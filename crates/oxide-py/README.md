@@ -1,24 +1,54 @@
-# oxide-py (Deferred)
+# oxide-py
 
-Python bindings are intentionally deferred to a PyO3/maturin follow-up. This
-directory is a scope marker, not a buildable crate.
-
-Planned API:
+Python bindings for the Oxide PDF engine, built with PyO3 and maturin.
 
 ```python
-from oxide_pdf import Document
+import oxide
 
-doc = Document.from_bytes(pdf_bytes)
-print(doc.page_count())
-print(doc.extract_text(1))
-png = doc.render_page_png(1, dpi=150)
-semantic = doc.extract_semantic()
+doc = oxide.open("input.pdf")
+print(doc.page_count)
+print(doc.extract_text())
+
+page = doc.page(1)
+print(page.text)
+print(page.words[:5])
+
+for table in page.tables:
+    print(table["rows"])
+
+fields = doc.extract_fields(doc_type="auto")
+png_bytes = page.render(dpi=150)
 ```
 
-Implementation notes:
+## Build And Install
 
-- Use a separate PyO3 crate with maturin packaging.
-- Convert `oxide-engine` errors to Python exceptions.
-- Return Python-native `str`, `bytes`, `dict`, and `list` values.
-- Start with bytes/page-count/text/info/render/semantic; add images,
-  attachments, signatures, and manipulation after the core wrapper is stable.
+```powershell
+python -m pip install maturin
+cd crates\oxide-py
+python -m maturin build
+python -m pip install target\wheels\oxide_pdf-0.1.0-*.whl
+python -c "import oxide; print(oxide.__version__)"
+```
+
+`oxide.open()` accepts a filesystem path or raw `bytes`. Password-protected PDFs
+can be opened with `password="..."`.
+
+## Exposed In This Binding
+
+- `oxide.open(path_or_bytes, password=None)`
+- `Document.page_count`, `Document.metadata`, `Document.page(n)`,
+  iteration over pages, and `doc[index]`
+- `Document.extract_text`, `extract_tables`, `extract_fields`,
+  `document_model`, `to_markdown`, `to_html`, and `render`
+- `Page.text`, `Page.words`, `Page.tables`, `Page.images`,
+  `Page.markdown`, and `Page.render`
+
+Errors from the Rust engine are converted to `oxide.OxideError`. The binding
+catches Rust panics at the Python boundary and converts them to that exception
+instead of aborting the interpreter.
+
+## Deferred
+
+Region/scoped extraction, extraction profiles, and expanded markdown heading
+controls are Prompt 6 work. Manipulation/signing surfaces remain Rust/CLI first
+for now.
