@@ -10,6 +10,7 @@ into a logical structure or recover reading order across columns.
 oxide extract-text in.pdf --structured                 # reading-order text
 oxide extract-text in.pdf --structured --format json   # block tree + bboxes
 oxide extract-text in.pdf -p 1-3 --structured          # a page range
+oxide extract-text in.pdf --region 0,396,306,792       # top-left quarter
 ```
 
 This is **additive**. The default `oxide extract-text` path is byte-for-byte
@@ -72,6 +73,15 @@ blank line. `--format json` emits the structured tree:
 The bounding boxes are in PDF user space (y-up). This structure feeds the table
 extractor and is useful for downstream consumers (chunking for RAG, layout-aware
 diffing, HTML reflow).
+
+## Region extraction
+
+`--region x0,y0,x1,y1` is available on `extract-text`, `extract-tables`, and
+`extract-images`. Coordinates are PDF user-space points with origin at the
+page's bottom-left, matching the layout JSON boxes. A text line, word, table, or
+image placement is included when its center is inside the region or at least
+half of its box overlaps the region. Regions partly outside the page are clamped
+to the page box; regions with no page overlap return a clean input error.
 
 ## The win — reading-order correctness (measured)
 

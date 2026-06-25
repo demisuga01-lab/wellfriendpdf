@@ -11,6 +11,8 @@ print(doc.page_count)
 print(doc.extract_text())
 print(doc.page(1).tables)
 print(doc.extract_fields(doc_type="auto"))
+print(doc.page(1).region(0, 0, 306, 792).text)
+print(doc.to_markdown(detect_headings=True, profile="rag-chunks"))
 png = doc.page(1).render(dpi=150)
 ```
 
@@ -35,9 +37,17 @@ are not claimed yet; CI wheel publishing is future packaging work.
 ## Current Coverage
 
 - Open from path or bytes, optionally with a password.
-- Document/page text extraction.
+- Document/page text extraction, with named profiles:
+  `fast-text`, `layout-faithful`, `tables-focused`, and `rag-chunks`.
 - Lazy page properties: `page.text`, `page.words`, `page.tables`, `page.images`.
 - Document-level tables, fields, document model, markdown, HTML, and rendering.
+- Region/scoped extraction through `page.region(x0, y0, x1, y1)` and
+  `page.within(...)`. The returned scoped object exposes `.text`, `.words`,
+  `.tables`, and `.images`.
+- Explicit markdown heading control through
+  `to_markdown(detect_headings=True|False)` and `page.markdown(...)`.
 
-Region extraction, named extraction profiles, and explicit markdown heading
-switches are added in Prompt 6.
+Region coordinates are PDF user-space points with origin at the page's
+bottom-left. Scoped extraction includes an item when its center is inside the
+region or at least half of its bounding box overlaps it. Markdown heading
+detection is heuristic unless the source PDF supplies tagged structure.

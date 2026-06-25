@@ -28,6 +28,8 @@ oxide parse --input f.pdf --format markdown|json|html [options]
 | `--dehyphenate` | off | Join words split across line ends (`compi-\nlation` → `compilation`). RAG-friendly; mutates characters, so off by default |
 | `--normalize-ligatures` | off | Map ligature codepoints to plain letters (`ﬁ`→`fi`). Off by default |
 | `--min-confidence N` | `0.0` | Drop blocks classified below confidence `N` |
+| `--profile NAME` | `fast-text` | Apply a named extraction profile: `fast-text`, `layout-faithful`, `tables-focused`, or `rag-chunks` |
+| `--detect-headings BOOL` | `true` | For Markdown output, emit heuristic headings when true; use `--detect-headings=false` for flat text-like Markdown |
 | `--password PW` | — | Password for an encrypted PDF |
 | `--output FILE` | stdout | Where to write the serialized output |
 

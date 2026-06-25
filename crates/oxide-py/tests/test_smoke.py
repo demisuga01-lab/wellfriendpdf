@@ -29,6 +29,25 @@ def test_open_bytes_and_python_native_outputs():
     assert isinstance(doc.to_html(), str)
 
 
+def test_region_profile_and_markdown_controls():
+    doc = oxide.open(FIXTURE)
+    page = doc.page(1)
+    region = page.region(0, 0, 10000, 10000)
+
+    assert "Hello" in region.text
+    assert isinstance(region.words, list)
+    assert isinstance(region.tables, list)
+    assert isinstance(region.images, list)
+    bbox = page.within(0, 0, 10000, 10000).bbox
+    assert bbox[0] == 0.0
+    assert bbox[1] == 0.0
+    assert bbox[2] <= 10000.0
+    assert bbox[3] <= 10000.0
+    assert "Hello" in doc.extract_text(profile="layout-faithful")
+    assert isinstance(doc.document_model(profile="rag-chunks"), dict)
+    assert isinstance(doc.to_markdown(detect_headings=False, profile="fast-text"), str)
+
+
 def test_iteration_yields_pages():
     doc = oxide.open(FIXTURE)
     assert [page.number for page in doc] == list(range(1, doc.page_count + 1))

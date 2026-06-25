@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use crate::content::{ContentOperation, ContentParser};
@@ -20,6 +20,210 @@ pub struct PageResources {
     pub ext_g_states: HashMap<String, PdfDictionary>,
     pub patterns: HashMap<String, PdfObject>,
     pub shadings: HashMap<String, PdfObject>,
+}
+
+/// A rectangular page region in PDF user-space points.
+///
+/// Coordinates use the same convention as Oxide's positioned layout model:
+/// origin at the page's bottom-left, `x` increasing rightward, and `y`
+/// increasing upward. Region extraction keeps an item when the item's center is
+/// inside the rectangle or at least half of the item's area overlaps it.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct PageRegion {
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+}
+
+impl PageRegion {
+    pub fn new(x0: f64, y0: f64, x1: f64, y1: f64) -> Result<Self> {
+        if ![x0, y0, x1, y1].iter().all(|v| v.is_finite()) {
+            return Err(OxideError::MalformedPdf(
+                "region coordinates must be finite numbers".to_string(),
+            ));
+        }
+        if x0 >= x1 || y0 >= y1 {
+            return Err(OxideError::MalformedPdf(
+                "region must satisfy x0 < x1 and y0 < y1".to_string(),
+            ));
+        }
+        Ok(Self { x0, y0, x1, y1 })
+    }
+
+    pub fn from_array(region: [f64; 4]) -> Result<Self> {
+        Self::new(region[0], region[1], region[2], region[3])
+    }
+
+    pub fn as_array(self) -> [f64; 4] {
+        [self.x0, self.y0, self.x1, self.y1]
+    }
+
+    pub fn width(self) -> f64 {
+        (self.x1 - self.x0).max(0.0)
+    }
+
+    pub fn height(self) -> f64 {
+        (self.y1 - self.y0).max(0.0)
+    }
+
+    pub fn contains_point(self, x: f64, y: f64) -> bool {
+        x >= self.x0 && x <= self.x1 && y >= self.y0 && y <= self.y1
+    }
+
+    pub fn overlap_area(self, bbox: [f64; 4]) -> f64 {
+        let bx0 = bbox[0].min(bbox[2]);
+        let by0 = bbox[1].min(bbox[3]);
+        let bx1 = bbox[0].max(bbox[2]);
+        let by1 = bbox[1].max(bbox[3]);
+        let x = (self.x1.min(bx1) - self.x0.max(bx0)).max(0.0);
+        let y = (self.y1.min(by1) - self.y0.max(by0)).max(0.0);
+        x * y
+    }
+
+    pub fn overlap_ratio_of(self, bbox: [f64; 4]) -> f64 {
+        let area = bbox_area(bbox);
+        if area <= 0.0 {
+            return 0.0;
+        }
+        self.overlap_area(bbox) / area
+    }
+
+    pub fn keeps_bbox(self, bbox: [f64; 4]) -> bool {
+        let cx = (bbox[0] + bbox[2]) / 2.0;
+        let cy = (bbox[1] + bbox[3]) / 2.0;
+        self.contains_point(cx, cy) || self.overlap_ratio_of(bbox) >= 0.5
+    }
+
+    fn clamp_to_page(self, page_box: [f64; 4]) -> Result<Self> {
+        let page = normalize_bbox(page_box);
+        let x0 = self.x0.max(page[0]);
+        let y0 = self.y0.max(page[1]);
+        let x1 = self.x1.min(page[2]);
+        let y1 = self.y1.min(page[3]);
+        if x0 >= x1 || y0 >= y1 {
+            return Err(OxideError::MalformedPdf(format!(
+                "region [{:.2},{:.2},{:.2},{:.2}] does not overlap page box [{:.2},{:.2},{:.2},{:.2}]",
+                self.x0, self.y0, self.x1, self.y1, page[0], page[1], page[2], page[3]
+            )));
+        }
+        Ok(Self { x0, y0, x1, y1 })
+    }
+}
+
+/// Named extraction profiles. Profiles are convenience bundles over existing
+/// engine options; they do not introduce a separate parser path.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExtractionProfile {
+    /// Speed-oriented plain text extraction.
+    #[default]
+    FastText,
+    /// Prefer the layout analyzer for line/column-faithful text.
+    LayoutFaithful,
+    /// Preserve table structure and keep parse options table-friendly.
+    TablesFocused,
+    /// RAG-oriented parse defaults: omit furniture, normalize searchable text.
+    RagChunks,
+}
+
+impl ExtractionProfile {
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.to_ascii_lowercase().as_str() {
+            "fast-text" | "fast" | "text" => Some(Self::FastText),
+            "layout-faithful" | "layout" | "faithful" => Some(Self::LayoutFaithful),
+            "tables-focused" | "tables" | "table" => Some(Self::TablesFocused),
+            "rag-chunks" | "rag" | "chunks" => Some(Self::RagChunks),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::FastText => "fast-text",
+            Self::LayoutFaithful => "layout-faithful",
+            Self::TablesFocused => "tables-focused",
+            Self::RagChunks => "rag-chunks",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::FastText => "speed-optimized plain text extraction",
+            Self::LayoutFaithful => "layout-aware reading order and spacing",
+            Self::TablesFocused => "table-preserving document parsing",
+            Self::RagChunks => {
+                "RAG-ready text with furniture omitted and searchable text normalized"
+            }
+        }
+    }
+
+    fn apply_parse_options(self, options: &mut crate::parse::ParseOptions) {
+        match self {
+            Self::FastText => {}
+            Self::LayoutFaithful => {
+                options.omit_furniture = false;
+            }
+            Self::TablesFocused => {
+                options.omit_furniture = true;
+            }
+            Self::RagChunks => {
+                options.omit_furniture = true;
+                options.dehyphenate = true;
+                options.normalize_ligatures = true;
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RegionWord {
+    pub text: String,
+    pub page: usize,
+    pub x0: f64,
+    pub y0: f64,
+    pub x1: f64,
+    pub y1: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlacedImageReference {
+    pub image: ImageReference,
+    pub bbox: [f64; 4],
+}
+
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct RegionImage {
+    pub page: usize,
+    pub name: String,
+    pub bbox: [f64; 4],
+    pub width: u32,
+    pub height: u32,
+    pub bits_per_component: u8,
+    pub color_space: String,
+    pub filters: Vec<String>,
+    pub inline: bool,
+    pub mask: bool,
+    pub soft_mask: bool,
+}
+
+impl From<&PlacedImageReference> for RegionImage {
+    fn from(value: &PlacedImageReference) -> Self {
+        let image = &value.image;
+        Self {
+            page: image.page_number,
+            name: image.xobject_name.clone(),
+            bbox: value.bbox,
+            width: image.width,
+            height: image.height,
+            bits_per_component: image.bits_per_component,
+            color_space: image.color_space.clone(),
+            filters: image.filter.clone(),
+            inline: image.is_inline,
+            mask: image.is_mask,
+            soft_mask: image.is_smask,
+        }
+    }
 }
 
 /// Fetch a resource sub-dictionary (e.g. `/Font`, `/ColorSpace`, `/Pattern`),
@@ -243,6 +447,20 @@ impl ContentEngine {
         }
     }
 
+    /// Extract one page's text using a named convenience profile.
+    pub fn get_page_text_with_profile(
+        &self,
+        page_number: usize,
+        profile: ExtractionProfile,
+    ) -> Result<String> {
+        match profile {
+            ExtractionProfile::FastText => self.get_page_text(page_number),
+            ExtractionProfile::LayoutFaithful
+            | ExtractionProfile::TablesFocused
+            | ExtractionProfile::RagChunks => self.get_page_text_structured(page_number),
+        }
+    }
+
     /// Run geometric layout analysis (XY-cut segmentation + reading order) on a
     /// page, returning the structured [`PageLayout`](crate::analysis::layout::PageLayout)
     /// (blocks → lines, in reading order). This is **additive** — it does not
@@ -277,6 +495,61 @@ impl ContentEngine {
     /// top-to-bottom dump (and plain `pdftotext`) interleaves columns.
     pub fn get_page_text_structured(&self, page_number: usize) -> Result<String> {
         Ok(self.analyze_page_layout(page_number)?.text())
+    }
+
+    /// Extract text constrained to a page region in PDF user-space points.
+    ///
+    /// A line is included when its center lies inside the region or at least
+    /// 50% of its line box overlaps the region. Blocks are preserved by joining
+    /// included lines with newlines and included blocks with blank lines.
+    pub fn extract_text_in_region(&self, page_number: usize, region: PageRegion) -> Result<String> {
+        let region = self.validated_region_for_page(page_number, region)?;
+        let layout = self.analyze_page_layout(page_number)?;
+        let mut blocks = Vec::new();
+        for block in layout.blocks {
+            let lines: Vec<String> = block
+                .lines
+                .into_iter()
+                .filter(|line| region.keeps_bbox(bbox_from_layout(line.bbox)))
+                .map(|line| line.text)
+                .collect();
+            if !lines.is_empty() {
+                blocks.push(lines.join("\n"));
+            }
+        }
+        Ok(blocks.join("\n\n"))
+    }
+
+    /// Approximate positioned words for a page from layout lines.
+    ///
+    /// The current layout model stores line boxes but not per-word boxes. This
+    /// method splits line text on whitespace and proportionally assigns word
+    /// extents across the line box. It is deterministic and good enough for the
+    /// public `words`/region surface until a lower-level glyph word model is
+    /// promoted.
+    pub fn extract_page_words(&self, page_number: usize) -> Result<Vec<RegionWord>> {
+        let layout = self.analyze_page_layout(page_number)?;
+        let mut words = Vec::new();
+        for block in layout.blocks {
+            for line in block.lines {
+                words.extend(words_from_line(page_number, &line));
+            }
+        }
+        Ok(words)
+    }
+
+    /// Extract positioned words constrained to a page region.
+    pub fn extract_words_in_region(
+        &self,
+        page_number: usize,
+        region: PageRegion,
+    ) -> Result<Vec<RegionWord>> {
+        let region = self.validated_region_for_page(page_number, region)?;
+        Ok(self
+            .extract_page_words(page_number)?
+            .into_iter()
+            .filter(|word| region.keeps_bbox([word.x0, word.y0, word.x1, word.y1]))
+            .collect())
     }
 
     /// Extract semantic structure for selected pages. Tagged PDFs use the
@@ -315,6 +588,20 @@ impl ContentEngine {
         Ok(crate::analysis::tables::detect_tables(&chunks, &graphics))
     }
 
+    /// Extract tables constrained to a page region.
+    pub fn extract_tables_in_region(
+        &self,
+        page_number: usize,
+        region: PageRegion,
+    ) -> Result<Vec<crate::analysis::tables::Table>> {
+        let region = self.validated_region_for_page(page_number, region)?;
+        Ok(self
+            .extract_tables(page_number)?
+            .into_iter()
+            .filter(|table| region.keeps_bbox(table.bbox))
+            .collect())
+    }
+
     /// Build a typed, ordered **document model** for the selected pages: each
     /// recovered block is classified (heading/paragraph/list/figure/caption/
     /// table/header/footer/page-number) and placed in a robust reading order
@@ -335,6 +622,54 @@ impl ContentEngine {
         crate::parse::parse(self, options)
     }
 
+    /// Parse with a named extraction profile.
+    pub fn parse_document_with_profile(
+        &self,
+        profile: ExtractionProfile,
+        options: &crate::parse::ParseOptions,
+    ) -> Result<crate::parse::Document> {
+        let mut options = options.clone();
+        profile.apply_parse_options(&mut options);
+        self.parse_document(&options)
+    }
+
+    /// Serialize selected pages to Markdown, optionally disabling heading
+    /// detection for callers that want a flat text-like Markdown export.
+    pub fn to_markdown_with_options(
+        &self,
+        pages: &[usize],
+        detect_headings: bool,
+        serialize_options: &crate::parse::SerializeOptions,
+    ) -> Result<String> {
+        let selected = if pages.is_empty() {
+            (1..=self.page_count()?).collect::<Vec<_>>()
+        } else {
+            pages.to_vec()
+        };
+        for &page in &selected {
+            self.validate_page(page)?;
+        }
+
+        if detect_headings {
+            let parse_options = crate::parse::ParseOptions {
+                pages: selected,
+                ..crate::parse::ParseOptions::default()
+            };
+            return Ok(self
+                .parse_document(&parse_options)?
+                .to_markdown(serialize_options));
+        }
+
+        let mut out = String::new();
+        for page in selected {
+            out.push_str(&self.get_page_text(page)?);
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+        }
+        Ok(out)
+    }
+
     /// Extract structured **key-value / form fields** (invoice number, date,
     /// total, line items; receipt merchant/amount; form label→value pairs).
     ///
@@ -346,6 +681,21 @@ impl ContentEngine {
         options: &crate::extract::ExtractOptions,
     ) -> Result<crate::extract::ExtractedFields> {
         crate::extract::extract_fields(self, options)
+    }
+
+    /// The page's crop box `[x0, y0, x1, y1]` in PDF user-space points.
+    pub fn page_box(&self, page_number: usize) -> Result<[f64; 4]> {
+        self.page_crop_box(page_number)
+    }
+
+    /// Clamp a region to the page box, returning a clean error if there is no
+    /// overlap. This is the effective region used by scoped extraction.
+    pub fn clamp_region_to_page(
+        &self,
+        page_number: usize,
+        region: PageRegion,
+    ) -> Result<PageRegion> {
+        self.validated_region_for_page(page_number, region)
     }
 
     /// Visible page size `(width, height)` in user-space units, from the page's
@@ -467,6 +817,67 @@ impl ContentEngine {
         self.validate_page(page_number)?;
         let opts = ImageLocateOptions::default();
         ImageLocator::find_page_images(self, page_number, &opts)
+    }
+
+    /// Find image placements constrained to a page region.
+    ///
+    /// The returned entries carry both the decodable image reference and the
+    /// user-space bounding box for the specific placement. Inline images do not
+    /// currently carry reliable placement boxes and are omitted from this
+    /// region-filtered surface.
+    pub fn find_page_images_in_region(
+        &self,
+        page_number: usize,
+        region: PageRegion,
+    ) -> Result<Vec<PlacedImageReference>> {
+        let region = self.validated_region_for_page(page_number, region)?;
+        let images = self.find_page_images(page_number)?;
+        let image_names: BTreeSet<String> = images
+            .iter()
+            .filter(|image| !image.is_inline)
+            .map(|image| image.xobject_name.clone())
+            .collect();
+        if image_names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let ops = self.get_page_content(page_number)?;
+        let graphics = crate::analysis::graphics::collect_graphics_with_images(&ops, &image_names);
+        let mut out = Vec::new();
+        for placement in graphics.images {
+            let bbox = [
+                placement.bbox.x0,
+                placement.bbox.y0,
+                placement.bbox.x1,
+                placement.bbox.y1,
+            ];
+            if !region.keeps_bbox(bbox) {
+                continue;
+            }
+            if let Some(image) = images
+                .iter()
+                .find(|image| image.xobject_name == placement.name)
+            {
+                out.push(PlacedImageReference {
+                    image: image.clone(),
+                    bbox,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Serializable image-placement metadata constrained to a page region.
+    pub fn find_page_image_regions(
+        &self,
+        page_number: usize,
+        region: PageRegion,
+    ) -> Result<Vec<RegionImage>> {
+        Ok(self
+            .find_page_images_in_region(page_number, region)?
+            .iter()
+            .map(RegionImage::from)
+            .collect())
     }
 
     /// Find all image XObjects in the entire document.
@@ -801,6 +1212,15 @@ impl ContentEngine {
         }
         Ok(())
     }
+
+    fn validated_region_for_page(
+        &self,
+        page_number: usize,
+        region: PageRegion,
+    ) -> Result<PageRegion> {
+        self.validate_page(page_number)?;
+        region.clamp_to_page(self.page_crop_box(page_number)?)
+    }
 }
 
 /// Default ceiling on the pixel count of a single rendered page (width * height
@@ -868,6 +1288,58 @@ fn should_prefer_structured_column_text(text: &str) -> bool {
 
 fn page_rotation_u32(rotation: i32) -> u32 {
     rotation.rem_euclid(360) as u32
+}
+
+fn normalize_bbox(bbox: [f64; 4]) -> [f64; 4] {
+    [
+        bbox[0].min(bbox[2]),
+        bbox[1].min(bbox[3]),
+        bbox[0].max(bbox[2]),
+        bbox[1].max(bbox[3]),
+    ]
+}
+
+fn bbox_area(bbox: [f64; 4]) -> f64 {
+    let b = normalize_bbox(bbox);
+    ((b[2] - b[0]).max(0.0)) * ((b[3] - b[1]).max(0.0))
+}
+
+fn bbox_from_layout(bbox: crate::analysis::layout::BBox) -> [f64; 4] {
+    [bbox.x0, bbox.y0, bbox.x1, bbox.y1]
+}
+
+fn words_from_line(
+    page_number: usize,
+    line: &crate::analysis::layout::LayoutLine,
+) -> Vec<RegionWord> {
+    let parts: Vec<&str> = line.text.split_whitespace().collect();
+    if parts.is_empty() {
+        return Vec::new();
+    }
+
+    let total_chars = parts
+        .iter()
+        .map(|word| word.chars().count())
+        .sum::<usize>()
+        .max(1);
+    let width = (line.bbox.x1 - line.bbox.x0).max(0.0);
+    let mut offset = 0usize;
+    let mut words = Vec::with_capacity(parts.len());
+    for word in parts {
+        let len = word.chars().count();
+        let x0 = line.bbox.x0 + width * (offset as f64 / total_chars as f64);
+        offset += len;
+        let x1 = line.bbox.x0 + width * (offset as f64 / total_chars as f64);
+        words.push(RegionWord {
+            text: word.to_string(),
+            page: page_number,
+            x0,
+            y0: line.bbox.y0,
+            x1,
+            y1: line.bbox.y1,
+        });
+    }
+    words
 }
 
 /// Parse an annotation `/Rect` `[x0 y0 x1 y1]` (resolving indirect refs and
@@ -967,6 +1439,43 @@ mod tests {
         let page = page([0.0, 0.0, 200.0, 200.0], [250.0, 250.0, 300.0, 300.0]);
 
         assert_eq!(effective_page_box(&page), [0.0, 0.0, 200.0, 200.0]);
+    }
+
+    #[test]
+    fn page_region_keeps_center_or_majority_overlap() {
+        let region = PageRegion::new(0.0, 0.0, 100.0, 100.0).unwrap();
+
+        assert!(region.keeps_bbox([25.0, 25.0, 50.0, 50.0]));
+        assert!(region.keeps_bbox([80.0, 10.0, 110.0, 50.0]));
+        assert!(!region.keeps_bbox([120.0, 10.0, 180.0, 50.0]));
+    }
+
+    #[test]
+    fn page_region_clamps_partial_overlap_and_rejects_miss() {
+        let region = PageRegion::new(-10.0, -10.0, 20.0, 20.0).unwrap();
+        assert_eq!(
+            region
+                .clamp_to_page([0.0, 0.0, 100.0, 100.0])
+                .unwrap()
+                .as_array(),
+            [0.0, 0.0, 20.0, 20.0]
+        );
+
+        let miss = PageRegion::new(120.0, 120.0, 140.0, 140.0).unwrap();
+        assert!(miss.clamp_to_page([0.0, 0.0, 100.0, 100.0]).is_err());
+    }
+
+    #[test]
+    fn extraction_profile_parses_aliases() {
+        assert_eq!(
+            ExtractionProfile::parse("layout-faithful"),
+            Some(ExtractionProfile::LayoutFaithful)
+        );
+        assert_eq!(
+            ExtractionProfile::parse("rag"),
+            Some(ExtractionProfile::RagChunks)
+        );
+        assert_eq!(ExtractionProfile::parse("unknown"), None);
     }
 
     #[test]

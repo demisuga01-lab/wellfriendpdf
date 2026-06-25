@@ -13,10 +13,14 @@ page = doc.page(1)
 print(page.text)
 print(page.words[:5])
 
+left_half = page.region(0, 0, 306, 792)
+print(left_half.text)
+
 for table in page.tables:
     print(table["rows"])
 
 fields = doc.extract_fields(doc_type="auto")
+markdown = doc.to_markdown(detect_headings=True, profile="rag-chunks")
 png_bytes = page.render(dpi=150)
 ```
 
@@ -41,7 +45,18 @@ can be opened with `password="..."`.
 - `Document.extract_text`, `extract_tables`, `extract_fields`,
   `document_model`, `to_markdown`, `to_html`, and `render`
 - `Page.text`, `Page.words`, `Page.tables`, `Page.images`,
-  `Page.markdown`, and `Page.render`
+- `Page.markdown`, `Page.render`, `Page.text_with_profile`, and
+  `Page.region(...)` / `Page.within(...)`
+- `RegionPage.text`, `RegionPage.words`, `RegionPage.tables`, and
+  `RegionPage.images`
+
+Region coordinates are PDF user-space points with origin at the page's
+bottom-left. Scoped extraction includes an item when its center is in the region
+or at least half of its box overlaps the region.
+
+Named profiles are `fast-text`, `layout-faithful`, `tables-focused`, and
+`rag-chunks`. Profiles are convenience bundles over Rust engine options; they do
+not reimplement parsing in Python.
 
 Errors from the Rust engine are converted to `oxide.OxideError`. The binding
 catches Rust panics at the Python boundary and converts them to that exception
@@ -49,6 +64,6 @@ instead of aborting the interpreter.
 
 ## Deferred
 
-Region/scoped extraction, extraction profiles, and expanded markdown heading
-controls are Prompt 6 work. Manipulation/signing surfaces remain Rust/CLI first
-for now.
+Manipulation/signing surfaces remain Rust/CLI first for now. Cross-platform
+prebuilt wheels are also future CI work; the local platform wheel is built with
+maturin.

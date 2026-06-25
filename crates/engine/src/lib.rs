@@ -153,7 +153,8 @@ pub use editing::{
     ImageStampOptions, OverlayLayer, PdfEditor, RedactionOptions, WatermarkOptions,
 };
 pub use engine::{
-    max_decode_pixels, max_render_pixels, ContentEngine, PageResources, DEFAULT_MAX_DECODE_PIXELS,
+    max_decode_pixels, max_render_pixels, ContentEngine, ExtractionProfile, PageRegion,
+    PageResources, PlacedImageReference, RegionImage, RegionWord, DEFAULT_MAX_DECODE_PIXELS,
     DEFAULT_MAX_RENDER_PIXELS,
 };
 pub use error::{ErrorKind, OxideError, Result};

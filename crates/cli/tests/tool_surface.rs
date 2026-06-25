@@ -102,6 +102,22 @@ fn extract_text_structured_runs() {
 }
 
 #[test]
+fn extract_text_region_and_profile_runs() {
+    let out = run(&[
+        "extract-text",
+        fx("tracemonkey.pdf").to_str().unwrap(),
+        "-p",
+        "3",
+        "--region",
+        "0,0,10000,10000",
+        "--profile",
+        "layout-faithful",
+    ]);
+    assert_ok(&out, "extract-text --region --profile");
+    assert!(!out.stdout.is_empty(), "region extraction produced no text");
+}
+
+#[test]
 fn extract_text_semantic_runs() {
     // Semantic mode uses tagged-PDF structure when present and falls back to the
     // geometric analyzer for untagged fixtures.
@@ -171,6 +187,18 @@ fn extract_tables_runs() {
     assert_ok(&html, "extract-tables --format html");
     let h = String::from_utf8_lossy(&html.stdout);
     assert!(h.contains("<!doctype html>"), "HTML should be a document");
+
+    let region_json = run(&[
+        "extract-tables",
+        fx("tracemonkey.pdf").to_str().unwrap(),
+        "-p",
+        "1",
+        "--format",
+        "json",
+        "--region",
+        "0,0,10000,10000",
+    ]);
+    assert_ok(&region_json, "extract-tables --region");
 }
 
 #[test]
@@ -241,6 +269,23 @@ fn parse_robustness_flags_and_per_page_source() {
     let s = String::from_utf8_lossy(&json.stdout);
     assert!(s.contains("\"schema_version\": \"1.1\""), "schema 1.1");
     assert!(s.contains("\"source\""), "per-page source recorded");
+}
+
+#[test]
+fn parse_profile_and_markdown_heading_flag_run() {
+    let md = run(&[
+        "parse",
+        fx("tracemonkey.pdf").to_str().unwrap(),
+        "-p",
+        "1",
+        "--format",
+        "markdown",
+        "--profile",
+        "rag-chunks",
+        "--detect-headings=false",
+    ]);
+    assert_ok(&md, "parse --profile --detect-headings=false");
+    assert!(!md.stdout.is_empty(), "flat markdown produced no output");
 }
 
 #[test]
@@ -393,6 +438,22 @@ fn extract_images_runs() {
         o.to_str().unwrap(),
     ]);
     assert_ok(&out, "extract-images");
+    assert!(o.exists());
+    let _ = std::fs::remove_file(&o);
+}
+
+#[test]
+fn extract_images_region_runs() {
+    let o = tmp("images_region.zip");
+    let out = run(&[
+        "extract-images",
+        fx("image_only.pdf").to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "--region",
+        "0,0,10000,10000",
+    ]);
+    assert_ok(&out, "extract-images --region");
     assert!(o.exists());
     let _ = std::fs::remove_file(&o);
 }

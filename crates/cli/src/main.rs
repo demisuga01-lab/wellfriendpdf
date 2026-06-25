@@ -227,6 +227,13 @@ struct ExtractTextArgs {
     /// either flag.
     #[arg(long, default_value = "text")]
     format: String,
+    /// Restrict extraction to a page box in PDF user-space points:
+    /// x0,y0,x1,y1 with origin bottom-left.
+    #[arg(long)]
+    region: Option<String>,
+    /// Extraction profile: fast-text, layout-faithful, tables-focused, or rag-chunks.
+    #[arg(long, default_value = "fast-text")]
+    profile: String,
     /// OCR scanned (image-only) pages with Tesseract and extract the recovered
     /// text, instead of returning nothing for pages with no text layer. Routes
     /// through the OCR-aware document parser. Requires the `tesseract` binary on
@@ -268,6 +275,10 @@ struct ExtractTablesArgs {
     /// (typically ruled) tables.
     #[arg(long, default_value = "0.0")]
     min_confidence: f64,
+    /// Restrict extraction to a page box in PDF user-space points:
+    /// x0,y0,x1,y1 with origin bottom-left.
+    #[arg(long)]
+    region: Option<String>,
     /// Accepted for surface consistency with the other extract commands, but
     /// table-grid reconstruction from OCR'd word boxes is not yet supported (a
     /// known gap — see docs/parser_benchmark.md). Passing --ocr errors with a
@@ -326,6 +337,13 @@ struct ParseArgs {
     /// Drop blocks below this classification confidence (0.0-1.0)
     #[arg(long, default_value = "0.0")]
     min_confidence: f64,
+    /// Extraction profile: fast-text, layout-faithful, tables-focused, or rag-chunks.
+    #[arg(long, default_value = "fast-text")]
+    profile: String,
+    /// Detect headings in Markdown output. Use `--detect-headings=false` for
+    /// flat text-like Markdown.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    detect_headings: bool,
     /// OCR scanned (image-only) pages with Tesseract instead of emitting a
     /// placeholder. Requires the `tesseract` binary on PATH and a CLI built with
     /// the `ocr` feature. Recovered text flows through the same layout/heading/
@@ -475,6 +493,11 @@ struct ExtractImagesArgs {
     /// Minimum image height in pixels
     #[arg(long, default_value = "1")]
     min_height: u32,
+    /// Restrict extraction to a page box in PDF user-space points:
+    /// x0,y0,x1,y1 with origin bottom-left. Inline images are skipped because
+    /// their placement boxes are not yet exposed.
+    #[arg(long)]
+    region: Option<String>,
     /// Password for an encrypted PDF (the empty user password is tried automatically)
     #[arg(long)]
     password: Option<String>,
@@ -711,12 +734,23 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     };
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
+    let region = args.region.as_deref().map(parse_region_cli).transpose()?;
+    let profile = parse_profile_cli(&args.profile)?;
 
     if args.structured && args.semantic {
         return Err("--structured and --semantic are mutually exclusive".into());
     }
     if args.ocr && (args.structured || args.semantic) {
         return Err("--ocr cannot be combined with --structured or --semantic".into());
+    }
+    if region.is_some() && args.semantic {
+        return Err(
+            "--region is not supported with --semantic; use default or --structured extraction"
+                .into(),
+        );
+    }
+    if region.is_some() && args.ocr {
+        return Err("--region is not supported with --ocr text extraction yet".into());
     }
 
     // OCR path: route through the OCR-aware document parser so scanned
@@ -743,7 +777,10 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     // errors (lowest page index) is propagated, matching the serial `?`.
     let page_texts: Vec<oxide_engine::Result<String>> = page_nums
         .par_iter()
-        .map(|&page_num| engine.get_page_text(page_num))
+        .map(|&page_num| match region {
+            Some(region) => engine.extract_text_in_region(page_num, region),
+            None => engine.get_page_text_with_profile(page_num, profile),
+        })
         .collect();
 
     let mut output_text = String::new();
@@ -756,7 +793,7 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
         output_text.push('\n');
     }
 
-    match args.output {
+    match &args.output {
         Some(path) => std::fs::write(path, output_text)?,
         None => print!("{}", output_text),
     }
@@ -771,6 +808,7 @@ fn run_extract_text_structured(
     page_nums: &[usize],
     args: &ExtractTextArgs,
 ) -> Result<(), Box<dyn Error>> {
+    let region = args.region.as_deref().map(parse_region_cli).transpose()?;
     let as_json = match args.format.to_lowercase().as_str() {
         "json" => true,
         "text" | "txt" => false,
@@ -783,7 +821,15 @@ fn run_extract_text_structured(
         // One JSON object per document: pages -> blocks -> lines, in reading order.
         let mut pages = Vec::new();
         for &page_num in page_nums {
-            let layout = engine.analyze_page_layout(page_num)?;
+            let mut layout = engine.analyze_page_layout(page_num)?;
+            if let Some(region) = region {
+                for block in &mut layout.blocks {
+                    block.lines.retain(|line| {
+                        region.keeps_bbox([line.bbox.x0, line.bbox.y0, line.bbox.x1, line.bbox.y1])
+                    });
+                }
+                layout.blocks.retain(|block| !block.lines.is_empty());
+            }
             pages.push(serde_json::json!({
                 "page": page_num,
                 "blocks": layout.blocks,
@@ -803,7 +849,10 @@ fn run_extract_text_structured(
         if args.page_numbers {
             out.push_str(&format!("--- Page {page_num} ---\n"));
         }
-        out.push_str(&engine.get_page_text_structured(page_num)?);
+        match region {
+            Some(region) => out.push_str(&engine.extract_text_in_region(page_num, region)?),
+            None => out.push_str(&engine.get_page_text_structured(page_num)?),
+        }
         out.push('\n');
     }
     match &args.output {
@@ -933,6 +982,7 @@ fn run_extract_tables(args: ExtractTablesArgs) -> Result<(), Box<dyn Error>> {
     };
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
+    let region = args.region.as_deref().map(parse_region_cli).transpose()?;
 
     let format = match args.format.to_lowercase().as_str() {
         "json" => "json",
@@ -948,8 +998,11 @@ fn run_extract_tables(args: ExtractTablesArgs) -> Result<(), Box<dyn Error>> {
     let mut html_pages = Vec::new();
 
     for &page_num in &page_nums {
-        let tables: Vec<_> = engine
-            .extract_tables(page_num)?
+        let tables_raw = match region {
+            Some(region) => engine.extract_tables_in_region(page_num, region)?,
+            None => engine.extract_tables(page_num)?,
+        };
+        let tables: Vec<_> = tables_raw
             .into_iter()
             .filter(|t| t.confidence >= args.min_confidence)
             .collect();
@@ -1090,6 +1143,7 @@ fn run_parse(args: ParseArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
+    let profile = parse_profile_cli(&args.profile)?;
 
     let mut options = ParseOptions {
         pages: page_nums,
@@ -1122,7 +1176,8 @@ fn run_parse(args: ParseArgs) -> Result<(), Box<dyn Error>> {
         };
         options.ocr_dpi = args.ocr_dpi.max(1);
     }
-    let document = engine.parse_document(&options)?;
+    let output_pages = options.pages.clone();
+    let document = engine.parse_document_with_profile(profile, &options)?;
 
     let ser_opts = SerializeOptions {
         include_furniture: args.keep_furniture,
@@ -1131,7 +1186,8 @@ fn run_parse(args: ParseArgs) -> Result<(), Box<dyn Error>> {
     };
     let output_text = match fmt {
         Fmt::Json => document.to_json(),
-        Fmt::Markdown => document.to_markdown(&ser_opts),
+        Fmt::Markdown if args.detect_headings => document.to_markdown(&ser_opts),
+        Fmt::Markdown => engine.to_markdown_with_options(&output_pages, false, &ser_opts)?,
         Fmt::Html => document.to_html(&ser_opts),
     };
 
@@ -1399,6 +1455,7 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
+    let region = args.region.as_deref().map(parse_region_cli).transpose()?;
 
     let format = match args.format.to_lowercase().as_str() {
         "png" => ImageOutputFormat::Png,
@@ -1414,13 +1471,34 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let opts = ImageLocateOptions {
-        pages: Some(page_nums),
-        min_width: args.min_width,
-        min_height: args.min_height,
-        ..Default::default()
+    let images: Vec<oxide_engine::PlacedImageReference> = if let Some(region) = region {
+        let mut placed = Vec::new();
+        for page_num in page_nums {
+            placed.extend(
+                engine
+                    .find_page_images_in_region(page_num, region)?
+                    .into_iter()
+                    .filter(|image| {
+                        image.image.width >= args.min_width && image.image.height >= args.min_height
+                    }),
+            );
+        }
+        placed
+    } else {
+        let opts = ImageLocateOptions {
+            pages: Some(page_nums),
+            min_width: args.min_width,
+            min_height: args.min_height,
+            ..Default::default()
+        };
+        ImageLocator::find_all_images(&engine, &opts)?
+            .into_iter()
+            .map(|image| oxide_engine::PlacedImageReference {
+                image,
+                bbox: [0.0; 4],
+            })
+            .collect()
     };
-    let images = ImageLocator::find_all_images(&engine, &opts)?;
 
     let out_file = std::fs::File::create(&args.output)?;
     let mut zip = ZipWriter::new(out_file);
@@ -1429,7 +1507,8 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
         .compression_level(Some(6));
 
     let mut encoded_count = 0usize;
-    for (idx, img_ref) in images.iter().enumerate() {
+    for (idx, placed) in images.iter().enumerate() {
+        let img_ref = &placed.image;
         // Inline images (object_number == 0 with captured data) are exported too;
         // only skip references that carry no usable data.
         if img_ref.object_number == 0 && img_ref.inline_data.is_none() {
@@ -2528,9 +2607,33 @@ fn parse_page_range_cli(spec: &str, total: usize) -> Result<Vec<usize>, Box<dyn 
     Ok(pages)
 }
 
+fn parse_region_cli(spec: &str) -> Result<oxide_engine::PageRegion, Box<dyn Error>> {
+    let values: Vec<f64> = spec
+        .split(',')
+        .map(|part| part.trim().parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.len() != 4 {
+        return Err("region must be four comma-separated numbers: x0,y0,x1,y1".into());
+    }
+    oxide_engine::PageRegion::new(values[0], values[1], values[2], values[3])
+        .map_err(|err| err.into())
+}
+
+fn parse_profile_cli(name: &str) -> Result<oxide_engine::ExtractionProfile, Box<dyn Error>> {
+    oxide_engine::ExtractionProfile::parse(name).ok_or_else(|| {
+        format!(
+            "unknown --profile '{name}'; use fast-text, layout-faithful, tables-focused, or rag-chunks"
+        )
+        .into()
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{expand_split_pattern, parse_page_range_cli, parse_page_selection_ordered};
+    use super::{
+        expand_split_pattern, parse_page_range_cli, parse_page_selection_ordered,
+        parse_profile_cli, parse_region_cli,
+    };
     use std::path::PathBuf;
 
     #[test]
@@ -2540,6 +2643,22 @@ mod tests {
         assert_eq!(parse_page_range_cli("2-4", 5).unwrap(), vec![2, 3, 4]);
         assert_eq!(parse_page_range_cli("1,3,5", 5).unwrap(), vec![1, 3, 5]);
         assert_eq!(parse_page_range_cli("3-10", 5).unwrap(), vec![3, 4, 5]);
+    }
+
+    #[test]
+    fn cli_region_parser_accepts_four_numbers() {
+        let region = parse_region_cli("1,2,3,4").unwrap();
+        assert_eq!(region.as_array(), [1.0, 2.0, 3.0, 4.0]);
+        assert!(parse_region_cli("1,2,3").is_err());
+    }
+
+    #[test]
+    fn cli_profile_parser_accepts_named_profiles() {
+        assert_eq!(
+            parse_profile_cli("layout-faithful").unwrap(),
+            oxide_engine::ExtractionProfile::LayoutFaithful
+        );
+        assert!(parse_profile_cli("made-up").is_err());
     }
 
     #[test]

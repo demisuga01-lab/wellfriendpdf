@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use oxide_engine::{
-    ContentEngine, DocType, DocumentInfo, ExtractOptions, ImageLocateOptions, ImageOutputFormat,
-    ParseOptions, SerializeOptions,
+    ContentEngine, DocType, DocumentInfo, ExtractOptions, ExtractionProfile, ImageLocateOptions,
+    ImageOutputFormat, PageRegion, ParseOptions, SerializeOptions,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyIndexError, PyTypeError, PyValueError};
@@ -23,6 +23,13 @@ struct PyDocument {
 struct PyPage {
     engine: Arc<ContentEngine>,
     number: usize,
+}
+
+#[pyclass(name = "RegionPage", module = "oxide", unsendable)]
+struct PyRegionPage {
+    engine: Arc<ContentEngine>,
+    number: usize,
+    region: PageRegion,
 }
 
 #[pyclass(name = "_PageIterator", module = "oxide", unsendable)]
@@ -124,11 +131,12 @@ impl PyDocument {
             .collect())
     }
 
-    #[pyo3(signature = (page=None))]
-    fn extract_text(&self, page: Option<usize>) -> PyResult<String> {
+    #[pyo3(signature = (page=None, profile="fast-text"))]
+    fn extract_text(&self, page: Option<usize>, profile: &str) -> PyResult<String> {
+        let profile = parse_profile_py(profile)?;
         match page {
-            Some(page) => run_oxide(|| self.engine.get_page_text(page)),
-            None => all_text(&self.engine),
+            Some(page) => run_oxide(|| self.engine.get_page_text_with_profile(page, profile)),
+            None => all_text_with_profile(&self.engine, profile),
         }
     }
 
@@ -172,30 +180,44 @@ impl PyDocument {
         json_to_py(py, &fields)
     }
 
-    fn document_model<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        let document = run_oxide(|| self.engine.parse_document(&ParseOptions::default()))?;
+    #[pyo3(signature = (profile="fast-text"))]
+    fn document_model<'py>(&self, py: Python<'py>, profile: &str) -> PyResult<Py<PyAny>> {
+        let profile = parse_profile_py(profile)?;
+        let document = run_oxide(|| {
+            self.engine
+                .parse_document_with_profile(profile, &ParseOptions::default())
+        })?;
         let value: serde_json::Value = serde_json::from_str(&document.to_json())
             .map_err(|err| OxideError::new_err(format!("document JSON error: {err}")))?;
         json_to_py(py, &value)
     }
 
-    #[pyo3(signature = (detect_headings=true))]
-    fn to_markdown(&self, detect_headings: bool) -> PyResult<String> {
-        let document = run_oxide(|| self.engine.parse_document(&ParseOptions::default()))?;
+    #[pyo3(signature = (detect_headings=true, profile="fast-text"))]
+    fn to_markdown(&self, detect_headings: bool, profile: &str) -> PyResult<String> {
+        let profile = parse_profile_py(profile)?;
         if detect_headings {
+            let document = run_oxide(|| {
+                self.engine
+                    .parse_document_with_profile(profile, &ParseOptions::default())
+            })?;
             Ok(document.to_markdown(&SerializeOptions::default()))
         } else {
-            all_text(&self.engine)
+            all_text_with_profile(&self.engine, profile)
         }
     }
 
-    #[pyo3(signature = (detect_headings=true))]
-    fn markdown(&self, detect_headings: bool) -> PyResult<String> {
-        self.to_markdown(detect_headings)
+    #[pyo3(signature = (detect_headings=true, profile="fast-text"))]
+    fn markdown(&self, detect_headings: bool, profile: &str) -> PyResult<String> {
+        self.to_markdown(detect_headings, profile)
     }
 
-    fn to_html(&self) -> PyResult<String> {
-        let document = run_oxide(|| self.engine.parse_document(&ParseOptions::default()))?;
+    #[pyo3(signature = (profile="fast-text"))]
+    fn to_html(&self, profile: &str) -> PyResult<String> {
+        let profile = parse_profile_py(profile)?;
+        let document = run_oxide(|| {
+            self.engine
+                .parse_document_with_profile(profile, &ParseOptions::default())
+        })?;
         Ok(document.to_html(&SerializeOptions::default()))
     }
 
@@ -233,22 +255,86 @@ impl PyPage {
         page_images(py, &self.engine, self.number)
     }
 
-    #[pyo3(signature = (detect_headings=true))]
-    fn markdown(&self, detect_headings: bool) -> PyResult<String> {
+    #[pyo3(signature = (profile="fast-text"))]
+    fn text_with_profile(&self, profile: &str) -> PyResult<String> {
+        let profile = parse_profile_py(profile)?;
+        run_oxide(|| self.engine.get_page_text_with_profile(self.number, profile))
+    }
+
+    #[pyo3(signature = (x0, y0, x1, y1))]
+    fn region(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> PyResult<PyRegionPage> {
+        let region = run_oxide(|| PageRegion::new(x0, y0, x1, y1))?;
+        let region = run_oxide(|| self.engine.clamp_region_to_page(self.number, region))?;
+        Ok(PyRegionPage {
+            engine: Arc::clone(&self.engine),
+            number: self.number,
+            region,
+        })
+    }
+
+    #[pyo3(signature = (x0, y0, x1, y1))]
+    fn within(&self, x0: f64, y0: f64, x1: f64, y1: f64) -> PyResult<PyRegionPage> {
+        self.region(x0, y0, x1, y1)
+    }
+
+    #[pyo3(signature = (detect_headings=true, profile="fast-text"))]
+    fn markdown(&self, detect_headings: bool, profile: &str) -> PyResult<String> {
+        let profile = parse_profile_py(profile)?;
         if !detect_headings {
-            return self.text();
+            return run_oxide(|| self.engine.get_page_text_with_profile(self.number, profile));
         }
         let options = ParseOptions {
             pages: vec![self.number],
             ..Default::default()
         };
-        let document = run_oxide(|| self.engine.parse_document(&options))?;
+        let document = run_oxide(|| self.engine.parse_document_with_profile(profile, &options))?;
         Ok(document.to_markdown(&SerializeOptions::default()))
     }
 
     #[pyo3(signature = (dpi=150))]
     fn render(&self, dpi: u32) -> PyResult<Vec<u8>> {
         run_oxide(|| self.engine.render_page_png_fast(self.number, dpi))
+    }
+}
+
+#[pymethods]
+impl PyRegionPage {
+    #[getter]
+    fn number(&self) -> usize {
+        self.number
+    }
+
+    #[getter]
+    fn bbox(&self) -> Vec<f64> {
+        self.region.as_array().to_vec()
+    }
+
+    #[getter]
+    fn text(&self) -> PyResult<String> {
+        run_oxide(|| self.engine.extract_text_in_region(self.number, self.region))
+    }
+
+    #[getter]
+    fn words<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let words = run_oxide(|| {
+            self.engine
+                .extract_words_in_region(self.number, self.region)
+        })?;
+        json_to_py(py, &words)
+    }
+
+    #[getter]
+    fn tables<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let tables = run_oxide(|| {
+            self.engine
+                .extract_tables_in_region(self.number, self.region)
+        })?;
+        json_to_py(py, &tables)
+    }
+
+    #[getter]
+    fn images<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        page_region_images(py, &self.engine, self.number, self.region)
     }
 }
 
@@ -282,6 +368,7 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("OxideError", py.get_type::<OxideError>())?;
     module.add_class::<PyDocument>()?;
     module.add_class::<PyPage>()?;
+    module.add_class::<PyRegionPage>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
@@ -337,13 +424,23 @@ fn validate_page(engine: &ContentEngine, page: usize) -> PyResult<()> {
     }
 }
 
-fn all_text(engine: &ContentEngine) -> PyResult<String> {
-    let pages = run_oxide(|| engine.get_all_text())?;
-    Ok(pages
-        .into_iter()
-        .map(|(_, text)| text)
-        .collect::<Vec<_>>()
-        .join("\n"))
+fn parse_profile_py(name: &str) -> PyResult<ExtractionProfile> {
+    ExtractionProfile::parse(name).ok_or_else(|| {
+        PyValueError::new_err(
+            "profile must be fast-text, layout-faithful, tables-focused, or rag-chunks",
+        )
+    })
+}
+
+fn all_text_with_profile(engine: &ContentEngine, profile: ExtractionProfile) -> PyResult<String> {
+    let total = run_oxide(|| engine.page_count())?;
+    let mut pages = Vec::new();
+    for page in 1..=total {
+        pages.push(run_oxide(|| {
+            engine.get_page_text_with_profile(page, profile)
+        })?);
+    }
+    Ok(pages.join("\n"))
 }
 
 fn json_to_py<'py, T: Serialize>(py: Python<'py>, value: &T) -> PyResult<Py<PyAny>> {
@@ -354,37 +451,7 @@ fn json_to_py<'py, T: Serialize>(py: Python<'py>, value: &T) -> PyResult<Py<PyAn
 }
 
 fn page_words<'py>(py: Python<'py>, engine: &ContentEngine, page: usize) -> PyResult<Py<PyAny>> {
-    let layout = run_oxide(|| engine.analyze_page_layout(page))?;
-    let mut words = Vec::new();
-    for block in layout.blocks {
-        for line in block.lines {
-            let parts: Vec<&str> = line.text.split_whitespace().collect();
-            if parts.is_empty() {
-                continue;
-            }
-            let total_chars = parts
-                .iter()
-                .map(|w| w.chars().count())
-                .sum::<usize>()
-                .max(1);
-            let mut offset = 0usize;
-            let width = (line.bbox.x1 - line.bbox.x0).max(0.0);
-            for word in parts {
-                let len = word.chars().count();
-                let x0 = line.bbox.x0 + width * (offset as f64 / total_chars as f64);
-                offset += len;
-                let x1 = line.bbox.x0 + width * (offset as f64 / total_chars as f64);
-                words.push(json!({
-                    "text": word,
-                    "page": page,
-                    "x0": x0,
-                    "y0": line.bbox.y0,
-                    "x1": x1,
-                    "y1": line.bbox.y1,
-                }));
-            }
-        }
-    }
+    let words = run_oxide(|| engine.extract_page_words(page))?;
     json_to_py(py, &words)
 }
 
@@ -399,6 +466,44 @@ fn page_images<'py>(py: Python<'py>, engine: &ContentEngine, page: usize) -> PyR
         let dict = PyDict::new(py);
         dict.set_item("page", image.page_number)?;
         dict.set_item("name", image.xobject_name.clone())?;
+        dict.set_item("width", image.width)?;
+        dict.set_item("height", image.height)?;
+        dict.set_item("bits_per_component", image.bits_per_component)?;
+        dict.set_item("color_space", image.color_space.clone())?;
+        dict.set_item("filters", image.filter.clone())?;
+        dict.set_item("inline", image.is_inline)?;
+        dict.set_item("mask", image.is_mask)?;
+        dict.set_item("soft_mask", image.is_smask)?;
+        match run_oxide(|| engine.extract_image_bytes(&image, ImageOutputFormat::Png, None)) {
+            Ok(bytes) => {
+                dict.set_item("format", "png")?;
+                dict.set_item("data", PyBytes::new(py, &bytes))?;
+            }
+            Err(err) => {
+                dict.set_item("format", py.None())?;
+                dict.set_item("data", py.None())?;
+                dict.set_item("error", err.to_string())?;
+            }
+        }
+        list.append(dict)?;
+    }
+    Ok(list.into_any().unbind())
+}
+
+fn page_region_images<'py>(
+    py: Python<'py>,
+    engine: &ContentEngine,
+    page: usize,
+    region: PageRegion,
+) -> PyResult<Py<PyAny>> {
+    let images = run_oxide(|| engine.find_page_images_in_region(page, region))?;
+    let list = PyList::empty(py);
+    for placed in images {
+        let image = placed.image;
+        let dict = PyDict::new(py);
+        dict.set_item("page", image.page_number)?;
+        dict.set_item("name", image.xobject_name.clone())?;
+        dict.set_item("bbox", placed.bbox.to_vec())?;
         dict.set_item("width", image.width)?;
         dict.set_item("height", image.height)?;
         dict.set_item("bits_per_component", image.bits_per_component)?;
