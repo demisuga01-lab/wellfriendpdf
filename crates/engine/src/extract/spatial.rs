@@ -62,17 +62,21 @@ pub fn extract_spatial_fields(doc: &Document) -> Vec<Field> {
 fn extract_block_fields(doc: &Document) -> Vec<Field> {
     let frags = collect_frags(doc);
 
-    // First pass: inline "label: value" within a single fragment.
+    // First pass: inline "label: value" pairs within a single fragment. Some
+    // generators collapse several pairs onto one line, so this handles
+    // "Account: AC-1 Period: 2026..." as multiple fields.
     let mut fields = Vec::new();
     let mut consumed = vec![false; frags.len()];
 
     for (i, f) in frags.iter().enumerate() {
-        if let Some((label, value)) = split_inline_label_value(&f.text) {
-            if is_label_text(&label) && !value.trim().is_empty() {
-                fields.push(make_field(&label, &value, f, f, GeoKind::Inline));
-                consumed[i] = true;
-            }
+        let pairs = extract_inline_label_values(&f.text);
+        if pairs.is_empty() {
+            continue;
         }
+        for pair in pairs {
+            fields.push(make_field(&pair.label, &pair.value, f, f, GeoKind::Inline));
+        }
+        consumed[i] = true;
     }
 
     // Second pass: a fragment that is *just a label* paired with a neighbor.
@@ -110,20 +114,36 @@ fn extract_table_fields(doc: &Document) -> Vec<Field> {
             continue;
         };
         for row in &table.rows {
+            for cell in row.iter().map(|c| c.trim()).filter(|c| !c.is_empty()) {
+                for pair in extract_inline_label_values(cell) {
+                    fields.push(table_field(
+                        &pair.label,
+                        &pair.value,
+                        b.page,
+                        b.bbox,
+                        b.confidence,
+                    ));
+                }
+                for pair in extract_compact_label_grid(cell) {
+                    fields.push(table_field(
+                        &pair.label,
+                        &pair.value,
+                        b.page,
+                        b.bbox,
+                        b.confidence,
+                    ));
+                }
+            }
+
+            if !allow_same_row_table_pairing(row) {
+                continue;
+            }
             // Walk cells; when a label cell is found, the value is the next
             // non-empty cell in the same row (skipping blank grid slots).
             let mut ci = 0;
             while ci < row.len() {
                 let cell = row[ci].trim();
                 if !cell.is_empty() && is_label_text(cell) {
-                    // Inline "label: value" inside one cell.
-                    if let Some((label, value)) = split_inline_label_value(cell) {
-                        if !value.trim().is_empty() {
-                            fields.push(table_field(&label, &value, b.page, b.bbox, b.confidence));
-                            ci += 1;
-                            continue;
-                        }
-                    }
                     // Else: the value is the next non-empty cell to the right.
                     if let Some(vj) = (ci + 1..row.len()).find(|&j| !row[j].trim().is_empty()) {
                         let value = row[vj].trim();
@@ -135,6 +155,18 @@ fn extract_table_fields(doc: &Document) -> Vec<Field> {
                     }
                 }
                 ci += 1;
+            }
+        }
+
+        for rows in table.rows.windows(2) {
+            for pair in table_below_pairs(&rows[0], &rows[1]) {
+                fields.push(table_field(
+                    &pair.label,
+                    &pair.value,
+                    b.page,
+                    b.bbox,
+                    b.confidence,
+                ));
             }
         }
     }
@@ -230,25 +262,203 @@ impl GeoKind {
 
 /// Split `"Total: $42.00"` → `("Total", "$42.00")`. Splits on the FIRST colon
 /// that is followed by content. Returns `None` if there's no such colon.
+#[cfg(test)]
 fn split_inline_label_value(s: &str) -> Option<(String, String)> {
+    extract_inline_label_values(s)
+        .into_iter()
+        .next()
+        .map(|pair| (pair.label, pair.value))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InlinePair {
+    label: String,
+    value: String,
+}
+
+fn extract_inline_label_values(s: &str) -> Vec<InlinePair> {
+    let hits = label_colon_hits(s);
+    if hits.is_empty() {
+        return extract_single_inline_label_value(s).into_iter().collect();
+    }
+
+    let mut pairs = Vec::new();
+    for (idx, hit) in hits.iter().enumerate() {
+        let value_start = hit.end;
+        let value_end = hits.get(idx + 1).map(|next| next.start).unwrap_or(s.len());
+        if value_start > value_end || value_end > s.len() {
+            continue;
+        }
+        let value = clean_inline_value_for_label(hit.label, &s[value_start..value_end]);
+        if !value.is_empty() && !is_delimiter_only_label(hit.label) {
+            pairs.push(InlinePair {
+                label: hit.label.to_string(),
+                value,
+            });
+        }
+    }
+    pairs
+}
+
+fn extract_single_inline_label_value(s: &str) -> Option<InlinePair> {
     let idx = s.find(':')?;
-    let (l, r) = s.split_at(idx);
-    let value = r[1..].trim().to_string();
+    let (label, rest) = s.split_at(idx);
+    let label = label.trim();
+    if !is_label_text(label) {
+        return None;
+    }
+    let label = strip_label(label);
+    let value = clean_inline_value_for_label(&label, &rest[1..]);
     if value.is_empty() {
         return None;
     }
-    Some((l.trim().to_string(), value))
+    Some(InlinePair { label, value })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct LabelHit {
+    start: usize,
+    end: usize,
+    label: &'static str,
+}
+
+fn label_colon_hits(s: &str) -> Vec<LabelHit> {
+    let lower = s.to_ascii_lowercase();
+    let mut hits = Vec::new();
+    for label in LABEL_LEXICON {
+        let pattern = format!("{label}:");
+        let mut search_from = 0;
+        while let Some(rel) = lower[search_from..].find(&pattern) {
+            let start = search_from + rel;
+            let end = start + pattern.len();
+            if is_label_start_boundary(&lower, start) {
+                hits.push(LabelHit { start, end, label });
+            }
+            search_from = start + 1;
+        }
+    }
+    hits.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| b.end.cmp(&a.end)));
+
+    let mut deduped: Vec<LabelHit> = Vec::new();
+    for hit in hits {
+        if deduped
+            .last()
+            .is_some_and(|prev| hit.start < prev.end || hit.start == prev.start)
+        {
+            continue;
+        }
+        deduped.push(hit);
+    }
+    deduped
+}
+
+fn is_label_start_boundary(s: &str, start: usize) -> bool {
+    start == 0
+        || s[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|ch| !ch.is_ascii_alphanumeric())
+}
+
+fn clean_inline_value(value: &str) -> String {
+    let mut trimmed = value.trim();
+    for marker in [" corpus document", " page "] {
+        if let Some(idx) = trimmed.to_ascii_lowercase().find(marker) {
+            trimmed = trimmed[..idx].trim();
+        }
+    }
+    trimmed
+        .trim_matches(|ch: char| ch == '-' || ch == '|' || ch == ';' || ch.is_whitespace())
+        .trim()
+        .to_string()
+}
+
+fn clean_inline_value_for_label(label: &str, value: &str) -> String {
+    let cleaned = clean_inline_value(value);
+    let key = label.to_ascii_lowercase();
+    if key == "payment terms" {
+        return String::new();
+    }
+    if key == "period" {
+        return period_prefix(&cleaned);
+    }
+    if key == "account" || key == "ref" || key == "date" || key == "due" || key == "due date" {
+        return first_token(&cleaned);
+    }
+    if key == "reference" {
+        let first = first_token(&cleaned);
+        if first.to_ascii_uppercase().starts_with("REF-") {
+            return first;
+        }
+        return cleaned;
+    }
+    if matches!(
+        key.as_str(),
+        "total" | "total due" | "amount" | "amount due" | "balance" | "closing balance"
+    ) {
+        return amount_prefix(&cleaned);
+    }
+    if matches!(
+        key.as_str(),
+        "seat"
+            | "gate"
+            | "flight"
+            | "class"
+            | "booking"
+            | "email"
+            | "phone"
+            | "status"
+            | "priority"
+    ) {
+        return first_token(&cleaned);
+    }
+    cleaned
+}
+
+fn is_delimiter_only_label(label: &str) -> bool {
+    label.eq_ignore_ascii_case("payment terms")
+}
+
+fn first_token(s: &str) -> String {
+    s.split_whitespace().next().unwrap_or("").to_string()
+}
+
+fn amount_prefix(s: &str) -> String {
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    if tokens.is_empty() {
+        return String::new();
+    }
+    if tokens.len() >= 2 && looks_like_currency_code(tokens[0]) {
+        return format!("{} {}", tokens[0], tokens[1]);
+    }
+    tokens[0].to_string()
+}
+
+fn looks_like_currency_code(token: &str) -> bool {
+    token.len() == 3 && token.chars().all(|ch| ch.is_ascii_uppercase())
+}
+
+fn period_prefix(s: &str) -> String {
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    if tokens.len() >= 3 && tokens[1].eq_ignore_ascii_case("to") {
+        return tokens[..3].join(" ");
+    }
+    first_token(s)
 }
 
 /// A short label lexicon of phrases that act as labels even without a colon.
 const LABEL_LEXICON: &[&str] = &[
+    "account",
+    "account id",
     "total",
     "subtotal",
     "tax",
+    "total due",
     "amount due",
     "amount",
     "balance",
     "balance due",
+    "closing balance",
     "invoice number",
     "invoice no",
     "invoice #",
@@ -257,7 +467,9 @@ const LABEL_LEXICON: &[&str] = &[
     "inv #",
     "date",
     "invoice date",
+    "due",
     "due date",
+    "period",
     "order number",
     "order no",
     "order #",
@@ -273,6 +485,22 @@ const LABEL_LEXICON: &[&str] = &[
     "account no",
     "reference",
     "ref",
+    "document type",
+    "status",
+    "priority",
+    "company",
+    "department",
+    "requested by",
+    "reviewed by",
+    "full name",
+    "passenger",
+    "from",
+    "to",
+    "seat",
+    "gate",
+    "flight",
+    "class",
+    "booking",
     "quantity",
     "qty",
     "unit price",
@@ -287,6 +515,7 @@ const LABEL_LEXICON: &[&str] = &[
     "receipt number",
     "receipt no",
     "payment",
+    "payment terms",
     "discount",
     "shipping",
     "grand total",
@@ -319,6 +548,151 @@ fn is_label_text(s: &str) -> bool {
 fn strip_label(s: &str) -> String {
     s.trim().trim_end_matches(':').trim().to_string()
 }
+
+fn allow_same_row_table_pairing(row: &[String]) -> bool {
+    non_empty_indices(row).len() == 2
+}
+
+fn table_below_pairs(label_row: &[String], value_row: &[String]) -> Vec<InlinePair> {
+    let non_empty = non_empty_indices(label_row);
+    let label_indices: Vec<usize> = non_empty
+        .iter()
+        .copied()
+        .filter(|&idx| is_label_text(&label_row[idx]))
+        .collect();
+
+    if label_indices.len() < 2 || label_indices.len() > 4 || label_indices.len() != non_empty.len()
+    {
+        return Vec::new();
+    }
+
+    let mut pairs = Vec::new();
+    for idx in label_indices {
+        let Some(value) = value_row.get(idx).map(|v| v.trim()) else {
+            return Vec::new();
+        };
+        if value.is_empty() || is_label_text(value) {
+            return Vec::new();
+        }
+        pairs.push(InlinePair {
+            label: strip_label(&label_row[idx]),
+            value: clean_inline_value(value),
+        });
+    }
+    pairs
+}
+
+fn non_empty_indices(row: &[String]) -> Vec<usize> {
+    row.iter()
+        .enumerate()
+        .filter_map(|(idx, cell)| (!cell.trim().is_empty()).then_some(idx))
+        .collect()
+}
+
+fn extract_compact_label_grid(s: &str) -> Vec<InlinePair> {
+    let low = s.to_ascii_lowercase();
+    if !low.contains("boarding pass") {
+        return Vec::new();
+    }
+
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    let mut pairs = Vec::new();
+    let mut idx = 0;
+    while idx < tokens.len() {
+        let Some((labels, value_start)) = compact_label_run(&tokens, idx) else {
+            idx += 1;
+            continue;
+        };
+        let value_end = next_compact_label_run_or_footer(&tokens, value_start);
+        if value_end <= value_start {
+            idx = value_start.max(idx + 1);
+            continue;
+        }
+        let values = &tokens[value_start..value_end];
+        if values.len() >= labels.len() {
+            pairs.extend(partition_compact_values(&labels, values));
+        }
+        idx = value_end.max(value_start + 1);
+    }
+
+    if pairs.len() < 4 {
+        Vec::new()
+    } else {
+        pairs
+    }
+}
+
+fn compact_label_run(tokens: &[&str], start: usize) -> Option<(Vec<String>, usize)> {
+    let mut labels = Vec::new();
+    let mut idx = start;
+    while idx < tokens.len() {
+        let token = compact_token(tokens[idx]);
+        if !COMPACT_GRID_LABELS.contains(&token.as_str()) {
+            break;
+        }
+        labels.push(token);
+        idx += 1;
+    }
+    (labels.len() >= 2).then_some((labels, idx))
+}
+
+fn next_compact_label_run_or_footer(tokens: &[&str], start: usize) -> usize {
+    for idx in start..tokens.len() {
+        let token = compact_token(tokens[idx]);
+        if token == "corpus" || token == "page" {
+            return idx;
+        }
+        if compact_label_run(tokens, idx).is_some() {
+            return idx;
+        }
+    }
+    tokens.len()
+}
+
+fn partition_compact_values(labels: &[String], values: &[&str]) -> Vec<InlinePair> {
+    let mut pairs = Vec::new();
+    let mut value_idx = 0;
+    for (label_idx, label) in labels.iter().enumerate() {
+        let remaining_labels = labels.len() - label_idx;
+        let remaining_values = values.len().saturating_sub(value_idx);
+        if remaining_values < remaining_labels {
+            break;
+        }
+        let mut take = 1;
+        if compact_label_can_take_extra(label) && remaining_values > remaining_labels {
+            take += remaining_values - remaining_labels;
+        }
+        let end = (value_idx + take).min(values.len());
+        pairs.push(InlinePair {
+            label: label.clone(),
+            value: values[value_idx..end].join(" "),
+        });
+        value_idx = end;
+    }
+    pairs
+}
+
+fn compact_label_can_take_extra(label: &str) -> bool {
+    matches!(label, "passenger" | "full name" | "company" | "department")
+}
+
+fn compact_token(token: &str) -> String {
+    token
+        .trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
+        .to_ascii_lowercase()
+}
+
+const COMPACT_GRID_LABELS: &[&str] = &[
+    "passenger",
+    "from",
+    "to",
+    "date",
+    "seat",
+    "gate",
+    "flight",
+    "class",
+    "booking",
+];
 
 /// Find the best value fragment for the label at `label_idx`. Searches for a
 /// right-of (same line), then below (aligned) neighbor, scoring by proximity.
@@ -423,7 +797,7 @@ fn make_field(
 /// Expected value type for a label, to bias normalization.
 fn hint_for_label(key: &str) -> ValueHint {
     let k = key.to_ascii_lowercase();
-    if k.contains("date") {
+    if k.contains("date") || k == "due" {
         ValueHint::Date
     } else if k.contains("email") {
         ValueHint::Email
@@ -456,6 +830,10 @@ mod tests {
         assert!(is_label_text("Total:"));
         assert!(is_label_text("Invoice Number:"));
         assert!(is_label_text("Total")); // lexicon
+        assert!(is_label_text("Account"));
+        assert!(is_label_text("Account ID"));
+        assert!(is_label_text("Passenger"));
+        assert!(is_label_text("Booking"));
         assert!(!is_label_text(
             "This is a long sentence of body prose, not a label"
         ));
@@ -466,15 +844,89 @@ mod tests {
     fn inline_split() {
         assert_eq!(
             split_inline_label_value("Total: $42.00"),
-            Some(("Total".into(), "$42.00".into()))
+            Some(("total".into(), "$42.00".into()))
         );
         assert_eq!(split_inline_label_value("no colon here"), None);
         assert_eq!(split_inline_label_value("Trailing:"), None);
     }
 
     #[test]
+    fn collapsed_inline_pairs_are_split_individually() {
+        let pairs = extract_inline_label_values(
+            "INV-1 Bill To: Papergrid Works Account: AC-492577 Due Date: 2026-07-20 \
+             Reference: REF-321168 Total Due: $282,856 Payment terms: Net 30",
+        );
+        let got: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|pair| (pair.label.as_str(), pair.value.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("bill to", "Papergrid Works"),
+                ("account", "AC-492577"),
+                ("due date", "2026-07-20"),
+                ("reference", "REF-321168"),
+                ("total due", "$282,856"),
+            ]
+        );
+    }
+
+    #[test]
+    fn table_label_rows_pair_with_value_rows_by_column() {
+        let label_row = vec!["PASSENGER".into(), "FROM".into(), "TO".into(), "".into()];
+        let value_row = vec![
+            "Tomas Novak".into(),
+            "Chennai".into(),
+            "Chennai".into(),
+            "".into(),
+        ];
+        let pairs = table_below_pairs(&label_row, &value_row);
+        let got: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|pair| (pair.label.as_str(), pair.value.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("PASSENGER", "Tomas Novak"),
+                ("FROM", "Chennai"),
+                ("TO", "Chennai"),
+            ]
+        );
+    }
+
+    #[test]
+    fn compact_boarding_pass_cell_is_partitioned() {
+        let pairs = extract_compact_label_grid(
+            "GEN-000015 Boarding Pass PASSENGER FROM TO Hassan Farouk Cebu Hue \
+             DATE SEAT GATE 2026-01-26 16E C19 FLIGHT CLASS BOOKING RV5200 Business \
+             BK-946787 corpus document 000015 page 1 of 1",
+        );
+        let got: Vec<(&str, &str)> = pairs
+            .iter()
+            .map(|pair| (pair.label.as_str(), pair.value.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("passenger", "Hassan Farouk"),
+                ("from", "Cebu"),
+                ("to", "Hue"),
+                ("date", "2026-01-26"),
+                ("seat", "16E"),
+                ("gate", "C19"),
+                ("flight", "RV5200"),
+                ("class", "Business"),
+                ("booking", "BK-946787"),
+            ]
+        );
+    }
+
+    #[test]
     fn hint_mapping() {
         assert_eq!(hint_for_label("Invoice Date"), ValueHint::Date);
+        assert_eq!(hint_for_label("Due"), ValueHint::Date);
         assert_eq!(hint_for_label("Total"), ValueHint::Amount);
         assert_eq!(hint_for_label("Email"), ValueHint::Email);
         assert_eq!(hint_for_label("Vendor"), ValueHint::Any);

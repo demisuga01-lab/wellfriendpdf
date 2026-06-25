@@ -13,6 +13,8 @@ use crate::filters::decode_stream_from_dict;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::parser::{ParserResolver, PdfParser};
 
+const MAX_FALLBACK_XREF_OBJECTS: usize = 200_000;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum XrefEntry {
     Free,
@@ -92,12 +94,30 @@ impl PdfReader {
     /// password verifies, [`OxideError::EncryptedPdf`] is returned.
     pub fn from_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
         let version = parse_header_version(&data)?;
-        let startxref = find_startxref(&data)?;
         let mut xref = HashMap::new();
         let mut trailer = None;
         let mut visited = HashSet::new();
 
-        read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited)?;
+        let startxref = match find_startxref(&data) {
+            Ok(startxref) => {
+                if let Err(primary) =
+                    read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited)
+                {
+                    xref.clear();
+                    trailer = None;
+                    if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
+                        return Err(primary);
+                    }
+                }
+                startxref
+            }
+            Err(primary) => {
+                if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
+                    return Err(primary);
+                }
+                0
+            }
+        };
         repair_uncompressed_xref_offsets(&data, &mut xref);
 
         let trailer = trailer.ok_or_else(|| {
@@ -763,6 +783,94 @@ fn repair_uncompressed_xref_offsets(data: &[u8], xref: &mut HashMap<(u32, u16), 
     }
 }
 
+fn rebuild_xref_from_object_scan(
+    data: &[u8],
+    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    trailer: &mut Option<PdfDictionary>,
+) -> Result<()> {
+    let scanned = scan_indirect_object_headers(data);
+    if scanned.is_empty() {
+        return Err(OxideError::MalformedPdf(
+            "fallback object scan found no indirect objects".to_string(),
+        ));
+    }
+    if scanned.len() > MAX_FALLBACK_XREF_OBJECTS {
+        return Err(OxideError::ResourceLimit(format!(
+            "fallback object scan found more than {MAX_FALLBACK_XREF_OBJECTS} objects"
+        )));
+    }
+
+    xref.clear();
+    let mut max_object = 0u32;
+    for (&(number, generation), &offset) in &scanned {
+        if number == 0 {
+            continue;
+        }
+        max_object = max_object.max(number);
+        xref.insert((number, generation), XrefEntry::Uncompressed { offset });
+    }
+
+    let mut rebuilt = find_last_trailer_dictionary(data).unwrap_or_else(PdfDictionary::empty);
+    if rebuilt.get("Root").is_none() {
+        if let Some((number, generation)) = find_catalog_reference(data, &scanned) {
+            rebuilt.insert("Root", PdfObject::Reference { number, generation });
+        }
+    }
+    if rebuilt.get("Size").is_none() {
+        rebuilt.insert("Size", PdfObject::Integer(i64::from(max_object) + 1));
+    }
+    if rebuilt.get("Root").is_none() {
+        return Err(OxideError::MalformedPdf(
+            "fallback object scan could not recover trailer /Root".to_string(),
+        ));
+    }
+    *trailer = Some(rebuilt);
+    Ok(())
+}
+
+fn find_last_trailer_dictionary(data: &[u8]) -> Option<PdfDictionary> {
+    let marker = b"trailer";
+    let mut positions = Vec::new();
+    for (pos, window) in data.windows(marker.len()).enumerate() {
+        if window == marker {
+            positions.push(pos);
+        }
+    }
+    for pos in positions.into_iter().rev() {
+        let dict_pos = pos + marker.len();
+        let Ok(mut parser) = PdfParser::new(data, dict_pos) else {
+            continue;
+        };
+        let Ok(PdfObject::Dictionary(dict)) = parser.parse_object() else {
+            continue;
+        };
+        return Some(dict);
+    }
+    None
+}
+
+fn find_catalog_reference(data: &[u8], scanned: &HashMap<(u32, u16), usize>) -> Option<(u32, u16)> {
+    let mut candidates: Vec<((u32, u16), usize)> =
+        scanned.iter().map(|(id, offset)| (*id, *offset)).collect();
+    candidates
+        .sort_unstable_by_key(|((number, generation), offset)| (*number, *generation, *offset));
+    for ((number, generation), offset) in candidates {
+        let Ok(mut parser) = PdfParser::new(data, offset) else {
+            continue;
+        };
+        let Ok(parsed) = parser.parse_indirect_object() else {
+            continue;
+        };
+        let Some(dict) = parsed.object.as_dict() else {
+            continue;
+        };
+        if dict.get_name("Type") == Some("Catalog") && dict.get_reference("Pages").is_some() {
+            return Some((number, generation));
+        }
+    }
+    None
+}
+
 fn scan_indirect_object_headers(data: &[u8]) -> HashMap<(u32, u16), usize> {
     let mut offsets = HashMap::new();
     for (rel, window) in data.windows(b" obj".len()).enumerate() {
@@ -1338,6 +1446,61 @@ mod tests {
         )
     }
 
+    fn tiny_pdf() -> Vec<u8> {
+        let mut pdf = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.7\n\n");
+        let obj1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\n");
+        let obj2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Count 0 /Kids [] >>\nendobj\n\n");
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "xref\n0 3\n0000000000 65535 f\n{obj1:010} 00000 n\n{obj2:010} 00000 n\ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
+    fn remove_startxref(mut pdf: Vec<u8>) -> Vec<u8> {
+        let marker = pdf
+            .windows(b"startxref".len())
+            .rposition(|window| window == b"startxref")
+            .expect("test PDF has startxref");
+        pdf.truncate(marker);
+        pdf.extend_from_slice(b"%%EOF\n");
+        pdf
+    }
+
+    fn wrong_startxref(pdf: Vec<u8>) -> Vec<u8> {
+        let marker = pdf
+            .windows(b"startxref".len())
+            .rposition(|window| window == b"startxref")
+            .expect("test PDF has startxref");
+        let mut out = pdf[..marker + b"startxref".len()].to_vec();
+        out.extend_from_slice(b"\n999999\n%%EOF\n");
+        out
+    }
+
+    fn remove_xref_and_trailer(mut pdf: Vec<u8>) -> Vec<u8> {
+        let marker = pdf
+            .windows(b"xref".len())
+            .position(|window| window == b"xref")
+            .expect("test PDF has xref");
+        pdf.truncate(marker);
+        pdf.extend_from_slice(b"%%EOF\n");
+        pdf
+    }
+
+    fn assert_recovered_catalog(pdf: Vec<u8>) {
+        let reader = PdfReader::from_bytes(pdf).unwrap();
+        assert_eq!(reader.root_reference(), Some((1, 0)));
+        let root = reader.get_and_resolve(1, 0).unwrap();
+        let root_dict = root.as_dict().unwrap();
+        assert_eq!(root_dict.get_name("Type"), Some("Catalog"));
+    }
+
     #[test]
     fn parses_xref_stream_entries_from_widths() {
         let dict = dict(&[
@@ -1416,20 +1579,15 @@ trailer
 
     #[test]
     fn reader_repairs_bad_uncompressed_xref_offsets() {
-        let mut pdf = Vec::new();
-        pdf.extend_from_slice(b"%PDF-1.7\n\n");
-        let obj1 = pdf.len();
-        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n\n");
-        let obj2 = pdf.len();
-        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Count 0 /Kids [] >>\nendobj\n\n");
-        let xref = pdf.len();
-        pdf.extend_from_slice(
-            format!(
-                "xref\n0 3\n0000000000 65535 f\n{obj1:010} 00000 n\n{:010} 00000 n\ntrailer\n<< /Size 3 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-                obj2 - 1
-            )
-            .as_bytes(),
-        );
+        let mut pdf = tiny_pdf();
+        let obj2 = pdf
+            .windows(b"2 0 obj".len())
+            .position(|window| window == b"2 0 obj")
+            .unwrap();
+        let old = format!("{obj2:010}");
+        let bad = format!("{:010}", obj2 - 1);
+        let text = String::from_utf8(pdf).unwrap().replace(&old, &bad);
+        pdf = text.into_bytes();
 
         let reader = PdfReader::from_bytes(pdf).unwrap();
 
@@ -1437,6 +1595,21 @@ trailer
             reader.get_object(2, 0).unwrap(),
             PdfObject::Dictionary(_)
         ));
+    }
+
+    #[test]
+    fn reader_recovers_when_startxref_is_missing_but_trailer_exists() {
+        assert_recovered_catalog(remove_startxref(tiny_pdf()));
+    }
+
+    #[test]
+    fn reader_recovers_when_startxref_points_beyond_eof() {
+        assert_recovered_catalog(wrong_startxref(tiny_pdf()));
+    }
+
+    #[test]
+    fn reader_synthesizes_trailer_from_object_scan_when_trailer_is_missing() {
+        assert_recovered_catalog(remove_xref_and_trailer(tiny_pdf()));
     }
 
     #[test]

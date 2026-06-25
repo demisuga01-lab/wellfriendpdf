@@ -58,6 +58,26 @@ pub static INVOICE: FieldProfile = FieldProfile {
             hint: ValueHint::Date,
         },
         ProfileField {
+            key: "account",
+            labels: &["account", "account number", "account no", "account id"],
+            hint: ValueHint::Any,
+        },
+        ProfileField {
+            key: "reference",
+            labels: &["reference", "ref"],
+            hint: ValueHint::Any,
+        },
+        ProfileField {
+            key: "period",
+            labels: &["period", "statement period"],
+            hint: ValueHint::Any,
+        },
+        ProfileField {
+            key: "closing_balance",
+            labels: &["closing balance", "ending balance", "balance"],
+            hint: ValueHint::Amount,
+        },
+        ProfileField {
             key: "po_number",
             labels: &[
                 "po number",
@@ -306,7 +326,7 @@ fn label_matches(found_key: &str, synonym: &str) -> bool {
     if fk == syn {
         return true;
     }
-    if phrase_contains(&fk, &syn) {
+    if syn.split_whitespace().count() > 1 && phrase_contains(&fk, &syn) {
         return true;
     }
     if fk.split_whitespace().count() == syn.split_whitespace().count() {
@@ -355,6 +375,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
     }
     prev[bc.len()]
 }
+
 /// Find the line-item table (the largest multi-row table on the doc) and map its
 /// columns to structured [`LineItem`]s by matching header names. Returns an
 /// empty vec when no suitable table exists.
@@ -503,7 +524,10 @@ mod tests {
     fn label_match_logic() {
         assert!(label_matches("invoice no.", "invoice no"));
         assert!(label_matches("total", "total"));
-        assert!(label_matches("grand total", "total"));
+        assert!(label_matches("grand total", "grand total"));
+        assert!(label_matches("Date", "date"));
+        assert!(label_matches("Due Date", "due date"));
+        assert!(!label_matches("Due Date", "date"));
         assert!(!label_matches("subtotal note", "total due"));
         assert!(label_matches("inveice number", "invoice number"));
         assert!(!label_matches("invoice date", "invoice number"));

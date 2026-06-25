@@ -11,11 +11,10 @@ pub trait ParserResolver {
 /// arrays/dictionaries). A malformed or malicious PDF can otherwise drive the
 /// recursive descent parser arbitrarily deep — e.g. thousands of unmatched
 /// `[` or `<<` bytes — and overflow the call stack, aborting the whole
-/// process. Real PDFs nest only a handful of levels; 64 is generous while
-/// keeping recursion well within a single thread's stack. Matches the
-/// depth-64 limits already used for reference resolution and PostScript
-/// functions elsewhere in the engine.
-const MAX_PARSE_DEPTH: usize = 64;
+/// process. Real PDFs usually nest only a handful of levels, but wild files can
+/// exceed 64 in benign catalog/action structures. 256 keeps recursion bounded
+/// while allowing those files to be parsed instead of rejected.
+const MAX_PARSE_DEPTH: usize = 256;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct IndirectObject {
@@ -719,7 +718,43 @@ mod tests {
 
     #[test]
     fn nesting_within_limit_still_parses_and_depth_resets() {
-        // A modest, well-formed nesting (10 levels) must parse fine, and the
+        // A wild but bounded well-formed nesting (180 levels) must parse fine,
+        // and the parser's depth counter must return to 0 so sibling structures
+        // are not penalised by earlier nesting.
+        let depth = 180;
+        let mut input = vec![b'['; depth];
+        input.push(b'1');
+        input.extend(std::iter::repeat_n(b']', depth));
+        // A second, equally-nested sibling right after the first.
+        let first_len = input.len();
+        input.extend_from_within(0..first_len);
+
+        let mut parser = PdfParser::new(&input, 0).unwrap();
+        let first = parser.parse_object().expect("first nested array parses");
+        let second = parser.parse_object().expect("second nested array parses");
+        assert_eq!(first, second, "depth must reset between sibling structures");
+    }
+
+    #[test]
+    fn nesting_beyond_limit_still_errors_cleanly() {
+        // A well-formed nesting above the hard limit still returns a clean
+        // ParseError rather than recursing until the stack overflows.
+        let depth = MAX_PARSE_DEPTH + 1;
+        let mut input = vec![b'['; depth];
+        input.push(b'1');
+        input.extend(std::iter::repeat_n(b']', depth));
+
+        let mut parser = PdfParser::new(&input, 0).unwrap();
+        let err = parser.parse_object().unwrap_err();
+        assert!(
+            matches!(err, OxideError::ParseError(ref msg) if msg.contains("depth limit")),
+            "expected depth-limit ParseError, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn modest_nesting_still_parses_and_depth_resets() {
+        // A small, well-formed nesting (10 levels) must parse fine, and the
         // parser's depth counter must return to 0 so sibling structures are
         // not penalised by earlier nesting.
         let mut input = vec![b'['; 10];
