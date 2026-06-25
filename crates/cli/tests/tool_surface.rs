@@ -44,6 +44,16 @@ fn assert_ok(out: &std::process::Output, label: &str) {
     );
 }
 
+fn assert_json(out: &std::process::Output, label: &str) -> serde_json::Value {
+    assert_ok(out, label);
+    serde_json::from_slice(&out.stdout).unwrap_or_else(|err| {
+        panic!(
+            "{label} did not emit valid JSON: {err}; stdout={}",
+            String::from_utf8_lossy(&out.stdout)
+        )
+    })
+}
+
 fn zip_entries(path: &std::path::Path) -> Vec<(String, Vec<u8>)> {
     use std::io::Read;
 
@@ -687,11 +697,133 @@ fn extract_tables_ocr_errors_cleanly() {
     // not silently produce empty/garbage output.
     let out = run(&["extract-tables", fx("flate.pdf").to_str().unwrap(), "--ocr"]);
     assert!(!out.status.success(), "extract-tables --ocr should error");
+    assert_eq!(out.status.code(), Some(5), "unsupported feature exit code");
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(
         err.contains("does not support --ocr"),
         "should explain the gap: {err}"
     );
+}
+
+#[test]
+fn cli_exit_codes_are_classified_and_clean() {
+    let missing = run(&["info", "does-not-exist.pdf"]);
+    assert_eq!(missing.status.code(), Some(3), "I/O exit code");
+    let missing_err = String::from_utf8_lossy(&missing.stderr);
+    assert!(missing_err.contains("I/O error"), "{missing_err}");
+    assert!(!missing_err.contains("panicked"), "{missing_err}");
+
+    let malformed = tmp("malformed_input.pdf");
+    std::fs::write(&malformed, b"not a pdf").expect("write malformed fixture");
+    let parse = run(&["info", malformed.to_str().unwrap()]);
+    assert_eq!(parse.status.code(), Some(4), "parse/format exit code");
+    let parse_err = String::from_utf8_lossy(&parse.stderr);
+    assert!(parse_err.contains("parse/format error"), "{parse_err}");
+    assert!(!parse_err.contains("panicked"), "{parse_err}");
+
+    let usage = run(&[
+        "extract-text",
+        fx("flate.pdf").to_str().unwrap(),
+        "--structured",
+        "--format",
+        "xml",
+    ]);
+    assert_eq!(usage.status.code(), Some(2), "usage exit code");
+    let usage_err = String::from_utf8_lossy(&usage.stderr);
+    assert!(usage_err.contains("usage error"), "{usage_err}");
+    assert!(!usage_err.contains("panicked"), "{usage_err}");
+
+    let _ = std::fs::remove_file(&malformed);
+}
+
+#[test]
+fn write_commands_emit_json_summaries() {
+    let render_out = tmp("render_json.zip");
+    let render = run(&[
+        "render",
+        fx("flate.pdf").to_str().unwrap(),
+        "-o",
+        render_out.to_str().unwrap(),
+        "-p",
+        "1",
+        "--json",
+    ]);
+    let json = assert_json(&render, "render --json");
+    assert_eq!(json["op"], "render");
+    assert_eq!(json["pages_rendered"], 1);
+
+    let images_out = tmp("images_json.zip");
+    let images = run(&[
+        "extract-images",
+        fx("image_only.pdf").to_str().unwrap(),
+        "-o",
+        images_out.to_str().unwrap(),
+        "--json",
+    ]);
+    let json = assert_json(&images, "extract-images --json");
+    assert_eq!(json["op"], "extract-images");
+    assert!(json["images"].as_u64().unwrap_or(0) >= 1);
+
+    let merge_out = tmp("merge_json.pdf");
+    let merge = run(&[
+        "merge",
+        fx("flate.pdf").to_str().unwrap(),
+        fx("minimal.pdf").to_str().unwrap(),
+        "-o",
+        merge_out.to_str().unwrap(),
+        "--json",
+    ]);
+    let json = assert_json(&merge, "merge --json");
+    assert_eq!(json["op"], "merge");
+    assert_eq!(json["inputs"], 2);
+
+    let extract_out = tmp("extract_pages_json.pdf");
+    let extract = run(&[
+        "extract-pages",
+        fx("tracemonkey.pdf").to_str().unwrap(),
+        "1",
+        "-o",
+        extract_out.to_str().unwrap(),
+        "--json",
+    ]);
+    let json = assert_json(&extract, "extract-pages --json");
+    assert_eq!(json["op"], "extract-pages");
+    assert_eq!(json["pages"].as_array().unwrap().len(), 1);
+
+    let split_pattern = tmp("split_json_%d.pdf");
+    let split = run(&[
+        "split",
+        fx("minimal.pdf").to_str().unwrap(),
+        "-o",
+        split_pattern.to_str().unwrap(),
+        "--json",
+    ]);
+    let json = assert_json(&split, "split --json");
+    assert_eq!(json["op"], "split");
+    assert_eq!(json["files"], 1);
+
+    let linearized_out = tmp("linearize_json.pdf");
+    let linearized = run(&[
+        "linearize",
+        fx("flate.pdf").to_str().unwrap(),
+        "-o",
+        linearized_out.to_str().unwrap(),
+        "--json",
+    ]);
+    let json = assert_json(&linearized, "linearize --json");
+    assert_eq!(json["op"], "linearize");
+    assert!(json["bytes"].as_u64().unwrap_or(0) > 0);
+
+    let _ = std::fs::remove_file(&render_out);
+    let _ = std::fs::remove_file(&images_out);
+    let _ = std::fs::remove_file(&merge_out);
+    let _ = std::fs::remove_file(&extract_out);
+    let _ = std::fs::remove_file(expand_test_split_pattern(&split_pattern, 1));
+    let _ = std::fs::remove_file(&linearized_out);
+}
+
+fn expand_test_split_pattern(pattern: &std::path::Path, page: usize) -> std::path::PathBuf {
+    std::path::PathBuf::from(pattern.to_string_lossy().replace("%d", &page.to_string()))
 }
 
 // --- Structural-write ops (Bucket 2) ----------------------------------------

@@ -1,5 +1,7 @@
 use std::error::Error;
+use std::fmt;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
 
@@ -37,11 +39,120 @@ fn long_version() -> &'static str {
     name = "oxide",
     about = "Oxide — pure-Rust PDF processing tool",
     version,
-    long_version = long_version()
+    long_version = long_version(),
+    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, to-html\n  Structure/editing: merge, split, extract-pages, rotate, optimize, repair, linearize\n  Info/security: info, fonts, detach, verify-sig, encrypt, analyze, eval-score\n\nExamples:\n  oxide extract-text input.pdf --structured --format json\n  oxide extract-tables input.pdf --format json --structure\n  oxide info input.pdf --json\n  oxide render input.pdf --format png --json"
 )]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum CliExitCode {
+    Success = 0,
+    Internal = 1,
+    Usage = 2,
+    Io = 3,
+    Input = 4,
+    Unsupported = 5,
+}
+
+impl CliExitCode {
+    const fn code(self) -> u8 {
+        self as u8
+    }
+
+    const fn label(self) -> &'static str {
+        match self {
+            Self::Success => "success",
+            Self::Internal => "internal error",
+            Self::Usage => "usage error",
+            Self::Io => "I/O error",
+            Self::Input => "parse/format error",
+            Self::Unsupported => "unsupported feature",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct CliError {
+    kind: CliExitCode,
+    message: String,
+}
+
+impl CliError {
+    fn new(kind: CliExitCode, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl fmt::Display for CliError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl Error for CliError {}
+
+fn usage_error(message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(CliError::new(CliExitCode::Usage, message))
+}
+
+fn unsupported_error(message: impl Into<String>) -> Box<dyn Error> {
+    Box::new(CliError::new(CliExitCode::Unsupported, message))
+}
+
+fn classify_error(err: &(dyn Error + 'static)) -> CliExitCode {
+    let mut current = Some(err);
+    while let Some(error) = current {
+        if let Some(cli) = error.downcast_ref::<CliError>() {
+            return cli.kind;
+        }
+        if let Some(oxide) = error.downcast_ref::<oxide_engine::OxideError>() {
+            return match oxide.kind() {
+                oxide_engine::ErrorKind::Io => CliExitCode::Io,
+                oxide_engine::ErrorKind::UnsupportedFeature => CliExitCode::Unsupported,
+                oxide_engine::ErrorKind::MalformedPdf
+                | oxide_engine::ErrorKind::Parse
+                | oxide_engine::ErrorKind::MissingObject
+                | oxide_engine::ErrorKind::Encrypted
+                | oxide_engine::ErrorKind::ResourceLimit => CliExitCode::Input,
+                oxide_engine::ErrorKind::Cancelled => CliExitCode::Internal,
+            };
+        }
+        if error.downcast_ref::<std::io::Error>().is_some() {
+            return CliExitCode::Io;
+        }
+        current = error.source();
+    }
+
+    let message = err.to_string().to_lowercase();
+    if message.contains("unsupported")
+        || message.contains("does not support")
+        || message.contains("no ocr backend")
+        || message.contains("rebuild the cli with")
+    {
+        CliExitCode::Unsupported
+    } else if message.contains("unknown --")
+        || message.contains("unknown format")
+        || message.contains("unknown render quality")
+        || message.contains("unknown --format")
+        || message.contains("unknown --type")
+        || message.contains("out of range")
+        || message.contains("page range")
+        || message.contains("mutually exclusive")
+        || message.contains("cannot be combined")
+        || message.contains("no pages selected")
+        || message.contains("matched no pages")
+    {
+        CliExitCode::Usage
+    } else {
+        CliExitCode::Internal
+    }
 }
 
 #[derive(Subcommand)]
@@ -199,6 +310,9 @@ struct LinearizeArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -501,6 +615,9 @@ struct ExtractImagesArgs {
     /// Password for an encrypted PDF (the empty user password is tried automatically)
     #[arg(long)]
     password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -534,6 +651,9 @@ struct RenderArgs {
     /// OXIDE_MAX_RENDER_PIXELS environment variable when set.
     #[arg(long)]
     max_render_pixels: Option<u64>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -558,6 +678,9 @@ struct MergeArgs {
     /// than inputs is fine; missing ones default to empty.
     #[arg(long)]
     passwords: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -577,6 +700,9 @@ struct SplitArgs {
     /// Password for an encrypted PDF (the empty user password is tried automatically)
     #[arg(long)]
     password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -591,6 +717,9 @@ struct ExtractPagesArgs {
     /// Password for an encrypted PDF (the empty user password is tried automatically)
     #[arg(long)]
     password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -689,9 +818,32 @@ struct VerifySigArgs {
     password: Option<String>,
 }
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.command {
+
+    let default_panic_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(cli)));
+    std::panic::set_hook(default_panic_hook);
+
+    match result {
+        Ok(Ok(())) => ExitCode::from(CliExitCode::Success.code()),
+        Ok(Err(err)) => {
+            let code = classify_error(err.as_ref());
+            eprintln!("oxide: {}: {}", code.label(), err);
+            ExitCode::from(code.code())
+        }
+        Err(_) => {
+            eprintln!(
+                "oxide: internal error: command panicked; this is a bug, not a PDF-level error"
+            );
+            ExitCode::from(CliExitCode::Internal.code())
+        }
+    }
+}
+
+fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
+    match cli.command {
         Commands::ExtractText(args) => run_extract_text(args),
         Commands::ExtractTables(args) => run_extract_tables(args),
         Commands::Parse(args) => run_parse(args),
@@ -715,11 +867,6 @@ fn main() {
         Commands::Optimize(args) => run_optimize(args),
         Commands::Repair(args) => run_repair(args),
         Commands::Linearize(args) => run_linearize(args),
-    };
-
-    if let Err(err) = result {
-        eprintln!("Error: {}", err);
-        std::process::exit(1);
     }
 }
 
@@ -813,7 +960,9 @@ fn run_extract_text_structured(
         "json" => true,
         "text" | "txt" => false,
         other => {
-            return Err(format!("unknown --format '{other}'; use text or json").into());
+            return Err(usage_error(format!(
+                "unknown --format '{other}'; use text or json"
+            )));
         }
     };
 
@@ -966,12 +1115,13 @@ fn run_extract_text_ocr(
 /// emitted as CSV (default), structured JSON, or span/header-preserving HTML.
 fn run_extract_tables(args: ExtractTablesArgs) -> Result<(), Box<dyn Error>> {
     if args.ocr {
-        return Err("table extraction does not support --ocr: reconstructing a \
+        return Err(unsupported_error(
+            "table extraction does not support --ocr: reconstructing a \
                     table grid from OCR'd word boxes is a known gap (see \
                     docs/parser_benchmark.md). For scanned documents, use \
                     `extract-fields --ocr` to recover key-value fields and line \
-                    items, or `extract-text --ocr` for the recovered text."
-            .into());
+                    items, or `extract-text --ocr` for the recovered text.",
+        ));
     }
     let _ = (&args.ocr_lang, args.ocr_dpi); // accepted for flag consistency only
     let engine = match &args.password {
@@ -1089,12 +1239,11 @@ fn build_ocr_engine() -> Result<std::sync::Arc<dyn oxide_engine::OcrEngine>, Box
 
 #[cfg(not(feature = "ocr"))]
 fn build_ocr_engine() -> Result<std::sync::Arc<dyn oxide_engine::OcrEngine>, Box<dyn Error>> {
-    Err(
+    Err(unsupported_error(
         "this build of oxide has no OCR backend; rebuild the CLI with \
          `--features ocr` (and install the `tesseract` binary + language data) \
-         to use --ocr"
-            .into(),
-    )
+         to use --ocr",
+    ))
 }
 
 /// Build [`oxide_engine::OcrOptions`] from the shared CLI `--ocr-lang`/`--ocr-dpi`
@@ -1455,6 +1604,7 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
+    let selected_pages = page_nums.len();
     let region = args.region.as_deref().map(parse_region_cli).transpose()?;
 
     let format = match args.format.to_lowercase().as_str() {
@@ -1548,11 +1698,24 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
     }
     zip.finish()?;
 
-    eprintln!(
-        "Extracted {} image(s) -> {}",
-        encoded_count,
-        args.output.display()
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "extract-images",
+                "output": args.output.display().to_string(),
+                "format": args.format,
+                "pages": selected_pages,
+                "images": encoded_count,
+            })
+        );
+    } else {
+        eprintln!(
+            "Extracted {} image(s) -> {}",
+            encoded_count,
+            args.output.display()
+        );
+    }
     Ok(())
 }
 
@@ -1653,12 +1816,26 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     }
     zip.finish()?;
 
-    eprintln!(
-        "Rendered {} page(s) at {} DPI -> {}",
-        rendered_count,
-        dpi,
-        args.output.display()
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "render",
+                "output": args.output.display().to_string(),
+                "format": args.format,
+                "dpi": dpi,
+                "pages_requested": page_nums.len(),
+                "pages_rendered": rendered_count,
+            })
+        );
+    } else {
+        eprintln!(
+            "Rendered {} page(s) at {} DPI -> {}",
+            rendered_count,
+            dpi,
+            args.output.display()
+        );
+    }
     Ok(())
 }
 
@@ -1696,12 +1873,27 @@ fn run_render_svg(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     }
     zip.finish()?;
 
-    eprintln!(
-        "Rendered {} page(s) to SVG -> {} ({} page(s) used the raster-embed fallback)",
-        rendered,
-        args.output.display(),
-        rasterized_fallback
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "render",
+                "output": args.output.display().to_string(),
+                "format": "svg",
+                "dpi": dpi,
+                "pages_requested": page_nums.len(),
+                "pages_rendered": rendered,
+                "rasterized_fallback_pages": rasterized_fallback,
+            })
+        );
+    } else {
+        eprintln!(
+            "Rendered {} page(s) to SVG -> {} ({} page(s) used the raster-embed fallback)",
+            rendered,
+            args.output.display(),
+            rasterized_fallback
+        );
+    }
     Ok(())
 }
 
@@ -1733,12 +1925,27 @@ fn run_render_ps(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     let mut file = std::fs::File::create(&out_path)?;
     file.write_all(ps.as_bytes())?;
 
-    eprintln!(
-        "Rendered {} page(s) to PostScript -> {} ({} page(s) used the raster-embed fallback)",
-        page_nums.len(),
-        out_path.display(),
-        rasterized
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "render",
+                "output": out_path.display().to_string(),
+                "format": "ps",
+                "dpi": dpi,
+                "pages_requested": page_nums.len(),
+                "pages_rendered": page_nums.len(),
+                "rasterized_fallback_pages": rasterized,
+            })
+        );
+    } else {
+        eprintln!(
+            "Rendered {} page(s) to PostScript -> {} ({} page(s) used the raster-embed fallback)",
+            page_nums.len(),
+            out_path.display(),
+            rasterized
+        );
+    }
     Ok(())
 }
 
@@ -1779,12 +1986,27 @@ fn run_render_eps(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     }
     zip.finish()?;
 
-    eprintln!(
-        "Rendered {} page(s) to EPS -> {} ({} page(s) used the raster-embed fallback)",
-        rendered,
-        args.output.display(),
-        rasterized_fallback
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "render",
+                "output": args.output.display().to_string(),
+                "format": "eps",
+                "dpi": dpi,
+                "pages_requested": page_nums.len(),
+                "pages_rendered": rendered,
+                "rasterized_fallback_pages": rasterized_fallback,
+            })
+        );
+    } else {
+        eprintln!(
+            "Rendered {} page(s) to EPS -> {} ({} page(s) used the raster-embed fallback)",
+            rendered,
+            args.output.display(),
+            rasterized_fallback
+        );
+    }
     Ok(())
 }
 
@@ -2254,12 +2476,25 @@ fn run_merge(args: MergeArgs) -> Result<(), Box<dyn Error>> {
 
     let bytes = build_merged(&inputs)?;
     std::fs::write(&args.output, &bytes)?;
-    eprintln!(
-        "Merged {} file(s), {} page(s) -> {}",
-        engines.len(),
-        total_pages,
-        args.output.display()
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "merge",
+                "output": args.output.display().to_string(),
+                "inputs": engines.len(),
+                "pages": total_pages,
+                "bytes": bytes.len(),
+            })
+        );
+    } else {
+        eprintln!(
+            "Merged {} file(s), {} page(s) -> {}",
+            engines.len(),
+            total_pages,
+            args.output.display()
+        );
+    }
     Ok(())
 }
 
@@ -2291,10 +2526,23 @@ fn run_split(args: SplitArgs) -> Result<(), Box<dyn Error>> {
         std::fs::write(&path, &bytes)?;
         written += 1;
     }
-    eprintln!(
-        "Split {} page(s) [{}..={}] using pattern '{}'",
-        written, first, last, args.output
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "split",
+                "pattern": args.output,
+                "first": first,
+                "last": last,
+                "files": written,
+            })
+        );
+    } else {
+        eprintln!(
+            "Split {} page(s) [{}..={}] using pattern '{}'",
+            written, first, last, args.output
+        );
+    }
     Ok(())
 }
 
@@ -2313,11 +2561,23 @@ fn run_extract_pages(args: ExtractPagesArgs) -> Result<(), Box<dyn Error>> {
 
     let bytes = engine.extract_pages(&pages)?;
     std::fs::write(&args.output, &bytes)?;
-    eprintln!(
-        "Extracted {} page(s) -> {}",
-        pages.len(),
-        args.output.display()
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "extract-pages",
+                "output": args.output.display().to_string(),
+                "pages": pages,
+                "bytes": bytes.len(),
+            })
+        );
+    } else {
+        eprintln!(
+            "Extracted {} page(s) -> {}",
+            pages.len(),
+            args.output.display()
+        );
+    }
     Ok(())
 }
 
@@ -2469,11 +2729,22 @@ fn run_linearize(args: LinearizeArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let bytes = oxide_engine::linearize(&engine)?;
     std::fs::write(&args.output, &bytes)?;
-    eprintln!(
-        "Linearized -> {} ({} bytes)",
-        args.output.display(),
-        bytes.len()
-    );
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "linearize",
+                "output": args.output.display().to_string(),
+                "bytes": bytes.len(),
+            })
+        );
+    } else {
+        eprintln!(
+            "Linearized -> {} ({} bytes)",
+            args.output.display(),
+            bytes.len()
+        );
+    }
     Ok(())
 }
 

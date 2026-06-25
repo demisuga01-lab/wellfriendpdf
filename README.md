@@ -93,6 +93,9 @@ oxide merge a.pdf b.pdf -o merged.pdf
 oxide split input.pdf -o page-%d.pdf
 ```
 
+For scripts, use `--json` or `--format json` where available. Stable CLI exit
+codes and JSON result summaries are documented in [docs/cli.md](docs/cli.md).
+
 Pair with external validation when you want a second pair of eyes:
 
 ```sh
