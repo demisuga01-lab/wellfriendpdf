@@ -2,6 +2,7 @@
 name = "oxide-py"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Python bindings for the Oxide PDF engine."
 
@@ -11,6 +12,6 @@ crate-type = ["cdylib"]
 
 [dependencies]
 oxide-engine = { path = "../engine" }
-pyo3 = { version = "0.27.2", features = ["extension-module", "abi3-py39"] }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -4,7 +4,7 @@ This is the consolidated hardening record for the post-GA hardening prompts.
 It summarizes what is continuously checked, what was freshly verified in this
 session, and what remains outside code-level hardening.
 
-Fresh verification date: 2026-06-23.
+Fresh verification date: 2026-06-26.
 Workspace: `E:\wellpdfsdk`.
 Baseline note: the worktree had pre-existing unrelated source edits before this
 consolidation pass. This document records the hardening evidence; it is not a
@@ -21,6 +21,7 @@ claim that those unrelated edits are release-ready.
 | Property-based testing | Round-trip identities, writer-mode equivalence, AES-256 preserve-content, no-panic arbitrary bytes, document-model invariants | `.github/workflows/property-tests.yml` is live. `cargo test -p oxide-engine --test property_invariants` passed 6 properties. |
 | Grammar-aware fuzzing | Valid-but-adversarial PDFs that reach content interpretation, renderer, editing, linearization, PDF/A, and signature validation paths | `structured_pdf` is in the fuzz target matrix. Its committed corpus replay passed, reaching 10,945 coverage/features in the smoke output. |
 | Real-world and hostile corpus sweep | Cross-pillar safety over parse, info, verify-sig, render, optimize, and linearize in isolated subprocesses | 265 files, 1,590 operations, 0 crashes, 0 timeouts, 100% crash-free and timeout-free. |
+| Indicative wild-PDF robustness benchmark | Text-extraction survival over the Prompt 1 corpus with isolated subprocesses, timeout, memory cap, and checkpointing | 200 files, 100.0% survival, 0 hard failures, 25 clean handled errors in the latest Prompt 8 smoke. |
 | Dependency security and licensing | RustSec advisories, license allowlist, source policy | `.github/workflows/security-audit.yml` is live. `cargo audit` and `cargo deny` passed with the documented `RUSTSEC-2023-0071` exception. |
 | Linux sanitizer CI | ASan/TSan/Rust UB checks over C-ABI and crypto tests; ASan replay for all committed fuzz corpora | `.github/workflows/sanitizers.yml` is live for scheduled and manual runs. Local Windows execution is not claimed. |
 
@@ -34,10 +35,20 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test -p oxide-engine --test property_invariants
 python scripts\differential_fuzz.py --cases 20 --output target\hardening6-differential-smoke
 python scripts\ci_fuzz.py --targets all --mode regression --no-build
+python scripts\ci_fuzz.py --targets content_tokenizer,crypto,signature_validation --mode regression --no-build
 python scripts\ga5_corpus_hardening.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --output-dir target\hardening6-corpus-60s --limit 265 --timeout-sec 60 --include-hostile
+python robustness-benchmark\scripts\robustness_benchmark.py --oxide-bin target\debug\oxide.exe --output-dir target\roadmap-prompt8\robustness_smoke --report target\roadmap-prompt8\robustness_smoke.md --tools oxide --timeout 60 --max-memory-mb 2048 --max-workers 4 --limit 200
 cargo audit --deny warnings --ignore RUSTSEC-2023-0071
 cargo deny check advisories licenses bans sources
 ```
+
+Prompt 9 note: these checks initially found `RUSTSEC-2026-0176` and
+`RUSTSEC-2026-0177` in PyO3 0.27.2. The Python binding was upgraded to PyO3
+0.29.0, and both advisory checks then passed without adding new exceptions.
+The focused Prompt 9 fuzz replay passed for `content_tokenizer` (565 runs),
+`crypto` (49 runs), and `signature_validation` (14 runs). The full all-target
+fuzz matrix remains a CI/scheduled gate; this Windows prompt did not rerun the
+Linux sanitizer matrix locally.
 
 Corpus sweep summary from `target\hardening6-corpus-60s\aggregate.json`:
 
@@ -82,6 +93,11 @@ Current guarantees and controls:
   sinks, plus output ceilings on the Flate/LZW/RunLength stream filters. A
   hostile image header declaring enormous dimensions is a clean error, not an
   allocation. Backed by hostile-input tests and corpus safety coverage.
+- Malformed/wild PDFs are expected input, not exceptional conditions. The CLI,
+  Python binding, C ABI, and server convert parser/engine failures into typed
+  errors or language-native exceptions. The latest indicative robustness smoke
+  recorded 0 crashes, 0 timeouts, and 0 OOMs across 200 files; clean handled
+  errors are counted separately from hard failures.
 - PDF JavaScript, Launch actions, and PDF-triggered external fetches are not
   executed as active content.
 - Signature/LTV network behavior is controlled by explicit signing/validation
@@ -126,6 +142,9 @@ risk is explicit:
 - A paid third-party security audit has not yet been performed. This remains
   the highest-value next step before broad commercial GA, especially because the
   SDK includes encryption and digital signatures.
+- The indicative 200-file wild-PDF corpus is a useful fast loop, not a final
+  real-world robustness claim. A larger sustained corpus and pilot usage remain
+  necessary before calling the robustness track record mature.
 - Real pilot usage has not yet replaced synthetic, fixture, fuzz, and corpus
   testing. A pilot integrator will exercise documents and workflows no local
   harness can predict.

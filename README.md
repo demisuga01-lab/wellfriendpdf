@@ -275,7 +275,8 @@ One `Document` model flows through every surface. The server is intentionally **
 
 ## Install / build
 
-Stable Rust toolchain (edition 2021). No `rust-version` pin yet — current stable.
+Stable Rust toolchain (edition 2021). MSRV is pinned to Rust 1.95 in every
+workspace crate; see [docs/stability.md](docs/stability.md).
 
 ```sh
 rustup update stable

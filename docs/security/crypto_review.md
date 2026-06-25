@@ -40,7 +40,31 @@ This document is the starting point for an external cryptography review.
 | Padding oracle exposure | Decryption is local library processing, not a network oracle by itself. Server errors are sanitized and do not expose padding detail. |
 | Signature integrity / trust / coverage are distinct (H-3) | The verifier reports cryptographic integrity, signer trust, and coverage as separate properties; the overall verdict is `Trusted` only when integrity verifies **and** the signer chains to a configured trust anchor (in validity, not revoked) **and** coverage is whole-file. With no anchors configured, trust is `NotVerified` and a cryptographically valid self-signed signature is `ValidUntrusted` — never reported as trusted. Tests cover valid/tampered/appended-after-signing, self-signed-not-trusted, pinned-anchor-trusted, unrelated-anchor-untrusted. |
 | Trust-chain/LTV | Chain verification against caller-configured DER trust anchors is implemented and tested (direct-pin and issuer-signature-verified paths) with validity-period and embedded-revocation gating. Live TSA/OCSP/CRL fetching and system trust-store policy remain deployment-specific and should be reviewed externally. |
-| RustSec advisory review | `rsa 0.9.10` is affected by `RUSTSEC-2023-0071` (Marvin timing side channel) and has no fixed RustCrypto upgrade in the current dependency line. It is an explicit cargo-audit/cargo-deny exception, not an unreviewed pass. Do not expose RSA private-key operations as a remotely timed signing oracle; external crypto audit should prioritize replacement or mitigation. |
+| RustSec advisory review | `rsa 0.9.10` is affected by `RUSTSEC-2023-0071` (Marvin timing side channel) and has no fixed RustCrypto upgrade in the current dependency line as of 2026-06-26. It is an explicit cargo-audit/cargo-deny exception, not an unreviewed pass. Do not expose RSA private-key operations as a remotely timed signing oracle; external crypto audit should prioritize replacement or mitigation. |
+
+## RUSTSEC-2023-0071 Decision Record
+
+`RUSTSEC-2023-0071` covers the Marvin timing side channel in RustCrypto `rsa`.
+Oxide currently depends on `rsa 0.9.10` through the PDF signature stack for
+RSA/SHA-256 signing and verification compatibility. No fixed RustCrypto `rsa`
+release is available in the dependency line used here, and a migration to a
+different signing backend would be a larger API/security design change.
+
+Current exposure assessment:
+
+- Oxide does not run an always-on remote signing service. RSA private-key use is
+  a local library/CLI operation unless a deployment wraps it that way.
+- The self-hosted HTTP server does not expose a signing endpoint.
+- Signature verification consumes public material and is not the private-key
+  timing oracle described by Marvin.
+- Deployments must not expose attacker-controlled repeated RSA private-key
+  operations over a low-noise network path without adding their own mitigation
+  or replacing the backend.
+
+Decision for this release line: keep `RUSTSEC-2023-0071` as a visible exception
+in `deny.toml` and security-audit CI, with the above usage constraint and this
+document as the justification. Revisit on every dependency/security review and
+prefer migration when a fixed or better-maintained pure-Rust option is available.
 
 ## Known Crypto Limitations
 
