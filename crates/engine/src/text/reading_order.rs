@@ -384,25 +384,68 @@ impl ReadingOrderReconstructor {
         let best_gap = &valid_gaps[0];
         let split_x = (best_gap.start_x + best_gap.end_x) / 2.0;
 
-        let left_lines = lines
-            .iter()
-            .filter(|g| {
-                g.iter().any(|c| {
-                    ((c.x + c.right()) / 2.0).is_finite() && (c.x + c.right()) / 2.0 < split_x
-                })
-            })
-            .count();
-        let right_lines = lines
-            .iter()
-            .filter(|g| {
-                g.iter().any(|c| {
-                    ((c.x + c.right()) / 2.0).is_finite() && (c.x + c.right()) / 2.0 >= split_x
-                })
-            })
-            .count();
-        let threshold = (lines.len() as f64 * 0.2).ceil() as usize;
+        let mut left_lines = 0usize;
+        let mut right_lines = 0usize;
+        let mut paired_lines = 0usize;
+        let mut left_baselines: Vec<(f64, f64)> = Vec::new();
+        let mut right_baselines: Vec<(f64, f64)> = Vec::new();
 
-        if left_lines >= threshold && right_lines >= threshold {
+        for group in lines {
+            let has_left = group.iter().any(|c| {
+                ((c.x + c.right()) / 2.0).is_finite() && (c.x + c.right()) / 2.0 < split_x
+            });
+            let has_right = group.iter().any(|c| {
+                ((c.x + c.right()) / 2.0).is_finite() && (c.x + c.right()) / 2.0 >= split_x
+            });
+            if !has_left && !has_right {
+                continue;
+            }
+
+            let y = group.iter().map(|c| c.y).sum::<f64>() / group.len() as f64;
+            let font_size = group
+                .iter()
+                .map(|c| c.font_size)
+                .fold(0.0_f64, f64::max)
+                .max(1.0);
+
+            if has_left {
+                left_lines += 1;
+                left_baselines.push((y, font_size));
+            }
+            if has_right {
+                right_lines += 1;
+                right_baselines.push((y, font_size));
+            }
+            if has_left && has_right {
+                paired_lines += 1;
+            }
+        }
+
+        if paired_lines == 0 {
+            let mut used_right = vec![false; right_baselines.len()];
+            for (left_y, left_size) in &left_baselines {
+                if let Some((idx, _)) = right_baselines
+                    .iter()
+                    .enumerate()
+                    .filter(|(idx, _)| !used_right[*idx])
+                    .map(|(idx, (right_y, right_size))| {
+                        let tolerance =
+                            left_size.max(*right_size).max(12.0) * self.line_y_tolerance_factor;
+                        (idx, (left_y - right_y).abs() <= tolerance)
+                    })
+                    .find(|(_, aligned)| *aligned)
+                {
+                    used_right[idx] = true;
+                    paired_lines += 1;
+                }
+            }
+        }
+
+        let threshold = (lines.len() as f64 * 0.2).ceil() as usize;
+        let paired_threshold =
+            ((left_lines.min(right_lines) as f64) * 0.5).ceil().max(3.0) as usize;
+
+        if left_lines >= threshold && right_lines >= threshold && paired_lines >= paired_threshold {
             Some(split_x)
         } else {
             None
@@ -937,6 +980,28 @@ mod tests {
         assert!(
             r.find_column_split_x(&groups).is_none(),
             "single-column layout should return None"
+        );
+    }
+
+    #[test]
+    fn find_column_split_x_ignores_sparse_right_side_furniture() {
+        let r = ReadingOrderReconstructor::new();
+        let mut groups: Vec<Vec<TextChunk>> = Vec::new();
+        for (i, y) in (0..12).map(|i| (i, 700.0 - i as f64 * 14.0)) {
+            groups.push(vec![chunk(&format!("Body{i}"), 50.0, y, 12.0)]);
+        }
+        for (text, y) in [
+            ("Title", 738.0),
+            ("Code", 720.0),
+            ("Footer", 665.0),
+            ("Page", 525.0),
+        ] {
+            groups.push(vec![chunk(text, 320.0, y, 12.0)]);
+        }
+
+        assert!(
+            r.find_column_split_x(&groups).is_none(),
+            "sparse right-side page furniture is not a two-column body"
         );
     }
 

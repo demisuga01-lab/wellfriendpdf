@@ -232,7 +232,15 @@ impl ContentEngine {
             },
             ..Default::default()
         };
-        extractor.extract(self, &options)
+        let text = extractor.extract(self, &options)?;
+        if should_prefer_structured_column_text(&text) {
+            match self.get_page_text_structured(page_number) {
+                Ok(structured) if !structured.trim().is_empty() => Ok(structured),
+                _ => Ok(text),
+            }
+        } else {
+            Ok(text)
+        }
     }
 
     /// Run geometric layout analysis (XY-cut segmentation + reading order) on a
@@ -266,8 +274,7 @@ impl ContentEngine {
     /// Structured (layout-aware) text for a page: the page's text in
     /// reading order recovered by XY-cut segmentation, with blocks separated by
     /// a blank line. Correct for multi-column pages where the default
-    /// top-to-bottom dump (and plain `pdftotext`) interleaves columns. Additive;
-    /// the default [`get_page_text`](Self::get_page_text) is unchanged.
+    /// top-to-bottom dump (and plain `pdftotext`) interleaves columns.
     pub fn get_page_text_structured(&self, page_number: usize) -> Result<String> {
         Ok(self.analyze_page_layout(page_number)?.text())
     }
@@ -835,6 +842,30 @@ pub fn max_decode_pixels() -> u64 {
         .unwrap_or(DEFAULT_MAX_DECODE_PIXELS)
 }
 
+fn should_prefer_structured_column_text(text: &str) -> bool {
+    let mut nonempty_lines = 0usize;
+    let mut wide_join_lines = 0usize;
+    let mut long_lines = 0usize;
+
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        nonempty_lines += 1;
+        if line.contains("  ") {
+            wide_join_lines += 1;
+        }
+        if line.chars().count() > 100 {
+            long_lines += 1;
+        }
+    }
+
+    if nonempty_lines < 24 {
+        return false;
+    }
+
+    let wide_ratio = wide_join_lines as f64 / nonempty_lines as f64;
+    let long_ratio = long_lines as f64 / nonempty_lines as f64;
+    wide_ratio >= 0.45 && long_ratio < 0.05
+}
+
 fn page_rotation_u32(rotation: i32) -> u32 {
     rotation.rem_euclid(360) as u32
 }
@@ -936,5 +967,27 @@ mod tests {
         let page = page([0.0, 0.0, 200.0, 200.0], [250.0, 250.0, 300.0, 300.0]);
 
         assert_eq!(effective_page_box(&page), [0.0, 0.0, 200.0, 200.0]);
+    }
+
+    #[test]
+    fn structured_column_text_fallback_detects_row_joined_columns() {
+        let mut text = String::new();
+        for i in 0..30 {
+            text.push_str(&format!("left {i}  middle {i}  right {i}\n"));
+        }
+
+        assert!(should_prefer_structured_column_text(&text));
+    }
+
+    #[test]
+    fn structured_column_text_fallback_ignores_ordinary_long_lines() {
+        let mut text = String::new();
+        for i in 0..30 {
+            text.push_str(&format!(
+                "section {i} has an intentionally long sentence with enough words to exceed one hundred characters but no column join\n"
+            ));
+        }
+
+        assert!(!should_prefer_structured_column_text(&text));
     }
 }
