@@ -367,7 +367,7 @@ fn detect_ruled_with_depth(
         attach_nested_tables(&mut cells, chunks, graphics, depth);
     }
 
-    vec![finalize_table(
+    let table = finalize_table(
         TableSource::Ruled,
         1.0,
         [
@@ -380,7 +380,8 @@ fn detect_ruled_with_depth(
         n_cols,
         cells,
         Vec::new(),
-    )]
+    );
+    postprocess_candidate(table).into_iter().collect()
 }
 
 fn empty_ruled_cell(
@@ -788,7 +789,145 @@ pub fn detect_borderless(chunks: &[TextChunk]) -> Vec<Table> {
         cells,
         vec!["borderless rowspans are not inferred; clear colspans only".to_string()],
     );
-    vec![isolate_borderless_region(table)]
+    postprocess_candidate(isolate_borderless_region(table))
+        .into_iter()
+        .collect()
+}
+
+fn postprocess_candidate(table: Table) -> Option<Table> {
+    let table = trim_sparse_table_edges(table);
+    if !has_table_shape_evidence(&table) {
+        return None;
+    }
+    if !header_like_row(table.rows.first()?) {
+        return None;
+    }
+    if table.source == TableSource::Borderless && looks_like_prose_grid(&table) {
+        return None;
+    }
+    Some(table)
+}
+
+fn trim_sparse_table_edges(table: Table) -> Table {
+    let mut start = 0usize;
+    let mut end = table.rows.len();
+    let multi_col_rows = table
+        .rows
+        .iter()
+        .filter(|row| non_empty_count(row) >= 2)
+        .count();
+    if multi_col_rows < 2 {
+        return table;
+    }
+
+    while start < end && non_empty_count(&table.rows[start]) < 2 {
+        start += 1;
+    }
+    while end > start && non_empty_count(&table.rows[end - 1]) < 2 {
+        end -= 1;
+    }
+    if start == 0 && end == table.rows.len() {
+        return table;
+    }
+    rebuild_region_table(
+        &table,
+        start,
+        end,
+        "sparse title/furniture rows trimmed from table candidate",
+    )
+}
+
+fn has_table_shape_evidence(table: &Table) -> bool {
+    let n_rows = table.num_rows();
+    let n_cols = table.num_cols();
+    if n_rows < 2 || n_cols < 2 {
+        return false;
+    }
+
+    let non_empty_cells: usize = table.rows.iter().map(|row| non_empty_count(row)).sum();
+    if non_empty_cells < 4 {
+        return false;
+    }
+
+    let multi_col_rows = table
+        .rows
+        .iter()
+        .filter(|row| non_empty_count(row) >= 2)
+        .count();
+    if multi_col_rows < 2 {
+        return false;
+    }
+
+    let non_empty_cols = (0..n_cols)
+        .filter(|&col| {
+            table
+                .rows
+                .iter()
+                .any(|row| row.get(col).map(|s| !s.trim().is_empty()).unwrap_or(false))
+        })
+        .count();
+    if non_empty_cols < 2 {
+        return false;
+    }
+
+    let empty_rows = table
+        .rows
+        .iter()
+        .filter(|row| non_empty_count(row) == 0)
+        .count();
+    empty_rows * 2 <= n_rows
+}
+
+fn header_like_row(row: &[String]) -> bool {
+    let cells: Vec<&str> = row
+        .iter()
+        .map(|cell| cell.trim())
+        .filter(|cell| !cell.is_empty())
+        .collect();
+    if cells.len() < 2 {
+        return false;
+    }
+    let mut label_like = 0usize;
+    for cell in &cells {
+        let words = cell.split_whitespace().count();
+        let chars = cell.chars().count();
+        let has_sentence_punct = cell.contains('.') || cell.contains('!') || cell.contains('?');
+        if chars <= 32 && words <= 4 && !has_sentence_punct {
+            label_like += 1;
+        }
+    }
+    label_like * 2 >= cells.len()
+}
+
+fn looks_like_prose_grid(table: &Table) -> bool {
+    let mut text_cells = 0usize;
+    let mut prose_cells = 0usize;
+    let mut numeric_or_code_cells = 0usize;
+    for cell in table.rows.iter().flatten() {
+        let cell = cell.trim();
+        if cell.is_empty() {
+            continue;
+        }
+        text_cells += 1;
+        let words = cell.split_whitespace().count();
+        if words >= 4 || cell.contains('.') || cell.contains('!') || cell.contains('?') {
+            prose_cells += 1;
+        }
+        if is_numeric_like(cell)
+            || cell.chars().any(|ch| ch.is_ascii_digit())
+            || cell.contains('-')
+            || cell.contains('/')
+        {
+            numeric_or_code_cells += 1;
+        }
+    }
+    if text_cells == 0 {
+        return false;
+    }
+
+    let prose_ratio = prose_cells as f64 / text_cells as f64;
+    let code_ratio = numeric_or_code_cells as f64 / text_cells as f64;
+    prose_ratio >= 0.55 && code_ratio < 0.35
 }
 
 fn isolate_borderless_region(table: Table) -> Table {
@@ -1516,6 +1655,54 @@ mod tests {
     }
 
     #[test]
+    fn ruled_table_trims_sparse_title_rows() {
+        let mut g = DrawnGraphics::default();
+        for y in [600.0, 620.0, 640.0, 660.0, 680.0] {
+            g.segments.push(seg(50.0, y, 350.0, y));
+        }
+        for x in [50.0, 150.0, 250.0, 350.0] {
+            g.segments.push(seg(x, 600.0, x, 680.0));
+        }
+        g.rects.push(Rect {
+            x0: 50.0,
+            y0: 600.0,
+            x1: 350.0,
+            y1: 680.0,
+        });
+        let chunks = vec![
+            chunk("Quarterly Results", 60.0, 665.0, 120.0),
+            chunk("Item", 60.0, 625.0, 30.0),
+            chunk("Qty", 160.0, 625.0, 30.0),
+            chunk("Total", 260.0, 625.0, 40.0),
+            chunk("Widget", 60.0, 605.0, 45.0),
+            chunk("10", 160.0, 605.0, 20.0),
+            chunk("$25", 260.0, 605.0, 30.0),
+        ];
+        let table = detect_ruled(&chunks, &g).remove(0);
+        assert_eq!(table.rows[0], vec!["Item", "Qty", "Total"]);
+        assert_eq!(table.num_rows(), 2);
+        assert!(table.notes.iter().any(|note| note.contains("sparse title")));
+    }
+
+    #[test]
+    fn ruled_prose_card_is_not_a_table() {
+        let mut g = DrawnGraphics::default();
+        for y in [600.0, 625.0, 650.0] {
+            g.segments.push(seg(50.0, y, 350.0, y));
+        }
+        for x in [50.0, 200.0, 350.0] {
+            g.segments.push(seg(x, 600.0, x, 650.0));
+        }
+        let chunks = vec![
+            chunk("Payment terms apply to this order.", 60.0, 633.0, 130.0),
+            chunk("No purchase order is required.", 210.0, 633.0, 120.0),
+            chunk("Contact support for billing help.", 60.0, 608.0, 125.0),
+            chunk("This notice is not tabular data.", 210.0, 608.0, 125.0),
+        ];
+        assert!(detect_ruled(&chunks, &g).is_empty());
+    }
+
+    #[test]
     fn ruled_table_to_csv_is_correct() {
         let (chunks, g) = ruled_2x2();
         let t = &detect_ruled(&chunks, &g)[0];
@@ -1711,6 +1898,19 @@ mod tests {
         }
         let tables = detect_borderless(&chunks);
         assert!(tables.is_empty(), "single-column prose is not a table");
+    }
+
+    #[test]
+    fn borderless_two_column_prose_is_not_a_table() {
+        let chunks = vec![
+            chunk("This paragraph explains the policy.", 50.0, 700.0, 190.0),
+            chunk("The sidebar continues with context.", 300.0, 700.0, 190.0),
+            chunk("It uses aligned text on the page.", 50.0, 680.0, 190.0),
+            chunk("But the content is ordinary prose.", 300.0, 680.0, 190.0),
+            chunk("There are no fields or measures.", 50.0, 660.0, 190.0),
+            chunk("The visual columns should stay text.", 300.0, 660.0, 190.0),
+        ];
+        assert!(detect_borderless(&chunks).is_empty());
     }
 
     #[test]
