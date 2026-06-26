@@ -572,7 +572,7 @@ def aggregate(records: list[dict[str, Any]], manifest: dict[str, Any], availabil
         "python": sys.version.split()[0],
         "platform": sys.platform,
         "hardware": hardware_summary(),
-        "label": "indicative (approx 200-file subset)",
+        "label": manifest.get("target", {}).get("label") or "indicative (approx 200-file subset)",
         "args": vars(args),
         "corpus": {
             "files": len(manifest.get("entries", [])),
@@ -636,17 +636,22 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
     leaders = [r for r in tool_rows if r["tool"] in {"pdf_oxide", "pymupdf", "pypdfium2", "poppler"}]
     top3 = summary["prioritized_fix_list"][:3]
     top_text = ", ".join(f"{x['category']} ({x['files']})" for x in top3) if top3 else "no hard failure category found"
+    label = summary.get("label") or "robustness corpus"
+    is_full = "full" in label.lower() or "prompt 10" in label.lower()
 
     w("# Robustness Benchmark: Wild-PDF Survival\n")
     w(
-        "**Plain-language summary.** On this indicative (approx 200-file subset) robustness run, "
+        f"**Plain-language summary.** On this {label} robustness run, "
         f"Oxide survived {oxide.get('survival_rate', '-')}% of attempted files and produced parsed text artifacts for "
         f"{oxide.get('parsed_pass_rate', '-')}%. The main Prompt 2 targets are: {top_text}. "
         "Clean handled errors are separated from crashes/timeouts/OOMs because a clean rejection is acceptable for malformed input, "
         "while a hard failure is not.\n"
     )
     w("## Scope And Corpus\n")
-    w("This is a SMALL indicative robustness corpus, not a final robustness claim. It has no ground-truth text labels, so it measures survival only.\n")
+    if is_full:
+        w("This is the scaled Prompt 10 local robustness corpus. It is larger than the 200-file fast loop, but it still has no ground-truth text labels, so it measures survival only and is not an internet-scale robustness track record.\n")
+    else:
+        w("This is a SMALL indicative robustness corpus, not a final robustness claim. It has no ground-truth text labels, so it measures survival only.\n")
     c = summary["corpus"]
     w(md([ "metric", "value" ], [["label", summary["label"]], ["files", c["files"]], ["selection", c.get("selection")]]))
     w("")
@@ -680,7 +685,7 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
     ]))
     w("")
     w("## Ranked Robustness Table\n")
-    w("Rates below are indicative (approx 200-file subset). Survival = PASS + CLEAN_ERROR. Parsed pass = PASS only.\n")
+    w(f"Rates below use the {label}. Survival = PASS + CLEAN_ERROR. Parsed pass = PASS only.\n")
     w(md(
         ["rank", "tool", "survival %", "parsed pass %", "parsed", "clean errors", "hard failures", "crash", "timeout", "OOM", "mean s"],
         [
@@ -735,7 +740,10 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
         w("No hard-failure fix category was found; Prompt 2 should focus on the largest clean-error competitor-parse recovery gap.")
     w("")
     w("## Still Unmeasured\n")
-    w("This run is small, text-extraction-only, and indicative. It does not prove final real-world robustness, does not score text correctness, and does not include a separate image/rendering robustness pass. The larger wild run belongs in Prompt 10.")
+    if is_full:
+        w("This run is text-extraction-only and has no text-correctness ground truth. It does not include a separate image/rendering robustness pass, sustained internet-scale wild-PDF exposure, or external security review.")
+    else:
+        w("This run is capped, text-extraction-only, and indicative. It does not score text correctness and does not include a separate image/rendering robustness pass.")
     w("")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")

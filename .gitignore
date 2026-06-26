@@ -28,11 +28,18 @@ crates/engine/tests/fixtures/*.ppm
 # evidence, ground-truth-labeled, and tiny.)
 renderer-benchmark/corpus/
 renderer-benchmark/results/
+test_corpus/
 
 # Robustness benchmark bulk PDFs are generated/downloaded locally. The manifest,
 # scripts, and docs are tracked; the PDF payloads are not.
 robustness-benchmark/corpus/
 robustness-benchmark/results/
+
+# Public head-to-head benchmark bulk data. The scripts and manifests are tracked,
+# but downloaded third-party PDFs and raw per-file benchmark output stay local.
+public-benchmark/corpus/
+public-benchmark/results/raw/
+.venv-public-benchmark/
 
 # Stray native build artifacts from compiling the C-ABI example locally.
 *.obj
