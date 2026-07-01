@@ -399,7 +399,7 @@ impl ContentEngine {
     }
 
     pub fn page_count(&self) -> Result<usize> {
-        Ok(self.doc.get_pages()?.len())
+        self.doc.page_count()
     }
 
     pub fn get_page_content(&self, page_number: usize) -> Result<Vec<ContentOperation>> {
@@ -410,20 +410,13 @@ impl ContentEngine {
 
     pub fn get_page_resources(&self, page_number: usize) -> Result<PageResources> {
         self.validate_page(page_number)?;
-        let pages = self.doc.get_pages()?;
-        let page = pages
-            .get(page_number - 1)
-            .ok_or_else(|| OxideError::MalformedPdf(format!("page {page_number} out of range")))?;
+        let page = self.doc.get_page(page_number)?;
         Ok(PageResources::from_dict(&page.resources, self.doc.reader()))
     }
 
     pub fn get_page(&self, page_number: usize) -> Result<PdfPage> {
         self.validate_page(page_number)?;
-        let pages = self.doc.get_pages()?;
-        pages
-            .get(page_number - 1)
-            .cloned()
-            .ok_or_else(|| OxideError::MalformedPdf(format!("page {page_number} out of range")))
+        self.doc.get_page(page_number)
     }
 
     pub fn get_page_text(&self, page_number: usize) -> Result<String> {
@@ -703,10 +696,7 @@ impl ContentEngine {
     /// layer for margin-band (header/footer) detection and page-area thresholds.
     pub(crate) fn page_dimensions(&self, page_number: usize) -> Result<(f64, f64)> {
         self.validate_page(page_number)?;
-        let pages = self.doc.get_pages()?;
-        let page = pages
-            .get(page_number - 1)
-            .ok_or_else(|| OxideError::MalformedPdf(format!("page {page_number} out of range")))?;
+        let page = self.doc.get_page(page_number)?;
         let b = page.crop_box;
         Ok(((b[2] - b[0]).abs(), (b[3] - b[1]).abs()))
     }
@@ -716,10 +706,7 @@ impl ContentEngine {
     /// coordinates into upright reading orientation before layout analysis.
     pub(crate) fn page_rotation(&self, page_number: usize) -> Result<i32> {
         self.validate_page(page_number)?;
-        let pages = self.doc.get_pages()?;
-        let page = pages
-            .get(page_number - 1)
-            .ok_or_else(|| OxideError::MalformedPdf(format!("page {page_number} out of range")))?;
+        let page = self.doc.get_page(page_number)?;
         Ok(page.rotate.rem_euclid(360))
     }
 
@@ -727,10 +714,7 @@ impl ContentEngine {
     /// media box). The origin needed to rotate coordinates about the page.
     pub(crate) fn page_crop_box(&self, page_number: usize) -> Result<[f64; 4]> {
         self.validate_page(page_number)?;
-        let pages = self.doc.get_pages()?;
-        let page = pages
-            .get(page_number - 1)
-            .ok_or_else(|| OxideError::MalformedPdf(format!("page {page_number} out of range")))?;
+        let page = self.doc.get_page(page_number)?;
         Ok(page.crop_box)
     }
 
@@ -742,10 +726,7 @@ impl ContentEngine {
     /// skipped, never an error. Never resolves remote targets.
     pub(crate) fn page_links(&self, page_number: usize) -> Result<Vec<([f64; 4], String)>> {
         self.validate_page(page_number)?;
-        let pages = self.doc.get_pages()?;
-        let page = pages
-            .get(page_number - 1)
-            .ok_or_else(|| OxideError::MalformedPdf(format!("page {page_number} out of range")))?;
+        let page = self.doc.get_page(page_number)?;
         let reader = self.doc.reader();
         let page_obj = reader.get_and_resolve(page.object_number, page.generation_number)?;
         let Some(page_dict) = page_obj.as_dict() else {
@@ -795,6 +776,28 @@ impl ContentEngine {
             }
         }
         Ok(results)
+    }
+
+    /// Stream text for selected 1-based pages to a caller-provided callback.
+    ///
+    /// An empty `pages` slice means all pages. This keeps only the active page's
+    /// extracted text resident while preserving the existing all-at-once
+    /// convenience APIs for callers that want a collected `String`/`Vec`.
+    pub fn for_each_page_text<F>(&self, pages: &[usize], mut sink: F) -> Result<()>
+    where
+        F: FnMut(usize, &str) -> Result<()>,
+    {
+        let selected = if pages.is_empty() {
+            (1..=self.page_count()?).collect::<Vec<_>>()
+        } else {
+            pages.to_vec()
+        };
+        for page in selected {
+            self.validate_page(page)?;
+            let text = self.get_page_text(page)?;
+            sink(page, &text)?;
+        }
+        Ok(())
     }
 
     pub fn get_all_text(&self) -> Result<Vec<(usize, String)>> {
@@ -1203,7 +1206,7 @@ impl ContentEngine {
                 "page_number is 1-indexed; 0 is invalid".to_string(),
             ));
         }
-        let count = self.doc.get_pages()?.len();
+        let count = self.doc.page_count()?;
         if page_number > count {
             return Err(OxideError::MalformedPdf(format!(
                 "page {} out of range (document has {} pages)",

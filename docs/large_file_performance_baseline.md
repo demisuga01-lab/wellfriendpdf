@@ -6,6 +6,8 @@ Commit measured: `01c592b718f17513083d32556c5b206e9159454d`
 
 This is the Prompt 1 measurement-only baseline. No reader/parser/engine implementation was changed.
 
+Prompt 2 follow-up: `docs/large_file_performance_prompt2.md` records the streaming-reader re-architecture results, before/after profile, correctness checks, and remaining Prompt 3 gap. This document remains the pre-change baseline.
+
 ## Headline Gap
 
 Target: process a single 3-4 GB PDF and documents with thousands of pages within a hard 2 GB resident-memory envelope.

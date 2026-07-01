@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::OnceLock;
 
 use crate::error::{OxideError, Result};
 use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
@@ -10,6 +11,7 @@ const DEFAULT_MEDIA_BOX: [f64; 4] = [0.0, 0.0, 612.0, 792.0];
 
 pub struct PdfDocument {
     reader: PdfReader,
+    pages_cache: OnceLock<Vec<PdfPage>>,
 }
 
 #[derive(Debug, Clone)]
@@ -36,12 +38,14 @@ impl PdfDocument {
     pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
         Ok(Self {
             reader: PdfReader::from_path(path)?,
+            pages_cache: OnceLock::new(),
         })
     }
 
     pub fn open_bytes(data: Vec<u8>) -> Result<Self> {
         Ok(Self {
             reader: PdfReader::from_bytes(data)?,
+            pages_cache: OnceLock::new(),
         })
     }
 
@@ -49,6 +53,7 @@ impl PdfDocument {
     pub fn open_path_with_password(path: impl AsRef<Path>, password: &[u8]) -> Result<Self> {
         Ok(Self {
             reader: PdfReader::from_path_with_password(path, password)?,
+            pages_cache: OnceLock::new(),
         })
     }
 
@@ -56,6 +61,7 @@ impl PdfDocument {
     pub fn open_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
         Ok(Self {
             reader: PdfReader::from_bytes_with_password(data, password)?,
+            pages_cache: OnceLock::new(),
         })
     }
 
@@ -81,6 +87,31 @@ impl PdfDocument {
     }
 
     pub fn get_pages(&self) -> Result<Vec<PdfPage>> {
+        if let Some(pages) = self.pages_cache.get() {
+            return Ok(pages.clone());
+        }
+        let pages = self.collect_pages()?;
+        let _ = self.pages_cache.set(pages);
+        Ok(self.pages_cache.get().cloned().unwrap_or_default())
+    }
+
+    pub fn page_count(&self) -> Result<usize> {
+        Ok(self.get_pages()?.len())
+    }
+
+    pub fn get_page(&self, page_number: usize) -> Result<PdfPage> {
+        if page_number == 0 {
+            return Err(OxideError::MalformedPdf(
+                "page numbers are 1-indexed".to_string(),
+            ));
+        }
+        self.get_pages()?
+            .get(page_number - 1)
+            .cloned()
+            .ok_or_else(|| OxideError::MalformedPdf(format!("page {page_number} is out of range")))
+    }
+
+    fn collect_pages(&self) -> Result<Vec<PdfPage>> {
         let catalog = self.get_catalog()?;
         let pages_ref = catalog.get_reference("Pages").ok_or_else(|| {
             OxideError::MalformedPdf("catalog is missing /Pages reference".to_string())
@@ -116,15 +147,7 @@ impl PdfDocument {
     }
 
     pub fn get_page_content_bytes(&self, page_number: usize) -> Result<Vec<u8>> {
-        if page_number == 0 {
-            return Err(OxideError::MalformedPdf(
-                "page numbers are 1-indexed".to_string(),
-            ));
-        }
-        let pages = self.get_pages()?;
-        let page = pages.get(page_number - 1).ok_or_else(|| {
-            OxideError::MalformedPdf(format!("page {page_number} is out of range"))
-        })?;
+        let page = self.get_page(page_number)?;
         let mut out = Vec::new();
 
         let mut wrote_stream = false;

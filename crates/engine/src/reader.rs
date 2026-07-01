@@ -1,7 +1,8 @@
-use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::Path;
-use std::sync::RwLock;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::fs::{self, File};
+use std::io::{Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock, RwLock};
 
 use crate::crypto::{
     compute_encryption_key, decrypt_string, derive_v5_file_key_from_owner,
@@ -14,6 +15,10 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::parser::{ParserResolver, PdfParser};
 
 const MAX_FALLBACK_XREF_OBJECTS: usize = 200_000;
+const STREAMING_TAIL_READ_LIMIT: usize = 16 * 1024 * 1024;
+const STREAMING_XREF_READ_LIMIT: usize = 64 * 1024 * 1024;
+const STREAMING_FULL_READ_FALLBACK_LIMIT: u64 = 128 * 1024 * 1024;
+const DEFAULT_OBJECT_STREAM_CACHE_LIMIT: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum XrefEntry {
@@ -51,10 +56,161 @@ pub struct EncryptionContext {
     pub encrypt_metadata: bool,
 }
 
-type ObjectStreamCache = HashMap<u32, HashMap<u32, (u32, PdfObject)>>;
+type ParsedObjectStream = HashMap<u32, (u32, PdfObject)>;
+
+struct BoundedObjectStreamCache {
+    streams: HashMap<u32, ParsedObjectStream>,
+    order: VecDeque<u32>,
+    max_streams: usize,
+}
+
+impl BoundedObjectStreamCache {
+    fn new(max_streams: usize) -> Self {
+        Self {
+            streams: HashMap::new(),
+            order: VecDeque::new(),
+            max_streams: max_streams.max(1),
+        }
+    }
+
+    fn contains_key(&self, stream_obj: &u32) -> bool {
+        self.streams.contains_key(stream_obj)
+    }
+
+    fn get(&self, stream_obj: &u32) -> Option<&ParsedObjectStream> {
+        self.streams.get(stream_obj)
+    }
+
+    fn insert(&mut self, stream_obj: u32, objects: ParsedObjectStream) {
+        if let std::collections::hash_map::Entry::Occupied(mut entry) =
+            self.streams.entry(stream_obj)
+        {
+            entry.insert(objects);
+            return;
+        }
+        while self.streams.len() >= self.max_streams {
+            let Some(victim) = self.order.pop_front() else {
+                break;
+            };
+            self.streams.remove(&victim);
+        }
+        self.order.push_back(stream_obj);
+        self.streams.insert(stream_obj, objects);
+    }
+}
+
+enum PdfSource {
+    Memory(Vec<u8>),
+    File(SeekableFileSource),
+}
+
+struct SeekableFileSource {
+    path: PathBuf,
+    file: Mutex<File>,
+    len: usize,
+    raw_cache: OnceLock<Vec<u8>>,
+}
+
+impl PdfSource {
+    fn from_path(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref().to_path_buf();
+        let file = File::open(&path)?;
+        let len = file.metadata()?.len();
+        let len = usize::try_from(len).map_err(|_| {
+            OxideError::ResourceLimit("input file is too large for this platform".to_string())
+        })?;
+        Ok(Self::File(SeekableFileSource {
+            path,
+            file: Mutex::new(file),
+            len,
+            raw_cache: OnceLock::new(),
+        }))
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::Memory(data) => data.len(),
+            Self::File(source) => source.len,
+        }
+    }
+
+    fn as_bytes(&self) -> Option<&[u8]> {
+        match self {
+            Self::Memory(data) => Some(data),
+            Self::File(_) => None,
+        }
+    }
+
+    fn file_bytes(&self) -> &[u8] {
+        match self {
+            Self::Memory(data) => data,
+            Self::File(source) => source.raw_cache.get_or_init(|| {
+                source.read_all().unwrap_or_else(|err| {
+                    log::warn!(
+                        "could not materialize original file bytes for {}: {}",
+                        source.path.display(),
+                        err
+                    );
+                    Vec::new()
+                })
+            }),
+        }
+    }
+
+    fn read_prefix(&self, max_len: usize) -> Result<Vec<u8>> {
+        self.read_at(0, self.len().min(max_len))
+    }
+
+    fn read_tail(&self, max_len: usize) -> Result<Vec<u8>> {
+        let len = self.len();
+        let read_len = len.min(max_len);
+        self.read_at(len - read_len, read_len)
+    }
+
+    fn read_from(&self, offset: usize, max_len: usize) -> Result<Vec<u8>> {
+        if offset > self.len() {
+            return Err(OxideError::ParseError(format!(
+                "offset {offset} is beyond input length {}",
+                self.len()
+            )));
+        }
+        let len = (self.len() - offset).min(max_len);
+        self.read_at(offset, len)
+    }
+
+    fn read_at(&self, offset: usize, len: usize) -> Result<Vec<u8>> {
+        let end = offset
+            .checked_add(len)
+            .ok_or_else(|| OxideError::MalformedPdf("read range overflows".to_string()))?;
+        if end > self.len() {
+            return Err(OxideError::ParseError(format!(
+                "read range {offset}..{end} exceeds input length {}",
+                self.len()
+            )));
+        }
+        match self {
+            Self::Memory(data) => Ok(data[offset..end].to_vec()),
+            Self::File(source) => source.read_at(offset, len),
+        }
+    }
+}
+
+impl SeekableFileSource {
+    fn read_at(&self, offset: usize, len: usize) -> Result<Vec<u8>> {
+        let mut out = vec![0u8; len];
+        let mut file = self.file.lock().expect("seekable PDF source lock poisoned");
+        file.seek(SeekFrom::Start(offset as u64))?;
+        file.read_exact(&mut out)?;
+        Ok(out)
+    }
+
+    fn read_all(&self) -> Result<Vec<u8>> {
+        self.read_at(0, self.len)
+    }
+}
 
 pub struct PdfReader {
-    data: Vec<u8>,
+    source: PdfSource,
     version: String,
     xref: HashMap<(u32, u16), XrefEntry>,
     trailer: PdfDictionary,
@@ -65,7 +221,7 @@ pub struct PdfReader {
     /// rendering instead of cloning/reparsing the PDF per
     /// thread. Reads dominate; the lock is only taken for writing the first time
     /// a given object stream is decoded.
-    object_stream_cache: RwLock<ObjectStreamCache>,
+    object_stream_cache: RwLock<BoundedObjectStreamCache>,
     encryption: Option<EncryptionContext>,
     startxref: usize,
 }
@@ -78,7 +234,19 @@ impl PdfReader {
     /// Open a PDF from a file path, supplying a user password for encrypted
     /// documents. For non-encrypted PDFs the password is ignored.
     pub fn from_path_with_password(path: impl AsRef<Path>, password: &[u8]) -> Result<Self> {
-        Self::from_bytes_with_password(fs::read(path)?, password)
+        let path = path.as_ref();
+        let metadata_len = fs::metadata(path)?.len();
+        let source = PdfSource::from_path(path)?;
+        match Self::from_seekable_source_with_password(source, password) {
+            Ok(reader) => Ok(reader),
+            Err(primary) if metadata_len <= STREAMING_FULL_READ_FALLBACK_LIMIT => {
+                match Self::from_bytes_with_password(fs::read(path)?, password) {
+                    Ok(reader) => Ok(reader),
+                    Err(_) => Err(primary),
+                }
+            }
+            Err(primary) => Err(primary),
+        }
     }
 
     pub fn from_bytes(data: Vec<u8>) -> Result<Self> {
@@ -124,14 +292,46 @@ impl PdfReader {
             OxideError::MalformedPdf("PDF did not contain a trailer dictionary".to_string())
         })?;
 
-        let encryption = setup_encryption(&data, &xref, &trailer, password)?;
+        let source = PdfSource::Memory(data);
+        let encryption = setup_encryption(&source, &xref, &trailer, password)?;
 
         Ok(Self {
-            data,
+            source,
             version,
             xref,
             trailer,
-            object_stream_cache: RwLock::new(HashMap::new()),
+            object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
+                DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
+            )),
+            encryption,
+            startxref,
+        })
+    }
+
+    fn from_seekable_source_with_password(source: PdfSource, password: &[u8]) -> Result<Self> {
+        let prefix = source.read_prefix(1024)?;
+        let version = parse_header_version(&prefix)?;
+        let tail = source.read_tail(STREAMING_TAIL_READ_LIMIT)?;
+        let mut xref = HashMap::new();
+        let mut trailer = None;
+        let mut visited = HashSet::new();
+        let startxref = find_startxref(&tail)?;
+
+        read_xref_chain_from_source(&source, startxref, &mut xref, &mut trailer, &mut visited)?;
+
+        let trailer = trailer.ok_or_else(|| {
+            OxideError::MalformedPdf("PDF did not contain a trailer dictionary".to_string())
+        })?;
+        let encryption = setup_encryption(&source, &xref, &trailer, password)?;
+
+        Ok(Self {
+            source,
+            version,
+            xref,
+            trailer,
+            object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
+                DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
+            )),
             encryption,
             startxref,
         })
@@ -155,14 +355,14 @@ impl PdfReader {
     /// Total size of the input PDF in bytes (the length of the parsed buffer).
     /// Reported by the `info` tool.
     pub fn file_size(&self) -> usize {
-        self.data.len()
+        self.source.len()
     }
 
     /// The exact original file bytes, as opened. Digital-signature verification
     /// hashes the bytes selected by a signature's `/ByteRange` against these —
     /// it must use the raw bytes, never a re-serialization.
     pub fn file_bytes(&self) -> &[u8] {
-        &self.data
+        self.source.file_bytes()
     }
 
     /// Byte offset recorded by the latest `startxref` marker.
@@ -182,7 +382,7 @@ impl PdfReader {
     /// documents and on any parse failure.
     pub fn encrypt_dictionary(&self) -> Option<PdfDictionary> {
         let encrypt = self.trailer.get("Encrypt")?;
-        resolve_encrypt_dict(&self.data, &self.xref, encrypt)
+        resolve_encrypt_dict(&self.source, &self.xref, encrypt)
             .ok()
             .flatten()
     }
@@ -253,8 +453,7 @@ impl PdfReader {
         match entry {
             XrefEntry::Free => Err(OxideError::MissingObject { number, generation }),
             XrefEntry::Uncompressed { offset } => {
-                let mut parser = PdfParser::with_resolver(&self.data, offset, Some(self))?;
-                let parsed = parser.parse_indirect_object()?;
+                let parsed = self.parse_uncompressed_object_at(offset)?;
                 if parsed.number != number || parsed.generation != generation {
                     return Err(OxideError::MissingObject { number, generation });
                 }
@@ -281,6 +480,48 @@ impl PdfReader {
                 Ok(object.clone())
             }
         }
+    }
+
+    fn parse_uncompressed_object_at(&self, offset: usize) -> Result<crate::parser::IndirectObject> {
+        if let Some(data) = self.source.as_bytes() {
+            let mut parser = PdfParser::with_resolver(data, offset, Some(self))?;
+            return parser.parse_indirect_object();
+        }
+
+        let bytes = self.read_object_window(offset)?;
+        let mut parser = PdfParser::with_resolver(&bytes, 0, Some(self))?;
+        parser.parse_indirect_object()
+    }
+
+    fn read_object_window(&self, offset: usize) -> Result<Vec<u8>> {
+        if offset > self.source.len() {
+            return Err(OxideError::ParseError(format!(
+                "object offset {offset} is beyond input length {}",
+                self.source.len()
+            )));
+        }
+        let end = self
+            .next_object_boundary(offset)
+            .unwrap_or_else(|| self.source.len());
+        if end <= offset {
+            return Err(OxideError::ParseError(format!(
+                "object offset {offset} has no readable range"
+            )));
+        }
+        self.source.read_at(offset, end - offset)
+    }
+
+    fn next_object_boundary(&self, offset: usize) -> Option<usize> {
+        self.xref
+            .values()
+            .filter_map(|entry| match entry {
+                XrefEntry::Uncompressed { offset: candidate } if *candidate > offset => {
+                    Some(*candidate)
+                }
+                _ => None,
+            })
+            .chain((self.startxref > offset).then_some(self.startxref))
+            .min()
     }
 
     /// Recursively decrypt the strings and stream bytes inside a freshly-parsed
@@ -444,7 +685,7 @@ impl PdfReader {
 }
 
 fn setup_encryption(
-    data: &[u8],
+    source: &PdfSource,
     xref: &HashMap<(u32, u16), XrefEntry>,
     trailer: &PdfDictionary,
     password: &[u8],
@@ -453,7 +694,7 @@ fn setup_encryption(
         return Ok(None); // not encrypted
     };
 
-    let encrypt_dict = match resolve_encrypt_dict(data, xref, encrypt_obj)? {
+    let encrypt_dict = match resolve_encrypt_dict(source, xref, encrypt_obj)? {
         Some(dict) => dict,
         None => return Err(OxideError::EncryptedDocument),
     };
@@ -614,7 +855,7 @@ fn extract_file_id(trailer: &PdfDictionary) -> Vec<u8> {
 }
 
 fn resolve_encrypt_dict(
-    data: &[u8],
+    source: &PdfSource,
     xref: &HashMap<(u32, u16), XrefEntry>,
     object: &PdfObject,
 ) -> Result<Option<PdfDictionary>> {
@@ -624,7 +865,14 @@ fn resolve_encrypt_dict(
             let Some(XrefEntry::Uncompressed { offset }) = xref.get(&(*number, *generation)) else {
                 return Ok(None);
             };
-            let mut parser = PdfParser::new(data, *offset)?;
+            let bytes;
+            let (data, parser_offset): (&[u8], usize) = if let Some(data) = source.as_bytes() {
+                (data, *offset)
+            } else {
+                bytes = read_object_window_from_source(source, xref, *offset, None)?;
+                (&bytes, 0)
+            };
+            let mut parser = PdfParser::new(data, parser_offset)?;
             let parsed = parser.parse_indirect_object()?;
             match parsed.object {
                 PdfObject::Dictionary(dict) => Ok(Some(dict)),
@@ -633,6 +881,37 @@ fn resolve_encrypt_dict(
         }
         _ => Ok(None),
     }
+}
+
+fn read_object_window_from_source(
+    source: &PdfSource,
+    xref: &HashMap<(u32, u16), XrefEntry>,
+    offset: usize,
+    startxref: Option<usize>,
+) -> Result<Vec<u8>> {
+    if offset > source.len() {
+        return Err(OxideError::ParseError(format!(
+            "object offset {offset} is beyond input length {}",
+            source.len()
+        )));
+    }
+    let end = xref
+        .values()
+        .filter_map(|entry| match entry {
+            XrefEntry::Uncompressed { offset: candidate } if *candidate > offset => {
+                Some(*candidate)
+            }
+            _ => None,
+        })
+        .chain(startxref.filter(|candidate| *candidate > offset))
+        .min()
+        .unwrap_or_else(|| source.len());
+    if end <= offset {
+        return Err(OxideError::ParseError(format!(
+            "object offset {offset} has no readable range"
+        )));
+    }
+    source.read_at(offset, end - offset)
 }
 
 impl ParserResolver for PdfReader {
@@ -749,6 +1028,36 @@ fn read_xref_chain(
         if let Some(xref_stm) = section.xref_stm {
             if xref_stm != offset && !visited.contains(&xref_stm) {
                 let _ = read_xref_section(data, xref_stm, xref)?;
+            }
+        }
+
+        next = section.prev;
+    }
+    Ok(())
+}
+
+fn read_xref_chain_from_source(
+    source: &PdfSource,
+    startxref: usize,
+    xref: &mut HashMap<(u32, u16), XrefEntry>,
+    trailer: &mut Option<PdfDictionary>,
+    visited: &mut HashSet<usize>,
+) -> Result<()> {
+    let mut next = Some(startxref);
+    while let Some(offset) = next {
+        if !visited.insert(offset) {
+            return Err(OxideError::MalformedPdf(format!(
+                "cyclic xref chain at offset {offset}"
+            )));
+        }
+        let section = read_xref_section_from_source(source, offset, xref)?;
+        if trailer.is_none() {
+            *trailer = Some(section.trailer.clone());
+        }
+
+        if let Some(xref_stm) = section.xref_stm {
+            if xref_stm != offset && !visited.contains(&xref_stm) {
+                let _ = read_xref_section_from_source(source, xref_stm, xref)?;
             }
         }
 
@@ -928,6 +1237,26 @@ fn read_xref_section(
         read_classic_xref(data, repaired, xref)
     } else {
         read_xref_stream(data, offset, xref)
+    }
+}
+
+fn read_xref_section_from_source(
+    source: &PdfSource,
+    offset: usize,
+    xref: &mut HashMap<(u32, u16), XrefEntry>,
+) -> Result<XrefSection> {
+    let base = offset.saturating_sub(64);
+    let data = source.read_from(base, STREAMING_XREF_READ_LIMIT)?;
+    let rel_offset = offset - base;
+    let rel_offset = skip_ws_and_comments(&data, rel_offset);
+    if bytes_at(&data, rel_offset, b"xref") {
+        read_classic_xref(&data, rel_offset, xref)
+    } else if let Ok(section) = read_xref_stream(&data, rel_offset, xref) {
+        Ok(section)
+    } else if let Some(repaired) = nearby_classic_xref_offset(&data, rel_offset) {
+        read_classic_xref(&data, repaired, xref)
+    } else {
+        read_xref_stream(&data, rel_offset, xref)
     }
 }
 

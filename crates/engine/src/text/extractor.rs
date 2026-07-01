@@ -10,6 +10,7 @@ use crate::error::Result;
 /// this threshold the rayon fan-out/join overhead outweighs the benefit, so we
 /// stay on the simple serial path to avoid regressing small-document latency.
 const PARALLEL_PAGE_THRESHOLD: usize = 4;
+const PARALLEL_FILE_SIZE_LIMIT_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Default)]
 pub struct TextExtractOptions {
@@ -71,7 +72,9 @@ impl TextExtractor {
             }
         };
 
-        let page_strings: Vec<Option<String>> = if page_list.len() >= PARALLEL_PAGE_THRESHOLD {
+        let allow_parallel = page_list.len() >= PARALLEL_PAGE_THRESHOLD
+            && engine.document().reader().file_size() <= PARALLEL_FILE_SIZE_LIMIT_BYTES;
+        let page_strings: Vec<Option<String>> = if allow_parallel {
             // `par_iter().map(...).collect()` preserves input order, so pages
             // land in `page_strings` by their position in `page_list`.
             page_list.par_iter().map(|&p| format_one(p)).collect()
