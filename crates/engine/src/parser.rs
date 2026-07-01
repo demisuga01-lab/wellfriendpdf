@@ -23,6 +23,15 @@ pub struct IndirectObject {
     pub object: PdfObject,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct IndirectStreamHeader {
+    pub number: u32,
+    pub generation: u16,
+    pub dict: PdfDictionary,
+    pub stream_start: usize,
+    pub length: Option<i64>,
+}
+
 pub struct PdfParser<'a> {
     data: &'a [u8],
     pos: usize,
@@ -127,6 +136,51 @@ impl<'a> PdfParser<'a> {
             number,
             generation,
             object,
+        })
+    }
+
+    pub fn parse_indirect_stream_header(&mut self) -> Result<IndirectStreamHeader> {
+        self.skip_ws_and_comments();
+        let number = self.parse_unsigned_integer_token()?;
+        self.skip_ws_and_comments();
+        let generation = self.parse_unsigned_integer_token()?;
+        let number = u32::try_from(number).map_err(|_| {
+            OxideError::ParseError(format!("object number {number} does not fit in u32"))
+        })?;
+        let generation = u16::try_from(generation).map_err(|_| {
+            OxideError::ParseError(format!("generation {generation} does not fit in u16"))
+        })?;
+        self.skip_ws_and_comments();
+        if !self.consume_keyword(b"obj") {
+            return Err(OxideError::ParseError(
+                "indirect object header is missing obj keyword".to_string(),
+            ));
+        }
+        self.skip_ws_and_comments();
+        let dict = self.parse_dictionary()?;
+        self.skip_ws_and_comments();
+        if !self.consume_keyword(b"stream") {
+            return Err(OxideError::ParseError(format!(
+                "object {number} {generation} is not a stream"
+            )));
+        }
+        match self.peek_byte() {
+            Some(b'\r') => {
+                self.pos += 1;
+                if self.peek_byte() == Some(b'\n') {
+                    self.pos += 1;
+                }
+            }
+            Some(b'\n') => self.pos += 1,
+            _ => {}
+        }
+        let length = self.resolve_stream_length(&dict)?;
+        Ok(IndirectStreamHeader {
+            number,
+            generation,
+            dict,
+            stream_start: self.pos,
+            length,
         })
     }
 

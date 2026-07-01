@@ -10,7 +10,8 @@ use crate::error::Result;
 /// this threshold the rayon fan-out/join overhead outweighs the benefit, so we
 /// stay on the simple serial path to avoid regressing small-document latency.
 const PARALLEL_PAGE_THRESHOLD: usize = 4;
-const PARALLEL_FILE_SIZE_LIMIT_BYTES: usize = 512 * 1024 * 1024;
+const DEFAULT_PARALLEL_MEMORY_BUDGET_MB: usize = 1536;
+const DEFAULT_PARALLEL_PAGE_BUDGET_MB: usize = 384;
 
 #[derive(Debug, Clone, Default)]
 pub struct TextExtractOptions {
@@ -72,12 +73,17 @@ impl TextExtractor {
             }
         };
 
-        let allow_parallel = page_list.len() >= PARALLEL_PAGE_THRESHOLD
-            && engine.document().reader().file_size() <= PARALLEL_FILE_SIZE_LIMIT_BYTES;
-        let page_strings: Vec<Option<String>> = if allow_parallel {
-            // `par_iter().map(...).collect()` preserves input order, so pages
-            // land in `page_strings` by their position in `page_list`.
-            page_list.par_iter().map(|&p| format_one(p)).collect()
+        let parallel_window = bounded_text_parallel_window(page_list.len());
+        let page_strings: Vec<Option<String>> = if parallel_window >= PARALLEL_PAGE_THRESHOLD {
+            let mut out = Vec::with_capacity(page_list.len());
+            for chunk in page_list.chunks(parallel_window) {
+                // Each chunk is bounded by a conservative memory budget. Rayon
+                // preserves input order for `collect()`, and chunks are appended
+                // sequentially, so aggregate output remains byte-identical to
+                // serial extraction.
+                out.extend(chunk.par_iter().map(|&p| format_one(p)).collect::<Vec<_>>());
+            }
+            out
         } else {
             page_list.iter().map(|&p| format_one(p)).collect()
         };
@@ -112,4 +118,34 @@ impl TextExtractor {
     pub fn extract_default(engine: &ContentEngine) -> Result<String> {
         TextExtractor::new().extract(engine, &TextExtractOptions::default())
     }
+}
+
+pub fn bounded_text_parallel_window(selected_pages: usize) -> usize {
+    if selected_pages < PARALLEL_PAGE_THRESHOLD {
+        return 1;
+    }
+    if cfg!(target_arch = "wasm32") {
+        return 1;
+    }
+    if let Ok(raw) = std::env::var("OXIDE_TEXT_PARALLEL_PAGES") {
+        if let Ok(value) = raw.parse::<usize>() {
+            return value.max(1).min(selected_pages);
+        }
+    }
+
+    let workers = std::thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1);
+    let memory_budget_mb = std::env::var("OXIDE_TEXT_PARALLEL_MEMORY_MB")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_PARALLEL_MEMORY_BUDGET_MB)
+        .max(1);
+    let page_budget_mb = std::env::var("OXIDE_TEXT_PARALLEL_PAGE_MB")
+        .ok()
+        .and_then(|raw| raw.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_PARALLEL_PAGE_BUDGET_MB)
+        .max(1);
+    let memory_window = (memory_budget_mb / page_budget_mb).max(1);
+    workers.min(memory_window).min(selected_pages)
 }

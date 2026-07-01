@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+use std::io::Read;
+
 use crate::error::{OxideError, Result};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -27,6 +30,16 @@ enum InlineImageState {
 pub struct ContentTokenizer<'a> {
     data: &'a [u8],
     pos: usize,
+    inline_image_state: InlineImageState,
+}
+
+pub struct StreamingContentTokenizer<R: Read> {
+    reader: R,
+    buffer: [u8; 64 * 1024],
+    pos: usize,
+    len: usize,
+    eof: bool,
+    lookahead: VecDeque<u8>,
     inline_image_state: InlineImageState,
 }
 
@@ -354,6 +367,383 @@ impl Iterator for ContentTokenizer<'_> {
     }
 }
 
+impl<R: Read> StreamingContentTokenizer<R> {
+    pub fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buffer: [0; 64 * 1024],
+            pos: 0,
+            len: 0,
+            eof: false,
+            lookahead: VecDeque::new(),
+            inline_image_state: InlineImageState::Normal,
+        }
+    }
+
+    fn next_token(&mut self) -> Result<Option<ContentToken>> {
+        if self.inline_image_state == InlineImageState::PendingEnd {
+            self.inline_image_state = InlineImageState::Normal;
+            return Ok(Some(ContentToken::Operator("EI".to_string())));
+        }
+        if self.inline_image_state == InlineImageState::Data {
+            return self.read_inline_image_data().map(Some);
+        }
+
+        self.skip_ws_and_comments()?;
+        if self.peek()?.is_none() {
+            return Ok(None);
+        }
+
+        let byte = self.peek()?.expect("peek checked above");
+        let token = match byte {
+            b'[' => {
+                self.consume(1)?;
+                ContentToken::ArrayStart
+            }
+            b']' => {
+                self.consume(1)?;
+                ContentToken::ArrayEnd
+            }
+            b'<' if self.starts_with(b"<<")? => {
+                self.consume(2)?;
+                ContentToken::DictStart
+            }
+            b'<' => self.read_hex_string()?,
+            b'>' if self.starts_with(b">>")? => {
+                self.consume(2)?;
+                ContentToken::DictEnd
+            }
+            b'>' => {
+                self.consume(1)?;
+                ContentToken::Operator("?".to_string())
+            }
+            b'/' => self.read_name()?,
+            b'(' => self.read_literal_string()?,
+            byte if self.is_number_start()? => self.read_number(byte)?,
+            _ => self.read_operator()?,
+        };
+
+        match &token {
+            ContentToken::Operator(op) if op == "BI" => {
+                self.inline_image_state = InlineImageState::Params;
+            }
+            ContentToken::Operator(op)
+                if op == "ID" && self.inline_image_state == InlineImageState::Params =>
+            {
+                self.consume_inline_image_data_separator()?;
+                self.inline_image_state = InlineImageState::Data;
+            }
+            _ => {}
+        }
+
+        Ok(Some(token))
+    }
+
+    fn read_number(&mut self, _first: u8) -> Result<ContentToken> {
+        let mut out = Vec::new();
+        if matches!(self.peek()?, Some(b'+' | b'-')) {
+            out.push(self.next_byte()?.expect("peek checked"));
+        }
+        let mut saw_dot = false;
+        while let Some(byte) = self.peek()? {
+            match byte {
+                b'0'..=b'9' => out.push(self.next_byte()?.expect("peek checked")),
+                b'.' if !saw_dot => {
+                    saw_dot = true;
+                    out.push(self.next_byte()?.expect("peek checked"));
+                }
+                _ => break,
+            }
+        }
+        let text = std::str::from_utf8(&out).unwrap_or("");
+        if saw_dot {
+            text.parse::<f64>()
+                .map(ContentToken::Real)
+                .map_err(|_| OxideError::ParseError("invalid content real".to_string()))
+        } else {
+            text.parse::<i64>()
+                .map(ContentToken::Integer)
+                .map_err(|_| OxideError::ParseError("invalid content integer".to_string()))
+        }
+    }
+
+    fn read_name(&mut self) -> Result<ContentToken> {
+        self.consume(1)?;
+        let mut out = Vec::new();
+        while let Some(byte) = self.peek()? {
+            if is_pdf_whitespace(byte) || is_delimiter(byte) {
+                break;
+            }
+            let byte = self.next_byte()?.expect("peek checked");
+            if byte == b'#' {
+                let high = self.peek()?.and_then(hex_value);
+                self.ensure_lookahead(2)?;
+                let low = self.lookahead.get(1).copied().and_then(hex_value);
+                if let (Some(high), Some(low)) = (high, low) {
+                    self.consume(2)?;
+                    out.push((high << 4) | low);
+                } else {
+                    out.push(byte);
+                }
+            } else {
+                out.push(byte);
+            }
+        }
+        Ok(ContentToken::Name(
+            String::from_utf8_lossy(&out).into_owned(),
+        ))
+    }
+
+    fn read_literal_string(&mut self) -> Result<ContentToken> {
+        self.consume(1)?;
+        let mut depth = 1usize;
+        let mut out = Vec::new();
+
+        while let Some(byte) = self.next_byte()? {
+            match byte {
+                b'(' => {
+                    depth += 1;
+                    out.push(byte);
+                }
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Ok(ContentToken::LiteralString(out));
+                    }
+                    out.push(byte);
+                }
+                b'\\' => self.read_literal_escape(&mut out)?,
+                _ => out.push(byte),
+            }
+        }
+
+        Err(OxideError::ParseError(
+            "unterminated content literal string".to_string(),
+        ))
+    }
+
+    fn read_literal_escape(&mut self, out: &mut Vec<u8>) -> Result<()> {
+        let Some(byte) = self.next_byte()? else {
+            return Ok(());
+        };
+        match byte {
+            b'n' => out.push(b'\n'),
+            b'r' => out.push(b'\r'),
+            b't' => out.push(b'\t'),
+            b'b' => out.push(0x08),
+            b'f' => out.push(0x0C),
+            b'(' | b')' | b'\\' => out.push(byte),
+            b'\r' => {
+                if self.peek()? == Some(b'\n') {
+                    self.consume(1)?;
+                }
+            }
+            b'\n' => {}
+            b'0'..=b'7' => {
+                let mut value = u16::from(byte - b'0');
+                for _ in 0..2 {
+                    match self.peek()? {
+                        Some(next @ b'0'..=b'7') => {
+                            self.consume(1)?;
+                            value = (value << 3) + u16::from(next - b'0');
+                        }
+                        _ => break,
+                    }
+                }
+                out.push((value & 0xFF) as u8);
+            }
+            other => out.push(other),
+        }
+        Ok(())
+    }
+
+    fn read_hex_string(&mut self) -> Result<ContentToken> {
+        self.consume(1)?;
+        let mut out = Vec::new();
+        let mut high: Option<u8> = None;
+
+        while let Some(byte) = self.next_byte()? {
+            if byte == b'>' {
+                if let Some(high_nibble) = high {
+                    out.push(high_nibble << 4);
+                }
+                return Ok(ContentToken::HexString(out));
+            }
+            if is_pdf_whitespace(byte) {
+                continue;
+            }
+            let Some(value) = hex_value(byte) else {
+                continue;
+            };
+            match high.take() {
+                Some(high_nibble) => out.push((high_nibble << 4) | value),
+                None => high = Some(value),
+            }
+        }
+
+        Err(OxideError::ParseError(
+            "unterminated content hex string".to_string(),
+        ))
+    }
+
+    fn read_operator(&mut self) -> Result<ContentToken> {
+        let mut out = Vec::new();
+        while let Some(byte) = self.peek()? {
+            if is_pdf_whitespace(byte) || is_delimiter(byte) {
+                break;
+            }
+            out.push(self.next_byte()?.expect("peek checked"));
+        }
+        if out.is_empty() {
+            self.consume(1)?;
+            return Ok(ContentToken::Operator("?".to_string()));
+        }
+        let op = String::from_utf8_lossy(&out).into_owned();
+        Ok(match op.as_str() {
+            "true" => ContentToken::Boolean(true),
+            "false" => ContentToken::Boolean(false),
+            _ => ContentToken::Operator(op),
+        })
+    }
+
+    fn read_inline_image_data(&mut self) -> Result<ContentToken> {
+        let mut data = Vec::new();
+        loop {
+            let Some(byte) = self.next_byte()? else {
+                self.inline_image_state = InlineImageState::Normal;
+                return Ok(ContentToken::InlineImageData(data));
+            };
+            if is_pdf_whitespace(byte) && self.starts_with(b"EI")? {
+                self.ensure_lookahead(3)?;
+                let follows = self
+                    .lookahead
+                    .get(2)
+                    .copied()
+                    .is_none_or(is_inline_image_end_follow);
+                if follows {
+                    self.consume(2)?;
+                    self.inline_image_state = InlineImageState::PendingEnd;
+                    return Ok(ContentToken::InlineImageData(data));
+                }
+            }
+            data.push(byte);
+        }
+    }
+
+    fn consume_inline_image_data_separator(&mut self) -> Result<()> {
+        match self.peek()? {
+            Some(b'\r') => {
+                self.consume(1)?;
+                if self.peek()? == Some(b'\n') {
+                    self.consume(1)?;
+                }
+            }
+            Some(byte) if is_pdf_whitespace(byte) => self.consume(1)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn skip_ws_and_comments(&mut self) -> Result<()> {
+        loop {
+            while matches!(self.peek()?, Some(byte) if is_pdf_whitespace(byte)) {
+                self.consume(1)?;
+            }
+            if self.peek()? == Some(b'%') {
+                while let Some(byte) = self.next_byte()? {
+                    if byte == b'\r' || byte == b'\n' {
+                        if byte == b'\r' && self.peek()? == Some(b'\n') {
+                            self.consume(1)?;
+                        }
+                        break;
+                    }
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    fn is_number_start(&mut self) -> Result<bool> {
+        let Some(first) = self.peek()? else {
+            return Ok(false);
+        };
+        Ok(match first {
+            b'0'..=b'9' => true,
+            b'.' => {
+                self.ensure_lookahead(2)?;
+                matches!(self.lookahead.get(1), Some(b'0'..=b'9'))
+            }
+            b'+' | b'-' => {
+                self.ensure_lookahead(2)?;
+                matches!(self.lookahead.get(1), Some(b'0'..=b'9' | b'.'))
+            }
+            _ => false,
+        })
+    }
+
+    fn starts_with(&mut self, bytes: &[u8]) -> Result<bool> {
+        self.ensure_lookahead(bytes.len())?;
+        if self.lookahead.len() < bytes.len() {
+            return Ok(false);
+        }
+        Ok(bytes
+            .iter()
+            .enumerate()
+            .all(|(idx, byte)| self.lookahead.get(idx) == Some(byte)))
+    }
+
+    fn peek(&mut self) -> Result<Option<u8>> {
+        self.ensure_lookahead(1)?;
+        Ok(self.lookahead.front().copied())
+    }
+
+    fn next_byte(&mut self) -> Result<Option<u8>> {
+        self.ensure_lookahead(1)?;
+        Ok(self.lookahead.pop_front())
+    }
+
+    fn consume(&mut self, n: usize) -> Result<()> {
+        self.ensure_lookahead(n)?;
+        for _ in 0..n.min(self.lookahead.len()) {
+            self.lookahead.pop_front();
+        }
+        Ok(())
+    }
+
+    fn ensure_lookahead(&mut self, n: usize) -> Result<()> {
+        while self.lookahead.len() < n && !self.eof {
+            match self.read_raw_byte()? {
+                Some(byte) => self.lookahead.push_back(byte),
+                None => self.eof = true,
+            }
+        }
+        Ok(())
+    }
+
+    fn read_raw_byte(&mut self) -> Result<Option<u8>> {
+        if self.pos >= self.len {
+            self.len = self.reader.read(&mut self.buffer).map_err(OxideError::Io)?;
+            self.pos = 0;
+            if self.len == 0 {
+                return Ok(None);
+            }
+        }
+        let byte = self.buffer[self.pos];
+        self.pos += 1;
+        Ok(Some(byte))
+    }
+}
+
+impl<R: Read> Iterator for StreamingContentTokenizer<R> {
+    type Item = Result<ContentToken>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_token().transpose()
+    }
+}
+
 pub fn tokenize_all(data: &[u8]) -> Result<Vec<ContentToken>> {
     ContentTokenizer::new(data).collect()
 }
@@ -413,6 +803,16 @@ mod tests {
                 ContentToken::Operator("ET".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn streaming_tokenizer_matches_slice_tokenizer() {
+        let data = b"BT /F1 12 Tf 100 700 Td [(Hello) 50 <576f726c64>] TJ ET\n% comment\nq Q";
+        let slice_tokens = tokenize_all(data).unwrap();
+        let streaming_tokens: Vec<_> = StreamingContentTokenizer::new(std::io::Cursor::new(data))
+            .collect::<Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(streaming_tokens, slice_tokens);
     }
 
     #[test]

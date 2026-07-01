@@ -206,8 +206,9 @@ pub use structural::{
     encrypt, linearize::linearize, optimize, repair, rotate_pages, OptimizeReport, Rotation,
 };
 pub use text::{
-    LineEnding, MarkedTextChunk, ReadingOrderReconstructor, TextChunk, TextCollector,
-    TextExtractOptions, TextExtractor, TextFormatOptions, TextFormatter, TextLine,
+    bounded_text_parallel_window, LineEnding, MarkedTextChunk, ReadingOrderReconstructor,
+    TextChunk, TextCollector, TextExtractOptions, TextExtractor, TextFormatOptions, TextFormatter,
+    TextLine,
 };
 pub use writer::{
     build_merged, build_subset, rewrite_document, rewrite_document_objects,

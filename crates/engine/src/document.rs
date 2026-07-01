@@ -5,7 +5,7 @@ use std::sync::OnceLock;
 use crate::error::{OxideError, Result};
 use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
-use crate::reader::PdfReader;
+use crate::reader::{PdfReader, UnfilteredStreamRange};
 
 const DEFAULT_MEDIA_BOX: [f64; 4] = [0.0, 0.0, 612.0, 792.0];
 
@@ -209,6 +209,17 @@ impl PdfDocument {
         }
 
         Ok(out)
+    }
+
+    pub(crate) fn single_unfiltered_content_stream(
+        &self,
+        page_number: usize,
+    ) -> Result<Option<UnfilteredStreamRange<'_>>> {
+        let page = self.get_page(page_number)?;
+        let [(number, generation)] = page.contents.as_slice() else {
+            return Ok(None);
+        };
+        self.reader.unfiltered_stream_range(*number, *generation)
     }
 
     fn walk_page_tree(

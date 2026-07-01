@@ -917,18 +917,35 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
         return run_extract_text_structured(&engine, &page_nums, &args);
     }
 
-    // Per-page text rendering is independent and read-only, so extract pages
-    // across rayon worker threads sharing the single parsed engine. Results are
-    // collected in page order (par_iter preserves input order on collect), so
-    // the output is byte-identical to serial extraction. The first page that
-    // errors (lowest page index) is propagated, matching the serial `?`.
-    let page_texts: Vec<oxide_engine::Result<String>> = page_nums
-        .par_iter()
-        .map(|&page_num| match region {
-            Some(region) => engine.extract_text_in_region(page_num, region),
-            None => engine.get_page_text_with_profile(page_num, profile),
-        })
-        .collect();
+    // Per-page text rendering is independent and read-only. Process bounded
+    // chunks across rayon workers so large files never put an unbounded number
+    // of page buffers in flight. Each chunk preserves input order, and chunks
+    // are appended sequentially, so the output stays byte-identical to serial
+    // extraction.
+    let parallel_window = oxide_engine::bounded_text_parallel_window(page_nums.len());
+    let page_texts: Vec<oxide_engine::Result<String>> = if parallel_window >= 4 {
+        let mut out = Vec::with_capacity(page_nums.len());
+        for chunk in page_nums.chunks(parallel_window) {
+            out.extend(
+                chunk
+                    .par_iter()
+                    .map(|&page_num| match region {
+                        Some(region) => engine.extract_text_in_region(page_num, region),
+                        None => engine.get_page_text_with_profile(page_num, profile),
+                    })
+                    .collect::<Vec<_>>(),
+            );
+        }
+        out
+    } else {
+        page_nums
+            .iter()
+            .map(|&page_num| match region {
+                Some(region) => engine.extract_text_in_region(page_num, region),
+                None => engine.get_page_text_with_profile(page_num, profile),
+            })
+            .collect()
+    };
 
     let mut output_text = String::new();
     for (page_num, text) in page_nums.iter().zip(page_texts) {

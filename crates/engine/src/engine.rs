@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
-use crate::content::{ContentOperation, ContentParser};
+use crate::content::{ContentOperation, ContentParser, StreamingContentTokenizer};
 use crate::document::{PdfDocument, PdfPage};
 use crate::error::{OxideError, Result};
 use crate::images::decoder::{ImageDecoder, RawImage};
@@ -404,6 +404,10 @@ impl ContentEngine {
 
     pub fn get_page_content(&self, page_number: usize) -> Result<Vec<ContentOperation>> {
         self.validate_page(page_number)?;
+        if let Some(stream) = self.doc.single_unfiltered_content_stream(page_number)? {
+            let tokens = StreamingContentTokenizer::new(stream.reader);
+            return Ok(ContentParser::parse_tokens(tokens));
+        }
         let bytes = self.doc.get_page_content_bytes(page_number)?;
         ContentParser::parse(&bytes)
     }

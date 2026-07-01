@@ -1,8 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
+use std::io::Read;
+#[cfg(unix)]
+use std::os::unix::fs::FileExt;
+#[cfg(windows)]
+use std::os::windows::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, OnceLock, RwLock};
+use std::sync::{OnceLock, RwLock};
 
 use crate::crypto::{
     compute_encryption_key, decrypt_string, derive_v5_file_key_from_owner,
@@ -18,6 +22,7 @@ const MAX_FALLBACK_XREF_OBJECTS: usize = 200_000;
 const STREAMING_TAIL_READ_LIMIT: usize = 16 * 1024 * 1024;
 const STREAMING_XREF_READ_LIMIT: usize = 64 * 1024 * 1024;
 const STREAMING_FULL_READ_FALLBACK_LIMIT: u64 = 128 * 1024 * 1024;
+const STREAMING_STREAM_HEADER_READ_LIMIT: usize = 1024 * 1024;
 const DEFAULT_OBJECT_STREAM_CACHE_LIMIT: usize = 32;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,9 +111,19 @@ enum PdfSource {
 
 struct SeekableFileSource {
     path: PathBuf,
-    file: Mutex<File>,
+    file: File,
     len: usize,
     raw_cache: OnceLock<Vec<u8>>,
+}
+
+pub(crate) struct PdfRangeReader<'a> {
+    source: &'a PdfSource,
+    offset: usize,
+    remaining: usize,
+}
+
+pub(crate) struct UnfilteredStreamRange<'a> {
+    pub reader: PdfRangeReader<'a>,
 }
 
 impl PdfSource {
@@ -121,7 +136,7 @@ impl PdfSource {
         })?;
         Ok(Self::File(SeekableFileSource {
             path,
-            file: Mutex::new(file),
+            file,
             len,
             raw_cache: OnceLock::new(),
         }))
@@ -198,14 +213,72 @@ impl PdfSource {
 impl SeekableFileSource {
     fn read_at(&self, offset: usize, len: usize) -> Result<Vec<u8>> {
         let mut out = vec![0u8; len];
-        let mut file = self.file.lock().expect("seekable PDF source lock poisoned");
-        file.seek(SeekFrom::Start(offset as u64))?;
-        file.read_exact(&mut out)?;
+        read_exact_at(&self.file, &mut out, offset as u64)?;
         Ok(out)
     }
 
     fn read_all(&self) -> Result<Vec<u8>> {
         self.read_at(0, self.len)
+    }
+}
+
+#[cfg(unix)]
+fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+    while !buf.is_empty() {
+        let n = file.read_at(buf, offset)?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "short read from PDF source",
+            ));
+        }
+        offset += n as u64;
+        let (_, rest) = buf.split_at_mut(n);
+        buf = rest;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn read_exact_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+    while !buf.is_empty() {
+        let n = file.seek_read(buf, offset)?;
+        if n == 0 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "short read from PDF source",
+            ));
+        }
+        offset += n as u64;
+        let (_, rest) = buf.split_at_mut(n);
+        buf = rest;
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn read_exact_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+    use std::io::{Seek, SeekFrom};
+
+    let mut file = file.try_clone()?;
+    file.seek(SeekFrom::Start(offset))?;
+    file.read_exact(buf)
+}
+
+impl Read for PdfRangeReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 || buf.is_empty() {
+            return Ok(0);
+        }
+        let len = self.remaining.min(buf.len());
+        let bytes = self
+            .source
+            .read_at(self.offset, len)
+            .map_err(|err| std::io::Error::other(err.to_string()))?;
+        buf[..bytes.len()].copy_from_slice(&bytes);
+        self.offset += bytes.len();
+        self.remaining -= bytes.len();
+        Ok(bytes.len())
     }
 }
 
@@ -480,6 +553,75 @@ impl PdfReader {
                 Ok(object.clone())
             }
         }
+    }
+
+    pub(crate) fn unfiltered_stream_range(
+        &self,
+        number: u32,
+        generation: u16,
+    ) -> Result<Option<UnfilteredStreamRange<'_>>> {
+        if self.encryption.is_some() {
+            return Ok(None);
+        }
+        if !matches!(self.source, PdfSource::File(_)) {
+            return Ok(None);
+        }
+
+        let Some(XrefEntry::Uncompressed { offset }) =
+            self.xref.get(&(number, generation)).cloned()
+        else {
+            return Ok(None);
+        };
+        let header_bytes = self
+            .source
+            .read_from(offset, STREAMING_STREAM_HEADER_READ_LIMIT)?;
+        let mut parser = PdfParser::with_resolver(&header_bytes, 0, Some(self))?;
+        let header = match parser.parse_indirect_stream_header() {
+            Ok(header) => header,
+            Err(_) => return Ok(None),
+        };
+        if header.number != number || header.generation != generation {
+            return Ok(None);
+        }
+        if header
+            .dict
+            .get("Filter")
+            .or_else(|| header.dict.get("F"))
+            .is_some()
+        {
+            return Ok(None);
+        }
+        let Some(length) = header.length else {
+            return Ok(None);
+        };
+        let length = usize::try_from(length)
+            .map_err(|_| OxideError::MalformedPdf("stream Length is too large".to_string()))?;
+        let stream_start = offset
+            .checked_add(header.stream_start)
+            .ok_or_else(|| OxideError::MalformedPdf("stream start offset overflows".to_string()))?;
+        let stream_end = stream_start
+            .checked_add(length)
+            .ok_or_else(|| OxideError::MalformedPdf("stream Length overflows".to_string()))?;
+        if stream_end > self.source.len() {
+            return Err(OxideError::ParseError(format!(
+                "stream range {stream_start}..{stream_end} exceeds input length {}",
+                self.source.len()
+            )));
+        }
+        if let Some(boundary) = self.next_object_boundary(offset) {
+            if stream_end > boundary {
+                return Err(OxideError::ParseError(format!(
+                    "stream range for object {number} {generation} crosses next object boundary"
+                )));
+            }
+        }
+        Ok(Some(UnfilteredStreamRange {
+            reader: PdfRangeReader {
+                source: &self.source,
+                offset: stream_start,
+                remaining: length,
+            },
+        }))
     }
 
     fn parse_uncompressed_object_at(&self, offset: usize) -> Result<crate::parser::IndirectObject> {

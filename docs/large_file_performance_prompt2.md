@@ -8,6 +8,8 @@ Prompt 1 baseline: `docs/large_file_performance_baseline.md`
 
 Prompt 2 after-profile source: the working tree containing this report and the streaming reader changes.
 
+Prompt 3 follow-up: `docs/large_file_performance_prompt3.md` records the target-scale streaming-content and bounded-parallel results.
+
 ## Headline
 
 Target: process a single 3-4 GB PDF and documents with thousands of pages inside a hard 2 GB resident-memory envelope.
