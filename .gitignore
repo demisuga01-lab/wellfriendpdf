@@ -41,6 +41,11 @@ public-benchmark/corpus/
 public-benchmark/results/raw/
 .venv-public-benchmark/
 
+# Large-file profiling generated PDFs and raw run samples are local-only. The
+# harness, generator, and summarized docs are tracked.
+large-file-profile/generated/
+large-file-profile/results/
+
 # Stray native build artifacts from compiling the C-ABI example locally.
 *.obj
 *.exp
