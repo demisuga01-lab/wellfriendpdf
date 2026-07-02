@@ -656,7 +656,17 @@ impl ContentEngine {
         let mut collector = crate::text::TextCollector::new(resources, self.doc.reader());
         let chunks = collector.collect(&ops);
         let graphics = crate::analysis::graphics::collect_graphics(&ops);
-        Ok(crate::analysis::tables::detect_tables(&chunks, &graphics))
+        // Filter to tables worth *reporting*: ruled/semantic always qualify;
+        // borderless (alignment-only) candidates must be regular dense grids,
+        // not key/value forms, prose columns, or lists. This gate is applied
+        // only here (the extract-tables reporting surface, shared by the CLI and
+        // the Python binding) and deliberately not inside the shared
+        // `detect_tables`, so the parse/field path keeps borderless regions it
+        // needs for label→value pairing. See `is_reportable_table`.
+        Ok(crate::analysis::tables::detect_tables(&chunks, &graphics)
+            .into_iter()
+            .filter(crate::analysis::tables::is_reportable_table)
+            .collect())
     }
 
     /// Extract tables constrained to a page region.

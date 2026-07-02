@@ -930,6 +930,119 @@ fn looks_like_prose_grid(table: &Table) -> bool {
     prose_ratio >= 0.55 && code_ratio < 0.35
 }
 
+/// Column-fill fraction above which a borderless column counts as "regular"
+/// (consistently populated across the table's rows). Below this a column is
+/// treated as incidental alignment rather than a real table column.
+const BORDERLESS_REGULAR_COL_FILL: f64 = 0.6;
+/// Minimum populated columns for a borderless table. Two aligned columns are a
+/// key/value form (handled by field extraction), not a table.
+const BORDERLESS_MIN_POPULATED_COLS: usize = 3;
+/// Minimum overall cell-fill density for a borderless table. A genuine table
+/// fills most of its grid; prose bodies, forms, and lists leave large gaps.
+const BORDERLESS_MIN_FILL: f64 = 0.75;
+/// Maximum fraction of sentence-like prose cells for a borderless table.
+const BORDERLESS_MAX_PROSE: f64 = 0.34;
+
+/// Whether a detected table is solid enough to **report** through the
+/// table-extraction surface (`extract_tables` → the CLI `extract-tables`
+/// command and the Python `extract_tables` binding).
+///
+/// This is applied only at the reporting boundary, deliberately *not* inside
+/// the shared [`detect_tables`] used by the document-model / parse path: the
+/// field extractor pairs labels with values from recovered borderless regions
+/// (`extract_table_fields`), so those candidates must survive for field
+/// extraction even when they are not worth reporting as standalone tables.
+///
+/// Ruled and semantic tables are always reportable (their grid is drawn or
+/// authored). Borderless (alignment-only) candidates must be a regular dense
+/// grid — see [`borderless_is_regular_grid`].
+pub fn is_reportable_table(table: &Table) -> bool {
+    table.source != TableSource::Borderless || borderless_is_regular_grid(table)
+}
+
+/// Gate a borderless (lines-free) candidate on being a **regular, dense grid**
+/// rather than aligned non-table text, for the purpose of *reporting* it as a
+/// table (see [`is_reportable_table`]).
+///
+/// Borderless detection infers columns from text x-alignment alone, so it
+/// readily promotes key/value forms, multi-column prose bodies, and bulleted
+/// lists into spurious tables — the dominant source of table over-detection.
+/// A real borderless table is a rectangular, densely-filled grid of several
+/// columns; the false positives are sparse, ragged, 2-column, or prose-heavy.
+/// This requires, on the emitted rows:
+///
+/// - at least [`BORDERLESS_MIN_POPULATED_COLS`] populated columns (2-column
+///   aligned text is a form, not a table);
+/// - all but at most one populated column is "regular" — non-empty across at
+///   least [`BORDERLESS_REGULAR_COL_FILL`] of the rows (rectangular, not ragged);
+/// - overall cell density ≥ [`BORDERLESS_MIN_FILL`];
+/// - fewer than [`BORDERLESS_MAX_PROSE`] of cells are sentence-like prose;
+/// - at least two multi-column data rows.
+///
+/// Calibrated on the table slice so every real borderless table and the clean
+/// hand-authored 3×3 borderless grid pass, while the aligned-prose / form /
+/// list false positives are rejected.
+fn borderless_is_regular_grid(table: &Table) -> bool {
+    let n_rows = table.num_rows();
+    let n_cols = table.num_cols();
+    if n_rows == 0 || n_cols == 0 {
+        return false;
+    }
+
+    let mut col_fill = vec![0usize; n_cols];
+    let mut non_empty = 0usize;
+    let mut text_cells = 0usize;
+    let mut prose_cells = 0usize;
+    let mut data_rows = 0usize;
+    for row in &table.rows {
+        let mut row_filled = 0usize;
+        for (col, cell) in row.iter().enumerate().take(n_cols) {
+            let cell = cell.trim();
+            if cell.is_empty() {
+                continue;
+            }
+            col_fill[col] += 1;
+            non_empty += 1;
+            row_filled += 1;
+            text_cells += 1;
+            let words = cell.split_whitespace().count();
+            if words >= 4 || cell.contains('.') || cell.contains('!') || cell.contains('?') {
+                prose_cells += 1;
+            }
+        }
+        if row_filled >= 2 {
+            data_rows += 1;
+        }
+    }
+
+    let populated_cols = col_fill.iter().filter(|&&c| c > 0).count();
+    if populated_cols < BORDERLESS_MIN_POPULATED_COLS {
+        return false;
+    }
+    let regular_threshold = BORDERLESS_REGULAR_COL_FILL * n_rows as f64;
+    let regular_cols = col_fill
+        .iter()
+        .filter(|&&c| c as f64 >= regular_threshold)
+        .count();
+    // Rectangular: at most one populated column may be sparse.
+    if regular_cols + 1 < populated_cols {
+        return false;
+    }
+    // At least two multi-column rows (e.g. a spanning-header row plus data).
+    if data_rows < 2 {
+        return false;
+    }
+    let fill_ratio = non_empty as f64 / (n_rows * n_cols) as f64;
+    if fill_ratio < BORDERLESS_MIN_FILL {
+        return false;
+    }
+    if text_cells == 0 {
+        return false;
+    }
+    let prose_ratio = prose_cells as f64 / text_cells as f64;
+    prose_ratio < BORDERLESS_MAX_PROSE
+}
+
 fn isolate_borderless_region(table: Table) -> Table {
     if let Some((start, end)) = line_item_row_range(&table.rows) {
         return rebuild_region_table(
@@ -1911,6 +2024,137 @@ mod tests {
             chunk("The visual columns should stay text.", 300.0, 660.0, 190.0),
         ];
         assert!(detect_borderless(&chunks).is_empty());
+    }
+
+    // --- Regression tests for the borderless over-detection fix ---
+    // The regularity gate is applied at the *reporting* boundary
+    // (`extract_tables` → `is_reportable_table`), not inside `detect_borderless`
+    // (which the field extractor still relies on). `reported` mirrors what
+    // `extract_tables` returns for a lines-free page: detect, then keep only
+    // reportable tables. These lock that key/value forms, multi-column prose,
+    // and ragged aligned blocks are not reported, while dense grids are.
+
+    fn reported(chunks: &[TextChunk]) -> Vec<Table> {
+        detect_borderless(chunks)
+            .into_iter()
+            .filter(is_reportable_table)
+            .collect()
+    }
+
+    #[test]
+    fn borderless_key_value_form_is_not_reported() {
+        // A label:value form has only two real columns and belongs to field
+        // extraction, not table reporting.
+        let pairs = [
+            ("Company:", "Cedar Analytics"),
+            ("Reviewed By:", "Jane Aziz"),
+            ("Email:", "omar@io.example"),
+            ("Status:", "Approved"),
+            ("Reference:", "REF-100823"),
+        ];
+        let mut chunks = Vec::new();
+        for (i, (k, v)) in pairs.iter().enumerate() {
+            let y = 700.0 - i as f64 * 20.0;
+            chunks.push(chunk(k, 50.0, y, 70.0));
+            chunks.push(chunk(v, 220.0, y, 100.0));
+        }
+        assert!(
+            reported(&chunks).is_empty(),
+            "key/value form must not be reported as a table: {:?}",
+            reported(&chunks)
+        );
+    }
+
+    #[test]
+    fn borderless_multicolumn_prose_is_not_reported() {
+        // Three aligned columns of sentence-like prose (a multi-column body)
+        // are dense but not tabular.
+        let cells = [
+            [
+                "It the old pale yellow",
+                "Where old a the sky",
+                "Of she warm promise",
+            ],
+            [
+                "and narrow streets could",
+                "promise another season",
+                "remembering season the",
+            ],
+            [
+                "could hold than the turn",
+                "narrow through light of",
+                "against the it drifting",
+            ],
+            [
+                "drifting light the gulls",
+                "than narrow still bends",
+                "streets to windows past",
+            ],
+        ];
+        let mut chunks = Vec::new();
+        for (r, row) in cells.iter().enumerate() {
+            let y = 700.0 - r as f64 * 20.0;
+            for (c, text) in row.iter().enumerate() {
+                chunks.push(chunk(text, 50.0 + c as f64 * 170.0, y, 130.0));
+            }
+        }
+        assert!(
+            reported(&chunks).is_empty(),
+            "multi-column prose must not be reported as a table: {:?}",
+            reported(&chunks)
+        );
+    }
+
+    #[test]
+    fn borderless_ragged_wide_block_is_not_reported() {
+        // Two solid columns plus two only-occasionally-filled columns is a
+        // ragged alignment, not a rectangular grid.
+        let mut chunks = Vec::new();
+        for r in 0..6 {
+            let y = 700.0 - r as f64 * 20.0;
+            chunks.push(chunk("alpha", 50.0, y, 40.0));
+            chunks.push(chunk("beta", 160.0, y, 40.0));
+            if r == 0 {
+                chunks.push(chunk("gamma", 270.0, y, 40.0));
+            }
+            if r == 1 {
+                chunks.push(chunk("delta", 380.0, y, 40.0));
+            }
+        }
+        assert!(
+            reported(&chunks).is_empty(),
+            "ragged wide block must not be reported as a table: {:?}",
+            reported(&chunks)
+        );
+    }
+
+    #[test]
+    fn borderless_dense_grid_is_still_reported() {
+        // A dense, regular, short-token grid with several columns is a genuine
+        // borderless table and must still be reported after the fix.
+        let cells = [
+            ["Region", "Owner", "Qty", "Total"],
+            ["North", "Alice", "10", "250"],
+            ["South", "Bob", "20", "500"],
+            ["East", "Cara", "15", "375"],
+            ["West", "Dan", "5", "125"],
+        ];
+        let mut chunks = Vec::new();
+        for (r, row) in cells.iter().enumerate() {
+            let y = 700.0 - r as f64 * 20.0;
+            for (c, text) in row.iter().enumerate() {
+                chunks.push(chunk(text, 50.0 + c as f64 * 110.0, y, 45.0));
+            }
+        }
+        let tables = reported(&chunks);
+        assert_eq!(
+            tables.len(),
+            1,
+            "dense grid is a reportable table: {tables:?}"
+        );
+        assert_eq!(tables[0].source, TableSource::Borderless);
+        assert_eq!(tables[0].num_rows(), 5);
+        assert_eq!(tables[0].num_cols(), 4);
     }
 
     #[test]

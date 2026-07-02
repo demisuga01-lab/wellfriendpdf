@@ -197,26 +197,26 @@ Text scoring normalizes whitespace, then reports character similarity, token F1,
 
 Table scoring compares ground-truth headers+cells to structured table outputs. False table detections count against precision.
 
-This capped slice contains no table ground truth, so table metrics are not scored here.
+This capped scorecard slice is image-heavy and contains no table ground truth, so tables are scored on a **separate, dedicated 200-file table slice** (the first 200 files whose JSON has a non-empty `tables` array). Full results, provenance, and the honest structural read are in [`table_slice_validation.md`](table_slice_validation.md). Headline (indicative, ≤200-file table slice; same harness and scorer), ranked by cell-F1:
 
-| tool | scored | cell F1 | recall | precision | TEDS approx |
-| --- | --- | --- | --- | --- | --- |
-| oxide | 0 | - | - | - | - |
-| pymupdf | 0 | - | - | - | - |
-| pdfplumber | 0 | - | - | - | - |
+| tool | scored | cell F1 | recall | precision | TEDS approx | shape F1 |
+| --- | --- | --- | --- | --- | --- | --- |
+| oxide | 200 | 0.936 | 0.997 | 0.896 | 0.893 | 0.765 |
+| pdfplumber | 200 | 0.851 | 0.854 | 0.848 | 0.863 | 0.899 |
+| pymupdf | 200 | 0.846 | 0.840 | 0.854 | 0.867 | 0.933 |
 
-Tools not shown lack structured table extraction in this harness or were not installed.
+Oxide leads all four headline metrics (cell-F1, recall, precision, TEDS-approx) but **trails on the pure structural shape-F1** (0.765 vs pymupdf 0.933 / pdfplumber 0.899) because it over-detects tables (1017 predicted vs 650 truth, over-detecting on 122/200 files, never under-detecting). docling was not importable in the benchmark venv (NOT-RUN); pdf_oxide has no table adapter in this harness. See the table-slice report for the before/after vs the 0.857 / 0.806 / 0.960 / 0.667 baseline.
 
 ### Field / Key-Value Accuracy
 
-This capped slice contains no field ground truth, so field metrics are not scored here.
+This capped scorecard slice is image-heavy and contains no field ground truth, so fields are scored on a **separate, dedicated 200-file field slice** (the first 200 files whose JSON has a non-empty `fields` object). Full results, provenance, and the honest failure-mode read are in [`field_slice_validation.md`](field_slice_validation.md). Headline (indicative, ≤200-file field slice; same harness and scorer):
 
 | tool | scored | strict field F1 | recall | precision | value-only F1 |
 | --- | --- | --- | --- | --- | --- |
-| oxide | 0 | - | - | - | - |
-| pypdf | 0 | - | - | - | - |
+| oxide | 200 | 0.725 | 0.845 | 0.692 | 0.814 |
+| pypdf | 200 | 0.000 | 0.000 | 0.000 | 0.000 |
 
-Strict field F1 requires key and value to match; value-only F1 shows values found under different labels.
+Strict field F1 requires key and value to match; value-only F1 shows values found under different labels. pypdf scores 0 because it reads AcroForm widgets and **0 of the 200 slice PDFs contain any** — the ground-truth fields are rendered key-value text, so this is a capability/source mismatch, not a head-to-head quality loss. pymupdf/pdf_oxide (AcroForm) share that gap; docling was not importable in the benchmark venv (NOT-RUN). See the field-slice report for the before/after vs the 0.104 baseline.
 
 ### Image Count Accuracy
 
@@ -288,8 +288,8 @@ Docling was measured through Python 3.12 and passed all 200 PDFs for text, but i
 | text char-sim | 0.742 | 0.927 | improved, still trails the best char-sim tools |
 | text word-F1 | 0.886 | 1.000 | improved |
 | image count accuracy | not in baseline summary | 1.000 | matched available competitors on scored files |
-| table precision / TEDS | 0.806 / 0.667 | not scored in this capped slice | use the dedicated table slice for table claims |
-| strict field-F1 | 0.104 | not scored in this capped slice | use the dedicated field slice for field claims |
+| table precision / TEDS | 0.806 / 0.667 | 0.896 / 0.893 on the dedicated 200-file table slice (indicative) | both up (recall 0.960→0.997, cell-F1 0.857→0.936 held); structural shape-F1 still trails — see docs/table_slice_validation.md |
+| strict field-F1 | 0.104 | 0.725 on the dedicated 200-file field slice (indicative) | improved ~7.0x with precision (0.166→0.692) and recall (0.085→0.845) both up; see docs/field_slice_validation.md |
 
 ## State Of The Project
 
