@@ -196,11 +196,11 @@ impl ImageDecoder {
     /// Decode JPEG bytes and return pixels plus width, height, channel count.
     pub fn decode_jpeg_with_info(jpeg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32, u8)> {
         let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(jpeg_bytes));
-        let pixels = decoder
-            .decode()
-            .map_err(|e| OxideError::MalformedPdf(format!("JPEG decode failed: {e}")))?;
+        decoder
+            .read_info()
+            .map_err(|e| OxideError::MalformedPdf(format!("JPEG metadata decode failed: {e}")))?;
         let info = decoder.info().ok_or_else(|| {
-            OxideError::MalformedPdf("JPEG decode: no metadata after decode".to_string())
+            OxideError::MalformedPdf("JPEG decode: no metadata after read_info".to_string())
         })?;
         let channels = match info.pixel_format {
             jpeg_decoder::PixelFormat::L8 => 1,
@@ -212,12 +212,15 @@ impl ImageDecoder {
                 )))
             }
         };
-        Ok((
-            pixels,
-            u32::from(info.width),
-            u32::from(info.height),
-            channels,
-        ))
+        let width = u32::from(info.width);
+        let height = u32::from(info.height);
+        ensure_decode_budget(width, height, channels)?;
+        let max_decoded = expected_len(width, height, channels);
+        decoder.set_max_decoding_buffer_size(max_decoded);
+        let pixels = decoder
+            .decode()
+            .map_err(|e| OxideError::MalformedPdf(format!("JPEG decode failed: {e}")))?;
+        Ok((pixels, width, height, channels))
     }
 
     pub(crate) fn normalise_bit_depth(

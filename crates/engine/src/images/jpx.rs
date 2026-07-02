@@ -33,7 +33,7 @@
 use hayro_jpeg2000::{ColorSpace, DecodeSettings, Image};
 
 use crate::error::{OxideError, Result};
-use crate::images::decoder::{ColorSpaceConverter, RawImage};
+use crate::images::decoder::{ensure_decode_budget, ColorSpaceConverter, RawImage};
 
 /// Decode a PDF-embedded JPEG 2000 (`JPXDecode`) stream into a `RawImage`.
 ///
@@ -51,18 +51,21 @@ pub fn decode(data: &[u8]) -> Result<RawImage> {
     let height = image.height();
     let has_alpha = image.has_alpha();
     let color_space = image.color_space().clone();
-
-    let decoded = image
-        .decode()
-        .map_err(|err| OxideError::MalformedPdf(format!("JPXDecode failed: {err}")))?;
-
-    let color_channels = color_space.num_channels() as usize;
-    let stored_channels = color_channels + usize::from(has_alpha);
+    let color_channels = color_space.num_channels();
+    let stored_channels = color_channels.saturating_add(u8::from(has_alpha));
     if stored_channels == 0 {
         return Err(OxideError::MalformedPdf(
             "JPXDecode produced an image with zero channels".to_string(),
         ));
     }
+    ensure_decode_budget(width, height, stored_channels)?;
+
+    let decoded = image
+        .decode()
+        .map_err(|err| OxideError::MalformedPdf(format!("JPXDecode failed: {err}")))?;
+
+    let color_channels = usize::from(color_channels);
+    let stored_channels = usize::from(stored_channels);
 
     // Drop the trailing alpha channel (if any) down to the pure color channels.
     let color_only = if has_alpha {

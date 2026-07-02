@@ -17,6 +17,9 @@ use crate::reader::PdfReader;
 /// on top of this; this is the engine's own hard floor so any caller — CLI,
 /// tests, embedders — is protected even without the server.
 pub const MAX_FLATE_DECOMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_FILTER_OUTPUT_BYTES: u64 = MAX_FLATE_DECOMPRESSED_BYTES;
+const MAX_FILTER_CHAIN_DEPTH: usize = 16;
+const MAX_PREDICTOR_ROW_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StreamDecodeStatus {
@@ -168,6 +171,7 @@ fn decode_stream_parts(
     reader: Option<&PdfReader>,
 ) -> Result<DecodedStream> {
     let filters = filter_names(dict, reader)?;
+    enforce_filter_chain_depth(filters.len())?;
     let params = decode_params(dict, reader, filters.len())?;
     let mut data = raw.to_vec();
 
@@ -234,6 +238,7 @@ fn decode_stream_reader_with_cap<'a, R: Read + 'a>(
     cap: u64,
 ) -> Result<DecodedStreamReader<'a>> {
     let filters = filter_names(dict, reader)?;
+    enforce_filter_chain_depth(filters.len())?;
     let params = decode_params(dict, reader, filters.len())?;
     let mut current: Box<dyn Read + 'a> = Box::new(raw);
 
@@ -263,8 +268,20 @@ fn decode_stream_reader_with_cap<'a, R: Read + 'a>(
                 ));
                 current = streaming_predictor_reader(current, param)?;
             }
-            "ASCIIHexDecode" | "AHx" => current = Box::new(AsciiHexReader::new(current)),
-            "ASCII85Decode" | "A85" => current = Box::new(Ascii85Reader::new(current)),
+            "ASCIIHexDecode" | "AHx" => {
+                current = Box::new(CappedReader::new(
+                    AsciiHexReader::new(current),
+                    cap,
+                    "ASCIIHexDecode output exceeds decompression cap",
+                ));
+            }
+            "ASCII85Decode" | "A85" => {
+                current = Box::new(CappedReader::new(
+                    Ascii85Reader::new(current),
+                    cap,
+                    "ASCII85Decode output exceeds decompression cap",
+                ));
+            }
             "RunLengthDecode" | "RL" => {
                 current = Box::new(CappedReader::new(
                     RunLengthReader::new(current),
@@ -843,6 +860,7 @@ impl<R: Read> PredictorReader<R> {
                 )
             })?;
         let row_len = ceil_div(row_bits, 8);
+        validate_predictor_row_len(row_len)?;
         let mode = match predictor {
             2 => PredictorMode::Tiff {
                 row_len,
@@ -851,7 +869,7 @@ impl<R: Read> PredictorReader<R> {
             },
             10..=15 => PredictorMode::Png {
                 row_len,
-                bytes_per_pixel: ceil_div(colors * bits_per_component, 8).max(1),
+                bytes_per_pixel: predictor_bytes_per_pixel(colors, bits_per_component)?,
                 prev_row: vec![0; row_len],
             },
             other => {
@@ -1002,6 +1020,15 @@ fn crypt_filter_is_identity(param: Option<&PdfDictionary>) -> bool {
     )
 }
 
+fn enforce_filter_chain_depth(filter_count: usize) -> Result<()> {
+    if filter_count > MAX_FILTER_CHAIN_DEPTH {
+        return Err(OxideError::MalformedPdf(format!(
+            "filter chain depth {filter_count} exceeds limit of {MAX_FILTER_CHAIN_DEPTH}"
+        )));
+    }
+    Ok(())
+}
+
 fn filter_names(dict: &PdfDictionary, reader: Option<&PdfReader>) -> Result<Vec<String>> {
     let Some(filter_obj) = dict.get("Filter").or_else(|| dict.get("F")) else {
         return Ok(Vec::new());
@@ -1142,6 +1169,7 @@ pub(crate) fn apply_predictor(data: Vec<u8>, params: Option<&PdfDictionary>) -> 
     if row_len == 0 {
         return Ok(data);
     }
+    validate_predictor_row_len(row_len)?;
 
     match predictor {
         2 => tiff_predictor(data, row_len, colors, bits_per_component),
@@ -1242,14 +1270,16 @@ fn png_predictor(
     colors: usize,
     bits_per_component: usize,
 ) -> Result<Vec<u8>> {
-    let row_with_filter = row_len + 1;
+    let row_with_filter = row_len.checked_add(1).ok_or_else(|| {
+        OxideError::MalformedPdf("PNG predictor row dimensions overflow".to_string())
+    })?;
     if !data.len().is_multiple_of(row_with_filter) {
         return Err(OxideError::MalformedPdf(
             "PNG predictor data length is not row-aligned".to_string(),
         ));
     }
 
-    let bytes_per_pixel = ceil_div(colors * bits_per_component, 8).max(1);
+    let bytes_per_pixel = predictor_bytes_per_pixel(colors, bits_per_component)?;
     let mut out = Vec::with_capacity((data.len() / row_with_filter) * row_len);
     let mut prev_row = vec![0u8; row_len];
 
@@ -1345,7 +1375,29 @@ fn ceil_div(value: usize, divisor: usize) -> usize {
     }
 }
 
+fn validate_predictor_row_len(row_len: usize) -> Result<()> {
+    if row_len > MAX_PREDICTOR_ROW_BYTES {
+        return Err(OxideError::MalformedPdf(format!(
+            "predictor row length {row_len} exceeds limit of {MAX_PREDICTOR_ROW_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn predictor_bytes_per_pixel(colors: usize, bits_per_component: usize) -> Result<usize> {
+    let bits = colors.checked_mul(bits_per_component).ok_or_else(|| {
+        OxideError::MalformedPdf(
+            "predictor bytes-per-pixel dimensions overflow (Colors x BitsPerComponent)".to_string(),
+        )
+    })?;
+    Ok(ceil_div(bits, 8).max(1))
+}
+
 fn ascii_hex_decode(data: &[u8]) -> Result<Vec<u8>> {
+    ascii_hex_decode_capped(data, MAX_FILTER_OUTPUT_BYTES)
+}
+
+fn ascii_hex_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut high: Option<u8> = None;
 
@@ -1360,19 +1412,25 @@ fn ascii_hex_decode(data: &[u8]) -> Result<Vec<u8>> {
             OxideError::ParseError(format!("invalid ASCIIHex digit 0x{byte:02X}"))
         })?;
         match high.take() {
-            Some(high_nibble) => out.push((high_nibble << 4) | value),
+            Some(high_nibble) => {
+                push_capped(&mut out, (high_nibble << 4) | value, cap, "ASCIIHexDecode")?
+            }
             None => high = Some(value),
         }
     }
 
     if let Some(high_nibble) = high {
-        out.push(high_nibble << 4);
+        push_capped(&mut out, high_nibble << 4, cap, "ASCIIHexDecode")?;
     }
 
     Ok(out)
 }
 
 fn ascii85_decode(data: &[u8]) -> Result<Vec<u8>> {
+    ascii85_decode_capped(data, MAX_FILTER_OUTPUT_BYTES)
+}
+
+fn ascii85_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut group: Vec<u8> = Vec::with_capacity(5);
     let mut idx = 0;
@@ -1415,7 +1473,7 @@ fn ascii85_decode(data: &[u8]) -> Result<Vec<u8>> {
                     "ASCII85 'z' cannot appear inside a group".to_string(),
                 ));
             }
-            out.extend_from_slice(&[0, 0, 0, 0]);
+            extend_capped(&mut out, &[0, 0, 0, 0], cap, "ASCII85Decode")?;
             continue;
         }
 
@@ -1427,7 +1485,7 @@ fn ascii85_decode(data: &[u8]) -> Result<Vec<u8>> {
 
         group.push(byte - b'!');
         if group.len() == 5 {
-            push_ascii85_group(&group, 4, &mut out)?;
+            push_ascii85_group_capped(&group, 4, &mut out, cap)?;
             group.clear();
         }
     }
@@ -1442,10 +1500,27 @@ fn ascii85_decode(data: &[u8]) -> Result<Vec<u8>> {
         while group.len() < 5 {
             group.push(84);
         }
-        push_ascii85_group(&group, output_len, &mut out)?;
+        push_ascii85_group_capped(&group, output_len, &mut out, cap)?;
     }
 
     Ok(out)
+}
+
+fn push_ascii85_group_capped(
+    group: &[u8],
+    output_len: usize,
+    out: &mut Vec<u8>,
+    cap: u64,
+) -> Result<()> {
+    let before = out.len();
+    push_ascii85_group(group, output_len, out)?;
+    if out.len() as u64 > cap {
+        out.truncate(before);
+        return Err(OxideError::MalformedPdf(format!(
+            "ASCII85Decode output exceeds {cap} byte limit"
+        )));
+    }
+    Ok(())
 }
 
 fn push_ascii85_group(group: &[u8], output_len: usize, out: &mut Vec<u8>) -> Result<()> {
@@ -1467,6 +1542,10 @@ fn push_ascii85_group(group: &[u8], output_len: usize, out: &mut Vec<u8>) -> Res
 }
 
 fn run_length_decode(data: &[u8]) -> Result<Vec<u8>> {
+    run_length_decode_capped(data, MAX_FILTER_OUTPUT_BYTES)
+}
+
+fn run_length_decode_capped(data: &[u8], cap: u64) -> Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut idx = 0;
 
@@ -1474,7 +1553,7 @@ fn run_length_decode(data: &[u8]) -> Result<Vec<u8>> {
         // Bound the expansion: RunLength can grow ~128x, so cap the cumulative
         // output the same way Flate is capped (a multi-hundred-MB input must not
         // be allowed to expand into an OOM).
-        if out.len() as u64 > MAX_FLATE_DECOMPRESSED_BYTES {
+        if out.len() as u64 > cap {
             return Err(OxideError::ParseError(
                 "RunLengthDecode output exceeds decompression cap".to_string(),
             ));
@@ -1492,7 +1571,7 @@ fn run_length_decode(data: &[u8]) -> Result<Vec<u8>> {
                         "truncated RunLength literal run".to_string(),
                     ));
                 }
-                out.extend_from_slice(&data[idx..end]);
+                extend_capped(&mut out, &data[idx..end], cap, "RunLengthDecode")?;
                 idx = end;
             }
             128 => break,
@@ -1503,7 +1582,7 @@ fn run_length_decode(data: &[u8]) -> Result<Vec<u8>> {
                     ));
                 }
                 let count = usize::from(257u16 - u16::from(len));
-                out.extend(std::iter::repeat_n(data[idx], count));
+                extend_repeat_capped(&mut out, data[idx], count, cap, "RunLengthDecode")?;
                 idx += 1;
             }
         }
@@ -1513,6 +1592,10 @@ fn run_length_decode(data: &[u8]) -> Result<Vec<u8>> {
 }
 
 fn lzw_decode(data: &[u8], early_change: u8) -> Result<Vec<u8>> {
+    lzw_decode_capped(data, early_change, MAX_FILTER_OUTPUT_BYTES)
+}
+
+fn lzw_decode_capped(data: &[u8], early_change: u8, cap: u64) -> Result<Vec<u8>> {
     let mut reader = MsbBitReader::new(data);
     let mut table = initial_lzw_table();
     let mut code_width = 9usize;
@@ -1523,7 +1606,7 @@ fn lzw_decode(data: &[u8], early_change: u8) -> Result<Vec<u8>> {
     while let Some(code) = reader.read_bits(code_width) {
         // Cap cumulative LZW output (the dictionary is bounded to 4096 entries
         // but the output stream is not) so a crafted stream cannot OOM.
-        if out.len() as u64 > MAX_FLATE_DECOMPRESSED_BYTES {
+        if out.len() as u64 > cap {
             return Err(OxideError::ParseError(
                 "LZWDecode output exceeds decompression cap".to_string(),
             ));
@@ -1558,7 +1641,7 @@ fn lzw_decode(data: &[u8], early_change: u8) -> Result<Vec<u8>> {
                     )));
                 };
 
-                out.extend_from_slice(&entry);
+                extend_capped(&mut out, &entry, cap, "LZWDecode")?;
 
                 if let Some(prev) = previous.as_ref() {
                     if next_code < 4096 {
@@ -1586,6 +1669,48 @@ fn lzw_decode(data: &[u8], early_change: u8) -> Result<Vec<u8>> {
     }
 
     Ok(out)
+}
+
+fn push_capped(out: &mut Vec<u8>, byte: u8, cap: u64, filter: &str) -> Result<()> {
+    if out.len() as u64 >= cap {
+        return Err(OxideError::MalformedPdf(format!(
+            "{filter} output exceeds {cap} byte limit"
+        )));
+    }
+    out.push(byte);
+    Ok(())
+}
+
+fn extend_capped(out: &mut Vec<u8>, bytes: &[u8], cap: u64, filter: &str) -> Result<()> {
+    let new_len = (out.len() as u64)
+        .checked_add(u64::try_from(bytes.len()).unwrap_or(u64::MAX))
+        .ok_or_else(|| OxideError::MalformedPdf(format!("{filter} output length overflows u64")))?;
+    if new_len > cap {
+        return Err(OxideError::MalformedPdf(format!(
+            "{filter} output exceeds {cap} byte limit"
+        )));
+    }
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn extend_repeat_capped(
+    out: &mut Vec<u8>,
+    byte: u8,
+    count: usize,
+    cap: u64,
+    filter: &str,
+) -> Result<()> {
+    let new_len = (out.len() as u64)
+        .checked_add(u64::try_from(count).unwrap_or(u64::MAX))
+        .ok_or_else(|| OxideError::MalformedPdf(format!("{filter} output length overflows u64")))?;
+    if new_len > cap {
+        return Err(OxideError::MalformedPdf(format!(
+            "{filter} output exceeds {cap} byte limit"
+        )));
+    }
+    out.extend(std::iter::repeat_n(byte, count));
+    Ok(())
 }
 
 fn initial_lzw_table() -> Vec<Option<Vec<u8>>> {
@@ -1676,6 +1801,70 @@ mod tests {
     fn lzw_decodes_literal_codes() {
         let encoded = pack_lzw_codes(&[65, 66, 67, 257], 9);
         assert_eq!(lzw_decode(&encoded, 1).unwrap(), b"ABC");
+    }
+
+    #[test]
+    fn filter_chain_depth_is_capped() {
+        let filters = PdfObject::Array(
+            (0..=MAX_FILTER_CHAIN_DEPTH)
+                .map(|_| PdfObject::Name("RunLengthDecode".to_string()))
+                .collect(),
+        );
+        let err = decode_stream_parts(&dict(&[("Filter", filters)]), &[128], None).unwrap_err();
+        assert!(
+            matches!(err, OxideError::MalformedPdf(ref message) if message.contains("filter chain depth")),
+            "expected chain-depth diagnostic, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn predictor_row_length_is_capped() {
+        let params = dict(&[
+            ("Predictor", PdfObject::Integer(12)),
+            (
+                "Columns",
+                PdfObject::Integer(i64::try_from(MAX_PREDICTOR_ROW_BYTES + 1).unwrap()),
+            ),
+            ("Colors", PdfObject::Integer(1)),
+            ("BitsPerComponent", PdfObject::Integer(8)),
+        ]);
+        let err = apply_predictor(vec![0u8; 8], Some(&params)).unwrap_err();
+        assert!(
+            matches!(err, OxideError::MalformedPdf(ref message) if message.contains("predictor row length")),
+            "expected row-length diagnostic, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn buffered_ascii_filters_enforce_output_cap() {
+        let hex_err = ascii_hex_decode_capped(b"6162>", 1).unwrap_err();
+        assert!(
+            matches!(hex_err, OxideError::MalformedPdf(ref message) if message.contains("ASCIIHexDecode output")),
+            "expected ASCIIHex cap diagnostic, got {hex_err:?}"
+        );
+
+        let ascii85_err = ascii85_decode_capped(b"zz~>", 4).unwrap_err();
+        assert!(
+            matches!(ascii85_err, OxideError::MalformedPdf(ref message) if message.contains("ASCII85Decode output")),
+            "expected ASCII85 cap diagnostic, got {ascii85_err:?}"
+        );
+    }
+
+    #[test]
+    fn buffered_run_length_and_lzw_enforce_output_cap() {
+        let run_err =
+            run_length_decode_capped(&[4, b'a', b'b', b'c', b'd', b'e', 128], 3).unwrap_err();
+        assert!(
+            matches!(run_err, OxideError::MalformedPdf(ref message) if message.contains("RunLengthDecode output")),
+            "expected RunLength cap diagnostic, got {run_err:?}"
+        );
+
+        let encoded = pack_lzw_codes(&[65, 66, 67, 257], 9);
+        let lzw_err = lzw_decode_capped(&encoded, 1, 2).unwrap_err();
+        assert!(
+            matches!(lzw_err, OxideError::MalformedPdf(ref message) if message.contains("LZWDecode output")),
+            "expected LZW cap diagnostic, got {lzw_err:?}"
+        );
     }
 
     #[test]
@@ -1844,6 +2033,22 @@ mod tests {
         assert!(
             err.to_string().contains("decompression cap"),
             "expected streaming cap error, got {err}"
+        );
+    }
+
+    #[test]
+    fn streaming_ascii_filters_enforce_decompression_cap() {
+        use std::io::Read as _;
+
+        let dict = dict(&[("Filter", PdfObject::Name("ASCIIHexDecode".to_string()))]);
+        let mut decoded =
+            decode_stream_reader_with_cap(&dict, std::io::Cursor::new(b"6162>".to_vec()), None, 1)
+                .unwrap();
+        let mut out = Vec::new();
+        let err = decoded.reader.read_to_end(&mut out).unwrap_err();
+        assert!(
+            err.to_string().contains("ASCIIHexDecode output"),
+            "expected streaming ASCIIHex cap error, got {err}"
         );
     }
 

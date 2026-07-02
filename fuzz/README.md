@@ -14,9 +14,13 @@ green. Fuzzing requires a nightly toolchain.
 |---------------------|-----------------------------------------------|-------------------|
 | `parse_pdf`         | `ContentEngine::open_bytes`                   | Header, xref/trailer, object streams, recursive object parser |
 | `filters`           | `oxide_engine::filters::fuzz_decode_filter`   | Flate / LZW / ASCIIHex / ASCII85 / RunLength decoders (selector byte picks one) |
-| `predictor`         | `oxide_engine::filters::fuzz_apply_predictor` | PNG/TIFF predictor with attacker-controlled Columns/Colors/BitsPerComponent |
+| `predictor`         | `oxide_engine::filters::fuzz_apply_predictor` | PNG/TIFF predictor with attacker-controlled Columns/Colors/BitsPerComponent and row geometry caps |
 | `content_tokenizer` | `ContentParser::parse`                        | Content-stream tokenizer + inline-image state machine + operand stack |
 | `image_decoders`    | `oxide_engine::fuzz::fuzz_decode_image`       | CCITT / JBIG2 / JPX / DCT image decoders |
+| `cos_object`        | `oxide_engine::fuzz::fuzz_cos_object`         | COS object parser entry point |
+| `parser_report`     | `oxide_engine::fuzz::fuzz_parser_report`      | Strict/repair/audit parser-report open path |
+| `xref_stream`       | `oxide_engine::fuzz::fuzz_xref_stream`        | XRef stream parsing through filtered stream decode |
+| `object_stream`     | `oxide_engine::fuzz::fuzz_object_stream`      | Object stream parsing through filtered stream decode |
 | `fonts`             | `oxide_engine::fuzz::fuzz_parse_font`         | TrueType / CFF / OpenType / bare-CFF font parsers through outline extraction |
 | `cmap`              | `oxide_engine::fuzz::fuzz_parse_cmap`         | ToUnicode CMap parsing and lookup |
 | `crypto`            | `oxide_engine::fuzz::fuzz_crypto`             | Encryption dictionary parsing, password verification, key derivation, decrypt primitives |
