@@ -99,6 +99,34 @@ doc = false
 bench = false
 
 [[bin]]
+name = "cos_object"
+path = "fuzz_targets/cos_object.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "parser_report"
+path = "fuzz_targets/parser_report.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xref_stream"
+path = "fuzz_targets/xref_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "object_stream"
+path = "fuzz_targets/object_stream.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "document_rewrite"
 path = "fuzz_targets/document_rewrite.rs"
 test = false

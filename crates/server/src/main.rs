@@ -40,6 +40,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let _ = oxide_server::config::CONFIG.set(config);
     let config = oxide_server::config::get_config();
 
+    // Register the server-wide OCR backend from the environment (OXIDE_OCR).
+    // No-op unless built with `--features ocr` and OXIDE_OCR is auto/force;
+    // logs the outcome so the operator sees whether scanned pages get OCR'd.
+    oxide_server::ocr::init_from_env();
+
     // Build the app and start the rate-limiter cleanup task on the same limiter
     // the app uses, so per-key buckets don't accumulate unbounded.
     let limiter = Arc::new(oxide_server::rate_limit::RateLimiter::new(

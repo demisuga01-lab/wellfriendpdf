@@ -22,7 +22,27 @@ for table in page.tables:
 fields = doc.extract_fields(doc_type="auto")
 markdown = doc.to_markdown(detect_headings=True, profile="rag-chunks")
 png_bytes = page.render(dpi=150)
+
+docx_bytes = oxide.pdf_to_docx("input.pdf", output="input.docx")
+pdf_bytes = oxide.docx_to_pdf("input.docx", output="from_docx.pdf")
 ```
+
+Scanned-page OCR can be supplied by any Python object implementing
+`recognize(image_bytes, info) -> list[dict]`:
+
+```python
+class MyOcr:
+    def recognize(self, image_bytes, info):
+        return [
+            {"text": "Hello", "bbox": [72, 60, 140, 88],
+             "confidence": 0.98, "line_id": 0},
+        ]
+
+markdown = doc.to_markdown(ocr=MyOcr(), ocr_lang="eng", ocr_dpi=300)
+```
+
+See `examples/local_ai_ocr_backend.py` for a runnable local-AI template with a
+real `pytesseract` fallback when those Python packages are installed.
 
 ## Build And Install
 
@@ -49,6 +69,9 @@ can be opened with `password="..."`.
   `Page.region(...)` / `Page.within(...)`
 - `RegionPage.text`, `RegionPage.words`, `RegionPage.tables`, and
   `RegionPage.images`
+- Module helpers for structural ops and conversions including
+  `pdf_to_xlsx`, `pdf_to_pptx`, `pdf_to_docx`, `docx_to_pdf`,
+  `xlsx_to_pdf`, and `pptx_to_pdf`
 
 Region coordinates are PDF user-space points with origin at the page's
 bottom-left. Scoped extraction includes an item when its center is in the region
@@ -64,6 +87,5 @@ instead of aborting the interpreter.
 
 ## Deferred
 
-Manipulation/signing surfaces remain Rust/CLI first for now. Cross-platform
-prebuilt wheels are also future CI work; the local platform wheel is built with
-maturin.
+Cross-platform prebuilt wheels are future CI work; the local platform wheel is
+built with maturin.

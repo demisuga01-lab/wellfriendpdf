@@ -1,6 +1,6 @@
 use std::error::Error;
 use std::fmt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -40,7 +40,7 @@ fn long_version() -> &'static str {
     about = "Oxide — pure-Rust PDF processing tool",
     version,
     long_version = long_version(),
-    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, to-html\n  Structure/editing: merge, split, extract-pages, rotate, optimize, repair, linearize\n  Info/security: info, fonts, detach, verify-sig, encrypt, analyze, eval-score\n\nExamples:\n  oxide extract-text input.pdf --structured --format json\n  oxide extract-tables input.pdf --format json --structure\n  oxide info input.pdf --json\n  oxide render input.pdf --format png --json"
+    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  oxide extract-text input.pdf --structured --format json\n  oxide parser-report input.pdf --mode audit\n  oxide pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  oxide image-to-pdf img1.jpg img2.png --out combined.pdf\n  oxide pdf-to-xlsx report.pdf --out report.xlsx\n  oxide pdf-to-pptx deck.pdf --out deck.pptx\n  oxide pdf-to-docx report.pdf --out report.docx\n  oxide xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  oxide watermark input.pdf --text CONFIDENTIAL --out out.pdf"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -189,6 +189,23 @@ enum Commands {
     ExtractImages(ExtractImagesArgs),
     /// Render PDF pages to images as a ZIP
     Render(RenderArgs),
+    /// Rasterize PDF pages to individual JPG/PNG image files
+    #[command(alias = "pdf-to-image")]
+    PdfToJpg(PdfToJpgArgs),
+    /// Wrap one or more JPG/PNG files into a new PDF
+    ImageToPdf(ImageToPdfArgs),
+    /// Convert table-oriented PDF content to an XLSX workbook
+    PdfToXlsx(PdfToXlsxArgs),
+    /// Convert PDF pages to editable PPTX slides
+    PdfToPptx(PdfToPptxArgs),
+    /// Convert PDF content to a flowing DOCX document
+    PdfToDocx(PdfToDocxArgs),
+    /// Convert a DOCX document to PDF with Oxide's native writer
+    DocxToPdf(OfficeToPdfArgs),
+    /// Convert an XLSX workbook to PDF with Oxide's native writer
+    XlsxToPdf(OfficeToPdfArgs),
+    /// Convert a PPTX presentation to PDF with Oxide's native writer
+    PptxToPdf(OfficeToPdfArgs),
     /// Analyze whether a PDF has a real text layer
     Analyze(AnalyzeArgs),
     /// Merge several PDFs into one (pdfunite-equivalent)
@@ -199,6 +216,8 @@ enum Commands {
     ExtractPages(ExtractPagesArgs),
     /// Report document metadata and structural facts (pdfinfo-equivalent)
     Info(InfoArgs),
+    /// Emit structured parser diagnostics, repair/audit status, and source metrics
+    ParserReport(ParserReportArgs),
     /// List the fonts used in a PDF (pdffonts-equivalent)
     Fonts(FontsArgs),
     /// List or extract embedded file attachments (pdfdetach-equivalent)
@@ -209,6 +228,15 @@ enum Commands {
     VerifySig(VerifySigArgs),
     /// Encrypt a PDF with a password (RC4-128 / AES-128 / AES-256). AES-256 default.
     Encrypt(EncryptArgs),
+    /// Write an unencrypted normalized copy of a password-opened PDF
+    #[command(alias = "unlock")]
+    Decrypt(DecryptArgs),
+    /// Add a text or image watermark to a PDF
+    Watermark(WatermarkArgs),
+    /// Add page numbers to a PDF
+    AddPageNumbers(PageNumbersArgs),
+    /// Reorder, delete, duplicate, or insert pages in a PDF
+    Organize(OrganizeArgs),
     /// Set page rotation (/Rotate) and write a new PDF (absolute or relative)
     Rotate(RotateArgs),
     /// Shrink a PDF (garbage-collect + recompress) without changing content
@@ -316,6 +344,129 @@ struct LinearizeArgs {
 }
 
 #[derive(Parser)]
+struct DecryptArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output file
+    #[arg(short, long, alias = "out", default_value = "decrypted.pdf")]
+    output: PathBuf,
+    /// Password to open the encrypted input
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct WatermarkArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output file
+    #[arg(short, long, alias = "out", default_value = "watermarked.pdf")]
+    output: PathBuf,
+    /// Text watermark
+    #[arg(long)]
+    text: Option<String>,
+    /// Image watermark (JPG/PNG)
+    #[arg(long)]
+    image: Option<PathBuf>,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Position: center, tile, top-left, top-center, top-right, bottom-left,
+    /// bottom-center, or bottom-right
+    #[arg(long, default_value = "center")]
+    position: String,
+    /// Opacity in 0..1
+    #[arg(long, default_value = "0.28")]
+    opacity: f64,
+    /// Text rotation angle in degrees
+    #[arg(long, default_value = "45")]
+    rotation: f64,
+    /// Text font size in points
+    #[arg(long, default_value = "64")]
+    font_size: f64,
+    /// Text color as #RRGGBB
+    #[arg(long, default_value = "#8c8c8c")]
+    color: String,
+    /// Image scale relative to page box
+    #[arg(long, default_value = "0.5")]
+    scale: f64,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PageNumbersArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output file
+    #[arg(short, long, alias = "out", default_value = "numbered.pdf")]
+    output: PathBuf,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Position: top-left, top-center, top-right, bottom-left, bottom-center,
+    /// or bottom-right
+    #[arg(long, default_value = "bottom-center")]
+    position: String,
+    /// Format string using {n}, {page}, and/or {total}
+    #[arg(long, default_value = "Page {n} of {total}")]
+    format: String,
+    /// Starting number for the first physical page
+    #[arg(long, default_value = "1")]
+    start: isize,
+    /// Font size in points
+    #[arg(long, default_value = "10")]
+    font_size: f64,
+    /// Text color as #RRGGBB
+    #[arg(long, default_value = "#333333")]
+    color: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct OrganizeArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output page order, e.g. 1,2,5,3,4,3. Repeats duplicate pages; omissions
+    /// delete pages.
+    #[arg(long, default_value = "all")]
+    order: String,
+    /// Optional second PDF to insert
+    #[arg(long)]
+    insert_from: Option<PathBuf>,
+    /// Pages from --insert-from to insert
+    #[arg(long, default_value = "all")]
+    insert_pages: String,
+    /// 1-based output position before which inserted pages are placed
+    #[arg(long, default_value = "1")]
+    insert_at: usize,
+    /// Output file
+    #[arg(short, long, alias = "out", default_value = "organized.pdf")]
+    output: PathBuf,
+    /// Password for the primary PDF
+    #[arg(long)]
+    password: Option<String>,
+    /// Password for --insert-from
+    #[arg(long)]
+    insert_password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
 struct ExtractTextArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -349,12 +500,14 @@ struct ExtractTextArgs {
     #[arg(long, default_value = "fast-text")]
     profile: String,
     /// OCR scanned (image-only) pages with Tesseract and extract the recovered
-    /// text, instead of returning nothing for pages with no text layer. Routes
-    /// through the OCR-aware document parser. Requires the `tesseract` binary on
-    /// PATH and a CLI built with `--features ocr`. Mutually exclusive with
-    /// --structured/--semantic.
-    #[arg(long)]
-    ocr: bool,
+    /// text, instead of returning nothing for pages with no text layer. Accepts
+    /// a policy: `--ocr`/`--ocr auto` OCRs classifier-detected scanned pages,
+    /// `--ocr force` re-OCRs every selected page, `--ocr off` disables it.
+    /// Routes through the OCR-aware document parser. Requires the `tesseract`
+    /// binary on PATH and a CLI built with `--features ocr`. Mutually exclusive
+    /// with --structured/--semantic.
+    #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+    ocr: Option<String>,
     /// OCR languages (Tesseract codes), comma- or plus-separated, e.g. `eng` or
     /// `eng,deu`. The matching tessdata packs must be installed.
     #[arg(long, default_value = "eng")]
@@ -397,8 +550,8 @@ struct ExtractTablesArgs {
     /// table-grid reconstruction from OCR'd word boxes is not yet supported (a
     /// known gap — see docs/parser_benchmark.md). Passing --ocr errors with a
     /// pointer to `extract-fields --ocr` / `extract-text --ocr`, which DO OCR.
-    #[arg(long)]
-    ocr: bool,
+    #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+    ocr: Option<String>,
     /// OCR languages (unused; --ocr is not supported for table extraction).
     #[arg(long, default_value = "eng")]
     ocr_lang: String,
@@ -459,11 +612,14 @@ struct ParseArgs {
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     detect_headings: bool,
     /// OCR scanned (image-only) pages with Tesseract instead of emitting a
-    /// placeholder. Requires the `tesseract` binary on PATH and a CLI built with
-    /// the `ocr` feature. Recovered text flows through the same layout/heading/
-    /// table pipeline as digital-born text.
-    #[arg(long)]
-    ocr: bool,
+    /// placeholder. Accepts a policy: `--ocr` or `--ocr auto` OCRs only
+    /// classifier-detected scanned pages; `--ocr force` re-OCRs every selected
+    /// page (ignoring the classifier); `--ocr off` disables OCR (the default when
+    /// the flag is absent). Requires the `tesseract` binary on PATH and a CLI
+    /// built with the `ocr` feature. Recovered text flows through the same
+    /// layout/heading/table pipeline as digital-born text.
+    #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+    ocr: Option<String>,
     /// OCR languages (Tesseract codes), comma- or plus-separated, e.g.
     /// `eng` or `eng,deu`. The matching tessdata packs must be installed.
     #[arg(long, default_value = "eng")]
@@ -519,8 +675,9 @@ struct ExtractFieldsArgs {
     min_confidence: f32,
     /// OCR scanned pages first (Tesseract). Requires the `ocr` feature + the
     /// `tesseract` binary; lets field extraction work on scanned documents.
-    #[arg(long)]
-    ocr: bool,
+    /// Accepts `off`/`auto`/`force`; bare `--ocr` means `auto`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+    ocr: Option<String>,
     /// OCR languages (Tesseract codes), comma/plus-separated.
     #[arg(long, default_value = "eng")]
     ocr_lang: String,
@@ -562,8 +719,9 @@ struct ChunkArgs {
     format: String,
     /// OCR scanned pages first (Tesseract). Requires the `ocr` feature + the
     /// `tesseract` binary; lets chunking work on scanned documents.
-    #[arg(long)]
-    ocr: bool,
+    /// Accepts `off`/`auto`/`force`; bare `--ocr` means `auto`.
+    #[arg(long, num_args = 0..=1, default_missing_value = "auto")]
+    ocr: Option<String>,
     /// OCR languages (Tesseract codes), comma/plus-separated.
     #[arg(long, default_value = "eng")]
     ocr_lang: String,
@@ -657,6 +815,121 @@ struct RenderArgs {
 }
 
 #[derive(Parser)]
+struct PdfToJpgArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Directory to write page images into
+    #[arg(long, alias = "out", default_value = "pages")]
+    out_dir: PathBuf,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Resolution in DPI
+    #[arg(short, long, default_value = "150")]
+    dpi: u32,
+    /// Output format: jpg or png
+    #[arg(short, long, default_value = "jpg")]
+    format: String,
+    /// JPEG quality 1-100
+    #[arg(short, long, default_value = "85")]
+    quality: u8,
+    /// Output filename stem, producing stem-001.jpg / stem-001.png
+    #[arg(long, default_value = "page")]
+    stem: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct ImageToPdfArgs {
+    /// Input image files, one PDF page per image
+    #[arg(required = true, num_args = 1..)]
+    images: Vec<PathBuf>,
+    /// Output PDF file
+    #[arg(short, long, alias = "out", default_value = "images.pdf")]
+    output: PathBuf,
+    /// Page size: a4, letter, or size-to-image
+    #[arg(long, default_value = "a4")]
+    page_size: String,
+    /// Margin in PDF points
+    #[arg(long, default_value = "0")]
+    margin: f64,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PdfToXlsxArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output XLSX file
+    #[arg(short, long, alias = "out", default_value = "output.xlsx")]
+    output: PathBuf,
+    /// Layout policy: pages (one worksheet per PDF page) or tables (one worksheet per table)
+    #[arg(long, default_value = "pages", value_parser = ["pages", "tables"])]
+    layout: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PdfToPptxArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output PPTX file
+    #[arg(short, long, alias = "out", default_value = "output.pptx")]
+    output: PathBuf,
+    /// Do not export decodable image XObjects as picture shapes
+    #[arg(long)]
+    no_images: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PdfToDocxArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output DOCX file
+    #[arg(short, long, alias = "out", default_value = "output.docx")]
+    output: PathBuf,
+    /// Do not export decodable image XObjects as inline pictures
+    #[arg(long)]
+    no_images: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct OfficeToPdfArgs {
+    /// Input Office file
+    input: PathBuf,
+    /// Output PDF file
+    #[arg(short, long, alias = "out", default_value = "output.pdf")]
+    output: PathBuf,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
 struct AnalyzeArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -729,6 +1002,48 @@ struct InfoArgs {
     /// Emit machine-readable JSON instead of the human-readable report
     #[arg(long)]
     json: bool,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct ParserReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Parser mode: strict, repair, or audit
+    #[arg(long, default_value = "audit")]
+    mode: String,
+    /// Emit machine-readable JSON (the stable default for parser-report)
+    #[arg(long)]
+    json: bool,
+    /// Emit a concise human-readable report
+    #[arg(long)]
+    pretty: bool,
+    /// Output report file; defaults to stdout
+    #[arg(short, long, alias = "out")]
+    output: Option<PathBuf>,
+    /// Include revision-chain details (accepted for explicit audit selection)
+    #[arg(long)]
+    include_revisions: bool,
+    /// Include Arlington validation details (accepted for explicit audit selection)
+    #[arg(long)]
+    include_arlington: bool,
+    /// Include linearization validation details (accepted for explicit audit selection)
+    #[arg(long)]
+    include_linearization: bool,
+    /// Include repair/carving details (accepted for explicit audit selection)
+    #[arg(long)]
+    include_repair: bool,
+    /// Include source and laziness metrics (accepted for explicit audit selection)
+    #[arg(long)]
+    include_source_metrics: bool,
+    /// Maximum diagnostics to emit in the top-level diagnostics array
+    #[arg(long)]
+    max_diagnostics: Option<usize>,
+    /// Exit non-zero if diagnostics reach this severity: error, fatal, or never
+    #[arg(long, default_value = "never")]
+    fail_on: String,
     /// Password for an encrypted PDF (the empty user password is tried automatically)
     #[arg(long)]
     password: Option<String>,
@@ -853,16 +1168,29 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::EvalScore(args) => run_eval_score(args),
         Commands::ExtractImages(args) => run_extract_images(args),
         Commands::Render(args) => run_render(args),
+        Commands::PdfToJpg(args) => run_pdf_to_jpg(args),
+        Commands::ImageToPdf(args) => run_image_to_pdf(args),
+        Commands::PdfToXlsx(args) => run_pdf_to_xlsx(args),
+        Commands::PdfToPptx(args) => run_pdf_to_pptx(args),
+        Commands::PdfToDocx(args) => run_pdf_to_docx(args),
+        Commands::DocxToPdf(args) => run_docx_to_pdf(args),
+        Commands::XlsxToPdf(args) => run_xlsx_to_pdf(args),
+        Commands::PptxToPdf(args) => run_pptx_to_pdf(args),
         Commands::Analyze(args) => run_analyze(args),
         Commands::Merge(args) => run_merge(args),
         Commands::Split(args) => run_split(args),
         Commands::ExtractPages(args) => run_extract_pages(args),
         Commands::Info(args) => run_info(args),
+        Commands::ParserReport(args) => run_parser_report(args),
         Commands::Fonts(args) => run_fonts(args),
         Commands::Detach(args) => run_detach(args),
         Commands::ToHtml(args) => run_to_html(args),
         Commands::VerifySig(args) => run_verify_sig(args),
         Commands::Encrypt(args) => run_encrypt(args),
+        Commands::Decrypt(args) => run_decrypt(args),
+        Commands::Watermark(args) => run_watermark(args),
+        Commands::AddPageNumbers(args) => run_page_numbers(args),
+        Commands::Organize(args) => run_organize(args),
         Commands::Rotate(args) => run_rotate(args),
         Commands::Optimize(args) => run_optimize(args),
         Commands::Repair(args) => run_repair(args),
@@ -887,7 +1215,8 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     if args.structured && args.semantic {
         return Err("--structured and --semantic are mutually exclusive".into());
     }
-    if args.ocr && (args.structured || args.semantic) {
+    let ocr_policy = ocr_policy_from_flag(&args.ocr)?;
+    if ocr_policy.is_some() && (args.structured || args.semantic) {
         return Err("--ocr cannot be combined with --structured or --semantic".into());
     }
     if region.is_some() && args.semantic {
@@ -896,7 +1225,7 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
                 .into(),
         );
     }
-    if region.is_some() && args.ocr {
+    if region.is_some() && ocr_policy.is_some() {
         return Err("--region is not supported with --ocr text extraction yet".into());
     }
 
@@ -904,8 +1233,8 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     // (image-only) pages contribute recovered text. Digital-born pages parse
     // exactly as before; only pages with no text layer change. Additive — the
     // default (no --ocr) path below is untouched.
-    if args.ocr {
-        return run_extract_text_ocr(&engine, page_nums, &args);
+    if let Some(policy) = ocr_policy {
+        return run_extract_text_ocr(&engine, page_nums, &args, policy);
     }
 
     // Layout-aware and semantic extraction take separate additive paths and do
@@ -1074,6 +1403,7 @@ fn run_extract_text_ocr(
     engine: &oxide_engine::ContentEngine,
     page_nums: Vec<usize>,
     args: &ExtractTextArgs,
+    policy: oxide_engine::OcrPolicy,
 ) -> Result<(), Box<dyn Error>> {
     use oxide_engine::{BlockKind, ParseOptions};
 
@@ -1082,6 +1412,7 @@ fn run_extract_text_ocr(
         // Keep furniture out of the text dump, matching the parser default.
         omit_furniture: true,
         ocr: Some(build_ocr_engine()?),
+        ocr_policy: policy,
         ocr_options: ocr_options(&args.ocr_lang, args.ocr_dpi),
         ocr_dpi: args.ocr_dpi.max(1),
         ..ParseOptions::default()
@@ -1131,7 +1462,7 @@ fn run_extract_text_ocr(
 /// Ruled tables (drawn grid lines) and borderless tables (alignment-only) are
 /// emitted as CSV (default), structured JSON, or span/header-preserving HTML.
 fn run_extract_tables(args: ExtractTablesArgs) -> Result<(), Box<dyn Error>> {
-    if args.ocr {
+    if args.ocr.is_some() {
         return Err(unsupported_error(
             "table extraction does not support --ocr: reconstructing a \
                     table grid from OCR'd word boxes is a known gap (see \
@@ -1283,6 +1614,29 @@ fn ocr_options(ocr_lang: &str, ocr_dpi: u32) -> oxide_engine::OcrOptions {
     }
 }
 
+/// Interpret the CLI `--ocr` flag value into an [`oxide_engine::OcrPolicy`].
+///
+/// `--ocr` is an optional-value flag: absent → `None` (OCR off, the default);
+/// bare `--ocr` → `Some("auto")` via clap's `default_missing_value`; `--ocr off`
+/// / `auto` / `force` map to the matching policy. Returns `Ok(None)` when OCR is
+/// off (the caller skips the OCR path), `Ok(Some(policy))` otherwise, or an
+/// error for an unrecognized token.
+fn ocr_policy_from_flag(
+    flag: &Option<String>,
+) -> Result<Option<oxide_engine::OcrPolicy>, Box<dyn Error>> {
+    match flag.as_deref() {
+        None => Ok(None),
+        Some(tok) => match oxide_engine::OcrPolicy::parse(tok) {
+            Some(oxide_engine::OcrPolicy::Off) => Ok(None),
+            Some(policy) => Ok(Some(policy)),
+            None => Err(format!(
+                "invalid --ocr value '{tok}'; use off, auto, or force (bare --ocr means auto)"
+            )
+            .into()),
+        },
+    }
+}
+
 /// Build a typed, ordered document model — a real document outline (headings,
 /// paragraphs, lists, figures, captions, tables in reading order), not a text
 /// dump. Tagged PDFs use their authored structure; untagged PDFs use the
@@ -1323,23 +1677,10 @@ fn run_parse(args: ParseArgs) -> Result<(), Box<dyn Error>> {
         normalize_ligatures: args.normalize_ligatures,
         ..ParseOptions::default()
     };
-    if args.ocr {
-        let langs: Vec<String> = args
-            .ocr_lang
-            .split(['+', ','])
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    if let Some(policy) = ocr_policy_from_flag(&args.ocr)? {
         options.ocr = Some(build_ocr_engine()?);
-        options.ocr_options = oxide_engine::OcrOptions {
-            languages: if langs.is_empty() {
-                vec!["eng".to_string()]
-            } else {
-                langs
-            },
-            dpi: args.ocr_dpi,
-            psm: None,
-        };
+        options.ocr_policy = policy;
+        options.ocr_options = ocr_options(&args.ocr_lang, args.ocr_dpi);
         options.ocr_dpi = args.ocr_dpi.max(1);
     }
     let output_pages = options.pages.clone();
@@ -1413,23 +1754,10 @@ fn run_extract_fields(args: ExtractFieldsArgs) -> Result<(), Box<dyn Error>> {
         min_confidence: args.min_confidence,
         ..Default::default()
     };
-    if args.ocr {
-        let langs: Vec<String> = args
-            .ocr_lang
-            .split(['+', ','])
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    if let Some(policy) = ocr_policy_from_flag(&args.ocr)? {
         options.ocr = Some(build_ocr_engine()?);
-        options.ocr_options = oxide_engine::OcrOptions {
-            languages: if langs.is_empty() {
-                vec!["eng".to_string()]
-            } else {
-                langs
-            },
-            dpi: args.ocr_dpi,
-            psm: None,
-        };
+        options.ocr_policy = policy;
+        options.ocr_options = ocr_options(&args.ocr_lang, args.ocr_dpi);
         options.ocr_dpi = args.ocr_dpi.max(1);
     }
 
@@ -1484,23 +1812,10 @@ fn run_chunk(args: ChunkArgs) -> Result<(), Box<dyn Error>> {
         omit_furniture: false,
         ..ParseOptions::default()
     };
-    if args.ocr {
-        let langs: Vec<String> = args
-            .ocr_lang
-            .split(['+', ','])
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+    if let Some(policy) = ocr_policy_from_flag(&args.ocr)? {
         parse_opts.ocr = Some(build_ocr_engine()?);
-        parse_opts.ocr_options = oxide_engine::OcrOptions {
-            languages: if langs.is_empty() {
-                vec!["eng".to_string()]
-            } else {
-                langs
-            },
-            dpi: args.ocr_dpi,
-            psm: None,
-        };
+        parse_opts.ocr_policy = policy;
+        parse_opts.ocr_options = ocr_options(&args.ocr_lang, args.ocr_dpi);
         parse_opts.ocr_dpi = args.ocr_dpi.max(1);
     }
     let document = engine.parse_document(&parse_opts)?;
@@ -1856,6 +2171,204 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_pdf_to_jpg(args: PdfToJpgArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let format = oxide_engine::RasterImageFormat::parse(&args.format)
+        .ok_or_else(|| format!("unknown --format '{}'; use jpg or png", args.format))?;
+    let results = oxide_engine::export_pdf_pages_to_images(
+        &engine,
+        &args.out_dir,
+        &pages,
+        args.dpi,
+        format,
+        args.quality,
+        &args.stem,
+    )?;
+    let failed = results.iter().filter(|r| !r.ok).count();
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "pdf-to-jpg",
+                "format": format.extension(),
+                "pages": results,
+                "ok": failed == 0,
+                "failed_pages": failed,
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Rendered {} page(s) to {} ({} failure(s)).",
+            results.len(),
+            args.out_dir.display(),
+            failed
+        );
+    }
+    Ok(())
+}
+
+fn run_image_to_pdf(args: ImageToPdfArgs) -> Result<(), Box<dyn Error>> {
+    let page_size = oxide_engine::ImagePdfPageSize::parse(&args.page_size).ok_or_else(|| {
+        format!(
+            "unknown --page-size '{}'; use a4, letter, or size-to-image",
+            args.page_size
+        )
+    })?;
+    let bytes = oxide_engine::images_to_pdf_from_paths(
+        &args.images,
+        oxide_engine::ImageToPdfOptions {
+            page_size,
+            margin_points: args.margin,
+        },
+    )?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "image-to-pdf",
+                "inputs": args.images,
+                "output": args.output,
+                "output_bytes": bytes.len(),
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Wrote {} page image(s) to {} ({} bytes).",
+            args.images.len(),
+            args.output.display(),
+            bytes.len()
+        );
+    }
+    Ok(())
+}
+
+fn run_pdf_to_xlsx(args: PdfToXlsxArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let layout = oxide_engine::XlsxLayout::parse(&args.layout)
+        .ok_or_else(|| format!("unknown --layout '{}'; use pages or tables", args.layout))?;
+    let bytes = oxide_engine::pdf_to_xlsx(&engine, &oxide_engine::XlsxOptions { layout })?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "pdf-to-xlsx",
+                "input": args.pdf,
+                "output": args.output,
+                "layout": layout.as_str(),
+                "output_bytes": bytes.len(),
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Wrote XLSX workbook to {} ({} bytes, layout {}).",
+            args.output.display(),
+            bytes.len(),
+            layout.as_str()
+        );
+    }
+    Ok(())
+}
+
+fn run_pdf_to_pptx(args: PdfToPptxArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let options = oxide_engine::PptxOptions {
+        include_images: !args.no_images,
+    };
+    let bytes = oxide_engine::pdf_to_pptx(&engine, &options)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "pdf-to-pptx",
+                "input": args.pdf,
+                "output": args.output,
+                "include_images": options.include_images,
+                "output_bytes": bytes.len(),
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Wrote PPTX presentation to {} ({} bytes).",
+            args.output.display(),
+            bytes.len()
+        );
+    }
+    Ok(())
+}
+
+fn run_pdf_to_docx(args: PdfToDocxArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let options = oxide_engine::DocxOptions {
+        include_images: !args.no_images,
+    };
+    let bytes = oxide_engine::pdf_to_docx(&engine, &options)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "pdf-to-docx",
+                "input": args.pdf,
+                "output": args.output,
+                "include_images": options.include_images,
+                "output_bytes": bytes.len(),
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Wrote DOCX document to {} ({} bytes).",
+            args.output.display(),
+            bytes.len()
+        );
+    }
+    Ok(())
+}
+
+fn run_docx_to_pdf(args: OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
+    run_office_to_pdf(args, "docx-to-pdf", oxide_engine::docx_to_pdf)
+}
+
+fn run_xlsx_to_pdf(args: OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
+    run_office_to_pdf(args, "xlsx-to-pdf", oxide_engine::xlsx_to_pdf)
+}
+
+fn run_pptx_to_pdf(args: OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
+    run_office_to_pdf(args, "pptx-to-pdf", oxide_engine::pptx_to_pdf)
+}
+
+fn run_office_to_pdf(
+    args: OfficeToPdfArgs,
+    op: &str,
+    convert: fn(&[u8], &oxide_engine::OfficeToPdfOptions) -> oxide_engine::Result<Vec<u8>>,
+) -> Result<(), Box<dyn Error>> {
+    let input = std::fs::read(&args.input)?;
+    let bytes = convert(&input, &oxide_engine::OfficeToPdfOptions::default())?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": op,
+                "input": args.input,
+                "output": args.output,
+                "output_bytes": bytes.len(),
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Wrote PDF to {} ({} bytes).",
+            args.output.display(),
+            bytes.len()
+        );
+    }
+    Ok(())
+}
+
 fn run_render_svg(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
     use std::io::Write;
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
@@ -2065,6 +2578,38 @@ fn open_engine(
     Ok(engine)
 }
 
+fn read_edit_input(
+    pdf: &std::path::Path,
+    password: &Option<String>,
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    if password.is_some() {
+        let engine = open_engine(pdf, password)?;
+        Ok(oxide_engine::decrypt_pdf(&engine)?)
+    } else {
+        Ok(std::fs::read(pdf)?)
+    }
+}
+
+fn parse_stamp_position(value: &str) -> Result<oxide_engine::StampPosition, Box<dyn Error>> {
+    oxide_engine::StampPosition::parse(value)
+        .ok_or_else(|| format!("unknown position '{value}'").into())
+}
+
+fn parse_rgb_color(value: &str) -> Result<oxide_engine::RgbColor, Box<dyn Error>> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() != 6 {
+        return Err(format!("color '{value}' must be #RRGGBB").into());
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16)?;
+    let g = u8::from_str_radix(&hex[2..4], 16)?;
+    let b = u8::from_str_radix(&hex[4..6], 16)?;
+    Ok(oxide_engine::RgbColor {
+        r: f64::from(r) / 255.0,
+        g: f64::from(g) / 255.0,
+        b: f64::from(b) / 255.0,
+    })
+}
+
 fn run_info(args: InfoArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let info = engine.document_info()?;
@@ -2140,6 +2685,133 @@ fn run_info(args: InfoArgs) -> Result<(), Box<dyn Error>> {
     println!("{:<16} {}", "XMP Metadata:", yes_no(info.has_xmp_metadata));
 
     Ok(())
+}
+
+fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
+    let mode = match args.mode.to_ascii_lowercase().as_str() {
+        "strict" => oxide_engine::ParserMode::Strict,
+        "repair" => oxide_engine::ParserMode::Repair,
+        "audit" => oxide_engine::ParserMode::Audit,
+        other => {
+            return Err(format!(
+                "unknown parser report mode '{other}'; use strict, repair, or audit"
+            )
+            .into());
+        }
+    };
+    let bytes = std::fs::read(&args.pdf)?;
+    let password = args.password.as_deref().unwrap_or("").as_bytes();
+    let mut report = oxide_engine::parser_report_bytes_with_password(&bytes, mode, password);
+    if let Some(max) = args.max_diagnostics {
+        report.diagnostics.truncate(max);
+    }
+    let _include_flags = (
+        args.include_revisions,
+        args.include_arlington,
+        args.include_linearization,
+        args.include_repair,
+        args.include_source_metrics,
+    );
+    let output = if args.pretty && !args.json {
+        format_parser_report_human(&args.pdf, &report)
+    } else {
+        serde_json::to_string_pretty(&report)?
+    };
+    match args.output {
+        Some(path) => std::fs::write(path, output)?,
+        None => println!("{output}"),
+    }
+    enforce_parser_report_fail_on(&args.fail_on, &report)?;
+    Ok(())
+}
+
+fn enforce_parser_report_fail_on(
+    fail_on: &str,
+    report: &oxide_engine::ParserReport,
+) -> Result<(), Box<dyn Error>> {
+    let should_fail = match fail_on.to_ascii_lowercase().as_str() {
+        "never" => false,
+        "fatal" => report.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.severity,
+                oxide_engine::ParserSeverity::FatalError
+                    | oxide_engine::ParserSeverity::SecurityLimit
+            )
+        }),
+        "error" => report.diagnostics.iter().any(|diagnostic| {
+            matches!(
+                diagnostic.severity,
+                oxide_engine::ParserSeverity::RecoverableError
+                    | oxide_engine::ParserSeverity::FatalError
+                    | oxide_engine::ParserSeverity::SecurityLimit
+            )
+        }),
+        other => {
+            return Err(
+                format!("unknown --fail-on value '{other}'; use error, fatal, or never").into(),
+            )
+        }
+    };
+    if should_fail {
+        Err("parser-report diagnostics reached the requested --fail-on severity".into())
+    } else {
+        Ok(())
+    }
+}
+
+fn format_parser_report_human(path: &Path, report: &oxide_engine::ParserReport) -> String {
+    let counts = report.diagnostic_counts();
+    let verdict = if report.opened { "opened" } else { "failed" };
+    let mut out = String::new();
+    out.push_str(&format!("Parser report for {}\n", path.display()));
+    out.push_str(&format!("Verdict: {verdict} ({:?})\n", report.mode));
+    out.push_str(&format!(
+        "Diagnostics: info={} warning={} recoverable_error={} fatal={} security_limit={}\n",
+        counts.info,
+        counts.warning,
+        counts.recoverable_error,
+        counts.fatal_error,
+        counts.security_limit
+    ));
+    out.push_str(&format!(
+        "Source: {} bytes, {} known object(s), {} xref entrie(s)\n",
+        report.source_metrics.file_size_bytes,
+        report.source_metrics.objects_known,
+        report.source_metrics.xref_entries
+    ));
+    out.push_str(&format!(
+        "Linearized: detected={} valid={} fast-open-candidate={} status={}\n",
+        report.linearization.is_linearized,
+        report.linearization.valid,
+        report.linearization.first_page_fast_open_candidate,
+        report.linearization.main_xref_status
+    ));
+    out.push_str(&format!(
+        "Revisions: {} section(s), incremental={}\n",
+        report.revision_history.section_count, report.revision_history.contains_incremental_updates
+    ));
+    out.push_str(&format!(
+        "Repair: xref_objects={} scan_objects={} duplicate_objects={} truncated_objects={} confidence={}\n",
+        report.repair_summary.total_objects_recovered_from_xref,
+        report.repair_summary.total_objects_recovered_from_scan,
+        report.repair_summary.duplicate_objects.len(),
+        report.repair_summary.truncated_objects.len(),
+        report.repair_summary.confidence
+    ));
+    out.push_str(&format!(
+        "Arlington: {} rules from {} TSV files at {}\n",
+        report.arlington.keys, report.arlington.tsv_files, report.arlington.commit
+    ));
+    if !report.diagnostics.is_empty() {
+        out.push_str("Top diagnostics:\n");
+        for diagnostic in report.diagnostics.iter().take(20) {
+            out.push_str(&format!(
+                "- {:?}/{:?} {}: {}\n",
+                diagnostic.severity, diagnostic.category, diagnostic.code, diagnostic.message
+            ));
+        }
+    }
+    out
 }
 
 fn page_size_label(s: &oxide_engine::PageSize) -> String {
@@ -2645,6 +3317,159 @@ fn run_encrypt(args: EncryptArgs) -> Result<(), Box<dyn Error>> {
             args.output.display(),
             bytes.len()
         );
+    }
+    Ok(())
+}
+
+fn run_decrypt(args: DecryptArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let bytes = oxide_engine::decrypt_pdf(&engine)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "decrypt",
+                "output": args.output.display().to_string(),
+                "bytes": bytes.len(),
+            })
+        );
+    } else {
+        eprintln!(
+            "Wrote unencrypted copy -> {} ({} bytes)",
+            args.output.display(),
+            bytes.len()
+        );
+    }
+    Ok(())
+}
+
+fn run_watermark(args: WatermarkArgs) -> Result<(), Box<dyn Error>> {
+    let has_text = args.text.is_some();
+    let has_image = args.image.is_some();
+    if has_text == has_image {
+        return Err("pass exactly one of --text or --image".into());
+    }
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let engine = oxide_engine::ContentEngine::open_bytes(input.clone())?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let position = parse_stamp_position(&args.position)?;
+    let bytes = if let Some(text) = args.text {
+        oxide_engine::watermark_text_pdf(
+            input,
+            &text,
+            oxide_engine::TextWatermarkOptions {
+                pages: pages.clone(),
+                position,
+                opacity: args.opacity,
+                rotation_degrees: args.rotation,
+                font_size: args.font_size,
+                color: parse_rgb_color(&args.color)?,
+            },
+        )?
+    } else {
+        let image_path = args.image.expect("checked above");
+        let image = std::fs::read(&image_path)?;
+        oxide_engine::watermark_image_pdf(
+            input,
+            &image,
+            image_path.extension().and_then(|s| s.to_str()),
+            oxide_engine::ImageWatermarkOptions {
+                pages: pages.clone(),
+                position,
+                opacity: args.opacity,
+                scale: args.scale,
+            },
+        )?
+    };
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "watermark",
+                "output": args.output.display().to_string(),
+                "pages": pages,
+                "bytes": bytes.len(),
+            })
+        );
+    } else {
+        eprintln!(
+            "Watermarked {} page(s) -> {}",
+            pages.len(),
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_page_numbers(args: PageNumbersArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let engine = oxide_engine::ContentEngine::open_bytes(input.clone())?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let bytes = oxide_engine::add_page_numbers_pdf(
+        input,
+        oxide_engine::PageNumberOptions {
+            pages: pages.clone(),
+            position: parse_stamp_position(&args.position)?,
+            format: args.format,
+            start: args.start,
+            font_size: args.font_size,
+            color: parse_rgb_color(&args.color)?,
+        },
+    )?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "add-page-numbers",
+                "output": args.output.display().to_string(),
+                "pages": pages,
+                "bytes": bytes.len(),
+            })
+        );
+    } else {
+        eprintln!(
+            "Added page numbers to {} page(s) -> {}",
+            pages.len(),
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_organize(args: OrganizeArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let order = parse_page_selection_ordered(&args.order, total)?;
+    let bytes = if let Some(insert_path) = args.insert_from {
+        let inserted = open_engine(&insert_path, &args.insert_password)?;
+        let inserted_total = inserted.page_count()?;
+        let insert_pages = parse_page_selection_ordered(&args.insert_pages, inserted_total)?;
+        oxide_engine::organize_pdf_with_insert(
+            &engine,
+            &order,
+            Some((&inserted, insert_pages, args.insert_at)),
+        )?
+    } else {
+        oxide_engine::organize_pdf(&engine, &order)?
+    };
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "organize",
+                "output": args.output.display().to_string(),
+                "order": order,
+                "bytes": bytes.len(),
+            })
+        );
+    } else {
+        eprintln!("Organized PDF -> {}", args.output.display());
     }
     Ok(())
 }

@@ -156,10 +156,11 @@ pub async fn parse(multipart: Multipart) -> ServerResult<Response> {
     let config = crate::config::get_config();
     let format_owned = format.to_string();
     let (content_type, body) = run_with_timeout(config, move |_cancel| {
-        let opts = ParseOptions {
+        let mut opts = ParseOptions {
             pages,
             ..Default::default()
         };
+        crate::ocr::apply_to(&mut opts);
         let doc = engine.parse_document(&opts)?;
         let out = match format_owned.as_str() {
             "json" => ("application/json", doc.to_json()),
@@ -203,10 +204,11 @@ pub async fn chunk(multipart: Multipart) -> ServerResult<Response> {
 
     let config = crate::config::get_config();
     let body = run_with_timeout(config, move |_cancel| {
-        let opts = ParseOptions {
+        let mut opts = ParseOptions {
             pages,
             ..Default::default()
         };
+        crate::ocr::apply_to(&mut opts);
         let doc = engine.parse_document(&opts)?;
         let mut chunk_opts = ChunkOptions {
             include_furniture: keep_furniture,
@@ -253,11 +255,12 @@ pub async fn extract_fields(multipart: Multipart) -> ServerResult<Response> {
 
     let config = crate::config::get_config();
     let body = run_with_timeout(config, move |_cancel| {
-        let opts = ExtractOptions {
+        let mut opts = ExtractOptions {
             doc_type,
             pages,
             ..Default::default()
         };
+        crate::ocr::apply_to_extract(&mut opts);
         let result = engine.extract_fields(&opts)?;
         Ok::<String, ServerError>(result.to_json())
     })

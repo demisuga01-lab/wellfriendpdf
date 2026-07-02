@@ -260,6 +260,15 @@ the CLI does). Honest expectation: OCR quality is bounded by Tesseract and scan
 quality; messy scans recover most text but key-value recall drops (see
 `docs/parser_positioning.md`).
 
+Tesseract is only the *default* backend, not the only option. OCR is a
+**pluggable seam**: you can point Oxide at your own local vision model, an ONNX
+runtime, or a hosted cloud vision API by implementing one small interface — in
+Rust, Python, or C. See **[OCR Backends — Integrator Guide](ocr_backends.md)**
+for the contract and worked examples on every surface. The copy-paste reference
+templates live at `crates/oxide-py/examples/local_ai_ocr_backend.py` and
+`crates/engine/examples/ocr_http_backends.rs`.
+
+
 ---
 
 ## 5. Example workflows

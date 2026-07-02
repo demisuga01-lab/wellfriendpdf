@@ -15,9 +15,13 @@ and may move while the crate is `0.x`.
 | RAG chunking | `Document::chunk`, `chunk`, `ChunkOptions`, `ChunkSet` |
 | Key-value fields | `ContentEngine::extract_fields`, `extract_fields`, `ExtractOptions` |
 | Rendering | `ContentEngine::render_page_png_fast`, `render_page_svg` |
+| Page raster export | `render_page_image`, `export_pdf_pages_to_images`, `RasterImageFormat` |
+| Office conversion | `pdf_to_xlsx`, `pdf_to_pptx`, `pdf_to_docx`, `xlsx_to_pdf`, `pptx_to_pdf`, `docx_to_pdf`, `XlsxOptions`, `PptxOptions`, `DocxOptions`, `OfficeToPdfOptions` |
 | Authoring | `PdfBuilder`, `PdfPageBuilder`, `FlowDocument`, `TextStyle`, `GraphicsStyle` |
 | Editing | `PdfEditor`, `WatermarkOptions`, `HeaderFooterOptions`, `RedactionOptions` |
-| Structural ops | `build_subset`, `build_merged`, `rotate_pages`, `optimize`, `repair`, `encrypt`, `linearize` |
+| Image-to-PDF | `images_to_pdf_from_paths`, `images_to_pdf_from_bytes`, `ImageToPdfOptions` |
+| Structural ops | `build_subset`, `build_merged`, `organize_pdf`, `rotate_pages`, `optimize`, `repair`, `encrypt`, `decrypt_pdf`, `linearize` |
+| Page overlays | `watermark_text_pdf`, `watermark_image_pdf`, `add_page_numbers_pdf` |
 | PDF/A and PDF/UA | `validate_pdfa`, `convert_to_pdfa`, `convert_to_pdfa_checked`, `validate_pdfua`, `PdfAProfile::{PdfA1B,PdfA2B,PdfA2A,PdfA3B,PdfA3A}` |
 | Signatures | `ContentEngine::sign`, `ContentEngine::add_ltv_material`, `sign_document`, `add_ltv_material`, `PdfSigner`, `verify_signatures` |
 | Errors | `Result<T>`, `OxideError`, `ErrorKind`, `OxideError::code()` |
@@ -27,7 +31,10 @@ and may move while the crate is `0.x`.
 | Surface | Status | Docs |
 | --- | --- | --- |
 | CLI | Stable command names for common operations | `oxide --help`, README |
+| Python | PyO3 module with `Document` plus module-level structural/conversion helpers | `docs/python_binding.md`, `docs/bindings.md` |
 | C ABI | Stable exported C symbols in committed header | `docs/bindings.md` |
+| .NET | P/Invoke binding over the C ABI with `SafeHandle` cleanup | `docs/dotnet_binding.md` |
+| Java | JDK 25 FFM binding over the C ABI with `AutoCloseable` cleanup | `docs/java_binding.md` |
 | WASM | Stable browser parse/render wrapper for digital-born PDFs | `docs/bindings.md` |
 | HTTP server | Stable `/api/v1/*` JSON endpoints; job API documented separately | `docs/self_hosting.md`, `docs/jobs.md` |
 

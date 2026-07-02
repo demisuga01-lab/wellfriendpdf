@@ -35,13 +35,26 @@ File-writing commands that naturally write their primary artifact to disk expose
 
 ```powershell
 oxide render input.pdf --format png --output pages.zip --json
+oxide pdf-to-jpg input.pdf --out-dir pages --dpi 150 --quality 85 --json
+oxide pdf-to-jpg input.pdf --out-dir pages-png --format png --json
+oxide image-to-pdf scan1.jpg scan2.png --out wrapped.pdf --page-size a4 --json
+oxide pdf-to-xlsx tables.pdf --out tables.xlsx --layout pages --json
+oxide pdf-to-pptx report.pdf --out slides.pptx --json
+oxide pdf-to-docx report.pdf --out report.docx --json
+oxide docx-to-pdf report.docx --out report.pdf --json
+oxide xlsx-to-pdf tables.xlsx --out tables.pdf --json
+oxide pptx-to-pdf slides.pptx --out slides.pdf --json
 oxide extract-images input.pdf --output images.zip --json
 oxide merge a.pdf b.pdf --output merged.pdf --json
 oxide split input.pdf --output page-%d.pdf --json
 oxide extract-pages input.pdf 1,3-5 --output subset.pdf --json
+oxide organize input.pdf --order 1,2,5,3,4,3 --output organized.pdf --json
 oxide linearize input.pdf --output linearized.pdf --json
 oxide encrypt input.pdf --user-pw secret --output encrypted.pdf --json
+oxide decrypt encrypted.pdf --password secret --output unlocked.pdf --json
 oxide rotate input.pdf --angle 90 --output rotated.pdf --json
+oxide watermark input.pdf --text CONFIDENTIAL --opacity 0.3 --rotation 45 --output watermarked.pdf --json
+oxide add-page-numbers input.pdf --format "Page {n} of {total}" --output numbered.pdf --json
 oxide optimize input.pdf --output optimized.pdf --json
 oxide repair damaged.pdf --output repaired.pdf --json
 ```
@@ -56,7 +69,54 @@ These summaries use stable top-level fields:
 | `pages`, `pages_requested`, `pages_rendered` | number/array | Page counts or selected pages, depending on command. |
 | `images`, `inputs`, `files` | number | Command-specific counts. |
 
+## Phase 3 Document Utilities
+
+`pdf-to-jpg` rasterizes whole pages through the same renderer used by `render`;
+it is not the same as `extract-images`, which extracts embedded image XObjects.
+Use `--format png` when lossless page screenshots are needed. Pages are rendered
+and written one at a time.
+
+`image-to-pdf` accepts JPG and PNG inputs and writes one image per page. Page
+size can be `a4`, `letter`, or `size-to-image`; images are fit to the page while
+preserving aspect ratio.
+
+`watermark` and `add-page-numbers` append overlay content streams to existing
+pages. They do not rasterize and replace the page, so existing digital text
+remains searchable/extractable. A text watermark may appear in later text
+extraction because it is real page text.
+
+`organize` copies pages in the exact 1-based order supplied by `--order`.
+Repeated indices duplicate pages; omitted indices delete pages. `--insert-from`
+can insert pages from a second document at `--insert-at`.
+
 Command-specific extraction JSON schemas are documented by the command outputs themselves and covered by integration tests. They are treated as compatibility surfaces for scripts.
+
+## Phase 4 Office Conversions
+
+`pdf-to-xlsx` reads the canonical document hierarchy and writes detected table
+blocks into a valid XLSX workbook. The default `--layout pages` creates one
+worksheet per PDF page and keeps non-table text as context rows near the tables.
+`--layout tables` creates one worksheet per detected table and puts non-table
+text on a `Notes` sheet. Numeric-looking cells are written as numbers when this
+can be inferred safely; leading-zero identifiers remain text.
+
+`pdf-to-pptx` maps one PDF page to one slide. Text blocks become positioned text
+boxes, tables become native PPTX table shapes, and decodable image XObjects
+become picture shapes unless `--no-images` is passed. It preserves editable
+structure, not pixel-perfect PDF appearance.
+
+`pdf-to-docx` reconstructs a flowing document from the same hierarchy. It writes
+native headings, paragraphs, lists, tables, and inline images. It is intended to
+produce a useful editable Word document, not a pixel-perfect reproduction of the
+fixed PDF canvas.
+
+`docx-to-pdf`, `xlsx-to-pdf`, and `pptx-to-pdf` are native by default and reuse
+Oxide's authoring/writer machinery. They do not require LibreOffice. Their
+fidelity boundaries and the optional external-renderer decision are documented
+in `docs/office_to_pdf_architecture.md`.
+
+These conversions are built on `docs/document_hierarchy.md`; they do not run a
+second table detector and do not change extraction accuracy paths.
 
 ## OCR Honesty
 
@@ -73,4 +133,3 @@ oxide render --help
 ```
 
 Region coordinates are PDF user-space points with the origin at the bottom-left, matching the region extraction docs.
-

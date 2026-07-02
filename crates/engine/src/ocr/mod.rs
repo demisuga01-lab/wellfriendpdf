@@ -29,10 +29,76 @@
 //! ([`preprocess`]) is pure Rust and lives here, applied before the image ever
 //! reaches a backend. It is where scan quality is earned.
 
+pub mod dispatch;
 pub mod preprocess;
 
 use crate::error::Result;
 use crate::images::decoder::RawImage;
+
+/// When the OCR stage runs, per page. Chosen by the caller; the engine turns it
+/// into a per-page decision via [`OcrPolicy::should_ocr`].
+///
+/// This makes OCR activation an explicit, three-valued policy rather than the
+/// implicit "an engine is present ⇒ OCR the scanned pages" it started as:
+///
+/// - [`OcrPolicy::Off`] — never OCR. Byte-identical to the pre-OCR behavior:
+///   scanned pages degrade to the placeholder note + full-page scan figure. This
+///   is the default, and is also the effective policy whenever no backend is
+///   configured (there is nothing to dispatch to).
+/// - [`OcrPolicy::Auto`] — OCR the pages the [`crate::classify`] classifier
+///   routed to [`crate::classify::PageSource::Scanned`] (image-only, no usable
+///   text layer). Digital-born and searchable-scan pages keep their real text
+///   layer and are never re-OCR'd. This is the sensible default when a backend
+///   *is* configured.
+/// - [`OcrPolicy::Force`] — OCR **every** selected page regardless of the
+///   classifier, including digital-born ones. For scans the classifier
+///   mislabeled as digital-born (e.g. a thin junk text layer over a scan), or
+///   deliberate full re-OCR. Expensive (renders + recognizes every page); the
+///   caller opts in knowingly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OcrPolicy {
+    /// Never OCR (default). Identical to pre-OCR behavior.
+    #[default]
+    Off,
+    /// OCR only classifier-detected scanned pages.
+    Auto,
+    /// OCR every selected page, ignoring the classifier.
+    Force,
+}
+
+impl OcrPolicy {
+    /// Whether a page classified as `source` should be OCR'd under this policy.
+    /// [`OcrPolicy::Off`] never OCRs; [`OcrPolicy::Force`] always does;
+    /// [`OcrPolicy::Auto`] OCRs exactly the scanned pages.
+    pub fn should_ocr(self, source: crate::classify::PageSource) -> bool {
+        match self {
+            OcrPolicy::Off => false,
+            OcrPolicy::Force => true,
+            OcrPolicy::Auto => source == crate::classify::PageSource::Scanned,
+        }
+    }
+
+    /// Parse a CLI/config token (`off` / `auto` / `force`, case-insensitive).
+    /// Returns `None` for an unrecognized value so the caller can error with a
+    /// surface-appropriate message.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "off" | "none" | "false" => Some(OcrPolicy::Off),
+            "auto" | "on" | "true" => Some(OcrPolicy::Auto),
+            "force" | "all" => Some(OcrPolicy::Force),
+            _ => None,
+        }
+    }
+
+    /// The token accepted by [`OcrPolicy::parse`] (for round-tripping / help).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OcrPolicy::Off => "off",
+            OcrPolicy::Auto => "auto",
+            OcrPolicy::Force => "force",
+        }
+    }
+}
 
 /// A single-channel 8-bit grayscale image — the substrate every preprocessing
 /// step and every [`OcrEngine`] backend works on.
@@ -227,6 +293,24 @@ pub trait OcrEngine: Send + Sync {
     /// reproducibility). `None` if the backend cannot report it.
     fn version(&self) -> Option<String> {
         None
+    }
+
+    /// The maximum number of pages this backend tolerates being recognized
+    /// **concurrently**. The engine caps its bounded parallel OCR window at this
+    /// value, so a backend that is not thread-safe, holds a global lock (a Python
+    /// backend under the GIL), or talks to a rate-limited remote API can keep the
+    /// engine from oversubscribing it.
+    ///
+    /// The default is `1` — the safe choice for a backend that has not opted in
+    /// to concurrency (it serializes OCR, matching the pre-concurrency behavior).
+    /// A local process pool (e.g. Tesseract) can raise this to its comfortable
+    /// parallelism (say `4`); a cloud API might return `2` to respect a rate
+    /// limit. The engine still clamps the effective window to its own global
+    /// bound, so returning a large number never exceeds the engine's limit.
+    ///
+    /// Must return a value `>= 1`; the engine treats `0` as `1`.
+    fn max_concurrency(&self) -> usize {
+        1
     }
 }
 

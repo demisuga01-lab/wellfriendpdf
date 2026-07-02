@@ -14,6 +14,14 @@ print(doc.extract_fields(doc_type="auto"))
 print(doc.page(1).region(0, 0, 306, 792).text)
 print(doc.to_markdown(detect_headings=True, profile="rag-chunks"))
 png = doc.page(1).render(dpi=150)
+
+oxide.pdf_to_images("input.pdf", "pages", pages="1-3", format="jpg", dpi=150)
+combined = oxide.images_to_pdf(["scan1.jpg", "scan2.png"], output="combined.pdf")
+xlsx = oxide.pdf_to_xlsx("tables.pdf", output="tables.xlsx", layout="pages")
+pptx = oxide.pdf_to_pptx("report.pdf", output="slides.pptx")
+docx = oxide.pdf_to_docx("report.pdf", output="report.docx")
+pdf = oxide.docx_to_pdf("report.docx", output="from_docx.pdf")
+numbered = oxide.add_page_numbers("input.pdf", output="numbered.pdf")
 ```
 
 The API is intentionally Python-native: text is `str`, rendered pages and images
@@ -46,6 +54,23 @@ are not claimed yet; CI wheel publishing is future packaging work.
   `.tables`, and `.images`.
 - Explicit markdown heading control through
   `to_markdown(detect_headings=True|False)` and `page.markdown(...)`.
+- OCR injection for scanned pages through `document_model(..., ocr=backend)`,
+  `to_markdown(..., ocr=backend)`, and `to_html(..., ocr=backend)`, where
+  `backend` is any Python object with
+  `recognize(image_bytes, info) -> list[dict]`. See
+  `crates/oxide-py/examples/local_ai_ocr_backend.py` and
+  `docs/ocr_backends.md`.
+- Structural and utility helpers:
+  `merge_pdfs`, `extract_pages`, `rotate_pdf`, `encrypt_pdf`, `decrypt_pdf`,
+  `optimize_pdf`, `repair_pdf`, `linearize_pdf`, `pdf_to_images`,
+  `images_to_pdf`, `pdf_to_xlsx`, `pdf_to_pptx`, `pdf_to_docx`,
+  `docx_to_pdf`, `xlsx_to_pdf`, `pptx_to_pdf`, `watermark_pdf`,
+  `add_page_numbers`, `organize_pdf`, `fonts`, and `verify_signatures`.
+
+`pdf_to_xlsx` accepts `layout="pages"` or `layout="tables"`. `pdf_to_pptx`
+maps each PDF page to one editable slide and can disable image export with
+`include_images=False`. `pdf_to_docx` reconstructs a flowing editable document;
+Office-to-PDF helpers use Oxide's native writer and do not require LibreOffice.
 
 Region coordinates are PDF user-space points with origin at the page's
 bottom-left. Scoped extraction includes an item when its center is inside the

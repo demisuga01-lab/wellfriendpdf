@@ -26,6 +26,7 @@ use crate::engine::ContentEngine;
 use crate::fonts::cmap::{parse_to_unicode_cmap, ToUnicodeCMap};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::parser::PdfParser;
+use crate::parser_report::{parser_report_bytes, ParserMode};
 use crate::reader::PdfReader;
 use crate::writer::{
     rewrite_document_with_mode, serialize_object, OutputObject, PdfWriter, WriterMode,
@@ -235,6 +236,52 @@ pub fn fuzz_writer(data: &[u8]) {
     if let Ok(pdf) = PdfWriter::new(objects, 1).write() {
         let _ = std::hint::black_box(PdfReader::from_bytes(pdf));
     }
+}
+
+/// Drive the COS object parser directly from arbitrary bytes.
+pub fn fuzz_cos_object(data: &[u8]) {
+    let Ok(mut parser) = PdfParser::new(data, 0) else {
+        return;
+    };
+    let _ = std::hint::black_box(parser.parse_object());
+}
+
+/// Drive strict+repair parser-report diagnostics from arbitrary bytes.
+pub fn fuzz_parser_report(data: &[u8]) {
+    let _ = std::hint::black_box(parser_report_bytes(data, ParserMode::Audit));
+}
+
+/// Drive xref-stream entry parsing with bounded synthetic dictionaries.
+pub fn fuzz_xref_stream(data: &[u8]) {
+    if data.is_empty() {
+        return;
+    }
+    let mut dict = PdfDictionary::empty();
+    dict.insert(
+        "W",
+        PdfObject::Array(vec![
+            PdfObject::Integer(i64::from(data[0] % 4)),
+            PdfObject::Integer(i64::from(data.get(1).copied().unwrap_or(1) % 5)),
+            PdfObject::Integer(i64::from(data.get(2).copied().unwrap_or(1) % 5)),
+        ]),
+    );
+    let count = 1 + i64::from(data.get(3).copied().unwrap_or(0) % 16);
+    dict.insert(
+        "Index",
+        PdfObject::Array(vec![PdfObject::Integer(0), PdfObject::Integer(count)]),
+    );
+    let payload = data.get(4..).unwrap_or_default();
+    let _ = std::hint::black_box(crate::reader::parse_xref_stream_entries(&dict, payload));
+}
+
+/// Drive object-stream table parsing with bounded /N and /First values.
+pub fn fuzz_object_stream(data: &[u8]) {
+    let n = usize::from(data.first().copied().unwrap_or(0) % 16);
+    let first = usize::from(data.get(1).copied().unwrap_or(0)).min(data.len());
+    let payload = data.get(2..).unwrap_or_default();
+    let _ = std::hint::black_box(crate::reader::parse_object_stream_data(
+        payload, n, first, None,
+    ));
 }
 
 /// Parse attacker-controlled input and exercise the full-document writer modes.

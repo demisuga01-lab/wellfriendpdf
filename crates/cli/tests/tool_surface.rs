@@ -28,7 +28,11 @@ fn fx(name: &str) -> PathBuf {
 }
 
 fn tmp(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!("oxide_tool_surface_{name}"))
+    std::env::temp_dir().join(format!(
+        "oxide_tool_surface_{}_{}",
+        std::process::id(),
+        name
+    ))
 }
 
 fn run(args: &[&str]) -> std::process::Output {
@@ -52,6 +56,14 @@ fn assert_json(out: &std::process::Output, label: &str) -> serde_json::Value {
             String::from_utf8_lossy(&out.stdout)
         )
     })
+}
+
+fn remove_path(path: &std::path::Path) {
+    if path.is_dir() {
+        let _ = std::fs::remove_dir_all(path);
+    } else {
+        let _ = std::fs::remove_file(path);
+    }
 }
 
 fn zip_entries(path: &std::path::Path) -> Vec<(String, Vec<u8>)> {
@@ -507,7 +519,7 @@ fn split_runs() {
     ]);
     assert_ok(&out, "split");
     for n in 1..=2 {
-        let p = std::env::temp_dir().join(format!("oxide_tool_surface_split-{n}.pdf"));
+        let p = PathBuf::from(pat.to_string_lossy().replace("%d", &n.to_string()));
         assert!(p.exists(), "split page {n} missing");
         let _ = std::fs::remove_file(&p);
     }
@@ -999,4 +1011,183 @@ fn linearize_command_writes_form_fast_web_view_pdf() {
         "info output: {stdout}"
     );
     let _ = std::fs::remove_file(&out);
+}
+
+#[test]
+fn phase3_utilities_run_across_cli_surface() {
+    let out_dir = tmp("phase3_pages");
+    let wrapped = tmp("phase3_wrapped.pdf");
+    let watermarked = tmp("phase3_watermarked.pdf");
+    let numbered = tmp("phase3_numbered.pdf");
+    let organized = tmp("phase3_organized.pdf");
+    remove_path(&out_dir);
+    remove_path(&wrapped);
+    remove_path(&watermarked);
+    remove_path(&numbered);
+    remove_path(&organized);
+
+    let render = run(&[
+        "pdf-to-jpg",
+        fx("tracemonkey.pdf").to_str().unwrap(),
+        "--pages",
+        "1",
+        "--out-dir",
+        out_dir.to_str().unwrap(),
+        "--dpi",
+        "72",
+        "--json",
+    ]);
+    let json = assert_json(&render, "pdf-to-jpg");
+    assert_eq!(json["failed_pages"], 0);
+    let jpg = out_dir.join("page-001.jpg");
+    assert!(jpg.exists(), "raster output should exist");
+
+    let image_pdf = run(&[
+        "image-to-pdf",
+        jpg.to_str().unwrap(),
+        "--out",
+        wrapped.to_str().unwrap(),
+        "--page-size",
+        "size-to-image",
+    ]);
+    assert_ok(&image_pdf, "image-to-pdf");
+    assert!(wrapped.exists());
+
+    let watermark = run(&[
+        "watermark",
+        wrapped.to_str().unwrap(),
+        "--text",
+        "DRAFT",
+        "--opacity",
+        "0.25",
+        "--out",
+        watermarked.to_str().unwrap(),
+    ]);
+    assert_ok(&watermark, "watermark");
+
+    let numbers = run(&[
+        "add-page-numbers",
+        watermarked.to_str().unwrap(),
+        "--format",
+        "{n}/{total}",
+        "--out",
+        numbered.to_str().unwrap(),
+    ]);
+    assert_ok(&numbers, "add-page-numbers");
+
+    let organize = run(&[
+        "organize",
+        numbered.to_str().unwrap(),
+        "--order",
+        "1,1",
+        "--out",
+        organized.to_str().unwrap(),
+    ]);
+    assert_ok(&organize, "organize");
+    let info = assert_json(
+        &run(&["info", organized.to_str().unwrap(), "--json"]),
+        "info on organized Phase 3 PDF",
+    );
+    assert_eq!(info["page_count"], 2);
+
+    remove_path(&out_dir);
+    remove_path(&wrapped);
+    remove_path(&watermarked);
+    remove_path(&numbered);
+    remove_path(&organized);
+}
+
+#[test]
+fn phase4_office_conversions_run_across_cli_surface() {
+    let xlsx = tmp("phase4_tables.xlsx");
+    let pptx = tmp("phase4_slides.pptx");
+    let docx = tmp("phase4_doc.docx");
+    let from_xlsx = tmp("phase4_from_xlsx.pdf");
+    let from_pptx = tmp("phase4_from_pptx.pdf");
+    let from_docx = tmp("phase4_from_docx.pdf");
+    remove_path(&xlsx);
+    remove_path(&pptx);
+    remove_path(&docx);
+    remove_path(&from_xlsx);
+    remove_path(&from_pptx);
+    remove_path(&from_docx);
+
+    let xlsx_out = run(&[
+        "pdf-to-xlsx",
+        fx("tracemonkey.pdf").to_str().unwrap(),
+        "--out",
+        xlsx.to_str().unwrap(),
+        "--layout",
+        "pages",
+        "--json",
+    ]);
+    let xlsx_json = assert_json(&xlsx_out, "pdf-to-xlsx");
+    assert_eq!(xlsx_json["layout"], "pages");
+    assert!(xlsx.exists());
+    let xlsx_entries = zip_entries(&xlsx);
+    assert!(xlsx_entries
+        .iter()
+        .any(|(name, _)| name == "xl/workbook.xml"));
+    assert!(xlsx_entries
+        .iter()
+        .any(|(name, _)| name == "xl/worksheets/sheet1.xml"));
+
+    let pptx_out = run(&[
+        "pdf-to-pptx",
+        fx("tracemonkey.pdf").to_str().unwrap(),
+        "--out",
+        pptx.to_str().unwrap(),
+        "--json",
+    ]);
+    let pptx_json = assert_json(&pptx_out, "pdf-to-pptx");
+    assert_eq!(pptx_json["include_images"], true);
+    assert!(pptx.exists());
+    let pptx_entries = zip_entries(&pptx);
+    assert!(pptx_entries
+        .iter()
+        .any(|(name, _)| name == "ppt/presentation.xml"));
+    assert!(pptx_entries
+        .iter()
+        .any(|(name, _)| name == "ppt/slides/slide1.xml"));
+
+    let docx_out = run(&[
+        "pdf-to-docx",
+        fx("tracemonkey.pdf").to_str().unwrap(),
+        "--out",
+        docx.to_str().unwrap(),
+        "--json",
+    ]);
+    let docx_json = assert_json(&docx_out, "pdf-to-docx");
+    assert_eq!(docx_json["include_images"], true);
+    assert!(docx.exists());
+    let docx_entries = zip_entries(&docx);
+    assert!(docx_entries
+        .iter()
+        .any(|(name, _)| name == "word/document.xml"));
+
+    for (command, input, output) in [
+        ("xlsx-to-pdf", &xlsx, &from_xlsx),
+        ("pptx-to-pdf", &pptx, &from_pptx),
+        ("docx-to-pdf", &docx, &from_docx),
+    ] {
+        let out = run(&[
+            command,
+            input.to_str().unwrap(),
+            "--out",
+            output.to_str().unwrap(),
+            "--json",
+        ]);
+        let json = assert_json(&out, command);
+        assert!(json["output_bytes"].as_u64().unwrap() > 100);
+        assert!(output.exists());
+        let bytes = std::fs::read(output).unwrap();
+        assert!(bytes.starts_with(b"%PDF-"), "{command} did not write a PDF");
+    }
+
+    remove_path(&xlsx);
+    remove_path(&pptx);
+    remove_path(&docx);
+    remove_path(&from_xlsx);
+    remove_path(&from_pptx);
+    remove_path(&from_docx);
 }

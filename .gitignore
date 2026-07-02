@@ -51,6 +51,12 @@ large-file-profile/results/
 *.obj
 *.exp
 
+# Language binding build/test outputs. Source under bindings/** is tracked, but
+# .NET/Java build products are machine output and must not enter checkpoints.
+bindings/**/bin/
+bindings/**/obj/
+bindings/java/target/
+
 # wasm-bindgen / wasm-pack generated package for the browser demo. This is a
 # BUILD ARTIFACT (the compiled .wasm + JS glue + .d.ts), regenerated from
 # crates/oxide-wasm via the commands in examples/browser/README.md. Not tracked

@@ -10,6 +10,12 @@ homepage = "https://github.com/oxide-pdf/oxide"
 keywords = ["pdf", "server", "documents"]
 categories = ["web-programming::http-server"]
 
+[features]
+# Compile in the Tesseract OCR backend so `OXIDE_OCR=auto|force` auto-registers
+# it at startup. Without this feature the server serves digital-born-only unless
+# a backend is registered in code via `ocr::set_backend`.
+ocr = ["dep:oxide-ocr-tesseract"]
+
 [lib]
 name = "oxide_server"
 path = "src/lib.rs"
@@ -20,6 +26,12 @@ path = "src/main.rs"
 
 [dependencies]
 oxide-engine = { version = "0.1.0", path = "../engine" }
+
+# Optional: server-wide Tesseract OCR backend. Off by default so the server
+# crate carries no OCR dependency; enable with `--features ocr` and set
+# `OXIDE_OCR=auto` (or `force`) at runtime. Any other backend can be wired in
+# code via `ocr::set_backend`, which needs no feature.
+oxide-ocr-tesseract = { version = "0.1.0", path = "../oxide-ocr-tesseract", optional = true }
 
 axum = { version = "0.7", features = ["multipart"] }
 tokio = { version = "1", features = ["full"] }

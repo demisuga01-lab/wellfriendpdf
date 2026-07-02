@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use oxide_engine::{
     ContentEngine, DocType, DocumentInfo, ExtractOptions, ExtractionProfile, ImageLocateOptions,
-    ImageOutputFormat, PageRegion, ParseOptions, SerializeOptions,
+    ImageOutputFormat, OcrPolicy, PageRegion, ParseOptions, SerializeOptions,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyIndexError, PyTypeError, PyValueError};
@@ -11,6 +11,9 @@ use pyo3::prelude::*;
 use pyo3::types::{PyAny, PyBytes, PyDict, PyList, PyModule, PyType};
 use serde::Serialize;
 use serde_json::json;
+
+mod ocr_backend;
+use ocr_backend::PyOcrEngine;
 
 create_exception!(oxide, OxideError, PyException);
 
@@ -180,44 +183,66 @@ impl PyDocument {
         json_to_py(py, &fields)
     }
 
-    #[pyo3(signature = (profile="fast-text"))]
-    fn document_model<'py>(&self, py: Python<'py>, profile: &str) -> PyResult<Py<PyAny>> {
+    #[pyo3(signature = (profile="fast-text", ocr=None, ocr_lang="eng", ocr_dpi=300))]
+    fn document_model<'py>(
+        &self,
+        py: Python<'py>,
+        profile: &str,
+        ocr: Option<&Bound<'py, PyAny>>,
+        ocr_lang: &str,
+        ocr_dpi: u32,
+    ) -> PyResult<Py<PyAny>> {
         let profile = parse_profile_py(profile)?;
-        let document = run_oxide(|| {
-            self.engine
-                .parse_document_with_profile(profile, &ParseOptions::default())
-        })?;
+        let options = parse_options_with_ocr(ocr, ocr_lang, ocr_dpi)?;
+        let document = run_oxide(|| self.engine.parse_document_with_profile(profile, &options))?;
         let value: serde_json::Value = serde_json::from_str(&document.to_json())
             .map_err(|err| OxideError::new_err(format!("document JSON error: {err}")))?;
         json_to_py(py, &value)
     }
 
-    #[pyo3(signature = (detect_headings=true, profile="fast-text"))]
-    fn to_markdown(&self, detect_headings: bool, profile: &str) -> PyResult<String> {
+    #[pyo3(signature = (detect_headings=true, profile="fast-text", ocr=None, ocr_lang="eng", ocr_dpi=300))]
+    fn to_markdown<'py>(
+        &self,
+        detect_headings: bool,
+        profile: &str,
+        ocr: Option<&Bound<'py, PyAny>>,
+        ocr_lang: &str,
+        ocr_dpi: u32,
+    ) -> PyResult<String> {
         let profile = parse_profile_py(profile)?;
         if detect_headings {
-            let document = run_oxide(|| {
-                self.engine
-                    .parse_document_with_profile(profile, &ParseOptions::default())
-            })?;
+            let options = parse_options_with_ocr(ocr, ocr_lang, ocr_dpi)?;
+            let document =
+                run_oxide(|| self.engine.parse_document_with_profile(profile, &options))?;
             Ok(document.to_markdown(&SerializeOptions::default()))
         } else {
             all_text_with_profile(&self.engine, profile)
         }
     }
 
-    #[pyo3(signature = (detect_headings=true, profile="fast-text"))]
-    fn markdown(&self, detect_headings: bool, profile: &str) -> PyResult<String> {
-        self.to_markdown(detect_headings, profile)
+    #[pyo3(signature = (detect_headings=true, profile="fast-text", ocr=None, ocr_lang="eng", ocr_dpi=300))]
+    fn markdown<'py>(
+        &self,
+        detect_headings: bool,
+        profile: &str,
+        ocr: Option<&Bound<'py, PyAny>>,
+        ocr_lang: &str,
+        ocr_dpi: u32,
+    ) -> PyResult<String> {
+        self.to_markdown(detect_headings, profile, ocr, ocr_lang, ocr_dpi)
     }
 
-    #[pyo3(signature = (profile="fast-text"))]
-    fn to_html(&self, profile: &str) -> PyResult<String> {
+    #[pyo3(signature = (profile="fast-text", ocr=None, ocr_lang="eng", ocr_dpi=300))]
+    fn to_html<'py>(
+        &self,
+        profile: &str,
+        ocr: Option<&Bound<'py, PyAny>>,
+        ocr_lang: &str,
+        ocr_dpi: u32,
+    ) -> PyResult<String> {
         let profile = parse_profile_py(profile)?;
-        let document = run_oxide(|| {
-            self.engine
-                .parse_document_with_profile(profile, &ParseOptions::default())
-        })?;
+        let options = parse_options_with_ocr(ocr, ocr_lang, ocr_dpi)?;
+        let document = run_oxide(|| self.engine.parse_document_with_profile(profile, &options))?;
         Ok(document.to_html(&SerializeOptions::default()))
     }
 
@@ -363,6 +388,413 @@ fn open(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<PyDocumen
     open_impl(source, password)
 }
 
+#[pyfunction]
+#[pyo3(signature = (inputs, output=None, passwords=None))]
+fn merge_pdfs(
+    inputs: Vec<PathBuf>,
+    output: Option<PathBuf>,
+    passwords: Option<Vec<String>>,
+) -> PyResult<Vec<u8>> {
+    if inputs.is_empty() {
+        return Err(PyValueError::new_err("inputs must not be empty"));
+    }
+    let mut engines = Vec::with_capacity(inputs.len());
+    for (idx, path) in inputs.iter().enumerate() {
+        let password = passwords
+            .as_ref()
+            .and_then(|values| values.get(idx))
+            .map(String::as_str);
+        engines.push(open_engine_path(path, password)?);
+    }
+    let mut specs = Vec::with_capacity(engines.len());
+    for engine in &engines {
+        let total = run_oxide(|| engine.page_count())?;
+        specs.push((engine.document(), (1..=total).collect::<Vec<_>>()));
+    }
+    let bytes = run_oxide(|| oxide_engine::build_merged(&specs))?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, pages, output=None, password=None))]
+fn extract_pages(
+    pdf: PathBuf,
+    pages: &str,
+    output: Option<PathBuf>,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let total = run_oxide(|| engine.page_count())?;
+    let selected = parse_pages_spec_py(pages, total)?;
+    let bytes = run_oxide(|| engine.extract_pages(&selected))?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, angle, pages="all", relative=false, output=None, password=None))]
+fn rotate_pdf(
+    pdf: PathBuf,
+    angle: i32,
+    pages: &str,
+    relative: bool,
+    output: Option<PathBuf>,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let total = run_oxide(|| engine.page_count())?;
+    let selected = parse_pages_spec_py(pages, total)?;
+    let rotation = if relative {
+        oxide_engine::Rotation::Relative(angle)
+    } else {
+        oxide_engine::Rotation::Absolute(angle)
+    };
+    let bytes = run_oxide(|| oxide_engine::rotate_pages(&engine, &selected, rotation))?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, output=None, password=None))]
+fn decrypt_pdf(pdf: PathBuf, output: Option<PathBuf>, password: Option<&str>) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let bytes = run_oxide(|| oxide_engine::decrypt_pdf(&engine))?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, user_password="", owner_password=None, output=None, algo="aes256", permissions=-1, password=None))]
+fn encrypt_pdf(
+    pdf: PathBuf,
+    user_password: &str,
+    owner_password: Option<&str>,
+    output: Option<PathBuf>,
+    algo: &str,
+    permissions: i32,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+    let engine = open_engine_path(&pdf, password)?;
+    let algorithm = EncryptAlgorithm::parse(algo)
+        .ok_or_else(|| PyValueError::new_err("algo must be aes256, aes128, or rc4"))?;
+    let owner = owner_password.unwrap_or(user_password);
+    let params = EncryptParams {
+        user_password: secret_bytes(user_password.as_bytes().to_vec()),
+        owner_password: secret_bytes(owner.as_bytes().to_vec()),
+        permissions,
+        algorithm,
+        encrypt_metadata: true,
+    };
+    let bytes = run_oxide(|| oxide_engine::encrypt(&engine, &params))?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, output=None, password=None))]
+fn optimize_pdf(
+    pdf: PathBuf,
+    output: Option<PathBuf>,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let (bytes, _) = run_oxide(|| oxide_engine::optimize(&engine))?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, output=None, password=None))]
+fn repair_pdf(pdf: PathBuf, output: Option<PathBuf>, password: Option<&str>) -> PyResult<Vec<u8>> {
+    let bytes = std::fs::read(&pdf).map_err(|err| OxideError::new_err(err.to_string()))?;
+    let password = password.unwrap_or("").as_bytes().to_vec();
+    let repaired = run_oxide(|| oxide_engine::repair(bytes, &password))?;
+    write_optional(&output, &repaired)?;
+    Ok(repaired)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, output=None, password=None))]
+fn linearize_pdf(
+    pdf: PathBuf,
+    output: Option<PathBuf>,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let bytes = run_oxide(|| oxide_engine::linearize(&engine))?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, out_dir, pages="all", dpi=150, quality=85, format="jpg", password=None))]
+#[allow(clippy::too_many_arguments)]
+fn pdf_to_images<'py>(
+    py: Python<'py>,
+    pdf: PathBuf,
+    out_dir: PathBuf,
+    pages: &str,
+    dpi: u32,
+    quality: u8,
+    format: &str,
+    password: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let total = run_oxide(|| engine.page_count())?;
+    let selected = parse_pages_spec_py(pages, total)?;
+    let format = oxide_engine::RasterImageFormat::parse(format)
+        .ok_or_else(|| PyValueError::new_err("format must be jpg or png"))?;
+    let results = run_oxide(|| {
+        oxide_engine::export_pdf_pages_to_images(
+            &engine, &out_dir, &selected, dpi, format, quality, "page",
+        )
+    })?;
+    json_to_py(py, &results)
+}
+
+#[pyfunction]
+#[pyo3(signature = (images, output=None, page_size="a4", margin=0.0))]
+fn images_to_pdf(
+    images: Vec<PathBuf>,
+    output: Option<PathBuf>,
+    page_size: &str,
+    margin: f64,
+) -> PyResult<Vec<u8>> {
+    let page_size = oxide_engine::ImagePdfPageSize::parse(page_size)
+        .ok_or_else(|| PyValueError::new_err("page_size must be a4, letter, or size-to-image"))?;
+    let bytes = run_oxide(|| {
+        oxide_engine::images_to_pdf_from_paths(
+            &images,
+            oxide_engine::ImageToPdfOptions {
+                page_size,
+                margin_points: margin,
+            },
+        )
+    })?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, output=None, layout="pages", password=None))]
+fn pdf_to_xlsx(
+    pdf: PathBuf,
+    output: Option<PathBuf>,
+    layout: &str,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let layout = oxide_engine::XlsxLayout::parse(layout)
+        .ok_or_else(|| PyValueError::new_err("layout must be pages or tables"))?;
+    let bytes =
+        run_oxide(|| oxide_engine::pdf_to_xlsx(&engine, &oxide_engine::XlsxOptions { layout }))?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, output=None, include_images=true, password=None))]
+fn pdf_to_pptx(
+    pdf: PathBuf,
+    output: Option<PathBuf>,
+    include_images: bool,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let bytes = run_oxide(|| {
+        oxide_engine::pdf_to_pptx(&engine, &oxide_engine::PptxOptions { include_images })
+    })?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, output=None, include_images=true, password=None))]
+fn pdf_to_docx(
+    pdf: PathBuf,
+    output: Option<PathBuf>,
+    include_images: bool,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let bytes = run_oxide(|| {
+        oxide_engine::pdf_to_docx(&engine, &oxide_engine::DocxOptions { include_images })
+    })?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (docx, output=None))]
+fn docx_to_pdf(docx: PathBuf, output: Option<PathBuf>) -> PyResult<Vec<u8>> {
+    let input = std::fs::read(&docx)?;
+    let bytes = run_oxide(|| {
+        oxide_engine::docx_to_pdf(&input, &oxide_engine::OfficeToPdfOptions::default())
+    })?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (xlsx, output=None))]
+fn xlsx_to_pdf(xlsx: PathBuf, output: Option<PathBuf>) -> PyResult<Vec<u8>> {
+    let input = std::fs::read(&xlsx)?;
+    let bytes = run_oxide(|| {
+        oxide_engine::xlsx_to_pdf(&input, &oxide_engine::OfficeToPdfOptions::default())
+    })?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pptx, output=None))]
+fn pptx_to_pdf(pptx: PathBuf, output: Option<PathBuf>) -> PyResult<Vec<u8>> {
+    let input = std::fs::read(&pptx)?;
+    let bytes = run_oxide(|| {
+        oxide_engine::pptx_to_pdf(&input, &oxide_engine::OfficeToPdfOptions::default())
+    })?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, text=None, image=None, output=None, pages="all", position="center", opacity=0.28, rotation=45.0, font_size=64.0, color="#8c8c8c", scale=0.5, password=None))]
+#[allow(clippy::too_many_arguments)]
+fn watermark_pdf(
+    pdf: PathBuf,
+    text: Option<String>,
+    image: Option<PathBuf>,
+    output: Option<PathBuf>,
+    pages: &str,
+    position: &str,
+    opacity: f64,
+    rotation: f64,
+    font_size: f64,
+    color: &str,
+    scale: f64,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    if text.is_some() == image.is_some() {
+        return Err(PyValueError::new_err("pass exactly one of text or image"));
+    }
+    let input = read_edit_input_py(&pdf, password)?;
+    let engine = run_oxide(|| ContentEngine::open_bytes(input.clone()))?;
+    let total = run_oxide(|| engine.page_count())?;
+    let selected = parse_pages_spec_py(pages, total)?;
+    let position = parse_stamp_position_py(position)?;
+    let bytes = if let Some(text) = text {
+        let color = parse_rgb_color_py(color)?;
+        run_oxide(|| {
+            oxide_engine::watermark_text_pdf(
+                input,
+                &text,
+                oxide_engine::TextWatermarkOptions {
+                    pages: selected,
+                    position,
+                    opacity,
+                    rotation_degrees: rotation,
+                    font_size,
+                    color,
+                },
+            )
+        })?
+    } else {
+        let image_path = image.expect("checked above");
+        let image =
+            std::fs::read(&image_path).map_err(|err| OxideError::new_err(err.to_string()))?;
+        run_oxide(|| {
+            oxide_engine::watermark_image_pdf(
+                input,
+                &image,
+                image_path.extension().and_then(|s| s.to_str()),
+                oxide_engine::ImageWatermarkOptions {
+                    pages: selected,
+                    position,
+                    opacity,
+                    scale,
+                },
+            )
+        })?
+    };
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, output=None, pages="all", position="bottom-center", format="Page {n} of {total}", start=1, font_size=10.0, color="#333333", password=None))]
+#[allow(clippy::too_many_arguments)]
+fn add_page_numbers(
+    pdf: PathBuf,
+    output: Option<PathBuf>,
+    pages: &str,
+    position: &str,
+    format: &str,
+    start: isize,
+    font_size: f64,
+    color: &str,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let input = read_edit_input_py(&pdf, password)?;
+    let engine = run_oxide(|| ContentEngine::open_bytes(input.clone()))?;
+    let total = run_oxide(|| engine.page_count())?;
+    let selected = parse_pages_spec_py(pages, total)?;
+    let position = parse_stamp_position_py(position)?;
+    let color = parse_rgb_color_py(color)?;
+    let bytes = run_oxide(|| {
+        oxide_engine::add_page_numbers_pdf(
+            input,
+            oxide_engine::PageNumberOptions {
+                pages: selected,
+                position,
+                format: format.to_string(),
+                start,
+                font_size,
+                color,
+            },
+        )
+    })?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, order="all", output=None, password=None))]
+fn organize_pdf(
+    pdf: PathBuf,
+    order: &str,
+    output: Option<PathBuf>,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let total = run_oxide(|| engine.page_count())?;
+    let selected = parse_pages_spec_py(order, total)?;
+    let bytes = run_oxide(|| oxide_engine::organize_pdf(&engine, &selected))?;
+    write_optional(&output, &bytes)?;
+    Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, password=None))]
+fn fonts<'py>(py: Python<'py>, pdf: PathBuf, password: Option<&str>) -> PyResult<Py<PyAny>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let fonts = run_oxide(|| engine.list_fonts())?;
+    json_to_py(py, &fonts)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, password=None))]
+fn verify_signatures<'py>(
+    py: Python<'py>,
+    pdf: PathBuf,
+    password: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let sigs = run_oxide(|| engine.verify_signatures())?;
+    json_to_py(py, &sigs)
+}
+
 #[pymodule]
 fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("OxideError", py.get_type::<OxideError>())?;
@@ -370,6 +802,27 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyPage>()?;
     module.add_class::<PyRegionPage>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
+    module.add_function(wrap_pyfunction!(merge_pdfs, module)?)?;
+    module.add_function(wrap_pyfunction!(extract_pages, module)?)?;
+    module.add_function(wrap_pyfunction!(rotate_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(decrypt_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(encrypt_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(optimize_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(repair_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(linearize_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(pdf_to_images, module)?)?;
+    module.add_function(wrap_pyfunction!(images_to_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(pdf_to_xlsx, module)?)?;
+    module.add_function(wrap_pyfunction!(pdf_to_pptx, module)?)?;
+    module.add_function(wrap_pyfunction!(pdf_to_docx, module)?)?;
+    module.add_function(wrap_pyfunction!(docx_to_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(xlsx_to_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(pptx_to_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(watermark_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(add_page_numbers, module)?)?;
+    module.add_function(wrap_pyfunction!(organize_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(fonts, module)?)?;
+    module.add_function(wrap_pyfunction!(verify_signatures, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     Ok(())
 }
@@ -402,6 +855,104 @@ fn open_impl(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<PyDo
     })
 }
 
+fn open_engine_path(path: &PathBuf, password: Option<&str>) -> PyResult<ContentEngine> {
+    if let Some(password) = password {
+        run_oxide(|| ContentEngine::open_path_with_password(path, password.as_bytes()))
+    } else {
+        run_oxide(|| ContentEngine::open_path(path))
+    }
+}
+
+fn write_optional(path: &Option<PathBuf>, bytes: &[u8]) -> PyResult<()> {
+    if let Some(path) = path {
+        std::fs::write(path, bytes).map_err(|err| OxideError::new_err(err.to_string()))?;
+    }
+    Ok(())
+}
+
+fn read_edit_input_py(path: &PathBuf, password: Option<&str>) -> PyResult<Vec<u8>> {
+    if password.is_some() {
+        let engine = open_engine_path(path, password)?;
+        run_oxide(|| oxide_engine::decrypt_pdf(&engine))
+    } else {
+        std::fs::read(path).map_err(|err| OxideError::new_err(err.to_string()))
+    }
+}
+
+fn parse_pages_spec_py(spec: &str, total: usize) -> PyResult<Vec<usize>> {
+    if total == 0 {
+        return Err(PyValueError::new_err("document has no pages"));
+    }
+    let spec = spec.trim();
+    if spec.is_empty() || spec.eq_ignore_ascii_case("all") {
+        return Ok((1..=total).collect());
+    }
+    let mut out = Vec::new();
+    for part in spec.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if let Some((start, end)) = part.split_once('-') {
+            let start: usize = start
+                .trim()
+                .parse()
+                .map_err(|_| PyValueError::new_err(format!("invalid page '{part}'")))?;
+            let end: usize = end
+                .trim()
+                .parse()
+                .map_err(|_| PyValueError::new_err(format!("invalid page '{part}'")))?;
+            if start == 0 || end == 0 || start > end {
+                return Err(PyValueError::new_err(format!(
+                    "invalid page range '{part}'"
+                )));
+            }
+            for page in start..=end.min(total) {
+                out.push(page);
+            }
+        } else {
+            let page: usize = part
+                .parse()
+                .map_err(|_| PyValueError::new_err(format!("invalid page '{part}'")))?;
+            if page == 0 || page > total {
+                return Err(PyValueError::new_err(format!(
+                    "page {page} out of range 1..={total}"
+                )));
+            }
+            out.push(page);
+        }
+    }
+    if out.is_empty() {
+        return Err(PyValueError::new_err("page selection matched no pages"));
+    }
+    Ok(out)
+}
+
+fn parse_stamp_position_py(value: &str) -> PyResult<oxide_engine::StampPosition> {
+    oxide_engine::StampPosition::parse(value)
+        .ok_or_else(|| PyValueError::new_err(format!("unknown position '{value}'")))
+}
+
+fn parse_rgb_color_py(value: &str) -> PyResult<oxide_engine::RgbColor> {
+    let hex = value.strip_prefix('#').unwrap_or(value);
+    if hex.len() != 6 {
+        return Err(PyValueError::new_err(format!(
+            "color '{value}' must be #RRGGBB"
+        )));
+    }
+    let r = u8::from_str_radix(&hex[0..2], 16)
+        .map_err(|_| PyValueError::new_err(format!("color '{value}' must be #RRGGBB")))?;
+    let g = u8::from_str_radix(&hex[2..4], 16)
+        .map_err(|_| PyValueError::new_err(format!("color '{value}' must be #RRGGBB")))?;
+    let b = u8::from_str_radix(&hex[4..6], 16)
+        .map_err(|_| PyValueError::new_err(format!("color '{value}' must be #RRGGBB")))?;
+    Ok(oxide_engine::RgbColor {
+        r: f64::from(r) / 255.0,
+        g: f64::from(g) / 255.0,
+        b: f64::from(b) / 255.0,
+    })
+}
+
 fn run_oxide<T, F>(operation: F) -> PyResult<T>
 where
     F: FnOnce() -> oxide_engine::Result<T>,
@@ -430,6 +981,42 @@ fn parse_profile_py(name: &str) -> PyResult<ExtractionProfile> {
             "profile must be fast-text, layout-faithful, tables-focused, or rag-chunks",
         )
     })
+}
+
+/// Build [`ParseOptions`] with an optional Python OCR backend wired in. When
+/// `ocr` is `None`, returns the default options (OCR off — scanned pages degrade
+/// to the placeholder, matching the pre-OCR behavior). When `ocr` is a Python
+/// object, wraps it as a [`PyOcrEngine`] and enables the `Auto` policy so scanned
+/// pages are recognized through it. `ocr_lang` is split on `+`/`,` (falling back
+/// to `eng`); `ocr_dpi` sets the rasterization DPI (~300 is the sweet spot).
+fn parse_options_with_ocr(
+    ocr: Option<&Bound<'_, PyAny>>,
+    ocr_lang: &str,
+    ocr_dpi: u32,
+) -> PyResult<ParseOptions> {
+    let mut options = ParseOptions::default();
+    let Some(obj) = ocr else {
+        return Ok(options);
+    };
+    let backend = PyOcrEngine::new(obj)?;
+    let langs: Vec<String> = ocr_lang
+        .split(['+', ','])
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    options.ocr = Some(Arc::new(backend));
+    options.ocr_policy = OcrPolicy::Auto;
+    options.ocr_options = oxide_engine::OcrOptions {
+        languages: if langs.is_empty() {
+            vec!["eng".to_string()]
+        } else {
+            langs
+        },
+        dpi: ocr_dpi.max(1),
+        psm: None,
+    };
+    options.ocr_dpi = ocr_dpi.max(1);
+    Ok(options)
 }
 
 fn all_text_with_profile(engine: &ContentEngine, profile: ExtractionProfile) -> PyResult<String> {

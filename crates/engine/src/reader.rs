@@ -17,6 +17,7 @@ use crate::error::{OxideError, Result};
 use crate::filters::decode_stream_from_dict;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::parser::{ParserResolver, PdfParser};
+use crate::parser_report::{ParserCategory, ParserDiagnostic, ParserSeverity, ParserSourceMetrics};
 
 const MAX_FALLBACK_XREF_OBJECTS: usize = 200_000;
 const STREAMING_TAIL_READ_LIMIT: usize = 16 * 1024 * 1024;
@@ -24,6 +25,7 @@ const STREAMING_XREF_READ_LIMIT: usize = 64 * 1024 * 1024;
 const STREAMING_FULL_READ_FALLBACK_LIMIT: u64 = 128 * 1024 * 1024;
 const STREAMING_STREAM_HEADER_READ_LIMIT: usize = 1024 * 1024;
 const DEFAULT_OBJECT_STREAM_CACHE_LIMIT: usize = 32;
+const MAX_XREF_CHAIN_DEPTH: usize = 256;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum XrefEntry {
@@ -298,6 +300,7 @@ pub struct PdfReader {
     object_stream_cache: RwLock<BoundedObjectStreamCache>,
     encryption: Option<EncryptionContext>,
     startxref: usize,
+    diagnostics: Vec<ParserDiagnostic>,
 }
 
 impl PdfReader {
@@ -315,7 +318,19 @@ impl PdfReader {
             Ok(reader) => Ok(reader),
             Err(primary) if metadata_len <= STREAMING_FULL_READ_FALLBACK_LIMIT => {
                 match Self::from_bytes_with_password(fs::read(path)?, password) {
-                    Ok(reader) => Ok(reader),
+                    Ok(mut reader) => {
+                        reader.diagnostics.push(
+                            ParserDiagnostic::new(
+                                ParserSeverity::RecoverableError,
+                                ParserCategory::Source,
+                                "streaming_open_fell_back_to_full_read",
+                                "file-backed range open failed; reopened through bounded full-read fallback",
+                            )
+                            .with_recovery("materialized file because it was below the configured fallback limit")
+                            .incomplete(),
+                        );
+                        Ok(reader)
+                    }
                     Err(_) => Err(primary),
                 }
             }
@@ -327,40 +342,24 @@ impl PdfReader {
         Self::from_bytes_with_password(data, b"")
     }
 
-    /// Open a PDF from bytes, supplying a user password for encrypted
-    /// documents. For non-encrypted PDFs the password is ignored.
+    /// Open a PDF from bytes in strict parser mode.
     ///
-    /// For encrypted PDFs the password is verified against the `/U` entry; the
-    /// supplied password is tried first, then the empty password as a fallback
-    /// (the most common case in the wild — permission-only encryption). If no
-    /// password verifies, [`OxideError::EncryptedPdf`] is returned.
-    pub fn from_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
+    /// Strict mode requires a discoverable `startxref`, a readable xref chain,
+    /// and a trailer dictionary. It intentionally does not run the object-scan
+    /// repair fallback that [`Self::from_bytes`] uses for damaged files.
+    pub fn from_bytes_strict(data: Vec<u8>) -> Result<Self> {
+        Self::from_bytes_strict_with_password(data, b"")
+    }
+
+    /// Strict parser-mode variant of [`Self::from_bytes_with_password`].
+    pub fn from_bytes_strict_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
+        let diagnostics = crate::parser_report::diagnose_pdf_bytes(&data);
         let version = parse_header_version(&data)?;
         let mut xref = HashMap::new();
         let mut trailer = None;
         let mut visited = HashSet::new();
-
-        let startxref = match find_startxref(&data) {
-            Ok(startxref) => {
-                if let Err(primary) =
-                    read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited)
-                {
-                    xref.clear();
-                    trailer = None;
-                    if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
-                        return Err(primary);
-                    }
-                }
-                startxref
-            }
-            Err(primary) => {
-                if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
-                    return Err(primary);
-                }
-                0
-            }
-        };
-        repair_uncompressed_xref_offsets(&data, &mut xref);
+        let startxref = find_startxref(&data)?;
+        read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited)?;
 
         let trailer = trailer.ok_or_else(|| {
             OxideError::MalformedPdf("PDF did not contain a trailer dictionary".to_string())
@@ -379,10 +378,106 @@ impl PdfReader {
             )),
             encryption,
             startxref,
+            diagnostics,
+        })
+    }
+
+    /// Open a PDF from bytes, supplying a user password for encrypted
+    /// documents. For non-encrypted PDFs the password is ignored.
+    ///
+    /// For encrypted PDFs the password is verified against the `/U` entry; the
+    /// supplied password is tried first, then the empty password as a fallback
+    /// (the most common case in the wild — permission-only encryption). If no
+    /// password verifies, [`OxideError::EncryptedPdf`] is returned.
+    pub fn from_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
+        let mut diagnostics = crate::parser_report::diagnose_pdf_bytes(&data);
+        let version = parse_header_version(&data)?;
+        let mut xref = HashMap::new();
+        let mut trailer = None;
+        let mut visited = HashSet::new();
+
+        let startxref = match find_startxref(&data) {
+            Ok(startxref) => {
+                if let Err(primary) =
+                    read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited)
+                {
+                    xref.clear();
+                    trailer = None;
+                    if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
+                        return Err(primary);
+                    }
+                    diagnostics.push(
+                        ParserDiagnostic::new(
+                            ParserSeverity::RecoverableError,
+                            ParserCategory::Repair,
+                            "xref_chain_rebuilt_from_object_scan",
+                            "xref chain could not be trusted and was rebuilt from a bounded indirect-object scan",
+                        )
+                        .at_offset(startxref)
+                        .with_recovery("discarded damaged xref chain and used recovered object offsets")
+                        .incomplete(),
+                    );
+                }
+                startxref
+            }
+            Err(primary) => {
+                if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
+                    return Err(primary);
+                }
+                diagnostics.push(
+                    ParserDiagnostic::new(
+                        ParserSeverity::RecoverableError,
+                        ParserCategory::Repair,
+                        "missing_startxref_repaired",
+                        "missing startxref was repaired by bounded indirect-object scan",
+                    )
+                    .with_recovery("built xref table from indirect-object headers")
+                    .incomplete(),
+                );
+                0
+            }
+        };
+        let repaired_offsets = repair_uncompressed_xref_offsets(&data, &mut xref);
+        if repaired_offsets > 0 {
+            diagnostics.push(
+                ParserDiagnostic::new(
+                    ParserSeverity::RecoverableError,
+                    ParserCategory::Repair,
+                    "xref_offsets_repaired",
+                    format!(
+                        "{repaired_offsets} xref offset(s) were corrected by nearby object headers"
+                    ),
+                )
+                .with_recovery(
+                    "replaced damaged uncompressed xref offsets with scanned object offsets",
+                )
+                .incomplete(),
+            );
+        }
+
+        let trailer = trailer.ok_or_else(|| {
+            OxideError::MalformedPdf("PDF did not contain a trailer dictionary".to_string())
+        })?;
+
+        let source = PdfSource::Memory(data);
+        let encryption = setup_encryption(&source, &xref, &trailer, password)?;
+
+        Ok(Self {
+            source,
+            version,
+            xref,
+            trailer,
+            object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
+                DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
+            )),
+            encryption,
+            startxref,
+            diagnostics,
         })
     }
 
     fn from_seekable_source_with_password(source: PdfSource, password: &[u8]) -> Result<Self> {
+        let diagnostics = Vec::new();
         let prefix = source.read_prefix(1024)?;
         let version = parse_header_version(&prefix)?;
         let tail = source.read_tail(STREAMING_TAIL_READ_LIMIT)?;
@@ -408,6 +503,7 @@ impl PdfReader {
             )),
             encryption,
             startxref,
+            diagnostics,
         })
     }
 
@@ -430,6 +526,28 @@ impl PdfReader {
     /// Reported by the `info` tool.
     pub fn file_size(&self) -> usize {
         self.source.len()
+    }
+
+    /// Structured diagnostics collected during parser open/repair.
+    pub fn parser_diagnostics(&self) -> &[ParserDiagnostic] {
+        &self.diagnostics
+    }
+
+    /// Source/laziness metrics that can be reported without forcing object parsing.
+    pub fn source_metrics(&self) -> ParserSourceMetrics {
+        ParserSourceMetrics {
+            file_size_bytes: self.source.len(),
+            file_backed: matches!(self.source, PdfSource::File(_)),
+            startxref: Some(self.startxref),
+            xref_entries: self.xref.len(),
+            objects_known: self.object_ids().len(),
+            objects_parsed_during_open: 0,
+            object_streams_decoded_during_open: 0,
+            bytes_read_during_open: match self.source {
+                PdfSource::Memory(_) => Some(self.source.len()),
+                PdfSource::File(_) => None,
+            },
+        }
     }
 
     /// The exact original file bytes, as opened. Digital-signature verification
@@ -1147,7 +1265,14 @@ fn read_xref_chain(
     visited: &mut HashSet<usize>,
 ) -> Result<()> {
     let mut next = Some(startxref);
+    let mut depth = 0usize;
     while let Some(offset) = next {
+        if depth >= MAX_XREF_CHAIN_DEPTH {
+            return Err(OxideError::ResourceLimit(format!(
+                "xref /Prev chain exceeded depth limit of {MAX_XREF_CHAIN_DEPTH}"
+            )));
+        }
+        depth += 1;
         if !visited.insert(offset) {
             return Err(OxideError::MalformedPdf(format!(
                 "cyclic xref chain at offset {offset}"
@@ -1177,7 +1302,14 @@ fn read_xref_chain_from_source(
     visited: &mut HashSet<usize>,
 ) -> Result<()> {
     let mut next = Some(startxref);
+    let mut depth = 0usize;
     while let Some(offset) = next {
+        if depth >= MAX_XREF_CHAIN_DEPTH {
+            return Err(OxideError::ResourceLimit(format!(
+                "xref /Prev chain exceeded depth limit of {MAX_XREF_CHAIN_DEPTH}"
+            )));
+        }
+        depth += 1;
         if !visited.insert(offset) {
             return Err(OxideError::MalformedPdf(format!(
                 "cyclic xref chain at offset {offset}"
@@ -1199,7 +1331,10 @@ fn read_xref_chain_from_source(
     Ok(())
 }
 
-fn repair_uncompressed_xref_offsets(data: &[u8], xref: &mut HashMap<(u32, u16), XrefEntry>) {
+fn repair_uncompressed_xref_offsets(
+    data: &[u8],
+    xref: &mut HashMap<(u32, u16), XrefEntry>,
+) -> usize {
     let needs_repair = xref.iter().any(|(&(number, generation), entry)| {
         matches!(
             entry,
@@ -1208,10 +1343,11 @@ fn repair_uncompressed_xref_offsets(data: &[u8], xref: &mut HashMap<(u32, u16), 
         )
     });
     if !needs_repair {
-        return;
+        return 0;
     }
 
     let scanned = scan_indirect_object_headers(data);
+    let mut repaired_count = 0usize;
     for (&(number, generation), entry) in xref.iter_mut() {
         let XrefEntry::Uncompressed { offset } = entry else {
             continue;
@@ -1221,8 +1357,10 @@ fn repair_uncompressed_xref_offsets(data: &[u8], xref: &mut HashMap<(u32, u16), 
         }
         if let Some(repaired) = scanned.get(&(number, generation)) {
             *offset = *repaired;
+            repaired_count += 1;
         }
     }
+    repaired_count
 }
 
 fn rebuild_xref_from_object_scan(
@@ -1315,6 +1453,7 @@ fn find_catalog_reference(data: &[u8], scanned: &HashMap<(u32, u16), usize>) -> 
 
 fn scan_indirect_object_headers(data: &[u8]) -> HashMap<(u32, u16), usize> {
     let mut offsets = HashMap::new();
+    let stream_spans = stream_data_spans(data);
     for (rel, window) in data.windows(b" obj".len()).enumerate() {
         if window != b" obj" {
             continue;
@@ -1324,12 +1463,57 @@ fn scan_indirect_object_headers(data: &[u8]) -> HashMap<(u32, u16), usize> {
             .rposition(|byte| *byte == b'\r' || *byte == b'\n')
             .map_or(0, |pos| pos + 1);
         let object_start = skip_ws_and_comments(data, line_start);
+        if offset_in_spans(object_start, &stream_spans) {
+            continue;
+        }
         let Some((number, generation)) = parse_indirect_object_header(data, object_start) else {
             continue;
         };
         offsets.insert((number, generation), object_start);
     }
     offsets
+}
+
+fn stream_data_spans(data: &[u8]) -> Vec<(usize, usize)> {
+    let marker = b"stream";
+    let mut spans = Vec::new();
+    let mut pos = 0usize;
+    while let Some(rel) = data[pos..]
+        .windows(marker.len())
+        .position(|window| window == marker)
+    {
+        let stream_pos = pos + rel;
+        let after_marker = stream_pos + marker.len();
+        let Some(data_start) = stream_data_start(data, after_marker) else {
+            pos = after_marker;
+            continue;
+        };
+        let data_end = find_endstream(data, data_start).unwrap_or(data.len());
+        spans.push((data_start, data_end));
+        pos = data_end.saturating_add(b"endstream".len()).min(data.len());
+    }
+    spans
+}
+
+fn stream_data_start(data: &[u8], pos: usize) -> Option<usize> {
+    match data.get(pos).copied() {
+        Some(b'\r') if data.get(pos + 1).copied() == Some(b'\n') => Some(pos + 2),
+        Some(b'\r' | b'\n') => Some(pos + 1),
+        _ => None,
+    }
+}
+
+fn find_endstream(data: &[u8], start: usize) -> Option<usize> {
+    data[start..]
+        .windows(b"endstream".len())
+        .position(|window| window == b"endstream")
+        .map(|rel| start + rel)
+}
+
+fn offset_in_spans(offset: usize, spans: &[(usize, usize)]) -> bool {
+    spans
+        .iter()
+        .any(|(start, end)| (*start..*end).contains(&offset))
 }
 
 fn indirect_object_header_at_matches(
@@ -1548,6 +1732,7 @@ pub(crate) fn parse_xref_stream_entries(
     };
 
     let mut entries = Vec::new();
+    let mut seen_object_numbers = HashSet::new();
     let mut cursor = 0usize;
     for (start, count) in ranges {
         for relative in 0..count {
@@ -1575,6 +1760,11 @@ pub(crate) fn parse_xref_stream_entries(
             let object_number = start.checked_add(relative).ok_or_else(|| {
                 OxideError::MalformedPdf("xref stream object number overflows".to_string())
             })?;
+            if !seen_object_numbers.insert(object_number) {
+                return Err(OxideError::MalformedPdf(format!(
+                    "xref stream /Index contains duplicate object {object_number}"
+                )));
+            }
             match field0 {
                 0 => {
                     let generation = u16::try_from(field2).unwrap_or(u16::MAX);
@@ -1647,15 +1837,20 @@ pub(crate) fn parse_object_stream_data(
     // the truncated header. The loop below still reads exactly `n` entries and
     // errors cleanly once the header runs out of tokens.
     let mut table = Vec::with_capacity(n.min(first));
+    let mut seen_object_numbers = HashSet::new();
     for index in 0..n {
         let object_number = read_u64_token(header, &mut pos)?;
         let offset = read_u64_token(header, &mut pos)?;
+        let object_number = u32::try_from(object_number).map_err(|_| {
+            OxideError::MalformedPdf("object stream object number does not fit in u32".to_string())
+        })?;
+        if !seen_object_numbers.insert(object_number) {
+            return Err(OxideError::MalformedPdf(format!(
+                "object stream contains duplicate object {object_number}"
+            )));
+        }
         table.push((
-            u32::try_from(object_number).map_err(|_| {
-                OxideError::MalformedPdf(
-                    "object stream object number does not fit in u32".to_string(),
-                )
-            })?,
+            object_number,
             u32::try_from(index).map_err(|_| {
                 OxideError::MalformedPdf("object stream index does not fit in u32".to_string())
             })?,
@@ -1679,7 +1874,11 @@ pub(crate) fn parse_object_stream_data(
         }
         let mut parser = PdfParser::with_resolver(decoded, object_offset, resolver)?;
         let object = parser.parse_object()?;
-        objects.insert(object_number, (index, object));
+        if objects.insert(object_number, (index, object)).is_some() {
+            return Err(OxideError::MalformedPdf(format!(
+                "object stream contains duplicate object {object_number}"
+            )));
+        }
     }
     Ok(objects)
 }
@@ -2098,6 +2297,36 @@ trailer
     }
 
     #[test]
+    fn xref_stream_rejects_overlapping_index_ranges() {
+        let dict = dict(&[
+            (
+                "W",
+                PdfObject::Array(vec![
+                    PdfObject::Integer(1),
+                    PdfObject::Integer(1),
+                    PdfObject::Integer(1),
+                ]),
+            ),
+            (
+                "Index",
+                PdfObject::Array(vec![
+                    PdfObject::Integer(1),
+                    PdfObject::Integer(2),
+                    PdfObject::Integer(2),
+                    PdfObject::Integer(1),
+                ]),
+            ),
+        ]);
+        let raw = [1, 10, 0, 1, 20, 0, 1, 30, 0];
+
+        let err = parse_xref_stream_entries(&dict, &raw).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("xref stream /Index contains duplicate object 2"));
+    }
+
+    #[test]
     fn parses_object_stream_data_by_object_number() {
         let decoded = b"10 0 11 5 true /Name";
         let objects = parse_object_stream_data(decoded, 2, 10, None).unwrap();
@@ -2106,6 +2335,17 @@ trailer
             objects.get(&11).unwrap().1,
             PdfObject::Name("Name".to_string())
         );
+    }
+
+    #[test]
+    fn object_stream_rejects_duplicate_object_numbers() {
+        let decoded = b"10 0 10 5 true /Name";
+
+        let err = parse_object_stream_data(decoded, 2, 10, None).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("object stream contains duplicate object 10"));
     }
 
     #[test]
@@ -2121,5 +2361,33 @@ trailer
             result.is_err(),
             "huge /N over a short header must error, not allocate or panic"
         );
+    }
+
+    #[test]
+    fn repair_scan_ignores_object_like_bytes_inside_streams() {
+        let data = b"%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 0 /Kids [] >>
+endobj
+3 0 obj
+<< /Length 42 >>
+stream
+9 0 obj
+<< /Type /Catalog /Pages 99 0 R >>
+endobj
+endstream
+endobj
+%%EOF
+";
+
+        let scanned = scan_indirect_object_headers(data);
+
+        assert!(scanned.contains_key(&(1, 0)));
+        assert!(scanned.contains_key(&(2, 0)));
+        assert!(scanned.contains_key(&(3, 0)));
+        assert!(!scanned.contains_key(&(9, 0)));
     }
 }

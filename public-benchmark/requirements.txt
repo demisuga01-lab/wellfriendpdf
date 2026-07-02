@@ -1,0 +1,9 @@
+pymupdf
+pypdfium2
+pymupdf4llm
+pdftext
+pdfminer.six
+pdfplumber
+markitdown
+pypdf
+pdf_oxide

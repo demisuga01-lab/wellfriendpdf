@@ -17,21 +17,42 @@
 //!    line id),
 //! 4. cleans up the temp file (even on error, via an RAII guard).
 //!
-//! # Robustness
+//! # Robustness — typed, actionable errors
 //!
-//! - A missing/undiscoverable `tesseract` binary yields a clear, actionable
-//!   [`OxideError::UnsupportedFeature`] — never a panic.
-//! - The subprocess is bounded by a configurable **timeout**; on expiry the
-//!   child is killed and an error returned.
-//! - A non-zero exit or unparseable output is a clean `Err`, so the caller can
-//!   degrade the page gracefully.
+//! Each failure mode maps to a distinct, actionable [`OxideError`], so a caller
+//! (or a human reading a log) can tell *why* a page failed:
+//!
+//! - **binary-not-found** — the `tesseract` program is not on `PATH` (or the
+//!   explicit path is wrong). Surfaced at construction as
+//!   [`OxideError::UnsupportedFeature`] with install guidance; never a panic.
+//! - **language-data-missing** — the binary ran but the requested language pack
+//!   (`eng.traineddata`, …) is not installed. Detected from tesseract's stderr
+//!   and surfaced as [`OxideError::UnsupportedFeature`] naming the language and
+//!   how to install it — distinct from a generic recognition failure.
+//! - **timeout** — the subprocess exceeded the configured deadline; the child is
+//!   **killed and reaped** (no zombie / no handle leak) and
+//!   [`OxideError::Cancelled`] is returned. This is the backend's *own* inner
+//!   timeout, in addition to the engine's outer containment backstop.
+//! - **nonzero-exit / unparseable output** — any other non-success exit is a
+//!   clean [`OxideError::ParseError`] carrying tesseract's stderr, so the page
+//!   degrades gracefully.
+//!
+//! # Concurrency
+//!
+//! Tesseract runs as independent OS processes, so several pages *can* be OCR'd in
+//! genuine parallel. [`TesseractEngine::max_concurrency`] therefore returns a
+//! real number tied to the host's CPU count (with a sane cap; overridable via
+//! [`TesseractEngine::with_max_concurrency`]) rather than the trait's
+//! conservative default of `1`. The engine still clamps the effective window to
+//! its own global bound, and each page is rendered one-at-a-time upstream, so
+//! this raises throughput without breaking the bounded-memory discipline.
 //!
 //! # Determinism
 //!
 //! Tesseract is deterministic for a fixed input + version; the engine version is
 //! recorded via [`OcrEngine::version`] for reproducibility.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -43,6 +64,12 @@ use oxide_engine::{OcrEngine, OcrImage, OcrOptions, OcrPage, OcrWord, OxideError
 /// Default per-page OCR subprocess timeout.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Upper bound on concurrent `tesseract` processes, regardless of core count.
+/// Each tesseract process is itself multi-threaded (OpenMP), so running one per
+/// core would oversubscribe the CPU; capping keeps the machine responsive while
+/// still exploiting real cross-process parallelism.
+const MAX_CONCURRENCY_CAP: usize = 8;
+
 /// The Tesseract-backed [`OcrEngine`]. Construct with [`TesseractEngine::new`]
 /// (auto-discovers `tesseract` on `PATH`) or [`TesseractEngine::with_path`].
 pub struct TesseractEngine {
@@ -52,6 +79,19 @@ pub struct TesseractEngine {
     version: Option<String>,
     /// Per-invocation timeout.
     timeout: Duration,
+    /// How many `tesseract` processes may run concurrently (see
+    /// [`OcrEngine::max_concurrency`]).
+    max_concurrency: usize,
+}
+
+/// A CPU-tied default for [`TesseractEngine::max_concurrency`]: half the
+/// available cores (each tesseract process is itself multi-threaded), at least
+/// 1, capped at [`MAX_CONCURRENCY_CAP`].
+fn default_concurrency() -> usize {
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
+    (cores / 2).clamp(1, MAX_CONCURRENCY_CAP)
 }
 
 impl TesseractEngine {
@@ -77,12 +117,22 @@ impl TesseractEngine {
             binary,
             version: Some(version),
             timeout: DEFAULT_TIMEOUT,
+            max_concurrency: default_concurrency(),
         })
     }
 
     /// Override the per-page subprocess timeout.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Override how many `tesseract` processes may run concurrently. Clamped to
+    /// at least 1. Use this to widen (a beefy dedicated OCR box) or narrow (a
+    /// shared host) the parallel window; the engine still clamps to its own
+    /// global bound on top of this.
+    pub fn with_max_concurrency(mut self, n: usize) -> Self {
+        self.max_concurrency = n.max(1);
         self
     }
 
@@ -113,7 +163,7 @@ impl OcrEngine for TesseractEngine {
             tmp.path.to_string_lossy().into_owned(),
             "stdout".to_string(),
             "-l".to_string(),
-            langs,
+            langs.clone(),
         ];
         if let Some(psm) = opts.psm {
             args.push("--psm".to_string());
@@ -127,7 +177,7 @@ impl OcrEngine for TesseractEngine {
         // The output "configfile": `tsv` emits the word-box TSV we parse.
         args.push("tsv".to_string());
 
-        let stdout = run_with_timeout(&self.binary, &args, self.timeout)?;
+        let stdout = run_with_timeout(&self.binary, &args, self.timeout, &langs)?;
         let words = parse_tsv(&stdout);
         Ok(OcrPage::new(words))
     }
@@ -138,6 +188,10 @@ impl OcrEngine for TesseractEngine {
 
     fn version(&self) -> Option<String> {
         self.version.clone()
+    }
+
+    fn max_concurrency(&self) -> usize {
+        self.max_concurrency
     }
 }
 
@@ -174,8 +228,16 @@ fn probe_version(binary: &Path) -> std::io::Result<String> {
 ///
 /// stdout and stderr are drained on dedicated threads so a full pipe buffer can
 /// never deadlock the child, while the main thread polls for completion against
-/// the deadline.
-fn run_with_timeout(binary: &Path, args: &[String], timeout: Duration) -> Result<Vec<u8>> {
+/// the deadline. On a non-zero exit the stderr is inspected so a
+/// **missing-language-data** failure maps to a distinct, actionable error rather
+/// than a generic parse error. `langs` is the resolved language string, used
+/// only to make that message specific.
+fn run_with_timeout(
+    binary: &Path,
+    args: &[String],
+    timeout: Duration,
+    langs: &str,
+) -> Result<Vec<u8>> {
     use std::io::Read;
 
     let mut child = Command::new(binary)
@@ -212,8 +274,14 @@ fn run_with_timeout(binary: &Path, args: &[String], timeout: Duration) -> Result
             Some(status) => break status,
             None => {
                 if Instant::now() >= deadline {
+                    // Kill AND reap: `wait()` after `kill()` reclaims the child
+                    // handle so there is no zombie / no leaked OS handle (the
+                    // WinError-1450 lesson applied to spawned OCR processes).
                     let _ = child.kill();
                     let _ = child.wait();
+                    // Join the drain threads so their pipe handles close too.
+                    let _ = out_handle.join();
+                    let _ = err_handle.join();
                     return Err(OxideError::Cancelled(format!(
                         "tesseract exceeded the {}s OCR timeout",
                         timeout.as_secs()
@@ -229,6 +297,16 @@ fn run_with_timeout(binary: &Path, args: &[String], timeout: Duration) -> Result
 
     if !status.success() {
         let err = String::from_utf8_lossy(&stderr);
+        // Classify a missing-language-data failure distinctly: tesseract prints
+        // a recognizable message when a `*.traineddata` pack is absent.
+        if is_missing_language_error(&err) {
+            return Err(OxideError::UnsupportedFeature(format!(
+                "tesseract is missing language data for '{langs}'. Install the matching \
+                 language pack (e.g. `tesseract-ocr-eng` for English, or set TESSDATA_PREFIX \
+                 to a directory containing the `*.traineddata` files). tesseract said: {}",
+                err.trim()
+            )));
+        }
         return Err(OxideError::ParseError(format!(
             "tesseract exited with {status}: {}",
             err.trim()
@@ -237,9 +315,19 @@ fn run_with_timeout(binary: &Path, args: &[String], timeout: Duration) -> Result
     Ok(stdout)
 }
 
-/// Process-unique counter so concurrent page OCR (rayon) does not collide on
-/// temp filenames without needing randomness (which the engine forbids in some
-/// contexts and which would hurt reproducibility of the filename).
+/// Whether tesseract's stderr indicates a missing/failed-to-load language pack.
+/// Tesseract's wording varies across versions; match the stable fragments.
+fn is_missing_language_error(stderr: &str) -> bool {
+    let s = stderr.to_ascii_lowercase();
+    (s.contains("failed loading language") || s.contains("could not initialize tesseract"))
+        || (s.contains("tessdata") && s.contains("error"))
+        || s.contains("please make sure the tessdata")
+        || (s.contains("data") && s.contains("does not exist"))
+}
+
+/// Process-local counter so concurrent page OCR (rayon) does not collide on
+/// temp filenames. Files are still created with `create_new(true)`; the counter
+/// is only a uniqueness aid, not a security boundary.
 static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// An RAII temp PGM file: written on construction, deleted on drop.
@@ -249,17 +337,38 @@ struct TempPgm {
 
 impl TempPgm {
     fn write(image: &OcrImage) -> Result<Self> {
-        let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
         let pid = std::process::id();
-        let mut path = std::env::temp_dir();
-        path.push(format!("oxide-ocr-{pid}-{seq}.pgm"));
+        let mut last_err = None;
+        for attempt in 0..64u32 {
+            let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let mut path = std::env::temp_dir();
+            path.push(format!("oxide-ocr-{pid}-{nanos}-{seq}-{attempt}.pgm"));
 
-        let mut f = fs::File::create(&path)?;
-        // Binary PGM (P5): "P5\n<w> <h>\n255\n" + raw bytes.
-        write!(f, "P5\n{} {}\n255\n", image.width, image.height)?;
-        f.write_all(&image.gray)?;
-        f.flush()?;
-        Ok(TempPgm { path })
+            let mut f = match OpenOptions::new().write(true).create_new(true).open(&path) {
+                Ok(file) => file,
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    last_err = Some(e);
+                    continue;
+                }
+                Err(e) => return Err(OxideError::Io(e)),
+            };
+            // Binary PGM (P5): "P5\n<w> <h>\n255\n" + raw bytes.
+            write!(f, "P5\n{} {}\n255\n", image.width, image.height)?;
+            f.write_all(&image.gray)?;
+            f.flush()?;
+            return Ok(TempPgm { path });
+        }
+
+        Err(OxideError::Io(last_err.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "could not allocate a unique temporary PGM path",
+            )
+        })))
     }
 }
 
@@ -394,5 +503,45 @@ mod tests {
             tmp.path.clone()
         };
         assert!(!path.exists(), "temp PGM must be removed on drop");
+    }
+
+    #[test]
+    fn missing_language_stderr_is_classified() {
+        // Representative stderr fragments across tesseract versions.
+        assert!(is_missing_language_error(
+            "Error opening data file /usr/share/tessdata/deu.traineddata\n\
+             Please make sure the TESSDATA_PREFIX environment variable is set"
+        ));
+        assert!(is_missing_language_error(
+            "Failed loading language 'fra'\nTesseract couldn't load any languages!"
+        ));
+        assert!(is_missing_language_error("Could not initialize tesseract."));
+        // A generic recognition/exit message is NOT a language error.
+        assert!(!is_missing_language_error(
+            "read_params_file: parameter not found: foo"
+        ));
+        assert!(!is_missing_language_error(""));
+    }
+
+    #[test]
+    fn default_concurrency_is_sane() {
+        let n = default_concurrency();
+        assert!(n >= 1, "must allow at least one process");
+        assert!(n <= MAX_CONCURRENCY_CAP, "must respect the cap");
+    }
+
+    #[test]
+    fn with_max_concurrency_clamps_to_at_least_one() {
+        // Build a struct directly (no binary probe) to test the setter's clamp.
+        let e = TesseractEngine {
+            binary: "tesseract".into(),
+            version: None,
+            timeout: DEFAULT_TIMEOUT,
+            max_concurrency: default_concurrency(),
+        }
+        .with_max_concurrency(0);
+        assert_eq!(e.max_concurrency(), 1, "0 clamps up to 1");
+        let e = e.with_max_concurrency(4);
+        assert_eq!(e.max_concurrency(), 4);
     }
 }

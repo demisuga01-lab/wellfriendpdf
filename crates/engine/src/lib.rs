@@ -71,6 +71,7 @@
 
 pub mod analysis;
 pub mod analyzer;
+pub mod arlington;
 pub mod attachments;
 pub mod authoring;
 pub mod cancel;
@@ -96,14 +97,17 @@ pub mod images;
 pub mod info;
 pub mod object;
 pub mod ocr;
+pub mod office;
 pub mod parse;
 pub mod parser;
+pub mod parser_report;
 pub mod reader;
 pub mod render;
 pub mod semantic;
 pub mod signature;
 pub mod structural;
 pub mod text;
+pub mod utilities;
 pub mod writer;
 
 /// Semantic version of the oxide-engine crate.
@@ -113,6 +117,10 @@ pub use analysis::graphics::{
     collect_graphics, collect_graphics_with_images, DrawnGraphics, ImagePlacement, Rect, Segment,
 };
 pub use analyzer::{PdfAnalyzer, TextLayerAnalysis, TextLayerRecommendation};
+pub use arlington::{
+    arlington_coverage, validate_arlington_dictionary, validate_arlington_dictionary_at_path,
+    ArlingtonCoverage, ArlingtonValidationMode,
+};
 pub use attachments::{
     extract_attachment, list_attachments, sanitize_filename, Attachment, AttachmentSource,
 };
@@ -182,10 +190,20 @@ pub use object::{PdfDictionary, PdfObject};
 pub use ocr::preprocess::{
     binarize_otsu, binarize_sauvola, detect_skew, preprocess, Binarization, PreprocessConfig,
 };
-pub use ocr::{OcrEngine, OcrImage, OcrOptions, OcrPage, OcrWord};
+pub use ocr::{OcrEngine, OcrImage, OcrOptions, OcrPage, OcrPolicy, OcrWord};
+pub use office::{
+    docx_to_pdf, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf, xlsx_to_pdf, DocxOptions,
+    OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
+};
 pub use parse::{
     parse, Block, BlockKind, Document, DocumentMetadata, ImageHandling, ImageRef, InlineSpan,
     InlineText, ListEntry, Page, ParseOptions, SerializeOptions, SourceInfo, SCHEMA_VERSION,
+};
+pub use parser_report::{
+    arlington_status, parser_report_bytes, parser_report_bytes_with_password,
+    ArlingtonIntegrationStatus, DiagnosticCounts, LinearizationInfo, ParserCategory,
+    ParserDiagnostic, ParserMode, ParserReport, ParserSeverity, ParserSourceMetrics, RepairSummary,
+    RevisionHistory, RevisionSection,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
@@ -210,6 +228,14 @@ pub use text::{
     TextChunk, TextCollector, TextExtractOptions, TextExtractor, TextFormatOptions, TextFormatter,
     TextLine,
 };
+pub use utilities::{
+    add_page_numbers_pdf, attachments_json, decrypt_pdf, encrypt_pdf, export_pdf_pages_to_images,
+    fonts_json, html_string, images_to_pdf_from_bytes, images_to_pdf_from_paths, linearize_pdf,
+    optimize_pdf, organize_pdf, organize_pdf_with_insert, render_page_image, repair_pdf,
+    rotate_pdf, signatures_json, watermark_image_pdf, watermark_text_pdf, ImagePdfPageSize,
+    ImageToPdfOptions, ImageWatermarkOptions, PageNumberOptions, RasterImageFormat,
+    RasterPageResult, RgbColor, StampPosition, TextWatermarkOptions,
+};
 pub use writer::{
     build_merged, build_subset, rewrite_document, rewrite_document_objects,
     rewrite_document_with_mode, rewrite_references, serialize_object, write_document_linearized,
@@ -225,7 +251,7 @@ pub use writer::{
 /// gathers exactly the types and functions needed to **open a document, parse
 /// it to the canonical [`Document`] model, serialize it (Markdown / JSON /
 /// HTML), chunk it for RAG, extract key-value fields, run the structural ops,
-/// and inject an OCR backend** — nothing more.
+/// export Office formats, and inject an OCR backend** — nothing more.
 ///
 /// ```no_run
 /// use oxide_engine::prelude::*;
@@ -276,6 +302,10 @@ pub mod prelude {
         extract_fields, DocType, ExtractOptions, ExtractedFields, Field, FieldValue, LineItem,
     };
     pub use crate::ocr::{OcrEngine, OcrOptions};
+    pub use crate::office::{
+        docx_to_pdf, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf, xlsx_to_pdf, DocxOptions,
+        OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
+    };
     pub use crate::parse::{
         parse, Block, BlockKind, Document, DocumentMetadata, Page, ParseOptions, SerializeOptions,
         SourceInfo, SCHEMA_VERSION,

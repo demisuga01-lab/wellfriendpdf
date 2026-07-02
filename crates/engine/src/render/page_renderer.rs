@@ -602,11 +602,25 @@ impl<'a> RenderState<'a> {
         //  - Luminosity: opaque black (mask 0 = fully masked) so areas the mask
         //    group does not paint stay masked out. /BC overrides the backdrop
         //    color (still opaque). Black-backdrop is the spec default.
-        //  - Alpha: fully transparent, so the alpha channel reflects only what
-        //    the mask group actually paints.
+        //  - Alpha: fully transparent by default, so the alpha channel reflects
+        //    only what the mask group actually paints. Some producer fixtures
+        //    rely on /BC making the unpainted mask backdrop opaque, but when a
+        //    transfer function already maps input 0 to a visible alpha, seeding
+        //    an opaque backdrop double-applies that visibility. Match Poppler's
+        //    observed convention by using the opaque /BC backdrop only when
+        //    /TR(0) is effectively transparent (or /TR is absent).
         let render_mode = self.buf.render_mode();
         let mut mask_buf = if is_alpha {
-            PixelBuffer::new_transparent_with_mode(self.buf.width, self.buf.height, render_mode)
+            if alpha_smask_uses_opaque_bc_backdrop(&smask_dict, reader) {
+                PixelBuffer::new_filled_with_mode(
+                    self.buf.width,
+                    self.buf.height,
+                    [0, 0, 0, 255],
+                    render_mode,
+                )
+            } else {
+                PixelBuffer::new_transparent_with_mode(self.buf.width, self.buf.height, render_mode)
+            }
         } else {
             let bc = smask_backdrop_color(&smask_dict, &g_dict);
             PixelBuffer::new_filled_with_mode(self.buf.width, self.buf.height, bc, render_mode)
@@ -1829,10 +1843,18 @@ impl<'a> RenderState<'a> {
         let fill_color = self.fill_pixel_color();
         let stroke_color = self.stroke_pixel_color();
 
-        // Stem/baseline grid-fitting is intentionally not enabled by default:
-        // the first R&D pass regressed Tracemonkey vs Poppler. Keep glyph
-        // coverage/tighter flattening active and revisit hinting with fixtures.
-        let glyph_hinting = GlyphHinting::disabled();
+        // Light baseline grid-fitting is bounded to normal body-text sizes in
+        // `GlyphHinting::light`, and is only enabled for TrueType-backed
+        // outlines. The Phase 7 renderer slice showed this trims IRS CID-TT
+        // text edge deltas; Type1/CFF outlines stay on the analytic path to
+        // preserve the TeX/Tracemonkey golden.
+        let glyph_pixel_size =
+            self.gs.text.font_size * self.ctm().scale_factor() * self.viewport.scale;
+        let glyph_hinting = if ttf_parser::Face::parse(request.font_bytes, 0).is_ok() {
+            GlyphHinting::light(glyph_pixel_size)
+        } else {
+            GlyphHinting::disabled()
+        };
 
         match self.gs.text.rendering_mode {
             0 | 4 => PathPainter::fill_glyph(
@@ -2455,6 +2477,23 @@ fn smask_backdrop_color(smask_dict: &PdfDictionary, g_dict: &PdfDictionary) -> P
     };
     let p = rc.to_pixel_color();
     [p[0], p[1], p[2], 255]
+}
+
+fn alpha_smask_uses_opaque_bc_backdrop(
+    smask_dict: &PdfDictionary,
+    reader: &crate::reader::PdfReader,
+) -> bool {
+    if smask_dict.get("BC").is_none() {
+        return false;
+    }
+    let Some(tr) = smask_dict.get("TR") else {
+        return true;
+    };
+    if matches!(tr, PdfObject::Name(name) if name == "Identity") {
+        return true;
+    }
+    let out = crate::render::shading::eval_function(tr, 0.0, reader);
+    out.first().copied().unwrap_or(0.0) <= 0.01
 }
 
 /// The `/Group` sub-dictionary of a Form XObject, if it is a transparency
@@ -3743,6 +3782,119 @@ mod tests {
             "Screen over partially transparent red backdrop should match PDF blend math: {:?}",
             overlap
         );
+    }
+
+    #[test]
+    fn alpha_smask_with_backdrop_color_keeps_source_visible_outside_group_paint() {
+        let content = "q\n0.95 0.95 0.95 rg\n0 0 220 160 re\nf\nQ\n\
+                       q\n/GS1 gs\n0.2 0.6 0.9 rg\n10 10 200 140 re\nf\nQ\n\
+                       q\n0 0 0 RG\n1 w\n40 30 60 60 re\nS\nQ\n";
+        let mask_content = "1 g\n40 30 60 60 re\nf\n";
+        let pdf = pdf_with_alpha_smask(content, mask_content, "1", None);
+        let engine = ContentEngine::open_bytes(pdf).expect("open alpha SMask PDF");
+        let buf = engine.render_page(1, 72).expect("render alpha SMask PDF");
+
+        let outside_mask_paint = buf.get_pixel(20, 20);
+        assert!(
+            outside_mask_paint[2] > 200
+                && outside_mask_paint[0] < 80
+                && outside_mask_paint[1] > 120,
+            "alpha SMask /BC backdrop should make the whole blue source visible: {:?}",
+            outside_mask_paint
+        );
+        let paper = buf.get_pixel(5, 5);
+        assert!(
+            (paper[0] as i32 - 242).abs() <= 2
+                && (paper[1] as i32 - 242).abs() <= 2
+                && (paper[2] as i32 - 242).abs() <= 2,
+            "area outside the masked source should remain the gray page background: {:?}",
+            paper
+        );
+    }
+
+    #[test]
+    fn alpha_smask_transfer_zero_backdrop_is_not_double_applied() {
+        let content = "q\n0.95 0.95 0.95 rg\n0 0 220 160 re\nf\nQ\n\
+                       q\n/GS1 gs\n0.2 0.6 0.9 rg\n10 10 200 140 re\nf\nQ\n\
+                       q\n0 0 0 RG\n1 w\n50 50 100 100 re\nS\nQ\n";
+        let mask_content = "1 g\n50 50 100 100 re\nf\n";
+        let transfer = "<< /FunctionType 2 /Domain [0 1] /C0 [0.5] /C1 [1] /N 1 /Range [0 1] >>";
+        let pdf = pdf_with_alpha_smask(content, mask_content, "0.5", Some(transfer));
+        let engine = ContentEngine::open_bytes(pdf).expect("open alpha SMask PDF");
+        let buf = engine
+            .render_page(1, 72)
+            .expect("render alpha SMask transfer PDF");
+
+        let outside_mask_paint = buf.get_pixel(20, 20);
+        assert!(
+            outside_mask_paint[0] > 120
+                && outside_mask_paint[0] < 180
+                && outside_mask_paint[1] > 180
+                && outside_mask_paint[2] > 220,
+            "TR(0) should provide the half-alpha backdrop, not be replaced by opaque /BC: {:?}",
+            outside_mask_paint
+        );
+    }
+
+    fn pdf_with_alpha_smask(
+        content: &str,
+        mask_content: &str,
+        bc: &str,
+        transfer: Option<&str>,
+    ) -> Vec<u8> {
+        let transfer_ref = transfer.map(|_| " /TR 7 0 R").unwrap_or("");
+        let mut objects = vec![
+            b"<< /Pages 2 0 R /Type /Catalog >>".to_vec(),
+            b"<< /Count 1 /Kids [3 0 R] /Type /Pages >>".to_vec(),
+            b"<< /Contents 4 0 R /MediaBox [0 0 220 160] /Parent 2 0 R \
+              /Resources << /ExtGState << /GS1 5 0 R >> >> /Type /Page >>"
+                .to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            )
+            .into_bytes(),
+            format!(
+                "<< /SMask << /BC [{}] /G 6 0 R /S /Alpha{} /Type /Mask >> /Type /ExtGState >>",
+                bc, transfer_ref
+            )
+            .into_bytes(),
+            format!(
+                "<< /BBox [40 30 100 90] /FormType 1 /Group << /CS /DeviceGray /S /Transparency /Type /Group >> \
+                 /Resources << >> /Subtype /Form /Type /XObject /Length {} >>\nstream\n{}\nendstream",
+                mask_content.len(),
+                mask_content
+            )
+            .into_bytes(),
+        ];
+        if let Some(transfer) = transfer {
+            objects.push(transfer.as_bytes().to_vec());
+        }
+
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
     }
 
     #[test]

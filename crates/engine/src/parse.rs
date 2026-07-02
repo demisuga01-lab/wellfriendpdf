@@ -109,6 +109,27 @@ pub struct ParseOptions {
     /// document-model pipeline as digital-born text. The trait lives in the
     /// pure-Rust core; a concrete engine (e.g. `oxide-ocr-tesseract`) is injected.
     pub ocr: Option<std::sync::Arc<dyn crate::ocr::OcrEngine>>,
+    /// **Which** pages the injected [`Self::ocr`] engine runs on. Only consulted
+    /// when [`Self::ocr`] is `Some` (with no engine there is nothing to run):
+    ///
+    /// - [`OcrPolicy::Auto`] (default) — OCR only classifier-detected
+    ///   [`PageSource::Scanned`] pages; digital-born and searchable-scan pages
+    ///   keep their real text layer. This is the historical "engine present ⇒
+    ///   OCR the scans" behavior.
+    /// - [`OcrPolicy::Off`] — never OCR, even with an engine injected (scanned
+    ///   pages degrade to the placeholder). Byte-identical to no engine.
+    /// - [`OcrPolicy::Force`] — OCR **every** selected page, ignoring the
+    ///   classifier and bypassing the digital-born builder. For scans the
+    ///   classifier mislabeled as digital-born, or deliberate full re-OCR.
+    pub ocr_policy: crate::ocr::OcrPolicy,
+    /// Engine-enforced per-page OCR timeout. `None` (default) runs each backend
+    /// call directly (still **panic-contained** — a panicking backend never
+    /// crosses the seam), with no engine-side deadline; the backend's own timeout
+    /// (if any) still applies. `Some(d)` with `d > 0` bounds each `recognize`
+    /// call at `d` on an engine-owned scratch thread, so a hung or wedged backend
+    /// fails that one page cleanly instead of stalling the run. See
+    /// [`crate::ocr::dispatch`].
+    pub ocr_timeout: Option<std::time::Duration>,
     /// Options passed to the OCR engine (languages, DPI, segmentation hint).
     pub ocr_options: crate::ocr::OcrOptions,
     /// Preprocessing applied to each rasterized scanned page before OCR — the
@@ -134,6 +155,8 @@ impl Default for ParseOptions {
             dehyphenate: false,
             normalize_ligatures: false,
             ocr: None,
+            ocr_policy: crate::ocr::OcrPolicy::Auto,
+            ocr_timeout: None,
             ocr_options: crate::ocr::OcrOptions::default(),
             ocr_preprocess: crate::ocr::preprocess::PreprocessConfig::default(),
             ocr_dpi: 300,
@@ -156,6 +179,8 @@ impl std::fmt::Debug for ParseOptions {
                 "ocr",
                 &self.ocr.as_ref().map(|e| e.name()).unwrap_or("none"),
             )
+            .field("ocr_policy", &self.ocr_policy)
+            .field("ocr_timeout", &self.ocr_timeout)
             .field("ocr_options", &self.ocr_options)
             .field("ocr_preprocess", &self.ocr_preprocess)
             .field("ocr_dpi", &self.ocr_dpi)
@@ -552,10 +577,21 @@ pub fn parse(engine: &ContentEngine, options: &ParseOptions) -> Result<Document>
 
     // 1. Per-page routing decision.
     let classes = classify_document(engine, &page_list, &ClassifyConfig::default())?;
+
+    // Whether a page with the given classification should be OCR'd: an engine is
+    // configured AND the policy selects it. Under `Force` this is every page
+    // (including digital-born), under `Auto` only scanned pages, under `Off`
+    // (or with no engine) never.
+    let has_engine = options.ocr.is_some();
+    let wants_ocr = |source: PageSource| has_engine && options.ocr_policy.should_ocr(source);
+
+    // Digital-born pages routed to the existing builder: those with a usable text
+    // layer that are NOT being OCR'd. Under `Force`, digital-born pages are pulled
+    // OUT of the builder and re-OCR'd instead, so they are excluded here.
     let digital_pages: Vec<usize> = page_list
         .iter()
         .zip(&classes)
-        .filter(|(_, c)| c.source.is_digital_born())
+        .filter(|(_, c)| c.source.is_digital_born() && !wants_ocr(c.source))
         .map(|(&p, _)| p)
         .collect();
 
@@ -573,31 +609,38 @@ pub fn parse(engine: &ContentEngine, options: &ParseOptions) -> Result<Document>
     };
     let tagged = info.tagged && !digital_pages.is_empty();
 
-    // 3. Scanned pages → the OCR seam. With an OCR engine injected, each scanned
-    //    page is rasterized, preprocessed, recognized, and fed through the SAME
-    //    document-model pipeline as digital text. Without one, it degrades to a
-    //    placeholder (note + full-page scan figure). Ids continue after the
+    // 3. OCR seam + scanned-page fallback. Every page that is NOT in the
+    //    digital-born set is handled here: either it is OCR'd (engine present and
+    //    the policy selects it) or it degrades to the placeholder (note +
+    //    full-page scan figure). Under `Force`, this includes digital-born pages
+    //    (re-OCR'd); under `Auto`, only scanned pages; under `Off`/no-engine,
+    //    scanned pages get the placeholder as before. Ids continue after the
     //    builder's so cross-links stay unique; reading_order is patched in
-    //    `assemble` after furniture filtering.
+    //    `assemble` after furniture filtering. Each backend call is panic- and
+    //    (optionally) timeout-contained, so a failing page never aborts the run.
     let mut next_id = blocks.iter().map(|b| b.id + 1).max().unwrap_or(0);
     let mut ocr_recovered_any = false;
     for (&page, class) in page_list.iter().zip(&classes) {
-        if class.source != PageSource::Scanned {
+        // Skip the pages that went through the digital-born builder.
+        if class.source.is_digital_born() && !wants_ocr(class.source) {
             continue;
         }
-        let page_blocks = match options.ocr.as_deref() {
-            Some(engine_ocr) => {
-                match ocr_page_blocks(engine, engine_ocr, page, options, &mut next_id) {
-                    Ok(bs) if bs.iter().any(|b| !b.text.trim().is_empty()) => {
-                        ocr_recovered_any = true;
-                        bs
-                    }
-                    // OCR ran but recovered nothing, or errored: fall back to the
-                    // placeholder so the page is never silently dropped.
-                    Ok(_) | Err(_) => scanned_placeholder_blocks(engine, page, &mut next_id),
+        let page_blocks = if wants_ocr(class.source) {
+            // SAFETY of unwrap: `wants_ocr` is only true when `options.ocr` is Some.
+            let engine_ocr = options.ocr.as_ref().expect("engine present per wants_ocr");
+            match ocr_page_blocks(engine, engine_ocr, page, options, &mut next_id) {
+                Ok(bs) if bs.iter().any(|b| !b.text.trim().is_empty()) => {
+                    ocr_recovered_any = true;
+                    bs
                 }
+                // OCR ran but recovered nothing, or errored (including a
+                // contained panic / timeout): fall back to the placeholder so the
+                // page is never silently dropped.
+                Ok(_) | Err(_) => scanned_placeholder_blocks(engine, page, &mut next_id),
             }
-            None => scanned_placeholder_blocks(engine, page, &mut next_id),
+        } else {
+            // Scanned page with OCR off / no engine → placeholder.
+            scanned_placeholder_blocks(engine, page, &mut next_id)
         };
         blocks.extend(page_blocks);
     }
@@ -746,7 +789,7 @@ fn scanned_placeholder_blocks(
 /// the placeholder; this never panics.
 fn ocr_page_blocks(
     engine: &ContentEngine,
-    ocr: &dyn OcrEngine,
+    ocr: &std::sync::Arc<dyn OcrEngine>,
     page: usize,
     options: &ParseOptions,
     next_id: &mut usize,
@@ -764,7 +807,16 @@ fn ocr_page_blocks(
     let gray = OcrImage::from(&raw);
     let (clean, skew_deg) = preprocess(&gray, &options.ocr_preprocess);
 
-    let ocr_page = ocr.recognize(&clean, &options.ocr_options)?;
+    // Dispatch through the containment layer: a backend panic becomes a clean
+    // error and (when a timeout is set) a hung backend is bounded on an
+    // engine-owned thread. Either way this never crosses the seam as a panic and
+    // the caller falls back to the placeholder for this one page.
+    let ocr_page = crate::ocr::dispatch::recognize_contained(
+        ocr,
+        &clean,
+        &options.ocr_options,
+        options.ocr_timeout,
+    )?;
 
     // Map each recognized word from the (possibly deskewed) image frame back into
     // PDF user space and emit a synthetic positioned chunk.

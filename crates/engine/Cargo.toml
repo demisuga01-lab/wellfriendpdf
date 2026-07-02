@@ -44,6 +44,7 @@ der = { version = "0.7", features = ["oid"] }
 spki = "0.7"
 subtle = "2"
 zeroize = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [features]
 default = ["parse", "render", "structural"]
@@ -67,4 +68,3 @@ fuzzing = []
 env_logger = "0.11"
 proptest = "1"
 resvg = { version = "0.47.0", default-features = false, features = ["text", "raster-images"] }
-zip = "2"

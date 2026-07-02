@@ -1,0 +1,439 @@
+{
+  "generated_from": "Advertised/documented capabilities inspected June 2026. This is a documented-feature matrix, not an exhaustive API audit.",
+  "sources": {
+    "pdf_oxide": [
+      "https://docs.rs/pdf_oxide/latest/pdf_oxide/",
+      "https://pdf.oxide.fyi/"
+    ],
+    "pymupdf": [
+      "https://pymupdf.readthedocs.io/",
+      "https://pymupdf.io/"
+    ],
+    "pypdfium2": [
+      "https://pypdfium2.readthedocs.io/",
+      "https://github.com/pypdfium2-team/pypdfium2"
+    ],
+    "pymupdf4llm": [
+      "https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/",
+      "https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/api.html"
+    ],
+    "pdftext": [
+      "https://pypi.org/project/pdftext/",
+      "https://github.com/datalab-to/pdftext"
+    ],
+    "pdfminer.six": [
+      "https://pdfminersix.readthedocs.io/"
+    ],
+    "pdfplumber": [
+      "https://github.com/jsvine/pdfplumber"
+    ],
+    "markitdown": [
+      "https://github.com/microsoft/markitdown",
+      "https://pypi.org/project/markitdown/"
+    ],
+    "pypdf": [
+      "https://pypdf.readthedocs.io/",
+      "https://github.com/py-pdf/pypdf"
+    ],
+    "oxide": [
+      "docs/api_overview.md",
+      "docs/self_hosting.md",
+      "docs/signatures.md",
+      "docs/tables.md",
+      "docs/semantic_extraction.md"
+    ]
+  },
+  "tools": [
+    "oxide",
+    "pdf_oxide",
+    "pymupdf",
+    "pypdfium2",
+    "pymupdf4llm",
+    "pdftext",
+    "pdfminer.six",
+    "pdfplumber",
+    "markitdown",
+    "pypdf"
+  ],
+  "capabilities": [
+    {
+      "name": "plain text extraction",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "yes",
+        "pymupdf4llm": "yes",
+        "pdftext": "yes",
+        "pdfminer.six": "yes",
+        "pdfplumber": "yes",
+        "markitdown": "yes",
+        "pypdf": "yes"
+      }
+    },
+    {
+      "name": "chars/words/lines with geometry",
+      "tools": {
+        "oxide": "partial",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "partial",
+        "pdftext": "yes",
+        "pdfminer.six": "partial",
+        "pdfplumber": "yes",
+        "markitdown": "no",
+        "pypdf": "partial"
+      }
+    },
+    {
+      "name": "layout-aware reading order / document model",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "partial",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "yes",
+        "pdftext": "yes",
+        "pdfminer.six": "partial",
+        "pdfplumber": "partial",
+        "markitdown": "partial",
+        "pypdf": "partial"
+      }
+    },
+    {
+      "name": "table extraction",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "yes",
+        "pdftext": "partial",
+        "pdfminer.six": "no",
+        "pdfplumber": "yes",
+        "markitdown": "partial",
+        "pypdf": "no"
+      }
+    },
+    {
+      "name": "image extraction",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "yes",
+        "pdftext": "no",
+        "pdfminer.six": "partial",
+        "pdfplumber": "partial",
+        "markitdown": "partial",
+        "pypdf": "partial"
+      }
+    },
+    {
+      "name": "form field read/fill",
+      "tools": {
+        "oxide": "partial",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "no",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "no",
+        "markitdown": "no",
+        "pypdf": "partial"
+      }
+    },
+    {
+      "name": "annotations",
+      "tools": {
+        "oxide": "partial",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "no",
+        "pdftext": "no",
+        "pdfminer.six": "partial",
+        "pdfplumber": "partial",
+        "markitdown": "no",
+        "pypdf": "yes"
+      }
+    },
+    {
+      "name": "markdown conversion with heading detection",
+      "tools": {
+        "oxide": "partial",
+        "pdf_oxide": "yes",
+        "pymupdf": "partial",
+        "pypdfium2": "no",
+        "pymupdf4llm": "yes",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "no",
+        "markitdown": "yes",
+        "pypdf": "no"
+      }
+    },
+    {
+      "name": "HTML conversion",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "no",
+        "pymupdf4llm": "no",
+        "pdftext": "no",
+        "pdfminer.six": "yes",
+        "pdfplumber": "no",
+        "markitdown": "no",
+        "pypdf": "no"
+      }
+    },
+    {
+      "name": "PDF creation",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "yes",
+        "pymupdf4llm": "no",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "no",
+        "markitdown": "no",
+        "pypdf": "yes"
+      }
+    },
+    {
+      "name": "editing / merge / split / rotate / redaction",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "no",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "no",
+        "markitdown": "no",
+        "pypdf": "yes"
+      }
+    },
+    {
+      "name": "rendering",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "yes",
+        "pymupdf4llm": "partial",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "partial",
+        "markitdown": "no",
+        "pypdf": "no"
+      }
+    },
+    {
+      "name": "OCR",
+      "tools": {
+        "oxide": "partial",
+        "pdf_oxide": "yes",
+        "pymupdf": "partial",
+        "pypdfium2": "no",
+        "pymupdf4llm": "partial",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "no",
+        "markitdown": "partial",
+        "pypdf": "no"
+      }
+    },
+    {
+      "name": "encryption / password handling",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "partial",
+        "pdftext": "partial",
+        "pdfminer.six": "yes",
+        "pdfplumber": "partial",
+        "markitdown": "partial",
+        "pypdf": "yes"
+      }
+    },
+    {
+      "name": "digital signatures / LTV reporting",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "unknown",
+        "pymupdf": "partial",
+        "pypdfium2": "no",
+        "pymupdf4llm": "no",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "no",
+        "markitdown": "no",
+        "pypdf": "partial"
+      }
+    },
+    {
+      "name": "PDF/A or PDF/UA validation/conversion",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "unknown",
+        "pymupdf": "partial",
+        "pypdfium2": "no",
+        "pymupdf4llm": "no",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "no",
+        "markitdown": "no",
+        "pypdf": "no"
+      }
+    },
+    {
+      "name": "metadata",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "yes",
+        "pymupdf4llm": "yes",
+        "pdftext": "partial",
+        "pdfminer.six": "yes",
+        "pdfplumber": "yes",
+        "markitdown": "partial",
+        "pypdf": "yes"
+      }
+    },
+    {
+      "name": "search",
+      "tools": {
+        "oxide": "partial",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "no",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "yes",
+        "markitdown": "no",
+        "pypdf": "no"
+      }
+    },
+    {
+      "name": "region/scoped extraction",
+      "tools": {
+        "oxide": "no",
+        "pdf_oxide": "yes",
+        "pymupdf": "yes",
+        "pypdfium2": "partial",
+        "pymupdf4llm": "partial",
+        "pdftext": "partial",
+        "pdfminer.six": "partial",
+        "pdfplumber": "yes",
+        "markitdown": "no",
+        "pypdf": "partial"
+      }
+    },
+    {
+      "name": "extraction profiles / preset strategies",
+      "tools": {
+        "oxide": "partial",
+        "pdf_oxide": "yes",
+        "pymupdf": "partial",
+        "pypdfium2": "no",
+        "pymupdf4llm": "yes",
+        "pdftext": "partial",
+        "pdfminer.six": "partial",
+        "pdfplumber": "partial",
+        "markitdown": "partial",
+        "pypdf": "no"
+      }
+    },
+    {
+      "name": "language bindings",
+      "tools": {
+        "oxide": "partial",
+        "pdf_oxide": "yes",
+        "pymupdf": "partial",
+        "pypdfium2": "python",
+        "pymupdf4llm": "python",
+        "pdftext": "python",
+        "pdfminer.six": "python",
+        "pdfplumber": "python",
+        "markitdown": "python",
+        "pypdf": "python"
+      }
+    },
+    {
+      "name": "CLI",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "yes",
+        "pymupdf": "partial",
+        "pypdfium2": "yes",
+        "pymupdf4llm": "partial",
+        "pdftext": "partial",
+        "pdfminer.six": "yes",
+        "pdfplumber": "yes",
+        "markitdown": "yes",
+        "pypdf": "partial"
+      }
+    },
+    {
+      "name": "self-host HTTP/API server",
+      "tools": {
+        "oxide": "yes",
+        "pdf_oxide": "no",
+        "pymupdf": "no",
+        "pypdfium2": "no",
+        "pymupdf4llm": "no",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "no",
+        "markitdown": "no",
+        "pypdf": "no"
+      }
+    },
+    {
+      "name": "MCP / AI assistant integration",
+      "tools": {
+        "oxide": "no",
+        "pdf_oxide": "yes",
+        "pymupdf": "no",
+        "pypdfium2": "no",
+        "pymupdf4llm": "partial",
+        "pdftext": "no",
+        "pdfminer.six": "no",
+        "pdfplumber": "no",
+        "markitdown": "partial",
+        "pypdf": "no"
+      }
+    }
+  ],
+  "oxide_lacks": [
+    "Region/scoped extraction API comparable to pdf_oxide page.region()/within() and pdfplumber crop().",
+    "Documented extraction-profile presets comparable to pdf_oxide ExtractionProfile and PyMuPDF4LLM's high-level extraction modes.",
+    "Lazy Python page properties such as page.text/page.words/page.tables/page.images.",
+    "Broad published language binding set comparable to pdf_oxide's Python/Go/JS/C#/.NET/Java/WASM positioning.",
+    "MCP server / AI assistant integration.",
+    "Built-in OCR runtime; Oxide OCR is optional and Tesseract-backed rather than bundled.",
+    "Documented XFA form data support comparable to pdf_oxide's advertised XFA capability.",
+    "Markdown heading detection is present only as heuristic document-model output, not an explicit page.markdown(detect_headings=True)-style API."
+  ],
+  "oxide_differentiators": [
+    "Self-host HTTP server with async job API, auth, rate limiting, file/time/output caps, and JSON endpoints.",
+    "PDF/A and PDF/UA validation/conversion surfaces in the Rust API/CLI.",
+    "Digital signature signing, verification, coverage, trust, timestamp/LTV reporting, and offline DSS material support.",
+    "Pure-Rust encryption/decryption support including RC4 legacy, AES-128, and AES-256 paths, with documented crypto review.",
+    "C ABI and WASM bindings in-tree in addition to the Rust library and CLI.",
+    "Enterprise-oriented operations beyond extraction: render, split, merge, rotate, optimize, repair, linearize, redact, attachments, server deployment.",
+    "Security posture documentation, sanitizer CI, fuzzing, dependency policy, and hostile-corpus safety gates."
+  ]
+}

@@ -1,0 +1,9 @@
+Object	Key	Required	ValueType	AllowedNames	Predicates
+Catalog	Type	true	Name	Catalog	
+Catalog	Pages	true	Reference		fn:SinceVersion
+Pages	Type	true	Name	Pages	
+Pages	Kids	true	Array		
+Pages	Count	true	Integer		
+Page	Type	true	Name	Page	
+Page	Parent	true	Reference		
+Page	Resources	false	Dictionary		

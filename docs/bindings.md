@@ -1,8 +1,7 @@
 # Bindings
 
-Oxide now exposes the engine beyond Rust through a native C ABI and a
-`wasm-bindgen` browser wrapper. Python is intentionally deferred to a focused
-PyO3 follow-up.
+Oxide exposes the engine beyond Rust through Python, a native C ABI, and a
+`wasm-bindgen` browser wrapper.
 
 ## C ABI
 
@@ -30,6 +29,26 @@ buffers:
   prefer `oxide_document_parse_json` for new code)
 - `oxide_document_info_json`
 - `oxide_document_render_page_png`
+- `oxide_document_render_page_jpeg`
+- `oxide_document_extract_pages_pdf` / `oxide_document_organize_pdf`
+- `oxide_document_rotate_pdf`
+- `oxide_document_optimize_pdf`
+- `oxide_document_linearize_pdf`
+- `oxide_document_decrypt_pdf`
+- `oxide_document_encrypt_aes256_pdf`
+- `oxide_document_to_html`
+- `oxide_document_to_xlsx`
+- `oxide_document_to_pptx`
+- `oxide_document_to_docx`
+- `oxide_docx_to_pdf`
+- `oxide_xlsx_to_pdf`
+- `oxide_pptx_to_pdf`
+- `oxide_document_fonts_json`
+- `oxide_document_signatures_json`
+- `oxide_document_watermark_text_pdf`
+- `oxide_document_add_page_numbers_pdf`
+- `oxide_images_to_pdf`
+- `oxide_merge_pdfs_from_bytes`
 - `oxide_document_free`
 - `oxide_string_free` / `oxide_error_free`
 - `oxide_buffer_free`
@@ -123,16 +142,43 @@ instead.
 
 ## Python
 
-Deferred. The intended follow-up is a separate `oxide-py` crate using PyO3 and
-maturin with:
+Crate: `crates/oxide-py`
+
+Build:
+
+```sh
+maturin build --manifest-path crates/oxide-py/Cargo.toml
+```
+
+The module exposes a `Document` class:
 
 - `Document(bytes)` / `Document.from_path(path)`
-- `page_count()`
-- `extract_text(page)`
-- `extract_semantic() -> dict`
-- `info() -> dict`
-- `render_page_png(page, dpi) -> bytes`
+- `len(doc)` / `doc.page_count`
+- `doc.extract_text(page=None, profile="fast-text")`
+- `doc.document_model(...) -> dict`
+- `doc.to_markdown(...)` / `doc.to_html(...)`
+- `doc.render(page, dpi=150) -> bytes`
+- `doc[0]`, `doc.page(1)`, page `text`/`words`/`tables`/`images`
 
-Errors should map to Python exceptions, and wheels should be built with maturin.
-This was deliberately not half-implemented in this round so C-ABI and WASM could
-ship cleanly.
+Module-level Phase 3/4 helpers mirror the CLI/Rust utility surface:
+
+- `merge_pdfs(inputs, output=None, passwords=None) -> bytes`
+- `extract_pages(pdf, pages, output=None, password=None) -> bytes`
+- `rotate_pdf(pdf, angle, pages="all", relative=False, output=None, password=None) -> bytes`
+- `encrypt_pdf(...)`, `decrypt_pdf(...)`, `optimize_pdf(...)`, `repair_pdf(...)`, `linearize_pdf(...)`
+- `pdf_to_images(pdf, out_dir, pages="all", dpi=150, quality=85, format="jpg", password=None) -> list[dict]`
+- `images_to_pdf(images, output=None, page_size="a4", margin=0.0) -> bytes`
+- `pdf_to_xlsx(pdf, output=None, layout="pages", password=None) -> bytes`
+- `pdf_to_pptx(pdf, output=None, include_images=True, password=None) -> bytes`
+- `pdf_to_docx(pdf, output=None, include_images=True, password=None) -> bytes`
+- `docx_to_pdf(docx, output=None) -> bytes`
+- `xlsx_to_pdf(xlsx, output=None) -> bytes`
+- `pptx_to_pdf(pptx, output=None) -> bytes`
+- `watermark_pdf(pdf, text=None, image=None, output=None, ...) -> bytes`
+- `add_page_numbers(pdf, output=None, ...) -> bytes`
+- `organize_pdf(pdf, order="all", output=None, password=None) -> bytes`
+- `fonts(pdf, password=None) -> list[dict]`
+- `verify_signatures(pdf, password=None) -> list[dict]`
+
+Errors map to `oxide.OxideError` for engine failures and normal Python
+`ValueError`/`IndexError` for bad binding-level arguments.

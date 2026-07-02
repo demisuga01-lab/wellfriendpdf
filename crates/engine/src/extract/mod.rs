@@ -143,6 +143,10 @@ pub struct ExtractOptions {
     /// The OCR engine to use if scanned pages must be recognized first (passed
     /// straight through to [`crate::parse`]). `None` → scanned pages degrade.
     pub ocr: Option<std::sync::Arc<dyn crate::ocr::OcrEngine>>,
+    /// Which pages the OCR engine runs on (passed through to [`crate::parse`]).
+    /// Only consulted when [`Self::ocr`] is `Some`. Defaults to
+    /// [`crate::ocr::OcrPolicy::Auto`] (scanned pages only).
+    pub ocr_policy: crate::ocr::OcrPolicy,
     /// OCR languages / segmentation passed through to the parse step. Ignored
     /// when [`Self::ocr`] is `None`.
     pub ocr_options: crate::ocr::OcrOptions,
@@ -157,6 +161,7 @@ impl Default for ExtractOptions {
             pages: Vec::new(),
             min_confidence: 0.0,
             ocr: None,
+            ocr_policy: crate::ocr::OcrPolicy::Auto,
             ocr_options: crate::ocr::OcrOptions::default(),
             ocr_dpi: 300,
         }
@@ -221,6 +226,7 @@ pub fn extract_fields(
         // Keep furniture: a label/value can live in a header/footer band.
         omit_furniture: false,
         ocr: options.ocr.clone(),
+        ocr_policy: options.ocr_policy,
         ocr_options: options.ocr_options.clone(),
         ocr_dpi: options.ocr_dpi,
         ..Default::default()

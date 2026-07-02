@@ -1,14 +1,19 @@
 //! C ABI for oxide-engine.
 
-use std::ffi::CString;
+use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
 use std::slice;
+use std::sync::Arc;
 
 use oxide_engine::{
-    ContentEngine, DocType, ExtractOptions, ParseOptions, Result as OxideResult, TextExtractor,
+    ContentEngine, DocType, ExtractOptions, OcrPolicy, ParseOptions, Result as OxideResult,
+    TextExtractor,
 };
+
+pub mod ocr_backend;
+pub use ocr_backend::{CAbiOcrEngine, OxideOcrBackend, OxideOcrEmitWordFn, OxideOcrRecognizeFn};
 
 pub const OXIDE_STATUS_OK: c_int = 0;
 pub const OXIDE_STATUS_NULL: c_int = 1;
@@ -18,6 +23,10 @@ pub const OXIDE_STATUS_PANIC: c_int = 3;
 #[repr(C)]
 pub struct OxideDocument {
     engine: ContentEngine,
+    /// An optional OCR backend registered via `oxide_document_set_ocr_backend`.
+    /// When present, the `*_with_ocr` parse functions route scanned pages
+    /// through it; the plain parse functions ignore it (digital-born only).
+    ocr: Option<Arc<dyn oxide_engine::OcrEngine>>,
 }
 
 #[repr(C)]
@@ -59,7 +68,7 @@ pub unsafe extern "C" fn oxide_document_open_from_bytes(
         let bytes = unsafe { slice::from_raw_parts(data, len) }.to_vec();
         ContentEngine::open_bytes(bytes)
     })) {
-        Ok(Ok(engine)) => Box::into_raw(Box::new(OxideDocument { engine })),
+        Ok(Ok(engine)) => Box::into_raw(Box::new(OxideDocument { engine, ocr: None })),
         Ok(Err(err)) => {
             set_error(error_out, &err.to_string());
             ptr::null_mut()
@@ -272,6 +281,95 @@ pub unsafe extern "C" fn oxide_document_parse_json(
     })
 }
 
+/// Registers a C-function-pointer OCR backend on the document, so the
+/// `oxide_document_parse_markdown_ocr` / `oxide_document_parse_json_ocr`
+/// functions route scanned pages through it. See [`OxideOcrBackend`] for the
+/// callback contract. Pass a backend with a null `recognize` to clear a
+/// previously-registered backend.
+///
+/// Returns `OXIDE_STATUS_OK` on success (including clearing), or
+/// `OXIDE_STATUS_ERROR` if the document is null.
+///
+/// # Safety
+///
+/// `document` must be a valid open document. `backend.recognize` /
+/// `backend.userdata` must remain valid until the document is freed or the
+/// backend is cleared/replaced. `backend.name`, if non-null, must be a valid
+/// NUL-terminated string for the duration of this call.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_set_ocr_backend(
+    document: *mut OxideDocument,
+    backend: OxideOcrBackend,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if document.is_null() {
+            return Err("document pointer is null".into());
+        }
+        // SAFETY: non-null, and the caller owns the document exclusively while
+        // registering a backend (no concurrent parse in flight is a caller
+        // contract, matching every other mutating C-API call).
+        let doc = unsafe { &mut *document };
+        // SAFETY: the descriptor's pointers satisfy the documented contract.
+        doc.ocr = unsafe { CAbiOcrEngine::from_descriptor(backend) }
+            .map(|e| Arc::new(e) as Arc<dyn oxide_engine::OcrEngine>);
+        Ok(())
+    })
+}
+
+/// Parses the document to canonical Markdown **with OCR** for scanned pages,
+/// using the backend registered via `oxide_document_set_ocr_backend`. If no
+/// backend is registered this behaves exactly like `oxide_document_parse_markdown`
+/// (scanned pages degrade to the placeholder).
+///
+/// # Safety
+///
+/// Same as `oxide_document_parse_markdown`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_parse_markdown_ocr(
+    document: *const OxideDocument,
+    out_markdown: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_markdown.is_null() {
+            return Err("out_markdown pointer is null".into());
+        }
+        let parsed = oxide(doc.engine.parse_document(&parse_options_with_ocr(doc)))?;
+        unsafe {
+            *out_markdown = into_c_string(parsed.to_markdown_default());
+        }
+        Ok(())
+    })
+}
+
+/// Parses the document to canonical JSON **with OCR** for scanned pages, using
+/// the backend registered via `oxide_document_set_ocr_backend`. If no backend is
+/// registered this behaves exactly like `oxide_document_parse_json`.
+///
+/// # Safety
+///
+/// Same as `oxide_document_parse_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_parse_json_ocr(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let parsed = oxide(doc.engine.parse_document(&parse_options_with_ocr(doc)))?;
+        unsafe {
+            *out_json = into_c_string(parsed.to_json());
+        }
+        Ok(())
+    })
+}
+
 /// Extracts structured key-value fields (invoice number/date/total, receipt
 /// merchant/amount, form label→value pairs, line items) as JSON.
 ///
@@ -377,12 +475,712 @@ pub unsafe extern "C" fn oxide_document_render_page_png(
     })
 }
 
+/// Renders a page to JPEG bytes.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_buffer` must be writable and freed with
+/// `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_render_page_jpeg(
+    document: *const OxideDocument,
+    page: usize,
+    dpi: u32,
+    quality: u8,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let (jpeg, _, _) = oxide(oxide_engine::render_page_image(
+            &doc.engine,
+            page,
+            dpi,
+            oxide_engine::RasterImageFormat::Jpeg,
+            quality,
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(jpeg);
+        }
+        Ok(())
+    })
+}
+
+/// Extracts/reorders pages into a new PDF. `pages` are 1-based; duplicates are
+/// kept. A null/empty pages array means all pages.
+///
+/// # Safety
+///
+/// `document` must be valid. `pages` must point to `pages_len` readable
+/// entries unless `pages_len` is zero. `out_buffer` must be writable and freed
+/// with `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_extract_pages_pdf(
+    document: *const OxideDocument,
+    pages: *const usize,
+    pages_len: usize,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let mut pages = unsafe { read_pages(pages, pages_len) }?;
+        if pages.is_empty() {
+            let total = oxide(doc.engine.page_count())?;
+            pages = (1..=total).collect();
+        }
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let out = oxide(doc.engine.extract_pages(&pages))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Alias for ordered page extraction that documents the organize workflow.
+///
+/// # Safety
+///
+/// Same contract as `oxide_document_extract_pages_pdf`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_organize_pdf(
+    document: *const OxideDocument,
+    pages: *const usize,
+    pages_len: usize,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe { oxide_document_extract_pages_pdf(document, pages, pages_len, out_buffer, error_out) }
+}
+
+/// Rotates selected pages and returns a new PDF.
+///
+/// # Safety
+///
+/// `document` must be valid. `pages` must point to `pages_len` readable
+/// entries unless `pages_len` is zero. `out_buffer` must be writable and freed
+/// with `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_rotate_pdf(
+    document: *const OxideDocument,
+    pages: *const usize,
+    pages_len: usize,
+    angle: c_int,
+    relative: c_int,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let pages = unsafe { read_pages(pages, pages_len) }?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let rotation = if relative != 0 {
+            oxide_engine::Rotation::Relative(angle)
+        } else {
+            oxide_engine::Rotation::Absolute(angle)
+        };
+        let out = oxide(oxide_engine::rotate_pages(&doc.engine, &pages, rotation))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Optimizes a document and returns a new PDF.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_buffer` must be writable and freed with
+/// `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_optimize_pdf(
+    document: *const OxideDocument,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let (out, _) = oxide(oxide_engine::optimize(&doc.engine))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Linearizes a document and returns a new PDF.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_buffer` must be writable and freed with
+/// `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_linearize_pdf(
+    document: *const OxideDocument,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let out = oxide(oxide_engine::linearize(&doc.engine))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Writes a normalized unencrypted copy of an opened document.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_buffer` must be writable and freed with
+/// `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_decrypt_pdf(
+    document: *const OxideDocument,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let out = oxide(oxide_engine::decrypt_pdf(&doc.engine))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Encrypts a document with AES-256 and returns a new PDF.
+///
+/// # Safety
+///
+/// `document` must be valid. Password pointers may be null or valid
+/// NUL-terminated UTF-8 strings. `out_buffer` must be writable and freed with
+/// `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_encrypt_aes256_pdf(
+    document: *const OxideDocument,
+    user_password: *const c_char,
+    owner_password: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let user = unsafe { optional_c_string(user_password) }?.unwrap_or_default();
+        let owner = unsafe { optional_c_string(owner_password) }?.unwrap_or_else(|| user.clone());
+        let params = EncryptParams {
+            user_password: secret_bytes(user.into_bytes()),
+            owner_password: secret_bytes(owner.into_bytes()),
+            permissions: -1,
+            algorithm: EncryptAlgorithm::Aes256,
+            encrypt_metadata: true,
+        };
+        let out = oxide(oxide_engine::encrypt(&doc.engine, &params))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Converts a document to HTML and returns an owned string.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_html` must be writable and freed with
+/// `oxide_string_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_to_html(
+    document: *const OxideDocument,
+    out_html: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_html.is_null() {
+            return Err("out_html pointer is null".into());
+        }
+        let html = oxide(oxide_engine::html_string(&doc.engine, &[]))?;
+        unsafe {
+            *out_html = into_c_string(html);
+        }
+        Ok(())
+    })
+}
+
+/// Converts a document to XLSX and returns an owned buffer.
+///
+/// # Safety
+///
+/// `document` must be valid. `layout` may be null or a valid NUL-terminated
+/// UTF-8 string (`pages` or `tables`). `out_buffer` must be writable and freed
+/// with `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_to_xlsx(
+    document: *const OxideDocument,
+    layout: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let layout = unsafe { optional_c_string(layout) }?.unwrap_or_else(|| "pages".to_string());
+        let layout = oxide_engine::XlsxLayout::parse(&layout)
+            .ok_or_else(|| "layout must be pages or tables".to_string())?;
+        let out = oxide(oxide_engine::pdf_to_xlsx(
+            &doc.engine,
+            &oxide_engine::XlsxOptions { layout },
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Converts a document to PPTX and returns an owned buffer.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_buffer` must be writable and freed with
+/// `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_to_pptx(
+    document: *const OxideDocument,
+    include_images: c_int,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let out = oxide(oxide_engine::pdf_to_pptx(
+            &doc.engine,
+            &oxide_engine::PptxOptions {
+                include_images: include_images != 0,
+            },
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Converts a document to DOCX and returns an owned buffer.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_buffer` must be writable and freed with
+/// `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_to_docx(
+    document: *const OxideDocument,
+    include_images: c_int,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let out = oxide(oxide_engine::pdf_to_docx(
+            &doc.engine,
+            &oxide_engine::DocxOptions {
+                include_images: include_images != 0,
+            },
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Converts DOCX bytes to PDF and returns an owned buffer.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `out_buffer` must be writable and
+/// freed with `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_docx_to_pdf(
+    data: *const u8,
+    len: usize,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let bytes = unsafe { read_input_bytes(data, len, "data") }?;
+        let out = oxide(oxide_engine::docx_to_pdf(
+            bytes,
+            &oxide_engine::OfficeToPdfOptions::default(),
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Converts XLSX bytes to PDF and returns an owned buffer.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `out_buffer` must be writable and
+/// freed with `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_xlsx_to_pdf(
+    data: *const u8,
+    len: usize,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let bytes = unsafe { read_input_bytes(data, len, "data") }?;
+        let out = oxide(oxide_engine::xlsx_to_pdf(
+            bytes,
+            &oxide_engine::OfficeToPdfOptions::default(),
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Converts PPTX bytes to PDF and returns an owned buffer.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. `out_buffer` must be writable and
+/// freed with `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_pptx_to_pdf(
+    data: *const u8,
+    len: usize,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let bytes = unsafe { read_input_bytes(data, len, "data") }?;
+        let out = oxide(oxide_engine::pptx_to_pdf(
+            bytes,
+            &oxide_engine::OfficeToPdfOptions::default(),
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Returns the document font report as JSON.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_json` must be writable and freed with
+/// `oxide_string_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_fonts_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let fonts = oxide(doc.engine.list_fonts())?;
+        let json = serde_json::to_string(&fonts).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Returns signature verification reports as JSON.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_json` must be writable and freed with
+/// `oxide_string_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_signatures_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let reports = oxide(doc.engine.verify_signatures())?;
+        let json = serde_json::to_string(&reports).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Adds a text watermark and returns a new PDF.
+///
+/// # Safety
+///
+/// `document` must be valid. `text` must be a valid NUL-terminated UTF-8
+/// string. `out_buffer` must be writable and freed with `oxide_buffer_free`.
+/// `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_watermark_text_pdf(
+    document: *const OxideDocument,
+    text: *const c_char,
+    opacity: f64,
+    rotation_degrees: f64,
+    font_size: f64,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let text = unsafe { required_c_string(text, "text") }?;
+        let input = oxide(oxide_engine::decrypt_pdf(&doc.engine))?;
+        let out = oxide(oxide_engine::watermark_text_pdf(
+            input,
+            &text,
+            oxide_engine::TextWatermarkOptions {
+                opacity,
+                rotation_degrees,
+                font_size,
+                ..Default::default()
+            },
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Adds page numbers and returns a new PDF.
+///
+/// # Safety
+///
+/// `document` must be valid. `format` may be null or a valid NUL-terminated
+/// UTF-8 string. `out_buffer` must be writable and freed with
+/// `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_add_page_numbers_pdf(
+    document: *const OxideDocument,
+    format: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let format = unsafe { optional_c_string(format) }?
+            .unwrap_or_else(|| "Page {n} of {total}".to_string());
+        let input = oxide(oxide_engine::decrypt_pdf(&doc.engine))?;
+        let out = oxide(oxide_engine::add_page_numbers_pdf(
+            input,
+            oxide_engine::PageNumberOptions {
+                format,
+                ..Default::default()
+            },
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Builds a PDF from JPG/PNG image byte buffers.
+///
+/// # Safety
+///
+/// `images` and `lengths` must point to `count` readable entries when `count`
+/// is nonzero. Each image pointer must point to its corresponding readable
+/// byte slice. `out_buffer` must be writable and freed with
+/// `oxide_buffer_free`. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_images_to_pdf(
+    images: *const *const u8,
+    lengths: *const usize,
+    count: usize,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if count > 0 && (images.is_null() || lengths.is_null()) {
+            return Err("images/lengths pointers are null".into());
+        }
+        let mut borrowed = Vec::with_capacity(count);
+        for idx in 0..count {
+            let ptr = unsafe { *images.add(idx) };
+            let len = unsafe { *lengths.add(idx) };
+            if ptr.is_null() {
+                return Err(format!("image pointer {idx} is null"));
+            }
+            let bytes = unsafe { slice::from_raw_parts(ptr, len) };
+            borrowed.push((bytes, None));
+        }
+        let out = oxide(oxide_engine::images_to_pdf_from_bytes(
+            &borrowed,
+            oxide_engine::ImageToPdfOptions::default(),
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Merges PDF byte buffers in order.
+///
+/// # Safety
+///
+/// `inputs` and `lengths` must point to `count` readable entries. Each input
+/// pointer must point to its corresponding readable byte slice. `out_buffer`
+/// must be writable and freed with `oxide_buffer_free`. `error_out`, if
+/// non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_merge_pdfs_from_bytes(
+    inputs: *const *const u8,
+    lengths: *const usize,
+    count: usize,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if count == 0 {
+            return Err("at least one input PDF is required".into());
+        }
+        if inputs.is_null() || lengths.is_null() {
+            return Err("inputs/lengths pointers are null".into());
+        }
+        let mut engines = Vec::with_capacity(count);
+        for idx in 0..count {
+            let ptr = unsafe { *inputs.add(idx) };
+            let len = unsafe { *lengths.add(idx) };
+            if ptr.is_null() {
+                return Err(format!("input pointer {idx} is null"));
+            }
+            let bytes = unsafe { slice::from_raw_parts(ptr, len) }.to_vec();
+            engines.push(oxide(ContentEngine::open_bytes(bytes))?);
+        }
+        let mut specs = Vec::with_capacity(engines.len());
+        for engine in &engines {
+            let total = oxide(engine.page_count())?;
+            specs.push((engine.document(), (1..=total).collect::<Vec<_>>()));
+        }
+        let out = oxide(oxide_engine::build_merged(&specs))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
 fn checked_doc<'a>(document: *const OxideDocument) -> Result<&'a OxideDocument, String> {
     if document.is_null() {
         Err("document pointer is null".to_string())
     } else {
         Ok(unsafe { &*document })
     }
+}
+
+unsafe fn read_pages(pages: *const usize, pages_len: usize) -> Result<Vec<usize>, String> {
+    if pages_len == 0 {
+        return Ok(Vec::new());
+    }
+    if pages.is_null() {
+        return Err("pages pointer is null".to_string());
+    }
+    Ok(unsafe { slice::from_raw_parts(pages, pages_len) }.to_vec())
+}
+
+unsafe fn optional_c_string(ptr: *const c_char) -> Result<Option<String>, String> {
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    let s = unsafe { CStr::from_ptr(ptr) }
+        .to_str()
+        .map_err(|_| "string is not valid UTF-8".to_string())?;
+    Ok(Some(s.to_string()))
+}
+
+unsafe fn required_c_string(ptr: *const c_char, name: &str) -> Result<String, String> {
+    unsafe { optional_c_string(ptr) }?.ok_or_else(|| format!("{name} pointer is null"))
+}
+
+unsafe fn read_input_bytes<'a>(
+    data: *const u8,
+    len: usize,
+    name: &str,
+) -> Result<&'a [u8], String> {
+    if len == 0 {
+        return Ok(&[]);
+    }
+    if data.is_null() {
+        return Err(format!("{name} pointer is null"));
+    }
+    Ok(unsafe { slice::from_raw_parts(data, len) })
 }
 
 fn ffi_status(error_out: *mut *mut c_char, f: impl FnOnce() -> Result<(), String>) -> c_int {
@@ -402,6 +1200,22 @@ fn ffi_status(error_out: *mut *mut c_char, f: impl FnOnce() -> Result<(), String
 
 fn oxide<T>(result: OxideResult<T>) -> Result<T, String> {
     result.map_err(|err| err.to_string())
+}
+
+/// Build [`ParseOptions`] carrying the document's registered OCR backend (if
+/// any). With a backend, uses `OcrPolicy::Auto` (scanned pages recognized) and a
+/// generous per-page timeout as an engine-side backstop; without one, returns
+/// default options (OCR off).
+fn parse_options_with_ocr(doc: &OxideDocument) -> ParseOptions {
+    match &doc.ocr {
+        Some(engine) => ParseOptions {
+            ocr: Some(Arc::clone(engine)),
+            ocr_policy: OcrPolicy::Auto,
+            ocr_timeout: Some(std::time::Duration::from_secs(120)),
+            ..Default::default()
+        },
+        None => ParseOptions::default(),
+    }
 }
 
 fn into_c_string(value: String) -> *mut c_char {
@@ -460,6 +1274,14 @@ mod tests {
 
         fn add_stream(&mut self, stream: &[u8]) {
             let mut body = format!("<< /Length {} >>\nstream\n", stream.len()).into_bytes();
+            body.extend_from_slice(stream);
+            body.extend_from_slice(b"\nendstream");
+            self.objects.push(body);
+        }
+
+        fn add_stream_with_dict(&mut self, dict_extra: &str, stream: &[u8]) {
+            let mut body =
+                format!("<< /Length {} {} >>\nstream\n", stream.len(), dict_extra).into_bytes();
             body.extend_from_slice(stream);
             body.extend_from_slice(b"\nendstream");
             self.objects.push(body);
@@ -579,6 +1401,142 @@ mod tests {
     }
 
     #[test]
+    fn capi_phase3_pdf_utilities_return_owned_buffers() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc = unsafe { oxide_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+
+        let mut jpeg = OxideBuffer::empty();
+        let status =
+            unsafe { oxide_document_render_page_jpeg(doc, 1, 72, 80, &mut jpeg, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let jpeg_bytes = unsafe { std::slice::from_raw_parts(jpeg.data, jpeg.len) };
+        assert!(jpeg_bytes.starts_with(&[0xFF, 0xD8]));
+        unsafe { oxide_buffer_free(jpeg) };
+
+        let pages = [1usize, 1usize];
+        let mut organized = OxideBuffer::empty();
+        let status = unsafe {
+            oxide_document_organize_pdf(
+                doc,
+                pages.as_ptr(),
+                pages.len(),
+                &mut organized,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let org_bytes = unsafe { std::slice::from_raw_parts(organized.data, organized.len) };
+        let re = ContentEngine::open_bytes(org_bytes.to_vec()).unwrap();
+        assert_eq!(re.page_count().unwrap(), 2);
+        unsafe { oxide_buffer_free(organized) };
+
+        let text = CString::new("DRAFT").unwrap();
+        let mut watermarked = OxideBuffer::empty();
+        let status = unsafe {
+            oxide_document_watermark_text_pdf(
+                doc,
+                text.as_ptr(),
+                0.25,
+                45.0,
+                48.0,
+                &mut watermarked,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let bytes = unsafe { std::slice::from_raw_parts(watermarked.data, watermarked.len) };
+        let re = ContentEngine::open_bytes(bytes.to_vec()).unwrap();
+        assert!(re.get_page_text(1).unwrap().contains("DRAFT"));
+        unsafe {
+            oxide_buffer_free(watermarked);
+            oxide_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_phase4_office_conversions_return_owned_buffers() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc = unsafe { oxide_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+
+        let layout = CString::new("pages").unwrap();
+        let mut xlsx = OxideBuffer::empty();
+        let status = unsafe { oxide_document_to_xlsx(doc, layout.as_ptr(), &mut xlsx, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let xlsx_bytes = unsafe { std::slice::from_raw_parts(xlsx.data, xlsx.len) };
+        assert!(xlsx_bytes.starts_with(b"PK"));
+        assert!(contains_ascii(xlsx_bytes, "xl/workbook.xml"));
+        let mut xlsx_pdf = OxideBuffer::empty();
+        let status = unsafe {
+            oxide_xlsx_to_pdf(
+                xlsx_bytes.as_ptr(),
+                xlsx_bytes.len(),
+                &mut xlsx_pdf,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let xlsx_pdf_bytes = unsafe { std::slice::from_raw_parts(xlsx_pdf.data, xlsx_pdf.len) };
+        assert!(xlsx_pdf_bytes.starts_with(b"%PDF-"));
+        unsafe { oxide_buffer_free(xlsx) };
+        unsafe { oxide_buffer_free(xlsx_pdf) };
+
+        let mut pptx = OxideBuffer::empty();
+        let status = unsafe { oxide_document_to_pptx(doc, 1, &mut pptx, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let pptx_bytes = unsafe { std::slice::from_raw_parts(pptx.data, pptx.len) };
+        assert!(pptx_bytes.starts_with(b"PK"));
+        assert!(contains_ascii(pptx_bytes, "ppt/presentation.xml"));
+        let mut pptx_pdf = OxideBuffer::empty();
+        let status = unsafe {
+            oxide_pptx_to_pdf(
+                pptx_bytes.as_ptr(),
+                pptx_bytes.len(),
+                &mut pptx_pdf,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let pptx_pdf_bytes = unsafe { std::slice::from_raw_parts(pptx_pdf.data, pptx_pdf.len) };
+        assert!(pptx_pdf_bytes.starts_with(b"%PDF-"));
+        unsafe { oxide_buffer_free(pptx_pdf) };
+
+        let mut docx = OxideBuffer::empty();
+        let status = unsafe { oxide_document_to_docx(doc, 1, &mut docx, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let docx_bytes = unsafe { std::slice::from_raw_parts(docx.data, docx.len) };
+        assert!(docx_bytes.starts_with(b"PK"));
+        assert!(contains_ascii(docx_bytes, "word/document.xml"));
+        let mut docx_pdf = OxideBuffer::empty();
+        let status = unsafe {
+            oxide_docx_to_pdf(
+                docx_bytes.as_ptr(),
+                docx_bytes.len(),
+                &mut docx_pdf,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let docx_pdf_bytes = unsafe { std::slice::from_raw_parts(docx_pdf.data, docx_pdf.len) };
+        assert!(docx_pdf_bytes.starts_with(b"%PDF-"));
+        unsafe {
+            oxide_buffer_free(pptx);
+            oxide_buffer_free(docx);
+            oxide_buffer_free(docx_pdf);
+            oxide_document_free(doc);
+        }
+    }
+
+    fn contains_ascii(bytes: &[u8], needle: &str) -> bool {
+        bytes
+            .windows(needle.len())
+            .any(|window| window == needle.as_bytes())
+    }
+
+    #[test]
     fn capi_reports_null_document_error() {
         let mut count = 0usize;
         let mut error = std::ptr::null_mut();
@@ -591,6 +1549,83 @@ mod tests {
         assert!(message.contains("document pointer is null"));
         unsafe {
             oxide_error_free(error);
+        }
+    }
+
+    // ── C-ABI OCR backend ────────────────────────────────────────────────────
+
+    /// A 612×792 page whose only content is a full-page image → classified
+    /// `Scanned`, routing it to the OCR path.
+    fn scanned_page_pdf() -> Vec<u8> {
+        let mut b = PdfBuilder::new();
+        b.add("<< /Type /Catalog /Pages 2 0 R >>");
+        b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        b.add(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+             /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>",
+        );
+        b.add_stream(b"q 612 0 0 792 0 0 cm /Im0 Do Q\n");
+        b.add_stream_with_dict(
+            "/Type /XObject /Subtype /Image /Width 1 /Height 1 \
+             /ColorSpace /DeviceGray /BitsPerComponent 8",
+            &[0x80],
+        );
+        b.build()
+    }
+
+    /// A C `recognize` that emits one scripted word via the sink, ignoring the
+    /// image. Proves the function-pointer backend reaches the document model.
+    extern "C" fn mock_recognize(
+        _userdata: *mut std::os::raw::c_void,
+        _gray: *const u8,
+        _width: u32,
+        _height: u32,
+        _dpi: u32,
+        sink: *mut std::os::raw::c_void,
+        emit: OxideOcrEmitWordFn,
+    ) -> c_int {
+        let text = CString::new("CabiWord").unwrap();
+        emit(sink, text.as_ptr(), 72.0, 60.0, 200.0, 88.0, 0.9, 0);
+        0
+    }
+
+    #[test]
+    fn capi_function_pointer_ocr_backend_reaches_document_model() {
+        let pdf = scanned_page_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc = unsafe { oxide_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+
+        // Without a backend, the scanned page degrades to the placeholder.
+        let mut md = std::ptr::null_mut();
+        let status = unsafe { oxide_document_parse_markdown_ocr(doc, &mut md, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let before = unsafe { CStr::from_ptr(md) }.to_string_lossy().into_owned();
+        assert!(!before.contains("CabiWord"), "no OCR yet: {before}");
+        unsafe { oxide_string_free(md) };
+
+        // Register the function-pointer backend and re-parse.
+        let name = CString::new("c-mock").unwrap();
+        let backend = OxideOcrBackend {
+            userdata: std::ptr::null_mut(),
+            recognize: Some(mock_recognize),
+            max_concurrency: 1,
+            name: name.as_ptr(),
+        };
+        let status = unsafe { oxide_document_set_ocr_backend(doc, backend, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+
+        let mut md = std::ptr::null_mut();
+        let status = unsafe { oxide_document_parse_markdown_ocr(doc, &mut md, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let after = unsafe { CStr::from_ptr(md) }.to_string_lossy().into_owned();
+        assert!(
+            after.contains("CabiWord"),
+            "OCR word must reach the document model: {after}"
+        );
+        unsafe {
+            oxide_string_free(md);
+            oxide_document_free(doc);
         }
     }
 }

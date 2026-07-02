@@ -1,3 +1,34 @@
+//! wasm-bindgen wrapper for `oxide-engine` — the browser/`wasm32` surface.
+//!
+//! # OCR decision: no in-browser OCR (by design, for now)
+//!
+//! The OCR seam ([`oxide_engine::OcrEngine`]) is a pluggable backend the host
+//! implements. On every *other* surface the backend is something outside the
+//! core: a Tesseract subprocess (Rust/CLI), a Python object (the `oxide`
+//! wheel), or a C function pointer (the C ABI). None of those exist inside the
+//! browser sandbox:
+//!
+//! - There is no process to spawn (no Tesseract), no Python runtime, and no
+//!   native library to call through the C ABI.
+//! - The seam's timeout backstop ([`oxide_engine::ocr::dispatch`]) uses
+//!   `std::thread`, which is unavailable on `wasm32-unknown-unknown`; there the
+//!   spawn simply fails and the call runs inline — fine, but it means the
+//!   engine offers no isolation an in-browser backend could rely on.
+//!
+//! So this crate exposes **no OCR entry point**: every parse method here uses
+//! [`ParseOptions::default`] (OCR off), and scanned pages degrade to the
+//! placeholder exactly as they do on any other surface with OCR off. This is a
+//! deliberate, documented gap, not an oversight.
+//!
+//! The intended path for browser OCR is **out of band**: call
+//! [`OxidePdf::render_page_png`] to rasterize a page, run OCR in JS/WASM (e.g.
+//! `tesseract.js`, an ONNX model, or a remote vision API), and use the
+//! recognized text alongside Oxide's digital-born output. Wiring a JS callback
+//! *back through* the seam (so OCR'd text merges into the canonical model
+//! in-engine) is feasible in principle — a `JsValue` backend mirroring the
+//! Python one — but is intentionally out of scope until there is demand; the
+//! render-then-OCR path covers the common case today without it.
+
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
     use wasm_bindgen::prelude::*;
