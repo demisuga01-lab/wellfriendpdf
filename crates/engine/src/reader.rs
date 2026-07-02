@@ -122,7 +122,8 @@ pub(crate) struct PdfRangeReader<'a> {
     remaining: usize,
 }
 
-pub(crate) struct UnfilteredStreamRange<'a> {
+pub(crate) struct ContentStreamRange<'a> {
+    pub dict: PdfDictionary,
     pub reader: PdfRangeReader<'a>,
 }
 
@@ -555,15 +556,12 @@ impl PdfReader {
         }
     }
 
-    pub(crate) fn unfiltered_stream_range(
+    pub(crate) fn content_stream_range(
         &self,
         number: u32,
         generation: u16,
-    ) -> Result<Option<UnfilteredStreamRange<'_>>> {
+    ) -> Result<Option<ContentStreamRange<'_>>> {
         if self.encryption.is_some() {
-            return Ok(None);
-        }
-        if !matches!(self.source, PdfSource::File(_)) {
             return Ok(None);
         }
 
@@ -581,14 +579,6 @@ impl PdfReader {
             Err(_) => return Ok(None),
         };
         if header.number != number || header.generation != generation {
-            return Ok(None);
-        }
-        if header
-            .dict
-            .get("Filter")
-            .or_else(|| header.dict.get("F"))
-            .is_some()
-        {
             return Ok(None);
         }
         let Some(length) = header.length else {
@@ -615,7 +605,8 @@ impl PdfReader {
                 )));
             }
         }
-        Ok(Some(UnfilteredStreamRange {
+        Ok(Some(ContentStreamRange {
+            dict: header.dict,
             reader: PdfRangeReader {
                 source: &self.source,
                 offset: stream_start,

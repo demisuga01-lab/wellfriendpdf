@@ -11,24 +11,49 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
+import tempfile
+import zlib
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Iterator
 
 
 BASE_STREAM_TEMPLATE = b"BT /F1 12 Tf 72 720 Td (Synthetic page %06d) Tj ET\n"
 PADDING_CHUNK = b"% " + (b"x" * 8190) + b"\n"
 
 
-def write_payload(out: BinaryIO, page: int, length: int) -> None:
+def iter_payload_chunks(page: int, length: int) -> Iterator[bytes]:
     prefix = BASE_STREAM_TEMPLATE % page
     if length < len(prefix):
         length = len(prefix)
-    out.write(prefix)
+    yield prefix
     remaining = length - len(prefix)
     while remaining > 0:
         chunk = PADDING_CHUNK[: min(remaining, len(PADDING_CHUNK))]
-        out.write(chunk)
+        yield chunk
         remaining -= len(chunk)
+
+
+def write_payload(out: BinaryIO, page: int, length: int) -> None:
+    for chunk in iter_payload_chunks(page, length):
+        out.write(chunk)
+
+
+def compress_payload_to_temp(page: int, length: int) -> tuple[BinaryIO, int]:
+    tmp = tempfile.TemporaryFile()
+    compressor = zlib.compressobj(level=6)
+    compressed_len = 0
+    for chunk in iter_payload_chunks(page, length):
+        compressed = compressor.compress(chunk)
+        if compressed:
+            tmp.write(compressed)
+            compressed_len += len(compressed)
+    tail = compressor.flush()
+    if tail:
+        tmp.write(tail)
+        compressed_len += len(tail)
+    tmp.seek(0)
+    return tmp, compressed_len
 
 
 def write_obj(out: BinaryIO, offsets: list[int], number: int, body: bytes) -> None:
@@ -38,7 +63,12 @@ def write_obj(out: BinaryIO, offsets: list[int], number: int, body: bytes) -> No
     out.write(b"\nendobj\n")
 
 
-def generate_pdf(output: Path, pages: int, stream_bytes_per_page: int) -> dict[str, int | str]:
+def generate_pdf(
+    output: Path,
+    pages: int,
+    stream_bytes_per_page: int,
+    compress_content: bool = False,
+) -> dict[str, int | str | bool]:
     if pages <= 0:
         raise ValueError("pages must be positive")
     if stream_bytes_per_page <= 0:
@@ -70,8 +100,21 @@ def generate_pdf(output: Path, pages: int, stream_bytes_per_page: int) -> dict[s
 
             offsets[content_obj] = out.tell()
             out.write(f"{content_obj} 0 obj\n".encode("ascii"))
-            out.write(f"<< /Length {stream_bytes_per_page} >>\nstream\n".encode("ascii"))
-            write_payload(out, page, stream_bytes_per_page)
+            if compress_content:
+                compressed, compressed_len = compress_payload_to_temp(page, stream_bytes_per_page)
+                try:
+                    out.write(
+                        (
+                            f"<< /Length {compressed_len} /Filter /FlateDecode >>\n"
+                            "stream\n"
+                        ).encode("ascii")
+                    )
+                    shutil.copyfileobj(compressed, out, length=1024 * 1024)
+                finally:
+                    compressed.close()
+            else:
+                out.write(f"<< /Length {stream_bytes_per_page} >>\nstream\n".encode("ascii"))
+                write_payload(out, page, stream_bytes_per_page)
             out.write(b"\nendstream\nendobj\n")
 
         startxref = out.tell()
@@ -91,12 +134,20 @@ def generate_pdf(output: Path, pages: int, stream_bytes_per_page: int) -> dict[s
         "bytes": output.stat().st_size,
         "pages": pages,
         "stream_bytes_per_page": stream_bytes_per_page,
+        "decompressed_stream_bytes_per_page": stream_bytes_per_page,
+        "compressed_content": compress_content,
+        "content_filter": "FlateDecode" if compress_content else "none",
         "objects": max_object,
     }
 
 
 def cmd_generate(args: argparse.Namespace) -> int:
-    metadata = generate_pdf(Path(args.output), args.pages, args.stream_bytes_per_page)
+    metadata = generate_pdf(
+        Path(args.output),
+        args.pages,
+        args.stream_bytes_per_page,
+        compress_content=args.compress_content,
+    )
     print(json.dumps(metadata, indent=2))
     return 0
 
@@ -111,15 +162,22 @@ def cmd_ladder(args: argparse.Namespace) -> int:
         pages = args.size_axis_pages
         estimated_overhead = 4096 + pages * 512
         stream_bytes = max(64, (target_bytes - estimated_overhead) // pages)
-        output = out_dir / f"synthetic-size-{target_mb}mb-{pages}p.pdf"
-        metadata = generate_pdf(output, pages, stream_bytes)
+        prefix = "synthetic-flate-size" if args.compress_content else "synthetic-size"
+        output = out_dir / f"{prefix}-{target_mb}mb-{pages}p.pdf"
+        metadata = generate_pdf(output, pages, stream_bytes, compress_content=args.compress_content)
         metadata["axis"] = "size"
         metadata["target_mb"] = target_mb
         manifest.append(metadata)
 
     for pages in args.page_targets:
-        output = out_dir / f"synthetic-pages-{pages}p.pdf"
-        metadata = generate_pdf(output, pages, args.page_axis_stream_bytes)
+        prefix = "synthetic-flate-pages" if args.compress_content else "synthetic-pages"
+        output = out_dir / f"{prefix}-{pages}p.pdf"
+        metadata = generate_pdf(
+            output,
+            pages,
+            args.page_axis_stream_bytes,
+            compress_content=args.compress_content,
+        )
         metadata["axis"] = "pages"
         manifest.append(metadata)
 
@@ -137,6 +195,7 @@ def main() -> int:
     gen.add_argument("--output", required=True)
     gen.add_argument("--pages", type=int, required=True)
     gen.add_argument("--stream-bytes-per-page", type=int, required=True)
+    gen.add_argument("--compress-content", action="store_true")
     gen.set_defaults(func=cmd_generate)
 
     ladder = sub.add_parser("ladder", help="generate size/page-count ladder PDFs")
@@ -145,6 +204,7 @@ def main() -> int:
     ladder.add_argument("--size-axis-pages", type=int, default=4)
     ladder.add_argument("--page-targets", nargs="+", type=int, default=[50, 1000, 5000])
     ladder.add_argument("--page-axis-stream-bytes", type=int, default=256)
+    ladder.add_argument("--compress-content", action="store_true")
     ladder.set_defaults(func=cmd_ladder)
 
     args = parser.parse_args()

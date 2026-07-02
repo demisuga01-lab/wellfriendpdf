@@ -44,6 +44,7 @@ public-benchmark/results/raw/
 # Large-file profiling generated PDFs and raw run samples are local-only. The
 # harness, generator, and summarized docs are tracked.
 large-file-profile/generated/
+large-file-profile/generated-followup/
 large-file-profile/results/
 
 # Stray native build artifacts from compiling the C-ABI example locally.

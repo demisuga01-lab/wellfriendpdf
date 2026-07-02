@@ -1,4 +1,5 @@
-use std::io::Read;
+use std::collections::VecDeque;
+use std::io::{self, Cursor, Read};
 
 use flate2::read::{DeflateDecoder, ZlibDecoder};
 
@@ -26,6 +27,11 @@ pub enum StreamDecodeStatus {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DecodedStream {
     pub data: Vec<u8>,
+    pub status: StreamDecodeStatus,
+}
+
+pub(crate) struct DecodedStreamReader<'a> {
+    pub reader: Box<dyn Read + 'a>,
     pub status: StreamDecodeStatus,
 }
 
@@ -74,6 +80,14 @@ pub(crate) fn decode_stream_from_dict(dict: &PdfDictionary, raw: &[u8]) -> Resul
             format!("image filter remains: {filter}"),
         )),
     }
+}
+
+pub(crate) fn decode_stream_lossless_reader<'a, R: Read + 'a>(
+    dict: &PdfDictionary,
+    raw: R,
+    reader: Option<&PdfReader>,
+) -> Result<DecodedStreamReader<'a>> {
+    decode_stream_reader_with_cap(dict, raw, reader, MAX_FLATE_DECOMPRESSED_BYTES)
 }
 
 pub(crate) fn apply_filter_bytes(
@@ -211,6 +225,767 @@ fn decode_stream_parts(
         data,
         status: StreamDecodeStatus::Complete,
     })
+}
+
+fn decode_stream_reader_with_cap<'a, R: Read + 'a>(
+    dict: &PdfDictionary,
+    raw: R,
+    reader: Option<&PdfReader>,
+    cap: u64,
+) -> Result<DecodedStreamReader<'a>> {
+    let filters = filter_names(dict, reader)?;
+    let params = decode_params(dict, reader, filters.len())?;
+    let mut current: Box<dyn Read + 'a> = Box::new(raw);
+
+    for (idx, filter) in filters.iter().enumerate() {
+        let param = params.get(idx).and_then(Option::as_ref);
+        match filter.as_str() {
+            "FlateDecode" | "Fl" => {
+                let flate = StreamingFlateReader::new(current).map_err(OxideError::Io)?;
+                current = Box::new(CappedReader::new(
+                    flate,
+                    cap,
+                    "FlateDecode output exceeds decompression cap",
+                ));
+                current = streaming_predictor_reader(current, param)?;
+            }
+            "LZWDecode" | "LZW" => {
+                let early_change = int_param(param, "EarlyChange", 1)?;
+                if !(0..=1).contains(&early_change) {
+                    return Err(OxideError::MalformedPdf(format!(
+                        "invalid LZW EarlyChange value {early_change}"
+                    )));
+                }
+                current = Box::new(CappedReader::new(
+                    LzwReader::new(current, early_change as u8),
+                    cap,
+                    "LZWDecode output exceeds decompression cap",
+                ));
+                current = streaming_predictor_reader(current, param)?;
+            }
+            "ASCIIHexDecode" | "AHx" => current = Box::new(AsciiHexReader::new(current)),
+            "ASCII85Decode" | "A85" => current = Box::new(Ascii85Reader::new(current)),
+            "RunLengthDecode" | "RL" => {
+                current = Box::new(CappedReader::new(
+                    RunLengthReader::new(current),
+                    cap,
+                    "RunLengthDecode output exceeds decompression cap",
+                ));
+            }
+            "Crypt" => {
+                if reader.and_then(PdfReader::encryption).is_none()
+                    && !crypt_filter_is_identity(param)
+                {
+                    return Err(OxideError::EncryptedPdf(
+                        "stream uses /Crypt filter; provide the correct password".to_string(),
+                    ));
+                }
+            }
+            "DCTDecode" | "DCT" | "JPXDecode" | "CCITTFaxDecode" | "CCF" | "JBIG2Decode" => {
+                return Ok(DecodedStreamReader {
+                    reader: current,
+                    status: StreamDecodeStatus::StoppedAtImageFilter(filter.clone()),
+                });
+            }
+            other => {
+                return Err(OxideError::UnsupportedFeature(format!(
+                    "unsupported stream filter {other}"
+                )));
+            }
+        }
+    }
+
+    Ok(DecodedStreamReader {
+        reader: current,
+        status: StreamDecodeStatus::Complete,
+    })
+}
+
+fn streaming_predictor_reader<'a>(
+    current: Box<dyn Read + 'a>,
+    params: Option<&PdfDictionary>,
+) -> Result<Box<dyn Read + 'a>> {
+    let predictor = int_param(params, "Predictor", 1)?;
+    if predictor == 1 {
+        return Ok(current);
+    }
+    Ok(Box::new(PredictorReader::new(current, params)?))
+}
+
+fn reader_error(message: impl Into<String>) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, message.into())
+}
+
+fn result_to_io<T>(result: Result<T>) -> io::Result<T> {
+    result.map_err(|err| reader_error(err.to_string()))
+}
+
+fn read_one<R: Read>(inner: &mut R) -> io::Result<Option<u8>> {
+    let mut byte = [0u8; 1];
+    match inner.read(&mut byte)? {
+        0 => Ok(None),
+        _ => Ok(Some(byte[0])),
+    }
+}
+
+struct PrefixReader<R> {
+    prefix: Cursor<Vec<u8>>,
+    inner: R,
+}
+
+impl<R> PrefixReader<R> {
+    fn new(prefix: Vec<u8>, inner: R) -> Self {
+        Self {
+            prefix: Cursor::new(prefix),
+            inner,
+        }
+    }
+}
+
+impl<R: Read> Read for PrefixReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        let prefix_read = self.prefix.read(buf)?;
+        if prefix_read > 0 {
+            return Ok(prefix_read);
+        }
+        self.inner.read(buf)
+    }
+}
+
+enum StreamingFlateReader<R: Read> {
+    Zlib(ZlibDecoder<PrefixReader<R>>),
+    Raw(DeflateDecoder<PrefixReader<R>>),
+}
+
+impl<R: Read> StreamingFlateReader<R> {
+    fn new(mut inner: R) -> io::Result<Self> {
+        let mut prefix = Vec::with_capacity(2);
+        while prefix.len() < 2 {
+            match read_one(&mut inner)? {
+                Some(byte) => prefix.push(byte),
+                None => break,
+            }
+        }
+        let reader = PrefixReader::new(prefix.clone(), inner);
+        if looks_like_zlib_header(&prefix) {
+            Ok(Self::Zlib(ZlibDecoder::new(reader)))
+        } else {
+            Ok(Self::Raw(DeflateDecoder::new(reader)))
+        }
+    }
+}
+
+impl<R: Read> Read for StreamingFlateReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Zlib(reader) => reader.read(buf),
+            Self::Raw(reader) => reader.read(buf),
+        }
+    }
+}
+
+fn looks_like_zlib_header(prefix: &[u8]) -> bool {
+    let [cmf, flg, ..] = prefix else {
+        return true;
+    };
+    (cmf & 0x0F) == 8 && (cmf >> 4) <= 7 && ((u16::from(*cmf) << 8) | u16::from(*flg)) % 31 == 0
+}
+
+struct CappedReader<R> {
+    inner: R,
+    emitted: u64,
+    cap: u64,
+    message: &'static str,
+}
+
+impl<R> CappedReader<R> {
+    fn new(inner: R, cap: u64, message: &'static str) -> Self {
+        Self {
+            inner,
+            emitted: 0,
+            cap,
+            message,
+        }
+    }
+}
+
+impl<R: Read> Read for CappedReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if self.emitted > self.cap {
+            return Err(reader_error(self.message));
+        }
+        let remaining = self.cap.saturating_sub(self.emitted).saturating_add(1);
+        let max_len = buf
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        let n = self.inner.read(&mut buf[..max_len])?;
+        self.emitted = self
+            .emitted
+            .saturating_add(u64::try_from(n).unwrap_or(u64::MAX));
+        if self.emitted > self.cap {
+            return Err(reader_error(self.message));
+        }
+        Ok(n)
+    }
+}
+
+struct AsciiHexReader<R> {
+    inner: R,
+    high: Option<u8>,
+    pending: VecDeque<u8>,
+    done: bool,
+}
+
+impl<R> AsciiHexReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            high: None,
+            pending: VecDeque::new(),
+            done: false,
+        }
+    }
+}
+
+impl<R: Read> Read for AsciiHexReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut written = 0usize;
+        while written < buf.len() {
+            if let Some(byte) = self.pending.pop_front() {
+                buf[written] = byte;
+                written += 1;
+                continue;
+            }
+            if self.done {
+                break;
+            }
+            match read_one(&mut self.inner)? {
+                Some(b'>') => {
+                    if let Some(high) = self.high.take() {
+                        self.pending.push_back(high << 4);
+                    }
+                    self.done = true;
+                }
+                Some(byte) if is_pdf_whitespace(byte) => {}
+                Some(byte) => {
+                    let value = hex_value(byte).ok_or_else(|| {
+                        reader_error(format!("invalid ASCIIHex digit 0x{byte:02X}"))
+                    })?;
+                    match self.high.take() {
+                        Some(high) => self.pending.push_back((high << 4) | value),
+                        None => self.high = Some(value),
+                    }
+                }
+                None => {
+                    if let Some(high) = self.high.take() {
+                        self.pending.push_back(high << 4);
+                    }
+                    self.done = true;
+                }
+            }
+        }
+        Ok(written)
+    }
+}
+
+struct Ascii85Reader<R> {
+    inner: R,
+    group: Vec<u8>,
+    pending: VecDeque<u8>,
+    done: bool,
+}
+
+impl<R: Read> Ascii85Reader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            group: Vec::with_capacity(5),
+            pending: VecDeque::new(),
+            done: false,
+        }
+    }
+
+    fn push_group(&mut self, output_len: usize) -> io::Result<()> {
+        let mut out = Vec::new();
+        result_to_io(push_ascii85_group(&self.group, output_len, &mut out))?;
+        self.pending.extend(out);
+        self.group.clear();
+        Ok(())
+    }
+
+    fn finish_partial(&mut self) -> io::Result<()> {
+        if self.group.is_empty() {
+            return Ok(());
+        }
+        if self.group.len() == 1 {
+            return Err(reader_error("ASCII85 final group cannot contain one digit"));
+        }
+        let output_len = self.group.len() - 1;
+        while self.group.len() < 5 {
+            self.group.push(84);
+        }
+        self.push_group(output_len)
+    }
+
+    fn fill_pending(&mut self) -> io::Result<()> {
+        while self.pending.is_empty() && !self.done {
+            let Some(byte) = read_one(&mut self.inner)? else {
+                self.finish_partial()?;
+                self.done = true;
+                break;
+            };
+            if is_pdf_whitespace(byte) {
+                continue;
+            }
+            if byte == b'~' {
+                let mut saw_end = false;
+                while let Some(next) = read_one(&mut self.inner)? {
+                    if is_pdf_whitespace(next) {
+                        continue;
+                    }
+                    if next == b'>' {
+                        saw_end = true;
+                        break;
+                    }
+                    return Err(reader_error("ASCII85 '~' must be followed by '>'"));
+                }
+                if !saw_end {
+                    return Err(reader_error("unterminated ASCII85 EOD marker"));
+                }
+                self.finish_partial()?;
+                self.done = true;
+                break;
+            }
+            if byte == b'z' {
+                if !self.group.is_empty() {
+                    return Err(reader_error("ASCII85 'z' cannot appear inside a group"));
+                }
+                self.pending.extend([0, 0, 0, 0]);
+                break;
+            }
+            if !(b'!'..=b'u').contains(&byte) {
+                return Err(reader_error(format!("invalid ASCII85 byte 0x{byte:02X}")));
+            }
+            self.group.push(byte - b'!');
+            if self.group.len() == 5 {
+                self.push_group(4)?;
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<R: Read> Read for Ascii85Reader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut written = 0usize;
+        while written < buf.len() {
+            if self.pending.is_empty() {
+                self.fill_pending()?;
+            }
+            let Some(byte) = self.pending.pop_front() else {
+                break;
+            };
+            buf[written] = byte;
+            written += 1;
+        }
+        Ok(written)
+    }
+}
+
+struct RunLengthReader<R> {
+    inner: R,
+    pending: VecDeque<u8>,
+    done: bool,
+}
+
+impl<R: Read> RunLengthReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            pending: VecDeque::new(),
+            done: false,
+        }
+    }
+
+    fn fill_pending(&mut self) -> io::Result<()> {
+        while self.pending.is_empty() && !self.done {
+            let Some(len) = read_one(&mut self.inner)? else {
+                self.done = true;
+                break;
+            };
+            match len {
+                0..=127 => {
+                    let count = usize::from(len) + 1;
+                    for _ in 0..count {
+                        let byte = read_one(&mut self.inner)?
+                            .ok_or_else(|| reader_error("truncated RunLength literal run"))?;
+                        self.pending.push_back(byte);
+                    }
+                }
+                128 => self.done = true,
+                129..=255 => {
+                    let byte = read_one(&mut self.inner)?
+                        .ok_or_else(|| reader_error("truncated RunLength repeat run"))?;
+                    let count = usize::from(257u16 - u16::from(len));
+                    self.pending.extend(std::iter::repeat_n(byte, count));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<R: Read> Read for RunLengthReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut written = 0usize;
+        while written < buf.len() {
+            if self.pending.is_empty() {
+                self.fill_pending()?;
+            }
+            let Some(byte) = self.pending.pop_front() else {
+                break;
+            };
+            buf[written] = byte;
+            written += 1;
+        }
+        Ok(written)
+    }
+}
+
+struct StreamingMsbBitReader<R> {
+    inner: R,
+    bit_buffer: u32,
+    bit_count: usize,
+}
+
+impl<R> StreamingMsbBitReader<R> {
+    fn new(inner: R) -> Self {
+        Self {
+            inner,
+            bit_buffer: 0,
+            bit_count: 0,
+        }
+    }
+}
+
+impl<R: Read> StreamingMsbBitReader<R> {
+    fn read_bits(&mut self, count: usize) -> io::Result<Option<u16>> {
+        if count == 0 {
+            return Ok(None);
+        }
+        while self.bit_count < count {
+            let Some(byte) = read_one(&mut self.inner)? else {
+                return Ok(None);
+            };
+            self.bit_buffer = (self.bit_buffer << 8) | u32::from(byte);
+            self.bit_count += 8;
+        }
+        let shift = self.bit_count - count;
+        let mask = (1u32 << count) - 1;
+        let value = (self.bit_buffer >> shift) & mask;
+        self.bit_buffer = if shift == 0 {
+            0
+        } else {
+            self.bit_buffer & ((1u32 << shift) - 1)
+        };
+        self.bit_count = shift;
+        Ok(Some(value as u16))
+    }
+}
+
+struct LzwReader<R: Read> {
+    bits: StreamingMsbBitReader<R>,
+    table: Vec<Option<Vec<u8>>>,
+    code_width: usize,
+    next_code: usize,
+    previous: Option<Vec<u8>>,
+    pending: VecDeque<u8>,
+    done: bool,
+    early_change: u8,
+}
+
+impl<R: Read> LzwReader<R> {
+    fn new(inner: R, early_change: u8) -> Self {
+        Self {
+            bits: StreamingMsbBitReader::new(inner),
+            table: initial_lzw_table(),
+            code_width: 9,
+            next_code: 258,
+            previous: None,
+            pending: VecDeque::new(),
+            done: false,
+            early_change,
+        }
+    }
+
+    fn reset_table(&mut self) {
+        self.table = initial_lzw_table();
+        self.code_width = 9;
+        self.next_code = 258;
+        self.previous = None;
+    }
+
+    fn fill_pending(&mut self) -> io::Result<()> {
+        while self.pending.is_empty() && !self.done {
+            let Some(code) = self.bits.read_bits(self.code_width)? else {
+                self.done = true;
+                break;
+            };
+            match code {
+                256 => self.reset_table(),
+                257 => self.done = true,
+                code => {
+                    let code_usize = usize::from(code);
+                    let entry = if code_usize < self.table.len() {
+                        self.table[code_usize].clone().ok_or_else(|| {
+                            reader_error(format!("invalid empty LZW code {code_usize}"))
+                        })?
+                    } else if code_usize == self.next_code {
+                        let prev = self
+                            .previous
+                            .as_ref()
+                            .ok_or_else(|| reader_error("LZW KwKwK code without previous entry"))?;
+                        let mut synthesized = prev.clone();
+                        let first = *prev
+                            .first()
+                            .ok_or_else(|| reader_error("empty LZW previous entry"))?;
+                        synthesized.push(first);
+                        synthesized
+                    } else {
+                        return Err(reader_error(format!("invalid LZW code {code_usize}")));
+                    };
+
+                    self.pending.extend(entry.iter().copied());
+
+                    if let Some(prev) = self.previous.as_ref() {
+                        if self.next_code < 4096 {
+                            let mut new_entry = prev.clone();
+                            let first = *entry
+                                .first()
+                                .ok_or_else(|| reader_error("empty LZW entry"))?;
+                            new_entry.push(first);
+                            if self.table.len() <= self.next_code {
+                                self.table.resize(self.next_code + 1, None);
+                            }
+                            self.table[self.next_code] = Some(new_entry);
+                            self.next_code += 1;
+                            if self.code_width < 12
+                                && self.next_code + usize::from(self.early_change)
+                                    >= (1usize << self.code_width)
+                            {
+                                self.code_width += 1;
+                            }
+                        }
+                    }
+
+                    self.previous = Some(entry);
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<R: Read> Read for LzwReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut written = 0usize;
+        while written < buf.len() {
+            if self.pending.is_empty() {
+                self.fill_pending()?;
+            }
+            let Some(byte) = self.pending.pop_front() else {
+                break;
+            };
+            buf[written] = byte;
+            written += 1;
+        }
+        Ok(written)
+    }
+}
+
+struct PredictorReader<R> {
+    inner: R,
+    mode: PredictorMode,
+    pending: VecDeque<u8>,
+    done: bool,
+}
+
+enum PredictorMode {
+    Tiff {
+        row_len: usize,
+        colors: usize,
+        bits_per_component: usize,
+    },
+    Png {
+        row_len: usize,
+        bytes_per_pixel: usize,
+        prev_row: Vec<u8>,
+    },
+}
+
+impl<R: Read> PredictorReader<R> {
+    fn new(inner: R, params: Option<&PdfDictionary>) -> Result<Self> {
+        let predictor = int_param(params, "Predictor", 1)?;
+        let columns = positive_usize_param(params, "Columns", 1)?;
+        let colors = positive_usize_param(params, "Colors", 1)?;
+        let bits_per_component = positive_usize_param(params, "BitsPerComponent", 8)?;
+        let row_bits = columns
+            .checked_mul(colors)
+            .and_then(|v| v.checked_mul(bits_per_component))
+            .ok_or_else(|| {
+                OxideError::MalformedPdf(
+                    "predictor row dimensions overflow (Columns x Colors x BitsPerComponent)"
+                        .to_string(),
+                )
+            })?;
+        let row_len = ceil_div(row_bits, 8);
+        let mode = match predictor {
+            2 => PredictorMode::Tiff {
+                row_len,
+                colors,
+                bits_per_component,
+            },
+            10..=15 => PredictorMode::Png {
+                row_len,
+                bytes_per_pixel: ceil_div(colors * bits_per_component, 8).max(1),
+                prev_row: vec![0; row_len],
+            },
+            other => {
+                return Err(OxideError::UnsupportedFeature(format!(
+                    "unsupported predictor {other}"
+                )));
+            }
+        };
+        Ok(Self {
+            inner,
+            mode,
+            pending: VecDeque::new(),
+            done: false,
+        })
+    }
+
+    fn read_exact_or_eof(&mut self, len: usize, context: &str) -> io::Result<Option<Vec<u8>>> {
+        let mut row = vec![0u8; len];
+        let mut filled = 0usize;
+        while filled < len {
+            let n = self.inner.read(&mut row[filled..])?;
+            if n == 0 {
+                if filled == 0 {
+                    return Ok(None);
+                }
+                return Err(reader_error(format!(
+                    "{context} data length is not row-aligned"
+                )));
+            }
+            filled += n;
+        }
+        Ok(Some(row))
+    }
+
+    fn fill_pending(&mut self) -> io::Result<()> {
+        if self.done {
+            return Ok(());
+        }
+        enum ModeSnapshot {
+            Tiff {
+                row_len: usize,
+                colors: usize,
+                bits_per_component: usize,
+            },
+            Png {
+                row_len: usize,
+                bytes_per_pixel: usize,
+                prev_row: Vec<u8>,
+            },
+        }
+        let snapshot = match &self.mode {
+            PredictorMode::Tiff {
+                row_len,
+                colors,
+                bits_per_component,
+            } => ModeSnapshot::Tiff {
+                row_len: *row_len,
+                colors: *colors,
+                bits_per_component: *bits_per_component,
+            },
+            PredictorMode::Png {
+                row_len,
+                bytes_per_pixel,
+                prev_row,
+            } => ModeSnapshot::Png {
+                row_len: *row_len,
+                bytes_per_pixel: *bytes_per_pixel,
+                prev_row: prev_row.clone(),
+            },
+        };
+        match snapshot {
+            ModeSnapshot::Tiff {
+                row_len,
+                colors,
+                bits_per_component,
+            } => {
+                let Some(mut row) = self.read_exact_or_eof(row_len, "TIFF predictor")? else {
+                    self.done = true;
+                    return Ok(());
+                };
+                result_to_io(decode_tiff_predictor_row(
+                    &mut row,
+                    row_len,
+                    colors,
+                    bits_per_component,
+                ))?;
+                self.pending.extend(row);
+            }
+            ModeSnapshot::Png {
+                row_len,
+                bytes_per_pixel,
+                prev_row,
+            } => {
+                let row_with_filter = row_len
+                    .checked_add(1)
+                    .ok_or_else(|| reader_error("PNG predictor row dimensions overflow"))?;
+                let Some(encoded_row) = self.read_exact_or_eof(row_with_filter, "PNG predictor")?
+                else {
+                    self.done = true;
+                    return Ok(());
+                };
+                let filter = encoded_row[0];
+                let mut row = encoded_row[1..].to_vec();
+                result_to_io(decode_png_predictor_row(
+                    &mut row,
+                    filter,
+                    &prev_row,
+                    bytes_per_pixel,
+                ))?;
+                if let PredictorMode::Png { prev_row, .. } = &mut self.mode {
+                    *prev_row = row.clone();
+                }
+                self.pending.extend(row);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<R: Read> Read for PredictorReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let mut written = 0usize;
+        while written < buf.len() {
+            if self.pending.is_empty() {
+                self.fill_pending()?;
+            }
+            let Some(byte) = self.pending.pop_front() else {
+                break;
+            };
+            buf[written] = byte;
+            written += 1;
+        }
+        Ok(written)
+    }
 }
 
 fn resolved_object(obj: &PdfObject, reader: Option<&PdfReader>) -> Result<PdfObject> {
@@ -416,12 +1191,23 @@ fn tiff_predictor(
         ));
     }
 
+    for row in data.chunks_mut(row_len) {
+        decode_tiff_predictor_row(row, row_len, colors, bits_per_component)?;
+    }
+
+    Ok(data)
+}
+
+fn decode_tiff_predictor_row(
+    row: &mut [u8],
+    row_len: usize,
+    colors: usize,
+    bits_per_component: usize,
+) -> Result<()> {
     match bits_per_component {
         8 => {
-            for row in data.chunks_mut(row_len) {
-                for idx in colors..row.len() {
-                    row[idx] = row[idx].wrapping_add(row[idx - colors]);
-                }
+            for idx in colors..row.len() {
+                row[idx] = row[idx].wrapping_add(row[idx - colors]);
             }
         }
         16 => {
@@ -431,16 +1217,14 @@ fn tiff_predictor(
                     "16-bit TIFF predictor row has odd byte length".to_string(),
                 ));
             }
-            for row in data.chunks_mut(row_len) {
-                let mut idx = stride;
-                while idx + 1 < row.len() {
-                    let current = u16::from_be_bytes([row[idx], row[idx + 1]]);
-                    let prior = u16::from_be_bytes([row[idx - stride], row[idx + 1 - stride]]);
-                    let decoded = current.wrapping_add(prior).to_be_bytes();
-                    row[idx] = decoded[0];
-                    row[idx + 1] = decoded[1];
-                    idx += 2;
-                }
+            let mut idx = stride;
+            while idx + 1 < row.len() {
+                let current = u16::from_be_bytes([row[idx], row[idx + 1]]);
+                let prior = u16::from_be_bytes([row[idx - stride], row[idx + 1 - stride]]);
+                let decoded = current.wrapping_add(prior).to_be_bytes();
+                row[idx] = decoded[0];
+                row[idx + 1] = decoded[1];
+                idx += 2;
             }
         }
         other => {
@@ -449,8 +1233,7 @@ fn tiff_predictor(
             )));
         }
     }
-
-    Ok(data)
+    Ok(())
 }
 
 fn png_predictor(
@@ -474,57 +1257,67 @@ fn png_predictor(
         let filter = encoded_row[0];
         let encoded = &encoded_row[1..];
         let mut row = encoded.to_vec();
-        match filter {
-            0 => {}
-            1 => {
-                for idx in 0..row_len {
-                    let left = idx
-                        .checked_sub(bytes_per_pixel)
-                        .and_then(|left_idx| row.get(left_idx).copied())
-                        .unwrap_or(0);
-                    row[idx] = row[idx].wrapping_add(left);
-                }
-            }
-            2 => {
-                for idx in 0..row_len {
-                    row[idx] = row[idx].wrapping_add(prev_row[idx]);
-                }
-            }
-            3 => {
-                for idx in 0..row_len {
-                    let left = idx
-                        .checked_sub(bytes_per_pixel)
-                        .and_then(|left_idx| row.get(left_idx).copied())
-                        .unwrap_or(0);
-                    let up = prev_row[idx];
-                    row[idx] = row[idx].wrapping_add(((u16::from(left) + u16::from(up)) / 2) as u8);
-                }
-            }
-            4 => {
-                for idx in 0..row_len {
-                    let left = idx
-                        .checked_sub(bytes_per_pixel)
-                        .and_then(|left_idx| row.get(left_idx).copied())
-                        .unwrap_or(0);
-                    let up = prev_row[idx];
-                    let up_left = idx
-                        .checked_sub(bytes_per_pixel)
-                        .and_then(|left_idx| prev_row.get(left_idx).copied())
-                        .unwrap_or(0);
-                    row[idx] = row[idx].wrapping_add(paeth(left, up, up_left));
-                }
-            }
-            other => {
-                return Err(OxideError::MalformedPdf(format!(
-                    "invalid PNG predictor row filter {other}"
-                )));
-            }
-        }
+        decode_png_predictor_row(&mut row, filter, &prev_row, bytes_per_pixel)?;
         out.extend_from_slice(&row);
         prev_row = row;
     }
 
     Ok(out)
+}
+
+fn decode_png_predictor_row(
+    row: &mut [u8],
+    filter: u8,
+    prev_row: &[u8],
+    bytes_per_pixel: usize,
+) -> Result<()> {
+    match filter {
+        0 => {}
+        1 => {
+            for idx in 0..row.len() {
+                let left = idx
+                    .checked_sub(bytes_per_pixel)
+                    .and_then(|left_idx| row.get(left_idx).copied())
+                    .unwrap_or(0);
+                row[idx] = row[idx].wrapping_add(left);
+            }
+        }
+        2 => {
+            for idx in 0..row.len() {
+                row[idx] = row[idx].wrapping_add(prev_row[idx]);
+            }
+        }
+        3 => {
+            for idx in 0..row.len() {
+                let left = idx
+                    .checked_sub(bytes_per_pixel)
+                    .and_then(|left_idx| row.get(left_idx).copied())
+                    .unwrap_or(0);
+                let up = prev_row[idx];
+                row[idx] = row[idx].wrapping_add(((u16::from(left) + u16::from(up)) / 2) as u8);
+            }
+        }
+        4 => {
+            for idx in 0..row.len() {
+                let left = idx
+                    .checked_sub(bytes_per_pixel)
+                    .and_then(|left_idx| row.get(left_idx).copied())
+                    .unwrap_or(0);
+                let up = prev_row[idx];
+                let up_left = idx
+                    .checked_sub(bytes_per_pixel)
+                    .and_then(|left_idx| prev_row.get(left_idx).copied())
+                    .unwrap_or(0);
+                row[idx] = row[idx].wrapping_add(paeth(left, up, up_left));
+            }
+        }
+        other => {
+            return Err(OxideError::MalformedPdf(format!(
+                "invalid PNG predictor row filter {other}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn paeth(left: u8, up: u8, up_left: u8) -> u8 {
@@ -957,6 +1750,144 @@ mod tests {
             matches!(err, OxideError::MalformedPdf(_)),
             "expected MalformedPdf on dimension overflow, got {err:?}"
         );
+    }
+
+    #[test]
+    fn streaming_reader_matches_buffered_filters() {
+        let flate = zlib_bytes(b"BT /F1 12 Tf (hello) Tj ET");
+        assert_streaming_matches(
+            &dict(&[("Filter", PdfObject::Name("FlateDecode".to_string()))]),
+            &flate,
+        );
+
+        let raw_deflate = raw_deflate_bytes(b"raw deflate bytes");
+        assert_streaming_matches(
+            &dict(&[("Filter", PdfObject::Name("FlateDecode".to_string()))]),
+            &raw_deflate,
+        );
+
+        assert_streaming_matches(
+            &dict(&[("Filter", PdfObject::Name("ASCIIHexDecode".to_string()))]),
+            b"61 62 3>",
+        );
+        assert_streaming_matches(
+            &dict(&[("Filter", PdfObject::Name("ASCII85Decode".to_string()))]),
+            b"87cURD]i,\"Ebo7~>",
+        );
+        assert_streaming_matches(
+            &dict(&[("Filter", PdfObject::Name("RunLengthDecode".to_string()))]),
+            &[2, b'a', b'b', b'c', 253, b'x', 128],
+        );
+        let lzw = pack_lzw_codes(&[65, 66, 67, 257], 9);
+        assert_streaming_matches(
+            &dict(&[("Filter", PdfObject::Name("LZWDecode".to_string()))]),
+            &lzw,
+        );
+    }
+
+    #[test]
+    fn streaming_reader_matches_buffered_filter_chain() {
+        let compressed = zlib_bytes(b"BT (chain) Tj ET");
+        let encoded = ascii_hex_bytes(&compressed);
+        let filters = PdfObject::Array(vec![
+            PdfObject::Name("ASCIIHexDecode".to_string()),
+            PdfObject::Name("FlateDecode".to_string()),
+        ]);
+        assert_streaming_matches(&dict(&[("Filter", filters)]), &encoded);
+    }
+
+    #[test]
+    fn streaming_reader_matches_buffered_predictors() {
+        let png_params = dict(&[
+            ("Predictor", PdfObject::Integer(12)),
+            ("Columns", PdfObject::Integer(3)),
+        ]);
+        let png_encoded = zlib_bytes(&[0, 1, 2, 3, 2, 1, 1, 1]);
+        assert_streaming_matches(
+            &dict(&[
+                ("Filter", PdfObject::Name("FlateDecode".to_string())),
+                ("DecodeParms", PdfObject::Dictionary(png_params)),
+            ]),
+            &png_encoded,
+        );
+
+        let tiff_params = dict(&[
+            ("Predictor", PdfObject::Integer(2)),
+            ("Columns", PdfObject::Integer(4)),
+        ]);
+        let tiff_encoded = zlib_bytes(&[1, 1, 1, 1]);
+        assert_streaming_matches(
+            &dict(&[
+                ("Filter", PdfObject::Name("FlateDecode".to_string())),
+                ("DecodeParms", PdfObject::Dictionary(tiff_params)),
+            ]),
+            &tiff_encoded,
+        );
+    }
+
+    #[test]
+    fn streaming_reader_enforces_decompression_cap() {
+        use std::io::Read as _;
+
+        let raw = vec![0u8; 4 * 1024 * 1024];
+        let compressed = zlib_bytes(&raw);
+        let dict = dict(&[("Filter", PdfObject::Name("FlateDecode".to_string()))]);
+        let mut decoded = decode_stream_reader_with_cap(
+            &dict,
+            std::io::Cursor::new(compressed),
+            None,
+            1024 * 1024,
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        let err = decoded.reader.read_to_end(&mut out).unwrap_err();
+        assert!(
+            err.to_string().contains("decompression cap"),
+            "expected streaming cap error, got {err}"
+        );
+    }
+
+    fn assert_streaming_matches(dict: &PdfDictionary, raw: &[u8]) {
+        use std::io::Read as _;
+
+        let buffered = decode_stream_parts(dict, raw, None).unwrap();
+        let mut streaming =
+            decode_stream_lossless_reader(dict, std::io::Cursor::new(raw.to_vec()), None).unwrap();
+        let mut out = Vec::new();
+        streaming.reader.read_to_end(&mut out).unwrap();
+        assert_eq!(streaming.status, buffered.status);
+        assert_eq!(out, buffered.data);
+    }
+
+    fn zlib_bytes(data: &[u8]) -> Vec<u8> {
+        use flate2::write::ZlibEncoder;
+        use flate2::Compression;
+        use std::io::Write as _;
+
+        let mut enc = ZlibEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn raw_deflate_bytes(data: &[u8]) -> Vec<u8> {
+        use flate2::write::DeflateEncoder;
+        use flate2::Compression;
+        use std::io::Write as _;
+
+        let mut enc = DeflateEncoder::new(Vec::new(), Compression::default());
+        enc.write_all(data).unwrap();
+        enc.finish().unwrap()
+    }
+
+    fn ascii_hex_bytes(data: &[u8]) -> Vec<u8> {
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        let mut out = Vec::with_capacity(data.len() * 2 + 1);
+        for &byte in data {
+            out.push(HEX[usize::from(byte >> 4)]);
+            out.push(HEX[usize::from(byte & 0x0F)]);
+        }
+        out.push(b'>');
+        out
     }
 
     fn pack_lzw_codes(codes: &[u16], width: usize) -> Vec<u8> {

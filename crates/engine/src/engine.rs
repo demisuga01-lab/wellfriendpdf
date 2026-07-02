@@ -1,9 +1,11 @@
 use std::collections::{BTreeSet, HashMap};
+use std::io::{self, Read};
 use std::path::Path;
 
 use crate::content::{ContentOperation, ContentParser, StreamingContentTokenizer};
 use crate::document::{PdfDocument, PdfPage};
 use crate::error::{OxideError, Result};
+use crate::filters::{decode_stream_lossless_reader, StreamDecodeStatus};
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::encoder::{ImageEncoder, ImageOutputFormat};
 use crate::images::locator::{ImageLocateOptions, ImageLocator, ImageReference};
@@ -20,6 +22,66 @@ pub struct PageResources {
     pub ext_g_states: HashMap<String, PdfDictionary>,
     pub patterns: HashMap<String, PdfObject>,
     pub shadings: HashMap<String, PdfObject>,
+}
+
+struct JoinedContentStreams<'a> {
+    readers: Vec<Box<dyn Read + 'a>>,
+    index: usize,
+    emit_separator: bool,
+    pending_error: Option<io::Error>,
+}
+
+impl<'a> JoinedContentStreams<'a> {
+    fn new(readers: Vec<Box<dyn Read + 'a>>) -> Self {
+        Self {
+            readers,
+            index: 0,
+            emit_separator: false,
+            pending_error: None,
+        }
+    }
+}
+
+impl Read for JoinedContentStreams<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if let Some(err) = self.pending_error.take() {
+            return Err(err);
+        }
+        if buf.is_empty() {
+            return Ok(0);
+        }
+
+        let mut written = 0usize;
+        while written < buf.len() {
+            if self.emit_separator {
+                buf[written] = b'\n';
+                written += 1;
+                self.emit_separator = false;
+                if written == buf.len() {
+                    break;
+                }
+            }
+
+            if self.index >= self.readers.len() {
+                break;
+            }
+
+            match self.readers[self.index].read(&mut buf[written..]) {
+                Ok(0) => {
+                    self.index += 1;
+                    self.emit_separator = self.index < self.readers.len();
+                }
+                Ok(n) => written += n,
+                Err(err) if written > 0 => {
+                    self.pending_error = Some(err);
+                    break;
+                }
+                Err(err) => return Err(err),
+            }
+        }
+
+        Ok(written)
+    }
 }
 
 /// A rectangular page region in PDF user-space points.
@@ -404,9 +466,21 @@ impl ContentEngine {
 
     pub fn get_page_content(&self, page_number: usize) -> Result<Vec<ContentOperation>> {
         self.validate_page(page_number)?;
-        if let Some(stream) = self.doc.single_unfiltered_content_stream(page_number)? {
-            let tokens = StreamingContentTokenizer::new(stream.reader);
-            return Ok(ContentParser::parse_tokens(tokens));
+        if let Some(streams) = self.doc.content_stream_ranges(page_number)? {
+            let mut readers = Vec::with_capacity(streams.len());
+            for stream in streams {
+                let decoded = decode_stream_lossless_reader(
+                    &stream.dict,
+                    stream.reader,
+                    Some(self.doc.reader()),
+                )?;
+                if let StreamDecodeStatus::StoppedAtImageFilter(filter) = &decoded.status {
+                    log::warn!("page content stream stopped at image filter {filter}");
+                }
+                readers.push(decoded.reader);
+            }
+            let tokens = StreamingContentTokenizer::new(JoinedContentStreams::new(readers));
+            return ContentParser::parse_tokens_propagating_io(tokens);
         }
         let bytes = self.doc.get_page_content_bytes(page_number)?;
         ContentParser::parse(&bytes)

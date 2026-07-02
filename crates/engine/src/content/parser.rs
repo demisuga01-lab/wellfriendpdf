@@ -26,6 +26,19 @@ impl ContentParser {
     pub fn parse_tokens(
         tokens: impl IntoIterator<Item = Result<ContentToken>>,
     ) -> Vec<ContentOperation> {
+        Self::parse_tokens_inner(tokens, false).unwrap_or_default()
+    }
+
+    pub(crate) fn parse_tokens_propagating_io(
+        tokens: impl IntoIterator<Item = Result<ContentToken>>,
+    ) -> Result<Vec<ContentOperation>> {
+        Self::parse_tokens_inner(tokens, true)
+    }
+
+    fn parse_tokens_inner(
+        tokens: impl IntoIterator<Item = Result<ContentToken>>,
+        propagate_io: bool,
+    ) -> Result<Vec<ContentOperation>> {
         let mut stack = Vec::new();
         let mut array_depth = 0u32;
         let mut operations = Vec::new();
@@ -34,6 +47,9 @@ impl ContentParser {
             let token = match token_result {
                 Ok(token) => token,
                 Err(err) => {
+                    if propagate_io && matches!(err, crate::error::OxideError::Io(_)) {
+                        return Err(err);
+                    }
                     log::warn!("content token error: {err}");
                     continue;
                 }
@@ -92,7 +108,7 @@ impl ContentParser {
             );
         }
 
-        operations
+        Ok(operations)
     }
 }
 
