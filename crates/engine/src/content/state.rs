@@ -826,9 +826,7 @@ impl GraphicsState {
 
     fn op_tj_advance(&mut self, op: &ContentOperation) {
         if let Some(bytes) = op.string_bytes(0) {
-            let n = bytes.len() as f64;
-            let advance = n * 500.0
-                + n * self.text.char_spacing * 1000.0 / self.text.font_size.max(f64::EPSILON);
+            let advance = self.approx_text_advance_for_bytes(bytes);
             self.advance_text_pos(advance);
         }
     }
@@ -837,13 +835,33 @@ impl GraphicsState {
         if let Some(arr) = op.operand(0).and_then(Operand::as_array) {
             for elem in arr {
                 match elem {
-                    Operand::String(bytes) => self.advance_text_pos(bytes.len() as f64 * 500.0),
+                    Operand::String(bytes) => {
+                        self.advance_text_pos(self.approx_text_advance_for_bytes(bytes))
+                    }
                     Operand::Integer(n) => self.advance_text_pos(-(*n as f64)),
                     Operand::Real(r) => self.advance_text_pos(-r),
                     _ => {}
                 }
             }
         }
+    }
+
+    fn approx_text_advance_for_bytes(&self, bytes: &[u8]) -> f64 {
+        let font_size = self.text.font_size.max(f64::EPSILON);
+        let char_spacing_units = self.text.char_spacing * 1000.0 / font_size;
+        let word_spacing_units = self.text.word_spacing * 1000.0 / font_size;
+        bytes
+            .iter()
+            .map(|byte| {
+                500.0
+                    + char_spacing_units
+                    + if *byte == b' ' {
+                        word_spacing_units
+                    } else {
+                        0.0
+                    }
+            })
+            .sum()
     }
 }
 
@@ -889,6 +907,14 @@ mod tests {
 
     fn op(operator: &str, operands: impl IntoIterator<Item = Operand>) -> ContentOperation {
         ContentOperation::new(operator, operands.into_iter().collect())
+    }
+
+    fn assert_pos(gs: &GraphicsState, expected_x: f64, expected_y: f64) {
+        let (x, y) = gs.text_position();
+        assert!(
+            (x - expected_x).abs() < 1e-6 && (y - expected_y).abs() < 1e-6,
+            "expected ({expected_x}, {expected_y}) got ({x}, {y})"
+        );
     }
 
     #[test]
@@ -972,6 +998,123 @@ mod tests {
         gs.process(&op("BT", []));
         gs.process(&op("TD", [Operand::Real(10.0), Operand::Real(-14.0)]));
         assert!((gs.text.leading - 14.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn tm_sets_text_and_line_matrix_then_td_moves_in_text_space() {
+        let mut gs = GraphicsState::new();
+        gs.process(&op("BT", []));
+        gs.process(&op(
+            "Tm",
+            [
+                Operand::Real(2.0),
+                Operand::Real(0.0),
+                Operand::Real(0.0),
+                Operand::Real(2.0),
+                Operand::Real(10.0),
+                Operand::Real(20.0),
+            ],
+        ));
+        assert_eq!(gs.text.tm, [2.0, 0.0, 0.0, 2.0, 10.0, 20.0]);
+        assert_eq!(gs.text.tlm, gs.text.tm);
+
+        gs.process(&op("Td", [Operand::Real(3.0), Operand::Real(4.0)]));
+        assert_pos(&gs, 16.0, 28.0);
+        assert_eq!(gs.text.tlm, gs.text.tm);
+    }
+
+    #[test]
+    fn tj_displacement_sign_and_horizontal_scaling_match_pdf_semantics() {
+        let mut gs = GraphicsState::new();
+        gs.process(&op("BT", []));
+        gs.process(&op(
+            "Tf",
+            [Operand::Name("F1".to_string()), Operand::Real(10.0)],
+        ));
+        gs.process(&op("Tz", [Operand::Real(80.0)]));
+
+        gs.process(&op(
+            "TJ",
+            [Operand::Array(vec![
+                Operand::String(b"A".to_vec()),
+                Operand::Integer(120),
+                Operand::String(b"B".to_vec()),
+            ])],
+        ));
+        // Two 500-unit glyphs at 10pt and 80% scale advance 8 user units.
+        // The positive TJ number subtracts 120 text units: -0.96 user units.
+        assert_pos(&gs, 7.04, 0.0);
+
+        let mut gs = GraphicsState::new();
+        gs.process(&op("BT", []));
+        gs.process(&op(
+            "Tf",
+            [Operand::Name("F1".to_string()), Operand::Real(10.0)],
+        ));
+        gs.process(&op("Tz", [Operand::Real(80.0)]));
+        gs.process(&op(
+            "TJ",
+            [Operand::Array(vec![
+                Operand::String(b"A".to_vec()),
+                Operand::Integer(-120),
+                Operand::String(b"B".to_vec()),
+            ])],
+        ));
+        assert_pos(&gs, 8.96, 0.0);
+    }
+
+    #[test]
+    fn text_showing_honors_character_and_word_spacing() {
+        let mut gs = GraphicsState::new();
+        gs.process(&op("BT", []));
+        gs.process(&op(
+            "Tf",
+            [Operand::Name("F1".to_string()), Operand::Real(10.0)],
+        ));
+        gs.process(&op("Tc", [Operand::Real(1.0)]));
+        gs.process(&op("Tw", [Operand::Real(2.0)]));
+        gs.process(&op("Tj", [Operand::String(b"A B".to_vec())]));
+        // Three approximate 500-unit glyphs at 10pt = 15, plus 3 char-spacing
+        // units and one word-spacing contribution.
+        assert_pos(&gs, 20.0, 0.0);
+    }
+
+    #[test]
+    fn quote_operators_apply_line_movement_and_spacing() {
+        let mut gs = GraphicsState::new();
+        gs.process(&op("BT", []));
+        gs.process(&op(
+            "Tf",
+            [Operand::Name("F1".to_string()), Operand::Real(10.0)],
+        ));
+        gs.process(&op("TL", [Operand::Real(12.0)]));
+        gs.process(&op("'", [Operand::String(b"A".to_vec())]));
+        assert_pos(&gs, 5.0, -12.0);
+
+        gs.process(&op(
+            "\"",
+            [
+                Operand::Real(2.0),
+                Operand::Real(1.0),
+                Operand::String(b" B".to_vec()),
+            ],
+        ));
+        assert_eq!(gs.text.word_spacing, 2.0);
+        assert_eq!(gs.text.char_spacing, 1.0);
+        assert_pos(&gs, 14.0, -24.0);
+    }
+
+    #[test]
+    fn text_rise_and_rendering_mode_do_not_move_line_matrix() {
+        let mut gs = GraphicsState::new();
+        gs.process(&op("BT", []));
+        gs.process(&op("Td", [Operand::Real(100.0), Operand::Real(200.0)]));
+        gs.process(&op("Ts", [Operand::Real(7.0)]));
+        gs.process(&op("Tr", [Operand::Integer(3)]));
+        assert_eq!(gs.text.rise, 7.0);
+        assert_eq!(gs.text.rendering_mode, 3);
+        assert_pos(&gs, 100.0, 200.0);
+        assert_eq!(gs.text.tlm, gs.text.tm);
     }
 
     #[test]

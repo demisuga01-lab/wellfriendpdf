@@ -362,3 +362,37 @@ Results:
 The changed file was `pdfjs_full_glyph_accent`: fail at 95.35% exact match to
 pass at 100.0%. No files regressed. Detailed per-file classification is in
 `docs/font_prompt04d_failure_analysis.md`.
+
+## Prompt 04E Final Font Audit Rerun
+
+Prompt 04E kept the exact original 24-file font/text Poppler slice as the
+acceptance anchor and audited the remaining concrete font/text fundamentals:
+CFF width operands and hint masks, CFF subroutine fallback behavior, PDF
+text-state/TJ spacing, Tr invisible/clipping modes, partial ToUnicode fallback,
+and Standard14 deterministic substitution.
+
+Command:
+
+```powershell
+cargo build --release -p oxide-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04e-font-after-audit --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+```
+
+Results:
+
+| metric | Prompt 04D anchor | Prompt 04E audit |
+| --- | ---: | ---: |
+| files | 24 | 24 |
+| visual pages compared | 24 | 24 |
+| visual pages passed | 12 | 12 |
+| visual pass | 50.0% | 50.0% |
+| weighted score | 47.5 | 47.5 |
+| peak Oxide memory | 11.99 MB | 11.55 MB |
+| determinism | 5/5 stable | 5/5 stable |
+
+The aggregate score did not move beyond Prompt 04D, but no files regressed and
+the final font-semantics checklist is now covered by focused tests or explicit
+bounded decisions. The unchanged blockers remain CJK/RTL raster or fallback
+metric drift, `font_ascent_descent.pdf`, and two blank-reference mismatches that
+need another reference renderer or benchmark policy decision. Details are in
+`docs/font_prompt04e_final_parity_audit.md`.

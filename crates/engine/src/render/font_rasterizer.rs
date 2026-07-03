@@ -1242,6 +1242,114 @@ pub(crate) mod cff_support {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::render::path::PathSegment;
+
+        fn op(value: i32) -> u8 {
+            assert!((-107..=107).contains(&value));
+            (value + 139) as u8
+        }
+
+        fn bounds(path: &Path) -> (f64, f64, f64, f64) {
+            let mut min_x = f64::INFINITY;
+            let mut min_y = f64::INFINITY;
+            let mut max_x = f64::NEG_INFINITY;
+            let mut max_y = f64::NEG_INFINITY;
+            for segment in &path.segments {
+                match *segment {
+                    PathSegment::MoveTo(x, y) | PathSegment::LineTo(x, y) => {
+                        min_x = min_x.min(x);
+                        min_y = min_y.min(y);
+                        max_x = max_x.max(x);
+                        max_y = max_y.max(y);
+                    }
+                    PathSegment::CubicTo {
+                        cp1x,
+                        cp1y,
+                        cp2x,
+                        cp2y,
+                        x,
+                        y,
+                    } => {
+                        for (px, py) in [(cp1x, cp1y), (cp2x, cp2y), (x, y)] {
+                            min_x = min_x.min(px);
+                            min_y = min_y.min(py);
+                            max_x = max_x.max(px);
+                            max_y = max_y.max(py);
+                        }
+                    }
+                    PathSegment::ClosePath => {}
+                }
+            }
+            (min_x, min_y, max_x, max_y)
+        }
+
+        #[test]
+        fn type2_width_operand_is_not_outline_geometry() {
+            let without_width = [op(20), 22, op(50), op(0), 5, 14];
+            let with_width = [28, 0x02, 0x58, op(20), 22, op(50), op(0), 5, 14];
+
+            let plain = outline_simple_type2_charstring(&without_width).expect("plain outline");
+            let width_prefixed =
+                outline_simple_type2_charstring(&with_width).expect("width-prefixed outline");
+
+            assert_eq!(bounds(&plain), bounds(&width_prefixed));
+            assert_eq!(plain.segments.len(), width_prefixed.segments.len());
+        }
+
+        #[test]
+        fn type2_stem_width_operand_and_hintmask_bytes_are_consumed() {
+            let charstring = [
+                28,
+                0x02,
+                0x58, // explicit width 600
+                op(10),
+                op(20),
+                1, // hstem: one stem pair after dropping width
+                19,
+                0x00, // hintmask for one stem consumes one byte
+                op(20),
+                22, // hmoveto
+                op(50),
+                op(0),
+                5, // rlineto
+                14,
+            ];
+
+            let path = outline_simple_type2_charstring(&charstring).expect("hinted outline");
+            let (min_x, min_y, max_x, max_y) = bounds(&path);
+            assert_eq!((min_x, min_y, max_x, max_y), (20.0, 0.0, 70.0, 0.0));
+        }
+
+        #[test]
+        fn type2_fallback_rejects_subroutines_instead_of_guessing_bias() {
+            let charstring = [op(0), 10, 14]; // callsubr, then endchar
+            assert!(
+                outline_simple_type2_charstring(&charstring).is_none(),
+                "the bounded fallback must not guess subr bias or execute subrs"
+            );
+        }
+
+        #[test]
+        fn seac_parser_accepts_optional_width_but_reports_base_and_accent() {
+            let charstring = [
+                28,
+                0x02,
+                0x58,    // optional width
+                op(-51), // adx
+                247,
+                40,     // ady = 148
+                op(0),  // bchar
+                op(97), // achar
+                14,
+            ];
+            let parsed = parse_seac_charstring(&charstring).expect("seac operands");
+            assert_eq!(parsed, (-51.0, 148.0, 0, 97));
+        }
+    }
 }
 
 pub struct FontRasterizer;
@@ -1626,6 +1734,49 @@ mod tests {
             .flat_map(|y| (0..200i32).map(move |x| (x, y)))
             .any(|(x, y)| buf.get_pixel(x, y) != WHITE);
         assert!(!changed);
+    }
+
+    #[test]
+    fn rasterize_glyph_text_clip_mode_does_not_paint() {
+        let font_bytes = match get_fallback_font("Helvetica") {
+            Some(bytes) if !bytes.is_empty() => bytes,
+            _ => return,
+        };
+        let vp = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
+        let ctm = Transform2D::identity();
+        let tm: Matrix = [1.0, 0.0, 0.0, 1.0, 50.0, 100.0];
+        let mut buf = PixelBuffer::new_filled(200, 200, WHITE);
+
+        FontRasterizer::rasterize_glyph(
+            &mut buf, 'A' as u16, font_bytes, 24.0, &tm, &ctm, &vp, BLACK, 7, BLACK, 1.0,
+        );
+
+        let changed = (0..200i32)
+            .flat_map(|y| (0..200i32).map(move |x| (x, y)))
+            .any(|(x, y)| buf.get_pixel(x, y) != WHITE);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn rasterize_glyph_fill_clip_mode_still_paints_fill() {
+        let font_bytes = match get_fallback_font("Helvetica") {
+            Some(bytes) if !bytes.is_empty() => bytes,
+            _ => return,
+        };
+        let vp = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
+        let ctm = Transform2D::identity();
+        let tm: Matrix = [1.0, 0.0, 0.0, 1.0, 50.0, 100.0];
+        let mut buf = PixelBuffer::new_filled(200, 200, WHITE);
+
+        FontRasterizer::rasterize_glyph(
+            &mut buf, 'A' as u16, font_bytes, 24.0, &tm, &ctm, &vp, BLACK, 4, BLACK, 1.0,
+        );
+
+        let darkened_count = (0..200i32)
+            .flat_map(|y| (0..200i32).map(move |x| (x, y)))
+            .filter(|&(x, y)| buf.get_pixel(x, y)[0] < 200)
+            .count();
+        assert!(darkened_count > 0);
     }
 
     // ── Bare CFF (OpenType-CFF / Type1C) support ────────────────────────────

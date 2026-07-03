@@ -231,4 +231,26 @@ mod tests {
         assert!(!hinted.synthetic_bold);
         assert!(!hinted.synthetic_italic);
     }
+
+    #[test]
+    fn standard_14_families_resolve_to_deterministic_bundled_faces() {
+        let provider = BundledFontProvider;
+        for (name, family) in [
+            ("Times-Roman", "Liberation Serif"),
+            ("Times-BoldItalic", "Liberation Serif"),
+            ("Helvetica", "Liberation Sans"),
+            ("Helvetica-Oblique", "Liberation Sans"),
+            ("Courier", "Liberation Mono"),
+            ("Courier-BoldOblique", "Liberation Mono"),
+            ("Symbol", "DejaVu Sans"),
+            ("ZapfDingbats", "DejaVu Sans"),
+        ] {
+            let matched = provider
+                .match_font(&FontMatchRequest::new(name))
+                .unwrap_or_else(|| panic!("standard 14 font {name} should resolve"));
+            assert_eq!(matched.source, FontProviderSource::Standard14, "{name}");
+            assert_eq!(matched.family_name, family, "{name}");
+            assert!(!matched.bytes.is_empty(), "{name}");
+        }
+    }
 }

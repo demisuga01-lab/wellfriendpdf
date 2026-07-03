@@ -1031,4 +1031,47 @@ mod tests {
         let resolver = FontResolver::new_from_dict_only(&font);
         assert_eq!(resolver.decode_string(b"A"), "中");
     }
+
+    #[test]
+    fn partial_to_unicode_falls_back_to_glyph_names_for_missing_codes() {
+        let cmap = b"
+        begincmap
+        1 beginbfchar
+        <42> <4E2D>
+        endbfchar
+        endcmap
+        ";
+        let encoding = PdfDictionary::new(
+            [
+                (
+                    "BaseEncoding".to_string(),
+                    PdfObject::Name("WinAnsiEncoding".to_string()),
+                ),
+                (
+                    "Differences".to_string(),
+                    PdfObject::Array(vec![
+                        PdfObject::Integer(65),
+                        PdfObject::Name("Euro".to_string()),
+                        PdfObject::Name("A".to_string()),
+                    ]),
+                ),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let font = dict(&[
+            ("Subtype", PdfObject::Name("Type1".to_string())),
+            ("Encoding", PdfObject::Dictionary(encoding)),
+            (
+                "ToUnicode",
+                PdfObject::Stream {
+                    dict: PdfDictionary::empty(),
+                    raw: cmap.to_vec(),
+                },
+            ),
+        ]);
+
+        let resolver = FontResolver::new_from_dict_only(&font);
+        assert_eq!(resolver.decode_string(b"AB"), "\u{20AC}\u{4E2D}");
+    }
 }
