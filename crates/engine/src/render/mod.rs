@@ -2,6 +2,7 @@ pub mod buffer;
 pub(crate) mod cmm;
 pub mod color;
 pub mod colorspace;
+pub mod display_list;
 pub mod font_rasterizer;
 pub mod function;
 pub mod glyph_cache;
@@ -23,6 +24,10 @@ pub use buffer::{
     TRANSPARENT, WHITE,
 };
 pub use color::{ColorSpaceHandler, RenderColor};
+pub use display_list::{
+    build_display_list, render_display_list, replay_display_list, CpuRenderDevice, DisplayList,
+    DisplayListStats, DisplayOp, DrawState, RenderDevice, UnsupportedRenderOp,
+};
 pub use font_rasterizer::{get_fallback_font, FontRasterizer};
 pub use glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey};
 pub use image_painter::ImagePainter;

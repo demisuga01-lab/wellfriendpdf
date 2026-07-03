@@ -14,6 +14,7 @@ use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::render::buffer::{AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, WHITE};
 use crate::render::color::ColorSpaceHandler;
+use crate::render::display_list::{build_display_list, render_display_list, DisplayList};
 use crate::render::font_rasterizer::{get_fallback_font, FontRasterizer};
 use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey};
 use crate::render::image_painter::ImagePainter;
@@ -109,6 +110,41 @@ impl PageRenderer {
             buf.flatten_onto_background(WHITE);
         }
         Ok(buf)
+    }
+
+    /// Build the conservative Prompt 03 display list for a page.
+    ///
+    /// The list always records what it can inspect, but it is marked unsupported
+    /// when it sees primitives that still require the immediate renderer (text,
+    /// images, shadings, patterns, soft masks, or Form XObjects).
+    pub fn build_display_list(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+    ) -> Result<DisplayList> {
+        let ops = engine.get_page_content(page_number)?;
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let resources = engine.get_page_resources(page_number)?;
+        Ok(build_display_list(&ops, viewport, &resources))
+    }
+
+    /// Render a page through display-list replay.
+    ///
+    /// Returns `Ok(None)` when the page contains primitives outside the current
+    /// conservative display-list subset. Callers can then use the normal
+    /// immediate renderer as a compatibility fallback.
+    pub fn render_page_display_list_with_mode(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+    ) -> Result<Option<PixelBuffer>> {
+        let list = Self::build_display_list(engine, page_number, dpi)?;
+        if list.is_fully_supported() {
+            Ok(Some(render_display_list(&list, render_mode)))
+        } else {
+            Ok(None)
+        }
     }
 }
 
@@ -3709,6 +3745,107 @@ mod tests {
 
     fn bytearray_pdf_header() -> Vec<u8> {
         b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec()
+    }
+
+    fn simple_vector_pdf(content: &str) -> Vec<u8> {
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    #[test]
+    fn display_list_page_render_replays_vector_content() {
+        let pdf = simple_vector_pdf("1 0 0 rg 10 10 40 40 re f\n0 0 0 RG 4 w 10 10 m 90 90 l S\n");
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector-only PDF");
+        let list = engine
+            .build_page_display_list(1, 72)
+            .expect("build display list");
+
+        assert!(list.is_fully_supported());
+        assert_eq!(list.stats.fills, 1);
+        assert_eq!(list.stats.strokes, 1);
+        assert!(list.approximate_memory_bytes() > 0);
+
+        let via_list = engine
+            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
+            .expect("display-list render")
+            .expect("vector page should be display-list compatible");
+        assert_eq!(via_list.get_pixel(20, 70), RED);
+        assert_ne!(via_list.get_pixel(50, 50), WHITE);
+    }
+
+    #[test]
+    fn display_list_replay_matches_immediate_vector_render() {
+        let pdf = simple_vector_pdf(
+            "q 0 0 1 rg 10 10 60 60 re f Q\n\
+             q 10 10 60 60 re W n 1 0 0 rg 0 0 100 100 re f Q\n\
+             0 0 0 RG 6 w [8 4] 0 d 5 95 m 95 5 l S\n",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector-only PDF");
+
+        let immediate = engine.render_page(1, 72).expect("immediate render");
+        let replay = engine
+            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
+            .expect("display-list query")
+            .expect("vector page should replay");
+
+        assert_eq!(immediate.width, replay.width);
+        assert_eq!(immediate.height, replay.height);
+        for y in 0..immediate.height as i32 {
+            for x in 0..immediate.width as i32 {
+                assert_eq!(
+                    immediate.get_pixel(x, y),
+                    replay.get_pixel(x, y),
+                    "display-list replay diverged at ({x}, {y})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn display_list_marks_text_page_for_immediate_renderer_fallback() {
+        let engine = ContentEngine::open_path(fixture("flate.pdf")).expect("open text fixture");
+        let list = engine
+            .build_page_display_list(1, 72)
+            .expect("build display list");
+
+        assert!(!list.is_fully_supported());
+        assert!(list
+            .unsupported
+            .iter()
+            .any(|op| op.reason.contains("text/glyph")));
+        assert!(engine
+            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
+            .expect("display-list fallback query")
+            .is_none());
+        assert!(engine.render_page(1, 72).is_ok());
     }
 
     #[test]

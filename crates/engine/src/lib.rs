@@ -222,10 +222,11 @@ pub use parser_report::{
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
     flatten_cubic, flatten_path, get_fallback_font, rgb, rgba, AlphaMask, CachedGlyph, ClipMask,
-    ColorSpaceHandler, DashState, FillRule, FlatPath, FontRasterizer, GlyphCache, GlyphCacheKey,
-    ImagePainter, LinePainter, PageRenderer, Path, PathPainter, PathSegment, PixelBuffer,
-    PixelColor, RenderColor, RenderMode, RenderQuality, SvgPage, Transform2D, Viewport,
-    WuLineRenderer, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
+    ColorSpaceHandler, CpuRenderDevice, DashState, DisplayList, DisplayListStats, DisplayOp,
+    DrawState, FillRule, FlatPath, FontRasterizer, GlyphCache, GlyphCacheKey, ImagePainter,
+    LinePainter, PageRenderer, Path, PathPainter, PathSegment, PixelBuffer, PixelColor,
+    RenderColor, RenderDevice, RenderMode, RenderQuality, SvgPage, Transform2D,
+    UnsupportedRenderOp, Viewport, WuLineRenderer, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
 };
 pub use render::{render_page_svg, svg, text_decode};
 pub use semantic::{SemanticDocument, SemanticElement, SemanticMcid, SemanticSource};

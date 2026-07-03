@@ -11,7 +11,7 @@ use crate::images::encoder::{ImageEncoder, ImageOutputFormat};
 use crate::images::locator::{ImageLocateOptions, ImageLocator, ImageReference};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
-use crate::render::{PageRenderer, PixelBuffer, RenderMode, Viewport, WHITE};
+use crate::render::{DisplayList, PageRenderer, PixelBuffer, RenderMode, Viewport, WHITE};
 use crate::text::{TextExtractOptions, TextExtractor, TextFormatOptions};
 
 #[derive(Debug, Clone, Default)]
@@ -1126,6 +1126,29 @@ impl ContentEngine {
         render_mode: RenderMode,
     ) -> Result<PixelBuffer> {
         PageRenderer::render_page_cancellable_with_mode(self, page_number, dpi, cancel, render_mode)
+    }
+
+    /// Build the conservative Prompt 03 display list for a page.
+    ///
+    /// This is a replayable vector display list for pages whose drawing
+    /// operations fit the current subset. The returned list also records
+    /// unsupported operations so callers can inspect why a page still needs the
+    /// immediate renderer.
+    pub fn build_page_display_list(&self, page_number: usize, dpi: u32) -> Result<DisplayList> {
+        PageRenderer::build_display_list(self, page_number, dpi)
+    }
+
+    /// Render a page through the display-list CPU device when fully supported.
+    ///
+    /// Returns `Ok(None)` for pages containing operations that are still handled
+    /// by the existing immediate renderer.
+    pub fn render_page_display_list_with_mode(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+    ) -> Result<Option<PixelBuffer>> {
+        PageRenderer::render_page_display_list_with_mode(self, page_number, dpi, render_mode)
     }
 
     /// Verify every digital signature field in the document (the `verify-sig`

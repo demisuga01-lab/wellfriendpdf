@@ -199,3 +199,26 @@ Recommended next Phase 7 iteration: attack the text/font bucket first, but with
 file-level probes like this pass. If a broader hinting or fallback-font change
 regresses `real-font-edge` or Tracemonkey/TAMReview, prefer a narrower font
 metric or glyph-positioning mechanism over a global rasterizer change.
+
+## Prompt 03 Architecture Follow-Up
+
+Prompt 03 added a conservative vector display-list and CPU render-device seam in
+`crates/engine/src/render/display_list.rs`. The default immediate renderer was
+left unchanged for compatibility, while `ContentEngine::build_page_display_list`
+and `ContentEngine::render_page_display_list_with_mode` expose the new replay
+path for vector-compatible pages.
+
+The Prompt 03 validation run used a small Poppler-backed smoke slice, not the
+full Phase 7 stress corpus:
+
+| metric | baseline | after |
+| --- | ---: | ---: |
+| files | 5 | 5 |
+| visual pages compared | 5 | 5 |
+| weighted score | 75.0 | 75.0 |
+| visual pass | 100.0% | 100.0% |
+| determinism | 2/2 stable | 2/2 stable |
+
+The architectural win is replayability and pixel-equivalence for supported
+vector pages, verified by unit tests. It is not a new claim that Oxide is
+Poppler/PDFium/MuPDF-class.
