@@ -329,6 +329,50 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bare_cff_simple_font_uses_pdf_winansi_name_for_accented_glyphs() {
+        let fixture =
+            repo_fixture("renderer-benchmark/corpus/real-world/pdfjs-full/glyph_accent.pdf");
+        if !std::path::Path::new(&fixture).exists() {
+            eprintln!("NOTE: pdf.js glyph_accent fixture missing; skipping bare-CFF accent test");
+            return;
+        }
+        let engine = ContentEngine::open_path(fixture).expect("open glyph_accent fixture");
+        let resources = engine.get_page_resources(1).expect("page resources");
+        let reader = engine.document().reader();
+        let font_dict = resources
+            .fonts
+            .get("F1")
+            .expect("glyph_accent should expose /F1");
+        let font_bytes =
+            FontRasterizer::extract_font_bytes(font_dict, reader).expect("embedded font bytes");
+        assert!(
+            crate::render::font_rasterizer::cff_support::is_bare_cff(&font_bytes),
+            "fixture should exercise bare CFF / Type1C simple fonts"
+        );
+
+        let resolver = FontResolver::new(font_dict, reader);
+        assert_eq!(resolver.decode_char(0xE3), "\u{00E3}");
+        assert_eq!(resolver.glyph_name(0xE3), Some("atilde"));
+        assert!(
+            crate::render::font_rasterizer::cff_support::outline_by_gid(&font_bytes, 48)
+                .and_then(|(path, _)| path)
+                .is_some(),
+            "fixture atilde GID should resolve to a composed CFF outline"
+        );
+
+        let (path, advance) =
+            extract_glyph_path_for_simple(&font_bytes, 0xE3, '\u{00E3}', Some("atilde"));
+        let path = path.expect("atilde outline should resolve by PDF glyph name");
+        let bounds = path_bounds(&path);
+
+        assert!(advance > 0.0, "atilde advance should be positive");
+        assert!(
+            bounds.2 > bounds.0 && bounds.3 > bounds.1,
+            "atilde outline should have positive bounds"
+        );
+    }
+
     fn path_bounds(path: &Path) -> (f64, f64, f64, f64) {
         let mut min_x = f64::INFINITY;
         let mut min_y = f64::INFINITY;

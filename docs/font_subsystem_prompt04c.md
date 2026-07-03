@@ -66,3 +66,14 @@ The visual benchmark evidence shows that if Prompt 04 is judged by Poppler pixel
 - Color-font subsetting/rendering is not implemented.
 - Existing-PDF Type1C/CFF visual fidelity still trails Poppler on `font_ascent_descent` and `glyph_accent`.
 - The 24-file visual benchmark score remains 45.21.
+
+## Prompt 04D Superseding Note
+
+Prompt 04D closed the `glyph_accent` Type1C/CFF rendering blocker by adding a
+bounded pure-Rust CFF charset/name fallback and `seac` composition fallback for
+SID-keyed bare CFF simple fonts. The same 24-file font slice moved from
+weighted score `45.21` to `47.5`, visual pass `45.83%` to `50.0%`, with
+`pdfjs_full_glyph_accent` changing from fail to pass and no regressions.
+
+`font_ascent_descent`, CJK/RTL drift, and blank-reference mismatches remain
+separate bounded items documented in `docs/font_prompt04d_failure_analysis.md`.

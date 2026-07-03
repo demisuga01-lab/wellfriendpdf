@@ -14,7 +14,6 @@ pub mod path;
 pub mod postscript;
 pub mod quality;
 pub mod shading;
-pub(crate) mod shaping;
 pub mod svg;
 pub mod text_decode;
 pub mod transform;

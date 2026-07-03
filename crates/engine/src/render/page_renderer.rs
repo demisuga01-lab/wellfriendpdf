@@ -1971,15 +1971,6 @@ impl<'a> RenderState<'a> {
             .filter(|value| *value > 0.0)
             .unwrap_or(1000.0);
 
-        if let (Some(font_bytes), Some(font_hash)) = (font_bytes.as_ref(), font_hash) {
-            if let Some(text) = decoded_text_for_shaping(&decoded) {
-                if let Some(shaped) = crate::render::shaping::shape_run(font_bytes, &text, upem) {
-                    self.render_shaped_glyphs(&shaped, font_bytes, font_hash, &variation, upem);
-                    return;
-                }
-            }
-        }
-
         for glyph in decoded {
             let mut ttf_advance = None;
             if !matches!(self.gs.text.rendering_mode, 3 | 7) && should_paint_decoded_glyph(&glyph) {
@@ -2002,33 +1993,6 @@ impl<'a> RenderState<'a> {
             }
             let advance = glyph.width.or(ttf_advance).unwrap_or(500.0);
             self.advance_decoded_text(advance, &glyph);
-        }
-    }
-
-    fn render_shaped_glyphs(
-        &mut self,
-        glyphs: &[crate::render::shaping::ShapedGlyph],
-        font_bytes: &[u8],
-        font_hash: u64,
-        variation: &VariationRequest,
-        upem: f64,
-    ) {
-        for glyph in glyphs {
-            if !matches!(self.gs.text.rendering_mode, 3 | 7) {
-                let _ = self.render_glyph_with_cache(GlyphRenderRequest {
-                    code: glyph.gid,
-                    ch: '\u{FFFD}',
-                    glyph_name: None,
-                    is_gid: true,
-                    font_bytes,
-                    font_hash,
-                    variation,
-                    upem,
-                    offset_x: glyph.offset_x,
-                    offset_y: glyph.offset_y,
-                });
-            }
-            self.advance_text(glyph.advance, false);
         }
     }
 
@@ -2306,17 +2270,6 @@ fn resolve_descriptor(
         PdfObject::Dictionary(dict) => Some(dict),
         _ => None,
     }
-}
-
-fn decoded_text_for_shaping(glyphs: &[DecodedGlyph]) -> Option<String> {
-    let mut text = String::new();
-    for glyph in glyphs {
-        if glyph.is_gid || glyph.unicode == '\u{FFFD}' {
-            return None;
-        }
-        text.push(glyph.unicode);
-    }
-    crate::render::shaping::needs_shaping(&text).then_some(text)
 }
 
 fn should_paint_decoded_glyph(glyph: &DecodedGlyph) -> bool {
