@@ -364,6 +364,24 @@ impl PathPainter {
         fill_flat_aa(buf, &flat, color, rule);
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn fill_device_cmyk_overprint_preview(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        cmyk: [f32; 4],
+        alpha: f32,
+        overprint_mode: i32,
+        rule: FillRule,
+    ) {
+        if path.is_empty() || buf.width == 0 || buf.height == 0 {
+            return;
+        }
+        let flat = flatten_path(path, ctm, viewport, 0.3);
+        fill_flat_cmyk_overprint_preview(buf, &flat, cmyk, alpha, overprint_mode, rule);
+    }
+
     /// Fill a glyph outline using the shared analytic coverage rasterizer.
     ///
     /// Glyph curves use a tighter 0.2px flattening tolerance than general PDF
@@ -468,6 +486,30 @@ impl PathPainter {
 /// both axes. The accumulated winding number is mapped to an opacity in [0,1]
 /// per the fill rule (nonzero or even-odd) and composited with `blend_pixel`.
 fn fill_flat_aa(buf: &mut PixelBuffer, flat: &FlatPath, color: PixelColor, rule: FillRule) {
+    fill_flat_with_compositor(buf, flat, rule, |buf, x, y, coverage| {
+        buf.blend_pixel(x, y, color, coverage);
+    });
+}
+
+fn fill_flat_cmyk_overprint_preview(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    cmyk: [f32; 4],
+    alpha: f32,
+    overprint_mode: i32,
+    rule: FillRule,
+) {
+    fill_flat_with_compositor(buf, flat, rule, |buf, x, y, coverage| {
+        buf.blend_device_cmyk_overprint_preview(x, y, cmyk, alpha, coverage, overprint_mode);
+    });
+}
+
+fn fill_flat_with_compositor(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    rule: FillRule,
+    mut composite_pixel: impl FnMut(&mut PixelBuffer, i32, i32, f32),
+) {
     let bw = buf.width as i32;
     let bh = buf.height as i32;
 
@@ -523,7 +565,7 @@ fn fill_flat_aa(buf: &mut PixelBuffer, flat: &FlatPath, color: PixelColor, rule:
         }
     }
 
-    acc.composite(buf, color, rule);
+    acc.composite(buf, rule, &mut composite_pixel);
 }
 
 fn light_grid_fit_flat_glyph(flat: &mut FlatPath, device_t: &Transform2D) {
@@ -1113,7 +1155,12 @@ impl Accumulator {
     }
 
     /// Resolve accumulated winding into coverage and composite onto `buf`.
-    fn composite(&self, buf: &mut PixelBuffer, color: PixelColor, rule: FillRule) {
+    fn composite(
+        &self,
+        buf: &mut PixelBuffer,
+        rule: FillRule,
+        composite_pixel: &mut impl FnMut(&mut PixelBuffer, i32, i32, f32),
+    ) {
         for ry in 0..self.h {
             let base = ry * self.w;
             let mut running = 0.0f32; // prefix sum of cover (winding to the left)
@@ -1126,7 +1173,7 @@ impl Accumulator {
                 }
                 let px = self.origin_x + rx as i32;
                 let py = self.origin_y + ry as i32;
-                buf.blend_pixel(px, py, color, coverage);
+                composite_pixel(buf, px, py, coverage);
             }
         }
     }

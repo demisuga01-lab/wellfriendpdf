@@ -427,3 +427,20 @@ Prompt 05 did not target new raster fidelity for mesh/pattern/image edge cases,
 so the visual score is unchanged. The color work closes architecture,
 diagnostic, cap, report, overprint-state, and output-intent validation gaps
 without regressing the benchmark.
+
+Prompt 05B reran the same anchor before and after color/prepress closure work:
+
+| metric | Prompt 05B before | Prompt 05B after |
+| --- | ---: | ---: |
+| files | 24 | 24 |
+| visual pages compared | 23 | 23 |
+| visual pass | 60.87% | 60.87% |
+| file pass | 58.33% | 58.33% |
+| weighted score | 59.0 | 59.0 |
+| peak Oxide memory | 19.48 MB | 19.47 MB |
+| determinism | 4/4 stable | 4/4 stable |
+
+Prompt 05B adds qcms transform-cache/fidelity reporting, stronger
+Separation/DeviceN preview diagnostics, common-case DeviceCMYK fill overprint
+preview, and stricter color-only PDF/A/PDF/X output-intent checks. Details are
+tracked in `docs/color_prompt05b_closure_audit.md`.

@@ -1,5 +1,6 @@
 use crate::content::BlendMode;
 use crate::images::decoder::RawImage;
+use crate::render::cmm;
 use crate::render::path::{FillRule, FlatPath};
 
 /// Gamma-correct compositing helpers.
@@ -699,6 +700,83 @@ impl PixelBuffer {
         self.data[idx + 3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
     }
 
+    pub(crate) fn blend_device_cmyk_overprint_preview(
+        &mut self,
+        x: i32,
+        y: i32,
+        cmyk: [f32; 4],
+        alpha: f32,
+        coverage: f32,
+        overprint_mode: i32,
+    ) {
+        if coverage <= 0.0 {
+            return;
+        }
+        if let Some(clip) = &self.clip {
+            if !clip.is_visible(x, y) {
+                return;
+            }
+        }
+        let idx = match self.pixel_index(x, y) {
+            Some(idx) => idx,
+            None => return,
+        };
+
+        let smask_alpha = self.smask.as_ref().map_or(1.0, |mask| mask.get(x, y));
+        let eff_a = (alpha * coverage * smask_alpha).clamp(0.0, 1.0);
+        if eff_a <= 0.0 {
+            return;
+        }
+
+        let dst_rgb_srgb = [
+            self.data[idx] as f32 / 255.0,
+            self.data[idx + 1] as f32 / 255.0,
+            self.data[idx + 2] as f32 / 255.0,
+        ];
+        let src_rgb_srgb =
+            cmm::device_cmyk_overprint_preview_srgb(dst_rgb_srgb, cmyk, overprint_mode == 1);
+        let dst_a = self.data[idx + 3] as f32 / 255.0;
+
+        let (src_rgb, dst_rgb) = if self.render_mode.is_high_quality() {
+            (
+                [
+                    gamma::to_linear_f32(src_rgb_srgb[0]),
+                    gamma::to_linear_f32(src_rgb_srgb[1]),
+                    gamma::to_linear_f32(src_rgb_srgb[2]),
+                ],
+                [
+                    gamma::to_linear(self.data[idx]),
+                    gamma::to_linear(self.data[idx + 1]),
+                    gamma::to_linear(self.data[idx + 2]),
+                ],
+            )
+        } else {
+            (src_rgb_srgb, dst_rgb_srgb)
+        };
+        let (out_rgb, out_a) =
+            composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, self.blend_mode);
+
+        if out_a < 1e-6 {
+            self.data[idx] = 0;
+            self.data[idx + 1] = 0;
+            self.data[idx + 2] = 0;
+            self.data[idx + 3] = 0;
+            return;
+        }
+
+        if self.render_mode.is_high_quality() {
+            self.data[idx] = gamma::to_srgb(out_rgb[0]);
+            self.data[idx + 1] = gamma::to_srgb(out_rgb[1]);
+            self.data[idx + 2] = gamma::to_srgb(out_rgb[2]);
+        } else {
+            let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+            self.data[idx] = to_byte(out_rgb[0]);
+            self.data[idx + 1] = to_byte(out_rgb[1]);
+            self.data[idx + 2] = to_byte(out_rgb[2]);
+        }
+        self.data[idx + 3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+
     fn blend_pixel_linear_light(&mut self, idx: usize, color: PixelColor, eff_a: f32) {
         let dst_rgb = [
             gamma::to_linear(self.data[idx]),
@@ -1270,6 +1348,26 @@ mod tests {
         assert!(p[0] < 10);
         assert!(p[1] < 10);
         assert!(p[2] < 10);
+    }
+
+    #[test]
+    fn cmyk_overprint_preview_preserves_zero_ink_channels() {
+        let to_pixel = |rgb: [f32; 3]| -> PixelColor {
+            [
+                (rgb[0] * 255.0).round() as u8,
+                (rgb[1] * 255.0).round() as u8,
+                (rgb[2] * 255.0).round() as u8,
+                255,
+            ]
+        };
+        let mut buf = PixelBuffer::new(1, 1);
+        buf.set_pixel(0, 0, to_pixel(cmm::device_cmyk_to_srgb(0.0, 0.0, 1.0, 0.0)));
+        buf.blend_device_cmyk_overprint_preview(0, 0, [1.0, 0.0, 0.0, 0.0], 1.0, 1.0, 1);
+        let expected = to_pixel(cmm::device_cmyk_to_srgb(1.0, 0.0, 1.0, 0.0));
+        let actual = buf.get_pixel(0, 0);
+        for i in 0..3 {
+            assert!((actual[i] as i16 - expected[i] as i16).abs() <= 8);
+        }
     }
 
     #[test]

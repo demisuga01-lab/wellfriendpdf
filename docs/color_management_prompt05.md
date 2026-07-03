@@ -44,6 +44,13 @@ This means screen preview for common ICCBased RGB/Gray/CMYK profiles is
 implemented, but device-link transforms, full multicolor profiles, black-point
 compensation, and certified prepress conversion are not claimed.
 
+Prompt 05B keeps this as Outcome B and makes it measurable rather than merely
+architectural. qcms ICC transforms now flow through a bounded transform cache,
+the report exposes cache metrics, and compact sRGB identity probes prove that
+the selected backend path is deterministic and within a one-byte channel
+tolerance. The default build still has no native LittleCMS dependency and
+preserves the pure-Rust/no-unsafe engine policy.
+
 ## Public Report API
 
 Rust API:
@@ -63,6 +70,7 @@ oxide parser-report input.pdf --json --include-color --color-profile pdfa
 The JSON `color` object includes:
 
 - backend decision;
+- ICC transform cache and fidelity vectors;
 - limits;
 - color-space family counts;
 - spot colorants;
@@ -102,7 +110,7 @@ Stable diagnostic codes added in Prompt 05 include:
 | DeviceN | DONE WITH BOUNDED LIMIT | max 16 components; tint transform to alternate preview |
 | Rendering intent | DONE WITH BOUNDED LIMIT | parsed/reported/carried; fallback transforms may ignore it |
 | Black-point compensation | DEFERRED WITH REASON | no default CMM backend support; surfaced in backend decision |
-| Overprint | DONE WITH BOUNDED LIMIT | OP/op/OPM parsed and preserved; true separations simulation not claimed |
+| Overprint | DONE WITH BOUNDED LIMIT | OP/op/OPM parsed and preserved; Prompt 05B adds DeviceCMYK fill overprint preview in the RGB framebuffer |
 | PDF/A color | DONE WITH BOUNDED LIMIT | output-intent color checks only, not full PDF/A validation |
 | PDF/X color | DONE WITH BOUNDED LIMIT | output-intent/prepress usage checks only, not full PDF/X validation |
 
@@ -135,12 +143,31 @@ The score did not move because Prompt 05 focused on architecture, caps,
 diagnostics, and reportability, not new mesh/pattern/color-glyph raster
 fidelity. No benchmark regression was observed.
 
+Prompt 05B reran the same 24-file anchor before changes under
+`target\prompt05b-color-before`, then reran after changes under
+`target\prompt05b-color-after`:
+
+| metric | before Prompt 05B | after Prompt 05B |
+| --- | ---: | ---: |
+| files | 24 | 24 |
+| weighted score | 59.0 | 59.0 |
+| visual pass | 60.87% | 60.87% |
+| file pass | 58.33% | 58.33% |
+| peak Oxide memory | 19.48 MB | 19.47 MB |
+| determinism | 4/4 stable | 4/4 stable |
+
+Prompt 05B's closure details are tracked in
+`docs/color_prompt05b_closure_audit.md`.
+
 ## Remaining Bounded Limits
 
-- No native LittleCMS backend or device-link/prepress conversion.
+- No native LittleCMS backend or device-link/prepress conversion. Prompt 05B
+  records this as a deliberate Outcome B decision with qcms cache/fidelity
+  evidence.
 - Black-point compensation is reported as unavailable in the fallback backend.
-- Overprint is parsed/preserved and diagnosed, not fully simulated across true
-  separation plates.
+- Overprint is parsed/preserved and diagnosed. DeviceCMYK fill overprint has an
+  RGB-framebuffer preview path; stroke, spot, and DeviceN plate overprint are
+  not fully simulated.
 - DeviceN/Separation preview uses tint transform to alternate color space; spot
   separations are preserved only in reporting metadata.
 - PDF/A/PDF/X checks are color/output-intent subset checks, not complete

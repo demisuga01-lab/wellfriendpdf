@@ -7,9 +7,290 @@
 use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 
 const D50: [f32; 3] = [0.96422, 1.0, 0.82521];
 pub(crate) const DEFAULT_MAX_ICC_PROFILE_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const DEFAULT_TRANSFORM_CACHE_ENTRIES: usize = 16;
+
+thread_local! {
+    static ICC_TRANSFORM_CACHE: RefCell<IccTransformCache> =
+        RefCell::new(IccTransformCache::new(DEFAULT_TRANSFORM_CACHE_ENTRIES));
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub(crate) enum ColorIntent {
+    #[default]
+    Perceptual,
+    RelativeColorimetric,
+    Saturation,
+    AbsoluteColorimetric,
+}
+
+impl ColorIntent {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Perceptual => "perceptual",
+            Self::RelativeColorimetric => "relative_colorimetric",
+            Self::Saturation => "saturation",
+            Self::AbsoluteColorimetric => "absolute_colorimetric",
+        }
+    }
+
+    fn to_qcms(self) -> qcms::Intent {
+        match self {
+            Self::Perceptual => qcms::Intent::Perceptual,
+            Self::RelativeColorimetric => qcms::Intent::RelativeColorimetric,
+            Self::Saturation => qcms::Intent::Saturation,
+            Self::AbsoluteColorimetric => qcms::Intent::AbsoluteColorimetric,
+        }
+    }
+}
+
+pub(crate) const SUPPORTED_QCMS_INTENTS: [ColorIntent; 4] = [
+    ColorIntent::Perceptual,
+    ColorIntent::RelativeColorimetric,
+    ColorIntent::Saturation,
+    ColorIntent::AbsoluteColorimetric,
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub(crate) struct ColorTransformOptions {
+    pub intent: ColorIntent,
+    pub black_point_compensation: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct IccTransformCacheMetrics {
+    pub hits: usize,
+    pub misses: usize,
+    pub evictions: usize,
+    pub entries: usize,
+    pub max_entries: usize,
+    pub invalid_profiles: usize,
+    pub unsupported_profiles: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct IccFidelityProbe {
+    pub name: &'static str,
+    pub backend: &'static str,
+    pub input: Vec<u8>,
+    pub output: Vec<u8>,
+    pub max_abs_error: u8,
+    pub tolerance: u8,
+    pub passed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct IccTransformKey {
+    profile_hash: u64,
+    profile_len: usize,
+    components: u8,
+    src_type: u8,
+    dst_type: u8,
+    intent: ColorIntent,
+    black_point_compensation: bool,
+}
+
+pub(crate) struct IccTransformCache {
+    max_entries: usize,
+    entries: Vec<(IccTransformKey, qcms::Transform)>,
+    metrics: IccTransformCacheMetrics,
+}
+
+impl IccTransformCache {
+    pub(crate) fn new(max_entries: usize) -> Self {
+        let max_entries = max_entries.max(1);
+        Self {
+            max_entries,
+            entries: Vec::new(),
+            metrics: IccTransformCacheMetrics {
+                max_entries,
+                ..IccTransformCacheMetrics::default()
+            },
+        }
+    }
+
+    pub(crate) fn metrics(&self) -> IccTransformCacheMetrics {
+        IccTransformCacheMetrics {
+            entries: self.entries.len(),
+            max_entries: self.max_entries,
+            ..self.metrics
+        }
+    }
+
+    pub(crate) fn transform_profile_to_srgb(
+        &mut self,
+        profile_bytes: &[u8],
+        components: u8,
+        pixels: &[u8],
+        options: ColorTransformOptions,
+    ) -> Option<(Vec<u8>, u8)> {
+        if profile_bytes.len() > DEFAULT_MAX_ICC_PROFILE_BYTES {
+            self.metrics.unsupported_profiles += 1;
+            return None;
+        }
+        let src_type = data_type_for_components(components)?;
+        if !pixels.len().is_multiple_of(src_type.bytes_per_pixel()) {
+            return None;
+        }
+        let key = IccTransformKey {
+            profile_hash: stable_hash(profile_bytes),
+            profile_len: profile_bytes.len(),
+            components,
+            src_type: data_type_tag(src_type),
+            dst_type: data_type_tag(qcms::DataType::RGB8),
+            intent: options.intent,
+            black_point_compensation: options.black_point_compensation,
+        };
+        let idx = match self
+            .entries
+            .iter()
+            .position(|(existing, _)| *existing == key)
+        {
+            Some(idx) => {
+                self.metrics.hits += 1;
+                idx
+            }
+            None => {
+                self.metrics.misses += 1;
+                let input = match qcms::Profile::new_from_slice(profile_bytes, false) {
+                    Some(profile) => profile,
+                    None => {
+                        self.metrics.invalid_profiles += 1;
+                        return None;
+                    }
+                };
+                let mut output = qcms::Profile::new_sRGB();
+                output.precache_output_transform();
+                let transform = qcms::Transform::new_to(
+                    &input,
+                    &output,
+                    src_type,
+                    qcms::DataType::RGB8,
+                    options.intent.to_qcms(),
+                )?;
+                if self.entries.len() >= self.max_entries {
+                    self.entries.remove(0);
+                    self.metrics.evictions += 1;
+                }
+                self.entries.push((key, transform));
+                self.entries.len() - 1
+            }
+        };
+        let pixel_count = pixels.len() / src_type.bytes_per_pixel();
+        let mut rgb = vec![0u8; pixel_count * 3];
+        self.entries[idx].1.convert(pixels, &mut rgb);
+        Some((rgb, 3))
+    }
+
+    pub(crate) fn transform_builtin_srgb_to_srgb_for_proof(
+        &mut self,
+        pixels: &[u8],
+        options: ColorTransformOptions,
+    ) -> Option<Vec<u8>> {
+        if !pixels.len().is_multiple_of(3) {
+            return None;
+        }
+        let key = IccTransformKey {
+            profile_hash: 0x5352_4742_5f42_5549,
+            profile_len: 0,
+            components: 3,
+            src_type: data_type_tag(qcms::DataType::RGB8),
+            dst_type: data_type_tag(qcms::DataType::RGB8),
+            intent: options.intent,
+            black_point_compensation: options.black_point_compensation,
+        };
+        let idx = match self
+            .entries
+            .iter()
+            .position(|(existing, _)| *existing == key)
+        {
+            Some(idx) => {
+                self.metrics.hits += 1;
+                idx
+            }
+            None => {
+                self.metrics.misses += 1;
+                let input = qcms::Profile::new_sRGB();
+                let mut output = qcms::Profile::new_sRGB();
+                output.precache_output_transform();
+                let transform = qcms::Transform::new_to(
+                    &input,
+                    &output,
+                    qcms::DataType::RGB8,
+                    qcms::DataType::RGB8,
+                    options.intent.to_qcms(),
+                )?;
+                if self.entries.len() >= self.max_entries {
+                    self.entries.remove(0);
+                    self.metrics.evictions += 1;
+                }
+                self.entries.push((key, transform));
+                self.entries.len() - 1
+            }
+        };
+        let mut out = vec![0u8; pixels.len()];
+        self.entries[idx].1.convert(pixels, &mut out);
+        Some(out)
+    }
+}
+
+pub(crate) fn icc_transform_cache_metrics() -> IccTransformCacheMetrics {
+    ICC_TRANSFORM_CACHE.with(|cache| cache.borrow().metrics())
+}
+
+pub(crate) fn srgb_identity_fidelity_probes() -> Vec<IccFidelityProbe> {
+    let vectors: [(&str, &[u8]); 3] = [
+        (
+            "srgb_identity_primary_steps",
+            &[0, 0, 0, 255, 255, 255, 255, 0, 0, 0, 255, 0, 0, 0, 255],
+        ),
+        (
+            "srgb_identity_midpoints",
+            &[16, 32, 64, 96, 128, 160, 192, 224, 240],
+        ),
+        (
+            "srgb_identity_mixed",
+            &[12, 200, 40, 50, 90, 180, 240, 120, 18],
+        ),
+    ];
+    let mut cache = IccTransformCache::new(4);
+    vectors
+        .into_iter()
+        .map(|(name, input)| {
+            let output = cache
+                .transform_builtin_srgb_to_srgb_for_proof(input, ColorTransformOptions::default())
+                .unwrap_or_default();
+            let max_abs_error = input
+                .iter()
+                .zip(output.iter())
+                .map(|(a, b)| a.abs_diff(*b))
+                .max()
+                .unwrap_or(0);
+            let passed = input.len() == output.len() && max_abs_error <= 1;
+            IccFidelityProbe {
+                name,
+                backend: "qcms-builtin-srgb",
+                input: input.to_vec(),
+                output,
+                max_abs_error,
+                tolerance: 1,
+                passed,
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn reset_icc_transform_cache_for_tests() {
+    ICC_TRANSFORM_CACHE.with(|cache| {
+        *cache.borrow_mut() = IccTransformCache::new(DEFAULT_TRANSFORM_CACHE_ENTRIES);
+    });
+}
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LabParams {
@@ -114,6 +395,41 @@ pub(crate) fn device_cmyk_bytes_to_rgb(pixels: &[u8]) -> Vec<u8> {
     rgb
 }
 
+pub(crate) fn device_cmyk_overprint_preview_srgb(
+    dst_rgb: [f32; 3],
+    src_cmyk: [f32; 4],
+    overprint_mode_one: bool,
+) -> [f32; 3] {
+    if !overprint_mode_one {
+        return device_cmyk_to_srgb(src_cmyk[0], src_cmyk[1], src_cmyk[2], src_cmyk[3]);
+    }
+    let mut dst_cmyk = srgb_to_device_cmyk_preview(dst_rgb);
+    for (dst, src) in dst_cmyk.iter_mut().zip(src_cmyk) {
+        let src = src.clamp(0.0, 1.0);
+        if src > 1e-6 {
+            *dst = src;
+        }
+    }
+    device_cmyk_to_srgb(dst_cmyk[0], dst_cmyk[1], dst_cmyk[2], dst_cmyk[3])
+}
+
+pub(crate) fn srgb_to_device_cmyk_preview(rgb: [f32; 3]) -> [f32; 4] {
+    let r = rgb[0].clamp(0.0, 1.0);
+    let g = rgb[1].clamp(0.0, 1.0);
+    let b = rgb[2].clamp(0.0, 1.0);
+    let k = 1.0 - r.max(g).max(b);
+    if k >= 1.0 - 1e-6 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    let denom = 1.0 - k;
+    [
+        ((1.0 - r - k) / denom).clamp(0.0, 1.0),
+        ((1.0 - g - k) / denom).clamp(0.0, 1.0),
+        ((1.0 - b - k) / denom).clamp(0.0, 1.0),
+        k.clamp(0.0, 1.0),
+    ]
+}
+
 pub(crate) fn lab_to_srgb(l: f32, a: f32, b: f32, params: LabParams) -> [f32; 3] {
     let l = l.clamp(0.0, 100.0);
     let a = a.clamp(params.range[0], params.range[1]);
@@ -199,26 +515,14 @@ pub(crate) fn icc_bytes_to_rgb(
 ) -> Option<(Vec<u8>, u8)> {
     let (profile_dict, profile_bytes) = icc_profile_stream(dict, reader)?;
     let n = profile_dict.get_integer("N").unwrap_or(3).clamp(1, 4) as u8;
-    let src_type = match n {
-        1 => qcms::DataType::Gray8,
-        3 => qcms::DataType::RGB8,
-        4 => qcms::DataType::CMYK,
-        _ => return None,
-    };
-    let input = qcms::Profile::new_from_slice(&profile_bytes, false)?;
-    let mut output = qcms::Profile::new_sRGB();
-    output.precache_output_transform();
-    let transform = qcms::Transform::new_to(
-        &input,
-        &output,
-        src_type,
-        qcms::DataType::RGB8,
-        qcms::Intent::default(),
-    )?;
-    let pixel_count = pixels.len() / usize::from(n);
-    let mut rgb = vec![0u8; pixel_count * 3];
-    transform.convert(&pixels[..pixel_count * usize::from(n)], &mut rgb);
-    Some((rgb, 3))
+    ICC_TRANSFORM_CACHE.with(|cache| {
+        cache.borrow_mut().transform_profile_to_srgb(
+            &profile_bytes,
+            n,
+            pixels,
+            ColorTransformOptions::default(),
+        )
+    })
 }
 
 pub(crate) fn icc_components_to_srgb(
@@ -228,33 +532,49 @@ pub(crate) fn icc_components_to_srgb(
 ) -> Option<[f32; 3]> {
     let (profile_dict, profile_bytes) = icc_profile_stream_from_space(space_obj, reader)?;
     let n = profile_dict.get_integer("N").unwrap_or(3).clamp(1, 4) as u8;
-    let src_type = match n {
-        1 => qcms::DataType::Gray8,
-        3 => qcms::DataType::RGB8,
-        4 => qcms::DataType::CMYK,
-        _ => return None,
-    };
     let mut src = vec![0u8; usize::from(n)];
     for (i, byte) in src.iter_mut().enumerate() {
         *byte = unit_to_u8(components.get(i).copied().unwrap_or(0.0) as f32);
     }
-    let input = qcms::Profile::new_from_slice(&profile_bytes, false)?;
-    let mut output = qcms::Profile::new_sRGB();
-    output.precache_output_transform();
-    let transform = qcms::Transform::new_to(
-        &input,
-        &output,
-        src_type,
-        qcms::DataType::RGB8,
-        qcms::Intent::default(),
-    )?;
-    let mut dst = [0u8; 3];
-    transform.convert(&src, &mut dst);
+    let (dst, _) = ICC_TRANSFORM_CACHE.with(|cache| {
+        cache.borrow_mut().transform_profile_to_srgb(
+            &profile_bytes,
+            n,
+            &src,
+            ColorTransformOptions::default(),
+        )
+    })?;
     Some([
         dst[0] as f32 / 255.0,
         dst[1] as f32 / 255.0,
         dst[2] as f32 / 255.0,
     ])
+}
+
+fn data_type_for_components(components: u8) -> Option<qcms::DataType> {
+    match components {
+        1 => Some(qcms::DataType::Gray8),
+        3 => Some(qcms::DataType::RGB8),
+        4 => Some(qcms::DataType::CMYK),
+        _ => None,
+    }
+}
+
+fn data_type_tag(data_type: qcms::DataType) -> u8 {
+    match data_type {
+        qcms::DataType::RGB8 => 0,
+        qcms::DataType::RGBA8 => 1,
+        qcms::DataType::BGRA8 => 2,
+        qcms::DataType::Gray8 => 3,
+        qcms::DataType::GrayA8 => 4,
+        qcms::DataType::CMYK => 5,
+    }
+}
+
+fn stable_hash(bytes: &[u8]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 pub(crate) fn icc_channel_count(dict: &PdfDictionary, reader: &PdfReader) -> Option<u8> {
@@ -646,5 +966,81 @@ mod tests {
         let out = bytes(cal_gray_to_srgb(0.5, params));
         assert!(out[0] < 140, "{out:?}");
         assert!((out[0] as i16 - out[1] as i16).abs() <= 2, "{out:?}");
+    }
+
+    #[test]
+    fn builtin_srgb_transform_cache_is_deterministic() {
+        reset_icc_transform_cache_for_tests();
+        let pixels = [0u8, 64, 128, 255, 128, 0];
+        let mut cache = IccTransformCache::new(4);
+        let first = cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, ColorTransformOptions::default())
+            .unwrap();
+        let second = cache
+            .transform_builtin_srgb_to_srgb_for_proof(&pixels, ColorTransformOptions::default())
+            .unwrap();
+        assert_eq!(first, pixels);
+        assert_eq!(second, pixels);
+        let metrics = cache.metrics();
+        assert_eq!(metrics.misses, 1);
+        assert_eq!(metrics.hits, 1);
+        assert_eq!(metrics.entries, 1);
+        let global_metrics = icc_transform_cache_metrics();
+        assert_eq!(global_metrics.max_entries, DEFAULT_TRANSFORM_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn transform_cache_eviction_is_bounded() {
+        let pixels = [10u8, 20, 30];
+        let mut cache = IccTransformCache::new(1);
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(
+                &pixels,
+                ColorTransformOptions {
+                    intent: ColorIntent::Perceptual,
+                    black_point_compensation: false,
+                },
+            )
+            .unwrap();
+        cache
+            .transform_builtin_srgb_to_srgb_for_proof(
+                &pixels,
+                ColorTransformOptions {
+                    intent: ColorIntent::RelativeColorimetric,
+                    black_point_compensation: false,
+                },
+            )
+            .unwrap();
+        let metrics = cache.metrics();
+        assert_eq!(metrics.entries, 1);
+        assert_eq!(metrics.evictions, 1);
+    }
+
+    #[test]
+    fn cmyk_overprint_preserves_zero_ink_channels_in_preview() {
+        let yellow_background = device_cmyk_to_srgb(0.0, 0.0, 1.0, 0.0);
+        let cyan_only = [1.0, 0.0, 0.0, 0.0];
+        let overprint = device_cmyk_overprint_preview_srgb(yellow_background, cyan_only, true);
+        let knockout = device_cmyk_overprint_preview_srgb(yellow_background, cyan_only, false);
+        let expected_green = device_cmyk_to_srgb(1.0, 0.0, 1.0, 0.0);
+        let overprint = bytes(overprint);
+        let expected_green = bytes(expected_green);
+        for (actual, expected) in overprint.into_iter().zip(expected_green) {
+            assert!((actual as i16 - expected as i16).abs() <= 8);
+        }
+        assert_eq!(
+            bytes(knockout),
+            bytes(device_cmyk_to_srgb(1.0, 0.0, 0.0, 0.0))
+        );
+    }
+
+    #[test]
+    fn srgb_identity_fidelity_vectors_pass() {
+        let probes = srgb_identity_fidelity_probes();
+        assert_eq!(probes.len(), 3);
+        assert!(probes.iter().all(|probe| probe.passed));
+        assert!(SUPPORTED_QCMS_INTENTS
+            .iter()
+            .any(|intent| intent.as_str() == "absolute_colorimetric"));
     }
 }

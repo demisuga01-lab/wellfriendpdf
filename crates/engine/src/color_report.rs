@@ -65,26 +65,37 @@ impl Default for ColorLimits {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ColorBackendDecision {
+    pub outcome: String,
     pub default_backend: String,
     pub native_littlecms_integrated: bool,
     pub default_build_unsafe_ffi: bool,
     pub icc_backend: String,
+    pub supported_rendering_intents: Vec<String>,
     pub device_cmyk_preview: String,
     pub bpc_support: String,
+    pub native_littlecms_decision: String,
 }
 
 impl Default for ColorBackendDecision {
     fn default() -> Self {
         Self {
+            outcome: "B: safe Rust/qcms accurate-enough preview backend".to_string(),
             default_backend: "safe-rust-plus-qcms".to_string(),
             native_littlecms_integrated: false,
             default_build_unsafe_ffi: false,
             icc_backend: "qcms for ICCBased profile-to-sRGB preview transforms".to_string(),
+            supported_rendering_intents: cmm::SUPPORTED_QCMS_INTENTS
+                .iter()
+                .map(|intent| intent.as_str().to_string())
+                .collect(),
             device_cmyk_preview:
-                "deterministic Poppler/Splash-like process-ink interpolation without claiming prepress conversion"
+                "deterministic Poppler/Splash-like process-ink interpolation; CMYK fill overprint preview preserves zero-ink channels in the RGB framebuffer approximation"
                     .to_string(),
             bpc_support:
-                "reported and carried in ColorContext; unavailable in deterministic fallback transforms"
+                "reported and carried in options; qcms/default fallback does not implement black-point compensation"
+                    .to_string(),
+            native_littlecms_decision:
+                "not integrated in oxide-engine because the crate forbids unsafe code and default/WASM builds must stay portable; a future native CMM belongs behind a separate optional boundary"
                     .to_string(),
         }
     }
@@ -114,6 +125,62 @@ pub struct OverprintReport {
     pub fill_overprint_used: bool,
     pub overprint_mode_one_used: bool,
     pub ext_gstate_count: usize,
+    pub cmyk_fill_preview_supported: bool,
+    pub true_separation_framebuffer: bool,
+    pub approximation_diagnostics: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SpotPreviewReport {
+    pub separation_spaces: usize,
+    pub devicen_spaces: usize,
+    pub separation_tint_transforms: usize,
+    pub devicen_tint_transforms: usize,
+    pub missing_tint_transforms: usize,
+    pub preview_model: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IccTransformCacheReport {
+    pub hits: usize,
+    pub misses: usize,
+    pub evictions: usize,
+    pub entries: usize,
+    pub max_entries: usize,
+    pub invalid_profiles: usize,
+    pub unsupported_profiles: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IccFidelityVector {
+    pub name: String,
+    pub backend: String,
+    pub input_rgb: Vec<u8>,
+    pub output_rgb: Vec<u8>,
+    pub max_abs_error: u8,
+    pub tolerance: u8,
+    pub passed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StandardsColorReport {
+    pub scope: String,
+    pub output_intent_checked: bool,
+    pub icc_profile_checked: bool,
+    pub device_color_policy_checked: bool,
+    pub external_validator: Option<String>,
+}
+
+fn cache_report(metrics: cmm::IccTransformCacheMetrics) -> IccTransformCacheReport {
+    IccTransformCacheReport {
+        hits: metrics.hits,
+        misses: metrics.misses,
+        evictions: metrics.evictions,
+        entries: metrics.entries,
+        max_entries: metrics.max_entries,
+        invalid_profiles: metrics.invalid_profiles,
+        unsupported_profiles: metrics.unsupported_profiles,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,12 +188,16 @@ pub struct ColorReport {
     pub validation_profile: ColorValidationProfile,
     pub backend: ColorBackendDecision,
     pub limits: ColorLimits,
+    pub icc_transform_cache: IccTransformCacheReport,
+    pub icc_fidelity_vectors: Vec<IccFidelityVector>,
     pub color_spaces: Vec<ColorSpaceUsage>,
     pub spot_colorants: Vec<String>,
     pub devicen_components: Vec<Vec<String>>,
+    pub spot_preview: SpotPreviewReport,
     pub output_intents: Vec<OutputIntentInfo>,
     pub rendering_intents: Vec<ColorSpaceUsage>,
     pub overprint: OverprintReport,
+    pub standards: StandardsColorReport,
     pub diagnostics: Vec<ColorDiagnostic>,
 }
 
@@ -136,12 +207,36 @@ impl ColorReport {
             validation_profile,
             backend: ColorBackendDecision::default(),
             limits: ColorLimits::default(),
+            icc_transform_cache: cache_report(cmm::icc_transform_cache_metrics()),
+            icc_fidelity_vectors: cmm::srgb_identity_fidelity_probes()
+                .into_iter()
+                .map(|probe| IccFidelityVector {
+                    name: probe.name.to_string(),
+                    backend: probe.backend.to_string(),
+                    input_rgb: probe.input,
+                    output_rgb: probe.output,
+                    max_abs_error: probe.max_abs_error,
+                    tolerance: probe.tolerance,
+                    passed: probe.passed,
+                })
+                .collect(),
             color_spaces: Vec::new(),
             spot_colorants: Vec::new(),
             devicen_components: Vec::new(),
+            spot_preview: SpotPreviewReport {
+                preview_model: "PDF tint transform to alternate color space; true spot plates are reported, not emitted by the RGB framebuffer".to_string(),
+                ..SpotPreviewReport::default()
+            },
             output_intents: Vec::new(),
             rendering_intents: Vec::new(),
             overprint: OverprintReport::default(),
+            standards: StandardsColorReport {
+                scope: "color-only OutputIntent/ICC/device-color/prepress checks; full PDF/A/PDF/X validation remains the compliance module/Prompt 09 scope".to_string(),
+                output_intent_checked: false,
+                icc_profile_checked: false,
+                device_color_policy_checked: false,
+                external_validator: None,
+            },
             diagnostics: Vec::new(),
         }
     }
@@ -155,10 +250,12 @@ struct ColorReportBuilder {
     rendering_intents: BTreeMap<String, usize>,
     diagnostics: Vec<ColorDiagnostic>,
     overprint: OverprintReport,
+    spot_preview: SpotPreviewReport,
 }
 
 impl ColorReportBuilder {
     fn finish(self, mut report: ColorReport) -> ColorReport {
+        let device_rgb_used = self.color_spaces.contains_key("DeviceRGB");
         report.color_spaces = self
             .color_spaces
             .into_iter()
@@ -171,8 +268,25 @@ impl ColorReportBuilder {
             .into_iter()
             .map(|(family, count)| ColorSpaceUsage { family, count })
             .collect();
+        report.spot_preview = SpotPreviewReport {
+            preview_model: report.spot_preview.preview_model,
+            ..self.spot_preview
+        };
         report.overprint = self.overprint;
         report.diagnostics.extend(self.diagnostics);
+        if matches!(report.validation_profile, ColorValidationProfile::PdfX) && device_rgb_used {
+            report.diagnostics.push(ColorDiagnostic {
+                code: "color.pdfx.device_rgb.warning".to_string(),
+                severity: ColorSeverity::Warning,
+                message: "PDF/X color validation found DeviceRGB usage; prepress output should be CMYK/spot or explicitly color managed".to_string(),
+                object: None,
+            });
+        }
+        report.icc_transform_cache = cache_report(cmm::icc_transform_cache_metrics());
+        report.standards.device_color_policy_checked = matches!(
+            report.validation_profile,
+            ColorValidationProfile::PdfA | ColorValidationProfile::PdfX
+        );
         report
     }
 
@@ -213,6 +327,11 @@ pub fn color_report(reader: &PdfReader, validation_profile: ColorValidationProfi
     let mut builder = ColorReportBuilder::default();
 
     report.output_intents = parse_output_intents(reader, validation_profile, &mut builder);
+    report.standards.output_intent_checked = matches!(
+        validation_profile,
+        ColorValidationProfile::PdfA | ColorValidationProfile::PdfX
+    );
+    report.standards.icc_profile_checked = !report.output_intents.is_empty();
     if report.output_intents.is_empty()
         && matches!(
             validation_profile,
@@ -324,6 +443,45 @@ fn parse_output_intents(
                     "color.output_intent.profile_missing",
                     ColorSeverity::Error,
                     "OutputIntent lacks DestOutputProfile",
+                    None,
+                );
+            }
+            match validation_profile {
+                ColorValidationProfile::PdfA if info.s.as_deref() != Some("GTS_PDFA1") => {
+                    builder.diagnostic(
+                        "color.pdfa.output_intent.s",
+                        ColorSeverity::Error,
+                        format!(
+                            "PDF/A color validation expects OutputIntent /S /GTS_PDFA1, got {:?}",
+                            info.s
+                        ),
+                        None,
+                    );
+                }
+                ColorValidationProfile::PdfX if info.s.as_deref() != Some("GTS_PDFX") => {
+                    builder.diagnostic(
+                        "color.pdfx.output_intent.s",
+                        ColorSeverity::Error,
+                        format!(
+                            "PDF/X color validation expects OutputIntent /S /GTS_PDFX, got {:?}",
+                            info.s
+                        ),
+                        None,
+                    );
+                }
+                _ => {}
+            }
+            if matches!(validation_profile, ColorValidationProfile::PdfX)
+                && info.dest_output_profile_n.is_some()
+                && info.dest_output_profile_n != Some(4)
+            {
+                builder.diagnostic(
+                    "color.pdfx.output_profile.not_cmyk",
+                    ColorSeverity::Warning,
+                    format!(
+                        "PDF/X prepress color check expected a CMYK output profile (/N 4), got {:?}",
+                        info.dest_output_profile_n
+                    ),
                     None,
                 );
             }
@@ -482,10 +640,12 @@ fn scan_ext_g_state(
         builder.overprint.ext_gstate_count += 1;
     }
     if dict.get_bool("OP").unwrap_or(false) || dict.get_bool("op").unwrap_or(false) {
+        builder.overprint.cmyk_fill_preview_supported = true;
+        builder.overprint.approximation_diagnostics += 1;
         builder.diagnostic(
             "color.overprint.preview_approximation",
             ColorSeverity::Info,
-            "overprint state is parsed and preserved; screen preview does not claim true separations compositing",
+            "overprint state is parsed and preserved; DeviceCMYK fills use RGB-framebuffer preview, but true separations compositing is not claimed",
             object_label,
         );
     }
@@ -644,13 +804,17 @@ fn inspect_separation_space(
     builder: &mut ColorReportBuilder,
     object_label: Option<String>,
 ) {
+    builder.spot_preview.separation_spaces += 1;
     if let Some(name) = arr.get(1).and_then(PdfObject::as_name) {
         builder.spot_colorants.insert(name.to_string());
     }
     if let Some(alt) = arr.get(2) {
         classify_color_space(alt, reader, builder, object_label.clone());
     }
-    if arr.get(3).is_none() {
+    if arr.get(3).is_some() {
+        builder.spot_preview.separation_tint_transforms += 1;
+    } else {
+        builder.spot_preview.missing_tint_transforms += 1;
         builder.diagnostic(
             "color.separation.tint_transform_missing",
             ColorSeverity::Error,
@@ -666,6 +830,7 @@ fn inspect_devicen_space(
     builder: &mut ColorReportBuilder,
     object_label: Option<String>,
 ) {
+    builder.spot_preview.devicen_spaces += 1;
     let names: Vec<String> = arr
         .get(1)
         .and_then(PdfObject::as_array)
@@ -695,7 +860,10 @@ fn inspect_devicen_space(
     if let Some(alt) = arr.get(2) {
         classify_color_space(alt, reader, builder, object_label.clone());
     }
-    if arr.get(3).is_none() {
+    if arr.get(3).is_some() {
+        builder.spot_preview.devicen_tint_transforms += 1;
+    } else {
+        builder.spot_preview.missing_tint_transforms += 1;
         builder.diagnostic(
             "color.devicen.tint_transform_missing",
             ColorSeverity::Error,
@@ -780,6 +948,9 @@ mod tests {
         );
         let report = color_report_bytes(&pdf, ColorValidationProfile::PdfA).unwrap();
         assert_eq!(report.output_intents.len(), 1);
+        assert!(report.standards.output_intent_checked);
+        assert!(report.standards.icc_profile_checked);
+        assert!(report.icc_fidelity_vectors.iter().all(|v| v.passed));
         assert!(report.output_intents[0].dest_output_profile_present);
         assert!(report
             .diagnostics
@@ -817,6 +988,10 @@ mod tests {
         );
         let report = color_report_bytes(&pdf, ColorValidationProfile::Generic).unwrap();
         assert!(report.spot_colorants.iter().any(|s| s == "SpotBlue"));
+        assert!(report.spot_preview.separation_spaces >= 1);
+        assert!(report.spot_preview.devicen_spaces >= 1);
+        assert!(report.spot_preview.separation_tint_transforms >= 1);
+        assert!(report.spot_preview.devicen_tint_transforms >= 1);
         assert!(report
             .devicen_components
             .iter()
@@ -824,6 +999,8 @@ mod tests {
         assert!(report.overprint.stroke_overprint_used);
         assert!(report.overprint.fill_overprint_used);
         assert!(report.overprint.overprint_mode_one_used);
+        assert!(report.overprint.cmyk_fill_preview_supported);
+        assert!(report.overprint.approximation_diagnostics >= 1);
         assert!(report
             .rendering_intents
             .iter()
@@ -874,5 +1051,28 @@ mod tests {
             .diagnostics
             .iter()
             .any(|d| d.code == "color.devicen.component_cap"));
+    }
+
+    #[test]
+    fn pdfx_profile_checks_output_intent_s_and_cmyk_profile() {
+        let pdf = build_pdf(
+            &[
+                "1 0 obj\n<< /Type /Catalog /Pages 2 0 R /OutputIntents [3 0 R] >>\nendobj",
+                "2 0 obj\n<< /Type /Pages /Count 0 >>\nendobj",
+                "3 0 obj\n<< /S /GTS_PDFA1 /OutputConditionIdentifier (sRGB) /DestOutputProfile 4 0 R >>\nendobj",
+                "4 0 obj\n<< /N 3 /Length 4 >>\nstream\nbad!\nendstream\nendobj",
+            ],
+            "1 0 R",
+        );
+        let report = color_report_bytes(&pdf, ColorValidationProfile::PdfX).unwrap();
+        assert!(report.standards.output_intent_checked);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "color.pdfx.output_intent.s"));
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "color.pdfx.output_profile.not_cmyk"));
     }
 }

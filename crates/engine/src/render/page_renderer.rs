@@ -676,6 +676,22 @@ impl<'a> RenderState<'a> {
             return;
         }
         let ctm = self.ctm();
+        if self.gs.fill_overprint {
+            if let Some(cmyk) = device_cmyk_components(&self.gs.fill_color) {
+                PathPainter::fill_device_cmyk_overprint_preview(
+                    &mut self.buf,
+                    &self.path,
+                    &ctm,
+                    &self.viewport,
+                    cmyk,
+                    self.gs.fill_alpha as f32,
+                    self.gs.overprint_mode,
+                    rule,
+                );
+                self.path.clear();
+                return;
+            }
+        }
         let color = self.fill_pixel_color();
         PathPainter::fill(&mut self.buf, &self.path, &ctm, &self.viewport, color, rule);
         self.path.clear();
@@ -3603,6 +3619,38 @@ fn cmyk_to_rgb(c: f64, m: f64, y: f64, k: f64) -> (f64, f64, f64) {
         clamp_unit((1.0 - m) * (1.0 - k)),
         clamp_unit((1.0 - y) * (1.0 - k)),
     )
+}
+
+fn device_cmyk_components(color: &crate::content::state::Color) -> Option<[f32; 4]> {
+    if !matches!(color.space, ColorSpace::DeviceCMYK) {
+        return None;
+    }
+    Some([
+        color
+            .components
+            .first()
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0) as f32,
+        color
+            .components
+            .get(1)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0) as f32,
+        color
+            .components
+            .get(2)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0) as f32,
+        color
+            .components
+            .get(3)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0) as f32,
+    ])
 }
 
 fn clamp_unit(value: f64) -> f64 {

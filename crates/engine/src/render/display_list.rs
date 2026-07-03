@@ -114,6 +114,8 @@ pub struct DrawState {
     pub ctm: Transform2D,
     pub fill_color: PixelColor,
     pub stroke_color: PixelColor,
+    pub fill_cmyk: Option<[f32; 4]>,
+    pub stroke_cmyk: Option<[f32; 4]>,
     pub blend_mode: BlendMode,
     pub rendering_intent: String,
     pub stroke_overprint: bool,
@@ -369,6 +371,22 @@ impl RenderDevice for CpuRenderDevice {
     fn fill_path(&mut self, path: &Path, state: &DrawState, rule: FillRule) {
         let saved_blend = self.buf.blend_mode;
         self.buf.blend_mode = state.blend_mode;
+        if state.fill_overprint {
+            if let Some(cmyk) = state.fill_cmyk {
+                PathPainter::fill_device_cmyk_overprint_preview(
+                    &mut self.buf,
+                    path,
+                    &state.ctm,
+                    &self.viewport,
+                    cmyk,
+                    state.fill_color[3] as f32 / 255.0,
+                    state.overprint_mode,
+                    rule,
+                );
+                self.buf.blend_mode = saved_blend;
+                return;
+            }
+        }
         PathPainter::fill(
             &mut self.buf,
             path,
@@ -801,6 +819,8 @@ impl<'a> DisplayListBuilder<'a> {
             ctm: self.ctm(),
             fill_color: resolve_simple_color(&self.gs.fill_color, self.gs.fill_alpha as f32),
             stroke_color: resolve_simple_color(&self.gs.stroke_color, self.gs.stroke_alpha as f32),
+            fill_cmyk: simple_cmyk_components(&self.gs.fill_color),
+            stroke_cmyk: simple_cmyk_components(&self.gs.stroke_color),
             blend_mode: self.gs.blend_mode,
             rendering_intent: self.gs.rendering_intent.clone(),
             stroke_overprint: self.gs.stroke_overprint,
@@ -845,6 +865,38 @@ fn resolve_simple_color(color: &Color, alpha: f32) -> PixelColor {
         return crate::render::color::RenderColor::transparent().to_pixel_color();
     }
     ColorSpaceHandler::to_render_color(color, alpha).to_pixel_color()
+}
+
+fn simple_cmyk_components(color: &Color) -> Option<[f32; 4]> {
+    if !matches!(color.space, ColorSpace::DeviceCMYK) {
+        return None;
+    }
+    Some([
+        color
+            .components
+            .first()
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0) as f32,
+        color
+            .components
+            .get(1)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0) as f32,
+        color
+            .components
+            .get(2)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0) as f32,
+        color
+            .components
+            .get(3)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0) as f32,
+    ])
 }
 
 #[cfg(test)]

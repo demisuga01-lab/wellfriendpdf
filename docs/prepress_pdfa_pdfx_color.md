@@ -21,9 +21,12 @@ Validation profiles:
 - `Generic`: inventory only.
 - `PdfA`: emits `color.output_intent.missing` if no output intent exists and
   `color.output_intent.profile_missing` if an output intent lacks
-  `DestOutputProfile`.
-- `PdfX`: same color-output-intent checks as `PdfA`; broader PDF/X rules remain
-  outside this Prompt 05 subset.
+  `DestOutputProfile`. Prompt 05B also diagnoses output-intent `/S` values that
+  are not `GTS_PDFA1`.
+- `PdfX`: same required output-intent/profile checks as `PdfA`, plus Prompt 05B
+  diagnoses output-intent `/S` values that are not `GTS_PDFX` and warns when a
+  parseable destination profile exposes `/N` other than 4. Broader PDF/X rules
+  remain outside this color-only subset.
 
 ## Spot Colors and DeviceN
 
@@ -35,7 +38,10 @@ Separation and DeviceN are preserved in report metadata:
 - missing tint transforms emit structured diagnostics.
 
 Screen preview uses the PDF tint transform into the alternate color space. This
-is acceptable for preview but is not a claim of true spot-plate output.
+is acceptable for preview but is not a claim of true spot-plate output. Prompt
+05B makes the preview posture explicit in report fields: Separation/DeviceN
+space counts, tint-transform counts, missing-transform counts, and the preview
+model string.
 
 ## Overprint
 
@@ -46,15 +52,29 @@ Prompt 05 parses and preserves:
 - `/OPM` overprint mode.
 
 The graphics-state stack restores these values across `q`/`Q`, and display-list
-`DrawState` carries them for future device backends. Current CPU screen preview
-emits `color.overprint.preview_approximation` because it does not simulate true
-prepress plate compositing.
+`DrawState` carries them for future device backends. Prompt 05B adds a bounded
+CPU preview for DeviceCMYK fills: when fill overprint is enabled, zero source
+ink channels preserve the approximate destination CMYK channel before returning
+to the RGB framebuffer. The report still emits
+`color.overprint.preview_approximation` because this is not true prepress plate
+compositing, and stroke/spot/DeviceN overprint remain diagnostic or
+alternate-space preview only.
+
+## ICC Backend and BPC
+
+Prompt 05B keeps the default backend as safe Rust plus qcms. ICC transforms are
+cached under a bounded entry count and the report exposes transform cache
+metrics and sRGB identity fidelity probes. Rendering intent values are parsed
+and reported; qcms-supported intent names are exposed. Black-point compensation
+is still reported as unavailable in the default backend rather than silently
+pretended.
 
 ## Standards Boundary
 
 Color validation now catches missing/malformed output intents, ICC profile
 decode/basic-parse failures, overlarge ICC profiles, spot/DeviceN metadata, and
-overprint usage. It does not yet validate every PDF/A or PDF/X requirement:
-metadata schemas, annotation constraints, font embedding, transparency rules,
-image compression requirements, and full prepress separations remain in their
-own standards phases.
+overprint usage, plus the Prompt 05B color-specific PDF/A and PDF/X
+output-intent checks above. It does not yet validate every PDF/A or PDF/X
+requirement: metadata schemas, annotation constraints, font embedding,
+transparency rules, image compression requirements, and full prepress
+separations remain in their own standards phases.
