@@ -167,3 +167,10 @@ path = "fuzz_targets/structured_pdf.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "display_list"
+path = "fuzz_targets/display_list.rs"
+test = false
+doc = false
+bench = false

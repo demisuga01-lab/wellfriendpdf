@@ -2,7 +2,7 @@ use crate::cancel::CancelToken;
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{BlendMode, ColorSpace, GraphicsState};
 use crate::engine::{ContentEngine, PageResources};
-use crate::error::Result;
+use crate::error::{OxideError, Result};
 use crate::fonts::cid::{cid_font_has_embedded_program, cid_to_gid};
 use crate::fonts::resolver::{detect_font_subtype, get_descendant_font, FontSubtype};
 use crate::fonts::variations::VariationRequest;
@@ -14,7 +14,10 @@ use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::render::buffer::{AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, WHITE};
 use crate::render::color::ColorSpaceHandler;
-use crate::render::display_list::{build_display_list, render_display_list, DisplayList};
+use crate::render::display_list::{
+    build_display_list, render_display_list, DisplayList, DisplayOp, RenderCache, RenderCacheKey,
+    RenderTile,
+};
 use crate::render::font_rasterizer::{get_fallback_font, FontRasterizer};
 use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey};
 use crate::render::image_painter::ImagePainter;
@@ -81,20 +84,7 @@ impl PageRenderer {
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
         let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
-        let buf = if transparent_page_group {
-            PixelBuffer::new_transparent_with_mode(
-                viewport.width_px,
-                viewport.height_px,
-                render_mode,
-            )
-        } else {
-            PixelBuffer::new_filled_with_mode(
-                viewport.width_px,
-                viewport.height_px,
-                WHITE,
-                render_mode,
-            )
-        };
+        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
 
         let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
         state.cancel = cancel.clone();
@@ -130,9 +120,11 @@ impl PageRenderer {
 
     /// Render a page through display-list replay.
     ///
-    /// Returns `Ok(None)` when the page contains primitives outside the current
-    /// conservative display-list subset. Callers can then use the normal
-    /// immediate renderer as a compatibility fallback.
+    /// Vector-only lists replay through the normalized CPU device. Pages with
+    /// higher-level text/image/XObject/shading/pattern content replay through a
+    /// typed compatibility content-run op that delegates to the same immediate
+    /// content implementation. `Ok(None)` is now reserved for an explicitly
+    /// unsupported display-list diagnostic.
     pub fn render_page_display_list_with_mode(
         engine: &ContentEngine,
         page_number: usize,
@@ -140,11 +132,166 @@ impl PageRenderer {
         render_mode: RenderMode,
     ) -> Result<Option<PixelBuffer>> {
         let list = Self::build_display_list(engine, page_number, dpi)?;
-        if list.is_fully_supported() {
-            Ok(Some(render_display_list(&list, render_mode)))
-        } else {
+        if !list.is_fully_supported() {
             Ok(None)
+        } else if list.native_vector_only() {
+            let mut buf = render_display_list(&list, render_mode);
+            Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
+            Ok(Some(buf))
+        } else {
+            Ok(Some(Self::render_display_list_cancellable_with_mode(
+                engine,
+                page_number,
+                dpi,
+                &list,
+                &CancelToken::none(),
+                render_mode,
+            )?))
         }
+    }
+
+    /// Replay an already-built display list with cancellation.
+    pub fn render_display_list_cancellable_with_mode(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        list: &DisplayList,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+    ) -> Result<PixelBuffer> {
+        cancel.check("display-list render start")?;
+        let ops = engine.get_page_content(page_number)?;
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let resources = engine.get_page_resources(page_number)?;
+        let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
+        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
+        let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
+        state.cancel = cancel.clone();
+        state.replay_display_list(list);
+        cancel.check("display-list replay")?;
+        state.render_page_annotations();
+        cancel.check("display-list annotation render")?;
+        let mut buf = state.into_buffer();
+        if transparent_page_group {
+            buf.flatten_onto_background(WHITE);
+        }
+        Ok(buf)
+    }
+
+    /// Render one page tile. The current implementation is compatibility-safe:
+    /// it renders the page through the display-list path and crops the requested
+    /// rectangle, with optional byte-budgeted tile caching.
+    pub fn render_page_tile_with_mode(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        tile: RenderTile,
+        render_mode: RenderMode,
+        cache: Option<&mut RenderCache>,
+    ) -> Result<PixelBuffer> {
+        let key = RenderCacheKey::new(page_number, dpi, render_mode, tile);
+        if let Some(cache) = cache {
+            if let Some(hit) = cache.get(&key) {
+                return Ok(hit);
+            }
+            let full = Self::render_page_display_list_or_immediate_with_mode(
+                engine,
+                page_number,
+                dpi,
+                render_mode,
+            )?;
+            let cropped = crop_buffer(&full, tile)?;
+            cache.insert(key, cropped.clone());
+            Ok(cropped)
+        } else {
+            let full = Self::render_page_display_list_or_immediate_with_mode(
+                engine,
+                page_number,
+                dpi,
+                render_mode,
+            )?;
+            crop_buffer(&full, tile)
+        }
+    }
+
+    /// Render page bands using the tile API. This gives callers a deterministic
+    /// bounded-band seam while preserving compatibility renderer semantics.
+    pub fn render_page_bands_with_mode(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        band_height: u32,
+        render_mode: RenderMode,
+    ) -> Result<Vec<PixelBuffer>> {
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let band_height = band_height.max(1);
+        let mut bands = Vec::new();
+        let mut y = 0u32;
+        while y < viewport.height_px {
+            let height = band_height.min(viewport.height_px - y);
+            bands.push(Self::render_page_tile_with_mode(
+                engine,
+                page_number,
+                dpi,
+                RenderTile {
+                    x: 0,
+                    y,
+                    width: viewport.width_px,
+                    height,
+                },
+                render_mode,
+                None,
+            )?);
+            y += height;
+        }
+        Ok(bands)
+    }
+
+    fn render_page_display_list_or_immediate_with_mode(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+    ) -> Result<PixelBuffer> {
+        match Self::render_page_display_list_with_mode(engine, page_number, dpi, render_mode)? {
+            Some(buf) => Ok(buf),
+            None => Self::render_page_with_mode(engine, page_number, dpi, render_mode),
+        }
+    }
+
+    fn initial_page_buffer(
+        viewport: &Viewport,
+        transparent_page_group: bool,
+        render_mode: RenderMode,
+    ) -> PixelBuffer {
+        if transparent_page_group {
+            PixelBuffer::new_transparent_with_mode(
+                viewport.width_px,
+                viewport.height_px,
+                render_mode,
+            )
+        } else {
+            PixelBuffer::new_filled_with_mode(
+                viewport.width_px,
+                viewport.height_px,
+                WHITE,
+                render_mode,
+            )
+        }
+    }
+
+    fn render_annotations_into(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        buf: &mut PixelBuffer,
+    ) -> Result<()> {
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let resources = engine.get_page_resources(page_number)?;
+        let mut state = RenderState::new(buf.clone(), viewport, resources, engine, page_number);
+        state.render_page_annotations();
+        *buf = state.into_buffer();
+        Ok(())
     }
 }
 
@@ -221,6 +368,71 @@ impl<'a> RenderState<'a> {
                 return;
             }
             self.dispatch(op);
+        }
+    }
+
+    fn replay_display_list(&mut self, list: &DisplayList) {
+        const CANCEL_CHECK_INTERVAL: usize = 64;
+        for (i, op) in list.ops.iter().enumerate() {
+            if i % CANCEL_CHECK_INTERVAL == 0 && self.cancel.is_cancelled() {
+                return;
+            }
+            self.replay_display_op(op);
+        }
+    }
+
+    fn replay_display_op(&mut self, op: &DisplayOp) {
+        match op {
+            DisplayOp::Save => {
+                self.clip_stack.push(self.buf.clip_mask().cloned());
+                self.smask_stack.push(self.buf.smask_mask().cloned());
+            }
+            DisplayOp::Restore => {
+                match self.clip_stack.pop() {
+                    Some(saved) => self.buf.restore_clip(saved),
+                    None => log::warn!("DisplayList replay: restore with empty clip stack"),
+                }
+                match self.smask_stack.pop() {
+                    Some(saved) => self.buf.restore_smask(saved),
+                    None => log::warn!("DisplayList replay: restore with empty SMask stack"),
+                }
+            }
+            DisplayOp::Clip { path, ctm, rule } => {
+                let flat = flatten_path(path, ctm, &self.viewport, 0.5);
+                let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, *rule);
+                self.buf.set_clip(clip);
+            }
+            DisplayOp::FillPath { path, state, rule } => {
+                let saved_blend = self.buf.blend_mode;
+                self.buf.blend_mode = state.blend_mode;
+                PathPainter::fill(
+                    &mut self.buf,
+                    path,
+                    &state.ctm,
+                    &self.viewport,
+                    state.fill_color,
+                    *rule,
+                );
+                self.buf.blend_mode = saved_blend;
+            }
+            DisplayOp::StrokePath { path, state } => {
+                let saved_blend = self.buf.blend_mode;
+                self.buf.blend_mode = state.blend_mode;
+                PathPainter::stroke_with_style(
+                    &mut self.buf,
+                    path,
+                    &state.ctm,
+                    &self.viewport,
+                    state.stroke_color,
+                    state.line_width,
+                    &state.dash,
+                    &state.line_cap,
+                    &state.line_join,
+                    state.miter_limit,
+                );
+                self.buf.blend_mode = saved_blend;
+            }
+            DisplayOp::ContentRun { ops, .. } => self.dispatch_all(ops),
         }
     }
 
@@ -2609,6 +2821,57 @@ fn shading_mesh_data(
     crate::filters::decode_stream(&stream_obj, reader).ok()
 }
 
+fn crop_buffer(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
+    if tile.width == 0 || tile.height == 0 {
+        return Err(OxideError::ResourceLimit(
+            "render tile must have non-zero width and height".to_string(),
+        ));
+    }
+    let end_x = tile
+        .x
+        .checked_add(tile.width)
+        .ok_or_else(|| OxideError::ResourceLimit("render tile x range overflows".to_string()))?;
+    let end_y = tile
+        .y
+        .checked_add(tile.height)
+        .ok_or_else(|| OxideError::ResourceLimit("render tile y range overflows".to_string()))?;
+    if end_x > buf.width || end_y > buf.height {
+        return Err(OxideError::ResourceLimit(format!(
+            "render tile {}x{} at {},{} exceeds page buffer {}x{}",
+            tile.width, tile.height, tile.x, tile.y, buf.width, buf.height
+        )));
+    }
+
+    let mut out =
+        PixelBuffer::new_transparent_with_mode(tile.width, tile.height, buf.render_mode());
+    for y in 0..tile.height as i32 {
+        for x in 0..tile.width as i32 {
+            let color = buf.get_pixel(tile.x as i32 + x, tile.y as i32 + y);
+            out.set_pixel(x, y, color);
+        }
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+fn stitch_vertical_bands(bands: &[PixelBuffer], width: u32, height: u32) -> PixelBuffer {
+    let mode = bands
+        .first()
+        .map(PixelBuffer::render_mode)
+        .unwrap_or(RenderMode::Compat);
+    let mut out = PixelBuffer::new_transparent_with_mode(width, height, mode);
+    let mut y_offset = 0i32;
+    for band in bands {
+        for y in 0..band.height as i32 {
+            for x in 0..band.width as i32 {
+                out.set_pixel(x, y_offset + y, band.get_pixel(x, y));
+            }
+        }
+        y_offset += band.height as i32;
+    }
+    out
+}
+
 /// Resolve a pattern/function object to its (dictionary, raw stream bytes).
 /// Returns `None` if it is not a stream.
 fn resolve_to_stream(
@@ -3780,6 +4043,20 @@ mod tests {
         out
     }
 
+    fn assert_same_pixels(expected: &PixelBuffer, actual: &PixelBuffer) {
+        assert_eq!(expected.width, actual.width);
+        assert_eq!(expected.height, actual.height);
+        for y in 0..expected.height as i32 {
+            for x in 0..expected.width as i32 {
+                assert_eq!(
+                    expected.get_pixel(x, y),
+                    actual.get_pixel(x, y),
+                    "rendered pixels diverged at ({x}, {y})"
+                );
+            }
+        }
+    }
+
     #[test]
     fn display_list_page_render_replays_vector_content() {
         let pdf = simple_vector_pdf("1 0 0 rg 10 10 40 40 re f\n0 0 0 RG 4 w 10 10 m 90 90 l S\n");
@@ -3830,22 +4107,155 @@ mod tests {
     }
 
     #[test]
-    fn display_list_marks_text_page_for_immediate_renderer_fallback() {
+    fn display_list_replays_text_page_through_compatibility_run() {
         let engine = ContentEngine::open_path(fixture("flate.pdf")).expect("open text fixture");
         let list = engine
             .build_page_display_list(1, 72)
             .expect("build display list");
 
-        assert!(!list.is_fully_supported());
-        assert!(list
-            .unsupported
-            .iter()
-            .any(|op| op.reason.contains("text/glyph")));
-        assert!(engine
+        assert!(list.is_fully_supported());
+        assert!(list.has_compatibility_runs());
+        assert!(list.stats.text_ops > 0);
+
+        let immediate = engine.render_page(1, 72).expect("immediate render");
+        let replay = engine
             .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
-            .expect("display-list fallback query")
-            .is_none());
-        assert!(engine.render_page(1, 72).is_ok());
+            .expect("display-list replay query")
+            .expect("text page should replay through compatibility run");
+        assert_same_pixels(&immediate, &replay);
+    }
+
+    #[test]
+    fn display_list_replays_image_page_through_compatibility_run() {
+        let engine =
+            ContentEngine::open_path(fixture("image_only.pdf")).expect("open image fixture");
+        let list = engine
+            .build_page_display_list(1, 72)
+            .expect("build display list");
+
+        assert!(list.is_fully_supported());
+        assert!(list.has_compatibility_runs());
+        assert!(list.stats.image_xobjects > 0 || list.stats.inline_images > 0);
+
+        let immediate = engine.render_page(1, 72).expect("immediate render");
+        let replay = engine
+            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
+            .expect("display-list replay query")
+            .expect("image page should replay through compatibility run");
+        assert_same_pixels(&immediate, &replay);
+    }
+
+    #[test]
+    fn display_list_tile_stitch_matches_full_page() {
+        let pdf = simple_vector_pdf(
+            "1 0 0 rg 0 0 50 100 re f\n\
+             0 0 1 rg 50 0 50 100 re f\n\
+             0 0 0 RG 3 w 5 5 m 95 95 l S\n",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let full = engine
+            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
+            .expect("display-list render")
+            .expect("vector page should replay");
+        let mut stitched = PixelBuffer::new_transparent_with_mode(100, 100, RenderMode::Compat);
+        for tile in [
+            RenderTile {
+                x: 0,
+                y: 0,
+                width: 50,
+                height: 50,
+            },
+            RenderTile {
+                x: 50,
+                y: 0,
+                width: 50,
+                height: 50,
+            },
+            RenderTile {
+                x: 0,
+                y: 50,
+                width: 50,
+                height: 50,
+            },
+            RenderTile {
+                x: 50,
+                y: 50,
+                width: 50,
+                height: 50,
+            },
+        ] {
+            let piece = engine
+                .render_page_tile_with_mode(1, 72, tile, RenderMode::Compat, None)
+                .expect("render tile");
+            for y in 0..piece.height as i32 {
+                for x in 0..piece.width as i32 {
+                    stitched.set_pixel(tile.x as i32 + x, tile.y as i32 + y, piece.get_pixel(x, y));
+                }
+            }
+        }
+        assert_same_pixels(&full, &stitched);
+    }
+
+    #[test]
+    fn display_list_band_stitch_matches_full_page() {
+        let pdf = simple_vector_pdf("1 0 0 rg 0 0 100 50 re f\n0 0 1 rg 0 50 100 50 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let full = engine
+            .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
+            .expect("display-list render")
+            .expect("vector page should replay");
+        let bands = engine
+            .render_page_bands_with_mode(1, 72, 25, RenderMode::Compat)
+            .expect("render bands");
+        let stitched = stitch_vertical_bands(&bands, full.width, full.height);
+        assert_same_pixels(&full, &stitched);
+    }
+
+    #[test]
+    fn render_tile_cache_records_hit_and_budget() {
+        let pdf = simple_vector_pdf("1 0 0 rg 0 0 100 100 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let tile = RenderTile {
+            x: 0,
+            y: 0,
+            width: 50,
+            height: 50,
+        };
+        let mut cache = RenderCache::new(20_000, 20_000);
+        let first = engine
+            .render_page_tile_with_mode(1, 72, tile, RenderMode::Compat, Some(&mut cache))
+            .expect("first tile render");
+        let second = engine
+            .render_page_tile_with_mode(1, 72, tile, RenderMode::Compat, Some(&mut cache))
+            .expect("cached tile render");
+
+        assert_same_pixels(&first, &second);
+        let metrics = cache.metrics();
+        assert_eq!(metrics.hits, 1);
+        assert_eq!(metrics.inserts, 1);
+        assert!(metrics.bytes <= 20_000);
+    }
+
+    #[test]
+    fn display_list_replay_observes_pre_cancelled_token() {
+        let pdf = simple_vector_pdf("1 0 0 rg 0 0 100 100 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let list = engine
+            .build_page_display_list(1, 72)
+            .expect("build display list");
+        let cancel = crate::cancel::CancelToken::new();
+        cancel.cancel();
+
+        let err = PageRenderer::render_display_list_cancellable_with_mode(
+            &engine,
+            1,
+            72,
+            &list,
+            &cancel,
+            RenderMode::Compat,
+        )
+        .expect_err("pre-cancelled replay should fail");
+        assert!(matches!(err, OxideError::Cancelled(_)));
     }
 
     #[test]

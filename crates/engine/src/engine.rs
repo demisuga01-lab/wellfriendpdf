@@ -11,7 +11,9 @@ use crate::images::encoder::{ImageEncoder, ImageOutputFormat};
 use crate::images::locator::{ImageLocateOptions, ImageLocator, ImageReference};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
-use crate::render::{DisplayList, PageRenderer, PixelBuffer, RenderMode, Viewport, WHITE};
+use crate::render::{
+    DisplayList, PageRenderer, PixelBuffer, RenderCache, RenderMode, RenderTile, Viewport, WHITE,
+};
 use crate::text::{TextExtractOptions, TextExtractor, TextFormatOptions};
 
 #[derive(Debug, Clone, Default)]
@@ -1149,6 +1151,31 @@ impl ContentEngine {
         render_mode: RenderMode,
     ) -> Result<Option<PixelBuffer>> {
         PageRenderer::render_page_display_list_with_mode(self, page_number, dpi, render_mode)
+    }
+
+    /// Render a pixel-space page tile through the display-list path where
+    /// possible, falling back to the compatibility renderer only when the list
+    /// reports an explicit unsupported reason.
+    pub fn render_page_tile_with_mode(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        tile: RenderTile,
+        render_mode: RenderMode,
+        cache: Option<&mut RenderCache>,
+    ) -> Result<PixelBuffer> {
+        PageRenderer::render_page_tile_with_mode(self, page_number, dpi, tile, render_mode, cache)
+    }
+
+    /// Render a page as deterministic vertical bands.
+    pub fn render_page_bands_with_mode(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        band_height: u32,
+        render_mode: RenderMode,
+    ) -> Result<Vec<PixelBuffer>> {
+        PageRenderer::render_page_bands_with_mode(self, page_number, dpi, band_height, render_mode)
     }
 
     /// Verify every digital signature field in the document (the `verify-sig`

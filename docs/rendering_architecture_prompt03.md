@@ -252,3 +252,25 @@ Exact remaining limits after Prompt 03:
 - Display-list caching is not enabled yet; this pass added stats and memory
   estimates needed to budget it safely.
 - The small Poppler smoke is not a Tier-3 fidelity claim.
+
+## Prompt 03B Update
+
+Prompt 03B keeps the Prompt 03 vector-native display-list path and broadens the
+architecture with a conservative compatibility-run bridge. Pages that contain
+text, image XObjects, inline images, Form XObjects, shadings, patterns, or
+transparency operators are now represented as typed `ContentRun` display-list
+operations instead of disappearing into an opaque fallback. Replay of those runs
+uses the existing immediate renderer semantics, so this closes the architectural
+replay gap without moving font shaping or color management work into Prompt 03B.
+
+The renderer now also exposes bounded tile and band rendering helpers,
+pre-cancelled display-list replay checks, and a byte-accounted `RenderCache` for
+tile-sized `PixelBuffer` entries. Tile and band tests verify stitched output
+matches full-page output for supported pages, and cache tests cover hits,
+eviction, oversized-entry skips, disabled budgets, and deterministic output.
+
+Prompt 03B does not claim mature-renderer parity. Its expanded Poppler-backed
+slice compared 50 files with 42 visual pages and reached a weighted score of
+90.45 with 83.33% visual pass. Remaining visual misses are mostly font/text,
+JPEG 2000/image-codec, and function-based shading cases that belong to Prompt
+04, Prompt 05, or later renderer fidelity iterations.

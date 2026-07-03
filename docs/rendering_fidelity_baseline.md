@@ -222,3 +222,42 @@ full Phase 7 stress corpus:
 The architectural win is replayability and pixel-equivalence for supported
 vector pages, verified by unit tests. It is not a new claim that Oxide is
 Poppler/PDFium/MuPDF-class.
+
+## Prompt 03B Expanded Renderer Slice
+
+Prompt 03B expanded the reference-renderer check from the five-file synthetic
+Prompt 03 smoke to a deterministic 50-file slice covering synthetic vector,
+geometry, text, image, transparency, forms, real text, complex vector, forms,
+scanned, CJK, RTL, multi-column, JPEG 2000, large-page, and hostile malformed
+categories. The run used Poppler `26.02.0`; PDFium was not configured and was
+reported as skipped by the benchmark harness.
+
+Command:
+
+```powershell
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt03b-renderer-slice-manifest.json --oxide-bin target\debug\oxide.exe --dpi 72 --timeout-sec 30 --max-memory-mb 1024 --max-pages-per-file 1 --limit 50 --determinism-sample 5 --threshold-profile renderer --output-dir target\prompt03b-renderer-benchmark
+```
+
+Results:
+
+| metric | Prompt 03 smoke | Prompt 03B expanded slice |
+| --- | ---: | ---: |
+| files | 5 | 50 |
+| visual pages compared | 5 | 42 |
+| weighted score | 75.0 | 90.45 |
+| visual pass | 100.0% | 83.33% |
+| hostile files | 0 | 6 |
+| hostile crash-free/timeout-safe/memory-bounded | N/A | 100.0% |
+| determinism sample | 2/2 stable | 5/5 stable |
+
+Prompt 03B's score is not directly comparable to the five-file Prompt 03 smoke
+because the corpus is much broader and intentionally includes real and hostile
+fixtures. The important outcomes are broader coverage, explicit display-list
+fallback accounting, deterministic re-rendering, and no new renderer crash or
+memory-bound failure on the capped slice.
+
+Worst remaining blockers in this slice were `function_based_shading.pdf`,
+`IdentityToUnicodeMap_charCodeOf.pdf`, `ThuluthFeatures.pdf`, `bug_jpx.pdf`,
+and `jp2k-resetprob.pdf`. Those map to function/shading fidelity, font/text
+semantics, and JPEG 2000/image behavior rather than to the Prompt 03B replay
+seam itself.

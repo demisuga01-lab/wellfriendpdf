@@ -1,11 +1,10 @@
 //! Display-list capture and replay for PDF rendering.
 //!
-//! This module is intentionally conservative: Prompt 03 introduces the
-//! reusable architecture without replacing the whole renderer at once. The
-//! capture path records vector drawing operations that can be replayed exactly
-//! through the current CPU rasterizer. Pages containing text, images, patterns,
-//! shadings, soft masks, or Form XObjects remain on the existing immediate
-//! renderer until those primitives are represented in later display-list passes.
+//! This module is intentionally conservative: the normalized vector operations
+//! are replayed directly through the CPU rasterizer, while higher-level content
+//! categories can be carried as a replayable compatibility run. That bridge is
+//! the display-list seam for text, images, XObjects, shadings, patterns, and
+//! transparency until later font/color passes deepen those primitives.
 
 use crate::content::operation::ContentOperation;
 use crate::content::state::{BlendMode, Color, ColorSpace, GraphicsState, LineCap, LineJoin};
@@ -15,6 +14,7 @@ use crate::render::color::ColorSpaceHandler;
 use crate::render::line::DashState;
 use crate::render::path::{flatten_path, FillRule, Path, PathPainter};
 use crate::render::transform::{Transform2D, Viewport};
+use std::collections::HashMap;
 
 /// A replayable page-level drawing program.
 #[derive(Debug, Clone)]
@@ -31,6 +31,16 @@ impl DisplayList {
         self.supported && self.unsupported.is_empty()
     }
 
+    pub fn has_compatibility_runs(&self) -> bool {
+        self.ops
+            .iter()
+            .any(|op| matches!(op, DisplayOp::ContentRun { .. }))
+    }
+
+    pub fn native_vector_only(&self) -> bool {
+        self.is_fully_supported() && !self.has_compatibility_runs()
+    }
+
     pub fn approximate_memory_bytes(&self) -> usize {
         let path_bytes: usize = self
             .ops
@@ -41,6 +51,7 @@ impl DisplayList {
                 | DisplayOp::StrokePath { path, .. } => {
                     std::mem::size_of_val(path.segments.as_slice())
                 }
+                DisplayOp::ContentRun { approx_bytes, .. } => *approx_bytes,
                 DisplayOp::Save | DisplayOp::Restore => 0,
             })
             .sum();
@@ -70,6 +81,31 @@ pub enum DisplayOp {
         path: Path,
         state: DrawState,
     },
+    /// Replayable bridge to the existing content-stream renderer.
+    ///
+    /// This is deliberately typed and accounted for instead of being a silent
+    /// fallback. It lets the display-list path cover real pages now while
+    /// keeping font/color/image semantics exactly aligned with the immediate
+    /// renderer until those primitives are normalized in future passes.
+    ContentRun {
+        kind: DisplayRunKind,
+        ops: Vec<ContentOperation>,
+        approx_bytes: usize,
+    },
+}
+
+/// Coarse category for a compatibility content run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DisplayRunKind {
+    PageContent,
+    Text,
+    Image,
+    InlineImage,
+    FormXObject,
+    Shading,
+    Pattern,
+    Transparency,
+    Mixed,
 }
 
 /// Paint and geometry state needed to replay one operation.
@@ -97,6 +133,16 @@ pub struct DisplayListStats {
     pub strokes: usize,
     pub paths: usize,
     pub path_segments: usize,
+    pub text_ops: usize,
+    pub image_xobjects: usize,
+    pub inline_images: usize,
+    pub form_xobjects: usize,
+    pub shadings: usize,
+    pub patterns: usize,
+    pub transparency_ops: usize,
+    pub compatibility_runs: usize,
+    pub compatibility_ops: usize,
+    pub compatibility_bytes: usize,
     pub unsupported_ops: usize,
     pub max_stack_depth: usize,
 }
@@ -109,6 +155,153 @@ pub struct UnsupportedRenderOp {
     pub reason: String,
 }
 
+/// Pixel-space page tile rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RenderTile {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl RenderTile {
+    pub fn full(width: u32, height: u32) -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+    }
+
+    pub fn estimated_rgba_bytes(self) -> usize {
+        self.width as usize * self.height as usize * 4
+    }
+}
+
+/// Stable key for the bounded render cache.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct RenderCacheKey {
+    pub page_number: usize,
+    pub dpi: u32,
+    pub render_mode: &'static str,
+    pub tile: RenderTile,
+}
+
+impl RenderCacheKey {
+    pub fn new(page_number: usize, dpi: u32, render_mode: RenderMode, tile: RenderTile) -> Self {
+        Self {
+            page_number,
+            dpi,
+            render_mode: render_mode.as_str(),
+            tile,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenderCacheMetrics {
+    pub hits: usize,
+    pub misses: usize,
+    pub inserts: usize,
+    pub evictions: usize,
+    pub skipped_oversized: usize,
+    pub bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RenderCacheEntry {
+    buffer: PixelBuffer,
+    bytes: usize,
+    last_used: u64,
+}
+
+/// Per-document render tile cache with byte accounting.
+#[derive(Debug, Clone)]
+pub struct RenderCache {
+    budget_bytes: usize,
+    max_entry_bytes: usize,
+    bytes: usize,
+    clock: u64,
+    entries: HashMap<RenderCacheKey, RenderCacheEntry>,
+    metrics: RenderCacheMetrics,
+}
+
+impl RenderCache {
+    pub fn new(budget_bytes: usize, max_entry_bytes: usize) -> Self {
+        Self {
+            budget_bytes,
+            max_entry_bytes,
+            bytes: 0,
+            clock: 0,
+            entries: HashMap::new(),
+            metrics: RenderCacheMetrics::default(),
+        }
+    }
+
+    pub fn disabled() -> Self {
+        Self::new(0, 0)
+    }
+
+    pub fn metrics(&self) -> RenderCacheMetrics {
+        let mut metrics = self.metrics.clone();
+        metrics.bytes = self.bytes;
+        metrics
+    }
+
+    pub fn get(&mut self, key: &RenderCacheKey) -> Option<PixelBuffer> {
+        self.clock = self.clock.saturating_add(1);
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.last_used = self.clock;
+            self.metrics.hits += 1;
+            Some(entry.buffer.clone())
+        } else {
+            self.metrics.misses += 1;
+            None
+        }
+    }
+
+    pub fn insert(&mut self, key: RenderCacheKey, buffer: PixelBuffer) {
+        if self.budget_bytes == 0 || self.max_entry_bytes == 0 {
+            self.metrics.skipped_oversized += 1;
+            return;
+        }
+        let bytes = buffer.width as usize * buffer.height as usize * 4;
+        if bytes > self.max_entry_bytes || bytes > self.budget_bytes {
+            self.metrics.skipped_oversized += 1;
+            return;
+        }
+        self.clock = self.clock.saturating_add(1);
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(old.bytes);
+        }
+        while self.bytes + bytes > self.budget_bytes {
+            let Some(victim) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            if let Some(removed) = self.entries.remove(&victim) {
+                self.bytes = self.bytes.saturating_sub(removed.bytes);
+                self.metrics.evictions += 1;
+            }
+        }
+        self.entries.insert(
+            key,
+            RenderCacheEntry {
+                buffer,
+                bytes,
+                last_used: self.clock,
+            },
+        );
+        self.bytes += bytes;
+        self.metrics.inserts += 1;
+    }
+}
+
 /// Concrete rendering target for display-list replay.
 pub trait RenderDevice {
     fn save(&mut self);
@@ -116,6 +309,12 @@ pub trait RenderDevice {
     fn clip_path(&mut self, path: &Path, ctm: &Transform2D, rule: FillRule);
     fn fill_path(&mut self, path: &Path, state: &DrawState, rule: FillRule);
     fn stroke_path(&mut self, path: &Path, state: &DrawState);
+    fn content_run(&mut self, kind: DisplayRunKind, ops: &[ContentOperation]) {
+        log::warn!(
+            "DisplayList device cannot replay {kind:?} compatibility run ({} ops)",
+            ops.len()
+        );
+    }
 }
 
 /// CPU raster device backed by the existing [`PixelBuffer`] rasterizer.
@@ -204,6 +403,7 @@ pub fn replay_display_list(list: &DisplayList, device: &mut dyn RenderDevice) {
             DisplayOp::Clip { path, ctm, rule } => device.clip_path(path, ctm, *rule),
             DisplayOp::FillPath { path, state, rule } => device.fill_path(path, state, *rule),
             DisplayOp::StrokePath { path, state } => device.stroke_path(path, state),
+            DisplayOp::ContentRun { kind, ops, .. } => device.content_run(*kind, ops),
         }
     }
 }
@@ -220,9 +420,117 @@ pub fn build_display_list(
     viewport: Viewport,
     resources: &PageResources,
 ) -> DisplayList {
+    let stats = classify_content(ops, resources);
+    if requires_compatibility_run(&stats) {
+        return DisplayList {
+            viewport,
+            ops: vec![DisplayOp::ContentRun {
+                kind: DisplayRunKind::PageContent,
+                ops: ops.to_vec(),
+                approx_bytes: estimate_ops_bytes(ops),
+            }],
+            stats: DisplayListStats {
+                operations: 1,
+                compatibility_runs: 1,
+                compatibility_ops: ops.len(),
+                compatibility_bytes: estimate_ops_bytes(ops),
+                ..stats
+            },
+            supported: true,
+            unsupported: Vec::new(),
+        };
+    }
+
     let mut builder = DisplayListBuilder::new(viewport, resources);
+    builder.stats = stats;
     builder.dispatch_all(ops);
     builder.finish()
+}
+
+fn requires_compatibility_run(stats: &DisplayListStats) -> bool {
+    stats.text_ops > 0
+        || stats.image_xobjects > 0
+        || stats.inline_images > 0
+        || stats.form_xobjects > 0
+        || stats.shadings > 0
+        || stats.patterns > 0
+        || stats.transparency_ops > 0
+}
+
+fn estimate_ops_bytes(ops: &[ContentOperation]) -> usize {
+    ops.iter()
+        .map(|op| {
+            op.operator.len()
+                + op.operands
+                    .iter()
+                    .map(estimate_operand_bytes)
+                    .sum::<usize>()
+                + std::mem::size_of::<ContentOperation>()
+        })
+        .sum()
+}
+
+fn estimate_operand_bytes(operand: &crate::content::operation::Operand) -> usize {
+    use crate::content::operation::Operand;
+    match operand {
+        Operand::Integer(_) | Operand::Real(_) | Operand::Boolean(_) => {
+            std::mem::size_of_val(operand)
+        }
+        Operand::Name(name) => name.len(),
+        Operand::String(bytes) => bytes.len(),
+        Operand::Array(items) => items.iter().map(estimate_operand_bytes).sum(),
+    }
+}
+
+fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> DisplayListStats {
+    let mut stats = DisplayListStats::default();
+    let mut gs = GraphicsState::default();
+    let mut pending_inline = false;
+    for op in ops {
+        match op.operator.as_str() {
+            "Tj" | "TJ" | "'" | "\"" => stats.text_ops += 1,
+            "BT" | "ET" | "Tf" | "Td" | "TD" | "Tm" | "T*" | "Tc" | "Tw" | "Tz" | "TL" | "Tr"
+            | "Ts" => {}
+            "Do" => {
+                stats.image_xobjects += 1;
+            }
+            "sh" => stats.shadings += 1,
+            "ID" => pending_inline = true,
+            "inline_image_data" if pending_inline => {
+                stats.inline_images += 1;
+                pending_inline = false;
+            }
+            "gs" => {
+                if let Some(name) = op.name(0) {
+                    if let Some(dict) = resources.ext_g_states.get(name) {
+                        if dict.get("SMask").is_some()
+                            || dict.get("ca").is_some()
+                            || dict.get("CA").is_some()
+                            || dict.get("BM").is_some()
+                        {
+                            stats.transparency_ops += 1;
+                        }
+                    } else {
+                        stats.transparency_ops += 1;
+                    }
+                }
+            }
+            "scn" | "SCN"
+                if op
+                    .operands
+                    .iter()
+                    .any(|operand| operand.as_name().is_some()) =>
+            {
+                stats.patterns += 1;
+            }
+            _ => {}
+        }
+        gs.process(op);
+        if gs.fill_pattern_name.is_some() || gs.stroke_pattern_name.is_some() {
+            stats.patterns += 1;
+        }
+    }
+    stats
 }
 
 struct DisplayListBuilder<'a> {
@@ -587,13 +895,23 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_text_marks_list_non_replayable() {
+    fn text_is_replayable_as_compatibility_run() {
         let ops = vec![op("Tj", vec![Operand::String(b"hello".to_vec())])];
         let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
         let list = build_display_list(&ops, viewport, &PageResources::default());
 
-        assert!(!list.is_fully_supported());
-        assert_eq!(list.unsupported[0].operator, "Tj");
+        assert!(list.is_fully_supported());
+        assert!(list.has_compatibility_runs());
+        assert_eq!(list.stats.text_ops, 1);
+        assert_eq!(list.stats.compatibility_runs, 1);
+        assert_eq!(list.stats.compatibility_ops, 1);
+        assert!(matches!(
+            list.ops[0],
+            DisplayOp::ContentRun {
+                kind: DisplayRunKind::PageContent,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -610,5 +928,58 @@ mod tests {
         let buf = render_display_list(&list, RenderMode::Compat);
 
         assert_eq!(buf.get_pixel(10, 25), BLACK);
+    }
+
+    #[test]
+    fn render_cache_hits_and_evicts_by_budget() {
+        let tile_a = RenderTile {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let tile_b = RenderTile {
+            x: 2,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let key_a = RenderCacheKey::new(1, 72, RenderMode::Compat, tile_a);
+        let key_b = RenderCacheKey::new(1, 72, RenderMode::Compat, tile_b);
+        let mut cache = RenderCache::new(16, 16);
+        let mut buf = PixelBuffer::new_transparent_with_mode(2, 2, RenderMode::Compat);
+        buf.set_pixel(0, 0, RED);
+
+        cache.insert(key_a.clone(), buf.clone());
+        assert!(cache.get(&key_a).is_some());
+        cache.insert(
+            key_b.clone(),
+            PixelBuffer::new_transparent_with_mode(2, 2, RenderMode::Compat),
+        );
+
+        let metrics = cache.metrics();
+        assert_eq!(metrics.hits, 1);
+        assert_eq!(metrics.evictions, 1);
+        assert_eq!(metrics.bytes, 16);
+        assert!(cache.get(&key_b).is_some());
+    }
+
+    #[test]
+    fn render_cache_skips_oversized_entries() {
+        let tile = RenderTile {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
+        let key = RenderCacheKey::new(1, 72, RenderMode::Compat, tile);
+        let mut cache = RenderCache::new(64, 64);
+        cache.insert(
+            key.clone(),
+            PixelBuffer::new_transparent_with_mode(10, 10, RenderMode::Compat),
+        );
+
+        assert!(cache.get(&key).is_none());
+        assert_eq!(cache.metrics().skipped_oversized, 1);
     }
 }

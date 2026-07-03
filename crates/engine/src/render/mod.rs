@@ -26,7 +26,8 @@ pub use buffer::{
 pub use color::{ColorSpaceHandler, RenderColor};
 pub use display_list::{
     build_display_list, render_display_list, replay_display_list, CpuRenderDevice, DisplayList,
-    DisplayListStats, DisplayOp, DrawState, RenderDevice, UnsupportedRenderOp,
+    DisplayListStats, DisplayOp, DisplayRunKind, DrawState, RenderCache, RenderCacheKey,
+    RenderCacheMetrics, RenderDevice, RenderTile, UnsupportedRenderOp,
 };
 pub use font_rasterizer::{get_fallback_font, FontRasterizer};
 pub use glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey};
