@@ -16,6 +16,8 @@ use serde::Serialize;
 
 use crate::document::PdfDocument;
 use crate::error::Result;
+use crate::fonts::provider::is_standard14_name;
+use crate::fonts::FontResolver;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 
@@ -42,10 +44,39 @@ pub struct FontInfo {
     pub subset: bool,
     /// Whether the font carries a `/ToUnicode` CMap.
     pub to_unicode: bool,
+    /// Raw `/BaseFont` value before `[none]` fallback.
+    pub base_font: Option<String>,
+    /// Raw PDF `/Subtype` name when present.
+    pub subtype: Option<String>,
+    /// Whether a FontDescriptor dictionary was present on the font or its
+    /// descendant CIDFont.
+    pub descriptor_present: bool,
+    /// Embedded font program key, if present: `FontFile`, `FontFile2`, or
+    /// `FontFile3`.
+    pub font_file_kind: Option<String>,
+    /// Descendant CIDFont subtype for Type0 fonts.
+    pub cid_descendant_type: Option<String>,
+    /// Writing mode inferred from CMap/WMode: `horizontal` or `vertical`.
+    pub writing_mode: String,
+    /// Whether rendering requires Standard 14 or bundled/user font fallback.
+    pub fallback_required: bool,
+    /// Structured font diagnostics for render/extract/write consumers.
+    pub diagnostics: Vec<FontDiagnostic>,
     /// Object number of the font dictionary.
     pub object_number: u32,
     /// Generation number of the font dictionary.
     pub generation: u16,
+}
+
+/// Structured font diagnostic attached to a [`FontInfo`] entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FontDiagnostic {
+    /// Severity: `info`, `warning`, or `error`.
+    pub severity: &'static str,
+    /// Stable machine-readable diagnostic code.
+    pub code: &'static str,
+    /// Human-readable explanation.
+    pub message: String,
 }
 
 /// Enumerate every distinct font used across the document.
@@ -314,6 +345,30 @@ fn describe_font(font_dict: &PdfDictionary, reader: &PdfReader, num: u32, gen: u
     let subset = is_subset_name(base_font);
 
     let to_unicode = font_dict.contains_key("ToUnicode");
+    let descriptor_present = primary_descriptor(font_dict, descendant.as_ref(), reader).is_some();
+    let font_file_kind = font_file_kind(font_dict, descendant.as_ref(), reader).map(str::to_string);
+    let cid_descendant_type = descendant
+        .as_ref()
+        .and_then(|dict| dict.get_name("Subtype"))
+        .map(str::to_string);
+    let writing_mode =
+        if subtype == "Type0" && FontResolver::new(font_dict, reader).is_vertical() {
+            "vertical"
+        } else {
+            "horizontal"
+        }
+        .to_string();
+    let fallback_required = !embedded;
+    let diagnostics = font_diagnostics(FontDiagnosticInput {
+        name: &name,
+        subtype,
+        encoding: &encoding,
+        embedded,
+        to_unicode,
+        descriptor_present,
+        descendant_present: descendant.is_some(),
+        writing_mode: &writing_mode,
+    });
 
     FontInfo {
         name,
@@ -322,6 +377,14 @@ fn describe_font(font_dict: &PdfDictionary, reader: &PdfReader, num: u32, gen: u
         embedded,
         subset,
         to_unicode,
+        base_font: (!base_font.is_empty()).then(|| base_font.to_string()),
+        subtype: (!subtype.is_empty()).then(|| subtype.to_string()),
+        descriptor_present,
+        font_file_kind,
+        cid_descendant_type,
+        writing_mode,
+        fallback_required,
+        diagnostics,
         object_number: num,
         generation: gen,
     }
@@ -455,12 +518,132 @@ fn is_embedded(
 }
 
 fn descriptor_has_fontfile(font_dict: &PdfDictionary, reader: &PdfReader) -> bool {
-    let Some(descriptor) = resolve_dict(font_dict.get("FontDescriptor"), reader) else {
+    let Some(descriptor) = font_descriptor(font_dict, reader) else {
         return false;
     };
     descriptor.contains_key("FontFile")
         || descriptor.contains_key("FontFile2")
         || descriptor.contains_key("FontFile3")
+}
+
+fn primary_descriptor(
+    font_dict: &PdfDictionary,
+    descendant: Option<&PdfDictionary>,
+    reader: &PdfReader,
+) -> Option<PdfDictionary> {
+    font_descriptor(font_dict, reader)
+        .or_else(|| descendant.and_then(|d| font_descriptor(d, reader)))
+}
+
+fn font_descriptor(font_dict: &PdfDictionary, reader: &PdfReader) -> Option<PdfDictionary> {
+    resolve_dict(font_dict.get("FontDescriptor"), reader)
+}
+
+fn font_file_kind(
+    font_dict: &PdfDictionary,
+    descendant: Option<&PdfDictionary>,
+    reader: &PdfReader,
+) -> Option<&'static str> {
+    let descriptor = primary_descriptor(font_dict, descendant, reader)?;
+    if descriptor.contains_key("FontFile") {
+        Some("FontFile")
+    } else if descriptor.contains_key("FontFile2") {
+        Some("FontFile2")
+    } else if descriptor.contains_key("FontFile3") {
+        Some("FontFile3")
+    } else {
+        None
+    }
+}
+
+struct FontDiagnosticInput<'a> {
+    name: &'a str,
+    subtype: &'a str,
+    encoding: &'a str,
+    embedded: bool,
+    to_unicode: bool,
+    descriptor_present: bool,
+    descendant_present: bool,
+    writing_mode: &'a str,
+}
+
+fn font_diagnostics(input: FontDiagnosticInput<'_>) -> Vec<FontDiagnostic> {
+    let mut diagnostics = Vec::new();
+    if input.subtype == "Type0" && !input.descendant_present {
+        diagnostics.push(FontDiagnostic {
+            severity: "error",
+            code: "font.type0.descendant_missing",
+            message: "Type0 font has no resolvable descendant CIDFont".to_string(),
+        });
+    }
+    if input.subtype.is_empty() {
+        diagnostics.push(FontDiagnostic {
+            severity: "warning",
+            code: "font.subtype.missing",
+            message: "Font dictionary is missing /Subtype".to_string(),
+        });
+    }
+    if !input.descriptor_present && !is_standard14_name(input.name) && input.subtype != "Type3" {
+        diagnostics.push(FontDiagnostic {
+            severity: "warning",
+            code: "font.descriptor.missing",
+            message: "Font has no FontDescriptor for metrics/substitution scoring".to_string(),
+        });
+    }
+    if !input.embedded {
+        if is_standard14_name(input.name) {
+            diagnostics.push(FontDiagnostic {
+                severity: "info",
+                code: "font.standard14.substitution",
+                message: "Standard 14 font will use deterministic bundled metrics/fallback"
+                    .to_string(),
+            });
+        } else {
+            diagnostics.push(FontDiagnostic {
+                severity: "warning",
+                code: "font.substitution.required",
+                message: "Font program is not embedded; rendering depends on fallback substitution"
+                    .to_string(),
+            });
+        }
+    }
+    if !input.to_unicode {
+        let code = if input.subtype == "Type0" {
+            "font.tounicode.missing_type0"
+        } else {
+            "font.tounicode.missing"
+        };
+        diagnostics.push(FontDiagnostic {
+            severity: "warning",
+            code,
+            message: "Font has no ToUnicode CMap; extraction uses encoding/glyph-name fallback"
+                .to_string(),
+        });
+    }
+    if input.encoding == "Custom" && !input.to_unicode {
+        diagnostics.push(FontDiagnostic {
+            severity: "warning",
+            code: "font.custom_encoding.no_tounicode",
+            message: "Custom encoding without ToUnicode may not round-trip text accurately"
+                .to_string(),
+        });
+    }
+    if input.subtype == "Type3" {
+        diagnostics.push(FontDiagnostic {
+            severity: "info",
+            code: "font.type3.charprocs",
+            message: "Type3 glyphs render through PDF CharProc content streams".to_string(),
+        });
+    }
+    if input.writing_mode == "vertical" {
+        diagnostics.push(FontDiagnostic {
+            severity: "info",
+            code: "font.vertical.detected",
+            message: "Vertical writing mode detected; full vertical layout fidelity is bounded"
+                .to_string(),
+        });
+    }
+    diagnostics
 }
 
 /// Resolve a Type0 font's first descendant CIDFont dictionary.
@@ -535,5 +718,50 @@ mod tests {
         let mut cid2 = PdfDictionary::empty();
         cid2.insert("Subtype", PdfObject::Name("CIDFontType2".to_string()));
         assert_eq!(font_type_label("Type0", Some(&cid2)), "CID TrueType");
+    }
+
+    #[test]
+    fn diagnostics_report_standard14_substitution_without_error() {
+        let diagnostics = font_diagnostics(FontDiagnosticInput {
+            name: "Helvetica",
+            subtype: "Type1",
+            encoding: "WinAnsi",
+            embedded: false,
+            to_unicode: false,
+            descriptor_present: false,
+            descendant_present: false,
+            writing_mode: "horizontal",
+        });
+
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.code == "font.standard14.substitution"));
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.code == "font.tounicode.missing"));
+        assert!(!diagnostics
+            .iter()
+            .any(|diag| diag.code == "font.descriptor.missing"));
+    }
+
+    #[test]
+    fn diagnostics_report_type0_missing_descendant_and_vertical_mode() {
+        let diagnostics = font_diagnostics(FontDiagnosticInput {
+            name: "ABCDEE+NotoSansCJK",
+            subtype: "Type0",
+            encoding: "Identity-V",
+            embedded: true,
+            to_unicode: true,
+            descriptor_present: true,
+            descendant_present: false,
+            writing_mode: "vertical",
+        });
+
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.code == "font.type0.descendant_missing"));
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.code == "font.vertical.detected"));
     }
 }

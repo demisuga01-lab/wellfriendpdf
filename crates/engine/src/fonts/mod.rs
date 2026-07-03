@@ -2,9 +2,15 @@ pub(crate) mod cid;
 pub mod cmap;
 pub mod encoding;
 pub mod glyph_list;
+pub mod provider;
 pub mod resolver;
+pub mod shaper;
 pub(crate) mod type1;
 pub mod variations;
 
+pub use provider::{
+    BundledFontProvider, FontMatch, FontMatchRequest, FontProvider, FontProviderSource,
+};
 pub use resolver::{FontResolver, FontType};
+pub use shaper::{ShapeOptions, ShapedGlyph, ShapedRun, TextDirection, TextShaper};
 pub use variations::{AxisValue, VariationRequest};

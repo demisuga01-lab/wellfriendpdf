@@ -71,6 +71,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "font_mapping"
+path = "fuzz_targets/font_mapping.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "cmap"
 path = "fuzz_targets/cmap.rs"
 test = false

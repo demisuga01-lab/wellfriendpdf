@@ -445,6 +445,45 @@ pub fn fuzz_parse_font(data: &[u8]) {
     }
 }
 
+/// Drive Prompt 04 font-name recovery, deterministic provider matching, and
+/// generated-text shaping. This complements `fuzz_parse_font`: it fuzzes the
+/// font subsystem decisions around names/text rather than raw font-program
+/// table parsing.
+pub fn fuzz_font_mapping(data: &[u8]) {
+    use crate::fonts::{
+        BundledFontProvider, FontMatchRequest, FontProvider, ShapeOptions, TextShaper,
+    };
+
+    let capped = &data[..data.len().min(128)];
+    let text = String::from_utf8_lossy(capped);
+    for token in text.split(|ch: char| ch.is_whitespace() || ch == '/' || ch == '(' || ch == ')') {
+        if token.is_empty() {
+            continue;
+        }
+        let _ = std::hint::black_box(crate::fonts::glyph_list::glyph_name_to_unicode(token));
+    }
+
+    let provider = BundledFontProvider;
+    let request = FontMatchRequest {
+        base_font: text.chars().take(64).collect(),
+        bold: data.first().copied().unwrap_or(0) & 1 != 0,
+        italic: data.first().copied().unwrap_or(0) & 2 != 0,
+        symbolic: data.first().copied().unwrap_or(0) & 4 != 0,
+    };
+    if let Some(font_match) = provider.match_font(&request) {
+        let shape_text: String = if data.get(1).copied().unwrap_or(0) & 1 == 0 {
+            text.chars().take(32).collect()
+        } else {
+            "\u{0633}\u{0644}\u{0627}\u{0645}".to_string()
+        };
+        let _ = std::hint::black_box(TextShaper::shape(
+            font_match.bytes,
+            &shape_text,
+            ShapeOptions::default(),
+        ));
+    }
+}
+
 fn drive_structured_pdf(bytes: &[u8], data: &[u8]) {
     let Ok(engine) = ContentEngine::open_bytes(bytes.to_vec()) else {
         return;

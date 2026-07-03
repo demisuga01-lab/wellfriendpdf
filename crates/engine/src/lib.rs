@@ -189,7 +189,10 @@ pub use filters::{
     DecodeSeverity, DecodedStream, StreamDecodeStatus, MAX_FLATE_DECOMPRESSED_BYTES,
 };
 pub use fonts::variations::{AxisValue, VariationRequest};
-pub use fonts::{FontResolver, FontType};
+pub use fonts::{
+    BundledFontProvider, FontMatch, FontMatchRequest, FontProvider, FontProviderSource,
+    FontResolver, FontType, ShapeOptions, ShapedGlyph, ShapedRun, TextDirection, TextShaper,
+};
 pub use fonts_report::{list_fonts, FontInfo};
 pub use html::{HtmlExporter, HtmlMode, HtmlOptions};
 pub use images::decoder::{ColorSpaceConverter, ImageDecoder, RawImage};

@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
+use std::mem;
 
-use crate::render::path::Path;
+use crate::render::path::{Path, PathSegment};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct GlyphCacheKey {
@@ -23,6 +24,16 @@ pub struct CachedGlyph {
     pub advance_width: f64,
 }
 
+/// Runtime glyph-cache counters.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GlyphCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub skipped_oversized: u64,
+    pub bytes: usize,
+}
+
 /// Glyph outline cache with **least-recently-used** eviction.
 ///
 /// One cache is created per [`RenderState`](crate::render) (i.e. per
@@ -38,23 +49,33 @@ pub struct CachedGlyph {
 /// an old-but-hot glyph refreshes its recency so it survives eviction — the
 /// defining difference from the previous insertion-order policy.
 pub struct GlyphCache {
-    /// key -> (glyph, recency sequence number).
-    entries: HashMap<GlyphCacheKey, (CachedGlyph, u64)>,
+    /// key -> (glyph, recency sequence number, approximate byte size).
+    entries: HashMap<GlyphCacheKey, (CachedGlyph, u64, usize)>,
     /// recency sequence number -> key, ordered so the first entry is the LRU.
     order: BTreeMap<u64, GlyphCacheKey>,
     /// Next recency stamp to hand out. Strictly increasing; u64 never wraps in
     /// any realistic render (2^64 glyph accesses).
     next_seq: u64,
     max_entries: usize,
+    max_bytes: usize,
+    current_bytes: usize,
+    stats: GlyphCacheStats,
 }
 
 impl GlyphCache {
     pub fn new(max_entries: usize) -> Self {
+        Self::new_with_budget(max_entries, 8 * 1024 * 1024)
+    }
+
+    pub fn new_with_budget(max_entries: usize, max_bytes: usize) -> Self {
         Self {
             entries: HashMap::new(),
             order: BTreeMap::new(),
             next_seq: 0,
             max_entries,
+            max_bytes,
+            current_bytes: 0,
+            stats: GlyphCacheStats::default(),
         }
     }
 
@@ -69,7 +90,12 @@ impl GlyphCache {
     pub fn get(&mut self, key: &GlyphCacheKey) -> Option<&CachedGlyph> {
         // Read the old recency stamp first, then release that borrow before
         // mutating `order`, then re-borrow mutably to write the new stamp.
-        let old_seq = self.entries.get(key)?.1;
+        let Some((_, old_seq, _)) = self.entries.get(key) else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+            return None;
+        };
+        let old_seq = *old_seq;
+        self.stats.hits = self.stats.hits.saturating_add(1);
         let new_seq = self.next_seq;
         self.next_seq += 1;
         self.order.remove(&old_seq);
@@ -83,39 +109,47 @@ impl GlyphCache {
     }
 
     pub fn insert(&mut self, key: GlyphCacheKey, glyph: CachedGlyph) {
-        if self.max_entries == 0 {
+        if self.max_entries == 0 || self.max_bytes == 0 {
+            return;
+        }
+        let glyph_bytes = estimate_glyph_bytes(&glyph);
+        if glyph_bytes > self.max_bytes {
+            self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
             return;
         }
 
         // Overwriting an existing key: replace the value and refresh recency,
         // never counts toward eviction.
         if self.entries.contains_key(&key) {
-            let old_seq = self.entries.get(&key).expect("contains_key just held").1;
+            let (_, old_seq, old_bytes) =
+                self.entries.remove(&key).expect("contains_key just held");
+            self.order.remove(&old_seq);
+            self.current_bytes = self.current_bytes.saturating_sub(old_bytes);
+            self.evict_until_fits(glyph_bytes);
             let new_seq = self.next_seq;
             self.next_seq += 1;
-            self.order.remove(&old_seq);
             self.order.insert(new_seq, key.clone());
-            let entry = self.entries.get_mut(&key).expect("contains_key just held");
-            entry.0 = glyph;
-            entry.1 = new_seq;
+            self.entries.insert(key, (glyph, new_seq, glyph_bytes));
+            self.current_bytes = self.current_bytes.saturating_add(glyph_bytes);
+            self.stats.bytes = self.current_bytes;
             return;
         }
 
         // New key: evict the least-recently-used entry if at capacity.
-        if self.entries.len() >= self.max_entries {
-            if let Some((&lru_seq, _)) = self.order.iter().next() {
-                let lru_key = self
-                    .order
-                    .remove(&lru_seq)
-                    .expect("iterator yielded this key");
-                self.entries.remove(&lru_key);
+        while self.entries.len() >= self.max_entries
+            || self.current_bytes.saturating_add(glyph_bytes) > self.max_bytes
+        {
+            if !self.evict_one() {
+                break;
             }
         }
 
         let seq = self.next_seq;
         self.next_seq += 1;
         self.order.insert(seq, key.clone());
-        self.entries.insert(key, (glyph, seq));
+        self.entries.insert(key, (glyph, seq, glyph_bytes));
+        self.current_bytes = self.current_bytes.saturating_add(glyph_bytes);
+        self.stats.bytes = self.current_bytes;
     }
 
     pub fn len(&self) -> usize {
@@ -129,6 +163,18 @@ impl GlyphCache {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.order.clear();
+        self.current_bytes = 0;
+        self.stats.bytes = 0;
+    }
+
+    pub fn current_bytes(&self) -> usize {
+        self.current_bytes
+    }
+
+    pub fn stats(&self) -> GlyphCacheStats {
+        let mut stats = self.stats;
+        stats.bytes = self.current_bytes;
+        stats
     }
 
     /// Compute a quick FNV-1a hash of the first 256 bytes of font data.
@@ -143,6 +189,45 @@ impl GlyphCache {
         }
         hash
     }
+
+    fn evict_until_fits(&mut self, additional_bytes: usize) {
+        while self.current_bytes.saturating_add(additional_bytes) > self.max_bytes {
+            if !self.evict_one() {
+                break;
+            }
+        }
+    }
+
+    fn evict_one(&mut self) -> bool {
+        let Some((&lru_seq, _)) = self.order.iter().next() else {
+            return false;
+        };
+        let lru_key = self
+            .order
+            .remove(&lru_seq)
+            .expect("iterator yielded this key");
+        if let Some((_, _, bytes)) = self.entries.remove(&lru_key) {
+            self.current_bytes = self.current_bytes.saturating_sub(bytes);
+            self.stats.evictions = self.stats.evictions.saturating_add(1);
+            self.stats.bytes = self.current_bytes;
+        }
+        true
+    }
+}
+
+fn estimate_glyph_bytes(glyph: &CachedGlyph) -> usize {
+    mem::size_of::<CachedGlyph>()
+        + glyph
+            .path
+            .as_ref()
+            .map(|path| {
+                mem::size_of::<Path>()
+                    + path
+                        .segments
+                        .len()
+                        .saturating_mul(mem::size_of::<PathSegment>())
+            })
+            .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -514,5 +599,49 @@ mod tests {
         cache.insert(key(0), glyph(0.0));
         assert_eq!(cache.len(), 0);
         assert!(cache.get(&key(0)).is_none());
+    }
+
+    #[test]
+    fn budgeted_cache_tracks_hit_miss_and_bytes() {
+        let mut cache = GlyphCache::new_with_budget(4, 4096);
+        assert!(cache.get(&key(7)).is_none());
+        cache.insert(key(7), glyph(700.0));
+        assert!(cache.current_bytes() > 0);
+        assert!(cache.get(&key(7)).is_some());
+        let stats = cache.stats();
+        assert_eq!(stats.misses, 1);
+        assert_eq!(stats.hits, 1);
+        assert_eq!(stats.bytes, cache.current_bytes());
+    }
+
+    #[test]
+    fn oversized_glyph_is_not_cached() {
+        let mut cache = GlyphCache::new_with_budget(4, 32);
+        let mut path = Path::new();
+        for i in 0..64 {
+            path.line_to(f64::from(i), f64::from(i));
+        }
+        cache.insert(
+            key(9),
+            CachedGlyph {
+                path: Some(path),
+                advance_width: 100.0,
+            },
+        );
+
+        assert_eq!(cache.len(), 0);
+        assert_eq!(cache.stats().skipped_oversized, 1);
+    }
+
+    #[test]
+    fn byte_budget_eviction_keeps_budget() {
+        let mut cache = GlyphCache::new_with_budget(100, 512);
+        for code in 0u16..50 {
+            cache.insert(key(code), glyph(f64::from(code)));
+            assert!(cache.current_bytes() <= 512);
+        }
+
+        assert!(cache.stats().evictions > 0);
+        assert!(cache.len() < 50);
     }
 }

@@ -3,10 +3,8 @@ use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{BlendMode, ColorSpace, GraphicsState};
 use crate::engine::{ContentEngine, PageResources};
 use crate::error::{OxideError, Result};
-use crate::fonts::cid::{cid_font_has_embedded_program, cid_to_gid};
 use crate::fonts::resolver::{detect_font_subtype, get_descendant_font, FontSubtype};
 use crate::fonts::variations::VariationRequest;
-use crate::fonts::FontResolver;
 use crate::images::decoder::ImageDecoder;
 use crate::images::locator::ImageReference;
 use crate::images::SmaskLoader;
@@ -24,6 +22,7 @@ use crate::render::image_painter::ImagePainter;
 use crate::render::line::DashState;
 use crate::render::path::{flatten_path, FillRule, FlatPath, GlyphHinting, Path, PathPainter};
 use crate::render::shading::ShadingRenderer;
+use crate::render::text_decode::{decode_text_bytes as decode_font_text_bytes, DecodedGlyph};
 use crate::render::transform::{Transform2D, Viewport};
 use std::fmt::Write as _;
 
@@ -1953,7 +1952,12 @@ impl<'a> RenderState<'a> {
         if font_size <= 0.0 {
             return;
         }
-        let decoded = self.decode_text_bytes(bytes, &font_name);
+        let decoded = decode_font_text_bytes(
+            bytes,
+            &font_name,
+            &self.resources,
+            self.engine.document().reader(),
+        );
         let font_bytes = self.get_font_bytes(&font_name);
         let variation = self.font_variation_request(&font_name);
         let font_hash = font_bytes
@@ -2173,107 +2177,6 @@ impl<'a> RenderState<'a> {
         None
     }
 
-    fn decode_text_bytes(&self, bytes: &[u8], font_name: &str) -> Vec<DecodedGlyph> {
-        let Some(font_dict) = self.resources.fonts.get(font_name) else {
-            return latin1_glyphs(bytes);
-        };
-        let reader = self.engine.document().reader();
-        if detect_font_subtype(font_dict) == FontSubtype::Type0 {
-            return self.decode_type0_text(bytes, font_dict, reader);
-        }
-
-        let resolver = FontResolver::new(font_dict, reader);
-        let has_explicit_widths = font_dict.get_array("Widths").is_some();
-        let mut glyphs = Vec::new();
-        let code_size = resolver.code_size().max(1);
-        let mut idx = 0usize;
-        while idx < bytes.len() {
-            let code = if code_size == 2 {
-                let high = bytes[idx];
-                let low = bytes.get(idx + 1).copied().unwrap_or(0);
-                idx = idx.saturating_add(2);
-                (u16::from(high) << 8) | u16::from(low)
-            } else {
-                let code = u16::from(bytes[idx]);
-                idx = idx.saturating_add(1);
-                code
-            };
-            let text = resolver.decode_char(code);
-            let ch = text.chars().next().unwrap_or('\u{FFFD}');
-            let glyph_name = resolver.glyph_name(code).map(str::to_string);
-            let width = if has_explicit_widths {
-                let width = resolver.glyph_width(code).max(0.0);
-                if width > 0.0 {
-                    Some(width)
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            glyphs.push(DecodedGlyph {
-                code,
-                unicode: ch,
-                glyph_name,
-                is_space: resolver.is_space_code(code) || ch == ' ',
-                width,
-                is_gid: false,
-            });
-        }
-        glyphs
-    }
-
-    fn decode_type0_text(
-        &self,
-        bytes: &[u8],
-        font_dict: &PdfDictionary,
-        reader: &crate::reader::PdfReader,
-    ) -> Vec<DecodedGlyph> {
-        let descendant_font = get_descendant_font(font_dict, reader);
-        let resolver = FontResolver::new(font_dict, reader);
-        let render_as_gid = cid_font_has_embedded_program(descendant_font.as_ref(), reader);
-        let mut glyphs = Vec::new();
-        let mut idx = 0usize;
-        let code_size = resolver.code_size().max(1);
-
-        while idx < bytes.len() {
-            let cid = if code_size == 2 {
-                let high = bytes[idx];
-                let low = bytes.get(idx + 1).copied().unwrap_or(0);
-                idx = idx.saturating_add(2);
-                (u16::from(high) << 8) | u16::from(low)
-            } else {
-                let code = u16::from(bytes[idx]);
-                idx = idx.saturating_add(1);
-                code
-            };
-
-            let text = resolver.decode_char(cid);
-            let unicode = text.chars().next().unwrap_or('\u{FFFD}');
-            let width = if render_as_gid {
-                Some(resolver.glyph_width(cid)).filter(|width| *width > 0.0)
-            } else {
-                None
-            };
-            let code = if render_as_gid {
-                cid_to_gid(cid, descendant_font.as_ref(), reader)
-            } else {
-                u16::try_from(unicode as u32).unwrap_or(cid)
-            };
-
-            glyphs.push(DecodedGlyph {
-                code,
-                unicode,
-                glyph_name: None,
-                is_space: resolver.is_space_code(cid) || unicode == ' ',
-                width,
-                is_gid: render_as_gid,
-            });
-        }
-
-        glyphs
-    }
-
     /// Build the variable-font [`VariationRequest`] for a font resource from its
     /// `FontDescriptor` (`/FontWeight` → `wght`, `/FontStretch` → `wdth`). Returns
     /// the empty request (default instance) when there is no descriptor or no
@@ -2351,15 +2254,6 @@ impl<'a> RenderState<'a> {
     }
 }
 
-struct DecodedGlyph {
-    code: u16,
-    unicode: char,
-    glyph_name: Option<String>,
-    is_space: bool,
-    width: Option<f64>,
-    is_gid: bool,
-}
-
 struct GlyphRenderRequest<'a> {
     code: u16,
     ch: char,
@@ -2394,20 +2288,6 @@ fn resolve_descriptor(
     }
 }
 
-fn latin1_glyphs(bytes: &[u8]) -> Vec<DecodedGlyph> {
-    bytes
-        .iter()
-        .map(|byte| DecodedGlyph {
-            code: u16::from(*byte),
-            unicode: decode_win_ansi(*byte),
-            glyph_name: None,
-            is_space: *byte == b' ',
-            width: None,
-            is_gid: false,
-        })
-        .collect()
-}
-
 fn decoded_text_for_shaping(glyphs: &[DecodedGlyph]) -> Option<String> {
     let mut text = String::new();
     for glyph in glyphs {
@@ -2417,39 +2297,6 @@ fn decoded_text_for_shaping(glyphs: &[DecodedGlyph]) -> Option<String> {
         text.push(glyph.unicode);
     }
     crate::render::shaping::needs_shaping(&text).then_some(text)
-}
-
-fn decode_win_ansi(byte: u8) -> char {
-    match byte {
-        0x80 => '€',
-        0x82 => '‚',
-        0x83 => 'ƒ',
-        0x84 => '„',
-        0x85 => '…',
-        0x86 => '†',
-        0x87 => '‡',
-        0x88 => 'ˆ',
-        0x89 => '‰',
-        0x8A => 'Š',
-        0x8B => '‹',
-        0x8C => 'Œ',
-        0x8E => 'Ž',
-        0x91 => '\u{2018}',
-        0x92 => '\u{2019}',
-        0x93 => '\u{201C}',
-        0x94 => '\u{201D}',
-        0x95 => '•',
-        0x96 => '–',
-        0x97 => '—',
-        0x98 => '˜',
-        0x99 => '™',
-        0x9A => 'š',
-        0x9B => '›',
-        0x9C => 'œ',
-        0x9E => 'ž',
-        0x9F => 'Ÿ',
-        b => char::from_u32(u32::from(b)).unwrap_or('\u{FFFD}'),
-    }
 }
 
 fn positive_u32(value: Option<i64>, default: u32) -> u32 {

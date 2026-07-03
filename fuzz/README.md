@@ -22,6 +22,7 @@ green. Fuzzing requires a nightly toolchain.
 | `xref_stream`       | `oxide_engine::fuzz::fuzz_xref_stream`        | XRef stream parsing through filtered stream decode |
 | `object_stream`     | `oxide_engine::fuzz::fuzz_object_stream`      | Object stream parsing through filtered stream decode |
 | `fonts`             | `oxide_engine::fuzz::fuzz_parse_font`         | TrueType / CFF / OpenType / bare-CFF font parsers through outline extraction |
+| `font_mapping`      | `oxide_engine::fuzz::fuzz_font_mapping`       | Glyph-name recovery, bundled font-provider matching, and generated-text shaping |
 | `cmap`              | `oxide_engine::fuzz::fuzz_parse_cmap`         | ToUnicode CMap parsing and lookup |
 | `crypto`            | `oxide_engine::fuzz::fuzz_crypto`             | Encryption dictionary parsing, password verification, key derivation, decrypt primitives |
 | `functions`         | `oxide_engine::fuzz::fuzz_functions`          | Function Types 0/2/3/4, sampled-function bit reader, Type 4 PostScript calculator |
@@ -54,6 +55,7 @@ cargo +nightly fuzz run predictor
 cargo +nightly fuzz run content_tokenizer
 cargo +nightly fuzz run image_decoders
 cargo +nightly fuzz run fonts
+cargo +nightly fuzz run font_mapping
 cargo +nightly fuzz run cmap
 cargo +nightly fuzz run crypto
 cargo +nightly fuzz run functions
@@ -96,8 +98,9 @@ Campaign output records git commit, Rust tool versions, target names, command
 status, and per-target log tails. It never writes outside `target/` unless
 `--out-dir` is explicitly supplied.
 
-Small reviewed seed inputs for decode fuzzing live under `fuzz/seeds/`. They are
-not libFuzzer's mutable corpus directory; copy or import them into
+Small reviewed seed inputs for decode and font fuzzing live under
+`fuzz/seeds/`. Font-specific seeds are under `fuzz/seeds/fonts/`. They are not
+libFuzzer's mutable corpus directory; copy or import them into
 `fuzz/corpus/<target>/` for local campaigns if desired.
 
 Seed corpora live in `corpus/<target>/`. cargo-fuzz seeds from there and writes

@@ -54,6 +54,15 @@ font/color/image implementation.
 The byte estimate is intentionally approximate and exists for cache budgeting
 and report/debug surfaces. It is not a serialized display-list size contract.
 
+## Prompt 04 Font Integration Note
+
+Prompt 04 keeps the Prompt 03B compatibility-run text replay model, but removes
+the duplicate raster text decoder from `page_renderer.rs`. Raster rendering,
+SVG/vector text, and display-list replay now share
+`render::text_decode::decode_text_bytes` for PDF font-code to glyph mapping.
+Font-specific provider, shaping, cache, and diagnostics status is tracked in
+[`font_subsystem_prompt04.md`](font_subsystem_prompt04.md).
+
 ## Tile, Band, Cache, And Cancellation
 
 Prompt 03B adds:

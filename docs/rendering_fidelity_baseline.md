@@ -182,6 +182,12 @@ The largest remaining bucket is still text/font fidelity:
   remaining errors are mostly font substitution, hinting, weight, and image/text
   antialiasing differences rather than gross page-geometry failures.
 
+Prompt 04 adds the font subsystem seam for this bucket: deterministic bundled
+font-provider reporting, structured font diagnostics, shared renderer text
+decoding, generated-output shaping API, and byte-budgeted glyph cache metrics.
+It does not claim that font-edge, CJK, or RTL visual parity is fully closed;
+those remain measured benchmark targets for font and later color/layout passes.
+
 The next-highest structural bucket is large-region rendering:
 
 - image masks and color-key masks,

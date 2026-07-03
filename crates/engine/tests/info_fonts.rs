@@ -340,6 +340,12 @@ fn fonts_reports_non_embedded_standard_14() {
     assert!(!helv.embedded, "standard-14 Helvetica must be non-embedded");
     assert!(!helv.subset);
     assert_eq!(helv.font_type, "Type 1");
+    assert_eq!(helv.writing_mode, "horizontal");
+    assert!(helv.fallback_required);
+    assert!(helv
+        .diagnostics
+        .iter()
+        .any(|diag| diag.code == "font.standard14.substitution"));
 }
 
 #[test]
@@ -355,4 +361,8 @@ fn fonts_reports_type0_cid_identity_h() {
     assert_eq!(cid.font_type, "CID TrueType");
     assert_eq!(cid.encoding, "Identity-H");
     assert!(cid.embedded);
+    assert_eq!(cid.cid_descendant_type.as_deref(), Some("CIDFontType2"));
+    assert_eq!(cid.writing_mode, "horizontal");
+    assert_eq!(cid.font_file_kind.as_deref(), Some("FontFile2"));
+    assert!(!cid.fallback_required);
 }
