@@ -396,3 +396,34 @@ bounded decisions. The unchanged blockers remain CJK/RTL raster or fallback
 metric drift, `font_ascent_descent.pdf`, and two blank-reference mismatches that
 need another reference renderer or benchmark policy decision. Details are in
 `docs/font_prompt04e_final_parity_audit.md`.
+
+## Prompt 05 Color/Prepress Slice
+
+Prompt 05 added a dedicated color/prepress slice using a temporary manifest
+under `target/prompt05-color-baseline-manifest.json`. The 24 files cover
+synthetic CMYK pages, pdf.js DeviceN/color-space/function fixtures, Indexed
+samples, CMYK JPEG, shadings, and tiling patterns.
+
+Command:
+
+```powershell
+cargo build --release -p oxide-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt05-color-baseline-manifest.json --oxide-bin target\release\oxide.exe --dpi 96 --timeout-sec 30 --max-memory-mb 2048 --max-pages-per-file 1 --output-dir target\prompt05-color-after --determinism-sample 4 --threshold-profile renderer
+```
+
+Results:
+
+| metric | Prompt 05 baseline | Prompt 05 after |
+| --- | ---: | ---: |
+| files | 24 | 24 |
+| visual pages compared | 23 | 23 |
+| visual pass | 60.87% | 60.87% |
+| file pass | 58.33% | 58.33% |
+| weighted score | 59.0 | 59.0 |
+| peak Oxide memory | 19.69 MB | 19.68 MB |
+| determinism | 4/4 stable | 4/4 stable |
+
+Prompt 05 did not target new raster fidelity for mesh/pattern/image edge cases,
+so the visual score is unchanged. The color work closes architecture,
+diagnostic, cap, report, overprint-state, and output-intent validation gaps
+without regressing the benchmark.

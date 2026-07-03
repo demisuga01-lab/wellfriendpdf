@@ -19,6 +19,10 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::render::shading::{eval_type2, eval_type3, get_float_array};
 
+pub(crate) const MAX_TYPE0_SAMPLE_VALUES: usize = 4_194_304;
+pub(crate) const MAX_TYPE4_TOKENS: usize = 16_384;
+pub(crate) const MAX_TYPE4_STACK: usize = 1_024;
+
 /// Evaluate a PDF function with one or more inputs, returning its output
 /// components. Returns an empty `Vec` for unsupported types or malformed input
 /// (never panics).
@@ -174,6 +178,14 @@ fn eval_type0(
         log::debug!("Type 0 function: unsupported BitsPerSample {bps}");
         return Vec::new();
     }
+    let Some(sample_values) = size.iter().try_fold(n, |acc, &dim| acc.checked_mul(dim)) else {
+        log::debug!("Type 0 function: sample count overflow");
+        return Vec::new();
+    };
+    if sample_values > MAX_TYPE0_SAMPLE_VALUES {
+        log::debug!("Type 0 function: sample count cap hit ({sample_values})");
+        return Vec::new();
+    }
 
     // Encode maps each input domain interval onto sample-index space
     // [0, Size_i - 1]; default is exactly that identity-to-index mapping.
@@ -320,6 +332,10 @@ fn eval_type4(
     };
     let text = String::from_utf8_lossy(&program_bytes);
     let tokens = tokenize_ps(&text);
+    if tokens.len() > MAX_TYPE4_TOKENS {
+        log::debug!("Type 4 function: token cap hit ({})", tokens.len());
+        return Vec::new();
+    }
 
     // The outermost `{ ... }` wraps the whole program; strip it so we execute
     // the body directly.
@@ -448,17 +464,33 @@ fn exec_ps(tokens: &[PsToken], stack: &mut Vec<PsValue>, depth: usize) -> Result
     let mut i = 0;
     while i < tokens.len() {
         match &tokens[i] {
-            PsToken::Num(x) => stack.push(PsValue::Num(*x)),
+            PsToken::Num(x) if x.is_finite() => stack.push(PsValue::Num(*x)),
+            PsToken::Num(_) => return Err(()),
             PsToken::ProcStart => {
                 let (body, next) = collect_proc(tokens, i + 1).ok_or(())?;
                 stack.push(PsValue::Proc(body));
+                check_ps_stack(stack)?;
                 i = next;
                 continue;
             }
             PsToken::ProcEnd => return Err(()),
             PsToken::Op(name) => exec_ps_op(name, stack, depth)?,
         }
+        check_ps_stack(stack)?;
         i += 1;
+    }
+    Ok(())
+}
+
+fn check_ps_stack(stack: &[PsValue]) -> Result<(), ()> {
+    if stack.len() > MAX_TYPE4_STACK {
+        return Err(());
+    }
+    if stack.iter().any(|value| match value {
+        PsValue::Num(n) => !n.is_finite(),
+        _ => false,
+    }) {
+        return Err(());
     }
     Ok(())
 }
@@ -859,6 +891,25 @@ mod tests {
         }
     }
 
+    fn type4_stream(program: &str, range: &[f64]) -> PdfObject {
+        use std::collections::BTreeMap;
+        let mut m: BTreeMap<String, PdfObject> = BTreeMap::new();
+        m.insert("FunctionType".into(), PdfObject::Integer(4));
+        m.insert(
+            "Domain".into(),
+            PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Real(1.0)]),
+        );
+        m.insert(
+            "Range".into(),
+            PdfObject::Array(range.iter().map(|&v| PdfObject::Real(v)).collect()),
+        );
+        m.insert("Length".into(), PdfObject::Integer(program.len() as i64));
+        PdfObject::Stream {
+            dict: PdfDictionary::new(m),
+            raw: program.as_bytes().to_vec(),
+        }
+    }
+
     #[test]
     fn type0_1d_exact_at_sample_points() {
         // 4 samples over Domain [0,1] -> Range [0,1]: 0, 85, 170, 255 (8-bit).
@@ -915,5 +966,34 @@ mod tests {
         let r = reader_for_tests();
         assert!((eval_function_n(&obj, &[0.0], &r)[0]).abs() < 0.01);
         assert!((eval_function_n(&obj, &[1.0], &r)[0] - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn type0_rejects_sample_count_cap() {
+        let obj = type0_stream(
+            &[MAX_TYPE0_SAMPLE_VALUES as i64 + 1],
+            8,
+            &[0.0, 1.0],
+            &[0.0, 1.0],
+            Vec::new(),
+        );
+        let r = reader_for_tests();
+        assert!(eval_function_n(&obj, &[0.5], &r).is_empty());
+    }
+
+    #[test]
+    fn type4_rejects_token_cap() {
+        let program = format!("{{ {} }}", "1 ".repeat(MAX_TYPE4_TOKENS + 1));
+        let obj = type4_stream(&program, &[0.0, 1.0]);
+        let r = reader_for_tests();
+        assert!(eval_function_n(&obj, &[], &r).is_empty());
+    }
+
+    #[test]
+    fn type4_rejects_stack_cap() {
+        let program = format!("{{ {} }}", "1 ".repeat(MAX_TYPE4_STACK + 1));
+        let obj = type4_stream(&program, &[0.0, 1.0]);
+        let r = reader_for_tests();
+        assert!(eval_function_n(&obj, &[], &r).is_empty());
     }
 }

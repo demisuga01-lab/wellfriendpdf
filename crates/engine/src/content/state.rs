@@ -387,6 +387,9 @@ pub struct GraphicsState {
     pub stroke_alpha: f64,
     pub fill_alpha: f64,
     pub blend_mode: BlendMode,
+    pub stroke_overprint: bool,
+    pub fill_overprint: bool,
+    pub overprint_mode: i32,
     pub text: TextState,
     pub clip_dirty: bool,
     /// Name of the current fill pattern resource, set by `scn /PatternName`.
@@ -413,6 +416,9 @@ struct GraphicsStateSnapshot {
     stroke_alpha: f64,
     fill_alpha: f64,
     blend_mode: BlendMode,
+    stroke_overprint: bool,
+    fill_overprint: bool,
+    overprint_mode: i32,
     text: TextState,
     clip_dirty: bool,
     fill_pattern_name: Option<String>,
@@ -436,6 +442,9 @@ impl Default for GraphicsState {
             stroke_alpha: 1.0,
             fill_alpha: 1.0,
             blend_mode: BlendMode::Normal,
+            stroke_overprint: false,
+            fill_overprint: false,
+            overprint_mode: 0,
             text: TextState::default(),
             clip_dirty: false,
             fill_pattern_name: None,
@@ -466,6 +475,9 @@ impl GraphicsState {
             stroke_alpha: self.stroke_alpha,
             fill_alpha: self.fill_alpha,
             blend_mode: self.blend_mode,
+            stroke_overprint: self.stroke_overprint,
+            fill_overprint: self.fill_overprint,
+            overprint_mode: self.overprint_mode,
             text: self.text.clone(),
             clip_dirty: self.clip_dirty,
             fill_pattern_name: self.fill_pattern_name.clone(),
@@ -490,6 +502,9 @@ impl GraphicsState {
                 self.stroke_alpha = snap.stroke_alpha;
                 self.fill_alpha = snap.fill_alpha;
                 self.blend_mode = snap.blend_mode;
+                self.stroke_overprint = snap.stroke_overprint;
+                self.fill_overprint = snap.fill_overprint;
+                self.overprint_mode = snap.overprint_mode;
                 self.text = snap.text;
                 self.clip_dirty = snap.clip_dirty;
                 self.fill_pattern_name = snap.fill_pattern_name;
@@ -614,6 +629,21 @@ impl GraphicsState {
             .and_then(|arr| arr.iter().find_map(PdfObject::as_name))
         {
             self.blend_mode = BlendMode::from_name(first_name);
+        }
+        if let Some(intent) = dict.get_name("RI") {
+            self.rendering_intent = intent.to_string();
+        }
+        if let Some(stroke_overprint) = dict.get_bool("OP") {
+            self.stroke_overprint = stroke_overprint;
+            if !dict.contains_key("op") {
+                self.fill_overprint = stroke_overprint;
+            }
+        }
+        if let Some(fill_overprint) = dict.get_bool("op") {
+            self.fill_overprint = fill_overprint;
+        }
+        if let Some(mode) = dict.get_integer("OPM") {
+            self.overprint_mode = if mode == 1 { 1 } else { 0 };
         }
     }
 
@@ -933,6 +963,39 @@ mod tests {
         gs.process(&op("Q", []));
         assert_eq!(gs.stroke_color.components, [0.5, 0.0, 0.0]);
         assert_eq!(gs.stack_depth(), 0);
+    }
+
+    #[test]
+    fn ext_gstate_overprint_and_intent_are_saved_and_restored() {
+        let mut gs = GraphicsState::new();
+        let mut ext = PdfDictionary::empty();
+        ext.insert("OP", PdfObject::Boolean(true));
+        ext.insert("op", PdfObject::Boolean(false));
+        ext.insert("OPM", PdfObject::Integer(1));
+        ext.insert("RI", PdfObject::Name("Perceptual".to_string()));
+        gs.apply_ext_g_state(&ext);
+
+        assert!(gs.stroke_overprint);
+        assert!(!gs.fill_overprint);
+        assert_eq!(gs.overprint_mode, 1);
+        assert_eq!(gs.rendering_intent, "Perceptual");
+
+        gs.push();
+        let mut changed = PdfDictionary::empty();
+        changed.insert("OP", PdfObject::Boolean(false));
+        changed.insert("OPM", PdfObject::Integer(0));
+        changed.insert("RI", PdfObject::Name("Saturation".to_string()));
+        gs.apply_ext_g_state(&changed);
+        assert!(!gs.stroke_overprint);
+        assert!(!gs.fill_overprint);
+        assert_eq!(gs.overprint_mode, 0);
+        assert_eq!(gs.rendering_intent, "Saturation");
+
+        gs.pop();
+        assert!(gs.stroke_overprint);
+        assert!(!gs.fill_overprint);
+        assert_eq!(gs.overprint_mode, 1);
+        assert_eq!(gs.rendering_intent, "Perceptual");
     }
 
     #[test]

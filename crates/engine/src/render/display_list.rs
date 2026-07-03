@@ -115,6 +115,10 @@ pub struct DrawState {
     pub fill_color: PixelColor,
     pub stroke_color: PixelColor,
     pub blend_mode: BlendMode,
+    pub rendering_intent: String,
+    pub stroke_overprint: bool,
+    pub fill_overprint: bool,
+    pub overprint_mode: i32,
     pub line_width: f64,
     pub line_cap: LineCap,
     pub line_join: LineJoin,
@@ -798,6 +802,10 @@ impl<'a> DisplayListBuilder<'a> {
             fill_color: resolve_simple_color(&self.gs.fill_color, self.gs.fill_alpha as f32),
             stroke_color: resolve_simple_color(&self.gs.stroke_color, self.gs.stroke_alpha as f32),
             blend_mode: self.gs.blend_mode,
+            rendering_intent: self.gs.rendering_intent.clone(),
+            stroke_overprint: self.gs.stroke_overprint,
+            fill_overprint: self.gs.fill_overprint,
+            overprint_mode: self.gs.overprint_mode,
             line_width: self.gs.line_width,
             line_cap: self.gs.line_cap.clone(),
             line_join: self.gs.line_join.clone(),
@@ -928,6 +936,35 @@ mod tests {
         let buf = render_display_list(&list, RenderMode::Compat);
 
         assert_eq!(buf.get_pixel(10, 25), BLACK);
+    }
+
+    #[test]
+    fn ext_gstate_overprint_metadata_is_captured() {
+        let mut resources = PageResources::default();
+        let mut gs_dict = crate::object::PdfDictionary::empty();
+        gs_dict.insert("OP", crate::object::PdfObject::Boolean(true));
+        gs_dict.insert("op", crate::object::PdfObject::Boolean(false));
+        gs_dict.insert("OPM", crate::object::PdfObject::Integer(1));
+        gs_dict.insert(
+            "RI",
+            crate::object::PdfObject::Name("AbsoluteColorimetric".to_string()),
+        );
+        resources.ext_g_states.insert("GS1".to_string(), gs_dict);
+        let ops = vec![
+            op("gs", vec![Operand::Name("GS1".to_string())]),
+            op("re", vec![num(1.0), num(1.0), num(5.0), num(5.0)]),
+            op("f", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 10.0, 10.0], 72);
+        let list = build_display_list(&ops, viewport, &resources);
+
+        let DisplayOp::FillPath { state, .. } = &list.ops[0] else {
+            panic!("expected captured fill path");
+        };
+        assert!(state.stroke_overprint);
+        assert!(!state.fill_overprint);
+        assert_eq!(state.overprint_mode, 1);
+        assert_eq!(state.rendering_intent, "AbsoluteColorimetric");
     }
 
     #[test]

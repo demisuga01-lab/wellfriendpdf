@@ -18,6 +18,8 @@ use crate::reader::PdfReader;
 use crate::render::cmm;
 use crate::render::color::{ColorSpaceHandler, RenderColor};
 
+pub(crate) const MAX_DEVICEN_COMPONENTS: usize = 16;
+
 /// Outcome of resolving a named colour space to a paint colour.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NamedColor {
@@ -145,6 +147,9 @@ fn resolve_device_n(
         Some(n) => n,
         None => return NamedColor::Unhandled,
     };
+    if names.len() > MAX_DEVICEN_COMPONENTS {
+        return NamedColor::Unhandled;
+    }
     // If every colorant is /None, the space produces no marks.
     if !names.is_empty() && names.iter().all(|n| n.as_name() == Some("None")) {
         return NamedColor::NoPaint;
@@ -359,6 +364,23 @@ mod tests {
             }
             other => panic!("expected Color, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn device_n_component_cap_is_unhandled() {
+        let names = (0..(MAX_DEVICEN_COMPONENTS + 1))
+            .map(|i| name(&format!("Spot{i}")))
+            .collect::<Vec<_>>();
+        let space = PdfObject::Array(vec![
+            name("DeviceN"),
+            PdfObject::Array(names),
+            name("DeviceRGB"),
+            type2_fn(&[0.0, 0.0, 0.0], &[1.0, 1.0, 1.0]),
+        ]);
+        assert_eq!(
+            resolve_named_color(&space, &[0.5; MAX_DEVICEN_COMPONENTS + 1], 1.0, &reader()),
+            NamedColor::Unhandled
+        );
     }
 
     #[test]

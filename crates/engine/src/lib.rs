@@ -77,6 +77,7 @@ pub mod authoring;
 pub mod cancel;
 pub mod chunk;
 pub mod classify;
+pub mod color_report;
 pub mod compliance;
 pub mod content;
 pub mod crypto;
@@ -137,6 +138,11 @@ pub use cancel::CancelToken;
 pub use chunk::{chunk, estimate_tokens, Chunk, ChunkOptions, ChunkSet, CHUNK_SCHEMA_VERSION};
 pub use classify::{
     classify_document, classify_page, ClassifyConfig, PageClassification, PageSource,
+};
+pub use color_report::{
+    color_report, color_report_bytes, ColorBackendDecision, ColorDiagnostic, ColorLimits,
+    ColorReport, ColorSeverity, ColorSpaceUsage, ColorValidationProfile, OutputIntentInfo,
+    OverprintReport,
 };
 pub use compliance::{
     convert_to_pdfa, convert_to_pdfa_checked, improve_pdfua_best_effort, validate_pdfa,

@@ -9,6 +9,7 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 
 const D50: [f32; 3] = [0.96422, 1.0, 0.82521];
+pub(crate) const DEFAULT_MAX_ICC_PROFILE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct LabParams {
@@ -295,7 +296,10 @@ fn icc_profile_stream(
     let (profile_dict, stream_obj) = icc_profile_object(dict, reader)?;
     let decoded = decode_stream_lossless(&stream_obj, reader).ok()?;
     match decoded.status {
-        StreamDecodeStatus::Complete => Some((profile_dict, decoded.data)),
+        StreamDecodeStatus::Complete if decoded.data.len() <= DEFAULT_MAX_ICC_PROFILE_BYTES => {
+            Some((profile_dict, decoded.data))
+        }
+        StreamDecodeStatus::Complete => None,
         StreamDecodeStatus::StoppedAtImageFilter(_) => None,
     }
 }
@@ -307,7 +311,10 @@ fn icc_profile_stream_from_space(
     let (profile_dict, stream_obj) = icc_profile_object_from_space(space_obj, reader)?;
     let decoded = decode_stream_lossless(&stream_obj, reader).ok()?;
     match decoded.status {
-        StreamDecodeStatus::Complete => Some((profile_dict, decoded.data)),
+        StreamDecodeStatus::Complete if decoded.data.len() <= DEFAULT_MAX_ICC_PROFILE_BYTES => {
+            Some((profile_dict, decoded.data))
+        }
+        StreamDecodeStatus::Complete => None,
         StreamDecodeStatus::StoppedAtImageFilter(_) => None,
     }
 }

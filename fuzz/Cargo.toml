@@ -120,6 +120,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "color_report"
+path = "fuzz_targets/color_report.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "xref_stream"
 path = "fuzz_targets/xref_stream.rs"
 test = false

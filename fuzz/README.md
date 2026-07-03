@@ -59,6 +59,7 @@ cargo +nightly fuzz run font_mapping
 cargo +nightly fuzz run cmap
 cargo +nightly fuzz run crypto
 cargo +nightly fuzz run functions
+cargo +nightly fuzz run color_report
 cargo +nightly fuzz run writer
 cargo +nightly fuzz run document_rewrite
 cargo +nightly fuzz run linearize
@@ -93,6 +94,12 @@ Groups:
   `object_stream`.
 - `risky-codec`: `image_decoders`.
 - `all`: decode/parser targets plus `cos_object`.
+
+Prompt 05 adds `color_report`, which drives the structured color/prepress report
+surface with arbitrary PDF bytes under the engine's fuzzing feature. It covers
+output-intent scanning, ICC metadata handling, color-space inventory,
+Separation/DeviceN diagnostics, overprint state reporting, and the PDF/A/PDF/X
+color validation profile switch.
 
 Campaign output records git commit, Rust tool versions, target names, command
 status, and per-target log tails. It never writes outside `target/` unless

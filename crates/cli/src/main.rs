@@ -1041,6 +1041,12 @@ struct ParserReportArgs {
     /// Include structured stream decode diagnostics and metrics
     #[arg(long)]
     include_decode: bool,
+    /// Include structured color/prepress inventory and diagnostics
+    #[arg(long)]
+    include_color: bool,
+    /// Color validation profile for --include-color: generic, pdfa, or pdfx
+    #[arg(long, default_value = "generic")]
+    color_profile: String,
     /// Decode limit profile: default, low-memory, or audit
     #[arg(long, default_value = "default")]
     decode_profile: String,
@@ -2732,6 +2738,14 @@ fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
     if let Some(max) = args.max_diagnostics {
         report.diagnostics.truncate(max);
     }
+    let color_report = if args.include_color {
+        Some(oxide_engine::color_report_bytes(
+            &bytes,
+            parser_report_color_profile(&args.color_profile)?,
+        )?)
+    } else {
+        None
+    };
     let _include_flags = (
         args.include_revisions,
         args.include_arlington,
@@ -2739,9 +2753,25 @@ fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
         args.include_repair,
         args.include_source_metrics,
         args.include_decode,
+        args.include_color,
     );
     let output = if args.pretty && !args.json {
-        format_parser_report_human(&args.pdf, &report)
+        let mut human = format_parser_report_human(&args.pdf, &report);
+        if let Some(color) = &color_report {
+            human.push_str(&format!(
+                "\nColor spaces: {} families\nOutput intents: {}\nColor diagnostics: {}\n",
+                color.color_spaces.len(),
+                color.output_intents.len(),
+                color.diagnostics.len()
+            ));
+        }
+        human
+    } else if let Some(color) = color_report {
+        let mut value = serde_json::to_value(&report)?;
+        if let Some(obj) = value.as_object_mut() {
+            obj.insert("color".to_string(), serde_json::to_value(color)?);
+        }
+        serde_json::to_string_pretty(&value)?
     } else {
         serde_json::to_string_pretty(&report)?
     };
@@ -2751,6 +2781,20 @@ fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
     }
     enforce_parser_report_fail_on(&args.fail_on, &report)?;
     Ok(())
+}
+
+fn parser_report_color_profile(
+    profile: &str,
+) -> Result<oxide_engine::ColorValidationProfile, Box<dyn Error>> {
+    match profile.to_ascii_lowercase().as_str() {
+        "generic" | "default" => Ok(oxide_engine::ColorValidationProfile::Generic),
+        "pdfa" | "pdf/a" | "pdf-a" => Ok(oxide_engine::ColorValidationProfile::PdfA),
+        "pdfx" | "pdf/x" | "pdf-x" => Ok(oxide_engine::ColorValidationProfile::PdfX),
+        other => Err(format!(
+            "unknown --color-profile value '{other}'; use generic, pdfa, or pdfx"
+        )
+        .into()),
+    }
 }
 
 fn parser_report_decode_limits(

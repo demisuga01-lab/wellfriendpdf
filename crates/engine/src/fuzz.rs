@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use std::sync::OnceLock;
 
 use crate::authoring::{GraphicsStyle, PageSize, PdfBuilder, StandardFont, TextStyle};
+use crate::color_report::{color_report_bytes, ColorValidationProfile};
 use crate::compliance::{convert_to_pdfa, validate_pdfa, PdfAProfile};
 use crate::content::Color;
 use crate::crypto::{
@@ -249,6 +250,18 @@ pub fn fuzz_cos_object(data: &[u8]) {
 /// Drive strict+repair parser-report diagnostics from arbitrary bytes.
 pub fn fuzz_parser_report(data: &[u8]) {
     let _ = std::hint::black_box(parser_report_bytes(data, ParserMode::Audit));
+}
+
+/// Drive color/prepress inventory reporting and output-intent validation from
+/// arbitrary bytes.
+pub fn fuzz_color_report(data: &[u8]) {
+    let selector = data.first().copied().unwrap_or(0);
+    let profile = match selector % 3 {
+        0 => ColorValidationProfile::Generic,
+        1 => ColorValidationProfile::PdfA,
+        _ => ColorValidationProfile::PdfX,
+    };
+    let _ = std::hint::black_box(color_report_bytes(data, profile));
 }
 
 /// Drive xref-stream entry parsing with bounded synthetic dictionaries.
