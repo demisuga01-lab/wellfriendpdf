@@ -1038,6 +1038,24 @@ struct ParserReportArgs {
     /// Include source and laziness metrics (accepted for explicit audit selection)
     #[arg(long)]
     include_source_metrics: bool,
+    /// Include structured stream decode diagnostics and metrics
+    #[arg(long)]
+    include_decode: bool,
+    /// Decode limit profile: default, low-memory, or audit
+    #[arg(long, default_value = "default")]
+    decode_profile: String,
+    /// Override per-stream decoded byte cap, in MiB
+    #[arg(long)]
+    decode_max_stream_mb: Option<u64>,
+    /// Override maximum filter-chain depth
+    #[arg(long)]
+    decode_max_chain_depth: Option<usize>,
+    /// Override maximum image pixels, in megapixels
+    #[arg(long)]
+    decode_max_image_mpixels: Option<u64>,
+    /// Override decoded-stream cache budget, in MiB
+    #[arg(long)]
+    decode_cache_mb: Option<u64>,
     /// Maximum diagnostics to emit in the top-level diagnostics array
     #[arg(long)]
     max_diagnostics: Option<usize>,
@@ -2701,7 +2719,16 @@ fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
     };
     let bytes = std::fs::read(&args.pdf)?;
     let password = args.password.as_deref().unwrap_or("").as_bytes();
-    let mut report = oxide_engine::parser_report_bytes_with_password(&bytes, mode, password);
+    let decode_limits = parser_report_decode_limits(&args)?;
+    let mut report = oxide_engine::parser_report_bytes_with_options(
+        &bytes,
+        mode,
+        password,
+        oxide_engine::ParserReportOptions {
+            include_decode: args.include_decode,
+            decode_limits,
+        },
+    );
     if let Some(max) = args.max_diagnostics {
         report.diagnostics.truncate(max);
     }
@@ -2711,6 +2738,7 @@ fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
         args.include_linearization,
         args.include_repair,
         args.include_source_metrics,
+        args.include_decode,
     );
     let output = if args.pretty && !args.json {
         format_parser_report_human(&args.pdf, &report)
@@ -2723,6 +2751,42 @@ fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
     }
     enforce_parser_report_fail_on(&args.fail_on, &report)?;
     Ok(())
+}
+
+fn parser_report_decode_limits(
+    args: &ParserReportArgs,
+) -> Result<oxide_engine::DecodeLimits, Box<dyn Error>> {
+    let mut limits = match args.decode_profile.to_ascii_lowercase().as_str() {
+        "default" => oxide_engine::DecodeLimits::default(),
+        "low-memory" | "low_memory" => oxide_engine::DecodeLimits::strict_low_memory(),
+        "audit" => oxide_engine::DecodeLimits::audit_generous(),
+        other => {
+            return Err(format!(
+                "unknown --decode-profile value '{other}'; use default, low-memory, or audit"
+            )
+            .into())
+        }
+    };
+    if let Some(mb) = args.decode_max_stream_mb {
+        limits.max_decoded_bytes_per_stream = mb
+            .checked_mul(1024 * 1024)
+            .ok_or("--decode-max-stream-mb overflows u64")?;
+    }
+    if let Some(depth) = args.decode_max_chain_depth {
+        limits.max_filter_chain_depth = depth;
+    }
+    if let Some(mpixels) = args.decode_max_image_mpixels {
+        limits.max_image_pixels = mpixels
+            .checked_mul(1_000_000)
+            .ok_or("--decode-max-image-mpixels overflows u64")?;
+    }
+    if let Some(mb) = args.decode_cache_mb {
+        limits.cache_budget_bytes = usize::try_from(
+            mb.checked_mul(1024 * 1024)
+                .ok_or("--decode-cache-mb overflows u64")?,
+        )?;
+    }
+    Ok(limits)
 }
 
 fn enforce_parser_report_fail_on(
@@ -2802,6 +2866,17 @@ fn format_parser_report_human(path: &Path, report: &oxide_engine::ParserReport) 
         "Arlington: {} rules from {} TSV files at {}\n",
         report.arlington.keys, report.arlington.tsv_files, report.arlington.commit
     ));
+    if let Some(decode) = &report.decode {
+        out.push_str(&format!(
+            "Decode: streams_seen={} decoded={} failed={} unsupported={} raw_bytes={} decoded_bytes={}\n",
+            decode.metrics.streams_seen,
+            decode.metrics.streams_decoded,
+            decode.metrics.streams_failed,
+            decode.metrics.unsupported_filters,
+            decode.metrics.total_raw_bytes,
+            decode.metrics.total_decoded_bytes
+        ));
+    }
     if !report.diagnostics.is_empty() {
         out.push_str("Top diagnostics:\n");
         for diagnostic in report.diagnostics.iter().take(20) {

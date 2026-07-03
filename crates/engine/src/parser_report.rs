@@ -2,6 +2,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::filters::{
+    decode_stream_report_from_dict, DecodeDiagnostic, DecodeLimits, DecodeReport, DecodeSeverity,
+};
 use crate::reader::PdfReader;
 
 /// Parser mode used for parser-report and validation entry points.
@@ -255,6 +258,8 @@ pub struct ParserReport {
     pub arlington: ArlingtonIntegrationStatus,
     pub revision_history: RevisionHistory,
     pub repair_summary: RepairSummary,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decode: Option<DecodeReport>,
 }
 
 impl ParserReport {
@@ -332,11 +337,26 @@ pub fn parser_report_bytes(data: &[u8], mode: ParserMode) -> ParserReport {
     parser_report_bytes_with_password(data, mode, b"")
 }
 
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ParserReportOptions {
+    pub include_decode: bool,
+    pub decode_limits: DecodeLimits,
+}
+
 /// Build a parser report for in-memory PDF bytes using a supplied user password.
 pub fn parser_report_bytes_with_password(
     data: &[u8],
     mode: ParserMode,
     password: &[u8],
+) -> ParserReport {
+    parser_report_bytes_with_options(data, mode, password, ParserReportOptions::default())
+}
+
+pub fn parser_report_bytes_with_options(
+    data: &[u8],
+    mode: ParserMode,
+    password: &[u8],
+    options: ParserReportOptions,
 ) -> ParserReport {
     let mut diagnostics = diagnose_pdf_bytes(data);
     let linearization = detect_linearization(data);
@@ -439,6 +459,13 @@ pub fn parser_report_bytes_with_password(
         }
     }
 
+    let decode = reader_for_metrics
+        .filter(|_| options.include_decode)
+        .map(|reader| summarize_decode(reader, &options.decode_limits));
+    if let Some(decode) = &decode {
+        diagnostics.extend(decode.diagnostics.iter().map(decode_to_parser_diagnostic));
+    }
+
     let repair_summary = summarize_repair(data, reader_for_metrics, &diagnostics);
 
     let (error_code, error_message) = if opened {
@@ -473,7 +500,63 @@ pub fn parser_report_bytes_with_password(
         arlington: arlington_status(),
         revision_history,
         repair_summary,
+        decode,
     }
+}
+
+fn summarize_decode(reader: &PdfReader, limits: &DecodeLimits) -> DecodeReport {
+    let mut aggregate = DecodeReport::empty(limits.clone());
+    for (number, generation) in reader.object_ids() {
+        let Ok(object) = reader.get_object(number, generation) else {
+            continue;
+        };
+        let Some((dict, raw)) = object.as_stream() else {
+            continue;
+        };
+        let report = decode_stream_report_from_dict(
+            dict,
+            raw,
+            Some(reader),
+            limits,
+            Some((number, generation)),
+        );
+        aggregate.merge(report);
+    }
+    aggregate
+}
+
+fn decode_to_parser_diagnostic(diagnostic: &DecodeDiagnostic) -> ParserDiagnostic {
+    let severity = match diagnostic.severity {
+        DecodeSeverity::Info => ParserSeverity::Info,
+        DecodeSeverity::Warning => ParserSeverity::Warning,
+        DecodeSeverity::Error => ParserSeverity::RecoverableError,
+        DecodeSeverity::Fatal => ParserSeverity::FatalError,
+        DecodeSeverity::SecurityLimit => ParserSeverity::SecurityLimit,
+    };
+    let category = if diagnostic.limit_name.is_some() {
+        ParserCategory::ResourceLimit
+    } else {
+        ParserCategory::FilterDecode
+    };
+    let mut parser = ParserDiagnostic::new(
+        severity,
+        category,
+        diagnostic.code.clone(),
+        diagnostic.message.clone(),
+    )
+    .with_source(format!("{:?}", diagnostic.source));
+    parser.object = diagnostic.object;
+    parser.page = diagnostic.page_index;
+    parser.path = diagnostic.stream_context.clone();
+    parser.expected = diagnostic
+        .limit_name
+        .as_ref()
+        .zip(diagnostic.limit_value)
+        .map(|(name, value)| format!("{name}<={value}"));
+    parser.actual = diagnostic.observed_value.map(|value| value.to_string());
+    parser.output_may_be_incomplete = diagnostic.partial_output_discarded;
+    parser.hostile = matches!(diagnostic.severity, DecodeSeverity::SecurityLimit);
+    parser
 }
 
 pub(crate) fn diagnose_pdf_bytes(data: &[u8]) -> Vec<ParserDiagnostic> {
@@ -1305,6 +1388,27 @@ mod tests {
         pdf
     }
 
+    fn tiny_pdf_with_bad_stream_filter() -> Vec<u8> {
+        let mut pdf = Vec::new();
+        pdf.extend_from_slice(b"%PDF-1.7\n");
+        let obj1 = pdf.len();
+        pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+        let obj2 = pdf.len();
+        pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Count 0 /Kids [] >>\nendobj\n");
+        let obj3 = pdf.len();
+        pdf.extend_from_slice(
+            b"3 0 obj\n<< /Length 3 /Filter /BogusDecode >>\nstream\nabc\nendstream\nendobj\n",
+        );
+        let xref = pdf.len();
+        pdf.extend_from_slice(
+            format!(
+                "xref\n0 4\n0000000000 65535 f\n{obj1:010} 00000 n\n{obj2:010} 00000 n\n{obj3:010} 00000 n\ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n"
+            )
+            .as_bytes(),
+        );
+        pdf
+    }
+
     #[test]
     fn audit_report_distinguishes_strict_failure_from_repair_success() {
         let mut pdf = tiny_pdf();
@@ -1393,5 +1497,26 @@ mod tests {
         assert!(report.repair_summary.truncated_objects.contains(&1));
         assert!(report.repair_summary.recovered_page_objects.contains(&1));
         assert!(report.repair_summary.page_tree_reconstructed);
+    }
+
+    #[test]
+    fn parser_report_can_include_decode_diagnostics() {
+        let options = ParserReportOptions {
+            include_decode: true,
+            decode_limits: DecodeLimits::default(),
+        };
+        let report = parser_report_bytes_with_options(
+            &tiny_pdf_with_bad_stream_filter(),
+            ParserMode::Audit,
+            b"",
+            options,
+        );
+        let decode = report.decode.as_ref().expect("decode report");
+        assert_eq!(decode.metrics.streams_seen, 1);
+        assert_eq!(decode.metrics.unsupported_filters, 1);
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "decode_unsupported_filter"));
     }
 }

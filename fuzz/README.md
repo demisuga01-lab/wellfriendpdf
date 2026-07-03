@@ -69,6 +69,37 @@ cargo +nightly fuzz run structured_pdf
 cargo +nightly fuzz run parse_pdf -- -max_total_time=900 -max_len=65536
 ```
 
+### Decode fuzz campaign harness
+
+Prompt 02B adds a reproducible campaign wrapper:
+
+```sh
+# Short decode-focused campaign. Writes logs under target/fuzz-campaigns/.
+python scripts/run_decode_fuzz_campaign.py --group quick --runs 256
+
+# Parser/decode targets used for overnight local runs.
+python scripts/run_decode_fuzz_campaign.py --group parser-decode --runs 100000
+
+# Dry-run to verify commands without invoking cargo-fuzz.
+python scripts/run_decode_fuzz_campaign.py --group risky-codec --dry-run
+```
+
+Groups:
+
+- `quick`: `filters`, `predictor`, `image_decoders`.
+- `parser-decode`: `filters`, `predictor`, `parser_report`, `xref_stream`,
+  `object_stream`.
+- `risky-codec`: `image_decoders`.
+- `all`: decode/parser targets plus `cos_object`.
+
+Campaign output records git commit, Rust tool versions, target names, command
+status, and per-target log tails. It never writes outside `target/` unless
+`--out-dir` is explicitly supplied.
+
+Small reviewed seed inputs for decode fuzzing live under `fuzz/seeds/`. They are
+not libFuzzer's mutable corpus directory; copy or import them into
+`fuzz/corpus/<target>/` for local campaigns if desired.
+
 Seed corpora live in `corpus/<target>/`. cargo-fuzz seeds from there and writes
 newly-discovered interesting inputs back into it.
 

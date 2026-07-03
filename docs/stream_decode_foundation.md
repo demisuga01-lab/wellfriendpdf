@@ -46,14 +46,73 @@ for valid documents under the caps.
 | Limit | Default | Enforced in |
 | --- | ---: | --- |
 | Lossless decoded bytes per stream | 512 MiB | Flate, LZW, RunLength, ASCIIHex, ASCII85, streaming readers |
+| Lossless decoded bytes per document | 2 GiB | `DecodeLimits` and scheduler/reporting surfaces |
 | Filter chain depth | 16 filters | `decode_stream_parts`, `decode_stream_reader_with_cap` |
 | Predictor row bytes | 64 MiB | buffered and streaming predictor paths |
 | Image pixels | `OXIDE_MAX_DECODE_PIXELS` or engine default | `ensure_decode_budget` before pixel sink allocation |
 | Image decoded byte addressability | platform `usize` | `ensure_decode_budget` |
 | Object stream cache | bounded by reader cache budget | `BoundedObjectStreamCache` in `reader.rs` |
+| General decode cache | 32 MiB budget, 4 MiB entry cap | `DecodeCache` utility |
+| Decode scheduler memory budget | 512 MiB default | `DecodeMemoryBudget` tokens |
 
 The stream cap is an engine backstop. Server/API layers can apply tighter
-request-level limits.
+request-level limits through `DecodeLimits`. Public profiles are:
+
+- `DecodeLimits::default()` for normal SDK use.
+- `DecodeLimits::strict_low_memory()` for constrained service workers.
+- `DecodeLimits::audit_generous()` for finite forensic inspection.
+
+The CLI exposes this through `oxide parser-report --include-decode
+--decode-profile default|low-memory|audit` plus high-value overrides for stream
+MiB, chain depth, image megapixels, and decode cache MiB.
+
+## Public Decode Diagnostics
+
+Prompt 02B adds a typed stream decode report surface in
+`crates/engine/src/filters.rs`:
+
+- `DecodeReport`
+- `DecodeDiagnostic`
+- `DecodeMetrics`
+- `DecodeLimits`
+
+Diagnostics include stable code, severity, source, filter name, chain index,
+object id/generation when known, raw stream length, decoded bytes, limit name
+and value for cap hits, predictor parameters, image dimensions, partial-output
+status, and a stable human message.
+
+`parser-report` exposes the report only when requested:
+
+```sh
+oxide parser-report input.pdf --mode audit --json --include-decode
+```
+
+Example shape:
+
+```json
+{
+  "decode": {
+    "ok": false,
+    "metrics": {
+      "streams_seen": 1,
+      "streams_failed": 1,
+      "unsupported_filters": 1
+    },
+    "diagnostics": [
+      {
+        "code": "decode_unsupported_filter",
+        "severity": "error",
+        "source": "unknown_filter",
+        "filter_name": "BogusDecode",
+        "object": [7, 0]
+      }
+    ]
+  }
+}
+```
+
+Normal reports omit `decode` so existing parser-report JSON remains stable
+unless callers opt into stream auditing.
 
 ## Filter Support Table
 
@@ -73,39 +132,52 @@ request-level limits.
 
 ## Decode Cache
 
-Prompt 02 did not add a general decoded-stream cache. The existing parser already
-has a bounded object-stream cache (`BoundedObjectStreamCache`) for repeated object
-stream member access, and rendering has its own glyph/shading caches. A general
-decoded-content/image cache would need per-entry byte accounting, a max-entry
-size, thread-safe eviction, and a document-level memory budget. Most content
-streams are decoded once, while image pixels are often too large to cache safely.
+Prompt 02B adds `DecodeCache`, a per-document LRU utility with exact byte
+accounting:
 
-The accepted architecture is: keep the object-stream cache, avoid caching huge
-pixels, and add a future small-stream LRU only after workload evidence shows
-meaningful reuse.
+- configurable total budget and max-entry size;
+- no global state or cross-document leakage;
+- no caching of failed decodes as successful bytes;
+- oversize entries are skipped, not partially stored;
+- metrics for hits, misses, evictions, current bytes, and skipped oversize
+  entries.
+
+The cache is intentionally for small decoded streams and metadata-like outputs.
+Huge image pixels are not cached by default because that risks consuming the
+document memory budget faster than repeated decode saves CPU.
 
 ## Parallel Decode
 
-Prompt 02 does not add a new global decode scheduler. Oxide already parallelizes
-page-level extraction with Rayon and keeps `PdfReader` shareable across workers.
-The stream decoders are deterministic, per-stream `Read` chains and are safe to
-use concurrently through independent calls. Adding a second lower-level scheduler
-inside the decoder would risk nested oversubscription and aggregate memory-budget
-violations.
+Prompt 02B adds `DecodeMemoryBudget`, `ScheduledDecodeJob`, and
+`run_scheduled_decode_jobs`. This is a controlled work-stealing foundation over
+Rayon:
 
-The next safe integration point is page/resource scheduling: decode independent
-page content streams or image resources in bounded windows, with per-document
-memory tokens. That belongs with the page/render/OCR scheduler rather than inside
-individual filter implementations.
+- callers choose max workers through `DecodeLimits`;
+- each job reserves memory tokens before executing;
+- a job larger than the aggregate budget fails with a structured engine error;
+- output is sorted by original job index for deterministic results;
+- tests prove scheduled ASCIIHex decode matches serial decode.
+
+The scheduler is not forced into every rendering/extraction path yet. That is a
+deliberate integration boundary: page/render/OCR scheduling can adopt this
+foundation without changing filter semantics or causing nested thread pools.
 
 ## SIMD and Delimiter Scanning
 
-Prompt 02 does not add SIMD scanning. Prompt 01 established scalar repair and
-parser-report scanning for structural markers. Stream decoding itself does not
-currently depend on large delimiter scans except through parser repair. A future
-SIMD implementation should accelerate only a scalar candidate scanner and must
-prove exact candidate equality for `obj`, `endobj`, `stream`, `endstream`, `xref`,
-`trailer`, and `startxref` on binary data with false positives.
+Prompt 02B adds `decode_scanner`:
+
+- scalar reference scanner for `obj`, `endobj`, `stream`, `endstream`, `xref`,
+  `trailer`, and `startxref`;
+- an accelerated entry point that currently reports
+  `ScalarFallbackNoUnsafeSimd`;
+- equality tests between scalar and accelerated candidate sets;
+- explicit documentation that scanner candidates are raw byte candidates, not
+  parser-valid objects.
+
+No unsafe SIMD was added because `oxide-engine` has `#![forbid(unsafe_code)]`.
+The future SIMD path must either use a safe portable implementation or stay
+feature-gated outside the core engine. `scripts/scan_marker_bench.py` provides a
+small benchmark harness for measuring whether scanner acceleration is worthwhile.
 
 ## Fuzz and Property Coverage
 
@@ -123,15 +195,23 @@ including filter chains and predictors. Cap tests cover decompression bombs,
 filter-chain depth, predictor row geometry, ASCII output, RunLength output, LZW
 output, and streaming ASCII output.
 
+Prompt 02B adds:
+
+- `scripts/run_decode_fuzz_campaign.py` for quick or long fuzz campaigns with
+  per-target logs and JSON summaries under `target/fuzz-campaigns/`;
+- compact seed inputs under `fuzz/seeds/`;
+- `scripts/codec_corpus_runner.py` for user-provided hostile PDF/raw-codec
+  corpora, using `parser-report --include-decode` for PDFs and metadata-only
+  cataloging for raw codec files.
+
 ## Known Limits
 
-- Decode diagnostics still use `OxideError` strings rather than a dedicated
-  public `DecodeDiagnostic` type. Parser-report does not force all streams to
-  decode, so decode metrics are not yet a full-document audit histogram.
-- JPX/JBIG2/CCITT are pure Rust library adapters, not subprocess-sandboxed
-  codecs. Resource limits are enforced at Oxide boundaries, but there is no
-  process isolation.
-- The general decoded-stream cache is intentionally not implemented until
-  workload data shows reuse worth the added memory complexity.
-- Parallel decode is available through existing page-level parallelism, not a
-  new decode-specific work-stealing scheduler.
+- Python and C ABI do not yet expose decode diagnostics directly. The stable
+  surfaces for Prompt 02B are Rust and parser-report JSON.
+- Risky codecs remain in-process. This is a documented pure-Rust plus caps
+  decision, not subprocess/RLBox isolation.
+- The scheduler foundation is implemented, but broad render/extraction adoption
+  is deferred to the subsystem scheduler prompts to avoid nested oversubscription.
+- SIMD is not implemented in the core engine because unsafe code is forbidden;
+  the scanner abstraction and equality tests are in place for a future safe
+  implementation.

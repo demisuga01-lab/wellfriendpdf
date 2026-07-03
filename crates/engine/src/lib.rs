@@ -80,6 +80,9 @@ pub mod classify;
 pub mod compliance;
 pub mod content;
 pub mod crypto;
+pub mod decode_cache;
+pub mod decode_scanner;
+pub mod decode_scheduler;
 pub mod docmodel;
 pub mod document;
 pub mod editing;
@@ -151,6 +154,14 @@ pub use crypto::{
     verify_v5_perms, verify_v5_user_password, CryptMethod, EncryptAlgorithm, EncryptParams,
     EncryptState, EncryptionInfo, Rc4, SecretBytes, V5Fields, PADDING,
 };
+pub use decode_cache::{DecodeCache, DecodeCacheKey, DecodeCacheMetrics};
+pub use decode_scanner::{
+    scan_pdf_markers_accelerated, scan_pdf_markers_scalar, MarkerCandidate, MarkerScanResult,
+    ScannerImplementation, PDF_DELIMITER_MARKERS,
+};
+pub use decode_scheduler::{
+    run_scheduled_decode_jobs, DecodeMemoryBudget, DecodeSchedulerMetrics, ScheduledDecodeJob,
+};
 pub use docmodel::{
     render_markdown as render_document_markdown, ClassifiedType, DocBlock, DocumentModel, ListItem,
     ModelSource, RegionKind,
@@ -172,8 +183,10 @@ pub use extract::{
     LineItem, ValueHint, FIELDS_SCHEMA_VERSION,
 };
 pub use filters::{
-    decode_stream, decode_stream_lossless, flate_encode, DecodedStream, StreamDecodeStatus,
-    MAX_FLATE_DECOMPRESSED_BYTES,
+    decode_image_budget_report, decode_stream, decode_stream_lossless,
+    decode_stream_lossless_with_limits, flate_encode, DecodeDiagnostic, DecodeDiagnosticSource,
+    DecodeImageParams, DecodeLimits, DecodeMetrics, DecodePredictorParams, DecodeReport,
+    DecodeSeverity, DecodedStream, StreamDecodeStatus, MAX_FLATE_DECOMPRESSED_BYTES,
 };
 pub use fonts::variations::{AxisValue, VariationRequest};
 pub use fonts::{FontResolver, FontType};
@@ -200,10 +213,11 @@ pub use parse::{
     InlineText, ListEntry, Page, ParseOptions, SerializeOptions, SourceInfo, SCHEMA_VERSION,
 };
 pub use parser_report::{
-    arlington_status, parser_report_bytes, parser_report_bytes_with_password,
-    ArlingtonIntegrationStatus, DiagnosticCounts, LinearizationInfo, ParserCategory,
-    ParserDiagnostic, ParserMode, ParserReport, ParserSeverity, ParserSourceMetrics, RepairSummary,
-    RevisionHistory, RevisionSection,
+    arlington_status, parser_report_bytes, parser_report_bytes_with_options,
+    parser_report_bytes_with_password, ArlingtonIntegrationStatus, DiagnosticCounts,
+    LinearizationInfo, ParserCategory, ParserDiagnostic, ParserMode, ParserReport,
+    ParserReportOptions, ParserSeverity, ParserSourceMetrics, RepairSummary, RevisionHistory,
+    RevisionSection,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{

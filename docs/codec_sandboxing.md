@@ -5,6 +5,23 @@ huge geometry, a malformed arithmetic-coded stream can stress CPU paths, and
 symbol-dictionary codecs such as JBIG2 have a history of security-sensitive
 failures. Oxide treats stream decoding as hostile by default.
 
+## Prompt 02B Dependency Audit
+
+Prompt 02B rechecked the risky codec dependency boundary from source and Cargo
+metadata. The current decoder adapters use Rust crates:
+
+- `jpeg-decoder` for DCT/JPEG;
+- `hayro-jpeg2000` for JPX/JPEG 2000;
+- `hayro-ccitt` for CCITT fax;
+- `hayro-jbig2` for JBIG2.
+
+Oxide does not link Poppler, PDFium, OpenJPEG, libjpeg, jbig2dec, or other C/C++
+codec libraries for these paths. The engine crate itself also has
+`#![forbid(unsafe_code)]`. Prompt 02B did not perform a line-by-line audit of
+all transitive dependency internals, so the claim is limited to the integration
+boundary: Oxide invokes Rust crates in-process and enforces Oxide-owned caps
+before or around decode.
+
 ## Current Codec Boundaries
 
 | Codec | Implementation | Native code | Current boundary | Prompt 02 posture |
@@ -41,6 +58,18 @@ sandbox, seccomp profile, or OS job object. The current protection is in-process
 pure Rust decoding plus resource limits and fuzz/property tests. This is an
 important safety boundary, but it is not equivalent to process isolation.
 
+Prompt 02B makes this an explicit Outcome C decision:
+
+- in-process decoding remains the default because the active risky-codec paths
+  are Rust dependencies rather than native libraries;
+- output, pixel, predictor, and filter-chain caps are enforced at Oxide
+  boundaries;
+- public decode diagnostics and parser-report JSON expose cap hits and codec
+  failures;
+- subprocess/RLBox isolation is deferred until Oxide introduces a native codec
+  dependency or fuzz/corpus evidence shows an in-process Rust codec needs OS
+  containment.
+
 Oxide also does not write JBIG2. In particular, it does not perform lossy JBIG2
 symbol substitution or any JBIG2 re-encoding that could alter document meaning.
 If JBIG2 writing is ever added, it should be handled as a separate security and
@@ -61,3 +90,12 @@ codec execution behind a process or WASM boundary:
 
 That future work should not create a second filter pipeline. It should wrap the
 codec adapters under `crates/engine/src/images/`.
+
+## Validation Hooks
+
+- `DecodeDiagnostic` records sandbox-wrapper source values even though no
+  subprocess worker is currently active.
+- `scripts/codec_corpus_runner.py` can be pointed at hostile PDF/raw-codec
+  directories and records clean errors, unsupported paths, and timeouts.
+- `scripts/run_decode_fuzz_campaign.py --group risky-codec` runs the risky-codec
+  fuzz target set.
