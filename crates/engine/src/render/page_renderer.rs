@@ -1982,7 +1982,7 @@ impl<'a> RenderState<'a> {
 
         for glyph in decoded {
             let mut ttf_advance = None;
-            if !matches!(self.gs.text.rendering_mode, 3 | 7) {
+            if !matches!(self.gs.text.rendering_mode, 3 | 7) && should_paint_decoded_glyph(&glyph) {
                 if let (Some(font_bytes), Some(font_hash)) = (font_bytes.as_ref(), font_hash) {
                     if !font_bytes.is_empty() {
                         ttf_advance = self.render_glyph_with_cache(GlyphRenderRequest {
@@ -2317,6 +2317,20 @@ fn decoded_text_for_shaping(glyphs: &[DecodedGlyph]) -> Option<String> {
         text.push(glyph.unicode);
     }
     crate::render::shaping::needs_shaping(&text).then_some(text)
+}
+
+fn should_paint_decoded_glyph(glyph: &DecodedGlyph) -> bool {
+    if glyph.is_gid {
+        return true;
+    }
+    if glyph.unicode == '\u{FFFD}' {
+        return glyph
+            .glyph_name
+            .as_deref()
+            .is_some_and(|name| name != ".notdef");
+    }
+    let codepoint = glyph.unicode as u32;
+    !(codepoint < 0x20 || codepoint == 0x7F)
 }
 
 fn positive_u32(value: Option<i64>, default: u32) -> u32 {
@@ -3795,6 +3809,44 @@ mod tests {
 
     fn fixture(path: &str) -> String {
         format!("{}/tests/fixtures/{}", env!("CARGO_MANIFEST_DIR"), path)
+    }
+
+    fn decoded_glyph(unicode: char, is_gid: bool, glyph_name: Option<&str>) -> DecodedGlyph {
+        DecodedGlyph {
+            code: unicode as u16,
+            unicode,
+            glyph_name: glyph_name.map(str::to_string),
+            is_space: unicode == ' ',
+            width: None,
+            is_gid,
+            is_vertical: false,
+            vertical_advance: None,
+            vertical_origin: None,
+        }
+    }
+
+    #[test]
+    fn skips_non_cid_replacement_and_control_glyph_painting() {
+        assert!(!should_paint_decoded_glyph(&decoded_glyph(
+            '\u{FFFD}', false, None
+        )));
+        assert!(!should_paint_decoded_glyph(&decoded_glyph(
+            '\u{FFFD}',
+            false,
+            Some(".notdef")
+        )));
+        assert!(!should_paint_decoded_glyph(&decoded_glyph(
+            '\0', false, None
+        )));
+        assert!(should_paint_decoded_glyph(&decoded_glyph(
+            '\u{FFFD}',
+            false,
+            Some("G1")
+        )));
+        assert!(should_paint_decoded_glyph(&decoded_glyph('A', false, None)));
+        assert!(should_paint_decoded_glyph(&decoded_glyph(
+            '\u{FFFD}', true, None
+        )));
     }
 
     fn simple_pdf_with_extgstate(

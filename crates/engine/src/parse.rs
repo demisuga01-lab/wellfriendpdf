@@ -1018,6 +1018,7 @@ fn ocr_word_to_chunk(
         is_rtl,
         is_vertical: false,
         is_invisible: false,
+        is_actual_text: false,
     }
 }
 
@@ -1122,6 +1123,7 @@ fn merge_ocr_words_into_lines(
             is_rtl: rtl,
             is_vertical: false,
             is_invisible: false,
+            is_actual_text: false,
         });
     }
     lines
@@ -1250,6 +1252,7 @@ fn build_ocr_run(words: &[crate::text::TextChunk], idxs: &[usize]) -> crate::tex
         is_rtl: rtl,
         is_vertical: false,
         is_invisible: false,
+        is_actual_text: false,
     }
 }
 

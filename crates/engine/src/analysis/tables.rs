@@ -1726,6 +1726,7 @@ mod tests {
             is_rtl: false,
             is_vertical: false,
             is_invisible: false,
+            is_actual_text: false,
         }
     }
 

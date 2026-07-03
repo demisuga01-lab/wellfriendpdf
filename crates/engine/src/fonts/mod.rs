@@ -5,6 +5,7 @@ pub mod glyph_list;
 pub mod predefined_cmap;
 pub mod provider;
 pub mod resolver;
+pub(crate) mod sfnt_subset;
 pub mod shaper;
 pub(crate) mod type1;
 pub mod variations;

@@ -521,6 +521,7 @@ impl ReadingOrderReconstructor {
                 let x_max = if x_max.is_finite() { x_max } else { 0.0 };
 
                 let mut text = String::new();
+                let has_actual_text = group.iter().any(|chunk| chunk.is_actual_text);
                 for (i, chunk) in group.iter().enumerate() {
                     if i > 0 {
                         let prev = &group[i - 1];
@@ -541,7 +542,11 @@ impl ReadingOrderReconstructor {
                 // sequence into logical reading order with the Unicode
                 // Bidirectional Algorithm. Pure-LTR lines take a fast path and
                 // are returned unchanged (zero behaviour change, no allocation).
-                let text = visual_to_logical(text);
+                let text = if has_actual_text {
+                    text
+                } else {
+                    visual_to_logical(text)
+                };
 
                 TextLine {
                     text,
@@ -703,6 +708,7 @@ mod tests {
             is_rtl: false,
             is_vertical: false,
             is_invisible: false,
+            is_actual_text: false,
         }
     }
 
@@ -718,6 +724,7 @@ mod tests {
             is_rtl: false,
             is_vertical: true,
             is_invisible: false,
+            is_actual_text: false,
         }
     }
 
@@ -1155,6 +1162,7 @@ mod tests {
                 is_rtl: true,
                 is_vertical: false,
                 is_invisible: false,
+                is_actual_text: false,
             },
             TextChunk {
                 text: "\u{05DC}".to_string(), // lamed, middle
@@ -1166,6 +1174,7 @@ mod tests {
                 is_rtl: true,
                 is_vertical: false,
                 is_invisible: false,
+                is_actual_text: false,
             },
             TextChunk {
                 text: "\u{05D4}".to_string(), // he, rightmost on page
@@ -1177,6 +1186,7 @@ mod tests {
                 is_rtl: true,
                 is_vertical: false,
                 is_invisible: false,
+                is_actual_text: false,
             },
         ];
         let lines = r.reconstruct(chunks);

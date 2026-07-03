@@ -131,3 +131,25 @@ text while the Poppler reference image for that fixture is effectively blank.
 - Full vertical glyph substitution and vertical punctuation alternates are not
   implemented.
 - Color glyph rendering is detected and diagnosed, not rendered in color.
+
+## Prompt 04C Follow-Up
+
+Prompt 04C implemented the named sfnt/glyf subsetting campaign for the generated
+Type0/CIDFontType2 TrueType path. The writer now emits a real subset `FontFile2`
+program for `glyf`/`loca` fonts, preserves original GIDs, prunes unused glyph
+programs to empty records, includes composite dependencies, rebuilds table
+checksums and `head.checkSumAdjustment`, and falls back explicitly for CFF,
+collections, malformed sfnt data, or resource-limit hits.
+
+The Prompt 04C benchmark reran the same 24-file Poppler font/text slice:
+
+- visual pass: 45.83% -> 45.83%
+- weighted score: 45.21 -> 45.21
+- peak Oxide memory: 11.28 MB -> 11.54 MB
+- artifact path: `target/prompt04c-font-render-benchmark-v2/`
+
+The subsetting production-output gap is closed for the bounded TrueType/glyf
+path, but the visual-benchmark gap remains. The remaining failing files are
+dominated by existing-PDF CJK/RTL/Type1C raster and positioning differences plus
+two blank-reference mismatches. See `docs/font_prompt04c_failure_analysis.md`
+and `docs/font_subsystem_prompt04c.md`.

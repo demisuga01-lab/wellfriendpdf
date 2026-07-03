@@ -300,3 +300,34 @@ font-substitution, hinting, and text-shape differences against Poppler. The
 `real_pdfjs_vertical` artifact is specifically not a score target: Oxide renders
 visible vertical text, while the Poppler reference image in this harness is
 effectively blank for that fixture.
+
+## Prompt 04C Font Slice Rerun
+
+Prompt 04C reran the same 24-file font/text Poppler slice after implementing
+true sfnt/glyf subsetting for generated Type0/CIDFontType2 output and a narrow
+non-CID `.notdef`/control-glyph paint guard.
+
+Command:
+
+```powershell
+cargo build --release -p oxide-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04c-font-render-benchmark-v2 --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+```
+
+Results:
+
+| metric | Prompt 04B | Prompt 04C |
+| --- | ---: | ---: |
+| files | 24 | 24 |
+| visual pages compared | 24 | 24 |
+| visual pages passed | 11 | 11 |
+| visual pass | 45.83% | 45.83% |
+| weighted score | 45.21 | 45.21 |
+| peak Oxide memory | 11.28 MB | 11.54 MB |
+
+Local metrics moved in the Standard14/font-edge bucket
+(`pdfjs_full_standard_fonts` exact match 89.0344 -> 89.4102), but not enough to
+move the aggregate pass threshold. The remaining Prompt 04 visual blockers are
+not generated-output embedding problems; they require a focused CFF/Type1C,
+CJK/RTL glyph positioning, or raster/hinting fidelity pass, or a formal
+acceptance-gate change.

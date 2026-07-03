@@ -733,6 +733,7 @@ fn text_chunks_have_valid_fields_from_real_pdf() {
         );
         let _ = chunk.is_vertical;
         let _ = chunk.is_invisible;
+        let _ = chunk.is_actual_text;
     }
 }
 
@@ -750,6 +751,7 @@ fn reading_order_reconstructor_handles_all_new_chunk_fields() {
             is_rtl: false,
             is_vertical: false,
             is_invisible: false,
+            is_actual_text: false,
         },
         TextChunk {
             text: "B".to_string(),
@@ -761,6 +763,7 @@ fn reading_order_reconstructor_handles_all_new_chunk_fields() {
             is_rtl: false,
             is_vertical: false,
             is_invisible: true,
+            is_actual_text: false,
         },
         TextChunk {
             text: "C".to_string(),
@@ -772,6 +775,7 @@ fn reading_order_reconstructor_handles_all_new_chunk_fields() {
             is_rtl: false,
             is_vertical: true,
             is_invisible: false,
+            is_actual_text: false,
         },
     ];
     let lines = r.reconstruct(chunks);

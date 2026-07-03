@@ -5,7 +5,7 @@
 //! [`PdfPageBuilder::pdf_y_from_top`] when a top-left UI coordinate is more
 //! convenient.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::Cursor;
 use std::path::Path;
 
@@ -14,11 +14,13 @@ use crate::error::{OxideError, Result};
 use crate::filters::flate_encode;
 use crate::fonts::encoding::{zapf_dingbats_name_to_unicode, Encoding};
 use crate::fonts::glyph_list::glyph_name_to_unicode;
+use crate::fonts::sfnt_subset::{subset_glyf_preserving_gids, SfntSubsetError, SfntSubsetMetrics};
 use crate::fonts::{ShapeOptions, TextShaper};
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::render::get_fallback_font;
 use crate::writer::{OutputObject, PdfWriter, WriterMode};
+use sha2::{Digest, Sha256};
 
 const DEFAULT_FONT_SIZE: f64 = 12.0;
 const DEFAULT_LINE_HEIGHT: f64 = 1.2;
@@ -132,9 +134,10 @@ impl PdfBuilder {
 
     /// Register a TrueType font program for authored text.
     ///
-    /// The current authoring layer embeds the complete font program as a
-    /// Type0/CIDFontType2 font with Identity-H encoding and a ToUnicode CMap.
-    /// Font subsetting is deliberately left to the next size-optimization pass.
+    /// Authored Unicode text is emitted as a Type0/CIDFontType2 font with
+    /// Identity-H encoding and a ToUnicode CMap. TrueType `glyf` fonts are
+    /// subset during serialization; unsupported font programs fall back to
+    /// full embedding with a structured fallback reason in the font stream.
     pub fn register_font_bytes(
         &mut self,
         name: impl Into<String>,
@@ -1762,6 +1765,20 @@ struct EmbeddedFontPlan {
 }
 
 #[derive(Debug, Clone)]
+struct FontProgramSelection {
+    base_name: String,
+    bytes: Vec<u8>,
+    subset: Option<SfntSubsetMetrics>,
+    fallback: Option<SfntSubsetFallback>,
+}
+
+#[derive(Debug, Clone)]
+struct SfntSubsetFallback {
+    code: &'static str,
+    reason: String,
+}
+
+#[derive(Debug, Clone)]
 struct CidEntry {
     cid: u16,
     glyph_id: u16,
@@ -1885,6 +1902,17 @@ impl FontBuildPlan {
 
     fn shaped_run(&self, font: FontFace, text: &str) -> Option<&ShapedTextPlan> {
         self.embedded.get(&font)?.shaped_runs.get(text)
+    }
+}
+
+impl EmbeddedFontPlan {
+    fn requested_glyphs(&self) -> BTreeSet<u16> {
+        let mut glyphs = BTreeSet::new();
+        glyphs.insert(0);
+        for entry in &self.entries {
+            glyphs.insert(entry.glyph_id);
+        }
+        glyphs
     }
 }
 
@@ -2362,7 +2390,9 @@ fn build_embedded_type0_font(
     let cid_to_gid_number = alloc(next);
 
     let metrics = TrueTypeMetrics::parse(font_bytes)?;
-    let cmap_name = format!("{base_name}ToUnicode");
+    let font_program = select_embedded_font_program(base_name, font, font_bytes, plan)?;
+    let embedded_base_name = font_program.base_name.as_str();
+    let cmap_name = format!("{embedded_base_name}ToUnicode");
 
     let mut objects = Vec::new();
     objects.push(OutputObject {
@@ -2370,7 +2400,7 @@ fn build_embedded_type0_font(
         object: PdfObject::Dictionary(dict(&[
             ("Type", PdfObject::Name("Font".to_string())),
             ("Subtype", PdfObject::Name("Type0".to_string())),
-            ("BaseFont", PdfObject::Name(base_name.to_string())),
+            ("BaseFont", PdfObject::Name(embedded_base_name.to_string())),
             ("Encoding", PdfObject::Name("Identity-H".to_string())),
             (
                 "DescendantFonts",
@@ -2383,7 +2413,7 @@ fn build_embedded_type0_font(
     objects.push(OutputObject {
         number: descendant_number,
         object: PdfObject::Dictionary(cid_font_dict(
-            base_name,
+            embedded_base_name,
             descriptor_number,
             cid_to_gid_number,
             font,
@@ -2393,16 +2423,24 @@ fn build_embedded_type0_font(
     });
     objects.push(OutputObject {
         number: descriptor_number,
-        object: PdfObject::Dictionary(font_descriptor_dict(base_name, font_file_number, &metrics)),
+        object: PdfObject::Dictionary(font_descriptor_dict(
+            embedded_base_name,
+            font_file_number,
+            &metrics,
+        )),
     });
 
     let mut font_file_dict = PdfDictionary::empty();
-    font_file_dict.insert("Length1", PdfObject::Integer(font_bytes.len() as i64));
+    font_file_dict.insert(
+        "Length1",
+        PdfObject::Integer(font_program.bytes.len() as i64),
+    );
+    annotate_subset_font_stream(&mut font_file_dict, &font_program);
     objects.push(OutputObject {
         number: font_file_number,
         object: PdfObject::Stream {
             dict: font_file_dict,
-            raw: font_bytes.to_vec(),
+            raw: font_program.bytes,
         },
     });
 
@@ -2425,6 +2463,105 @@ fn build_embedded_type0_font(
         top_object: type0_number,
         objects,
     })
+}
+
+fn select_embedded_font_program(
+    base_name: &str,
+    font: FontFace,
+    font_bytes: &[u8],
+    plan: &FontBuildPlan,
+) -> Result<FontProgramSelection> {
+    let embedded = plan.embedded_plan(font)?;
+    let requested_glyphs = embedded.requested_glyphs();
+    match subset_glyf_preserving_gids(font_bytes, &requested_glyphs) {
+        Ok(subset) => {
+            let base_name =
+                deterministic_subset_font_name(base_name, font_bytes, embedded, &subset.metrics);
+            Ok(FontProgramSelection {
+                base_name,
+                bytes: subset.bytes,
+                subset: Some(subset.metrics),
+                fallback: None,
+            })
+        }
+        Err(err) => Ok(FontProgramSelection {
+            base_name: base_name.to_string(),
+            bytes: font_bytes.to_vec(),
+            subset: None,
+            fallback: Some(subset_fallback(err)),
+        }),
+    }
+}
+
+fn subset_fallback(err: SfntSubsetError) -> SfntSubsetFallback {
+    SfntSubsetFallback {
+        code: err.code(),
+        reason: err.to_string(),
+    }
+}
+
+fn deterministic_subset_font_name(
+    base_name: &str,
+    font_bytes: &[u8],
+    embedded: &EmbeddedFontPlan,
+    metrics: &SfntSubsetMetrics,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(base_name.as_bytes());
+    hasher.update(font_bytes);
+    hasher.update(metrics.strategy.as_bytes());
+    for entry in &embedded.entries {
+        hasher.update(entry.cid.to_be_bytes());
+        hasher.update(entry.glyph_id.to_be_bytes());
+        hasher.update(entry.unicode.as_bytes());
+    }
+    let digest = hasher.finalize();
+    let tag: String = digest[..6]
+        .iter()
+        .map(|byte| char::from(b'A' + (byte % 26)))
+        .collect();
+    let clean_base = sanitize_pdf_name(base_name, "OxideSubsetFont");
+    format!("{tag}+{clean_base}")
+}
+
+fn annotate_subset_font_stream(dict: &mut PdfDictionary, selection: &FontProgramSelection) {
+    let mut info = PdfDictionary::empty();
+    if let Some(metrics) = &selection.subset {
+        info.insert("Enabled", PdfObject::Boolean(true));
+        info.insert(
+            "Strategy",
+            PdfObject::String(metrics.strategy.as_bytes().to_vec()),
+        );
+        info.insert(
+            "OriginalBytes",
+            PdfObject::Integer(metrics.original_bytes as i64),
+        );
+        info.insert(
+            "OutputBytes",
+            PdfObject::Integer(metrics.subset_bytes as i64),
+        );
+        info.insert(
+            "GlyphsRequested",
+            PdfObject::Integer(metrics.glyphs_requested as i64),
+        );
+        info.insert(
+            "GlyphsEmbedded",
+            PdfObject::Integer(metrics.glyphs_embedded as i64),
+        );
+    } else {
+        info.insert("Enabled", PdfObject::Boolean(false));
+        if let Some(fallback) = &selection.fallback {
+            info.insert(
+                "FallbackCode",
+                PdfObject::String(fallback.code.as_bytes().to_vec()),
+            );
+            info.insert(
+                "FallbackReason",
+                PdfObject::String(fallback.reason.as_bytes().to_vec()),
+            );
+        }
+    }
+    dict.insert("OxideSubset", PdfObject::Dictionary(info));
 }
 
 fn cid_font_dict(
@@ -3279,6 +3416,127 @@ mod tests {
             let mapped = u16::from_be_bytes([cid_to_gid[offset], cid_to_gid[offset + 1]]);
             assert_eq!(mapped, entry.glyph_id);
         }
+    }
+
+    #[test]
+    fn embedded_truetype_authoring_uses_real_glyf_subset() {
+        let font_bytes =
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/DejaVuSans.ttf")).as_slice();
+        let mut doc = PdfBuilder::new();
+        let font = doc
+            .register_font_bytes("DejaVuSubsetPrompt04C", font_bytes)
+            .unwrap();
+        doc.add_page(PageSize::LETTER)
+            .draw_text("Hello subset", 72.0, 720.0, &TextStyle::new(font, 18.0))
+            .unwrap();
+
+        let plan = FontBuildPlan::from_builder(&doc).unwrap();
+        let mut next = 1;
+        let built =
+            build_embedded_type0_font(&mut next, font, "DejaVuSubsetPrompt04C", font_bytes, &plan)
+                .unwrap();
+        let font_file = built
+            .objects
+            .iter()
+            .find_map(|object| match &object.object {
+                PdfObject::Stream { dict, raw }
+                    if dict.get_name("OxideSubset").is_none()
+                        && dict.get_integer("Length1").is_some() =>
+                {
+                    Some((dict, raw))
+                }
+                PdfObject::Stream { dict, raw }
+                    if matches!(dict.get("OxideSubset"), Some(PdfObject::Dictionary(_))) =>
+                {
+                    Some((dict, raw))
+                }
+                _ => None,
+            })
+            .expect("embedded font file stream");
+        assert!(font_file.1.len() < font_bytes.len());
+        assert_eq!(
+            font_file.0.get_integer("Length1").unwrap() as usize,
+            font_file.1.len()
+        );
+        let subset_info = match font_file.0.get("OxideSubset") {
+            Some(PdfObject::Dictionary(dict)) => dict,
+            other => panic!("missing subset info: {other:?}"),
+        };
+        assert_eq!(subset_info.get_bool("Enabled"), Some(true));
+        assert!(
+            ttf_parser::Face::parse(font_file.1, 0).is_ok(),
+            "subset sfnt must parse"
+        );
+
+        let engine = ContentEngine::open_bytes(doc.to_bytes().unwrap()).unwrap();
+        let text = engine.get_page_text(1).unwrap();
+        assert!(text.contains("Hello subset"), "{text}");
+    }
+
+    #[test]
+    fn embedded_truetype_subset_authoring_is_deterministic() {
+        fn build() -> Vec<u8> {
+            let font_bytes =
+                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/DejaVuSans.ttf"))
+                    .as_slice();
+            let mut doc = PdfBuilder::new();
+            let font = doc
+                .register_font_bytes("DejaVuSubsetDeterministic", font_bytes)
+                .unwrap();
+            doc.add_page(PageSize::LETTER)
+                .draw_text(
+                    "Deterministic subset",
+                    72.0,
+                    720.0,
+                    &TextStyle::new(font, 18.0),
+                )
+                .unwrap();
+            doc.to_bytes().unwrap()
+        }
+        assert_eq!(build(), build());
+    }
+
+    #[test]
+    fn arabic_shaped_authoring_survives_subset_embedding() {
+        let font_bytes =
+            include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/DejaVuSans.ttf")).as_slice();
+        let mut doc = PdfBuilder::new();
+        let font = doc
+            .register_font_bytes("DejaVuArabicSubsetPrompt04C", font_bytes)
+            .unwrap();
+        let arabic = "\u{0633}\u{0644}\u{0627}\u{0645}";
+        doc.add_page(PageSize::LETTER)
+            .draw_text(arabic, 72.0, 720.0, &TextStyle::new(font, 18.0))
+            .unwrap();
+
+        let plan = FontBuildPlan::from_builder(&doc).unwrap();
+        assert!(plan.shaped_run(font, arabic).is_some());
+        let mut next = 1;
+        let built = build_embedded_type0_font(
+            &mut next,
+            font,
+            "DejaVuArabicSubsetPrompt04C",
+            font_bytes,
+            &plan,
+        )
+        .unwrap();
+        let subset_font_bytes = built
+            .objects
+            .iter()
+            .find_map(|object| match &object.object {
+                PdfObject::Stream { dict, raw }
+                    if matches!(dict.get("OxideSubset"), Some(PdfObject::Dictionary(_))) =>
+                {
+                    Some(raw)
+                }
+                _ => None,
+            })
+            .expect("subset font file");
+        assert!(subset_font_bytes.len() < font_bytes.len());
+
+        let engine = ContentEngine::open_bytes(doc.to_bytes().unwrap()).unwrap();
+        let text = engine.get_page_text(1).unwrap();
+        assert!(text.contains(arabic), "{text}");
     }
 
     #[test]

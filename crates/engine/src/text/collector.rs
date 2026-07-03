@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::content::{ContentOperation, GraphicsState, Operand};
 use crate::engine::PageResources;
 use crate::fonts::FontResolver;
+use crate::info::decode_pdf_text_string;
 use crate::reader::PdfReader;
 
 #[derive(Debug, Clone)]
@@ -16,6 +17,7 @@ pub struct TextChunk {
     pub is_rtl: bool,
     pub is_vertical: bool,
     pub is_invisible: bool,
+    pub is_actual_text: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -81,6 +83,12 @@ pub struct TextCollector<'a> {
     reader: Option<&'a PdfReader>,
 }
 
+#[derive(Debug, Clone)]
+struct ActualTextFrame {
+    text: Option<String>,
+    emitted: bool,
+}
+
 impl<'a> TextCollector<'a> {
     pub fn new(resources: PageResources, reader: &'a PdfReader) -> Self {
         Self {
@@ -110,8 +118,33 @@ impl<'a> TextCollector<'a> {
         }
 
         let mut chunks = Vec::new();
+        let mut actual_text_stack: Vec<ActualTextFrame> = Vec::new();
         for operation in operations {
-            self.process_op(operation, &mut chunks);
+            match operation.operator.as_str() {
+                "BDC" => {
+                    actual_text_stack.push(ActualTextFrame {
+                        text: extract_actual_text(operation),
+                        emitted: false,
+                    });
+                    self.gs.process(operation);
+                }
+                "BMC" => {
+                    actual_text_stack.push(ActualTextFrame {
+                        text: None,
+                        emitted: false,
+                    });
+                    self.gs.process(operation);
+                }
+                "EMC" => {
+                    let _ = actual_text_stack.pop();
+                    self.gs.process(operation);
+                }
+                _ => {
+                    let before = chunks.len();
+                    self.process_op(operation, &mut chunks);
+                    apply_actual_text_override(&mut chunks, before, &mut actual_text_stack);
+                }
+            }
         }
         chunks
     }
@@ -130,24 +163,35 @@ impl<'a> TextCollector<'a> {
         let mut chunks = Vec::new();
         let mut marked = Vec::new();
         let mut mcid_stack: Vec<Option<i64>> = Vec::new();
+        let mut actual_text_stack: Vec<ActualTextFrame> = Vec::new();
 
         for operation in operations {
             match operation.operator.as_str() {
                 "BDC" => {
                     mcid_stack.push(extract_mcid(operation));
+                    actual_text_stack.push(ActualTextFrame {
+                        text: extract_actual_text(operation),
+                        emitted: false,
+                    });
                     self.gs.process(operation);
                 }
                 "BMC" => {
                     mcid_stack.push(None);
+                    actual_text_stack.push(ActualTextFrame {
+                        text: None,
+                        emitted: false,
+                    });
                     self.gs.process(operation);
                 }
                 "EMC" => {
                     let _ = mcid_stack.pop();
+                    let _ = actual_text_stack.pop();
                     self.gs.process(operation);
                 }
                 _ => {
                     let before = chunks.len();
                     self.process_op(operation, &mut chunks);
+                    apply_actual_text_override(&mut chunks, before, &mut actual_text_stack);
                     let active_mcid = mcid_stack.iter().rev().find_map(|id| *id);
                     for chunk in chunks[before..].iter().cloned() {
                         marked.push(MarkedTextChunk {
@@ -314,6 +358,7 @@ impl<'a> TextCollector<'a> {
                 is_rtl,
                 is_vertical,
                 is_invisible,
+                is_actual_text: false,
             });
         }
     }
@@ -368,6 +413,57 @@ impl<'a> TextCollector<'a> {
 
 fn extract_mcid(op: &ContentOperation) -> Option<i64> {
     op.operands.iter().find_map(operand_mcid)
+}
+
+fn apply_actual_text_override(
+    chunks: &mut Vec<TextChunk>,
+    before: usize,
+    stack: &mut [ActualTextFrame],
+) {
+    if chunks.len() == before {
+        return;
+    }
+    let Some(frame) = stack.iter_mut().rev().find(|frame| frame.text.is_some()) else {
+        return;
+    };
+    if frame.emitted {
+        chunks.truncate(before);
+        return;
+    }
+    let Some(text) = frame.text.clone() else {
+        return;
+    };
+    if text.is_empty() {
+        chunks.truncate(before);
+    } else {
+        chunks[before].text = text;
+        chunks[before].is_actual_text = true;
+        chunks.truncate(before + 1);
+    }
+    frame.emitted = true;
+}
+
+fn extract_actual_text(op: &ContentOperation) -> Option<String> {
+    op.operands.iter().find_map(operand_actual_text)
+}
+
+fn operand_actual_text(operand: &Operand) -> Option<String> {
+    let Operand::Array(items) = operand else {
+        return None;
+    };
+    let mut iter = items.iter().peekable();
+    while let Some(item) = iter.next() {
+        if matches!(item.as_name(), Some("ActualText")) {
+            return iter
+                .next()
+                .and_then(Operand::as_bytes)
+                .map(decode_pdf_text_string);
+        }
+        if let Some(text) = operand_actual_text(item) {
+            return Some(text);
+        }
+    }
+    None
 }
 
 fn operand_mcid(operand: &Operand) -> Option<i64> {
@@ -510,6 +606,15 @@ mod tests {
         assert_eq!(chunks.len(), 2);
         assert!((chunks[0].y - 700.0).abs() < 1.0);
         assert!((chunks[1].y - 686.0).abs() < 1.0);
+    }
+
+    #[test]
+    fn actual_text_replaces_marked_content_glyph_text_once() {
+        let chunks = collect_text(
+            b"/Span << /ActualText <FEFF0633064406270645> >> BDC BT /F1 12 Tf 100 700 Td (xxxx) Tj (yyyy) Tj ET EMC",
+        );
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].text, "\u{0633}\u{0644}\u{0627}\u{0645}");
     }
 
     #[test]
@@ -729,6 +834,7 @@ mod tests {
             is_rtl: false,
             is_vertical: false,
             is_invisible: true,
+            is_actual_text: false,
         };
         assert_eq!(chunk.right(), 15.0);
         assert!(chunk.is_whitespace());

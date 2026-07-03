@@ -652,6 +652,7 @@ fn rot_chunk_90_swaps_width_and_height_into_upright_run() {
         is_rtl: false,
         is_vertical: false,
         is_invisible: false,
+        is_actual_text: false,
     };
     rot.rotate_chunk(&mut c);
     // Box corners (50,400)→(400,750) and (150,410)→(410,650) give a hull of
