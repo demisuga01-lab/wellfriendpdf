@@ -518,7 +518,7 @@ impl SvgRenderState<'_> {
                 }
             }
             let advance = glyph.width.or(ttf_advance).unwrap_or(500.0);
-            self.advance_text(advance, glyph.is_space);
+            self.advance_decoded_text(advance, &glyph);
         }
     }
 
@@ -585,6 +585,26 @@ impl SvgRenderState<'_> {
             advance += self.gs.text.word_spacing * th;
         }
         self.translate_text_matrix(advance, 0.0);
+    }
+
+    fn advance_decoded_text(&mut self, glyph_width: f64, glyph: &DecodedGlyph) {
+        if !glyph.is_vertical {
+            self.advance_text(glyph_width, glyph.is_space);
+            return;
+        }
+        let mut advance_y =
+            glyph.vertical_advance.unwrap_or(-1000.0) / 1000.0 * self.gs.text.font_size;
+        let spacing = self.gs.text.char_spacing
+            + if glyph.is_space {
+                self.gs.text.word_spacing
+            } else {
+                0.0
+            };
+        if spacing != 0.0 {
+            let sign = if advance_y < 0.0 { -1.0 } else { 1.0 };
+            advance_y += spacing * sign;
+        }
+        self.translate_text_matrix(0.0, advance_y);
     }
 
     fn adjust_text_position(&mut self, adjustment: f64) {

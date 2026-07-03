@@ -2,6 +2,7 @@ pub(crate) mod cid;
 pub mod cmap;
 pub mod encoding;
 pub mod glyph_list;
+pub mod predefined_cmap;
 pub mod provider;
 pub mod resolver;
 pub mod shaper;

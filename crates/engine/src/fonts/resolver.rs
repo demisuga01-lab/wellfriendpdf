@@ -4,6 +4,7 @@ use crate::filters::{decode_stream_from_dict, decode_stream_lossless};
 use crate::fonts::cmap::ToUnicodeCMap;
 use crate::fonts::encoding::Encoding;
 use crate::fonts::glyph_list::glyph_name_to_unicode;
+use crate::fonts::predefined_cmap::{self, PredefinedCMapInfo};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 
@@ -74,6 +75,7 @@ pub struct FontResolver {
     descendant_font: Option<PdfDictionary>,
     default_width: f64,
     code_size: u8,
+    predefined_cmap: Option<PredefinedCMapInfo>,
     /// Writing mode of the font's encoding CMap: 0 = horizontal (glyphs advance
     /// left-to-right), 1 = vertical (glyphs advance top-to-bottom, columns
     /// arranged right-to-left). Only Type0 (composite) fonts can be vertical;
@@ -132,6 +134,14 @@ impl FontResolver {
                     result.push(ch);
                     continue;
                 }
+            }
+            if let Some(text) = self
+                .predefined_cmap
+                .as_ref()
+                .and_then(|info| predefined_cmap::unicode_for_code(info.name, code))
+            {
+                result.push_str(&text);
+                continue;
             }
             log::warn!("font decode produced replacement character for code {code:#06X}");
             result.push('\u{FFFD}');
@@ -250,10 +260,16 @@ impl FontResolver {
         } else {
             widths.iter().sum::<f64>() / widths.len() as f64
         };
+        let predefined_cmap = if font_type.is_cid() {
+            predefined_cmap_name(font_dict, reader).and_then(|name| predefined_cmap::lookup(&name))
+        } else {
+            None
+        };
         let code_size = if font_type.is_cid() {
             to_unicode
                 .as_ref()
                 .map(ToUnicodeCMap::code_size)
+                .or_else(|| predefined_cmap.map(|info| info.code_size))
                 .unwrap_or(2)
         } else {
             1
@@ -277,8 +293,36 @@ impl FontResolver {
             descendant_font,
             default_width,
             code_size,
+            predefined_cmap,
             wmode,
         }
+    }
+}
+
+pub fn predefined_cmap_name(
+    font_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+) -> Option<String> {
+    let encoding = font_dict.get("Encoding")?;
+    let resolved = resolve_optional(encoding, reader).unwrap_or_else(|_| encoding.clone());
+    match resolved {
+        PdfObject::Name(name) => Some(name),
+        PdfObject::Stream { dict, raw } => {
+            if let Some(name) = dict.get_name("CMapName") {
+                return Some(name.to_string());
+            }
+            let decoded = match reader {
+                Some(reader) => {
+                    let stream = PdfObject::Stream { dict, raw };
+                    decode_stream_lossless(&stream, reader)
+                        .map(|d| d.data)
+                        .unwrap_or_default()
+                }
+                None => decode_stream_from_dict(&dict, &raw).unwrap_or_default(),
+            };
+            cmap_name_from_bytes(&decoded)
+        }
+        _ => None,
     }
 }
 
@@ -388,7 +432,7 @@ fn detect_wmode(font_dict: &PdfDictionary, reader: Option<&PdfReader>) -> u8 {
 /// `UniGB-UCS2-V`, `UniJIS-UCS2-V`). All `-H` names and anything else are
 /// horizontal.
 fn wmode_from_cmap_name(name: &str) -> u8 {
-    u8::from(name.ends_with("-V"))
+    predefined_cmap::wmode_from_name(name).unwrap_or_else(|| u8::from(name.ends_with("-V")))
 }
 
 /// Scan a decoded CMap program for an explicit `/WMode 1` declaration or a
@@ -417,6 +461,19 @@ fn wmode_from_cmap_bytes(bytes: &[u8]) -> u8 {
         }
     }
     0
+}
+
+fn cmap_name_from_bytes(bytes: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let idx = text.find("/CMapName")?;
+    let rest = &text[idx..];
+    let slash = rest[1..].find('/')?;
+    let after = &rest[1 + slash + 1..];
+    let token: String = after
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '/')
+        .collect();
+    (!token.is_empty()).then_some(token)
 }
 
 /// Look up vertical metrics `(w1y, v_x, v_y)` for a CID from a CIDFont's `/W2`
@@ -742,10 +799,24 @@ mod cid_font_tests {
     fn wmode_name_suffix_detection() {
         assert_eq!(wmode_from_cmap_name("Identity-V"), 1);
         assert_eq!(wmode_from_cmap_name("Identity-H"), 0);
+        assert_eq!(wmode_from_cmap_name("UniJIS-UTF16-V"), 1);
+        assert_eq!(wmode_from_cmap_name("UniGB-UTF16-H"), 0);
         assert_eq!(wmode_from_cmap_name("UniJIS-UCS2-V"), 1);
         assert_eq!(wmode_from_cmap_name("UniGB-UCS2-H"), 0);
         assert_eq!(wmode_from_cmap_name("90ms-RKSJ-V"), 1);
         assert_eq!(wmode_from_cmap_name("WeirdName"), 0);
+    }
+
+    #[test]
+    fn supported_predefined_utf16_cmap_sets_code_size_and_decodes_unicode() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert("Subtype", PdfObject::Name("Type0".to_string()));
+        dict.insert("Encoding", PdfObject::Name("UniJIS-UTF16-H".to_string()));
+
+        let resolver = FontResolver::new_from_dict_only(&dict);
+        assert_eq!(resolver.code_size(), 2);
+        assert_eq!(resolver.decode_string(&[0x65, 0xE5]), "日");
+        assert!(!resolver.is_vertical());
     }
 
     #[test]

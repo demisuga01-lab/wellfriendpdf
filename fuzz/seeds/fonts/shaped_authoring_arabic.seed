@@ -1,0 +1,2 @@
+font DejaVuSans text \u0633\u0644\u0627\u0645
+expect shaped Type0 CID output with ActualText and ToUnicode clusters

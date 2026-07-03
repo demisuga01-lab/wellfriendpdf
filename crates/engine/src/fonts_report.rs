@@ -16,10 +16,13 @@ use serde::Serialize;
 
 use crate::document::PdfDocument;
 use crate::error::Result;
+use crate::fonts::predefined_cmap;
 use crate::fonts::provider::is_standard14_name;
+use crate::fonts::resolver::predefined_cmap_name;
 use crate::fonts::FontResolver;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
+use crate::render::font_rasterizer::FontRasterizer;
 
 /// Maximum resource-scope recursion depth (Form XObjects nesting Form
 /// XObjects, etc.). Real documents nest only a few levels; this bounds a
@@ -58,6 +61,17 @@ pub struct FontInfo {
     pub cid_descendant_type: Option<String>,
     /// Writing mode inferred from CMap/WMode: `horizontal` or `vertical`.
     pub writing_mode: String,
+    /// Predefined CMap name, if the font references one.
+    pub predefined_cmap: Option<String>,
+    /// Whether the referenced predefined CMap is covered by Oxide's bounded
+    /// built-in CMap metadata.
+    pub predefined_cmap_supported: bool,
+    /// Detected OpenType color-glyph table tags.
+    pub color_font_tables: Vec<String>,
+    /// Raster path used by the engine for this font class.
+    pub rasterization: String,
+    /// Authoring/subsetting posture for this font class.
+    pub embedding_policy: String,
     /// Whether rendering requires Standard 14 or bundled/user font fallback.
     pub fallback_required: bool,
     /// Structured font diagnostics for render/extract/write consumers.
@@ -358,6 +372,15 @@ fn describe_font(font_dict: &PdfDictionary, reader: &PdfReader, num: u32, gen: u
             "horizontal"
         }
         .to_string();
+    let predefined_cmap = predefined_cmap_name(font_dict, Some(reader));
+    let predefined_cmap_supported = predefined_cmap
+        .as_deref()
+        .is_some_and(predefined_cmap::is_supported_name);
+    let color_font_tables = font_program_bytes(font_dict, descendant.as_ref(), reader)
+        .map(|bytes| detect_color_font_tables(&bytes))
+        .unwrap_or_default();
+    let rasterization = rasterization_label(subtype, &font_type);
+    let embedding_policy = embedding_policy_label(embedded, &font_file_kind, subset);
     let fallback_required = !embedded;
     let diagnostics = font_diagnostics(FontDiagnosticInput {
         name: &name,
@@ -368,6 +391,10 @@ fn describe_font(font_dict: &PdfDictionary, reader: &PdfReader, num: u32, gen: u
         descriptor_present,
         descendant_present: descendant.is_some(),
         writing_mode: &writing_mode,
+        predefined_cmap: predefined_cmap.as_deref(),
+        predefined_cmap_supported,
+        color_font_tables: &color_font_tables,
+        embedding_policy: &embedding_policy,
     });
 
     FontInfo {
@@ -383,6 +410,11 @@ fn describe_font(font_dict: &PdfDictionary, reader: &PdfReader, num: u32, gen: u
         font_file_kind,
         cid_descendant_type,
         writing_mode,
+        predefined_cmap,
+        predefined_cmap_supported,
+        color_font_tables,
+        rasterization,
+        embedding_policy,
         fallback_required,
         diagnostics,
         object_number: num,
@@ -556,6 +588,63 @@ fn font_file_kind(
     }
 }
 
+fn font_program_bytes(
+    font_dict: &PdfDictionary,
+    descendant: Option<&PdfDictionary>,
+    reader: &PdfReader,
+) -> Option<Vec<u8>> {
+    FontRasterizer::extract_font_bytes(font_dict, reader)
+        .or_else(|| descendant.and_then(|desc| FontRasterizer::extract_font_bytes(desc, reader)))
+}
+
+fn detect_color_font_tables(bytes: &[u8]) -> Vec<String> {
+    if bytes.len() < 12 {
+        return Vec::new();
+    }
+    let num_tables = u16::from_be_bytes([bytes[4], bytes[5]]) as usize;
+    let mut tags = Vec::new();
+    for idx in 0..num_tables {
+        let offset = 12usize.saturating_add(idx.saturating_mul(16));
+        let Some(tag) = bytes.get(offset..offset + 4) else {
+            break;
+        };
+        if matches!(tag, b"COLR" | b"CPAL" | b"CBDT" | b"CBLC" | b"sbix") || tag == b"SVG " {
+            tags.push(String::from_utf8_lossy(tag).trim().to_string());
+        }
+    }
+    tags.sort();
+    tags.dedup();
+    tags
+}
+
+fn rasterization_label(subtype: &str, font_type: &str) -> String {
+    match subtype {
+        "Type3" => "Type3 CharProc through PDF content interpreter".to_string(),
+        "Type0" if font_type.contains("TrueType") => {
+            "pure-rust ttf-parser outlines with light grid fitting".to_string()
+        }
+        "Type0" if font_type.contains("Type 0") => {
+            "pure-rust CFF/Type2 outlines where available".to_string()
+        }
+        "TrueType" => "pure-rust ttf-parser outlines with light grid fitting".to_string(),
+        "Type1" | "MMType1" => "pure-rust Type1/CFF outline interpreter".to_string(),
+        _ => "pure-rust fallback outline path".to_string(),
+    }
+}
+
+fn embedding_policy_label(embedded: bool, font_file_kind: &Option<String>, subset: bool) -> String {
+    if !embedded {
+        return "not embedded in source; deterministic fallback/substitution at render time"
+            .to_string();
+    }
+    let program = font_file_kind.as_deref().unwrap_or("FontFile");
+    if subset {
+        format!("source subset {program}; preserves embedded subset program")
+    } else {
+        format!("source full-font {program}; generated output uses Type0 subset maps with full sfnt fallback")
+    }
+}
+
 struct FontDiagnosticInput<'a> {
     name: &'a str,
     subtype: &'a str,
@@ -565,6 +654,10 @@ struct FontDiagnosticInput<'a> {
     descriptor_present: bool,
     descendant_present: bool,
     writing_mode: &'a str,
+    predefined_cmap: Option<&'a str>,
+    predefined_cmap_supported: bool,
+    color_font_tables: &'a [String],
+    embedding_policy: &'a str,
 }
 
 fn font_diagnostics(input: FontDiagnosticInput<'_>) -> Vec<FontDiagnostic> {
@@ -641,6 +734,60 @@ fn font_diagnostics(input: FontDiagnosticInput<'_>) -> Vec<FontDiagnostic> {
             code: "font.vertical.detected",
             message: "Vertical writing mode detected; full vertical layout fidelity is bounded"
                 .to_string(),
+        });
+    }
+    if let Some(name) = input.predefined_cmap {
+        if input.predefined_cmap_supported {
+            diagnostics.push(FontDiagnostic {
+                severity: "info",
+                code: "font.cmap.predefined.used",
+                message: format!("Predefined CMap {name} is covered by bounded built-in metadata"),
+            });
+        } else if predefined_cmap::looks_like_predefined_name(name) {
+            diagnostics.push(FontDiagnostic {
+                severity: "warning",
+                code: "font.cmap.predefined.unsupported",
+                message: format!(
+                    "Predefined CMap {name} is not bundled; extraction/rendering use fallback mapping"
+                ),
+            });
+        }
+    }
+    if input
+        .predefined_cmap
+        .is_some_and(|name| name.ends_with("-V") || name == "Identity-V")
+    {
+        diagnostics.push(FontDiagnostic {
+            severity: "info",
+            code: "font.cmap.vertical",
+            message: "Predefined vertical CMap name was detected".to_string(),
+        });
+    }
+    if input
+        .predefined_cmap
+        .is_some_and(|name| name == "Identity-H" || name == "Identity-V")
+    {
+        diagnostics.push(FontDiagnostic {
+            severity: "info",
+            code: "font.cmap.identity",
+            message: "Identity CMap is used for CID-to-character code mapping".to_string(),
+        });
+    }
+    if !input.color_font_tables.is_empty() {
+        diagnostics.push(FontDiagnostic {
+            severity: "warning",
+            code: "font.color_glyphs.detected",
+            message: format!(
+                "Color glyph tables detected ({}); renderer uses monochrome outline fallback",
+                input.color_font_tables.join(", ")
+            ),
+        });
+    }
+    if input.embedding_policy.contains("full-font") {
+        diagnostics.push(FontDiagnostic {
+            severity: "info",
+            code: "font.subset.sfnt_deferred",
+            message: "Authoring uses Type0 subset maps with full sfnt embedding unless a future safe subset writer is selected".to_string(),
         });
     }
     diagnostics
@@ -731,6 +878,10 @@ mod tests {
             descriptor_present: false,
             descendant_present: false,
             writing_mode: "horizontal",
+            predefined_cmap: None,
+            predefined_cmap_supported: false,
+            color_font_tables: &[],
+            embedding_policy: "not embedded in source",
         });
 
         assert!(diagnostics
@@ -755,6 +906,10 @@ mod tests {
             descriptor_present: true,
             descendant_present: false,
             writing_mode: "vertical",
+            predefined_cmap: Some("Identity-V"),
+            predefined_cmap_supported: true,
+            color_font_tables: &[],
+            embedding_policy: "source subset FontFile2",
         });
 
         assert!(diagnostics
@@ -763,5 +918,52 @@ mod tests {
         assert!(diagnostics
             .iter()
             .any(|diag| diag.code == "font.vertical.detected"));
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.code == "font.cmap.identity"));
+    }
+
+    #[test]
+    fn diagnostics_report_predefined_cmap_support_and_color_tables() {
+        let color_tables = vec!["COLR".to_string(), "CPAL".to_string()];
+        let diagnostics = font_diagnostics(FontDiagnosticInput {
+            name: "ABCDEE+ColorCjk",
+            subtype: "Type0",
+            encoding: "UniJIS-UTF16-H",
+            embedded: true,
+            to_unicode: false,
+            descriptor_present: true,
+            descendant_present: true,
+            writing_mode: "horizontal",
+            predefined_cmap: Some("UniJIS-UTF16-H"),
+            predefined_cmap_supported: true,
+            color_font_tables: &color_tables,
+            embedding_policy: "source full-font FontFile2",
+        });
+
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.code == "font.cmap.predefined.used"));
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.code == "font.color_glyphs.detected"));
+        assert!(diagnostics
+            .iter()
+            .any(|diag| diag.code == "font.subset.sfnt_deferred"));
+    }
+
+    #[test]
+    fn color_font_table_detection_reads_sfnt_directory() {
+        let mut bytes = vec![0u8; 12 + 3 * 16];
+        bytes[0..4].copy_from_slice(&0x0001_0000u32.to_be_bytes());
+        bytes[4..6].copy_from_slice(&3u16.to_be_bytes());
+        bytes[12..16].copy_from_slice(b"COLR");
+        bytes[28..32].copy_from_slice(b"CPAL");
+        bytes[44..48].copy_from_slice(b"name");
+
+        assert_eq!(
+            detect_color_font_tables(&bytes),
+            vec!["COLR".to_string(), "CPAL".to_string()]
+        );
     }
 }

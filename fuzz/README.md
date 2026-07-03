@@ -103,6 +103,13 @@ Small reviewed seed inputs for decode and font fuzzing live under
 libFuzzer's mutable corpus directory; copy or import them into
 `fuzz/corpus/<target>/` for local campaigns if desired.
 
+Prompt 04B adds font-fidelity seeds for:
+
+- supported predefined UTF-16 CMap names;
+- unsupported predefined-looking legacy CMap names;
+- OpenType color-glyph table tags;
+- shaped Arabic authoring output with Type0 CID expectations.
+
 Seed corpora live in `corpus/<target>/`. cargo-fuzz seeds from there and writes
 newly-discovered interesting inputs back into it.
 

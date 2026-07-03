@@ -5,7 +5,7 @@
 //! [`PdfPageBuilder::pdf_y_from_top`] when a top-left UI coordinate is more
 //! convenient.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::Path;
 
@@ -14,6 +14,7 @@ use crate::error::{OxideError, Result};
 use crate::filters::flate_encode;
 use crate::fonts::encoding::{zapf_dingbats_name_to_unicode, Encoding};
 use crate::fonts::glyph_list::glyph_name_to_unicode;
+use crate::fonts::{ShapeOptions, TextShaper};
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::render::get_fallback_font;
@@ -772,25 +773,6 @@ impl PdfPageBuilder {
         for command in &self.commands {
             if let PageCommand::Text { style, .. } = command {
                 push_unique_font(&mut out, style.font);
-            }
-        }
-        out
-    }
-
-    fn unicode_chars_used_by_font(&self) -> HashMap<FontFace, Vec<char>> {
-        let mut out: HashMap<FontFace, Vec<char>> = HashMap::new();
-        let mut seen: HashMap<FontFace, BTreeSet<char>> = HashMap::new();
-        for command in &self.commands {
-            if let PageCommand::Text { text, style, .. } = command {
-                if style.font.is_embedded_unicode() {
-                    let chars = out.entry(style.font).or_default();
-                    let seen_for_font = seen.entry(style.font).or_default();
-                    for ch in text.chars() {
-                        if seen_for_font.insert(ch) {
-                            chars.push(ch);
-                        }
-                    }
-                }
             }
         }
         out
@@ -1775,14 +1757,47 @@ struct FontBuildPlan {
 #[derive(Debug, Clone)]
 struct EmbeddedFontPlan {
     cids: HashMap<char, u16>,
-    chars: Vec<char>,
+    entries: Vec<CidEntry>,
+    shaped_runs: HashMap<String, ShapedTextPlan>,
+}
+
+#[derive(Debug, Clone)]
+struct CidEntry {
+    cid: u16,
+    glyph_id: u16,
+    unicode: String,
+    width: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ShapedTextPlan {
+    glyphs: Vec<ShapedTextGlyph>,
+    actual_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ShapedTextGlyph {
+    cid: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct GlyphCidKey {
+    glyph_id: u16,
+    unicode: String,
+}
+
+#[derive(Debug, Default)]
+struct EmbeddedFontPlanBuilder {
+    cids: HashMap<char, u16>,
+    glyph_cids: HashMap<GlyphCidKey, u16>,
+    entries: Vec<CidEntry>,
+    shaped_runs: HashMap<String, ShapedTextPlan>,
 }
 
 impl FontBuildPlan {
     fn from_builder(builder: &PdfBuilder) -> Result<Self> {
         let mut fonts = Vec::new();
-        let mut chars_by_font: HashMap<FontFace, Vec<char>> = HashMap::new();
-        let mut seen_by_font: HashMap<FontFace, BTreeSet<char>> = HashMap::new();
+        let mut embedded_builders: HashMap<FontFace, EmbeddedFontPlanBuilder> = HashMap::new();
 
         for page in &builder.pages {
             for font in page.fonts_used() {
@@ -1791,12 +1806,23 @@ impl FontBuildPlan {
                 }
                 push_unique_font(&mut fonts, font);
             }
-            for (font, chars) in page.unicode_chars_used_by_font() {
-                let out = chars_by_font.entry(font).or_default();
-                let seen = seen_by_font.entry(font).or_default();
-                for ch in chars {
-                    if seen.insert(ch) {
-                        out.push(ch);
+            for command in &page.commands {
+                if let PageCommand::Text { text, style, .. } = command {
+                    if !style.font.is_embedded_unicode() {
+                        continue;
+                    }
+                    let font_bytes = font_bytes_for_face(builder, style.font)?;
+                    let metrics = TrueTypeMetrics::parse(font_bytes)?;
+                    let embedded = embedded_builders.entry(style.font).or_default();
+                    let shaped = TextShaper::shape(font_bytes, text, ShapeOptions::default())?;
+                    if shaped.used_complex_shaping
+                        && shaped.glyphs.iter().any(|glyph| glyph.glyph_id != 0)
+                    {
+                        embedded.add_shaped_run(text, &shaped, &metrics)?;
+                    } else {
+                        for ch in text.chars() {
+                            embedded.add_char(ch, &metrics)?;
+                        }
                     }
                 }
             }
@@ -1812,17 +1838,8 @@ impl FontBuildPlan {
             if !font.is_embedded_unicode() {
                 continue;
             }
-            let chars = chars_by_font.remove(font).unwrap_or_default();
-            let mut cids = HashMap::new();
-            for (idx, ch) in chars.iter().enumerate() {
-                let cid = u16::try_from(idx + 1).map_err(|_| {
-                    OxideError::ResourceLimit(format!(
-                        "authoring: too many unique Unicode scalar values for font {font:?}"
-                    ))
-                })?;
-                cids.insert(*ch, cid);
-            }
-            embedded.insert(*font, EmbeddedFontPlan { cids, chars });
+            let builder = embedded_builders.remove(font).unwrap_or_default();
+            embedded.insert(*font, builder.finish());
         }
 
         Ok(Self {
@@ -1865,6 +1882,126 @@ impl FontBuildPlan {
                 ))
             })
     }
+
+    fn shaped_run(&self, font: FontFace, text: &str) -> Option<&ShapedTextPlan> {
+        self.embedded.get(&font)?.shaped_runs.get(text)
+    }
+}
+
+impl EmbeddedFontPlanBuilder {
+    fn add_char(&mut self, ch: char, metrics: &TrueTypeMetrics<'_>) -> Result<u16> {
+        if let Some(cid) = self.cids.get(&ch).copied() {
+            return Ok(cid);
+        }
+        let glyph_id = metrics.glyph_id(ch);
+        let width = metrics.glyph_width_by_gid(glyph_id);
+        let cid = self.push_entry(glyph_id, ch.to_string(), width)?;
+        self.cids.insert(ch, cid);
+        Ok(cid)
+    }
+
+    fn add_shaped_run(
+        &mut self,
+        text: &str,
+        shaped: &crate::fonts::ShapedRun,
+        metrics: &TrueTypeMetrics<'_>,
+    ) -> Result<()> {
+        let clusters = cluster_boundaries(text, shaped);
+        let mut glyphs = Vec::with_capacity(shaped.glyphs.len());
+        for glyph in &shaped.glyphs {
+            let unicode = cluster_text(text, glyph.cluster, &clusters);
+            let key = GlyphCidKey {
+                glyph_id: glyph.glyph_id,
+                unicode: unicode.clone(),
+            };
+            let cid = if let Some(cid) = self.glyph_cids.get(&key).copied() {
+                cid
+            } else {
+                let width = if glyph.advance.is_finite() && glyph.advance > 0.0 {
+                    glyph.advance
+                } else {
+                    metrics.glyph_width_by_gid(glyph.glyph_id)
+                };
+                let cid = self.push_entry(glyph.glyph_id, unicode.clone(), width)?;
+                self.glyph_cids.insert(key, cid);
+                cid
+            };
+            glyphs.push(ShapedTextGlyph { cid });
+        }
+        self.shaped_runs.insert(
+            text.to_string(),
+            ShapedTextPlan {
+                glyphs,
+                actual_text: text.to_string(),
+            },
+        );
+        Ok(())
+    }
+
+    fn push_entry(&mut self, glyph_id: u16, unicode: String, width: f64) -> Result<u16> {
+        let cid = u16::try_from(self.entries.len() + 1).map_err(|_| {
+            OxideError::ResourceLimit(
+                "authoring: too many unique font CIDs for embedded Type0 font".to_string(),
+            )
+        })?;
+        self.entries.push(CidEntry {
+            cid,
+            glyph_id,
+            unicode,
+            width,
+        });
+        Ok(cid)
+    }
+
+    fn finish(self) -> EmbeddedFontPlan {
+        EmbeddedFontPlan {
+            cids: self.cids,
+            entries: self.entries,
+            shaped_runs: self.shaped_runs,
+        }
+    }
+}
+
+fn font_bytes_for_face(builder: &PdfBuilder, font: FontFace) -> Result<&[u8]> {
+    match font {
+        FontFace::BuiltinUnicode => builtin_unicode_font_bytes(),
+        FontFace::Custom(id) => Ok(&builder.custom_font(id)?.bytes),
+        FontFace::Standard(_) => Err(OxideError::MalformedPdf(
+            "authoring: Standard14 font has no embedded font plan".to_string(),
+        )),
+    }
+}
+
+fn cluster_boundaries(text: &str, shaped: &crate::fonts::ShapedRun) -> Vec<usize> {
+    let mut clusters: Vec<usize> = shaped
+        .glyphs
+        .iter()
+        .filter_map(|glyph| usize::try_from(glyph.cluster).ok())
+        .filter(|idx| *idx <= text.len() && text.is_char_boundary(*idx))
+        .collect();
+    clusters.push(0);
+    clusters.push(text.len());
+    clusters.sort_unstable();
+    clusters.dedup();
+    clusters
+}
+
+fn cluster_text(text: &str, cluster: u32, clusters: &[usize]) -> String {
+    let Ok(start) = usize::try_from(cluster) else {
+        return "\u{FFFD}".to_string();
+    };
+    if start > text.len() || !text.is_char_boundary(start) {
+        return "\u{FFFD}".to_string();
+    }
+    let end = clusters
+        .iter()
+        .copied()
+        .find(|candidate| *candidate > start)
+        .unwrap_or(text.len());
+    if end <= start || end > text.len() || !text.is_char_boundary(end) {
+        return "\u{FFFD}".to_string();
+    }
+    text[start..end].to_string()
 }
 
 fn push_unique_font(fonts: &mut Vec<FontFace>, font: FontFace) {
@@ -2280,7 +2417,7 @@ fn build_embedded_type0_font(
         number: cid_to_gid_number,
         object: PdfObject::Stream {
             dict: PdfDictionary::empty(),
-            raw: build_cid_to_gid_map(font, plan, &metrics)?,
+            raw: build_cid_to_gid_map(font, plan)?,
         },
     });
 
@@ -2346,23 +2483,24 @@ fn unicode_width_array(
     metrics: &TrueTypeMetrics,
 ) -> Result<Vec<PdfObject>> {
     let embedded = plan.embedded_plan(font)?;
-    if embedded.chars.is_empty() {
+    if embedded.entries.is_empty() {
         return Ok(Vec::new());
     }
-    let mut items = Vec::with_capacity(embedded.chars.len() + 1);
+    let mut items = Vec::with_capacity(embedded.entries.len() + 1);
     items.push(PdfObject::Integer(1));
-    let widths = plan
-        .embedded_plan(font)?
-        .chars
+    let widths = embedded
+        .entries
         .iter()
-        .map(|ch| {
-            let cid = plan.cid_for(font, *ch)?;
-            let gid = metrics.glyph_id(*ch);
-            let width = metrics.glyph_width_by_gid(gid);
-            debug_assert!(cid > 0);
-            Ok(pdf_number(width))
+        .map(|entry| {
+            debug_assert!(entry.cid > 0);
+            let width = if entry.width > 0.0 {
+                entry.width
+            } else {
+                metrics.glyph_width_by_gid(entry.glyph_id)
+            };
+            pdf_number(width)
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect();
     items.push(PdfObject::Array(widths));
     Ok(items)
 }
@@ -2376,11 +2514,14 @@ fn build_to_unicode_cmap(font: FontFace, plan: &FontBuildPlan, cmap_name: &str) 
     out.push_str(&format!("/CMapName /{cmap_name} def\n/CMapType 2 def\n"));
     out.push_str("1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n");
 
-    for chunk in embedded.chars.chunks(100) {
+    for chunk in embedded.entries.chunks(100) {
         out.push_str(&format!("{} beginbfchar\n", chunk.len()));
-        for ch in chunk {
-            let cid = embedded.cids[ch];
-            out.push_str(&format!("<{cid:04X}> <{}>\n", utf16be_hex_for_char(*ch)));
+        for entry in chunk {
+            out.push_str(&format!(
+                "<{:04X}> <{}>\n",
+                entry.cid,
+                utf16be_hex_for_str(&entry.unicode)
+            ));
         }
         out.push_str("endbfchar\n");
     }
@@ -2389,19 +2530,18 @@ fn build_to_unicode_cmap(font: FontFace, plan: &FontBuildPlan, cmap_name: &str) 
     Ok(out.into_bytes())
 }
 
-fn build_cid_to_gid_map(
-    font: FontFace,
-    plan: &FontBuildPlan,
-    metrics: &TrueTypeMetrics,
-) -> Result<Vec<u8>> {
+fn build_cid_to_gid_map(font: FontFace, plan: &FontBuildPlan) -> Result<Vec<u8>> {
     let embedded = plan.embedded_plan(font)?;
-    let max_cid = embedded.cids.values().copied().max().unwrap_or(0);
+    let max_cid = embedded
+        .entries
+        .iter()
+        .map(|entry| entry.cid)
+        .max()
+        .unwrap_or(0);
     let mut bytes = vec![0u8; (usize::from(max_cid) + 1) * 2];
-    for ch in &embedded.chars {
-        let cid = embedded.cids[ch];
-        let gid = metrics.glyph_id(*ch);
-        let offset = usize::from(cid) * 2;
-        bytes[offset..offset + 2].copy_from_slice(&gid.to_be_bytes());
+    for entry in &embedded.entries {
+        let offset = usize::from(entry.cid) * 2;
+        bytes[offset..offset + 2].copy_from_slice(&entry.glyph_id.to_be_bytes());
     }
     Ok(bytes)
 }
@@ -2467,6 +2607,21 @@ fn write_text_command(
     let resource = plan.resource_name(style.font)?;
     out.extend_from_slice(b"q\n");
     write_fill_color(out, &style.fill);
+    if let Some(shaped) = plan.shaped_run(style.font, text) {
+        write_shaped_actual_text(out, &shaped.actual_text);
+        out.extend_from_slice(
+            format!(
+                "BT /{} {} Tf {} {} Td <{}> Tj ET\nEMC\nQ\n",
+                resource,
+                fmt_num(style.size),
+                fmt_num(x),
+                fmt_num(y),
+                hex_string(&encode_shaped_text(shaped))
+            )
+            .as_bytes(),
+        );
+        return Ok(());
+    }
     let encoded = encode_text_for_font(text, style.font, plan)?;
     out.extend_from_slice(
         format!(
@@ -2480,6 +2635,24 @@ fn write_text_command(
         .as_bytes(),
     );
     Ok(())
+}
+
+fn write_shaped_actual_text(out: &mut Vec<u8>, text: &str) {
+    out.extend_from_slice(
+        format!(
+            "/Span << /ActualText <{}> >> BDC\n",
+            utf16be_hex_with_bom(text)
+        )
+        .as_bytes(),
+    );
+}
+
+fn encode_shaped_text(shaped: &ShapedTextPlan) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(shaped.glyphs.len() * 2);
+    for glyph in &shaped.glyphs {
+        bytes.extend_from_slice(&glyph.cid.to_be_bytes());
+    }
+    bytes
 }
 
 fn write_image_command(
@@ -2918,13 +3091,17 @@ fn hex_digit(value: u8) -> char {
     }
 }
 
-fn utf16be_hex_for_char(ch: char) -> String {
-    let mut units = [0u16; 2];
-    let encoded = ch.encode_utf16(&mut units);
+fn utf16be_hex_for_str(value: &str) -> String {
     let mut out = String::new();
-    for unit in encoded {
+    for unit in value.encode_utf16() {
         out.push_str(&format!("{unit:04X}"));
     }
+    out
+}
+
+fn utf16be_hex_with_bom(value: &str) -> String {
+    let mut out = String::from("FEFF");
+    out.push_str(&utf16be_hex_for_str(value));
     out
 }
 
@@ -3048,6 +3225,60 @@ mod tests {
         assert!(text.contains("Standard text"), "{text}");
         assert!(text.contains("Unicode cafe \u{03c0}"), "{text}");
         assert!(text.contains("\u{03b1}\u{03b2}"), "{text}");
+    }
+
+    #[test]
+    fn complex_script_authoring_uses_shaped_cids_and_actual_text() {
+        let mut doc = PdfBuilder::new();
+        let font = doc
+            .register_font_bytes(
+                "DejaVuSansPrompt04B",
+                include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/DejaVuSans.ttf"))
+                    .as_slice(),
+            )
+            .unwrap();
+        let arabic = "\u{0633}\u{0644}\u{0627}\u{0645}";
+        doc.add_page(PageSize::LETTER)
+            .draw_text(arabic, 72.0, 720.0, &TextStyle::new(font, 18.0))
+            .unwrap();
+
+        let plan = FontBuildPlan::from_builder(&doc).unwrap();
+        let shaped = plan
+            .shaped_run(font, arabic)
+            .expect("Arabic text should use shaped CID path");
+        assert!(!shaped.glyphs.is_empty());
+        let embedded = plan.embedded_plan(font).unwrap();
+        assert!(embedded.entries.iter().all(|entry| entry.glyph_id > 0));
+
+        let image_plan = ImageBuildPlan {
+            images: Vec::new(),
+            resource_names: HashMap::new(),
+        };
+        let content = String::from_utf8(
+            build_content_stream(&doc.pages[0], &plan, &image_plan).expect("content"),
+        )
+        .unwrap();
+        assert!(
+            content.contains("/ActualText <FEFF0633064406270645>"),
+            "{content}"
+        );
+        assert!(content.contains("BDC"), "{content}");
+
+        let cmap = String::from_utf8(build_to_unicode_cmap(font, &plan, "Prompt04B").unwrap())
+            .expect("cmap is text");
+        assert!(cmap.contains("0633") || cmap.contains("0644"), "{cmap}");
+
+        let cid_to_gid = build_cid_to_gid_map(font, &plan).unwrap();
+        for glyph in &shaped.glyphs {
+            let entry = embedded
+                .entries
+                .iter()
+                .find(|entry| entry.cid == glyph.cid)
+                .expect("cid entry");
+            let offset = usize::from(glyph.cid) * 2;
+            let mapped = u16::from_be_bytes([cid_to_gid[offset], cid_to_gid[offset + 1]]);
+            assert_eq!(mapped, entry.glyph_id);
+        }
     }
 
     #[test]

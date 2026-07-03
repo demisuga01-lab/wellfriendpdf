@@ -267,3 +267,36 @@ Worst remaining blockers in this slice were `function_based_shading.pdf`,
 and `jp2k-resetprob.pdf`. Those map to function/shading fidelity, font/text
 semantics, and JPEG 2000/image behavior rather than to the Prompt 03B replay
 seam itself.
+
+## Prompt 04B Font Slice Rerun
+
+Prompt 04B reran the same 24-file font/text Poppler slice used by Prompt 04:
+`real-cjk-text`, `real-font-edge`, and `real-rtl-text`, one rendered page per
+file at 72 DPI. The release CLI was rebuilt first.
+
+Command:
+
+```powershell
+cargo build --release -p oxide-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04b-font-render-benchmark --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+```
+
+Results:
+
+| metric | Prompt 04 | Prompt 04B |
+| --- | ---: | ---: |
+| files | 24 | 24 |
+| visual pages compared | 24 | 24 |
+| visual pages passed | 11 | 11 |
+| visual pass | 45.83% | 45.83% |
+| weighted score | 45.21 | 45.21 |
+| peak Oxide memory | 11.72 MB | 11.28 MB |
+| determinism | 5/5 stable | 5/5 stable |
+
+Prompt 04B improved the font subsystem's authoring, reporting, CMap, vertical
+advance, and explicit fallback behavior, but it did not improve this visual
+slice. The remaining failing files are still dominated by glyph rasterizer,
+font-substitution, hinting, and text-shape differences against Poppler. The
+`real_pdfjs_vertical` artifact is specifically not a score target: Oxide renders
+visible vertical text, while the Poppler reference image in this harness is
+effectively blank for that fixture.

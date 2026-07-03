@@ -60,6 +60,8 @@ pub struct FontMatch {
     pub synthetic_bold: bool,
     /// Whether the match requires synthetic slanting to satisfy the request.
     pub synthetic_italic: bool,
+    /// Stable explanation used by font diagnostics.
+    pub match_reason: &'static str,
 }
 
 /// Pluggable font lookup interface.
@@ -74,15 +76,51 @@ pub struct BundledFontProvider;
 
 impl FontProvider for BundledFontProvider {
     fn match_font(&self, request: &FontMatchRequest) -> Option<FontMatch> {
-        let bytes = get_fallback_font(&request.base_font)?;
+        let lookup_name = styled_lookup_name(request);
+        let bytes = get_fallback_font(&lookup_name)?;
+        let actual_bold = lookup_name_contains_bold(&lookup_name);
+        let actual_italic = lookup_name_contains_italic(&lookup_name);
         Some(FontMatch {
-            family_name: bundled_family_label(&request.base_font),
+            family_name: bundled_family_label(&lookup_name),
             source: source_for_name(&request.base_font),
             bytes,
-            synthetic_bold: false,
-            synthetic_italic: false,
+            synthetic_bold: request.bold && !actual_bold,
+            synthetic_italic: request.italic && !actual_italic,
+            match_reason: if lookup_name == request.base_font {
+                "name"
+            } else {
+                "style_hint"
+            },
         })
     }
+}
+
+fn styled_lookup_name(request: &FontMatchRequest) -> String {
+    let mut name = request.base_font.clone();
+    if request.bold && !lookup_name_contains_bold(&name) {
+        name.push_str("-Bold");
+    }
+    if request.italic && !lookup_name_contains_italic(&name) {
+        name.push_str("-Italic");
+    }
+    name
+}
+
+fn lookup_name_contains_bold(name: &str) -> bool {
+    let normalized = normalized_font_name(name);
+    normalized.contains("bold")
+        || normalized.contains("heavy")
+        || normalized.contains("black")
+        || normalized.ends_with('b')
+}
+
+fn lookup_name_contains_italic(name: &str) -> bool {
+    let normalized = normalized_font_name(name);
+    normalized.contains("italic")
+        || normalized.contains("oblique")
+        || normalized.contains("slant")
+        || normalized.ends_with("-i")
+        || normalized.ends_with("-o")
 }
 
 fn source_for_name(name: &str) -> FontProviderSource {
@@ -167,6 +205,7 @@ mod tests {
         assert_eq!(first.source, FontProviderSource::Standard14);
         assert_eq!(first.bytes.as_ptr(), second.bytes.as_ptr());
         assert!(!first.bytes.is_empty());
+        assert_eq!(first.match_reason, "name");
     }
 
     #[test]
@@ -177,5 +216,19 @@ mod tests {
             .expect("symbol match");
         assert_eq!(result.family_name, "DejaVu Sans");
         assert_eq!(result.source, FontProviderSource::Standard14);
+    }
+
+    #[test]
+    fn explicit_style_hints_are_deterministic() {
+        let provider = BundledFontProvider;
+        let mut request = FontMatchRequest::new("Helvetica");
+        request.bold = true;
+        request.italic = true;
+        let hinted = provider.match_font(&request).expect("hinted font");
+
+        assert_eq!(hinted.family_name, "Liberation Sans");
+        assert_eq!(hinted.match_reason, "style_hint");
+        assert!(!hinted.synthetic_bold);
+        assert!(!hinted.synthetic_italic);
     }
 }

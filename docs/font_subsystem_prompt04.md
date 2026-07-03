@@ -18,8 +18,8 @@ every script and PDF font corner.
 | Glyph-name recovery | Generated AGL table and `uniXXXX` / `uXXXX` support existed | Documented as the Standard 14/simple-font fallback; ligature expansion remains in resolver |
 | Font substitution | Renderer selected bundled fallback fonts directly | Added public provider seam with deterministic bundled provider and Standard 14 detection |
 | Glyph cache | Per-render LRU cache existed with entry-count cap | Added byte budget, hit/miss/eviction/oversized-skip metrics, and tests |
-| Generated shaping | Internal renderer used rustybuzz for existing Arabic/Indic runs when needed | Added public `TextShaper` facade for generated output with Latin fallback and rustybuzz complex shaping |
-| Writing / embedding | Authoring embeds full TrueType Unicode fonts as Type0/CIDFontType2 with ToUnicode | Kept as concrete safe path; true glyph subsetting remains bounded deferred work |
+| Generated shaping | Internal renderer used rustybuzz for existing Arabic/Indic runs when needed | Prompt 04 added public `TextShaper`; Prompt 04B routes generated complex-script runs into shaped Type0 CIDs with ActualText and ToUnicode clusters |
+| Writing / embedding | Authoring embeds full TrueType Unicode fonts as Type0/CIDFontType2 with ToUnicode | Prompt 04B emits subset CID maps/widths/ToUnicode; true sfnt glyph-program rewriting remains a documented safe-boundary decision |
 
 ## Architecture
 
@@ -31,6 +31,8 @@ The font stack is centralized around these modules:
 - `crates/engine/src/fonts/cmap.rs`: cap-bounded ToUnicode CMap parser.
 - `crates/engine/src/fonts/glyph_list.rs`: generated Adobe Glyph List style
   glyph-name lookup plus `uniXXXX` and `uXXXX` conventions.
+- `crates/engine/src/fonts/predefined_cmap.rs`: bounded predefined-CMap
+  metadata for Identity and common Uni*-UTF16 CMaps.
 - `crates/engine/src/fonts/provider.rs`: deterministic provider seam for
   embedded, Standard 14, bundled fallback, and future user/system providers.
 - `crates/engine/src/fonts/shaper.rs`: generated-output text shaping facade.
@@ -57,7 +59,8 @@ Oxide’s extraction/render text decoding follows this practical priority:
 2. Simple-font `/Encoding` plus `/Differences`.
 3. Adobe Glyph List style glyph-name recovery, including `uniXXXX` and `uXXXX`.
 4. Ligature expansion for common Unicode presentation ligatures.
-5. Type0/CID CMap code-size and CID width/vertical metadata.
+5. Type0/CID CMap code-size, predefined UTF-16 CMap metadata, and CID
+   width/vertical metadata.
 6. Last-resort Unicode scalar fallback or replacement character with logging.
 
 `ActualText` and full reading-order semantics are intentionally left to the
@@ -105,9 +108,11 @@ FreeType-style bytecode hinting/autohinting is not integrated.
 This is not applied to existing PDF content streams. Existing PDFs already
 carry positioned glyph codes. Re-shaping them would be incorrect.
 
-The current PDF authoring path embeds full TrueType Unicode fonts with Type0 /
-CIDFontType2 dictionaries and ToUnicode maps. Full HarfBuzz-shaped CID glyph
-output for newly authored complex scripts is the next generated-output step.
+Prompt 04B routes generated complex-script runs through the same shaping facade
+and emits shaped CID glyph streams for Type0/CIDFontType2 output. The writer
+adds `/ActualText` for the logical source text and maps each shaped CID back to
+its Unicode cluster in ToUnicode. Latin/simple runs keep the scalar CID path for
+stable output.
 
 ## Writing, Embedding, and Subsetting
 
@@ -117,25 +122,33 @@ Existing authoring has one concrete safe font output path:
   Type0/CIDFontType2.
 - Widths, CIDToGIDMap, FontDescriptor, and ToUnicode are written.
 - Extraction of generated text is preserved through ToUnicode.
+- Prompt 04B writes used-CID `/W`, CIDToGIDMap, and ToUnicode entries for
+  shaped glyph clusters.
 
-Prompt 04 does not implement true glyph-program subsetting. The writer tracks
-used characters/CIDs but still embeds the full configured font program. This is
-deliberate: partial subsetting without robust cmap/glyf/loca/name/table
-rewriting would risk corrupt generated PDFs. The bounded follow-up is to add a
-TrueType subset writer behind the existing authoring font plan.
+Prompt 04B still does not rewrite sfnt glyph programs. The writer uses subset
+maps but embeds the full configured font program. This is deliberate: partial
+subsetting without robust `cmap`/`glyf`/`loca`/`hmtx`/`maxp`/`head` rewriting
+would risk corrupt generated PDFs. Reports expose this boundary with
+`font.subset.sfnt_deferred`.
 
 ## CJK, RTL, and Vertical Writing
 
 - Identity-H and Identity-V are recognized.
+- Common UTF-16 predefined maps are recognized:
+  `UniJIS-UTF16-H/V`, `UniGB-UTF16-H/V`, `UniCNS-UTF16-H/V`, and
+  `UniKS-UTF16-H/V`.
 - Type0/CID widths and `/W2` vertical metrics are parsed.
+- Vertical Type0 text advances through shared decoded-glyph metrics in raster,
+  SVG, and PostScript output.
 - Multi-byte ToUnicode/CMap cases are tested.
 - Font reports expose `writing_mode` and emit `font.vertical.detected`.
 - Existing PDF RTL rendering follows the supplied glyph positions; generated
   RTL shaping is available through `TextShaper`.
 
-Full predefined CJK CMap packs and full vertical glyph layout fidelity are not
-claimed here. Identity-V is detected and diagnosed; mature vertical rendering
-requires font/color/layout work beyond this prompt.
+Full legacy predefined CJK CMap packs and full vertical glyph substitution are
+not claimed here. Unsupported predefined-looking names such as `90ms-RKSJ-H`
+emit `font.cmap.predefined.unsupported` unless the PDF supplies an embedded
+CMap or ToUnicode map.
 
 ## Public Diagnostics
 
@@ -159,6 +172,12 @@ Example diagnostic codes:
 - `font.type0.descendant_missing`
 - `font.type3.charprocs`
 - `font.vertical.detected`
+- `font.cmap.predefined.used`
+- `font.cmap.predefined.unsupported`
+- `font.cmap.vertical`
+- `font.cmap.identity`
+- `font.color_glyphs.detected`
+- `font.subset.sfnt_deferred`
 
 The human `oxide fonts` table remains pdffonts-style. JSON surfaces expose the
 extra fields.
@@ -170,20 +189,21 @@ deterministic provider matching, and generated-text shaping. Existing targets
 continue to cover raw font program parsing (`fonts`) and ToUnicode CMaps
 (`cmap`).
 
-Small reviewed seeds live under `fuzz/seeds/fonts/`.
+Small reviewed seeds live under `fuzz/seeds/fonts/`, including Prompt 04B
+predefined-CMap, color-font, and shaped-authoring seeds.
 
 ## Known Limits
 
 - Native FreeType is not integrated; the current raster path is pure Rust and
   does not claim full TrueType bytecode hinting parity.
-- Native HarfBuzz bindings are not added; rustybuzz backs complex shaping for
-  generated text where applicable.
-- Generated complex-script PDF output is not fully shaped into CID glyph
-  streams yet; `TextShaper` is the stable seam for that integration.
-- TrueType/OpenType subsetting is not implemented; authoring currently embeds
-  complete configured font programs.
-- Full predefined CJK CMap coverage is not vendored; Identity-H/V is solid and
-  explicit.
-- Full vertical writing fidelity is not claimed; vertical mode is detected and
-  reported.
-- Full color font / emoji handling is deferred.
+- Native HarfBuzz bindings are not added; rustybuzz backs generated complex
+  shaping without adding FFI risk.
+- True sfnt glyph-program subsetting is not implemented; authoring writes
+  subset maps with full-font fallback and a structured diagnostic.
+- Full legacy predefined CJK CMap coverage is not vendored; UTF-16 common maps
+  and Identity-H/V are explicit.
+- Full vertical writing fidelity is not claimed; vertical advances are used,
+  but vertical alternates and punctuation substitution are not.
+- Color font / emoji rendering is detected and diagnosed, not rendered in color.
+
+See also `docs/font_subsystem_prompt04b.md` for the Prompt 04B closure table.

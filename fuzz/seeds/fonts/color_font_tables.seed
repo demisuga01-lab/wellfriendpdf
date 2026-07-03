@@ -1,0 +1,2 @@
+sfnt tables COLR CPAL CBDT CBLC sbix SVG
+expect diagnostic font.color_glyphs.detected

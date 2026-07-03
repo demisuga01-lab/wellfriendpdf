@@ -30,6 +30,13 @@ pub struct DecodedGlyph {
     pub width: Option<f64>,
     /// Whether `code` is a glyph id (CID fonts) rather than a char code.
     pub is_gid: bool,
+    /// Whether the font's CMap declares vertical writing mode.
+    pub is_vertical: bool,
+    /// Vertical displacement `(w1y)` in 1/1000 text units for Type0 vertical
+    /// fonts. Negative values advance downward, per PDF vertical metrics.
+    pub vertical_advance: Option<f64>,
+    /// Vertical origin vector `(v_x, v_y)` in 1/1000 text units when available.
+    pub vertical_origin: Option<(f64, f64)>,
 }
 
 /// Decode a text string under `font_name`'s font into glyphs, resolving the
@@ -79,6 +86,9 @@ pub fn decode_text_bytes(
             is_space: resolver.is_space_code(code) || ch == ' ',
             width,
             is_gid: false,
+            is_vertical: false,
+            vertical_advance: None,
+            vertical_origin: None,
         });
     }
     glyphs
@@ -120,6 +130,12 @@ fn decode_type0_text(
         } else {
             u16::try_from(unicode as u32).unwrap_or(cid)
         };
+        let (vertical_advance, vertical_origin) = if resolver.is_vertical() {
+            let (w1y, vx, vy) = resolver.vertical_metrics(cid);
+            (Some(w1y), Some((vx, vy)))
+        } else {
+            (None, None)
+        };
 
         glyphs.push(DecodedGlyph {
             code,
@@ -128,6 +144,9 @@ fn decode_type0_text(
             is_space: resolver.is_space_code(cid) || unicode == ' ',
             width,
             is_gid: render_as_gid,
+            is_vertical: resolver.is_vertical(),
+            vertical_advance,
+            vertical_origin,
         });
     }
     glyphs
@@ -168,6 +187,9 @@ fn latin1_glyphs(bytes: &[u8]) -> Vec<DecodedGlyph> {
             is_space: *byte == b' ',
             width: None,
             is_gid: false,
+            is_vertical: false,
+            vertical_advance: None,
+            vertical_origin: None,
         })
         .collect()
 }
