@@ -555,11 +555,23 @@ impl ContentEngine {
         page_number: usize,
         config: &crate::analysis::layout::LayoutConfig,
     ) -> Result<crate::analysis::layout::PageLayout> {
+        let chunks = self.collect_page_text_chunks(page_number)?;
+        Ok(crate::analysis::layout::analyze_page(&chunks, config))
+    }
+
+    /// Collect positioned text runs for a page with provenance-friendly flags
+    /// preserved (`ActualText`, invisible OCR-layer text, RTL/vertical writing
+    /// mode, font name, font size, and run geometry). This is the shared
+    /// low-level input for layout analysis, semantic text, search, and
+    /// redaction-preview quads.
+    pub fn collect_page_text_chunks(
+        &self,
+        page_number: usize,
+    ) -> Result<Vec<crate::text::TextChunk>> {
         let ops = self.get_page_content(page_number)?;
         let resources = self.get_page_resources(page_number)?;
         let mut collector = crate::text::TextCollector::new(resources, self.doc.reader());
-        let chunks = collector.collect(&ops);
-        Ok(crate::analysis::layout::analyze_page(&chunks, config))
+        Ok(collector.collect(&ops))
     }
 
     /// Structured (layout-aware) text for a page: the page's text in
@@ -593,22 +605,33 @@ impl ContentEngine {
         Ok(blocks.join("\n\n"))
     }
 
-    /// Approximate positioned words for a page from layout lines.
-    ///
-    /// The current layout model stores line boxes but not per-word boxes. This
-    /// method splits line text on whitespace and proportionally assigns word
-    /// extents across the line box. It is deterministic and good enough for the
-    /// public `words`/region surface until a lower-level glyph word model is
-    /// promoted.
+    /// Positioned words for a page from the semantic text model. Word boxes are
+    /// derived from the contributing text runs/characters rather than from a
+    /// whole-line proportional split, which makes the region/search/redaction
+    /// surfaces map back to tighter source quads.
     pub fn extract_page_words(&self, page_number: usize) -> Result<Vec<RegionWord>> {
-        let layout = self.analyze_page_layout(page_number)?;
-        let mut words = Vec::new();
-        for block in layout.blocks {
-            for line in block.lines {
-                words.extend(words_from_line(page_number, &line));
-            }
-        }
-        Ok(words)
+        let document = self.extract_text_semantic_model(
+            &[page_number],
+            crate::text::TextSemanticOptions::default(),
+        )?;
+        Ok(document
+            .pages
+            .into_iter()
+            .flat_map(|page| {
+                page.blocks.into_iter().flat_map(move |block| {
+                    block.lines.into_iter().flat_map(move |line| {
+                        line.words.into_iter().map(move |word| RegionWord {
+                            text: word.text,
+                            page: page.page,
+                            x0: word.quad.x0,
+                            y0: word.quad.y0,
+                            x1: word.quad.x1,
+                            y1: word.quad.y1,
+                        })
+                    })
+                })
+            })
+            .collect())
     }
 
     /// Extract positioned words constrained to a page region.
@@ -638,6 +661,52 @@ impl ContentEngine {
     /// Readable text view of [`extract_semantic_document`](Self::extract_semantic_document).
     pub fn extract_semantic_text(&self, pages: &[usize]) -> Result<String> {
         Ok(self.extract_semantic_document(pages)?.to_text())
+    }
+
+    /// Build the Prompt 06 semantic text model: pages -> blocks -> paragraphs
+    /// -> lines -> words/spans/chars with geometry, confidence, and provenance.
+    /// This model is additive and leaves the legacy flat extraction path
+    /// unchanged.
+    pub fn extract_text_semantic_model(
+        &self,
+        pages: &[usize],
+        options: crate::text::TextSemanticOptions,
+    ) -> Result<crate::text::TextSemanticDocument> {
+        let page_numbers = if pages.is_empty() {
+            (1..=self.page_count()?).collect::<Vec<_>>()
+        } else {
+            pages.to_vec()
+        };
+        let mut out = Vec::with_capacity(page_numbers.len());
+        for page_number in page_numbers {
+            let page_box = self.page_box(page_number)?;
+            let chunks = self.collect_page_text_chunks(page_number)?;
+            out.push(crate::text::build_text_semantic_page(
+                page_number,
+                page_box,
+                chunks,
+                &options,
+            ));
+        }
+        Ok(crate::text::build_text_semantic_document(out, Vec::new()))
+    }
+
+    /// Search selected pages through the semantic model and return source
+    /// character quads for highlighting/redaction previews. This does not apply
+    /// redactions; it prepares stable geometry for the editing phase.
+    pub fn search_text(
+        &self,
+        pages: &[usize],
+        query: &str,
+        options: crate::text::TextSearchOptions,
+    ) -> Result<Vec<crate::text::TextSearchMatch>> {
+        let semantic_options = crate::text::TextSemanticOptions {
+            mode: crate::text::TextExtractionMode::SearchText,
+            include_hidden: options.include_hidden,
+            ..crate::text::TextSemanticOptions::default()
+        };
+        let document = self.extract_text_semantic_model(pages, semantic_options)?;
+        Ok(document.search(query, &options))
     }
 
     /// Detect and extract tables on a page (the `extract-tables` tool — a
@@ -1447,40 +1516,6 @@ fn bbox_area(bbox: [f64; 4]) -> f64 {
 
 fn bbox_from_layout(bbox: crate::analysis::layout::BBox) -> [f64; 4] {
     [bbox.x0, bbox.y0, bbox.x1, bbox.y1]
-}
-
-fn words_from_line(
-    page_number: usize,
-    line: &crate::analysis::layout::LayoutLine,
-) -> Vec<RegionWord> {
-    let parts: Vec<&str> = line.text.split_whitespace().collect();
-    if parts.is_empty() {
-        return Vec::new();
-    }
-
-    let total_chars = parts
-        .iter()
-        .map(|word| word.chars().count())
-        .sum::<usize>()
-        .max(1);
-    let width = (line.bbox.x1 - line.bbox.x0).max(0.0);
-    let mut offset = 0usize;
-    let mut words = Vec::with_capacity(parts.len());
-    for word in parts {
-        let len = word.chars().count();
-        let x0 = line.bbox.x0 + width * (offset as f64 / total_chars as f64);
-        offset += len;
-        let x1 = line.bbox.x0 + width * (offset as f64 / total_chars as f64);
-        words.push(RegionWord {
-            text: word.to_string(),
-            page: page_number,
-            x0,
-            y0: line.bbox.y0,
-            x1,
-            y1: line.bbox.y1,
-        });
-    }
-    words
 }
 
 /// Parse an annotation `/Rect` `[x0 y0 x1 y1]` (resolving indirect refs and

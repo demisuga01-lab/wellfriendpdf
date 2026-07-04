@@ -250,8 +250,12 @@ pub use structural::{
 };
 pub use text::{
     bounded_text_parallel_window, LineEnding, MarkedTextChunk, ReadingOrderReconstructor,
-    TextChunk, TextCollector, TextExtractOptions, TextExtractor, TextFormatOptions, TextFormatter,
-    TextLine,
+    SemanticTextDirection, TextChunk, TextCollector, TextDiagnostic, TextExtractOptions,
+    TextExtractionCounters, TextExtractionMode, TextExtractor, TextFormatOptions, TextFormatter,
+    TextLayoutStrategy, TextLine, TextMappingSource, TextProvenanceFlag, TextQuad, TextRole,
+    TextSearchMatch, TextSearchOptions, TextSemanticBlock, TextSemanticChar, TextSemanticDocument,
+    TextSemanticLine, TextSemanticOptions, TextSemanticPage, TextSemanticParagraph,
+    TextSemanticSpan, TextSemanticWord,
 };
 pub use utilities::{
     add_page_numbers_pdf, attachments_json, decrypt_pdf, encrypt_pdf, export_pdf_pages_to_images,

@@ -488,8 +488,8 @@ struct ExtractTextArgs {
     /// to geometric layout analysis when absent.
     #[arg(long)]
     semantic: bool,
-    /// Output format for --structured/--semantic: text or json. Ignored without
-    /// either flag.
+    /// Output format for --structured/--semantic: text, json, or model-json
+    /// (Prompt 06 geometry/provenance model). Ignored without either flag.
     #[arg(long, default_value = "text")]
     format: String,
     /// Restrict extraction to a page box in PDF user-space points:
@@ -1326,12 +1326,27 @@ fn run_extract_text_structured(
     args: &ExtractTextArgs,
 ) -> Result<(), Box<dyn Error>> {
     let region = args.region.as_deref().map(parse_region_cli).transpose()?;
-    let as_json = match args.format.to_lowercase().as_str() {
+    let format = args.format.to_lowercase();
+    if matches!(
+        format.as_str(),
+        "model-json" | "model_json" | "semantic-model"
+    ) {
+        let model = engine
+            .extract_text_semantic_model(page_nums, oxide_engine::TextSemanticOptions::default())?;
+        let s = serde_json::to_string_pretty(&model)?;
+        match &args.output {
+            Some(path) => std::fs::write(path, s)?,
+            None => println!("{s}"),
+        }
+        return Ok(());
+    }
+
+    let as_json = match format.as_str() {
         "json" => true,
         "text" | "txt" => false,
         other => {
             return Err(usage_error(format!(
-                "unknown --format '{other}'; use text or json"
+                "unknown --format '{other}'; use text, json, or model-json"
             )));
         }
     };
@@ -1388,11 +1403,28 @@ fn run_extract_text_semantic(
     page_nums: &[usize],
     args: &ExtractTextArgs,
 ) -> Result<(), Box<dyn Error>> {
-    let as_json = match args.format.to_lowercase().as_str() {
+    let format = args.format.to_lowercase();
+    if matches!(
+        format.as_str(),
+        "model-json" | "model_json" | "semantic-model"
+    ) {
+        let model = engine
+            .extract_text_semantic_model(page_nums, oxide_engine::TextSemanticOptions::default())?;
+        let output = serde_json::to_string_pretty(&model)?;
+        match &args.output {
+            Some(path) => std::fs::write(path, output)?,
+            None => println!("{output}"),
+        }
+        return Ok(());
+    }
+
+    let as_json = match format.as_str() {
         "json" => true,
         "text" | "txt" => false,
         other => {
-            return Err(format!("unknown --format '{other}'; use text or json").into());
+            return Err(
+                format!("unknown --format '{other}'; use text, json, or model-json").into(),
+            );
         }
     };
 

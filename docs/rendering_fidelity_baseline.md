@@ -444,3 +444,31 @@ Prompt 05B adds qcms transform-cache/fidelity reporting, stronger
 Separation/DeviceN preview diagnostics, common-case DeviceCMYK fill overprint
 preview, and stricter color-only PDF/A/PDF/X output-intent checks. Details are
 tracked in `docs/color_prompt05b_closure_audit.md`.
+
+## Prompt 06 Extraction Anchor
+
+Prompt 06 is text/layout work, not renderer fidelity work. The flat extraction
+gate was rerun before and after the additive semantic text model to prove no
+text drift:
+
+```powershell
+cargo build --release -p oxide-cli
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools oxide --tasks text --output-dir target\competitive-benchmark\prompt06-text-before --report target\competitive-benchmark\prompt06-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools oxide --tasks text --output-dir target\competitive-benchmark\prompt06-text-after --report target\competitive-benchmark\prompt06-text-after.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+```
+
+| metric | before | after |
+| --- | ---: | ---: |
+| files | 200 | 200 |
+| pages | 561 | 561 |
+| text pass rate | 100.0% | 100.0% |
+| char similarity | 0.92743 | 0.92743 |
+| word-F1 | 1.0 | 1.0 |
+| line recall | 1.0 | 1.0 |
+| reading order | 0.96019 | 0.96019 |
+
+Artifacts:
+
+- `target\competitive-benchmark\prompt06-text-before`
+- `target\competitive-benchmark\prompt06-text-after`
+- `target\prompt06-model-smoke.json`

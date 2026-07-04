@@ -1,0 +1,41 @@
+# RAG Chunking Model
+
+Prompt 06 does not replace the existing RAG chunker. It documents how the chunker relates to the new semantic text model.
+
+## Existing Path
+
+The `chunk` command and `crate::chunk` module operate over the canonical parsed document:
+
+```text
+ContentEngine::parse_document
+-> Document body blocks
+-> section-aware chunks
+-> JSON chunk records with page/source metadata
+```
+
+This remains the primary RAG-facing path because it already understands headings, tables, figures, page references, block kinds, and serialization policy.
+
+## Prompt 06 Additions
+
+The new semantic text model adds lower-level geometry:
+
+- words
+- spans
+- characters
+- quads
+- provenance
+- confidence
+
+Future RAG chunking can use these fields for span-level citations and highlight previews without changing chunk boundaries.
+
+## Recommended Use
+
+- Use `oxide chunk` for production RAG ingestion.
+- Use `extract-text --structured --format model-json` when an application needs character quads or match geometry.
+- Use `ContentEngine::search_text` for query-time source highlighting.
+
+## Limits
+
+- The chunker is not switched to the Prompt 06 text model by default.
+- Table chunking remains tied to the existing table/document model.
+- OCR chunking still depends on the existing OCR seam and policy.
