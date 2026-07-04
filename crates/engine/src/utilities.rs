@@ -195,6 +195,40 @@ impl Default for ImageToPdfOptions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScalePagesOptions {
+    pub pages: Option<Vec<usize>>,
+    pub scale: f64,
+    pub dpi: u32,
+}
+
+impl Default for ScalePagesOptions {
+    fn default() -> Self {
+        Self {
+            pages: None,
+            scale: 1.0,
+            dpi: 144,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NUpOptions {
+    pub columns: usize,
+    pub rows: usize,
+    pub dpi: u32,
+}
+
+impl Default for NUpOptions {
+    fn default() -> Self {
+        Self {
+            columns: 2,
+            rows: 1,
+            dpi: 144,
+        }
+    }
+}
+
 /// Build a PDF with one page per image path. Inputs are read and registered one
 /// at a time; the builder retains the encoded image data required for output.
 pub fn images_to_pdf_from_paths(paths: &[PathBuf], options: ImageToPdfOptions) -> Result<Vec<u8>> {
@@ -504,6 +538,91 @@ pub fn organize_pdf(engine: &ContentEngine, order: &[usize]) -> Result<Vec<u8>> 
     build_subset(engine.document(), order)
 }
 
+/// Crop selected pages by writing `/CropBox` into the preserved source graph.
+pub fn crop_pdf_pages(engine: &ContentEngine, pages: &[usize], crop: ImageRect) -> Result<Vec<u8>> {
+    crate::structural::crop_pages(engine, pages, crop)
+}
+
+/// Scale selected pages by rendering them into fresh visual pages.
+///
+/// This is an intentionally visual operation: annotations/forms/navigation are
+/// not relinked into the new raster pages. Use structural crop/rotate when
+/// preserving interactivity is required.
+pub fn scale_pdf_pages(engine: &ContentEngine, options: ScalePagesOptions) -> Result<Vec<u8>> {
+    if !options.scale.is_finite() || options.scale <= 0.0 {
+        return Err(OxideError::MalformedPdf(
+            "scale: --scale must be a positive finite number".to_string(),
+        ));
+    }
+    let total = engine.page_count()?;
+    let selected = normalize_pages(total, options.pages.as_deref().unwrap_or(&[]))?;
+    let mut builder = PdfBuilder::new();
+    for page_no in selected {
+        let page = engine.get_page(page_no)?;
+        let image = render_page_rgb(engine, page_no, options.dpi.max(1))?;
+        let handle = builder.add_rgb_image(image.width, image.height, image.pixels)?;
+        let (width, height) = page_box_size(page.media_box);
+        let scaled_w = width * options.scale;
+        let scaled_h = height * options.scale;
+        let x = (width - scaled_w) / 2.0;
+        let y = (height - scaled_h) / 2.0;
+        builder
+            .add_page(AuthorPageSize::custom(width, height))
+            .draw_image(handle, x, y, scaled_w, scaled_h);
+    }
+    builder.to_bytes()
+}
+
+/// Create a visual n-up PDF from selected pages.
+///
+/// Source pages are rasterized into cells. The output is safe and deterministic,
+/// but interactive structures are intentionally not preserved because arbitrary
+/// widget/link destination relinking across imposed pages is not safe yet.
+pub fn n_up_pdf(engine: &ContentEngine, pages: &[usize], options: NUpOptions) -> Result<Vec<u8>> {
+    if options.columns == 0 || options.rows == 0 {
+        return Err(OxideError::MalformedPdf(
+            "n-up: rows and columns must be positive".to_string(),
+        ));
+    }
+    let per_sheet = options.columns.saturating_mul(options.rows);
+    if per_sheet == 0 || per_sheet > 64 {
+        return Err(OxideError::ResourceLimit(
+            "n-up: rows*columns must be between 1 and 64".to_string(),
+        ));
+    }
+    let total = engine.page_count()?;
+    let selected = normalize_pages(total, pages)?;
+    let first = engine.get_page(selected[0])?;
+    let (sheet_w, sheet_h) = page_box_size(first.media_box);
+    let cell_w = sheet_w / options.columns as f64;
+    let cell_h = sheet_h / options.rows as f64;
+    let mut builder = PdfBuilder::new();
+    for chunk in selected.chunks(per_sheet) {
+        let mut handles = Vec::with_capacity(chunk.len());
+        for &page_no in chunk {
+            let image = render_page_rgb(engine, page_no, options.dpi.max(1))?;
+            let handle = builder.add_rgb_image(image.width, image.height, image.pixels)?;
+            handles.push((page_no, handle));
+        }
+        let page = builder.add_page(AuthorPageSize::custom(sheet_w, sheet_h));
+        for (idx, (page_no, handle)) in handles.into_iter().enumerate() {
+            let source = engine.get_page(page_no)?;
+            let (source_w, source_h) = page_box_size(source.media_box);
+            let source_w = source_w.max(1.0);
+            let source_h = source_h.max(1.0);
+            let scale = (cell_w / source_w).min(cell_h / source_h);
+            let draw_w = source_w * scale;
+            let draw_h = source_h * scale;
+            let col = idx % options.columns;
+            let row = idx / options.columns;
+            let x = col as f64 * cell_w + (cell_w - draw_w) / 2.0;
+            let y = sheet_h - (row + 1) as f64 * cell_h + (cell_h - draw_h) / 2.0;
+            page.draw_image(handle, x, y, draw_w, draw_h);
+        }
+    }
+    builder.to_bytes()
+}
+
 /// Organize one primary document and optionally insert pages from another
 /// document at a 1-based output position.
 pub fn organize_pdf_with_insert(
@@ -561,6 +680,10 @@ pub fn rotate_pdf(
     crate::structural::rotate_pages(engine, pages, rotation)
 }
 
+pub fn crop_pdf(engine: &ContentEngine, pages: &[usize], crop: ImageRect) -> Result<Vec<u8>> {
+    crop_pdf_pages(engine, pages, crop)
+}
+
 pub fn repair_pdf(bytes: Vec<u8>, password: &[u8]) -> Result<Vec<u8>> {
     crate::structural::repair(bytes, password)
 }
@@ -611,6 +734,49 @@ fn normalize_pages(total: usize, pages: &[usize]) -> Result<Vec<usize>> {
         }
     }
     Ok(pages.to_vec())
+}
+
+fn render_page_rgb(engine: &ContentEngine, page: usize, dpi: u32) -> Result<RawImage> {
+    let raw = engine.render_page(page, dpi)?.to_raw_image();
+    match raw.channels {
+        3 => Ok(raw),
+        4 => {
+            let mut pixels = Vec::with_capacity(raw.width as usize * raw.height as usize * 3);
+            for px in raw.pixels.chunks_exact(4) {
+                pixels.extend_from_slice(&px[..3]);
+            }
+            Ok(RawImage {
+                width: raw.width,
+                height: raw.height,
+                channels: 3,
+                bits_per_sample: 8,
+                pixels,
+            })
+        }
+        1 => {
+            let mut pixels = Vec::with_capacity(raw.width as usize * raw.height as usize * 3);
+            for gray in raw.pixels {
+                pixels.extend_from_slice(&[gray, gray, gray]);
+            }
+            Ok(RawImage {
+                width: raw.width,
+                height: raw.height,
+                channels: 3,
+                bits_per_sample: 8,
+                pixels,
+            })
+        }
+        channels => Err(OxideError::UnsupportedFeature(format!(
+            "rendered page image has unsupported channel count {channels}"
+        ))),
+    }
+}
+
+fn page_box_size(media_box: [f64; 4]) -> (f64, f64) {
+    (
+        (media_box[2] - media_box[0]).abs().max(1.0),
+        (media_box[3] - media_box[1]).abs().max(1.0),
+    )
 }
 
 fn add_image_page(

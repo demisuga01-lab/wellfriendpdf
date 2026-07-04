@@ -7,8 +7,10 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
-use oxide_engine::structural::{encrypt, linearize, optimize, repair, rotate_pages, Rotation};
-use oxide_engine::ContentEngine;
+use oxide_engine::structural::{
+    crop_pages, encrypt, linearize, optimize, repair, rotate_pages, Rotation,
+};
+use oxide_engine::{ContentEngine, ImageRect, NUpOptions, ScalePagesOptions};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -93,6 +95,48 @@ fn rotate_preserves_text_content() {
         after.trim(),
         "text content unchanged by rotation"
     );
+}
+
+#[test]
+fn crop_pages_persists_crop_box_and_preserves_text() {
+    let engine = open("tracemonkey.pdf");
+    let before = engine.get_page_text(1).unwrap();
+    let out = crop_pages(&engine, &[1], ImageRect::new(10.0, 20.0, 300.0, 400.0)).unwrap();
+    let re = open_bytes(out);
+    let page = re.get_page(1).unwrap();
+    assert_eq!(page.crop_box, [10.0, 20.0, 310.0, 420.0]);
+    assert_eq!(before.trim(), re.get_page_text(1).unwrap().trim());
+}
+
+#[test]
+fn visual_scale_and_nup_outputs_reopen() {
+    let engine = open("minimal.pdf");
+    let scaled = oxide_engine::scale_pdf_pages(
+        &engine,
+        ScalePagesOptions {
+            pages: Some(vec![1]),
+            scale: 0.75,
+            dpi: 72,
+        },
+    )
+    .unwrap();
+    let scaled_engine = open_bytes(scaled);
+    assert_eq!(scaled_engine.page_count().unwrap(), 1);
+    assert!(scaled_engine.render_page_png_fast(1, 72).is_ok());
+
+    let nup = oxide_engine::n_up_pdf(
+        &engine,
+        &[1],
+        NUpOptions {
+            columns: 2,
+            rows: 1,
+            dpi: 72,
+        },
+    )
+    .unwrap();
+    let nup_engine = open_bytes(nup);
+    assert_eq!(nup_engine.page_count().unwrap(), 1);
+    assert!(nup_engine.render_page_png_fast(1, 72).is_ok());
 }
 
 // --- ENCRYPT ----------------------------------------------------------------

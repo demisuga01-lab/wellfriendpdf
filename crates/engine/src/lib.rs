@@ -94,6 +94,7 @@ pub mod extract;
 pub mod filters;
 pub mod fonts;
 pub mod fonts_report;
+pub mod form_exchange;
 #[cfg(feature = "fuzzing")]
 pub mod fuzz;
 pub mod html;
@@ -175,8 +176,9 @@ pub use docmodel::{
 };
 pub use document::{PdfDocument, PdfPage};
 pub use editing::{
-    AnnotationOptions, EditMode, EditRectStyle, EditTextStyle, HeaderFooterOptions, ImageRect,
-    ImageStampOptions, OverlayLayer, PdfEditor, RedactionOptions, WatermarkOptions,
+    AnnotationOptions, AttachmentRedactionPolicy, EditMode, EditRectStyle, EditTextStyle,
+    HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions, OverlayLayer,
+    PdfEditor, RedactionOptions, WatermarkOptions,
 };
 pub use engine::{
     max_decode_pixels, max_render_pixels, ContentEngine, ExtractionProfile, PageRegion,
@@ -202,6 +204,10 @@ pub use fonts::{
     TextDirection, TextShaper,
 };
 pub use fonts_report::{list_fonts, FontInfo};
+pub use form_exchange::{
+    apply_form_data_pdf, export_form_data, parse_form_data, FormDataApplyReport, FormDataField,
+    FormDataFormat, FormDataSet,
+};
 pub use html::{HtmlExporter, HtmlMode, HtmlOptions};
 pub use images::decoder::{ColorSpaceConverter, ImageDecoder, RawImage};
 pub use images::encoder::{ImageEncoder, ImageOutputFormat};
@@ -254,7 +260,8 @@ pub use signature::{
     SignatureReport, SignatureStatus, SignatureTrust, SignatureValidity, VerifyOptions,
 };
 pub use structural::{
-    encrypt, linearize::linearize, optimize, repair, rotate_pages, OptimizeReport, Rotation,
+    crop_pages, encrypt, linearize::linearize, optimize, repair, rotate_pages, OptimizeReport,
+    Rotation,
 };
 pub use text::{
     bounded_text_parallel_window, CjkSegmentationMode, LineEnding, MarkedTextChunk,
@@ -267,12 +274,13 @@ pub use text::{
     TextSemanticWord, TextStructureContext, TextStructureEntry, TextStructurePageSummary,
 };
 pub use utilities::{
-    add_page_numbers_pdf, attachments_json, decrypt_pdf, encrypt_pdf, export_pdf_pages_to_images,
-    fonts_json, html_string, images_to_pdf_from_bytes, images_to_pdf_from_paths, linearize_pdf,
-    optimize_pdf, organize_pdf, organize_pdf_with_insert, render_page_image, repair_pdf,
-    rotate_pdf, signatures_json, watermark_image_pdf, watermark_text_pdf, ImagePdfPageSize,
-    ImageToPdfOptions, ImageWatermarkOptions, PageNumberOptions, RasterImageFormat,
-    RasterPageResult, RgbColor, StampPosition, TextWatermarkOptions,
+    add_page_numbers_pdf, attachments_json, crop_pdf, crop_pdf_pages, decrypt_pdf, encrypt_pdf,
+    export_pdf_pages_to_images, fonts_json, html_string, images_to_pdf_from_bytes,
+    images_to_pdf_from_paths, linearize_pdf, n_up_pdf, optimize_pdf, organize_pdf,
+    organize_pdf_with_insert, render_page_image, repair_pdf, rotate_pdf, scale_pdf_pages,
+    signatures_json, watermark_image_pdf, watermark_text_pdf, ImagePdfPageSize, ImageToPdfOptions,
+    ImageWatermarkOptions, NUpOptions, PageNumberOptions, RasterImageFormat, RasterPageResult,
+    RgbColor, ScalePagesOptions, StampPosition, TextWatermarkOptions,
 };
 pub use writer::{
     build_merged, build_subset, rewrite_document, rewrite_document_objects,
@@ -330,8 +338,9 @@ pub mod prelude {
         PdfAValidationReport, PdfUaValidationReport,
     };
     pub use crate::editing::{
-        AnnotationOptions, EditMode, EditRectStyle, EditTextStyle, HeaderFooterOptions, ImageRect,
-        ImageStampOptions, OverlayLayer, PdfEditor, RedactionOptions, WatermarkOptions,
+        AnnotationOptions, AttachmentRedactionPolicy, EditMode, EditRectStyle, EditTextStyle,
+        HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions, OverlayLayer,
+        PdfEditor, RedactionOptions, WatermarkOptions,
     };
     pub use crate::engine::ContentEngine;
     pub use crate::error::{ErrorKind, OxideError, Result};

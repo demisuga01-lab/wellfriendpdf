@@ -771,6 +771,116 @@ fn prompt07_report_commands_emit_json() {
 }
 
 #[test]
+fn prompt07b_form_annotation_and_page_ops_run() {
+    let xfdf = tmp("prompt07b_fields.xfdf");
+    let filled = tmp("prompt07b_filled.pdf");
+    let flattened = tmp("prompt07b_flattened.pdf");
+    let cropped = tmp("prompt07b_cropped.pdf");
+    let scaled = tmp("prompt07b_scaled.pdf");
+    let nup = tmp("prompt07b_nup.pdf");
+    for path in [&xfdf, &filled, &flattened, &cropped, &scaled, &nup] {
+        remove_path(path);
+    }
+
+    let export = run(&[
+        "forms-export",
+        fx("form_160f.pdf").to_str().unwrap(),
+        "--format",
+        "xfdf",
+        "--output",
+        xfdf.to_str().unwrap(),
+    ]);
+    assert_ok(&export, "forms-export xfdf");
+    assert!(
+        String::from_utf8_lossy(&std::fs::read(&xfdf).unwrap()).contains("<xfdf"),
+        "XFDF export should be XML"
+    );
+
+    let import = assert_json(
+        &run(&[
+            "forms-import",
+            fx("form_160f.pdf").to_str().unwrap(),
+            xfdf.to_str().unwrap(),
+            "--format",
+            "xfdf",
+            "--out",
+            filled.to_str().unwrap(),
+            "--json",
+        ]),
+        "forms-import xfdf",
+    );
+    assert!(import["imported_fields"].as_u64().unwrap_or(0) > 0);
+    assert!(filled.exists());
+
+    let flatten = assert_json(
+        &run(&[
+            "annotations-flatten",
+            fx("attach_annot.pdf").to_str().unwrap(),
+            "--out",
+            flattened.to_str().unwrap(),
+            "--json",
+        ]),
+        "annotations-flatten",
+    );
+    assert_eq!(flatten["op"], "annotations-flatten");
+    assert!(flattened.exists());
+
+    assert_ok(
+        &run(&[
+            "pages-crop",
+            fx("tracemonkey.pdf").to_str().unwrap(),
+            "--rect",
+            "0,0,200,200",
+            "--pages",
+            "1",
+            "--out",
+            cropped.to_str().unwrap(),
+            "--json",
+        ]),
+        "pages-crop",
+    );
+    assert_ok(
+        &run(&[
+            "pages-scale",
+            fx("minimal.pdf").to_str().unwrap(),
+            "--scale",
+            "0.75",
+            "--pages",
+            "1",
+            "--dpi",
+            "72",
+            "--out",
+            scaled.to_str().unwrap(),
+            "--json",
+        ]),
+        "pages-scale",
+    );
+    assert_ok(
+        &run(&[
+            "pages-nup",
+            fx("minimal.pdf").to_str().unwrap(),
+            "--columns",
+            "2",
+            "--rows",
+            "1",
+            "--pages",
+            "1",
+            "--dpi",
+            "72",
+            "--out",
+            nup.to_str().unwrap(),
+            "--json",
+        ]),
+        "pages-nup",
+    );
+    assert!(cropped.exists() && scaled.exists() && nup.exists());
+
+    for path in [&xfdf, &filled, &flattened, &cropped, &scaled, &nup] {
+        remove_path(path);
+    }
+}
+
+#[test]
 fn prompt07_redact_search_term_writes_verified_pdf() {
     let input = tmp("prompt07_redact_input.pdf");
     let output = tmp("prompt07_redact_output.pdf");
@@ -790,6 +900,10 @@ fn prompt07_redact_search_term_writes_verified_pdf() {
             output.to_str().unwrap(),
             "--json",
             "--strict",
+            "--image-policy",
+            "partial",
+            "--attachments",
+            "remove-all",
         ]),
         "redact --text",
     );

@@ -2,9 +2,9 @@ use std::io::Cursor;
 
 use oxide_engine::{
     AnnotationOptions, AuthorPageSize as PageSize, Color, ContentEngine, EditMode, EditRectStyle,
-    EditTextStyle, ExtractOptions, HeaderFooterOptions, ImageRect, ImageStampOptions, OverlayLayer,
-    PdfBuilder, PdfDocument, PdfEditor, RedactionOptions, StandardFont, TextStyle,
-    WatermarkOptions,
+    EditTextStyle, ExtractOptions, HeaderFooterOptions, ImageRect, ImageRedactionPolicy,
+    ImageStampOptions, OverlayLayer, PdfBuilder, PdfDocument, PdfEditor, RedactionOptions,
+    StandardFont, TextStyle, WatermarkOptions,
 };
 
 fn base_pdf() -> Vec<u8> {
@@ -284,7 +284,10 @@ fn redaction_removes_intersecting_image_invocation() {
         .redact(
             1,
             ImageRect::new(245.0, 595.0, 90.0, 90.0),
-            RedactionOptions::default(),
+            RedactionOptions {
+                image_policy: ImageRedactionPolicy::Remove,
+                ..RedactionOptions::default()
+            },
         )
         .unwrap();
     let redacted = editor.save_to_bytes(EditMode::FullRewrite).unwrap();
@@ -296,6 +299,43 @@ fn redaction_removes_intersecting_image_invocation() {
     assert!(
         !String::from_utf8_lossy(&redacted).contains("/OxIm"),
         "redacted content stream should not invoke the old image resource"
+    );
+}
+
+#[test]
+fn partial_image_redaction_rewrites_pixels_and_preserves_uncovered_area() {
+    let mut doc = PdfBuilder::new();
+    let image = doc
+        .add_rgb_image(2, 2, vec![255, 0, 0, 0, 255, 0, 255, 0, 0, 0, 255, 0])
+        .unwrap();
+    doc.add_page(PageSize::LETTER)
+        .draw_image(image, 200.0, 500.0, 100.0, 100.0);
+    let mut editor = PdfEditor::open_bytes(doc.to_bytes().unwrap()).unwrap();
+    editor
+        .redact(
+            1,
+            ImageRect::new(200.0, 500.0, 50.0, 100.0),
+            RedactionOptions::default(),
+        )
+        .unwrap();
+    let redacted = editor.save_to_bytes(EditMode::FullRewrite).unwrap();
+    let engine = ContentEngine::open_bytes(redacted).unwrap();
+    let raw = engine.render_page(1, 72).unwrap().to_raw_image();
+    let channels = raw.channels as usize;
+    let sample = |x: usize, y: usize| -> &[u8] {
+        let offset = (y * raw.width as usize + x) * channels;
+        &raw.pixels[offset..offset + channels.min(3)]
+    };
+    let image_top = raw.height as usize - 600;
+    let left = sample(225, image_top + 50);
+    let right = sample(275, image_top + 50);
+    assert!(
+        left[0] < 20 && left[1] < 20 && left[2] < 20,
+        "redacted half should render black, got {left:?}"
+    );
+    assert!(
+        right[0] > 120 || right[1] > 120,
+        "unredacted half should retain image color, got {right:?}"
     );
 }
 

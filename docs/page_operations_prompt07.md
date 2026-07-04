@@ -22,11 +22,14 @@ reachable from the updated root and info dictionaries, which prevents stale
 redacted streams from remaining in output bytes while preserving reachable
 catalog structures such as outlines, name trees, attachments, and AcroForms.
 
+Prompt 07B adds `crop_pages`, which writes `/CropBox` values in the preserved
+source object graph. It also adds visual `scale_pdf_pages` and `n_up_pdf`
+helpers. Scale and n-up produce deterministic rasterized visual pages and
+diagnose that interactive structures are not relinked into the new pages.
+
 ## Limits
 
-- Crop/scale/n-up/impose are not promoted beyond existing smoke-level support.
-- Rewriting page labels, outlines, and named destinations after arbitrary page
-  reindexing remains bounded page-operation polish.
+- Arbitrary destination relinking after visual page reassembly remains bounded;
+  graph-preserving operations keep labels/outlines/destinations reachable.
 - Existing signatures may be invalidated by page operations. Prompt 09 owns
   full signature validation and preservation policy.
-

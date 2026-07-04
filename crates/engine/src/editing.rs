@@ -15,6 +15,7 @@ use crate::error::{OxideError, Result};
 use crate::filters::{decode_stream_lossless, flate_encode};
 use crate::fonts::FontResolver;
 use crate::images::decoder::{ImageDecoder, RawImage};
+use crate::images::locator::ImageReference;
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
@@ -173,6 +174,8 @@ impl Default for ImageStampOptions {
 pub struct RedactionOptions {
     pub fill: Color,
     pub scrub_metadata: bool,
+    pub image_policy: ImageRedactionPolicy,
+    pub attachment_policy: AttachmentRedactionPolicy,
 }
 
 impl Default for RedactionOptions {
@@ -180,8 +183,33 @@ impl Default for RedactionOptions {
         Self {
             fill: Color::black(),
             scrub_metadata: true,
+            image_policy: ImageRedactionPolicy::Partial,
+            attachment_policy: AttachmentRedactionPolicy::Keep,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageRedactionPolicy {
+    /// Try to rewrite intersecting image pixels; fall back to whole-image removal
+    /// when the image transform or encoding is unsupported.
+    Partial,
+    /// Remove/blank intersecting image invocations conservatively.
+    Remove,
+    /// Return an error if an intersecting image cannot be redacted at pixel level.
+    Fail,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AttachmentRedactionPolicy {
+    /// Preserve attachments while still scrubbing matching strings from
+    /// metadata-like streams when `scrub_metadata` is enabled.
+    Keep,
+    /// Remove document-level embedded files and file-attachment annotations.
+    RemoveAll,
+    /// Remove file-attachment annotations that overlap redaction regions; keep
+    /// catalog-level embedded files.
+    RemoveOverlapping,
 }
 
 /// Common annotation styling and metadata.
@@ -234,6 +262,7 @@ pub struct PdfEditor {
     annotations: BTreeMap<usize, Vec<AnnotationEdit>>,
     form_fills: BTreeMap<String, FormValue>,
     flatten_forms: bool,
+    flatten_annotations: bool,
 }
 
 impl PdfEditor {
@@ -245,6 +274,7 @@ impl PdfEditor {
             annotations: BTreeMap::new(),
             form_fills: BTreeMap::new(),
             flatten_forms: false,
+            flatten_annotations: false,
         })
     }
 
@@ -565,6 +595,14 @@ impl PdfEditor {
         self
     }
 
+    /// Bake common annotation appearances into page content and remove the
+    /// flattened annotations. Unsupported annotation subtypes are removed with a
+    /// conservative fallback only for visual markers that Oxide can synthesize.
+    pub fn flatten_annotations(&mut self) -> &mut Self {
+        self.flatten_annotations = true;
+        self
+    }
+
     pub fn save_to_bytes(&self, mode: EditMode) -> Result<Vec<u8>> {
         if mode == EditMode::Incremental && !self.redactions.is_empty() {
             return Err(OxideError::UnsupportedFeature(
@@ -630,12 +668,16 @@ impl PdfEditor {
         let mut changes = ChangeSet::new(self.document.reader());
         let mut redact_report = RedactionReport::default();
         let flatten_visuals = self.apply_form_changes(&pages, &mut changes)?;
+        let attachment_policy = self.effective_attachment_policy();
 
         let mut page_numbers: BTreeSet<usize> = BTreeSet::new();
         page_numbers.extend(self.edits.keys().copied());
         page_numbers.extend(self.redactions.keys().copied());
         page_numbers.extend(self.annotations.keys().copied());
         page_numbers.extend(flatten_visuals.keys().copied());
+        if self.flatten_annotations || attachment_policy == AttachmentRedactionPolicy::RemoveAll {
+            page_numbers.extend(pages.iter().map(|page| page.page_number));
+        }
 
         for page_number in page_numbers {
             let edits = self
@@ -693,6 +735,14 @@ impl PdfEditor {
                     write_annotation_visual_to_content(&mut overlay, &mut resources, spec);
                 }
             }
+            if self.flatten_annotations {
+                write_existing_annotation_visuals(
+                    self.document.reader(),
+                    &page_dict,
+                    &mut overlay,
+                    &mut resources,
+                )?;
+            }
 
             let mut content_refs = Vec::new();
             if !underlay.is_empty() {
@@ -708,7 +758,7 @@ impl PdfEditor {
                 let rewritten = rewrite_page_content_for_redaction(
                     self.document.reader(),
                     page,
-                    &resources,
+                    &mut resources,
                     redactions,
                     &mut redact_report,
                     &mut changes,
@@ -737,7 +787,11 @@ impl PdfEditor {
                 &mut page_dict,
                 redactions,
                 annotation_edits,
-                self.flatten_forms,
+                AnnotationApplyOptions {
+                    remove_widgets: self.flatten_forms,
+                    flatten_annotations: self.flatten_annotations,
+                    attachment_policy,
+                },
                 &mut changes,
             )?;
             page_dict.insert("Resources", PdfObject::Dictionary(resources));
@@ -751,6 +805,9 @@ impl PdfEditor {
 
         if redact_report.scrub_metadata && !redact_report.removed_text.is_empty() {
             self.apply_metadata_scrub(&redact_report.removed_text, &mut changes)?;
+        }
+        if attachment_policy == AttachmentRedactionPolicy::RemoveAll {
+            self.remove_embedded_file_name_tree(&mut changes)?;
         }
 
         Ok(changes.into_vec())
@@ -791,6 +848,24 @@ impl PdfEditor {
         }
     }
 
+    fn effective_attachment_policy(&self) -> AttachmentRedactionPolicy {
+        let mut policy = AttachmentRedactionPolicy::Keep;
+        for redactions in self.redactions.values() {
+            for redaction in redactions {
+                match redaction.options.attachment_policy {
+                    AttachmentRedactionPolicy::RemoveAll => {
+                        return AttachmentRedactionPolicy::RemoveAll;
+                    }
+                    AttachmentRedactionPolicy::RemoveOverlapping => {
+                        policy = AttachmentRedactionPolicy::RemoveOverlapping;
+                    }
+                    AttachmentRedactionPolicy::Keep => {}
+                }
+            }
+        }
+        policy
+    }
+
     fn apply_metadata_scrub(
         &self,
         removed_text: &BTreeSet<String>,
@@ -820,6 +895,49 @@ impl PdfEditor {
             }
             if changed {
                 changes.insert_existing(number, generation, scrubbed);
+            }
+        }
+        Ok(())
+    }
+
+    fn remove_embedded_file_name_tree(&self, changes: &mut ChangeSet) -> Result<()> {
+        let reader = self.document.reader();
+        let (root, generation) = reader.root_reference().ok_or_else(|| {
+            OxideError::MalformedPdf("attachment removal: trailer is missing /Root".to_string())
+        })?;
+        let object = changes.current_object(reader, root, generation)?;
+        let mut catalog = object.as_dict().cloned().ok_or_else(|| {
+            OxideError::MalformedPdf("attachment removal: /Root is not a dictionary".to_string())
+        })?;
+        let Some(names_obj) = catalog.get("Names").cloned() else {
+            changes.insert_existing(root, generation, PdfObject::Dictionary(catalog));
+            return Ok(());
+        };
+
+        match names_obj {
+            PdfObject::Dictionary(mut names) => {
+                names.remove("EmbeddedFiles");
+                if names.is_empty() {
+                    catalog.remove("Names");
+                } else {
+                    catalog.insert("Names", PdfObject::Dictionary(names));
+                }
+                changes.insert_existing(root, generation, PdfObject::Dictionary(catalog));
+            }
+            PdfObject::Reference {
+                number,
+                generation: names_gen,
+            } => {
+                let names_obj = changes.current_object(reader, number, names_gen)?;
+                if let Some(mut names) = names_obj.as_dict().cloned() {
+                    names.remove("EmbeddedFiles");
+                    changes.insert_existing(number, names_gen, PdfObject::Dictionary(names));
+                }
+                changes.insert_existing(root, generation, PdfObject::Dictionary(catalog));
+            }
+            _ => {
+                catalog.remove("Names");
+                changes.insert_existing(root, generation, PdfObject::Dictionary(catalog));
             }
         }
         Ok(())
@@ -1285,6 +1403,15 @@ impl RedactionState {
         let (x4, y4) = transform_point(&self.ctm, 1.0, 1.0);
         rect_from_points(&[(x1, y1), (x2, y2), (x3, y3), (x4, y4)])
     }
+
+    fn axis_aligned_unit_rect(&self) -> Option<ImageRect> {
+        let [a, b, c, d, e, f] = self.ctm;
+        const EPS: f64 = 0.000_001;
+        if b.abs() > EPS || c.abs() > EPS || a.abs() < EPS || d.abs() < EPS {
+            return None;
+        }
+        Some(rect_from_corners(e, f, e + a, f + d))
+    }
 }
 
 #[derive(Default)]
@@ -1369,7 +1496,7 @@ impl PendingPath {
 fn rewrite_page_content_for_redaction(
     reader: &PdfReader,
     page: &PdfPage,
-    resources: &PdfDictionary,
+    resources: &mut PdfDictionary,
     redactions: &[RedactionEdit],
     report: &mut RedactionReport,
     changes: &mut ChangeSet,
@@ -1436,13 +1563,62 @@ fn rewrite_page_content_for_redaction(
                 }
                 "Do" => {
                     let image_rect = state.unit_rect();
-                    if redactions
+                    let intersects = redactions
                         .iter()
-                        .any(|redaction| rects_intersect(image_rect, redaction.rect))
-                    {
+                        .any(|redaction| rects_intersect(image_rect, redaction.rect));
+                    if intersects {
+                        let policy = redactions
+                            .iter()
+                            .filter(|redaction| rects_intersect(image_rect, redaction.rect))
+                            .map(|redaction| redaction.options.image_policy)
+                            .find(|policy| *policy == ImageRedactionPolicy::Fail)
+                            .unwrap_or_else(|| {
+                                redactions
+                                    .iter()
+                                    .filter(|redaction| rects_intersect(image_rect, redaction.rect))
+                                    .map(|redaction| redaction.options.image_policy)
+                                    .find(|policy| *policy == ImageRedactionPolicy::Remove)
+                                    .unwrap_or(ImageRedactionPolicy::Partial)
+                            });
                         if let Some(name) = op.name(0) {
                             if let Some((obj, gen)) = xobject_reference(resources, reader, name) {
-                                changes.insert_existing(obj, gen, blank_image_xobject());
+                                let mut handled = false;
+                                if policy != ImageRedactionPolicy::Remove {
+                                    if let Some(axis_rect) = state.axis_aligned_unit_rect() {
+                                        match redacted_image_xobject(
+                                            reader, obj, gen, axis_rect, redactions,
+                                        ) {
+                                            Ok(Some(redacted)) => {
+                                                let new_number = changes.alloc();
+                                                changes.insert_new(new_number, redacted);
+                                                replace_xobject_reference(
+                                                    resources, name, new_number,
+                                                );
+                                                serialize_content_operation(&op, &mut out);
+                                                handled = true;
+                                            }
+                                            Ok(None) => {}
+                                            Err(err) if policy == ImageRedactionPolicy::Fail => {
+                                                return Err(err);
+                                            }
+                                            Err(_) => {}
+                                        }
+                                    } else if policy == ImageRedactionPolicy::Fail {
+                                        return Err(OxideError::UnsupportedFeature(
+                                            "partial image redaction requires an axis-aligned image transform"
+                                                .to_string(),
+                                        ));
+                                    }
+                                }
+                                if !handled {
+                                    if policy == ImageRedactionPolicy::Fail {
+                                        return Err(OxideError::UnsupportedFeature(
+                                            "partial image redaction could not rewrite the image pixels"
+                                                .to_string(),
+                                        ));
+                                    }
+                                    changes.insert_existing(obj, gen, blank_image_xobject());
+                                }
                             }
                         }
                     } else {
@@ -1845,6 +2021,159 @@ fn xobject_reference(
     dict.get(name).and_then(PdfObject::as_reference)
 }
 
+fn replace_xobject_reference(resources: &mut PdfDictionary, name: &str, number: u32) {
+    let mut xobjects = dict_resource(resources, "XObject");
+    xobjects.insert(name, reference(number, 0));
+    resources.insert("XObject", PdfObject::Dictionary(xobjects));
+}
+
+fn redacted_image_xobject(
+    reader: &PdfReader,
+    number: u32,
+    generation: u16,
+    image_rect: ImageRect,
+    redactions: &[RedactionEdit],
+) -> Result<Option<PdfObject>> {
+    let obj = reader.get_object(number, generation)?;
+    let PdfObject::Stream {
+        dict: image_dict, ..
+    } = &obj
+    else {
+        return Ok(None);
+    };
+    if image_dict.get_name("Subtype") != Some("Image") {
+        return Ok(None);
+    }
+    let width = image_dict
+        .get_integer("Width")
+        .or_else(|| image_dict.get_integer("W"))
+        .unwrap_or(0)
+        .max(0) as u32;
+    let height = image_dict
+        .get_integer("Height")
+        .or_else(|| image_dict.get_integer("H"))
+        .unwrap_or(0)
+        .max(0) as u32;
+    if width == 0 || height == 0 || image_rect.width <= 0.0 || image_rect.height <= 0.0 {
+        return Ok(None);
+    }
+    let bpc = image_dict
+        .get_integer("BitsPerComponent")
+        .or_else(|| image_dict.get_integer("BPC"))
+        .unwrap_or(8)
+        .clamp(0, 16) as u8;
+    let color_space = match image_dict
+        .get("ColorSpace")
+        .or_else(|| image_dict.get("CS"))
+    {
+        Some(PdfObject::Name(name)) => match name.as_str() {
+            "G" => "DeviceGray",
+            "RGB" => "DeviceRGB",
+            "CMYK" => "DeviceCMYK",
+            other => other,
+        },
+        _ => "DeviceRGB",
+    };
+    let reference = ImageReference {
+        page_number: 0,
+        xobject_name: String::new(),
+        object_number: number,
+        generation_number: generation,
+        width,
+        height,
+        bits_per_component: bpc,
+        color_space: color_space.to_string(),
+        filter: Vec::new(),
+        is_inline: false,
+        is_mask: image_dict
+            .get_bool("ImageMask")
+            .or_else(|| image_dict.get_bool("IM"))
+            .unwrap_or(false),
+        is_smask: false,
+        inline_data: None,
+    };
+    let mut raw = ImageDecoder::decode(&reference, reader)?;
+    if raw.bits_per_sample != 8 || !matches!(raw.channels, 1 | 3) {
+        return Ok(None);
+    }
+    let fill = redactions
+        .iter()
+        .find(|redaction| rects_intersect(image_rect, redaction.rect))
+        .map(|redaction| fill_for_channels(&redaction.options.fill, raw.channels))
+        .unwrap_or_else(|| fill_for_channels(&Color::black(), raw.channels));
+    let channels = raw.channels as usize;
+    let mut changed = false;
+    for redaction in redactions {
+        let Some(intersection) = rect_intersection(image_rect, redaction.rect) else {
+            continue;
+        };
+        let x0 = (((intersection.x - image_rect.x) / image_rect.width) * raw.width as f64)
+            .floor()
+            .clamp(0.0, raw.width as f64) as usize;
+        let x1 = ((((intersection.x + intersection.width - image_rect.x) / image_rect.width)
+            * raw.width as f64)
+            .ceil())
+        .clamp(0.0, raw.width as f64) as usize;
+        let y0 = (((intersection.y - image_rect.y) / image_rect.height) * raw.height as f64)
+            .floor()
+            .clamp(0.0, raw.height as f64) as usize;
+        let y1 = ((((intersection.y + intersection.height - image_rect.y) / image_rect.height)
+            * raw.height as f64)
+            .ceil())
+        .clamp(0.0, raw.height as f64) as usize;
+        for y in y0.min(y1)..y0.max(y1) {
+            for x in x0.min(x1)..x0.max(x1) {
+                let offset = (y * raw.width as usize + x) * channels;
+                raw.pixels[offset..offset + channels].copy_from_slice(&fill[..channels]);
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return Ok(None);
+    }
+    let color_space = match raw.channels {
+        1 => "DeviceGray",
+        3 => "DeviceRGB",
+        _ => return Ok(None),
+    };
+    Ok(Some(PdfObject::Stream {
+        dict: dict(&[
+            ("Type", PdfObject::Name("XObject".to_string())),
+            ("Subtype", PdfObject::Name("Image".to_string())),
+            ("Width", PdfObject::Integer(i64::from(raw.width))),
+            ("Height", PdfObject::Integer(i64::from(raw.height))),
+            ("ColorSpace", PdfObject::Name(color_space.to_string())),
+            ("BitsPerComponent", PdfObject::Integer(8)),
+            ("Filter", PdfObject::Name("FlateDecode".to_string())),
+        ]),
+        raw: flate_encode(&raw.pixels, 9),
+    }))
+}
+
+fn fill_for_channels(color: &Color, channels: u8) -> [u8; 3] {
+    let c = |idx: usize| -> u8 {
+        (color
+            .components
+            .get(idx)
+            .copied()
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0)
+            * 255.0)
+            .round() as u8
+    };
+    match channels {
+        1 => [c(0), 0, 0],
+        _ => match color.space {
+            ColorSpace::DeviceGray => {
+                let g = c(0);
+                [g, g, g]
+            }
+            _ => [c(0), c(1), c(2)],
+        },
+    }
+}
+
 fn blank_image_xobject() -> PdfObject {
     PdfObject::Stream {
         dict: dict(&[
@@ -1859,16 +2188,378 @@ fn blank_image_xobject() -> PdfObject {
     }
 }
 
+fn write_existing_annotation_visuals(
+    reader: &PdfReader,
+    page_dict: &PdfDictionary,
+    out: &mut Vec<u8>,
+    resources: &mut PdfDictionary,
+) -> Result<()> {
+    for annot_ref in resolve_annotation_refs(reader, page_dict.get("Annots"))? {
+        let annot = reader.get_and_resolve(annot_ref.0, annot_ref.1)?;
+        let Some(dict) = annot.as_dict() else {
+            continue;
+        };
+        write_existing_annotation_visual(reader, dict, out, resources);
+    }
+    Ok(())
+}
+
+fn write_existing_annotation_visual(
+    reader: &PdfReader,
+    dict: &PdfDictionary,
+    out: &mut Vec<u8>,
+    resources: &mut PdfDictionary,
+) {
+    let subtype = dict.get_name("Subtype").unwrap_or("Unknown");
+    if subtype == "Widget" || subtype == "Link" || subtype == "Popup" {
+        return;
+    }
+    let rect = rect_from_dict(dict, reader).unwrap_or_else(|| ImageRect::new(0.0, 0.0, 0.0, 0.0));
+    let color = color_from_annotation(dict, reader);
+    let opacity = dict
+        .get("CA")
+        .and_then(PdfObject::as_number)
+        .or_else(|| dict.get("ca").and_then(PdfObject::as_number))
+        .unwrap_or(0.85)
+        .clamp(0.0, 1.0);
+    match subtype {
+        "Highlight" => {
+            let gs = ensure_extgstate(resources, opacity.min(0.45));
+            let quads = quad_rects(dict, reader);
+            if quads.is_empty() {
+                write_rect(
+                    out,
+                    Some(&gs),
+                    rect,
+                    &EditRectStyle {
+                        stroke: None,
+                        fill: Some(color),
+                        line_width: 0.0,
+                        opacity,
+                    },
+                );
+            } else {
+                for quad in quads {
+                    write_rect(
+                        out,
+                        Some(&gs),
+                        quad,
+                        &EditRectStyle {
+                            stroke: None,
+                            fill: Some(color.clone()),
+                            line_width: 0.0,
+                            opacity,
+                        },
+                    );
+                }
+            }
+        }
+        "Underline" | "StrikeOut" | "Squiggly" => {
+            for quad in nonempty_or_rect(quad_rects(dict, reader), rect) {
+                let y = match subtype {
+                    "StrikeOut" => quad.y + quad.height * 0.5,
+                    _ => quad.y + quad.height * 0.12,
+                };
+                if subtype == "Squiggly" {
+                    write_squiggly(out, quad.x, y, quad.x + quad.width, 2.0, &color);
+                } else {
+                    write_line_segment(out, quad.x, y, quad.x + quad.width, y, 1.0, &color);
+                }
+            }
+        }
+        "FreeText" => {
+            write_rect(
+                out,
+                None,
+                rect,
+                &EditRectStyle {
+                    stroke: Some(color.clone()),
+                    fill: None,
+                    line_width: 1.0,
+                    opacity: 1.0,
+                },
+            );
+            if let Some(contents) = dict.get("Contents").and_then(pdf_string_or_name) {
+                let font = ensure_standard_font(resources);
+                let style =
+                    EditTextStyle::new((rect.height * 0.35).clamp(8.0, 14.0)).fill(Color::black());
+                write_text(
+                    out,
+                    &font,
+                    None,
+                    &contents,
+                    rect.x + 3.0,
+                    rect.y + rect.height * 0.45,
+                    &style,
+                );
+            }
+        }
+        "Ink" => {
+            if let Some(paths) = ink_paths(dict, reader) {
+                for points in paths {
+                    write_polyline(out, &points, false, 1.5, &color);
+                }
+            }
+        }
+        "Line" => {
+            if let Some(values) = number_array_from_key(dict, reader, "L") {
+                if values.len() >= 4 {
+                    write_line_segment(
+                        out, values[0], values[1], values[2], values[3], 1.2, &color,
+                    );
+                }
+            }
+        }
+        "Square" => {
+            write_rect(
+                out,
+                None,
+                rect,
+                &EditRectStyle {
+                    stroke: Some(color),
+                    fill: None,
+                    line_width: 1.0,
+                    opacity: 1.0,
+                },
+            );
+        }
+        "Circle" => write_ellipse(out, rect, 1.0, &color),
+        "Polygon" | "PolyLine" => {
+            if let Some(points) = vertices(dict, reader) {
+                write_polyline(out, &points, subtype == "Polygon", 1.0, &color);
+            }
+        }
+        "Stamp" => {
+            let label = dict
+                .get_name("Name")
+                .map(str::to_string)
+                .or_else(|| dict.get("Contents").and_then(pdf_string_or_name))
+                .unwrap_or_else(|| "STAMP".to_string());
+            let spec = AnnotationSpec {
+                kind: AnnotationKind::Stamp,
+                rect,
+                label,
+                options: AnnotationOptions::default().color(color),
+            };
+            write_annotation_visual_to_content(out, resources, &spec);
+        }
+        "Text" | "FileAttachment" => {
+            write_rect(
+                out,
+                None,
+                ImageRect::new(rect.x, rect.y, rect.width.max(14.0), rect.height.max(14.0)),
+                &EditRectStyle {
+                    stroke: Some(Color::black()),
+                    fill: Some(color),
+                    line_width: 1.0,
+                    opacity: 1.0,
+                },
+            );
+        }
+        _ => {}
+    }
+}
+
+fn color_from_annotation(dict: &PdfDictionary, reader: &PdfReader) -> Color {
+    match number_array_from_key(dict, reader, "C").as_deref() {
+        Some([gray]) => Color::device_gray(*gray),
+        Some([red, green, blue]) => Color::device_rgb(*red, *green, *blue),
+        Some([cyan, magenta, yellow, black]) => {
+            Color::device_cmyk(*cyan, *magenta, *yellow, *black)
+        }
+        _ => Color::device_rgb(1.0, 0.9, 0.0),
+    }
+}
+
+fn quad_rects(dict: &PdfDictionary, reader: &PdfReader) -> Vec<ImageRect> {
+    number_array_from_key(dict, reader, "QuadPoints")
+        .unwrap_or_default()
+        .chunks_exact(8)
+        .map(|quad| {
+            let xs = [quad[0], quad[2], quad[4], quad[6]];
+            let ys = [quad[1], quad[3], quad[5], quad[7]];
+            let min_x = xs.iter().copied().fold(f64::INFINITY, f64::min);
+            let max_x = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            let min_y = ys.iter().copied().fold(f64::INFINITY, f64::min);
+            let max_y = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            ImageRect::new(min_x, min_y, max_x - min_x, max_y - min_y)
+        })
+        .filter(|rect| rect.width > 0.0 && rect.height > 0.0)
+        .collect()
+}
+
+fn nonempty_or_rect(rects: Vec<ImageRect>, fallback: ImageRect) -> Vec<ImageRect> {
+    if rects.is_empty() && fallback.width > 0.0 && fallback.height > 0.0 {
+        vec![fallback]
+    } else {
+        rects
+    }
+}
+
+fn number_array_from_key(dict: &PdfDictionary, reader: &PdfReader, key: &str) -> Option<Vec<f64>> {
+    let object = reader.resolve(dict.get(key)?.clone()).ok()?;
+    let values = object
+        .as_array()?
+        .iter()
+        .filter_map(|item| reader.resolve(item.clone()).ok()?.as_number())
+        .collect::<Vec<_>>();
+    Some(values)
+}
+
+fn write_line_segment(
+    out: &mut Vec<u8>,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+    width: f64,
+    color: &Color,
+) {
+    out.extend_from_slice(b"q\n");
+    write_stroke_color(out, color);
+    out.extend_from_slice(
+        format!(
+            "{} w {} {} m {} {} l S\nQ\n",
+            fmt_num(width.max(0.1)),
+            fmt_num(x1),
+            fmt_num(y1),
+            fmt_num(x2),
+            fmt_num(y2)
+        )
+        .as_bytes(),
+    );
+}
+
+fn write_squiggly(out: &mut Vec<u8>, x0: f64, y: f64, x1: f64, amp: f64, color: &Color) {
+    if x1 <= x0 {
+        return;
+    }
+    out.extend_from_slice(b"q\n");
+    write_stroke_color(out, color);
+    out.extend_from_slice(format!("1 w {} {} m\n", fmt_num(x0), fmt_num(y)).as_bytes());
+    let step = 4.0;
+    let mut x = x0 + step;
+    let mut up = true;
+    while x < x1 {
+        let yy = y + if up { amp } else { -amp };
+        out.extend_from_slice(format!("{} {} l\n", fmt_num(x), fmt_num(yy)).as_bytes());
+        x += step;
+        up = !up;
+    }
+    out.extend_from_slice(format!("{} {} l S\nQ\n", fmt_num(x1), fmt_num(y)).as_bytes());
+}
+
+fn ink_paths(dict: &PdfDictionary, reader: &PdfReader) -> Option<Vec<Vec<(f64, f64)>>> {
+    let object = reader.resolve(dict.get("InkList")?.clone()).ok()?;
+    let mut paths = Vec::new();
+    for path_obj in object.as_array()? {
+        let path = reader.resolve(path_obj.clone()).ok()?;
+        let mut points = Vec::new();
+        for pair in path.as_array()?.chunks_exact(2) {
+            let x = reader.resolve(pair[0].clone()).ok()?.as_number()?;
+            let y = reader.resolve(pair[1].clone()).ok()?.as_number()?;
+            points.push((x, y));
+        }
+        if points.len() >= 2 {
+            paths.push(points);
+        }
+    }
+    Some(paths)
+}
+
+fn vertices(dict: &PdfDictionary, reader: &PdfReader) -> Option<Vec<(f64, f64)>> {
+    let values = number_array_from_key(dict, reader, "Vertices")?;
+    let points = values
+        .chunks_exact(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect::<Vec<_>>();
+    (points.len() >= 2).then_some(points)
+}
+
+fn write_polyline(
+    out: &mut Vec<u8>,
+    points: &[(f64, f64)],
+    close: bool,
+    width: f64,
+    color: &Color,
+) {
+    let Some((first_x, first_y)) = points.first().copied() else {
+        return;
+    };
+    out.extend_from_slice(b"q\n");
+    write_stroke_color(out, color);
+    out.extend_from_slice(
+        format!(
+            "{} w {} {} m\n",
+            fmt_num(width.max(0.1)),
+            fmt_num(first_x),
+            fmt_num(first_y)
+        )
+        .as_bytes(),
+    );
+    for (x, y) in points.iter().copied().skip(1) {
+        out.extend_from_slice(format!("{} {} l\n", fmt_num(x), fmt_num(y)).as_bytes());
+    }
+    out.extend_from_slice(if close { b"h S\nQ\n" } else { b"S\nQ\n" });
+}
+
+fn write_ellipse(out: &mut Vec<u8>, rect: ImageRect, width: f64, color: &Color) {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return;
+    }
+    let k = 0.552_284_749_830_793_6;
+    let rx = rect.width / 2.0;
+    let ry = rect.height / 2.0;
+    let cx = rect.x + rx;
+    let cy = rect.y + ry;
+    out.extend_from_slice(b"q\n");
+    write_stroke_color(out, color);
+    out.extend_from_slice(
+        format!(
+            "{} w {} {} m\n",
+            fmt_num(width.max(0.1)),
+            fmt_num(cx + rx),
+            fmt_num(cy)
+        )
+        .as_bytes(),
+    );
+    let commands = [
+        (cx + rx, cy + k * ry, cx + k * rx, cy + ry, cx, cy + ry),
+        (cx - k * rx, cy + ry, cx - rx, cy + k * ry, cx - rx, cy),
+        (cx - rx, cy - k * ry, cx - k * rx, cy - ry, cx, cy - ry),
+        (cx + k * rx, cy - ry, cx + rx, cy - k * ry, cx + rx, cy),
+    ];
+    for (x1, y1, x2, y2, x3, y3) in commands {
+        out.extend_from_slice(
+            format!(
+                "{} {} {} {} {} {} c\n",
+                fmt_num(x1),
+                fmt_num(y1),
+                fmt_num(x2),
+                fmt_num(y2),
+                fmt_num(x3),
+                fmt_num(y3)
+            )
+            .as_bytes(),
+        );
+    }
+    out.extend_from_slice(b"S\nQ\n");
+}
+
 fn apply_annotation_edits(
     reader: &PdfReader,
     page_dict: &mut PdfDictionary,
     redactions: &[RedactionEdit],
     edits: &[AnnotationEdit],
-    remove_widgets: bool,
+    options: AnnotationApplyOptions,
     changes: &mut ChangeSet,
 ) -> Result<()> {
     let mut annots = resolve_annotation_refs(reader, page_dict.get("Annots"))?;
-    if !redactions.is_empty() || remove_widgets {
+    if !redactions.is_empty()
+        || options.remove_widgets
+        || options.flatten_annotations
+        || options.attachment_policy == AttachmentRedactionPolicy::RemoveAll
+    {
         let mut kept = Vec::new();
         for annot_ref in annots {
             let annot = reader.get_and_resolve(annot_ref.0, annot_ref.1)?;
@@ -1883,8 +2574,17 @@ fn apply_annotation_edits(
                         .any(|redaction| rects_intersect(rect, redaction.rect))
                 })
                 .unwrap_or(false);
-            let remove_widget = remove_widgets && dict.get_name("Subtype") == Some("Widget");
-            if !remove_for_redaction && !remove_widget {
+            let remove_widget =
+                options.remove_widgets && dict.get_name("Subtype") == Some("Widget");
+            let remove_flattened =
+                options.flatten_annotations && dict.get_name("Subtype") != Some("Widget");
+            let remove_attachment = dict.get_name("Subtype") == Some("FileAttachment")
+                && match options.attachment_policy {
+                    AttachmentRedactionPolicy::RemoveAll => true,
+                    AttachmentRedactionPolicy::RemoveOverlapping => remove_for_redaction,
+                    AttachmentRedactionPolicy::Keep => false,
+                };
+            if !remove_for_redaction && !remove_widget && !remove_flattened && !remove_attachment {
                 kept.push(annot_ref);
             }
         }
@@ -1946,6 +2646,13 @@ fn apply_annotation_edits(
         );
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AnnotationApplyOptions {
+    remove_widgets: bool,
+    flatten_annotations: bool,
+    attachment_policy: AttachmentRedactionPolicy,
 }
 
 fn resolve_annotation_refs(
@@ -3167,6 +3874,17 @@ fn rects_intersect(a: ImageRect, b: ImageRect) -> bool {
     let bx2 = b.x + b.width;
     let by2 = b.y + b.height;
     a.x < bx2 && ax2 > b.x && a.y < by2 && ay2 > b.y
+}
+
+fn rect_intersection(a: ImageRect, b: ImageRect) -> Option<ImageRect> {
+    if !rects_intersect(a, b) {
+        return None;
+    }
+    let x0 = a.x.max(b.x);
+    let y0 = a.y.max(b.y);
+    let x1 = (a.x + a.width).min(b.x + b.width);
+    let y1 = (a.y + a.height).min(b.y + b.height);
+    Some(ImageRect::new(x0, y0, x1 - x0, y1 - y0))
 }
 
 fn rect_from_corners(x1: f64, y1: f64, x2: f64, y2: f64) -> ImageRect {

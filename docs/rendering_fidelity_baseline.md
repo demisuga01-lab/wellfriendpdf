@@ -533,3 +533,28 @@ Artifacts:
 - `target\competitive-benchmark\prompt07-tables-after`
 - `target\competitive-benchmark\prompt07-fields-after`
 - `target\competitive-benchmark\prompt07-text-after`
+
+## Prompt 07B Interactive/Data Closure Anchor
+
+Prompt 07B is additive interactive/data-layer closure: FDF/XFDF field exchange,
+annotation appearance flattening, metadata-preserving crop, visual scale/n-up,
+partial image redaction, and attachment removal policy. It is not intended to
+change table, field, or text extraction scoring.
+
+Expected unchanged gates:
+
+| metric | Prompt 07 / 07B anchor |
+| --- | ---: |
+| table shape-F1 | 0.96232 |
+| table cell-F1 in current scorer | 0.987 |
+| table TEDS approx | 0.981 |
+| strict field-F1 | 0.72503 |
+| text char similarity | 0.92743 |
+| text word-F1 | 1.0 |
+| semantic reading order | 0.96019 |
+
+Prompt 07B artifacts:
+
+- `target\prompt07b-baseline`
+- `target\prompt07b-*`
+- `target\competitive-benchmark\prompt07b-*`

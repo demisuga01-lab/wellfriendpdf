@@ -16,6 +16,7 @@ extraction and editing paths.
   unknown.
 - `NeedAppearances`, `/SigFlags`, and calculation-order length reporting.
 - Basic fill and flatten through `PdfEditor`.
+- Fields-only JSON/FDF/XFDF export and import through Prompt 07B.
 - XFA detection and packet count reporting.
 - JavaScript action detection without execution.
 
@@ -23,6 +24,8 @@ extraction and editing paths.
 
 - Rust: `forms_report(&ContentEngine)`.
 - CLI: `oxide forms-report input.pdf`.
+- CLI: `oxide forms-export input.pdf --format xfdf --output fields.xfdf`.
+- CLI: `oxide forms-import input.pdf fields.xfdf --format xfdf --out filled.pdf`.
 - Existing editing API: `PdfEditor::set_form_text`,
   `set_form_checkbox`, `set_form_choice`, and `flatten_forms`.
 
@@ -33,6 +36,5 @@ extraction and editing paths.
 - Signature fields are detected, but cryptographic validation is Prompt 09.
 - Rich text field appearance and all producer-specific DA quirks are bounded
   appearance-generation work.
-- FDF/XFDF import/export is not implemented in Prompt 07; JSON report/fill
-  surfaces are the supported path.
-
+- FDF/XFDF support is fields-only; annotation XFDF and JavaScript-driven
+  calculation/import are intentionally unsupported.

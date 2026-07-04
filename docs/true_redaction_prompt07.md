@@ -27,9 +27,14 @@ string.
 ## Images and Vectors
 
 Intersecting image invocations and simple vector paths are removed
-conservatively. Partial pixel-level redaction inside shared image XObjects is
-not claimed as complete; the current policy avoids leaving an intersecting
-image invocation recoverable in the redacted page content.
+conservatively when partial image rewriting is unsupported or when the caller
+selects `ImageRedactionPolicy::Remove`.
+
+Prompt 07B adds pixel-level partial image redaction for axis-aligned 8-bit
+DeviceGray/DeviceRGB image XObjects. The editor creates a new redacted image
+object for the affected invocation and leaves the original object unreachable
+from that invocation. Unsupported transforms or formats follow the caller's
+policy: partial fallback, remove, or fail.
 
 ## Metadata, Alternate Text, Annotations, Links
 
@@ -38,6 +43,10 @@ marked-content `/ActualText` and `/Alt` strings. Overlapping annotations and
 links are removed through the page annotation edit path. The CLI exposes
 `--no-metadata-scrub` for callers that need to preserve metadata, but strict
 verification should normally keep scrubbing enabled.
+
+Prompt 07B adds `AttachmentRedactionPolicy`: keep attachments, remove all
+catalog embedded files and FileAttachment annotations, or remove only
+overlapping FileAttachment annotations.
 
 ## Verification
 
@@ -54,6 +63,7 @@ Known bounded limits:
 
 - Encoded secrets that are not recoverable as text by Oxide and are not direct
   raw byte matches require broader Prompt 09 sanitization policy.
-- Pixel-level partial redaction of shared images is bounded follow-up work.
+- Non-axis-aligned or unsupported image encodings may be removed conservatively
+  or fail in strict mode instead of partially rewritten.
 - Redaction apply intentionally uses full rewrite; incremental redaction is
   rejected because old revisions preserve sensitive bytes.

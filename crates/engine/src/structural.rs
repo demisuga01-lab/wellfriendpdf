@@ -12,6 +12,7 @@
 use std::collections::HashMap;
 
 use crate::crypto::{build_encryption, EncryptParams};
+use crate::editing::ImageRect;
 use crate::engine::ContentEngine;
 use crate::error::{OxideError, Result};
 use crate::object::PdfObject;
@@ -106,6 +107,64 @@ pub fn rotate_pages(
                 } else {
                     dict.insert("Rotate", PdfObject::Integer(angle as i64));
                 }
+            }
+        }
+    })
+}
+
+/// Set `/CropBox` on selected pages while preserving the source object graph.
+pub fn crop_pages(engine: &ContentEngine, pages: &[usize], crop: ImageRect) -> Result<Vec<u8>> {
+    if !crop.x.is_finite()
+        || !crop.y.is_finite()
+        || !crop.width.is_finite()
+        || !crop.height.is_finite()
+        || crop.width <= 0.0
+        || crop.height <= 0.0
+    {
+        return Err(OxideError::MalformedPdf(
+            "crop: rectangle must be positive finite points".to_string(),
+        ));
+    }
+    let total = engine.page_count()?;
+    let targets: Vec<usize> = if pages.is_empty() {
+        (1..=total).collect()
+    } else {
+        let mut p: Vec<usize> = pages
+            .iter()
+            .copied()
+            .filter(|&n| n >= 1 && n <= total)
+            .collect();
+        p.sort_unstable();
+        p.dedup();
+        p
+    };
+    if targets.is_empty() {
+        return Err(OxideError::MalformedPdf(
+            "crop: no valid pages selected".to_string(),
+        ));
+    }
+
+    let mut wanted: HashMap<u32, ImageRect> = HashMap::new();
+    for &page_no in &targets {
+        let page = engine.get_page(page_no)?;
+        wanted.insert(page.object_number, crop);
+    }
+
+    rewrite_document(engine.document().reader(), |orig_num, obj| {
+        let Some(rect) = wanted.get(&orig_num).copied() else {
+            return;
+        };
+        if let PdfObject::Dictionary(dict) = obj {
+            if dict.get_name("Type") == Some("Page") {
+                dict.insert(
+                    "CropBox",
+                    PdfObject::Array(vec![
+                        pdf_number(rect.x),
+                        pdf_number(rect.y),
+                        pdf_number(rect.x + rect.width),
+                        pdf_number(rect.y + rect.height),
+                    ]),
+                );
             }
         }
     })
@@ -206,6 +265,15 @@ pub fn encrypt(engine: &ContentEngine, params: &EncryptParams) -> Result<Vec<u8>
         .with_id(Some(file_id))
         .with_encryption(state);
     writer.write()
+}
+
+fn pdf_number(value: f64) -> PdfObject {
+    let rounded = value.round();
+    if (value - rounded).abs() < 0.000_001 {
+        PdfObject::Integer(rounded as i64)
+    } else {
+        PdfObject::Real(value)
+    }
 }
 
 /// Write a clean, normalized copy of a (possibly damaged) PDF.

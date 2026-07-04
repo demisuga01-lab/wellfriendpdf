@@ -178,8 +178,14 @@ enum Commands {
     ExtractFields(ExtractFieldsArgs),
     /// Report AcroForm field trees, inheritance, widgets, XFA, and form diagnostics
     FormsReport(FormsReportArgs),
+    /// Export AcroForm field values as JSON, FDF, or XFDF
+    FormsExport(FormsExportArgs),
+    /// Import AcroForm field values from JSON, FDF, or XFDF
+    FormsImport(FormsImportArgs),
     /// Report annotations, QuadPoints, appearances, and unsafe actions
     AnnotationsReport(AnnotationsReportArgs),
+    /// Flatten common page annotations into page content
+    AnnotationsFlatten(AnnotationsFlattenArgs),
     /// Report page boxes, labels/outlines/destinations, and page-op preservation risks
     PagesReport(PagesReportArgs),
     /// Combined Prompt 07 interactive/data-layer report
@@ -249,6 +255,12 @@ enum Commands {
     Organize(OrganizeArgs),
     /// Set page rotation (/Rotate) and write a new PDF (absolute or relative)
     Rotate(RotateArgs),
+    /// Set page CropBox values while preserving the source graph
+    PagesCrop(PagesCropArgs),
+    /// Scale pages visually into a new PDF
+    PagesScale(PagesScaleArgs),
+    /// Create a visual n-up imposed PDF
+    PagesNup(PagesNupArgs),
     /// Shrink a PDF (garbage-collect + recompress) without changing content
     Optimize(OptimizeArgs),
     /// Write a clean, normalized copy of a damaged PDF (qpdf --check passes)
@@ -726,6 +738,41 @@ struct FormsReportArgs {
 }
 
 #[derive(Parser)]
+struct FormsExportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output file. Defaults to stdout.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Export format: json, fdf, or xfdf
+    #[arg(long, default_value = "json")]
+    format: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct FormsImportArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Field data file to import
+    data: PathBuf,
+    /// Output PDF
+    #[arg(short, long, alias = "out", default_value = "forms-filled.pdf")]
+    output: PathBuf,
+    /// Input data format: json, fdf, or xfdf. Defaults to the data extension.
+    #[arg(long)]
+    format: Option<String>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
 struct AnnotationsReportArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -735,6 +782,26 @@ struct AnnotationsReportArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AnnotationsFlattenArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output PDF
+    #[arg(
+        short,
+        long,
+        alias = "out",
+        default_value = "annotations-flattened.pdf"
+    )]
+    output: PathBuf,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -784,12 +851,90 @@ struct RedactArgs {
     /// Disable metadata/XMP/attachment string scrubbing for removed text.
     #[arg(long)]
     no_metadata_scrub: bool,
+    /// Image redaction policy: partial, remove, or fail
+    #[arg(long, default_value = "partial")]
+    image_policy: String,
+    /// Attachment policy: keep, remove-all, or remove-overlapping
+    #[arg(long, default_value = "keep")]
+    attachments: String,
     /// Emit a JSON result summary.
     #[arg(long)]
     json: bool,
     /// Fail if verification finds any requested term after redaction.
     #[arg(long)]
     strict: bool,
+}
+
+#[derive(Parser)]
+struct PagesCropArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Crop rectangle as x,y,w,h in PDF user-space points
+    #[arg(long)]
+    rect: String,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Output file
+    #[arg(short, long, alias = "out", default_value = "cropped.pdf")]
+    output: PathBuf,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PagesScaleArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Scale factor. 1.0 preserves visual size.
+    #[arg(long)]
+    scale: f64,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Rasterization DPI used for the visual page copy
+    #[arg(long, default_value = "144")]
+    dpi: u32,
+    /// Output file
+    #[arg(short, long, alias = "out", default_value = "scaled.pdf")]
+    output: PathBuf,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PagesNupArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Number of columns per output sheet
+    #[arg(long, default_value = "2")]
+    columns: usize,
+    /// Number of rows per output sheet
+    #[arg(long, default_value = "1")]
+    rows: usize,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Rasterization DPI used for source pages
+    #[arg(long, default_value = "144")]
+    dpi: u32,
+    /// Output file
+    #[arg(short, long, alias = "out", default_value = "nup.pdf")]
+    output: PathBuf,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -1292,7 +1437,10 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::DocumentModel(args) => run_document_model(args),
         Commands::ExtractFields(args) => run_extract_fields(args),
         Commands::FormsReport(args) => run_forms_report(args),
+        Commands::FormsExport(args) => run_forms_export(args),
+        Commands::FormsImport(args) => run_forms_import(args),
         Commands::AnnotationsReport(args) => run_annotations_report(args),
+        Commands::AnnotationsFlatten(args) => run_annotations_flatten(args),
         Commands::PagesReport(args) => run_pages_report(args),
         Commands::InteractiveReport(args) => run_interactive_report(args),
         Commands::Redact(args) => run_redact(args),
@@ -1324,6 +1472,9 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::AddPageNumbers(args) => run_page_numbers(args),
         Commands::Organize(args) => run_organize(args),
         Commands::Rotate(args) => run_rotate(args),
+        Commands::PagesCrop(args) => run_pages_crop(args),
+        Commands::PagesScale(args) => run_pages_scale(args),
+        Commands::PagesNup(args) => run_pages_nup(args),
         Commands::Optimize(args) => run_optimize(args),
         Commands::Repair(args) => run_repair(args),
         Commands::Linearize(args) => run_linearize(args),
@@ -1985,10 +2136,82 @@ fn run_forms_report(args: FormsReportArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_forms_export(args: FormsExportArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let format = parse_form_data_format(&args.format)?;
+    let bytes = oxide_engine::export_form_data(&engine, format)?;
+    match args.output {
+        Some(path) => std::fs::write(path, bytes)?,
+        None => {
+            if matches!(
+                format,
+                oxide_engine::FormDataFormat::Json | oxide_engine::FormDataFormat::Xfdf
+            ) {
+                print!("{}", String::from_utf8_lossy(&bytes));
+            } else {
+                return Err(usage_error(
+                    "forms-export --format fdf requires --output because FDF is binary-safe PDF syntax",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_forms_import(args: FormsImportArgs) -> Result<(), Box<dyn Error>> {
+    let format = if let Some(format) = args.format.as_deref() {
+        parse_form_data_format(format)?
+    } else {
+        let extension = args
+            .data
+            .extension()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| usage_error("forms-import needs --format when data has no extension"))?;
+        parse_form_data_format(extension)?
+    };
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let data = std::fs::read(&args.data)?;
+    let (bytes, report) = oxide_engine::apply_form_data_pdf(input, &data, format)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        eprintln!(
+            "Imported {} field(s), applied {} -> {}",
+            report.imported_fields,
+            report.applied_fields,
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
 fn run_annotations_report(args: AnnotationsReportArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let output = serde_json::to_string_pretty(&oxide_engine::annotation_report(&engine)?)?;
     write_output_optional(&args.output, &output)?;
+    Ok(())
+}
+
+fn run_annotations_flatten(args: AnnotationsFlattenArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let mut editor = oxide_engine::PdfEditor::open_bytes(input)?;
+    editor.flatten_annotations();
+    let bytes = editor.save_to_bytes(oxide_engine::EditMode::FullRewrite)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "annotations-flatten",
+                "output": args.output.display().to_string(),
+                "bytes": bytes.len(),
+                "diagnostics": ["annotations.flatten.common_appearance_subset"]
+            })
+        );
+    } else {
+        eprintln!("Flattened annotations -> {}", args.output.display());
+    }
     Ok(())
 }
 
@@ -2020,9 +2243,13 @@ fn run_redact(args: RedactArgs) -> Result<(), Box<dyn Error>> {
     }
 
     let mut editor = oxide_engine::PdfEditor::open_bytes(input)?;
+    let image_policy = parse_image_redaction_policy(&args.image_policy)?;
+    let attachment_policy = parse_attachment_policy(&args.attachments)?;
     let redaction_options = oxide_engine::RedactionOptions {
         fill: oxide_engine::Color::black(),
         scrub_metadata: !args.no_metadata_scrub,
+        image_policy,
+        attachment_policy,
     };
     let mut search_regions = Vec::new();
     for term in &args.text {
@@ -2080,6 +2307,8 @@ fn run_redact(args: RedactArgs) -> Result<(), Box<dyn Error>> {
             })
         }).collect::<Vec<_>>(),
         "metadata_scrub": !args.no_metadata_scrub,
+        "image_policy": args.image_policy,
+        "attachment_policy": args.attachments,
         "verification": verification,
     });
     if args.json {
@@ -2954,6 +3183,59 @@ fn parse_redact_rect_cli(
         page,
         rect: oxide_engine::ImageRect::new(values[0], values[1], values[2], values[3]),
     })
+}
+
+fn parse_plain_rect_cli(spec: &str) -> Result<oxide_engine::ImageRect, Box<dyn Error>> {
+    let values: Vec<f64> = spec
+        .split(',')
+        .map(|part| part.trim().parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.len() != 4 {
+        return Err(usage_error("rectangle must be x,y,w,h"));
+    }
+    if values.iter().any(|v| !v.is_finite()) || values[2] <= 0.0 || values[3] <= 0.0 {
+        return Err(usage_error(
+            "rectangle coordinates must be finite and width/height must be positive",
+        ));
+    }
+    Ok(oxide_engine::ImageRect::new(
+        values[0], values[1], values[2], values[3],
+    ))
+}
+
+fn parse_form_data_format(value: &str) -> Result<oxide_engine::FormDataFormat, Box<dyn Error>> {
+    oxide_engine::FormDataFormat::parse(value)
+        .ok_or_else(|| usage_error(format!("unknown form data format '{value}'")))
+}
+
+fn parse_image_redaction_policy(
+    value: &str,
+) -> Result<oxide_engine::ImageRedactionPolicy, Box<dyn Error>> {
+    match value.to_ascii_lowercase().as_str() {
+        "partial" => Ok(oxide_engine::ImageRedactionPolicy::Partial),
+        "remove" => Ok(oxide_engine::ImageRedactionPolicy::Remove),
+        "fail" => Ok(oxide_engine::ImageRedactionPolicy::Fail),
+        _ => Err(usage_error(format!(
+            "unknown --image-policy '{value}'; expected partial, remove, or fail"
+        ))),
+    }
+}
+
+fn parse_attachment_policy(
+    value: &str,
+) -> Result<oxide_engine::AttachmentRedactionPolicy, Box<dyn Error>> {
+    match value.to_ascii_lowercase().as_str() {
+        "keep" => Ok(oxide_engine::AttachmentRedactionPolicy::Keep),
+        "remove-all" | "remove_all" | "all" => {
+            Ok(oxide_engine::AttachmentRedactionPolicy::RemoveAll)
+        }
+        "remove-overlapping" | "remove_overlapping" | "overlapping" => {
+            Ok(oxide_engine::AttachmentRedactionPolicy::RemoveOverlapping)
+        }
+        _ => Err(usage_error(format!(
+            "unknown --attachments '{value}'; expected keep, remove-all, or remove-overlapping"
+        ))),
+    }
 }
 
 fn redaction_rect_from_quads(quads: &[oxide_engine::TextQuad]) -> Option<oxide_engine::ImageRect> {
@@ -3958,6 +4240,100 @@ fn run_rotate(args: RotateArgs) -> Result<(), Box<dyn Error>> {
             args.angle,
             args.output.display()
         );
+    }
+    Ok(())
+}
+
+fn run_pages_crop(args: PagesCropArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let rect = parse_plain_rect_cli(&args.rect)?;
+    let bytes = oxide_engine::crop_pdf(&engine, &pages, rect)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "pages-crop",
+                "output": args.output.display().to_string(),
+                "bytes": bytes.len(),
+                "pages": pages,
+                "crop_box": [rect.x, rect.y, rect.width, rect.height],
+                "preservation": "source_graph_preserved",
+            })
+        );
+    } else {
+        eprintln!(
+            "Cropped {} page(s) -> {}",
+            pages.len(),
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_pages_scale(args: PagesScaleArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let options = oxide_engine::ScalePagesOptions {
+        pages: Some(pages.clone()),
+        scale: args.scale,
+        dpi: args.dpi,
+    };
+    let bytes = oxide_engine::scale_pdf_pages(&engine, options)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "pages-scale",
+                "output": args.output.display().to_string(),
+                "bytes": bytes.len(),
+                "pages": pages,
+                "scale": args.scale,
+                "dpi": args.dpi,
+                "preservation": "visual_raster_copy_interactive_structures_not_preserved",
+            })
+        );
+    } else {
+        eprintln!(
+            "Scaled {} page(s) -> {}",
+            pages.len(),
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_pages_nup(args: PagesNupArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let options = oxide_engine::NUpOptions {
+        columns: args.columns,
+        rows: args.rows,
+        dpi: args.dpi,
+    };
+    let bytes = oxide_engine::n_up_pdf(&engine, &pages, options)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::json!({
+                "op": "pages-nup",
+                "output": args.output.display().to_string(),
+                "bytes": bytes.len(),
+                "pages": pages,
+                "columns": args.columns,
+                "rows": args.rows,
+                "dpi": args.dpi,
+                "preservation": "visual_imposition_interactive_structures_not_preserved",
+            })
+        );
+    } else {
+        eprintln!("Created n-up PDF -> {}", args.output.display());
     }
     Ok(())
 }

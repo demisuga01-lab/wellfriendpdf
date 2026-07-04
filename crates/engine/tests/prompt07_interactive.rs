@@ -1,7 +1,9 @@
 use oxide_engine::{
-    annotation_report, forms_report, page_operations_report, redaction_verification_report,
-    AuthorPageSize as PageSize, ContentEngine, EditMode, ImageRect, PdfBuilder, PdfEditor,
-    RedactionOptions, StandardFont, TextSearchOptions, TextStyle,
+    annotation_report, apply_form_data_pdf, export_form_data, forms_report, page_operations_report,
+    parse_form_data, redaction_verification_report, AttachmentRedactionPolicy,
+    AuthorPageSize as PageSize, ContentEngine, EditMode, FormDataField, FormDataFormat,
+    FormDataSet, ImageRect, PdfBuilder, PdfEditor, RedactionOptions, StandardFont,
+    TextSearchOptions, TextStyle,
 };
 
 struct PdfFixtureBuilder {
@@ -91,7 +93,7 @@ fn interactive_fixture_pdf() -> Vec<u8> {
     b.add("<< /Type /Filespec /F (note.txt) /UF (note.txt) >>");
     b.add("<< /Title (Start) /Parent 9 0 R /Dest [3 0 R /Fit] >>");
     b.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
-    b.add("<< /T (child) /V (Alice) /DV (Default) /Kids [5 0 R] >>");
+    b.add("<< /T (child) /Parent 10 0 R /V (Alice) /DV (Default) /Kids [5 0 R] >>");
     b.build()
 }
 
@@ -129,6 +131,40 @@ fn forms_report_merges_field_tree_inheritance_widgets_and_xfa() {
 }
 
 #[test]
+fn fdf_xfdf_form_exchange_roundtrips_field_values() {
+    let source = interactive_fixture_pdf();
+    let engine = ContentEngine::open_bytes(source.clone()).unwrap();
+
+    let fdf = export_form_data(&engine, FormDataFormat::Fdf).unwrap();
+    let parsed = parse_form_data(&fdf, FormDataFormat::Fdf).unwrap();
+    assert!(parsed
+        .fields
+        .iter()
+        .any(|field| field.name == "parent.child" && field.value == "Alice"));
+
+    let xfdf = export_form_data(&engine, FormDataFormat::Xfdf).unwrap();
+    let xfdf_text = String::from_utf8(xfdf).unwrap();
+    assert!(xfdf_text.contains("<field name=\"parent.child\""));
+
+    let update = serde_json::to_vec(&FormDataSet {
+        fields: vec![FormDataField {
+            name: "parent.child".to_string(),
+            value: "Bob".to_string(),
+        }],
+    })
+    .unwrap();
+    let (filled, report) = apply_form_data_pdf(source, &update, FormDataFormat::Json).unwrap();
+    assert_eq!(report.applied_fields, 1);
+    let filled_report = forms_report(&ContentEngine::open_bytes(filled).unwrap()).unwrap();
+    let field = filled_report
+        .fields
+        .iter()
+        .find(|field| field.full_name == "parent.child")
+        .unwrap();
+    assert_eq!(field.value.as_deref(), Some("Bob"));
+}
+
+#[test]
 fn annotations_report_classifies_quadpoints_and_unsafe_actions() {
     let engine = ContentEngine::open_bytes(interactive_fixture_pdf()).unwrap();
     let report = annotation_report(&engine).unwrap();
@@ -160,6 +196,21 @@ fn annotations_report_classifies_quadpoints_and_unsafe_actions() {
 }
 
 #[test]
+fn annotation_flattening_removes_common_annotations_but_keeps_widgets() {
+    let mut editor = PdfEditor::open_bytes(interactive_fixture_pdf()).unwrap();
+    editor.flatten_annotations();
+    let flattened = editor.save_to_bytes(EditMode::FullRewrite).unwrap();
+    let report = annotation_report(&ContentEngine::open_bytes(flattened.clone()).unwrap()).unwrap();
+    assert_eq!(report.by_subtype.get("Widget"), Some(&1));
+    assert!(!report.by_subtype.contains_key("Highlight"));
+    assert!(!report.by_subtype.contains_key("Link"));
+    assert!(ContentEngine::open_bytes(flattened)
+        .unwrap()
+        .render_page_png_fast(1, 72)
+        .is_ok());
+}
+
+#[test]
 fn page_operations_report_exposes_preservation_inputs() {
     let engine = ContentEngine::open_bytes(interactive_fixture_pdf()).unwrap();
     let report = page_operations_report(&engine).unwrap();
@@ -173,6 +224,29 @@ fn page_operations_report_exposes_preservation_inputs() {
     assert!(report.embedded_files_present);
     assert!(report.acroform_present);
     assert!(report.signatures_may_be_invalidated_by_rewrite);
+}
+
+#[test]
+fn attachment_removal_policy_drops_embedded_file_name_tree() {
+    let mut editor = PdfEditor::open_bytes(interactive_fixture_pdf()).unwrap();
+    editor
+        .redact(
+            1,
+            ImageRect::new(1.0, 1.0, 10.0, 10.0),
+            RedactionOptions {
+                attachment_policy: AttachmentRedactionPolicy::RemoveAll,
+                ..RedactionOptions::default()
+            },
+        )
+        .unwrap();
+    let scrubbed = editor.save_to_bytes(EditMode::FullRewrite).unwrap();
+    let engine = ContentEngine::open_bytes(scrubbed).unwrap();
+    assert!(engine.list_attachments().unwrap().is_empty());
+    assert!(
+        !page_operations_report(&engine)
+            .unwrap()
+            .embedded_files_present
+    );
 }
 
 #[test]
