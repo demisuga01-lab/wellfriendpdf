@@ -101,6 +101,16 @@ output-intent scanning, ICC metadata handling, color-space inventory,
 Separation/DeviceN diagnostics, overprint state reporting, and the PDF/A/PDF/X
 color validation profile switch.
 
+Prompt 09 adds the deterministic structure-aware mutation helper
+`scripts/prompt09_structure_mutator.py`. It is not a replacement for
+coverage-guided fuzzing; it creates malformed-but-recognizable PDFs for parser,
+sanitizer, signature, validation, and writer smoke runs:
+
+```sh
+python scripts/prompt09_structure_mutator.py crates/engine/tests/fixtures/minimal.pdf --out-dir target/prompt09-structure-mutations
+cargo check --manifest-path fuzz/Cargo.toml --bins
+```
+
 Campaign output records git commit, Rust tool versions, target names, command
 status, and per-target log tails. It never writes outside `target/` unless
 `--out-dir` is explicitly supplied.

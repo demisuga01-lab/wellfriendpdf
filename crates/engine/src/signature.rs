@@ -383,6 +383,33 @@ pub struct CertInfo {
     pub not_after: String,
 }
 
+/// Audit-grade check bits for one signature.
+///
+/// These fields deliberately separate PDF container checks, byte-range digest
+/// binding, CMS verification, chain trust, timestamp presence, and LTV material.
+/// A caller must not infer CMS or trust validation from ByteRange parsing alone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct SignatureCheckDetails {
+    pub byte_range_present: bool,
+    pub byte_range_well_formed: bool,
+    pub byte_range_in_bounds: bool,
+    pub byte_range_non_overlapping: bool,
+    pub byte_range_covers_whole_file: bool,
+    pub contents_present: bool,
+    pub digest_matches: bool,
+    pub cms_verified: bool,
+    pub chain_verified: bool,
+    pub revocation_checked: bool,
+    pub timestamp_present: bool,
+    pub timestamp_verified: bool,
+    pub ltv_material_present: bool,
+    pub ltv_verified: bool,
+    pub docmdp_evaluated: bool,
+    pub fieldmdp_evaluated: bool,
+    pub signed_bytes: usize,
+    pub byte_range: Option<[usize; 4]>,
+}
+
 /// A single signature field's verification report.
 #[derive(Debug, Clone, Serialize)]
 pub struct SignatureReport {
@@ -418,6 +445,8 @@ pub struct SignatureReport {
     pub certificate: Option<CertInfo>,
     /// PAdES/LTV material discovered for this signature.
     pub ltv: LtvReport,
+    /// Machine-readable check separation for security/enterprise reports.
+    pub checks: SignatureCheckDetails,
     /// Human-readable note on what was/wasn't checked.
     pub note: String,
 }
@@ -1062,12 +1091,18 @@ fn verify_one(
         status: SignatureStatus::Error,
         certificate: None,
         ltv: LtvReport::default(),
+        checks: SignatureCheckDetails::default(),
         note: String::new(),
     };
 
     // /ByteRange = [a b c d]; signed data = file[a..a+b] ++ file[c..c+d].
     let byte_range = match parse_byte_range(sig) {
-        Some(br) => br,
+        Some(br) => {
+            report.checks.byte_range_present = true;
+            report.checks.byte_range_well_formed = true;
+            report.checks.byte_range = Some([br.a, br.b, br.c, br.d]);
+            br
+        }
         None => {
             report.note = "missing or malformed /ByteRange".to_string();
             return report;
@@ -1075,7 +1110,12 @@ fn verify_one(
     };
 
     let signed_data_bytes = match extract_signed_bytes(file, &byte_range) {
-        Some(b) => b,
+        Some(b) => {
+            report.checks.byte_range_in_bounds = true;
+            report.checks.byte_range_non_overlapping = true;
+            report.checks.signed_bytes = b.len();
+            b
+        }
         None => {
             report.note = "/ByteRange out of bounds for file".to_string();
             return report;
@@ -1084,10 +1124,14 @@ fn verify_one(
 
     // Coverage: do the ranges + the /Contents gap reach the end of the file?
     report.coverage = compute_coverage(&byte_range, file.len());
+    report.checks.byte_range_covers_whole_file = report.coverage == Coverage::WholeFile;
 
     // /Contents = DER CMS blob (a hex/binary string).
     let contents = match sig.get("Contents").and_then(PdfObject::as_string) {
-        Some(c) => c.to_vec(),
+        Some(c) => {
+            report.checks.contents_present = true;
+            c.to_vec()
+        }
         None => {
             report.note = "missing /Contents".to_string();
             return report;
@@ -1109,6 +1153,19 @@ fn verify_one(
             report.trust = trust;
             report.ltv = ltv;
             report.status = overall_status(&report.validity, &report.trust, &report.coverage);
+            report.checks.digest_matches = report.validity == SignatureValidity::Valid;
+            report.checks.cms_verified = report.validity == SignatureValidity::Valid;
+            report.checks.chain_verified = report.trust == SignatureTrust::Trusted;
+            report.checks.revocation_checked =
+                report.ltv.revocation_status != RevocationStatus::NotChecked;
+            report.checks.timestamp_present = report.ltv.timestamp_token_count > 0;
+            report.checks.timestamp_verified = false;
+            report.checks.ltv_material_present = report.ltv.dss_present
+                || report.ltv.embedded_certs > 0
+                || report.ltv.embedded_ocsp_responses > 0
+                || report.ltv.embedded_crls > 0;
+            report.checks.ltv_verified = report.ltv.vri_matched
+                && report.ltv.revocation_status == RevocationStatus::GoodFromEmbeddedCrl;
         }
         Err(msg) => {
             report.validity = SignatureValidity::Error;

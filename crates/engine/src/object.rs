@@ -40,6 +40,10 @@ impl PdfDictionary {
         self.entries.iter()
     }
 
+    pub fn entries_mut(&mut self) -> impl Iterator<Item = (&String, &mut PdfObject)> + '_ {
+        self.entries.iter_mut()
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }

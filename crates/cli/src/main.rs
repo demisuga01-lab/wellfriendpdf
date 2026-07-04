@@ -40,7 +40,7 @@ fn long_version() -> &'static str {
     about = "Oxide — pure-Rust PDF processing tool",
     version,
     long_version = long_version(),
-    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  oxide extract-text input.pdf --structured --format json\n  oxide parser-report input.pdf --mode audit\n  oxide pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  oxide image-to-pdf img1.jpg img2.png --out combined.pdf\n  oxide pdf-to-xlsx report.pdf --out report.xlsx\n  oxide pdf-to-pptx deck.pdf --out deck.pptx\n  oxide pdf-to-docx report.pdf --out report.docx\n  oxide xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  oxide watermark input.pdf --text CONFIDENTIAL --out out.pdf"
+    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  oxide extract-text input.pdf --structured --format json\n  oxide parser-report input.pdf --mode audit\n  oxide pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  oxide image-to-pdf img1.jpg img2.png --out combined.pdf\n  oxide pdf-to-xlsx report.pdf --out report.xlsx\n  oxide pdf-to-pptx deck.pdf --out deck.pptx\n  oxide pdf-to-docx report.pdf --out report.docx\n  oxide xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  oxide watermark input.pdf --text CONFIDENTIAL --out out.pdf"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -254,6 +254,16 @@ enum Commands {
     ToHtml(ToHtmlArgs),
     /// Verify digital signatures in a PDF (pdfsig-equivalent)
     VerifySig(VerifySigArgs),
+    /// Emit encryption, signature, and active-content security diagnostics
+    SecurityReport(SecurityReportArgs),
+    /// Alias for verify-sig with Prompt 09 signature status fields
+    SignatureReport(VerifySigArgs),
+    /// Remove active/risky PDF content according to a sanitizer policy
+    Sanitize(SanitizeArgs),
+    /// Validate supported PDF/A, PDF/UA, PDF/X, and security profile subsets
+    Validate(ValidateArgs),
+    /// Write a deterministic canonical full-rewrite copy and audit report
+    Canonicalize(CanonicalizeArgs),
     /// Encrypt a PDF with a password (RC4-128 / AES-128 / AES-256). AES-256 default.
     Encrypt(EncryptArgs),
     /// Write an unencrypted normalized copy of a password-opened PDF
@@ -1573,6 +1583,78 @@ struct VerifySigArgs {
     password: Option<String>,
 }
 
+#[derive(Parser)]
+struct SecurityReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Emit machine-readable JSON
+    #[arg(long)]
+    json: bool,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct SanitizeArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output sanitized PDF
+    #[arg(short, long, default_value = "sanitized.pdf")]
+    output: PathBuf,
+    /// Policy: strict, balanced, or preserve-visual
+    #[arg(long, default_value = "balanced")]
+    policy: String,
+    /// Emit machine-readable JSON report
+    #[arg(long)]
+    json: bool,
+    /// Fail if risky content remains after sanitization
+    #[arg(long)]
+    strict: bool,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct ValidateArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Profile: pdfa, pdfua, pdfx, security, or all
+    #[arg(long, default_value = "all")]
+    profile: String,
+    /// Emit machine-readable JSON
+    #[arg(long)]
+    json: bool,
+    /// Exit non-zero at this severity: never, error, or warning
+    #[arg(long, default_value = "never")]
+    fail_on: String,
+    /// Exit non-zero on warning as well as error
+    #[arg(long)]
+    fail_on_warning: bool,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct CanonicalizeArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output deterministic full-rewrite PDF
+    #[arg(short, long, default_value = "canonical.pdf")]
+    output: PathBuf,
+    /// Emit machine-readable JSON report
+    #[arg(long)]
+    json: bool,
+    /// Fixed SOURCE_DATE_EPOCH-like value for audit reports
+    #[arg(long)]
+    source_date_epoch: Option<i64>,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
 
@@ -1640,6 +1722,11 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Detach(args) => run_detach(args),
         Commands::ToHtml(args) => run_to_html(args),
         Commands::VerifySig(args) => run_verify_sig(args),
+        Commands::SecurityReport(args) => run_security_report(args),
+        Commands::SignatureReport(args) => run_verify_sig(args),
+        Commands::Sanitize(args) => run_sanitize(args),
+        Commands::Validate(args) => run_validate(args),
+        Commands::Canonicalize(args) => run_canonicalize(args),
         Commands::Encrypt(args) => run_encrypt(args),
         Commands::Decrypt(args) => run_decrypt(args),
         Commands::Watermark(args) => run_watermark(args),
@@ -4290,6 +4377,142 @@ fn run_verify_sig(args: VerifySigArgs) -> Result<(), Box<dyn Error>> {
         println!();
     }
     Ok(())
+}
+
+fn run_security_report(args: SecurityReportArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let report = oxide_engine::security_report(&engine)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Security report");
+        println!("  encrypted: {}", report.encrypted);
+        println!("  signatures: {}", report.signatures.len());
+        println!("  risky content: {}", report.risky_content.risky_total());
+        println!(
+            "  public-key security handler: {}",
+            report.public_key_security_handler_detected
+        );
+        println!("  AES-GCM detected: {}", report.aes_gcm_detected);
+        for finding in &report.findings {
+            println!(
+                "  - {:?} {}: {}",
+                finding.severity, finding.code, finding.message
+            );
+        }
+    }
+    Ok(())
+}
+
+fn run_sanitize(args: SanitizeArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let options = parse_sanitizer_options(&args.policy)?;
+    let (bytes, report) = oxide_engine::sanitize_pdf(&engine, &options)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "Sanitized {} -> {} (risky: {} -> {}, strict_passed={})",
+            args.pdf.display(),
+            args.output.display(),
+            report.input_risky_total,
+            report.output_risky_total,
+            report.strict_passed
+        );
+    }
+    if args.strict && !report.strict_passed {
+        return Err("sanitizer strict verification failed: risky content remains".into());
+    }
+    Ok(())
+}
+
+fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let profile = oxide_engine::StandardsProfile::parse(&args.profile)
+        .ok_or_else(|| usage_error(format!("unknown validation profile '{}'", args.profile)))?;
+    let report = oxide_engine::validate_standards_profile(&engine, profile)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "Validation {:?}: {} rule(s), passed={}",
+            report.profile,
+            report.rules.len(),
+            report.passed
+        );
+        for rule in &report.rules {
+            println!(
+                "  - {:?} {:?} {}: {}",
+                rule.status, rule.severity, rule.rule_id, rule.message
+            );
+        }
+    }
+    let has_fail = report
+        .rules
+        .iter()
+        .any(|rule| matches!(rule.status, oxide_engine::ValidationStatus::Fail));
+    let has_warn = report
+        .rules
+        .iter()
+        .any(|rule| matches!(rule.status, oxide_engine::ValidationStatus::Warn));
+    let fail_on = parse_validate_fail_on(&args.fail_on, args.fail_on_warning)?;
+    if (fail_on == "error" && has_fail) || (fail_on == "warning" && (has_fail || has_warn)) {
+        return Err(Box::new(CliError::new(
+            CliExitCode::Input,
+            "validation profile reported failing rules",
+        )));
+    }
+    Ok(())
+}
+
+fn run_canonicalize(args: CanonicalizeArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let options = oxide_engine::CanonicalizeOptions {
+        fixed_source_date_epoch: args.source_date_epoch,
+        ..Default::default()
+    };
+    let (bytes, report) = oxide_engine::canonicalize_pdf(&engine, &options)?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!(
+            "Canonicalized {} -> {} (sha256={})",
+            args.pdf.display(),
+            args.output.display(),
+            report.output_sha256
+        );
+    }
+    Ok(())
+}
+
+fn parse_sanitizer_options(policy: &str) -> Result<oxide_engine::SanitizerOptions, Box<dyn Error>> {
+    match policy.to_ascii_lowercase().as_str() {
+        "strict" => Ok(oxide_engine::SanitizerOptions::strict()),
+        "balanced" => Ok(oxide_engine::SanitizerOptions::balanced()),
+        "preserve-visual" | "preserve_visual" => {
+            Ok(oxide_engine::SanitizerOptions::preserve_visual())
+        }
+        other => Err(usage_error(format!("unknown sanitizer policy '{other}'"))),
+    }
+}
+
+fn parse_validate_fail_on(
+    value: &str,
+    fail_on_warning: bool,
+) -> Result<&'static str, Box<dyn Error>> {
+    if fail_on_warning {
+        return Ok("warning");
+    }
+    match value.to_ascii_lowercase().as_str() {
+        "never" | "none" => Ok("never"),
+        "error" | "errors" => Ok("error"),
+        "warning" | "warnings" | "warn" => Ok("warning"),
+        other => Err(usage_error(format!(
+            "unknown --fail-on value '{other}'; use never, error, or warning"
+        ))),
+    }
 }
 
 fn run_merge(args: MergeArgs) -> Result<(), Box<dyn Error>> {

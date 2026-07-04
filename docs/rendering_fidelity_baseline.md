@@ -586,3 +586,28 @@ Prompt 08 implementation artifacts:
 
 - `target\prompt08-artifacts`
 - `target\competitive-benchmark\prompt08-*`
+
+## Prompt 09 Security/Trust Anchor
+
+Prompt 09 is an additive trust/compliance phase. It adds security reports,
+signature check separation, sanitizer policies, standards-profile reports,
+structure-aware mutation, and deterministic canonical output audit. It is not
+intended to change rendering, text, field, or table extraction gates.
+
+Expected unchanged gates:
+
+| metric | Prompt 09 anchor |
+| --- | ---: |
+| table shape-F1 | 0.96232 |
+| table cell-F1 in current scorer | 0.987 |
+| table TEDS approx | 0.981 |
+| strict field-F1 | 0.72503 |
+| text char similarity | 0.92743 |
+| text word-F1 | 1.0 |
+| semantic reading order | 0.96019 |
+
+Prompt 09 artifacts:
+
+- `target\prompt09-baseline`
+- `target\prompt09-structure-mutations`
+- `target\prompt09-differential`

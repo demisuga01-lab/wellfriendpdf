@@ -110,8 +110,10 @@ pub mod parser;
 pub mod parser_report;
 pub mod reader;
 pub mod render;
+pub mod security;
 pub mod semantic;
 pub mod signature;
+pub mod standards;
 pub mod structural;
 pub mod text;
 pub mod utilities;
@@ -266,11 +268,21 @@ pub use render::{
     WuLineRenderer, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
 };
 pub use render::{render_page_svg, svg, text_decode};
+pub use security::{
+    canonicalize_pdf, sanitize_pdf, scan_risky_content, security_report, CanonicalizeOptions,
+    CanonicalizeReport, RiskyContentReport, SanitizerOptions, SanitizerPolicy, SanitizerReport,
+    SecurityFinding, SecurityReport, SecuritySeverity,
+};
 pub use semantic::{SemanticDocument, SemanticElement, SemanticMcid, SemanticSource};
 pub use signature::{
     add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options, CertInfo,
-    Coverage, LtvMaterial, LtvReport, PadesLevel, PdfSigner, RevocationStatus, SignatureOptions,
-    SignatureReport, SignatureStatus, SignatureTrust, SignatureValidity, VerifyOptions,
+    Coverage, LtvMaterial, LtvReport, PadesLevel, PdfSigner, RevocationStatus,
+    SignatureCheckDetails, SignatureOptions, SignatureReport, SignatureStatus, SignatureTrust,
+    SignatureValidity, VerifyOptions,
+};
+pub use standards::{
+    validate_standards_profile, StandardsProfile, StandardsValidationReport, ValidationRuleResult,
+    ValidationSeverity, ValidationStatus,
 };
 pub use structural::{
     crop_pages, encrypt, linearize::linearize, optimize, repair, rotate_pages, OptimizeReport,
