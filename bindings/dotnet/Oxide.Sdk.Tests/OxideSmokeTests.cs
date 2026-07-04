@@ -1,4 +1,6 @@
 using System.Text;
+using System.Text.Json;
+using System.Security.Cryptography;
 using Oxide.Sdk;
 using Xunit;
 
@@ -13,17 +15,46 @@ public sealed class OxideSmokeTests
         Assert.True(doc.PageCount >= 1);
         Assert.False(string.IsNullOrWhiteSpace(doc.GetPage(1).Text));
         Assert.Contains("\"schema_version\"", doc.ParseJson());
+        var reports = new Dictionary<string, string>
+        {
+            ["feature"] = OxideDocument.FeatureReportJson(),
+            ["security"] = doc.SecurityReportJson(),
+            ["parser"] = doc.ParserReportJson(),
+            ["color"] = doc.ColorReportJson(),
+            ["validate_security"] = doc.ValidateJson("security"),
+            ["forms"] = doc.FormsReportJson(),
+            ["annotations"] = doc.AnnotationsReportJson(),
+            ["pages"] = doc.PagesReportJson(),
+            ["interactive"] = doc.InteractiveReportJson(),
+            ["chunks"] = doc.ChunksJson(),
+        };
+        Assert.Contains("feature_report", reports["feature"]);
+        Assert.False(string.IsNullOrWhiteSpace(OxideDocument.EngineVersion()));
+        Assert.True(OxideDocument.AbiVersion >= 1);
+        foreach (var report in reports.Values)
+        {
+            AssertReport(report);
+        }
 
         var docx = doc.ToDocx();
         var xlsx = doc.ToXlsx();
         var pptx = doc.ToPptx();
+        var sanitized = doc.Sanitize();
+        var canonicalized = doc.Canonicalize(0);
+        reports["sanitize"] = sanitized.ReportJson;
+        reports["canonicalize"] = canonicalized.ReportJson;
 
         Assert.StartsWith("PK", Encoding.ASCII.GetString(docx, 0, 2));
         Assert.StartsWith("PK", Encoding.ASCII.GetString(xlsx, 0, 2));
         Assert.StartsWith("PK", Encoding.ASCII.GetString(pptx, 0, 2));
+        Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(sanitized.Bytes, 0, 5));
+        Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(canonicalized.Bytes, 0, 5));
+        AssertReport(sanitized.ReportJson);
+        AssertReport(canonicalized.ReportJson);
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(OfficeConverters.DocxToPdf(docx), 0, 5));
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(OfficeConverters.XlsxToPdf(xlsx), 0, 5));
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(OfficeConverters.PptxToPdf(pptx), 0, 5));
+        WritePrompt02Artifact(FixturePath(), reports, sanitized, canonicalized);
     }
 
     [Fact]
@@ -62,5 +93,48 @@ public sealed class OxideSmokeTests
         }
 
         throw new FileNotFoundException("Could not locate tracemonkey.pdf fixture.");
+    }
+
+    private static void AssertReport(string json)
+    {
+        Assert.Contains("\"schema_version\"", json);
+    }
+
+    private static void WritePrompt02Artifact(
+        string fixture,
+        IReadOnlyDictionary<string, string> reports,
+        OxideBinaryResult sanitized,
+        OxideBinaryResult canonicalized)
+    {
+        var artifactDir = Environment.GetEnvironmentVariable("OXIDE_PROMPT02_ARTIFACT_DIR");
+        if (string.IsNullOrWhiteSpace(artifactDir))
+        {
+            return;
+        }
+
+        Directory.CreateDirectory(artifactDir);
+        var payload = new
+        {
+            surface = "dotnet",
+            fixture,
+            engine_version = OxideDocument.EngineVersion(),
+            abi_version = OxideDocument.AbiVersion,
+            reports = reports.ToDictionary(
+                kvp => kvp.Key,
+                kvp => new { sha256 = Sha256(Encoding.UTF8.GetBytes(kvp.Value)), bytes = Encoding.UTF8.GetByteCount(kvp.Value) }),
+            outputs = new
+            {
+                sanitized = new { bytes = sanitized.Bytes.Length, sha256 = Sha256(sanitized.Bytes) },
+                canonicalized = new { bytes = canonicalized.Bytes.Length, sha256 = Sha256(canonicalized.Bytes) },
+            },
+        };
+        File.WriteAllText(
+            Path.Combine(artifactDir, "dotnet-smoke.json"),
+            JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }));
+    }
+
+    private static string Sha256(byte[] bytes)
+    {
+        return Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     }
 }

@@ -19,6 +19,18 @@ public final class Oxide {
     private Oxide() {
     }
 
+    public static String featureReportJson() {
+        return Native.featureReportJson();
+    }
+
+    public static String engineVersion() {
+        return Native.engineVersion();
+    }
+
+    public static int abiVersion() {
+        return Native.abiVersion();
+    }
+
     public static final class OxideException extends RuntimeException {
         private final int status;
 
@@ -29,6 +41,12 @@ public final class Oxide {
 
         public int status() {
             return status;
+        }
+    }
+
+    public record BinaryResult(byte[] bytes, String reportJson) {
+        public void writeBytes(Path path) throws IOException {
+            Files.write(path, bytes);
         }
     }
 
@@ -55,7 +73,7 @@ public final class Oxide {
                     (long) bytes.length,
                     err
                 );
-                if (isNull(handle)) {
+                if (Native.isNull(handle)) {
                     Native.throwError(2, err);
                 }
                 return new Document(handle);
@@ -125,6 +143,66 @@ public final class Oxide {
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide parse_json failed", ex);
             }
+        }
+
+        public String securityReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.SECURITY_REPORT, "security_report");
+        }
+
+        public String parserReportJson(String mode) {
+            ensureOpen();
+            return Native.documentStringReport(handle, Native.PARSER_REPORT, mode, "parser_report");
+        }
+
+        public String colorReportJson(String profile) {
+            ensureOpen();
+            return Native.documentStringReport(handle, Native.COLOR_REPORT, profile, "color_report");
+        }
+
+        public String validateJson(String profile) {
+            ensureOpen();
+            return Native.documentStringReport(handle, Native.VALIDATE, profile, "validate");
+        }
+
+        public String formsReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.FORMS_REPORT, "forms_report");
+        }
+
+        public String annotationsReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.ANNOTATIONS_REPORT, "annotations_report");
+        }
+
+        public String pagesReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PAGES_REPORT, "pages_report");
+        }
+
+        public String interactiveReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.INTERACTIVE_REPORT, "interactive_report");
+        }
+
+        public String chunksJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.CHUNKS, "chunks");
+        }
+
+        public BinaryResult sanitize(String policy) {
+            ensureOpen();
+            return Native.documentStringOutput(handle, Native.SANITIZE, policy, "sanitize");
+        }
+
+        public BinaryResult canonicalize(Long dateEpoch) {
+            ensureOpen();
+            return Native.canonicalize(handle, dateEpoch);
+        }
+
+        public BinaryResult redactTerms(List<String> terms, boolean strict) {
+            ensureOpen();
+            return Native.redactTerms(handle, terms, strict);
         }
 
         public byte[] toDocx(boolean includeImages) {
@@ -207,6 +285,7 @@ public final class Oxide {
             ValueLayout.JAVA_LONG.withName("len")
         );
         private static final long BUFFER_LEN_OFFSET = ValueLayout.ADDRESS.byteSize();
+        private static final long ADDRESS_SIZE = ValueLayout.ADDRESS.byteSize();
 
         private static final MethodHandle OPEN = downcall(
             "oxide_document_open_from_bytes",
@@ -264,19 +343,235 @@ public final class Oxide {
             "oxide_pptx_to_pdf",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle SECURITY_REPORT = documentReport("oxide_document_security_report_json");
+        private static final MethodHandle PARSER_REPORT = documentStringReport("oxide_document_parser_report_json");
+        private static final MethodHandle COLOR_REPORT = documentStringReport("oxide_document_color_report_json");
+        private static final MethodHandle VALIDATE = documentStringReport("oxide_document_validate_json");
+        private static final MethodHandle FORMS_REPORT = documentReport("oxide_document_forms_report_json");
+        private static final MethodHandle ANNOTATIONS_REPORT = documentReport("oxide_document_annotations_report_json");
+        private static final MethodHandle PAGES_REPORT = documentReport("oxide_document_pages_report_json");
+        private static final MethodHandle INTERACTIVE_REPORT = documentReport("oxide_document_interactive_report_json");
+        private static final MethodHandle CHUNKS = documentReport("oxide_document_chunks_json");
+        private static final MethodHandle SANITIZE = downcall(
+            "oxide_document_sanitize_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle CANONICALIZE = downcall(
+            "oxide_document_canonicalize_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle REDACT = downcall(
+            "oxide_document_redact_terms_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle FEATURE_REPORT = downcall(
+            "oxide_feature_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle VERSION = downcall(
+            "oxide_version",
+            FunctionDescriptor.of(ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ABI_VERSION = downcall(
+            "oxide_abi_version",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT)
+        );
 
         private static SymbolLookup loadLibrary() {
-            String explicit = System.getenv("OXIDE_NATIVE_LIBRARY");
-            if (explicit == null || explicit.isBlank()) {
-                throw new IllegalStateException("Set OXIDE_NATIVE_LIBRARY to the oxide_capi dynamic library");
+            Path path = findNativeLibrary();
+            if (path == null) {
+                throw new IllegalStateException(
+                    "Could not locate oxide_capi native library. Set OXIDE_NATIVE_LIBRARY or place it under target/debug, target/release, or runtimes/<rid>/native.");
             }
-            return SymbolLookup.libraryLookup(Path.of(explicit), LOOKUP_ARENA);
+            return SymbolLookup.libraryLookup(path, LOOKUP_ARENA);
+        }
+
+        private static Path findNativeLibrary() {
+            String explicit = System.getenv("OXIDE_NATIVE_LIBRARY");
+            if (explicit != null && !explicit.isBlank() && Files.exists(Path.of(explicit))) {
+                return Path.of(explicit);
+            }
+
+            String mapped = mappedLibraryName();
+            String rid = runtimeIdentifier();
+            List<Path> roots = List.of(
+                Path.of("").toAbsolutePath(),
+                Path.of("").toAbsolutePath().resolve("target/debug"),
+                Path.of("").toAbsolutePath().resolve("target/release")
+            );
+            for (Path root : roots) {
+                Path direct = root.resolve(mapped);
+                if (Files.exists(direct)) {
+                    return direct;
+                }
+                Path ridPath = root.resolve("runtimes").resolve(rid).resolve("native").resolve(mapped);
+                if (Files.exists(ridPath)) {
+                    return ridPath;
+                }
+            }
+            return null;
+        }
+
+        private static String mappedLibraryName() {
+            String os = System.getProperty("os.name", "").toLowerCase();
+            if (os.contains("win")) {
+                return "oxide_capi.dll";
+            }
+            if (os.contains("mac") || os.contains("darwin")) {
+                return "liboxide_capi.dylib";
+            }
+            return "liboxide_capi.so";
+        }
+
+        private static String runtimeIdentifier() {
+            String os = System.getProperty("os.name", "").toLowerCase();
+            String osPart = os.contains("win") ? "win" : os.contains("mac") || os.contains("darwin") ? "osx" : "linux";
+            String arch = System.getProperty("os.arch", "").toLowerCase();
+            String archPart = arch.contains("aarch64") || arch.contains("arm64") ? "arm64" : arch.contains("86") && !arch.contains("64") ? "x86" : "x64";
+            return osPart + "-" + archPart;
+        }
+
+        private static MethodHandle documentReport(String name) {
+            return downcall(
+                name,
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+            );
+        }
+
+        private static MethodHandle documentStringReport(String name) {
+            return downcall(
+                name,
+                FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+            );
         }
 
         private static MethodHandle downcall(String name, FunctionDescriptor descriptor) {
             MemorySegment symbol = LOOKUP.find(name)
                 .orElseThrow(() -> new UnsatisfiedLinkError("Missing native symbol " + name));
             return LINKER.downcallHandle(symbol, descriptor);
+        }
+
+        private static String featureReportJson() {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) FEATURE_REPORT.invokeExact(jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide feature_report failed", ex);
+            }
+        }
+
+        private static String engineVersion() {
+            try (Arena ignored = Arena.ofConfined()) {
+                MemorySegment ptr = (MemorySegment) VERSION.invokeExact();
+                if (isNull(ptr)) {
+                    return "";
+                }
+                try {
+                    return ptr.reinterpret(Long.MAX_VALUE).getString(0);
+                } finally {
+                    STRING_FREE.invokeExact(ptr);
+                }
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide version query failed", ex);
+            }
+        }
+
+        private static int abiVersion() {
+            try {
+                return (int) ABI_VERSION.invokeExact();
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide ABI version query failed", ex);
+            }
+        }
+
+        private static String documentReport(MemorySegment handle, MethodHandle method, String operation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(handle, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static String documentStringReport(MemorySegment handle, MethodHandle method, String value, String operation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment arg = value == null || value.isBlank() ? MemorySegment.NULL : arena.allocateFrom(value);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(handle, arg, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult documentStringOutput(MemorySegment handle, MethodHandle method, String value, String operation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment arg = value == null || value.isBlank() ? MemorySegment.NULL : arena.allocateFrom(value);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(handle, arg, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult canonicalize(MemorySegment handle, Long dateEpoch) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                long epoch = dateEpoch == null ? 0L : dateEpoch.longValue();
+                int status = (int) CANONICALIZE.invokeExact(handle, epoch, dateEpoch == null ? 0 : 1, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide canonicalize failed", ex);
+            }
+        }
+
+        private static BinaryResult redactTerms(MemorySegment handle, List<String> terms, boolean strict) {
+            Objects.requireNonNull(terms, "terms");
+            List<String> clean = terms.stream().filter(t -> t != null && !t.isBlank()).toList();
+            if (clean.isEmpty()) {
+                throw new IllegalArgumentException("At least one non-empty redaction term is required");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment termArray = arena.allocate(ADDRESS_SIZE * clean.size());
+                for (int i = 0; i < clean.size(); i++) {
+                    termArray.set(ValueLayout.ADDRESS, ADDRESS_SIZE * i, arena.allocateFrom(clean.get(i)));
+                }
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) REDACT.invokeExact(handle, termArray, (long) clean.size(), strict ? 1 : 0, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide redact_terms failed", ex);
+            }
         }
 
         private static void throwError(int status, MemorySegment errorPtr) throws Throwable {
@@ -352,9 +647,9 @@ public final class Oxide {
                 BUFFER_FREE.invokeExact(buffer);
             }
         }
-    }
 
-    private static boolean isNull(MemorySegment segment) {
-        return segment == null || segment.equals(MemorySegment.NULL) || segment.address() == 0;
+        private static boolean isNull(MemorySegment segment) {
+            return segment == null || segment.equals(MemorySegment.NULL) || segment.address() == 0;
+        }
     }
 }

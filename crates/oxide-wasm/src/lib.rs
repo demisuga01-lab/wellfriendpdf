@@ -1,43 +1,45 @@
-//! wasm-bindgen wrapper for `oxide-engine` — the browser/`wasm32` surface.
+//! wasm-bindgen wrapper for `oxide-engine`.
 //!
-//! # OCR decision: no in-browser OCR (by design, for now)
-//!
-//! The OCR seam ([`oxide_engine::OcrEngine`]) is a pluggable backend the host
-//! implements. On every *other* surface the backend is something outside the
-//! core: a Tesseract subprocess (Rust/CLI), a Python object (the `oxide`
-//! wheel), or a C function pointer (the C ABI). None of those exist inside the
-//! browser sandbox:
-//!
-//! - There is no process to spawn (no Tesseract), no Python runtime, and no
-//!   native library to call through the C ABI.
-//! - The seam's timeout backstop ([`oxide_engine::ocr::dispatch`]) uses
-//!   `std::thread`, which is unavailable on `wasm32-unknown-unknown`; there the
-//!   spawn simply fails and the call runs inline — fine, but it means the
-//!   engine offers no isolation an in-browser backend could rely on.
-//!
-//! So this crate exposes **no OCR entry point**: every parse method here uses
-//! [`ParseOptions::default`] (OCR off), and scanned pages degrade to the
-//! placeholder exactly as they do on any other surface with OCR off. This is a
-//! deliberate, documented gap, not an oversight.
-//!
-//! The intended path for browser OCR is **out of band**: call
-//! [`OxidePdf::render_page_png`] to rasterize a page, run OCR in JS/WASM (e.g.
-//! `tesseract.js`, an ONNX model, or a remote vision API), and use the
-//! recognized text alongside Oxide's digital-born output. Wiring a JS callback
-//! *back through* the seam (so OCR'd text merges into the canonical model
-//! in-engine) is feasible in principle — a `JsValue` backend mirroring the
-//! Python one — but is intentionally out of scope until there is demand; the
-//! render-then-OCR path covers the common case today without it.
+//! The browser/Node/WebWorker surface accepts caller-provided bytes only. It
+//! does not fetch URLs, read host files implicitly, or execute PDF active
+//! content. Reports are routed through `oxide_engine::sdk` so the JSON envelope
+//! matches Rust, Python, and the C ABI.
 
 #[cfg(target_arch = "wasm32")]
 mod wasm_api {
     use wasm_bindgen::prelude::*;
 
-    use oxide_engine::{ChunkOptions, ContentEngine, DocType, ExtractOptions, ParseOptions};
+    use oxide_engine::{sdk, ChunkOptions, ContentEngine, DocType, ExtractOptions, ParseOptions};
 
     #[wasm_bindgen]
     pub struct OxidePdf {
         engine: ContentEngine,
+        bytes: Vec<u8>,
+        closed: bool,
+    }
+
+    #[wasm_bindgen]
+    pub struct OxideOutput {
+        bytes: Vec<u8>,
+        report_json: String,
+    }
+
+    #[wasm_bindgen]
+    impl OxideOutput {
+        #[wasm_bindgen(js_name = bytes)]
+        pub fn bytes(&self) -> Vec<u8> {
+            self.bytes.clone()
+        }
+
+        #[wasm_bindgen(js_name = byteLength)]
+        pub fn byte_length(&self) -> usize {
+            self.bytes.len()
+        }
+
+        #[wasm_bindgen(js_name = reportJson)]
+        pub fn report_json(&self) -> String {
+            self.report_json.clone()
+        }
     }
 
     #[wasm_bindgen]
@@ -46,37 +48,90 @@ mod wasm_api {
         pub fn new(bytes: &[u8]) -> Result<OxidePdf, JsValue> {
             install_panic_hook();
             let engine = ContentEngine::open_bytes(bytes.to_vec()).map_err(js_err)?;
-            Ok(Self { engine })
+            Ok(Self {
+                engine,
+                bytes: bytes.to_vec(),
+                closed: false,
+            })
+        }
+
+        #[wasm_bindgen(js_name = openWithPassword)]
+        pub fn open_with_password(bytes: &[u8], password: &[u8]) -> Result<OxidePdf, JsValue> {
+            install_panic_hook();
+            let engine = ContentEngine::open_bytes_with_password(bytes.to_vec(), password)
+                .map_err(js_err)?;
+            Ok(Self {
+                engine,
+                bytes: bytes.to_vec(),
+                closed: false,
+            })
+        }
+
+        #[wasm_bindgen(js_name = sdkVersion)]
+        pub fn sdk_version() -> String {
+            oxide_engine::ENGINE_VERSION.to_string()
+        }
+
+        #[wasm_bindgen(js_name = abiVersion)]
+        pub fn abi_version() -> u32 {
+            sdk::REPORT_ENVELOPE_VERSION
+        }
+
+        #[wasm_bindgen(js_name = featureReportJson)]
+        pub fn feature_report_json() -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::feature_report_json().map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = decodeBudgetReportJson)]
+        pub fn decode_budget_report_json(
+            filter: &str,
+            width: u32,
+            height: u32,
+            components: u8,
+        ) -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::decode_budget_report_json(filter, width, height, components).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = close)]
+        pub fn close(&mut self) {
+            self.closed = true;
+        }
+
+        #[wasm_bindgen(js_name = isClosed)]
+        pub fn is_closed(&self) -> bool {
+            self.closed
         }
 
         #[wasm_bindgen(js_name = pageCount)]
         pub fn page_count(&self) -> Result<usize, JsValue> {
+            self.ensure_open()?;
             self.engine.page_count().map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = extractText)]
         pub fn extract_text(&self, page: usize) -> Result<String, JsValue> {
+            self.ensure_open()?;
             self.engine.get_page_text(page).map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = extractStructuredText)]
         pub fn extract_structured_text(&self, page: usize) -> Result<String, JsValue> {
+            self.ensure_open()?;
             self.engine.get_page_text_structured(page).map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = extractSemanticJson)]
         pub fn extract_semantic_json(&self) -> Result<String, JsValue> {
+            self.ensure_open()?;
             let semantic = self.engine.extract_semantic_document(&[]).map_err(js_err)?;
             serde_json::to_string(&semantic).map_err(|err| JsValue::from_str(&err.to_string()))
         }
 
-        /// Parse the whole document into the canonical model and render it as
-        /// clean, RAG-ready Markdown (headings/paragraphs/lists/tables/figures
-        /// in recovered reading order). This is the digital-born parser surface
-        /// — scanned pages degrade to a placeholder (OCR is not available
-        /// in-browser; it requires the external Tesseract process).
         #[wasm_bindgen(js_name = parseMarkdown)]
         pub fn parse_markdown(&self) -> Result<String, JsValue> {
+            self.ensure_open()?;
             let doc = self
                 .engine
                 .parse_document(&ParseOptions::default())
@@ -84,13 +139,9 @@ mod wasm_api {
             Ok(doc.to_markdown_default())
         }
 
-        /// Parse the whole document into the canonical [`Document`] model and
-        /// return it as JSON. This is the SAME schema the CLI `parse --format
-        /// json` and the server `/parse` endpoint emit (schema 1.1) — distinct
-        /// from the legacy `extractSemanticJson`, which serializes the older
-        /// semantic model and is kept only for back-compat.
         #[wasm_bindgen(js_name = parseJson)]
         pub fn parse_json(&self) -> Result<String, JsValue> {
+            self.ensure_open()?;
             let doc = self
                 .engine
                 .parse_document(&ParseOptions::default())
@@ -98,12 +149,9 @@ mod wasm_api {
             Ok(doc.to_json())
         }
 
-        /// Parse the document and split it into RAG-ready semantic chunks
-        /// (structure-aware, token-sized, with overlap and heading context).
-        /// Returns the `ChunkSet` as JSON. Pass `0` for `target_tokens` or
-        /// `overlap` to use the defaults (512 / 64).
         #[wasm_bindgen(js_name = chunk)]
         pub fn chunk(&self, target_tokens: usize, overlap: usize) -> Result<String, JsValue> {
+            self.ensure_open()?;
             let doc = self
                 .engine
                 .parse_document(&ParseOptions::default())
@@ -118,13 +166,9 @@ mod wasm_api {
             Ok(doc.chunk(&opts).to_json())
         }
 
-        /// Extract structured key-value fields (invoice number/date/total,
-        /// receipt merchant/amount, form label→value pairs, line items) as
-        /// JSON. `doc_type` is one of `auto` (default), `invoice`, `receipt`,
-        /// `form`, or `generic`; an unrecognized value falls back to `auto`.
-        /// Digital-born only in-browser (no OCR).
         #[wasm_bindgen(js_name = extractFieldsJson)]
         pub fn extract_fields_json(&self, doc_type: &str) -> Result<String, JsValue> {
+            self.ensure_open()?;
             let opts = ExtractOptions {
                 doc_type: DocType::parse(doc_type),
                 ..Default::default()
@@ -135,13 +179,148 @@ mod wasm_api {
 
         #[wasm_bindgen(js_name = infoJson)]
         pub fn info_json(&self) -> Result<String, JsValue> {
+            self.ensure_open()?;
             let info = self.engine.document_info().map_err(js_err)?;
             serde_json::to_string(&info).map_err(|err| JsValue::from_str(&err.to_string()))
         }
 
         #[wasm_bindgen(js_name = renderPagePng)]
         pub fn render_page_png(&self, page: usize, dpi: u32) -> Result<Vec<u8>, JsValue> {
+            self.ensure_open()?;
             self.engine.render_page_png_fast(page, dpi).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = documentInfoJson)]
+        pub fn document_info_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::document_info_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = securityReportJson)]
+        pub fn security_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::security_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = riskyContentReportJson)]
+        pub fn risky_content_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::risky_content_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = parserReportJson)]
+        pub fn parser_report_json(&self, mode: Option<String>) -> Result<String, JsValue> {
+            self.report(|b| sdk::parser_report_json(b, mode.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = colorReportJson)]
+        pub fn color_report_json(&self, profile: Option<String>) -> Result<String, JsValue> {
+            self.report(|b| sdk::color_report_json(b, profile.as_deref()))
+        }
+
+        #[wasm_bindgen(js_name = validateJson)]
+        pub fn validate_json(&self, profile: Option<String>) -> Result<String, JsValue> {
+            self.report(|b| sdk::standards_profile_json(b, profile.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = validatePdfaJson)]
+        pub fn validate_pdfa_json(&self, profile: Option<String>) -> Result<String, JsValue> {
+            self.report(|b| sdk::pdfa_validation_json(b, profile.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = validatePdfuaJson)]
+        pub fn validate_pdfua_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::pdfua_validation_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = formsReportJson)]
+        pub fn forms_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::forms_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = annotationsReportJson)]
+        pub fn annotations_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::annotation_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = pagesReportJson)]
+        pub fn pages_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::page_operations_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = interactiveReportJson)]
+        pub fn interactive_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::interactive_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = signatureReportJson)]
+        pub fn signature_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::signature_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = fontReportJson)]
+        pub fn font_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::font_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = textSemanticJson)]
+        pub fn text_semantic_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::text_semantic_json(b, &[], None))
+        }
+
+        #[wasm_bindgen(js_name = semanticDocumentReportJson)]
+        pub fn semantic_document_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::semantic_document_json(b, &[], None))
+        }
+
+        #[wasm_bindgen(js_name = chunksJson)]
+        pub fn chunks_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::chunk_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = sanitize)]
+        pub fn sanitize(&self, policy: Option<String>) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::sanitize_json(b, policy.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = canonicalize)]
+        pub fn canonicalize(&self, date_epoch: Option<i64>) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::canonicalize_json(b, date_epoch, None))
+        }
+
+        #[wasm_bindgen(js_name = redactTermsJson)]
+        pub fn redact_terms_json(
+            &self,
+            terms_json: &str,
+            strict: bool,
+        ) -> Result<OxideOutput, JsValue> {
+            let terms: Vec<String> = serde_json::from_str(terms_json)
+                .map_err(|err| JsValue::from_str(&err.to_string()))?;
+            self.output(|b| sdk::redact_terms_json(b, &terms, strict, None))
+        }
+
+        fn ensure_open(&self) -> Result<(), JsValue> {
+            if self.closed {
+                Err(JsValue::from_str(
+                    "OxidePdf document is closed; create a new instance before calling this method",
+                ))
+            } else {
+                Ok(())
+            }
+        }
+
+        fn report<F>(&self, f: F) -> Result<String, JsValue>
+        where
+            F: FnOnce(&[u8]) -> oxide_engine::Result<String>,
+        {
+            self.ensure_open()?;
+            f(&self.bytes).map_err(js_err)
+        }
+
+        fn output<F>(&self, f: F) -> Result<OxideOutput, JsValue>
+        where
+            F: FnOnce(&[u8]) -> oxide_engine::Result<(Vec<u8>, String)>,
+        {
+            self.ensure_open()?;
+            let (bytes, report_json) = f(&self.bytes).map_err(js_err)?;
+            Ok(OxideOutput { bytes, report_json })
         }
     }
 

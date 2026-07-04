@@ -42,6 +42,19 @@ public sealed class OxideDocument : IDisposable
         return new OxideDocument(handle);
     }
 
+    public static string FeatureReportJson()
+    {
+        var status = NativeMethods.oxide_feature_report_json(out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public static string EngineVersion()
+    {
+        return NativeMethods.TakeString(NativeMethods.oxide_version());
+    }
+
+    public static uint AbiVersion => NativeMethods.oxide_abi_version();
+
     public Page GetPage(int pageNumber)
     {
         if (pageNumber < 1 || pageNumber > PageCount)
@@ -83,6 +96,140 @@ public sealed class OxideDocument : IDisposable
             {
                 Marshal.FreeCoTaskMem(docTypePtr);
             }
+        }
+    }
+
+    public string SecurityReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_security_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string ParserReportJson(string mode = "repair")
+    {
+        ThrowIfDisposed();
+        return ReportWithString(mode, NativeMethods.oxide_document_parser_report_json);
+    }
+
+    public string ColorReportJson(string profile = "generic")
+    {
+        ThrowIfDisposed();
+        return ReportWithString(profile, NativeMethods.oxide_document_color_report_json);
+    }
+
+    public string ValidateJson(string profile = "all")
+    {
+        ThrowIfDisposed();
+        return ReportWithString(profile, NativeMethods.oxide_document_validate_json);
+    }
+
+    public string FormsReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_forms_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string AnnotationsReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_annotations_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string PagesReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_pages_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string InteractiveReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_interactive_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string ChunksJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_chunks_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public OxideBinaryResult Sanitize(string policy = "balanced")
+    {
+        ThrowIfDisposed();
+        var policyPtr = NativeMethods.StringToNativeOrNull(policy);
+        try
+        {
+            var status = NativeMethods.oxide_document_sanitize_json(_handle, policyPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (policyPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(policyPtr);
+            }
+        }
+    }
+
+    public OxideBinaryResult Canonicalize(long? dateEpoch = null)
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_canonicalize_json(
+            _handle,
+            dateEpoch.GetValueOrDefault(),
+            dateEpoch.HasValue ? 1 : 0,
+            out var buffer,
+            out var json,
+            out var error);
+        return NativeMethods.TakeOutput(status, buffer, json, error);
+    }
+
+    public OxideBinaryResult RedactTerms(IEnumerable<string> terms, bool strict = false)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(terms);
+        var normalized = terms.Where(t => !string.IsNullOrWhiteSpace(t)).ToArray();
+        if (normalized.Length == 0)
+        {
+            throw new ArgumentException("At least one non-empty redaction term is required.", nameof(terms));
+        }
+
+        var nativeStrings = new IntPtr[normalized.Length];
+        var termsPtr = Marshal.AllocHGlobal(IntPtr.Size * normalized.Length);
+        try
+        {
+            for (var i = 0; i < normalized.Length; i++)
+            {
+                nativeStrings[i] = Marshal.StringToCoTaskMemUTF8(normalized[i]);
+                Marshal.WriteIntPtr(termsPtr, i * IntPtr.Size, nativeStrings[i]);
+            }
+
+            var status = NativeMethods.oxide_document_redact_terms_json(
+                _handle,
+                termsPtr,
+                (UIntPtr)normalized.Length,
+                strict ? 1 : 0,
+                out var buffer,
+                out var json,
+                out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            foreach (var ptr in nativeStrings)
+            {
+                if (ptr != IntPtr.Zero)
+                {
+                    Marshal.FreeCoTaskMem(ptr);
+                }
+            }
+            Marshal.FreeHGlobal(termsPtr);
         }
     }
 
@@ -131,6 +278,29 @@ public sealed class OxideDocument : IDisposable
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    private delegate int StringReportCall(
+        NativeMethods.DocumentHandle document,
+        IntPtr arg,
+        out IntPtr json,
+        out IntPtr error);
+
+    private string ReportWithString(string? arg, StringReportCall call)
+    {
+        var argPtr = NativeMethods.StringToNativeOrNull(arg);
+        try
+        {
+            var status = call(_handle, argPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (argPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(argPtr);
+            }
+        }
     }
 }
 

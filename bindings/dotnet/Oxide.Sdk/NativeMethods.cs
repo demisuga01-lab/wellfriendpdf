@@ -26,7 +26,66 @@ internal static partial class NativeMethods
             return NativeLibrary.Load(explicitPath);
         }
 
+        foreach (var candidate in NativeLibraryCandidates(assembly))
+        {
+            if (File.Exists(candidate))
+            {
+                return NativeLibrary.Load(candidate);
+            }
+        }
+
         return IntPtr.Zero;
+    }
+
+    private static IEnumerable<string> NativeLibraryCandidates(Assembly assembly)
+    {
+        var mapped = MapNativeLibraryName();
+        var rid = RuntimeIdentifier();
+        var bases = new[]
+        {
+            AppContext.BaseDirectory,
+            Path.GetDirectoryName(assembly.Location) ?? AppContext.BaseDirectory,
+            Environment.CurrentDirectory,
+            Path.Combine(Environment.CurrentDirectory, "target", "debug"),
+            Path.Combine(Environment.CurrentDirectory, "target", "release"),
+        };
+
+        foreach (var root in bases.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            yield return Path.Combine(root, mapped);
+            yield return Path.Combine(root, "runtimes", rid, "native", mapped);
+        }
+    }
+
+    private static string RuntimeIdentifier()
+    {
+        var os = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? "win"
+            : RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                ? "osx"
+                : "linux";
+        var arch = RuntimeInformation.ProcessArchitecture switch
+        {
+            Architecture.X64 => "x64",
+            Architecture.Arm64 => "arm64",
+            Architecture.X86 => "x86",
+            Architecture.Arm => "arm",
+            _ => RuntimeInformation.ProcessArchitecture.ToString().ToLowerInvariant(),
+        };
+        return $"{os}-{arch}";
+    }
+
+    private static string MapNativeLibraryName()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return $"{LibraryName}.dll";
+        }
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            return $"lib{LibraryName}.dylib";
+        }
+        return $"lib{LibraryName}.so";
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -136,6 +195,101 @@ internal static partial class NativeMethods
         out OxideBuffer buffer,
         out IntPtr errorOut);
 
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_security_report_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_parser_report_json(
+        DocumentHandle document,
+        IntPtr mode,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_color_report_json(
+        DocumentHandle document,
+        IntPtr profile,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_validate_json(
+        DocumentHandle document,
+        IntPtr profile,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_forms_report_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_annotations_report_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_pages_report_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_interactive_report_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_chunks_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_sanitize_json(
+        DocumentHandle document,
+        IntPtr policy,
+        out OxideBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_canonicalize_json(
+        DocumentHandle document,
+        long dateEpoch,
+        int hasDateEpoch,
+        out OxideBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_redact_terms_json(
+        DocumentHandle document,
+        IntPtr terms,
+        UIntPtr termsLen,
+        int strict,
+        out OxideBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_feature_report_json(
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern IntPtr oxide_version();
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern uint oxide_abi_version();
+
     internal static void ThrowIfError(int status, IntPtr errorOut)
     {
         if (status == 0)
@@ -190,5 +344,22 @@ internal static partial class NativeMethods
         {
             oxide_buffer_free(buffer);
         }
+    }
+
+    internal static string TakeJson(int status, IntPtr json, IntPtr error)
+    {
+        ThrowIfError(status, error);
+        return TakeString(json);
+    }
+
+    internal static OxideBinaryResult TakeOutput(int status, OxideBuffer buffer, IntPtr json, IntPtr error)
+    {
+        ThrowIfError(status, error);
+        return new OxideBinaryResult(TakeBuffer(buffer), TakeString(json));
+    }
+
+    internal static IntPtr StringToNativeOrNull(string? value)
+    {
+        return string.IsNullOrEmpty(value) ? IntPtr.Zero : Marshal.StringToCoTaskMemUTF8(value);
     }
 }
