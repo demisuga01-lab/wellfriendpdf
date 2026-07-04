@@ -16,18 +16,29 @@ Supported:
 - package readback verification by opening `word/document.xml` from the DOCX
   ZIP package.
 
+Prompt 08B closure:
+
+- `DocxLayout::Flowing` remains the default semantic DOCX mode.
+- `DocxLayout::PageFaithful` emits positioned `wp:anchor` / `wps:txbx` text
+  boxes for text blocks and anchored image drawings.
+- `DocxLayout::Hybrid` keeps confident semantic structures and positions lower
+  confidence blocks.
+- CLI: `oxide pdf-to-docx input.pdf --layout page-faithful --out output.docx`.
+- tests inspect the generated OOXML for anchored text box markup.
+
 Bounded limits:
 
-- page-faithful Word text boxes/frames are not implemented in Prompt 08.
 - full Word style recreation is approximate.
 - exact PDF line breaks are not always desirable in flowing DOCX mode.
 - headers/footers and footnotes are exported only when the reconstructed model
   exposes them confidently.
+- OOXML readers differ in how they expose text box text through high-level APIs.
 
 CLI:
 
 ```powershell
 oxide pdf-to-docx input.pdf --out output.docx --json
+oxide pdf-to-docx input.pdf --layout page-faithful --out output.docx --json
 ```
 
 Prompt 08 also keeps the existing `docx-to-pdf` native authoring path unchanged.

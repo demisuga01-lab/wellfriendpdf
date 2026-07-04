@@ -31,9 +31,14 @@ Edit-safety levels:
 - `page_regenerate`: page-level regeneration may be needed.
 - `unsupported`: no safe edit path is currently claimed.
 
-The current transaction log is in-memory and deterministic. It provides
-undo/redo for block text replacement in the model. It is not yet a persistent
-HAMT/RRB snapshot store; that remains a later optimization.
+Prompt 08B transaction closure:
+
+- `EditTransactionLog` records transactions, patches, and bounded checkpoints.
+- `EditPatch` records stable target IDs, before/after text, and diagnostics.
+- `EditCheckpoint` records a deterministic digest and compact counts.
+- replace/insert/delete paragraph operations support undo/redo.
+- redo history is discarded after a branch edit.
+- this is a compact patch/checkpoint model, not a full HAMT/RRB store.
 
 JSON stability:
 

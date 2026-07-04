@@ -819,6 +819,7 @@ pub unsafe extern "C" fn oxide_document_to_docx(
             &doc.engine,
             &oxide_engine::DocxOptions {
                 include_images: include_images != 0,
+                layout: oxide_engine::DocxLayout::Flowing,
             },
         ))?;
         unsafe {

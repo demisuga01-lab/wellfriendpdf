@@ -1169,6 +1169,9 @@ struct PdfToDocxArgs {
     /// Do not export decodable image XObjects as inline pictures
     #[arg(long)]
     no_images: bool,
+    /// DOCX layout mode: flowing, page-faithful, or hybrid
+    #[arg(long, default_value = "flowing")]
+    layout: String,
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
@@ -1259,6 +1262,15 @@ struct EditTextArgs {
     /// Replacement text to draw in the matched source region
     #[arg(long)]
     replacement: String,
+    /// Edit mode: paragraph-reflow (default true edit), safe-patch, or overlay-fallback
+    #[arg(long, default_value = "paragraph-reflow")]
+    mode: String,
+    /// Insert replacement text at this character offset inside the matched paragraph
+    #[arg(long)]
+    insert_at: Option<usize>,
+    /// Delete a character range inside the matched paragraph, formatted start:end
+    #[arg(long)]
+    delete_range: Option<String>,
     /// Output PDF file
     #[arg(short, long, alias = "out", default_value = "edited.pdf")]
     output: PathBuf,
@@ -1307,6 +1319,12 @@ struct SaveIncrementalArgs {
     /// Font size in PDF points
     #[arg(long, default_value_t = 12.0)]
     font_size: f64,
+    /// Emit deterministic writer diagnostics in JSON output
+    #[arg(long)]
+    deterministic: bool,
+    /// Fixed PDF date string to report for deterministic save workflows
+    #[arg(long)]
+    fixed_timestamp: Option<String>,
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
@@ -2989,8 +3007,11 @@ fn run_pdf_to_pptx(args: PdfToPptxArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_pdf_to_docx(args: PdfToDocxArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
+    let layout = oxide_engine::DocxLayout::parse(&args.layout)
+        .ok_or_else(|| usage_error("unknown --layout; use flowing, page-faithful, or hybrid"))?;
     let options = oxide_engine::DocxOptions {
         include_images: !args.no_images,
+        layout,
     };
     let bytes = oxide_engine::pdf_to_docx(&engine, &options)?;
     std::fs::write(&args.output, &bytes)?;
@@ -3002,6 +3023,7 @@ fn run_pdf_to_docx(args: PdfToDocxArgs) -> Result<(), Box<dyn Error>> {
                 "input": args.pdf,
                 "output": args.output,
                 "include_images": options.include_images,
+                "layout": options.layout.as_str(),
                 "output_bytes": bytes.len(),
             }))?
         );
@@ -3137,18 +3159,53 @@ fn run_edit_text(args: EditTextArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let style = oxide_engine::EditTextStyle::new(args.font_size)
         .fill(oxide_engine::Color::device_rgb(rgb.r, rgb.g, rgb.b));
-    let (bytes, report) = oxide_engine::replace_text_pdf(
-        input,
-        &args.query,
-        &args.replacement,
-        oxide_engine::TextReplacementOptions {
-            pages,
-            case_sensitive: !args.ignore_case,
-            max_replacements: args.max_replacements.max(1),
-            replacement_style: style,
-            ..oxide_engine::TextReplacementOptions::default()
-        },
-    )?;
+    let mode =
+        oxide_engine::ParagraphEditSerializationMode::parse(&args.mode).ok_or_else(|| {
+            usage_error("unknown --mode; use paragraph-reflow, safe-patch, or overlay-fallback")
+        })?;
+    let operation = if let Some(range) = args.delete_range.as_deref() {
+        let (start, end) = parse_char_range_cli(range)?;
+        oxide_engine::ParagraphEditOperation::Delete { start, end }
+    } else if let Some(offset) = args.insert_at {
+        oxide_engine::ParagraphEditOperation::Insert {
+            offset,
+            text: args.replacement.clone(),
+        }
+    } else {
+        oxide_engine::ParagraphEditOperation::Replace {
+            replacement: args.replacement.clone(),
+        }
+    };
+    let (bytes, report) = if mode == oxide_engine::ParagraphEditSerializationMode::OverlayFallback {
+        let (bytes, report) = oxide_engine::replace_text_pdf(
+            input,
+            &args.query,
+            &args.replacement,
+            oxide_engine::TextReplacementOptions {
+                pages,
+                case_sensitive: !args.ignore_case,
+                max_replacements: args.max_replacements.max(1),
+                replacement_style: style,
+                ..oxide_engine::TextReplacementOptions::default()
+            },
+        )?;
+        (bytes, serde_json::to_value(report)?)
+    } else {
+        let (bytes, report) = oxide_engine::edit_paragraph_reflow_pdf(
+            input,
+            &args.query,
+            operation,
+            oxide_engine::ParagraphReflowOptions {
+                pages,
+                case_sensitive: !args.ignore_case,
+                max_edits: args.max_replacements.max(1),
+                replacement_style: style,
+                mode,
+                ..oxide_engine::ParagraphReflowOptions::default()
+            },
+        )?;
+        (bytes, serde_json::to_value(report)?)
+    };
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -3161,11 +3218,7 @@ fn run_edit_text(args: EditTextArgs) -> Result<(), Box<dyn Error>> {
             }))?
         );
     } else {
-        eprintln!(
-            "Replaced {} match(es) -> {}.",
-            report.replacements,
-            args.output.display()
-        );
+        eprintln!("Edited text -> {}.", args.output.display());
     }
     Ok(())
 }
@@ -3181,7 +3234,33 @@ fn run_save_incremental(args: SaveIncrementalArgs) -> Result<(), Box<dyn Error>>
         oxide_engine::EditTextStyle::new(args.font_size),
         oxide_engine::OverlayLayer::Overlay,
     )?;
-    let bytes = editor.save_to_bytes(oxide_engine::EditMode::Incremental)?;
+    let deterministic_options = oxide_engine::DeterministicSaveOptions {
+        fixed_pdf_date: args.fixed_timestamp.clone(),
+        ..oxide_engine::DeterministicSaveOptions::default()
+    };
+    let (bytes, report) = if args.deterministic || args.fixed_timestamp.is_some() {
+        editor.save_to_bytes_with_options(
+            oxide_engine::EditMode::Incremental,
+            &deterministic_options,
+        )?
+    } else {
+        let bytes = editor.save_to_bytes(oxide_engine::EditMode::Incremental)?;
+        let output_bytes = bytes.len();
+        (
+            bytes,
+            oxide_engine::DeterministicSaveReport {
+                mode: "incremental".to_string(),
+                output_bytes,
+                fixed_pdf_date: None,
+                first_file_id_preserved: true,
+                deterministic_resource_names: true,
+                dedup_resources_requested: false,
+                object_stream_packing: "incremental_plain_objects".to_string(),
+                compression: "deterministic_flate_settings".to_string(),
+                signature_invalidation_warning: false,
+            },
+        )
+    };
     let original_prefix_preserved = bytes.starts_with(&input);
     std::fs::write(&args.output, &bytes)?;
     if args.json {
@@ -3194,6 +3273,8 @@ fn run_save_incremental(args: SaveIncrementalArgs) -> Result<(), Box<dyn Error>>
                 "page": args.page,
                 "output_bytes": bytes.len(),
                 "original_prefix_preserved": original_prefix_preserved,
+                "deterministic": args.deterministic,
+                "writer_report": report,
             }))?
         );
     } else {
@@ -4893,6 +4974,18 @@ fn parse_page_range_cli(spec: &str, total: usize) -> Result<Vec<usize>, Box<dyn 
     pages.sort_unstable();
     pages.dedup();
     Ok(pages)
+}
+
+fn parse_char_range_cli(spec: &str) -> Result<(usize, usize), Box<dyn Error>> {
+    let Some((start, end)) = spec.split_once(':') else {
+        return Err(usage_error("--delete-range must be formatted start:end"));
+    };
+    let start = start.trim().parse::<usize>()?;
+    let end = end.trim().parse::<usize>()?;
+    if start > end {
+        return Err(usage_error("--delete-range start must be <= end"));
+    }
+    Ok((start, end))
 }
 
 fn parse_region_cli(spec: &str) -> Result<oxide_engine::PageRegion, Box<dyn Error>> {

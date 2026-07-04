@@ -1,6 +1,6 @@
 # PDF Text Editing In Prompt 08
 
-Prompt 08 adds a verified high-level text replacement path:
+Prompt 08 added a verified high-level text replacement path:
 
 ```text
 semantic search quads -> full-rewrite redaction of matched source content
@@ -23,10 +23,22 @@ Supported:
 - output reopens in Oxide and can be extracted/searched.
 - CLI: `oxide edit-text --query OLD --replacement NEW --out edited.pdf`.
 
+Prompt 08B closure:
+
+- `edit_paragraph_reflow_pdf` edits the reconstructed editable paragraph model.
+- replace/insert/delete operations are represented as paragraph operations.
+- rewritten text is line-broken inside the source/configured region.
+- old paragraph content is removed from reachable content before rewritten lines
+  are serialized.
+- `edit-text` defaults to `--mode paragraph-reflow`; the older
+  `overlay-fallback` mode is explicit.
+- outputs are reopened and searched/extracted to prove old text is absent and
+  new text is present.
+
 Unsupported or bounded:
 
 - same-width in-place stream patching is not claimed yet.
-- complex paragraph reflow is limited to replacement overlay in Prompt 08.
+- arbitrary Word-like page reflow is not claimed.
 - replacement text uses the existing authoring font path rather than trying to
   reconstruct an original embedded font program.
 - if replacement contains the query, absence verification is not meaningful and

@@ -25,6 +25,8 @@ Curve fitting:
 - ink annotations keep original points through the Prompt 07 annotation model.
 - CPU-safe polyline-to-Bezier fitting is documented as a bounded follow-up
   rather than a Prompt 08 blocker.
+- Prompt 08B keeps this as a roadmap item; paragraph reflow and DOCX geometry
+  closure did not require deep vectorization.
 
 Raster-to-vector:
 
@@ -36,5 +38,5 @@ Font reconstruction:
 
 - generating replacement fonts for rasterized or subset glyph-only text is not
   implemented.
-- text editing uses safe removal plus replacement drawing through the authoring
-  font path.
+- text editing uses safe removal plus rewritten paragraph drawing through the
+  authoring font path.

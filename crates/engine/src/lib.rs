@@ -178,17 +178,20 @@ pub use docmodel::{
 };
 pub use document::{PdfDocument, PdfPage};
 pub use editable::{
-    build_editable_document, build_editable_document_with_parse_options, EditOperation, EditSafety,
-    EditTransaction, EditTransactionLog, EditableBlock, EditableBuildOptions, EditableDiagnostic,
-    EditableDiagnosticSeverity, EditableDocument, EditableImage, EditableListInfo, EditablePage,
-    EditableParagraph, EditableProvenance, EditableRole, EditableRun, EditableSection,
-    EditableTable, EditableTableCell, EditableTextStyle, EDITABLE_SCHEMA_VERSION,
+    build_editable_document, build_editable_document_with_parse_options, EditCheckpoint,
+    EditOperation, EditPatch, EditSafety, EditTransaction, EditTransactionLog, EditableBlock,
+    EditableBuildOptions, EditableDiagnostic, EditableDiagnosticSeverity, EditableDocument,
+    EditableImage, EditableListInfo, EditablePage, EditableParagraph, EditableProvenance,
+    EditableRole, EditableRun, EditableSection, EditableTable, EditableTableCell,
+    EditableTextStyle, EDITABLE_SCHEMA_VERSION,
 };
 pub use editing::{
-    replace_text_pdf, AnnotationOptions, AttachmentRedactionPolicy, EditMode, EditRectStyle,
-    EditTextStyle, HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions,
-    OverlayLayer, PdfEditor, RedactionOptions, TextReplacementOptions, TextReplacementReport,
-    WatermarkOptions,
+    edit_paragraph_reflow_pdf, replace_text_pdf, AnnotationOptions, AttachmentRedactionPolicy,
+    DeterministicSaveOptions, DeterministicSaveReport, EditMode, EditRectStyle, EditTextStyle,
+    HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions, OverlayLayer,
+    ParagraphEditOperation, ParagraphEditSerializationMode, ParagraphReflowOptions,
+    ParagraphReflowReport, PdfEditor, RedactionOptions, TextReplacementOptions,
+    TextReplacementReport, WatermarkOptions,
 };
 pub use engine::{
     max_decode_pixels, max_render_pixels, ContentEngine, ExtractionProfile, PageRegion,
@@ -238,8 +241,8 @@ pub use ocr::preprocess::{
 };
 pub use ocr::{OcrEngine, OcrImage, OcrOptions, OcrPage, OcrPolicy, OcrWord};
 pub use office::{
-    docx_to_pdf, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf, xlsx_to_pdf, DocxOptions,
-    OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
+    docx_to_pdf, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf, xlsx_to_pdf, DocxLayout,
+    DocxOptions, OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
 };
 pub use parse::{
     parse, Block, BlockKind, Document, DocumentMetadata, ImageHandling, ImageRef, InlineSpan,
@@ -293,7 +296,8 @@ pub use utilities::{
     RgbColor, ScalePagesOptions, StampPosition, TextWatermarkOptions,
 };
 pub use versioning::{
-    content_defined_chunks, hamming_distance, resource_digest, simhash_text, ContentChunk,
+    content_defined_chunks, hamming_distance, resource_dedup_report, resource_digest, simhash_text,
+    ContentChunk, ResourceDedupGroup, ResourceDedupReport,
 };
 pub use writer::{
     build_merged, build_subset, rewrite_document, rewrite_document_objects,
@@ -355,10 +359,12 @@ pub mod prelude {
         EDITABLE_SCHEMA_VERSION,
     };
     pub use crate::editing::{
-        replace_text_pdf, AnnotationOptions, AttachmentRedactionPolicy, EditMode, EditRectStyle,
-        EditTextStyle, HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions,
-        OverlayLayer, PdfEditor, RedactionOptions, TextReplacementOptions, TextReplacementReport,
-        WatermarkOptions,
+        edit_paragraph_reflow_pdf, replace_text_pdf, AnnotationOptions, AttachmentRedactionPolicy,
+        DeterministicSaveOptions, DeterministicSaveReport, EditMode, EditRectStyle, EditTextStyle,
+        HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions, OverlayLayer,
+        ParagraphEditOperation, ParagraphEditSerializationMode, ParagraphReflowOptions,
+        ParagraphReflowReport, PdfEditor, RedactionOptions, TextReplacementOptions,
+        TextReplacementReport, WatermarkOptions,
     };
     pub use crate::engine::ContentEngine;
     pub use crate::error::{ErrorKind, OxideError, Result};
@@ -368,8 +374,8 @@ pub mod prelude {
     };
     pub use crate::ocr::{OcrEngine, OcrOptions};
     pub use crate::office::{
-        docx_to_pdf, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf, xlsx_to_pdf, DocxOptions,
-        OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
+        docx_to_pdf, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf, xlsx_to_pdf, DocxLayout,
+        DocxOptions, OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
     };
     pub use crate::parse::{
         parse, Block, BlockKind, Document, DocumentMetadata, Page, ParseOptions, SerializeOptions,

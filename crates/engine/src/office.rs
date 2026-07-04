@@ -32,6 +32,7 @@ const WORD_NS: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/m
 const WP_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
 const PIC_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/picture";
 const DOCX_REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+const WPS_NS: &str = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
 
 /// How detected table content is arranged in a generated XLSX workbook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,12 +99,42 @@ impl Default for PptxOptions {
 pub struct DocxOptions {
     /// Include decodable PDF image XObjects as inline DOCX pictures.
     pub include_images: bool,
+    pub layout: DocxLayout,
 }
 
 impl Default for DocxOptions {
     fn default() -> Self {
         Self {
             include_images: true,
+            layout: DocxLayout::Flowing,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocxLayout {
+    Flowing,
+    PageFaithful,
+    Hybrid,
+}
+
+impl DocxLayout {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "flowing" | "flow" => Some(Self::Flowing),
+            "page-faithful" | "page_faithful" | "faithful" | "positioned" => {
+                Some(Self::PageFaithful)
+            }
+            "hybrid" => Some(Self::Hybrid),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Flowing => "flowing",
+            Self::PageFaithful => "page-faithful",
+            Self::Hybrid => "hybrid",
         }
     }
 }
@@ -433,6 +464,8 @@ struct DocxImagePart {
     bytes: Vec<u8>,
     width_emu: i64,
     height_emu: i64,
+    x_emu: i64,
+    y_emu: i64,
 }
 
 fn write_docx(
@@ -461,7 +494,7 @@ fn write_docx(
         &mut zip,
         opts,
         "word/document.xml",
-        &docx_document_xml(document, &images),
+        &docx_document_xml(document, &images, options.layout),
     )?;
     zip_file(
         &mut zip,
@@ -504,6 +537,8 @@ fn collect_docx_images(engine: &ContentEngine, document: &Document) -> Result<Ve
             let index = out.len() + 1;
             let width_points = (image.bbox[2] - image.bbox[0]).abs().clamp(72.0, 432.0);
             let height_points = (image.bbox[3] - image.bbox[1]).abs().clamp(72.0, 432.0);
+            let x_points = image.bbox[0].max(0.0);
+            let y_points = (page.height - image.bbox[3]).max(0.0);
             out.push(DocxImagePart {
                 page: page.number,
                 rel_id: format!("rIdImage{index}"),
@@ -511,6 +546,8 @@ fn collect_docx_images(engine: &ContentEngine, document: &Document) -> Result<Ve
                 bytes,
                 width_emu: points_to_emu(width_points),
                 height_emu: points_to_emu(height_points),
+                x_emu: points_to_emu(x_points),
+                y_emu: points_to_emu(y_points),
             });
         }
     }
@@ -561,7 +598,7 @@ fn docx_document_rels(images: &[DocxImagePart]) -> String {
     out
 }
 
-fn docx_document_xml(document: &Document, images: &[DocxImagePart]) -> String {
+fn docx_document_xml(document: &Document, images: &[DocxImagePart], layout: DocxLayout) -> String {
     let mut body = String::new();
     if document.pages.is_empty() && document.body.is_empty() {
         body.push_str(&docx_paragraph_xml(
@@ -572,14 +609,46 @@ fn docx_document_xml(document: &Document, images: &[DocxImagePart]) -> String {
             ParagraphRole::Normal,
         ));
     }
+    let mut anchor_id = 1usize;
     for page in &document.pages {
         let mut blocks = page_blocks(document, page.number);
         blocks.sort_by_key(|block| block.reading_order);
         for block in blocks {
-            body.push_str(&docx_block_xml(block));
+            match layout {
+                DocxLayout::Flowing => body.push_str(&docx_block_xml(block)),
+                DocxLayout::PageFaithful => {
+                    if matches!(block.kind, BlockKind::Table { .. }) {
+                        body.push_str(&docx_block_xml(block));
+                    } else {
+                        body.push_str(&docx_positioned_block_xml(block, page, anchor_id));
+                        anchor_id += 1;
+                    }
+                }
+                DocxLayout::Hybrid => {
+                    if matches!(
+                        block.kind,
+                        BlockKind::Title { .. }
+                            | BlockKind::Heading { .. }
+                            | BlockKind::Table { .. }
+                            | BlockKind::List { .. }
+                    ) && block.confidence >= 0.75
+                    {
+                        body.push_str(&docx_block_xml(block));
+                    } else {
+                        body.push_str(&docx_positioned_block_xml(block, page, anchor_id));
+                        anchor_id += 1;
+                    }
+                }
+            }
         }
         for image in images.iter().filter(|image| image.page == page.number) {
-            body.push_str(&docx_image_paragraph_xml(image));
+            match layout {
+                DocxLayout::Flowing => body.push_str(&docx_image_paragraph_xml(image)),
+                DocxLayout::PageFaithful | DocxLayout::Hybrid => {
+                    body.push_str(&docx_image_anchor_xml(image, anchor_id));
+                    anchor_id += 1;
+                }
+            }
         }
     }
     if body.is_empty() {
@@ -589,7 +658,7 @@ fn docx_document_xml(document: &Document, images: &[DocxImagePart]) -> String {
     }
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="{WORD_NS}" xmlns:r="{DOCX_REL_NS}" xmlns:wp="{WP_NS}" xmlns:pic="{PIC_NS}" xmlns:a="{DRAWING_NS}"><w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>"#
+<w:document xmlns:w="{WORD_NS}" xmlns:r="{DOCX_REL_NS}" xmlns:wp="{WP_NS}" xmlns:pic="{PIC_NS}" xmlns:a="{DRAWING_NS}" xmlns:wps="{WPS_NS}"><w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>"#
     )
 }
 
@@ -680,6 +749,56 @@ fn docx_run_xml(span: &InlineSpan) -> String {
     format!(
         r#"<w:r>{props}<w:t{preserve}>{}</w:t></w:r>"#,
         xml_escape(&span.text)
+    )
+}
+
+fn docx_positioned_block_xml(block: &Block, page: &crate::parse::Page, anchor_id: usize) -> String {
+    let Some(text) = block_text(block) else {
+        return String::new();
+    };
+    if text.trim().is_empty() {
+        return String::new();
+    }
+    let x = block.bbox[0].max(0.0);
+    let y = (page.height - block.bbox[3]).max(0.0);
+    let w = (block.bbox[2] - block.bbox[0])
+        .abs()
+        .clamp(36.0, page.width.max(36.0));
+    let h = (block.bbox[3] - block.bbox[1])
+        .abs()
+        .clamp(14.0, page.height.max(14.0));
+    let role = match &block.kind {
+        BlockKind::Title { .. } => ParagraphRole::Title,
+        BlockKind::Heading { level, .. } => ParagraphRole::Heading((*level).clamp(1, 3)),
+        _ => ParagraphRole::Normal,
+    };
+    let paragraph = docx_paragraph_xml(
+        &[InlineSpan {
+            text,
+            ..Default::default()
+        }],
+        role,
+    );
+    docx_textbox_anchor_xml(
+        anchor_id,
+        points_to_emu(x),
+        points_to_emu(y),
+        points_to_emu(w),
+        points_to_emu(h),
+        &paragraph,
+    )
+}
+
+fn docx_textbox_anchor_xml(
+    anchor_id: usize,
+    x_emu: i64,
+    y_emu: i64,
+    width_emu: i64,
+    height_emu: i64,
+    content_xml: &str,
+) -> String {
+    format!(
+        r#"<w:p><w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="0" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>{x_emu}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>{y_emu}</wp:posOffset></wp:positionV><wp:extent cx="{width_emu}" cy="{height_emu}"/><wp:wrapNone/><wp:docPr id="{anchor_id}" name="OxideBlock{anchor_id}"/><a:graphic><a:graphicData uri="{WPS_NS}"><wps:wsp><wps:txbx><w:txbxContent>{content_xml}</w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#
     )
 }
 
@@ -802,6 +921,23 @@ fn docx_image_paragraph_xml(image: &DocxImagePart) -> String {
         image.width_emu,
         image.height_emu,
         xml_escape(&image.name),
+        xml_escape(&image.name),
+        xml_escape(&image.rel_id),
+        image.width_emu,
+        image.height_emu
+    )
+}
+
+fn docx_image_anchor_xml(image: &DocxImagePart, anchor_id: usize) -> String {
+    format!(
+        r#"<w:p><w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="0" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>{}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>{}</wp:posOffset></wp:positionV><wp:extent cx="{}" cy="{}"/><wp:wrapNone/><wp:docPr id="{}" name="{}"/><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic><pic:nvPicPr><pic:cNvPr id="{}" name="{}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="{}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill><pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{}" cy="{}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#,
+        image.x_emu,
+        image.y_emu,
+        image.width_emu,
+        image.height_emu,
+        anchor_id,
+        xml_escape(&image.name),
+        anchor_id,
         xml_escape(&image.name),
         xml_escape(&image.rel_id),
         image.width_emu,

@@ -620,7 +620,13 @@ fn pdf_to_docx(
 ) -> PyResult<Vec<u8>> {
     let engine = open_engine_path(&pdf, password)?;
     let bytes = run_oxide(|| {
-        oxide_engine::pdf_to_docx(&engine, &oxide_engine::DocxOptions { include_images })
+        oxide_engine::pdf_to_docx(
+            &engine,
+            &oxide_engine::DocxOptions {
+                include_images,
+                layout: oxide_engine::DocxLayout::Flowing,
+            },
+        )
     })?;
     write_optional(&output, &bytes)?;
     Ok(bytes)

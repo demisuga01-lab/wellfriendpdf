@@ -105,10 +105,11 @@ boxes, tables become native PPTX table shapes, and decodable image XObjects
 become picture shapes unless `--no-images` is passed. It preserves editable
 structure, not pixel-perfect PDF appearance.
 
-`pdf-to-docx` reconstructs a flowing document from the same hierarchy. It writes
-native headings, paragraphs, lists, tables, and inline images. It is intended to
-produce a useful editable Word document, not a pixel-perfect reproduction of the
-fixed PDF canvas.
+`pdf-to-docx` reconstructs a document from the same hierarchy. The default
+`--layout flowing` writes native headings, paragraphs, lists, tables, and inline
+images. `--layout page-faithful` uses positioned OOXML text boxes and anchored
+images to preserve page geometry where a flowing document would lose too much
+layout. It still does not claim pixel-perfect Word pagination.
 
 `docx-to-pdf`, `xlsx-to-pdf`, and `pptx-to-pdf` are native by default and reuse
 Oxide's authoring/writer machinery. They do not require LibreOffice. Their

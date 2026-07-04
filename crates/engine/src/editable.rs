@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::engine::ContentEngine;
 use crate::error::Result;
 use crate::parse::{Block, BlockKind, Document, InlineSpan, ParseOptions};
+use crate::versioning::resource_digest;
 
 pub const EDITABLE_SCHEMA_VERSION: &str = "0.1";
 
@@ -193,10 +194,28 @@ pub enum EditableDiagnosticSeverity {
     Error,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditTransactionLog {
     pub entries: Vec<EditTransaction>,
     pub cursor: usize,
+    #[serde(default)]
+    pub patches: Vec<EditPatch>,
+    #[serde(default)]
+    pub checkpoints: Vec<EditCheckpoint>,
+    #[serde(default = "default_transaction_checkpoint_cap")]
+    pub max_checkpoints: usize,
+}
+
+impl Default for EditTransactionLog {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+            cursor: 0,
+            patches: Vec::new(),
+            checkpoints: Vec::new(),
+            max_checkpoints: default_transaction_checkpoint_cap(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -205,6 +224,32 @@ pub struct EditTransaction {
     pub operation: EditOperation,
     pub before_text: Option<String>,
     pub after_text: Option<String>,
+    #[serde(default)]
+    pub sequence: usize,
+    #[serde(default)]
+    pub paragraph_id: Option<String>,
+    #[serde(default)]
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditPatch {
+    pub sequence: usize,
+    pub operation: EditOperation,
+    pub target_block_id: String,
+    pub target_paragraph_id: Option<String>,
+    pub before_text: String,
+    pub after_text: String,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EditCheckpoint {
+    pub sequence: usize,
+    pub document_digest: String,
+    pub transaction_count: usize,
+    pub block_count: usize,
+    pub text_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,6 +259,10 @@ pub enum EditOperation {
     InsertText { block_id: String, offset: usize },
     DeleteText { block_id: String },
     ReplaceImage { image_id: String },
+}
+
+fn default_transaction_checkpoint_cap() -> usize {
+    8
 }
 
 pub fn build_editable_document(
@@ -397,17 +446,105 @@ impl EditableDocument {
             list: None,
             confidence: block.confidence,
         }];
-        let tx_id = format!("tx-{}", self.transactions.entries.len() + 1);
-        self.transactions.entries.truncate(self.transactions.cursor);
-        self.transactions.entries.push(EditTransaction {
-            id: tx_id,
-            operation: EditOperation::ReplaceText {
+        self.record_text_transaction(
+            EditOperation::ReplaceText {
                 block_id: block_id.to_string(),
             },
-            before_text: Some(before),
-            after_text: Some(replacement.to_string()),
-        });
-        self.transactions.cursor = self.transactions.entries.len();
+            block_id,
+            None,
+            before,
+            replacement.to_string(),
+            Vec::new(),
+        );
+        true
+    }
+
+    pub fn replace_paragraph_text(
+        &mut self,
+        block_id: &str,
+        paragraph_id: &str,
+        replacement: &str,
+    ) -> bool {
+        self.splice_paragraph_text(
+            block_id,
+            paragraph_id,
+            0,
+            usize::MAX,
+            replacement,
+            EditOperation::ReplaceText {
+                block_id: block_id.to_string(),
+            },
+        )
+    }
+
+    pub fn insert_paragraph_text(
+        &mut self,
+        block_id: &str,
+        paragraph_id: &str,
+        offset_chars: usize,
+        insertion: &str,
+    ) -> bool {
+        self.splice_paragraph_text(
+            block_id,
+            paragraph_id,
+            offset_chars,
+            offset_chars,
+            insertion,
+            EditOperation::InsertText {
+                block_id: block_id.to_string(),
+                offset: offset_chars,
+            },
+        )
+    }
+
+    pub fn delete_paragraph_range(
+        &mut self,
+        block_id: &str,
+        paragraph_id: &str,
+        start_chars: usize,
+        end_chars: usize,
+    ) -> bool {
+        self.splice_paragraph_text(
+            block_id,
+            paragraph_id,
+            start_chars,
+            end_chars,
+            "",
+            EditOperation::DeleteText {
+                block_id: block_id.to_string(),
+            },
+        )
+    }
+
+    fn splice_paragraph_text(
+        &mut self,
+        block_id: &str,
+        paragraph_id: &str,
+        start_chars: usize,
+        end_chars: usize,
+        replacement: &str,
+        operation: EditOperation,
+    ) -> bool {
+        let Some((block_idx, para_idx)) = self.find_paragraph_index(block_id, paragraph_id) else {
+            return false;
+        };
+        let before = self.blocks[block_idx].paragraphs[para_idx].text.clone();
+        let end_chars = end_chars.min(before.chars().count());
+        let Some(after) = splice_chars(&before, start_chars.min(end_chars), end_chars, replacement)
+        else {
+            return false;
+        };
+        let paragraph = &mut self.blocks[block_idx].paragraphs[para_idx];
+        paragraph.text = after.clone();
+        paragraph.runs = rebuild_runs_for_text(&paragraph.runs, &after);
+        self.record_text_transaction(
+            operation,
+            block_id,
+            Some(paragraph_id.to_string()),
+            before,
+            after,
+            Vec::new(),
+        );
         true
     }
 
@@ -430,8 +567,11 @@ impl EditableDocument {
     }
 
     fn apply_transaction_text(&mut self, tx: &EditTransaction, undo: bool) -> bool {
-        let EditOperation::ReplaceText { block_id } = &tx.operation else {
-            return false;
+        let block_id = match &tx.operation {
+            EditOperation::ReplaceText { block_id }
+            | EditOperation::InsertText { block_id, .. }
+            | EditOperation::DeleteText { block_id } => block_id,
+            EditOperation::ReplaceImage { .. } => return false,
         };
         let text = if undo {
             tx.before_text.as_deref()
@@ -441,24 +581,180 @@ impl EditableDocument {
         let Some(text) = text else {
             return false;
         };
-        let Some(block) = self.blocks.iter_mut().find(|block| &block.id == block_id) else {
+        if let Some(paragraph_id) = tx.paragraph_id.as_deref() {
+            self.set_paragraph_text(block_id, paragraph_id, text)
+        } else if let Some(block) = self.blocks.iter_mut().find(|block| &block.id == block_id) {
+            block.paragraphs = vec![EditableParagraph {
+                id: format!("{block_id}-p0"),
+                role: block.role,
+                text: text.to_string(),
+                runs: vec![EditableRun {
+                    id: format!("{block_id}-r0"),
+                    text: text.to_string(),
+                    style: EditableTextStyle::default(),
+                    source_span_index: 0,
+                }],
+                list: None,
+                confidence: block.confidence,
+            }];
+            true
+        } else {
+            false
+        }
+    }
+
+    fn find_paragraph_index(&self, block_id: &str, paragraph_id: &str) -> Option<(usize, usize)> {
+        let block_idx = self.blocks.iter().position(|block| block.id == block_id)?;
+        let para_idx = self.blocks[block_idx]
+            .paragraphs
+            .iter()
+            .position(|paragraph| paragraph.id == paragraph_id)?;
+        Some((block_idx, para_idx))
+    }
+
+    fn set_paragraph_text(&mut self, block_id: &str, paragraph_id: &str, text: &str) -> bool {
+        let Some((block_idx, para_idx)) = self.find_paragraph_index(block_id, paragraph_id) else {
             return false;
         };
-        block.paragraphs = vec![EditableParagraph {
-            id: format!("{block_id}-p0"),
-            role: block.role,
-            text: text.to_string(),
-            runs: vec![EditableRun {
-                id: format!("{block_id}-r0"),
-                text: text.to_string(),
-                style: EditableTextStyle::default(),
-                source_span_index: 0,
-            }],
-            list: None,
-            confidence: block.confidence,
-        }];
+        let paragraph = &mut self.blocks[block_idx].paragraphs[para_idx];
+        paragraph.text = text.to_string();
+        paragraph.runs = rebuild_runs_for_text(&paragraph.runs, text);
         true
     }
+
+    fn record_text_transaction(
+        &mut self,
+        operation: EditOperation,
+        block_id: &str,
+        paragraph_id: Option<String>,
+        before_text: String,
+        after_text: String,
+        diagnostics: Vec<String>,
+    ) {
+        self.transactions.entries.truncate(self.transactions.cursor);
+        self.transactions.patches.truncate(self.transactions.cursor);
+        let sequence = self.transactions.entries.len() + 1;
+        let tx_id = format!("tx-{sequence}");
+        self.transactions.entries.push(EditTransaction {
+            id: tx_id,
+            operation: operation.clone(),
+            before_text: Some(before_text.clone()),
+            after_text: Some(after_text.clone()),
+            sequence,
+            paragraph_id: paragraph_id.clone(),
+            diagnostics: diagnostics.clone(),
+        });
+        self.transactions.patches.push(EditPatch {
+            sequence,
+            operation,
+            target_block_id: block_id.to_string(),
+            target_paragraph_id: paragraph_id,
+            before_text,
+            after_text,
+            diagnostics,
+        });
+        self.transactions.cursor = self.transactions.entries.len();
+        self.capture_edit_checkpoint(sequence);
+    }
+
+    fn capture_edit_checkpoint(&mut self, sequence: usize) {
+        let digest_input = self
+            .blocks
+            .iter()
+            .map(block_text)
+            .collect::<Vec<_>>()
+            .join("\n\x1f\n");
+        let text_bytes = digest_input.len();
+        self.transactions.checkpoints.push(EditCheckpoint {
+            sequence,
+            document_digest: resource_digest(digest_input.as_bytes()),
+            transaction_count: self.transactions.entries.len(),
+            block_count: self.blocks.len(),
+            text_bytes,
+        });
+        let cap = self.transactions.max_checkpoints.max(1);
+        if self.transactions.checkpoints.len() > cap {
+            let drain = self.transactions.checkpoints.len() - cap;
+            self.transactions.checkpoints.drain(0..drain);
+        }
+    }
+}
+
+fn splice_chars(
+    input: &str,
+    start_chars: usize,
+    end_chars: usize,
+    replacement: &str,
+) -> Option<String> {
+    if start_chars > end_chars {
+        return None;
+    }
+    let start = char_to_byte_index(input, start_chars)?;
+    let end = char_to_byte_index(input, end_chars)?;
+    let mut out = String::with_capacity(input.len() + replacement.len());
+    out.push_str(&input[..start]);
+    out.push_str(replacement);
+    out.push_str(&input[end..]);
+    Some(out)
+}
+
+fn char_to_byte_index(input: &str, char_index: usize) -> Option<usize> {
+    if char_index == input.chars().count() {
+        return Some(input.len());
+    }
+    input.char_indices().nth(char_index).map(|(idx, _)| idx)
+}
+
+fn rebuild_runs_for_text(existing: &[EditableRun], text: &str) -> Vec<EditableRun> {
+    if existing.is_empty() {
+        return vec![EditableRun {
+            id: "run-0".to_string(),
+            text: text.to_string(),
+            style: EditableTextStyle::default(),
+            source_span_index: 0,
+        }];
+    }
+    if existing.len() == 1 {
+        let mut run = existing[0].clone();
+        run.text = text.to_string();
+        return vec![run];
+    }
+    let chars = text.chars().collect::<Vec<_>>();
+    let total_chars = chars.len();
+    if total_chars == 0 {
+        let mut run = existing[0].clone();
+        run.text.clear();
+        return vec![run];
+    }
+    let old_total = existing
+        .iter()
+        .map(|run| run.text.chars().count())
+        .sum::<usize>()
+        .max(1);
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    for (idx, run) in existing.iter().enumerate() {
+        let remaining_runs = existing.len() - idx;
+        let remaining_chars = total_chars.saturating_sub(cursor);
+        let take = if idx + 1 == existing.len() {
+            remaining_chars
+        } else {
+            let proportional = ((run.text.chars().count() * total_chars) / old_total).max(1);
+            proportional.min(remaining_chars.saturating_sub(remaining_runs - 1))
+        };
+        let mut rebuilt = run.clone();
+        rebuilt.text = chars[cursor..cursor + take].iter().collect();
+        cursor += take;
+        if !rebuilt.text.is_empty() {
+            out.push(rebuilt);
+        }
+    }
+    if out.is_empty() {
+        let mut run = existing[0].clone();
+        run.text = text.to_string();
+        out.push(run);
+    }
+    out
 }
 
 fn block_to_editable(block: &Block) -> EditableBlock {

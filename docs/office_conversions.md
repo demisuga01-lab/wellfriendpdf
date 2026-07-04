@@ -74,6 +74,7 @@ Entry points:
 
 - Rust: `oxide_engine::pdf_to_docx(&engine, &DocxOptions { ... })`
 - CLI: `oxide pdf-to-docx input.pdf --out output.docx`
+- CLI page-faithful mode: `oxide pdf-to-docx input.pdf --layout page-faithful --out output.docx`
 - Python: `oxide.pdf_to_docx("input.pdf", output="output.docx")`
 - C ABI: `oxide_document_to_docx(document, 1, &out, &error)`
 
@@ -81,6 +82,9 @@ Default policy:
 
 - The canonical document hierarchy supplies reading order, paragraphs, headings,
   lists, tables, and figures.
+- `DocxLayout::Flowing` is the default editable Word mode.
+- `DocxLayout::PageFaithful` emits positioned `wp:anchor`/`wps:txbx` blocks for
+  geometry-sensitive output while keeping confident tables native.
 - Titles/headings become native DOCX paragraph styles.
 - Lists become native DOCX numbering definitions.
 - Tables become native DOCX tables with `gridSpan` / `vMerge` where the table

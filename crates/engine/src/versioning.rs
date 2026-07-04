@@ -7,12 +7,29 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContentChunk {
     pub offset: usize,
     pub length: usize,
     pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceDedupGroup {
+    pub digest: String,
+    pub canonical_index: usize,
+    pub duplicate_indices: Vec<usize>,
+    pub byte_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceDedupReport {
+    pub input_count: usize,
+    pub unique_count: usize,
+    pub duplicate_count: usize,
+    pub groups: Vec<ResourceDedupGroup>,
 }
 
 /// Split bytes into deterministic content-defined chunks using a bounded rolling
@@ -86,6 +103,41 @@ pub fn resource_digest(data: &[u8]) -> String {
     hex_digest(data)
 }
 
+/// Group byte-identical resources by SHA-256 digest in deterministic input
+/// order. The writer can use this report to avoid emitting duplicate resources
+/// when object semantics allow it; the helper itself does not rewrite objects.
+pub fn resource_dedup_report(resources: &[Vec<u8>]) -> ResourceDedupReport {
+    let mut seen: BTreeMap<String, (usize, usize, Vec<usize>)> = BTreeMap::new();
+    for (idx, resource) in resources.iter().enumerate() {
+        let digest = resource_digest(resource);
+        seen.entry(digest)
+            .and_modify(|(_, _, duplicates)| duplicates.push(idx))
+            .or_insert((idx, resource.len(), Vec::new()));
+    }
+    let mut groups = seen
+        .into_iter()
+        .map(
+            |(digest, (canonical_index, byte_len, duplicate_indices))| ResourceDedupGroup {
+                digest,
+                canonical_index,
+                duplicate_indices,
+                byte_len,
+            },
+        )
+        .collect::<Vec<_>>();
+    groups.sort_by_key(|group| group.canonical_index);
+    let duplicate_count = groups
+        .iter()
+        .map(|group| group.duplicate_indices.len())
+        .sum();
+    ResourceDedupReport {
+        input_count: resources.len(),
+        unique_count: groups.len(),
+        duplicate_count,
+        groups,
+    }
+}
+
 fn chunk_digest(data: &[u8], offset: usize, length: usize) -> ContentChunk {
     ContentChunk {
         offset,
@@ -129,5 +181,17 @@ mod tests {
         let digest = resource_digest(b"resource");
         assert_eq!(digest.len(), 64);
         assert_eq!(digest, resource_digest(b"resource"));
+    }
+
+    #[test]
+    fn resource_dedup_report_groups_identical_resources() {
+        let resources = vec![b"image-a".to_vec(), b"font".to_vec(), b"image-a".to_vec()];
+        let report = resource_dedup_report(&resources);
+        assert_eq!(report.input_count, 3);
+        assert_eq!(report.unique_count, 2);
+        assert_eq!(report.duplicate_count, 1);
+        let first = &report.groups[0];
+        assert_eq!(first.canonical_index, 0);
+        assert_eq!(first.duplicate_indices, vec![2]);
     }
 }

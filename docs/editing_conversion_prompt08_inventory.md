@@ -22,7 +22,7 @@ operations, or redaction except through narrow integration points.
 | real table grid model | Prompt 07 table cells/spans | editable table cells export to Markdown/HTML/Office | Office package test | low | complex table style recreation later |
 | absolute-position mode | existing PPTX positioned shapes | route through editable parse model | package readback | medium | richer shape grouping later |
 | flowing DOCX mode | existing native DOCX writer | consumes editable-model derived parse document | package readback | medium | full Word layout parity later |
-| page-faithful DOCX mode | not implemented | documented limit | docs | high | optional later |
+| page-faithful DOCX mode | Prompt 08B implements `DocxLayout::PageFaithful` | positioned OOXML anchors/text boxes | `prompt08b_editing_conversion` | medium | exact Word pagination later |
 | PPTX slide mapping | existing native PPTX writer | consumes editable-model derived parse document | package readback | medium | vector shape fidelity later |
 | XLSX table/sheet mapping | existing native XLSX writer | consumes editable-model derived parse document | package readback | low | numeric/date inference later |
 | HTML export | existing pdftohtml-style exporter | semantic `pdf-to-html` via editable model | CLI smoke planned | low | CSS/layout modes later |
@@ -32,7 +32,7 @@ operations, or redaction except through narrow integration points.
 | PDF rewrite/save | writer and editor exist | use full rewrite for text replacement | edit/reopen test | medium | direct stream patch for same-width edits later |
 | incremental save | editor supports append-only overlays | expose CLI and test prefix preservation | integration test | medium | signature-aware preservation in Prompt 09 |
 | deterministic output | writer deterministic modes exist | resource digests and repeat-edit hash proof | integration test | medium | object-stream packing optimization later |
-| undo/redo model | not present | in-memory transaction log for model text edits | unit test | low | persistent snapshots later |
+| undo/redo model | Prompt 08B patch/checkpoint transaction log | model text edit undo/redo | unit test | low | external transaction replay later |
 | rope/segmented editing | not present | segmented run replacement | unit test | medium | full rope later |
 | curve fitting for ink | annotation points preserved | documented roadmap | docs | medium | higher quality curve fitting later |
 | raster-to-vector roadmap | not implemented | documented research boundary | docs | high | optional later |

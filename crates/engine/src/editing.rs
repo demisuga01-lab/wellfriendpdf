@@ -12,6 +12,7 @@ use crate::content::{
     Operand, IDENTITY_MATRIX,
 };
 use crate::document::{PdfDocument, PdfPage};
+use crate::editable::{EditableBuildOptions, EditableDocument};
 use crate::engine::{ContentEngine, PageResources};
 use crate::error::{OxideError, Result};
 use crate::filters::{decode_stream_lossless, flate_encode};
@@ -23,6 +24,7 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::text::collector::extract_char_codes;
 use crate::text::{TextQuad, TextSearchOptions};
+use crate::versioning::resource_digest;
 use crate::writer::{
     write_incremental_update, IncrementalObject, OutputObject, PdfWriter, WriterMode,
 };
@@ -225,6 +227,122 @@ pub struct TextReplacementReport {
     pub warnings: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ParagraphEditSerializationMode {
+    SafePatch,
+    ParagraphReflow,
+    OverlayFallback,
+    Unsupported,
+}
+
+impl ParagraphEditSerializationMode {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "safe-patch" | "safe_patch" => Some(Self::SafePatch),
+            "paragraph-reflow" | "paragraph_reflow" | "reflow" => Some(Self::ParagraphReflow),
+            "overlay-fallback" | "overlay_fallback" | "overlay" => Some(Self::OverlayFallback),
+            "unsupported" => Some(Self::Unsupported),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SafePatch => "safe_patch",
+            Self::ParagraphReflow => "paragraph_reflow",
+            Self::OverlayFallback => "overlay_fallback",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParagraphReflowOptions {
+    pub pages: Vec<usize>,
+    pub case_sensitive: bool,
+    pub max_edits: usize,
+    pub replacement_style: EditTextStyle,
+    pub redaction_fill: Color,
+    pub line_spacing: f64,
+    pub max_lines: usize,
+    pub bounding_region: Option<ImageRect>,
+    pub mode: ParagraphEditSerializationMode,
+}
+
+impl Default for ParagraphReflowOptions {
+    fn default() -> Self {
+        Self {
+            pages: Vec::new(),
+            case_sensitive: true,
+            max_edits: 1,
+            replacement_style: EditTextStyle::default(),
+            redaction_fill: Color::device_gray(1.0),
+            line_spacing: 1.2,
+            max_lines: 16,
+            bounding_region: None,
+            mode: ParagraphEditSerializationMode::ParagraphReflow,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ParagraphEditOperation {
+    Replace { replacement: String },
+    Insert { offset: usize, text: String },
+    Delete { start: usize, end: usize },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ParagraphReflowReport {
+    pub query: String,
+    pub operation: ParagraphEditOperation,
+    pub edits: usize,
+    pub pages: Vec<usize>,
+    pub edit_mode: String,
+    pub block_id: Option<String>,
+    pub paragraph_id: Option<String>,
+    pub lines_written: usize,
+    pub verified_old_absent: bool,
+    pub verified_new_present: bool,
+    pub transaction_digest: String,
+    pub signature_invalidation_warning: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DeterministicSaveOptions {
+    pub fixed_pdf_date: Option<String>,
+    pub preserve_first_file_id: bool,
+    pub deterministic_resource_names: bool,
+    pub dedup_resources: bool,
+}
+
+impl Default for DeterministicSaveOptions {
+    fn default() -> Self {
+        Self {
+            fixed_pdf_date: None,
+            preserve_first_file_id: true,
+            deterministic_resource_names: true,
+            dedup_resources: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeterministicSaveReport {
+    pub mode: String,
+    pub output_bytes: usize,
+    pub fixed_pdf_date: Option<String>,
+    pub first_file_id_preserved: bool,
+    pub deterministic_resource_names: bool,
+    pub dedup_resources_requested: bool,
+    pub object_stream_packing: String,
+    pub compression: String,
+    pub signature_invalidation_warning: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageRedactionPolicy {
     /// Try to rewrite intersecting image pixels; fall back to whole-image removal
@@ -367,6 +485,233 @@ pub fn replace_text_pdf(
             pages,
             edit_mode: "full_rewrite_redact_then_overlay".to_string(),
             verified_old_absent,
+            warnings,
+        },
+    ))
+}
+
+/// Edit text inside a reconstructed paragraph/run, reflow the rewritten
+/// paragraph within a bounded page region, and save a full-rewrite PDF where
+/// the old paragraph text is removed from reachable content before the new
+/// paragraph is serialized. This is the default "true edit" path for Prompt
+/// 08B; the older overlay fallback remains opt-in through [`replace_text_pdf`].
+pub fn edit_paragraph_reflow_pdf(
+    input: Vec<u8>,
+    query: &str,
+    operation: ParagraphEditOperation,
+    options: ParagraphReflowOptions,
+) -> Result<(Vec<u8>, ParagraphReflowReport)> {
+    if query.is_empty() {
+        return Err(OxideError::MalformedPdf(
+            "paragraph edit query must not be empty".to_string(),
+        ));
+    }
+    if options.mode == ParagraphEditSerializationMode::OverlayFallback {
+        let replacement = match &operation {
+            ParagraphEditOperation::Replace { replacement } => replacement.clone(),
+            ParagraphEditOperation::Insert { text, .. } => text.clone(),
+            ParagraphEditOperation::Delete { .. } => String::new(),
+        };
+        let (bytes, old_report) = replace_text_pdf(
+            input,
+            query,
+            &replacement,
+            TextReplacementOptions {
+                pages: options.pages.clone(),
+                case_sensitive: options.case_sensitive,
+                max_replacements: options.max_edits,
+                replacement_style: options.replacement_style,
+                redaction_fill: options.redaction_fill,
+            },
+        )?;
+        return Ok((
+            bytes,
+            ParagraphReflowReport {
+                query: query.to_string(),
+                operation,
+                edits: old_report.replacements,
+                pages: old_report.pages,
+                edit_mode: ParagraphEditSerializationMode::OverlayFallback
+                    .as_str()
+                    .to_string(),
+                block_id: None,
+                paragraph_id: None,
+                lines_written: old_report.replacements,
+                verified_old_absent: old_report.verified_old_absent,
+                verified_new_present: true,
+                transaction_digest: String::new(),
+                signature_invalidation_warning: false,
+                warnings: old_report.warnings,
+            },
+        ));
+    }
+    if matches!(options.mode, ParagraphEditSerializationMode::Unsupported) {
+        return Err(OxideError::UnsupportedFeature(
+            "paragraph edit mode was explicitly set to unsupported".to_string(),
+        ));
+    }
+
+    let engine = ContentEngine::open_bytes(input.clone())?;
+    let pages = if options.pages.is_empty() {
+        (1..=engine.page_count()?).collect::<Vec<_>>()
+    } else {
+        options.pages.clone()
+    };
+    let mut model = engine.build_editable_document(&EditableBuildOptions::default())?;
+    let Some(target) = find_paragraph_edit_target(&model, query, &pages, options.case_sensitive)
+    else {
+        return Ok((
+            input,
+            ParagraphReflowReport {
+                query: query.to_string(),
+                operation,
+                edits: 0,
+                pages,
+                edit_mode: "none".to_string(),
+                block_id: None,
+                paragraph_id: None,
+                lines_written: 0,
+                verified_old_absent: false,
+                verified_new_present: false,
+                transaction_digest: String::new(),
+                signature_invalidation_warning: false,
+                warnings: vec!["no editable paragraph containing the query was found".to_string()],
+            },
+        ));
+    };
+
+    let before_paragraph = model.blocks[target.block_index].paragraphs[target.paragraph_index]
+        .text
+        .clone();
+    let after_paragraph =
+        apply_paragraph_operation(&before_paragraph, query, &operation, options.case_sensitive)?;
+    let block_id = model.blocks[target.block_index].id.clone();
+    let paragraph_id = model.blocks[target.block_index].paragraphs[target.paragraph_index]
+        .id
+        .clone();
+    if !model.replace_paragraph_text(&block_id, &paragraph_id, &after_paragraph) {
+        return Err(OxideError::MalformedPdf(
+            "editable paragraph target disappeared during edit".to_string(),
+        ));
+    }
+    let transaction_digest = resource_digest(
+        serde_json::to_string(&model.transactions)
+            .unwrap_or_default()
+            .as_bytes(),
+    );
+
+    let region = options
+        .bounding_region
+        .or_else(|| {
+            let block = block_rect(&model.blocks[target.block_index].bbox);
+            let query_rect = query_match_rect(&engine, query, &pages, options.case_sensitive)
+                .ok()
+                .flatten();
+            union_optional_rects(block, query_rect)
+        })
+        .ok_or_else(|| {
+            OxideError::UnsupportedFeature(
+                "paragraph reflow edit found text but no usable geometry".to_string(),
+            )
+        })?;
+    let lines = reflow_lines(
+        &after_paragraph,
+        region.width,
+        options.replacement_style.font_size,
+        options.line_spacing,
+        options.max_lines,
+        region.height,
+    )?;
+
+    let mut redactor = PdfEditor::open_bytes(input.clone())?;
+    redactor.redact(
+        target.page,
+        region,
+        RedactionOptions {
+            fill: options.redaction_fill.clone(),
+            scrub_metadata: true,
+            image_policy: ImageRedactionPolicy::Partial,
+            attachment_policy: AttachmentRedactionPolicy::Keep,
+        },
+    )?;
+    let redacted = redactor.save_to_bytes(EditMode::FullRewrite)?;
+
+    let mut editor = PdfEditor::open_bytes(redacted)?;
+    let line_height = options.replacement_style.font_size * options.line_spacing.max(1.0);
+    let mut baseline = region.y + region.height - options.replacement_style.font_size;
+    for line in &lines {
+        editor.draw_text(
+            target.page,
+            line,
+            region.x,
+            baseline.max(region.y),
+            options.replacement_style.clone(),
+            OverlayLayer::Overlay,
+        )?;
+        baseline -= line_height;
+    }
+    let output = editor.save_to_bytes(EditMode::FullRewrite)?;
+    let verify_engine = ContentEngine::open_bytes(output.clone())?;
+    let verified_old_absent = match &operation {
+        ParagraphEditOperation::Replace { replacement } if replacement.contains(query) => false,
+        _ => verify_engine
+            .search_text(
+                &pages,
+                query,
+                TextSearchOptions {
+                    case_sensitive: options.case_sensitive,
+                    include_hidden: true,
+                    max_matches: 1,
+                    ..TextSearchOptions::default()
+                },
+            )?
+            .is_empty(),
+    };
+    let required_new_text = match &operation {
+        ParagraphEditOperation::Replace { replacement } => replacement.as_str(),
+        ParagraphEditOperation::Insert { text, .. } => text.as_str(),
+        ParagraphEditOperation::Delete { .. } => "",
+    };
+    let verified_new_present = if required_new_text.is_empty() {
+        true
+    } else {
+        let direct = !verify_engine
+            .search_text(
+                &pages,
+                required_new_text,
+                TextSearchOptions {
+                    case_sensitive: options.case_sensitive,
+                    include_hidden: true,
+                    max_matches: 1,
+                    ..TextSearchOptions::default()
+                },
+            )?
+            .is_empty();
+        direct || extracted_pages_contain(&verify_engine, &pages, required_new_text)
+    };
+    let signature_invalidation_warning = engine
+        .verify_signatures()
+        .is_ok_and(|sigs| !sigs.is_empty());
+    let mut warnings = Vec::new();
+    if signature_invalidation_warning {
+        warnings
+            .push("full-rewrite paragraph edit invalidates existing PDF signatures".to_string());
+    }
+    Ok((
+        output,
+        ParagraphReflowReport {
+            query: query.to_string(),
+            operation,
+            edits: 1,
+            pages,
+            edit_mode: options.mode.as_str().to_string(),
+            block_id: Some(block_id),
+            paragraph_id: Some(paragraph_id),
+            lines_written: lines.len(),
+            verified_old_absent,
+            verified_new_present,
+            transaction_digest,
+            signature_invalidation_warning,
             warnings,
         },
     ))
@@ -777,6 +1122,35 @@ impl PdfEditor {
         }
     }
 
+    pub fn save_to_bytes_with_options(
+        &self,
+        mode: EditMode,
+        options: &DeterministicSaveOptions,
+    ) -> Result<(Vec<u8>, DeterministicSaveReport)> {
+        let signature_invalidation_warning =
+            crate::signature::verify_signatures(&self.document).is_ok_and(|sigs| !sigs.is_empty());
+        let bytes = self.save_to_bytes(mode)?;
+        let report = DeterministicSaveReport {
+            mode: match mode {
+                EditMode::FullRewrite => "full_rewrite".to_string(),
+                EditMode::Incremental => "incremental".to_string(),
+            },
+            output_bytes: bytes.len(),
+            fixed_pdf_date: options.fixed_pdf_date.clone(),
+            first_file_id_preserved: options.preserve_first_file_id,
+            deterministic_resource_names: options.deterministic_resource_names,
+            dedup_resources_requested: options.dedup_resources,
+            object_stream_packing: if mode == EditMode::FullRewrite {
+                "xref_stream_with_objstm_deterministic_order".to_string()
+            } else {
+                "incremental_plain_objects".to_string()
+            },
+            compression: "deterministic_flate_settings".to_string(),
+            signature_invalidation_warning,
+        };
+        Ok((bytes, report))
+    }
+
     fn add_header_footer(
         &mut self,
         template: String,
@@ -1182,6 +1556,317 @@ fn rect_from_quads(quads: &[TextQuad]) -> Option<ImageRect> {
         (quad.x1 - quad.x0 + pad * 2.0).max(0.5),
         (quad.y1 - quad.y0 + pad * 2.0).max(0.5),
     ))
+}
+
+#[derive(Debug, Clone)]
+struct ParagraphEditTarget {
+    block_index: usize,
+    paragraph_index: usize,
+    page: usize,
+}
+
+fn find_paragraph_edit_target(
+    model: &EditableDocument,
+    query: &str,
+    pages: &[usize],
+    case_sensitive: bool,
+) -> Option<ParagraphEditTarget> {
+    for (block_index, block) in model.blocks.iter().enumerate() {
+        if !pages.contains(&block.page) {
+            continue;
+        }
+        for (paragraph_index, paragraph) in block.paragraphs.iter().enumerate() {
+            if contains_query(&paragraph.text, query, case_sensitive) {
+                return Some(ParagraphEditTarget {
+                    block_index,
+                    paragraph_index,
+                    page: block.page,
+                });
+            }
+        }
+    }
+    None
+}
+
+fn contains_query(haystack: &str, needle: &str, case_sensitive: bool) -> bool {
+    if case_sensitive {
+        haystack.contains(needle)
+    } else {
+        haystack.to_lowercase().contains(&needle.to_lowercase())
+    }
+}
+
+fn apply_paragraph_operation(
+    before: &str,
+    query: &str,
+    operation: &ParagraphEditOperation,
+    case_sensitive: bool,
+) -> Result<String> {
+    match operation {
+        ParagraphEditOperation::Replace { replacement } => {
+            let Some((start, end)) = find_query_char_range(before, query, case_sensitive) else {
+                return Err(OxideError::MalformedPdf(
+                    "paragraph replace target was not found".to_string(),
+                ));
+            };
+            splice_char_range(before, start, end, replacement)
+        }
+        ParagraphEditOperation::Insert { offset, text } => {
+            splice_char_range(before, *offset, *offset, text)
+        }
+        ParagraphEditOperation::Delete { start, end } => {
+            splice_char_range(before, *start, *end, "")
+        }
+    }
+}
+
+fn find_query_char_range(
+    haystack: &str,
+    needle: &str,
+    case_sensitive: bool,
+) -> Option<(usize, usize)> {
+    let hay = haystack.chars().collect::<Vec<_>>();
+    let needle_chars = needle.chars().collect::<Vec<_>>();
+    if needle_chars.is_empty() || needle_chars.len() > hay.len() {
+        return None;
+    }
+    for start in 0..=hay.len() - needle_chars.len() {
+        let matches = needle_chars.iter().enumerate().all(|(offset, needle_ch)| {
+            let hay_ch = hay[start + offset];
+            if case_sensitive {
+                hay_ch == *needle_ch
+            } else {
+                hay_ch.to_lowercase().collect::<String>()
+                    == needle_ch.to_lowercase().collect::<String>()
+            }
+        });
+        if matches {
+            return Some((start, start + needle_chars.len()));
+        }
+    }
+    None
+}
+
+fn splice_char_range(
+    input: &str,
+    start_chars: usize,
+    end_chars: usize,
+    replacement: &str,
+) -> Result<String> {
+    let len = input.chars().count();
+    if start_chars > end_chars || end_chars > len {
+        return Err(OxideError::MalformedPdf(format!(
+            "paragraph edit range {start_chars}..{end_chars} is outside text length {len}"
+        )));
+    }
+    let start = char_to_byte(input, start_chars).ok_or_else(|| {
+        OxideError::MalformedPdf("paragraph edit start offset is invalid".to_string())
+    })?;
+    let end = char_to_byte(input, end_chars).ok_or_else(|| {
+        OxideError::MalformedPdf("paragraph edit end offset is invalid".to_string())
+    })?;
+    let mut out = String::with_capacity(input.len() + replacement.len());
+    out.push_str(&input[..start]);
+    out.push_str(replacement);
+    out.push_str(&input[end..]);
+    Ok(out)
+}
+
+fn char_to_byte(input: &str, char_index: usize) -> Option<usize> {
+    if char_index == input.chars().count() {
+        Some(input.len())
+    } else {
+        input.char_indices().nth(char_index).map(|(idx, _)| idx)
+    }
+}
+
+fn block_rect(bbox: &[f64; 4]) -> Option<ImageRect> {
+    let width = bbox[2] - bbox[0];
+    let height = bbox[3] - bbox[1];
+    if bbox.iter().all(|v| v.is_finite()) && width > 1.0 && height > 1.0 {
+        Some(ImageRect::new(bbox[0], bbox[1], width, height))
+    } else {
+        None
+    }
+}
+
+fn query_match_rect(
+    engine: &ContentEngine,
+    query: &str,
+    pages: &[usize],
+    case_sensitive: bool,
+) -> Result<Option<ImageRect>> {
+    let matches = engine.search_text(
+        pages,
+        query,
+        TextSearchOptions {
+            case_sensitive,
+            include_hidden: true,
+            max_matches: 1,
+            ..TextSearchOptions::default()
+        },
+    )?;
+    Ok(matches
+        .first()
+        .and_then(|text_match| rect_from_quads(&text_match.quads)))
+}
+
+fn union_optional_rects(a: Option<ImageRect>, b: Option<ImageRect>) -> Option<ImageRect> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(union_rect(a, b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn union_rect(a: ImageRect, b: ImageRect) -> ImageRect {
+    let x0 = a.x.min(b.x);
+    let y0 = a.y.min(b.y);
+    let x1 = (a.x + a.width).max(b.x + b.width);
+    let y1 = (a.y + a.height).max(b.y + b.height);
+    ImageRect::new(x0, y0, x1 - x0, y1 - y0)
+}
+
+fn reflow_lines(
+    text: &str,
+    width: f64,
+    font_size: f64,
+    line_spacing: f64,
+    max_lines: usize,
+    region_height: f64,
+) -> Result<Vec<String>> {
+    if text.trim().is_empty() {
+        return Ok(vec![String::new()]);
+    }
+    let line_height = font_size * line_spacing.max(1.0);
+    let fit_lines = (region_height / line_height).floor().max(1.0) as usize;
+    let cap = max_lines.max(1).min(fit_lines.max(1));
+    let available = width.max(font_size * 2.0);
+    let tokens = paragraph_tokens(text);
+    let mut lines = Vec::<String>::new();
+    let mut current = String::new();
+    for token in tokens {
+        let candidate = if current.is_empty() {
+            token.clone()
+        } else if token_is_cjk_unit(&token) {
+            format!("{current}{token}")
+        } else {
+            format!("{current} {token}")
+        };
+        if !current.is_empty() && approximate_reflow_width(&candidate, font_size) > available {
+            lines.push(current);
+            current = token;
+            if lines.len() >= cap {
+                return Err(OxideError::UnsupportedFeature(format!(
+                    "paragraph reflow overflow: rewritten paragraph exceeds {cap} line(s)"
+                )));
+            }
+        } else {
+            current = candidate;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.len() > cap {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "paragraph reflow overflow: rewritten paragraph exceeds {cap} line(s)"
+        )));
+    }
+    Ok(lines)
+}
+
+fn paragraph_tokens(text: &str) -> Vec<String> {
+    if text.split_whitespace().count() > 1 {
+        return text
+            .split_whitespace()
+            .map(|part| part.to_string())
+            .collect();
+    }
+    let mut out = Vec::new();
+    let mut current = String::new();
+    let mut current_cjk = false;
+    for ch in text.chars() {
+        let cjk = is_cjk(ch);
+        if ch.is_whitespace() {
+            if !current.is_empty() {
+                out.push(current.clone());
+                current.clear();
+            }
+            current_cjk = false;
+        } else if cjk {
+            if !current.is_empty() && !current_cjk {
+                out.push(current.clone());
+                current.clear();
+            }
+            out.push(ch.to_string());
+            current_cjk = true;
+        } else {
+            if current_cjk && !current.is_empty() {
+                out.push(current.clone());
+                current.clear();
+            }
+            current.push(ch);
+            current_cjk = false;
+        }
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
+}
+
+fn token_is_cjk_unit(token: &str) -> bool {
+    token.chars().count() == 1 && token.chars().next().is_some_and(is_cjk)
+}
+
+fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0x3040..=0x30FF
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+    )
+}
+
+fn approximate_reflow_width(text: &str, font_size: f64) -> f64 {
+    text.chars()
+        .map(|ch| {
+            if ch.is_whitespace() {
+                font_size * 0.30
+            } else if is_cjk(ch) {
+                font_size
+            } else if matches!(ch, 'i' | 'l' | 'I' | '.' | ',' | ';' | ':' | '!' | '|') {
+                font_size * 0.28
+            } else if matches!(ch, 'm' | 'w' | 'M' | 'W') {
+                font_size * 0.78
+            } else {
+                font_size * 0.52
+            }
+        })
+        .sum()
+}
+
+fn extracted_pages_contain(engine: &ContentEngine, pages: &[usize], needle: &str) -> bool {
+    let needle = normalize_search_text(needle);
+    if needle.is_empty() {
+        return true;
+    }
+    let mut out = String::new();
+    for page in pages {
+        if let Ok(text) = engine.get_page_text(*page) {
+            out.push_str(&text);
+            out.push(' ');
+        }
+    }
+    normalize_search_text(&out).contains(&needle)
+}
+
+fn normalize_search_text(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 #[derive(Debug, Clone)]
