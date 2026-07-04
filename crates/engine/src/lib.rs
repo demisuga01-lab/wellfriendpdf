@@ -99,6 +99,7 @@ pub mod fuzz;
 pub mod html;
 pub mod images;
 pub mod info;
+pub mod interactive;
 pub mod object;
 pub mod ocr;
 pub mod office;
@@ -208,6 +209,12 @@ pub use images::locator::{ImageLocateOptions, ImageLocator, ImageReference, Inli
 pub use images::smask::SmaskLoader;
 pub use info::{
     decode_pdf_text_string, format_pdf_date, DocumentInfo, EncryptionReport, PageSize, Permissions,
+};
+pub use interactive::{
+    annotation_report, forms_report, interactive_report, page_operations_report,
+    redaction_verification_report, AnnotationActionInfo, AnnotationInfo, AnnotationReport,
+    FieldAttributeSource, FormFieldReport, FormReport, FormWidgetReport, InteractiveDiagnostic,
+    InteractiveReport, PageBoxReport, PageOperationsReport, RedactionVerificationReport, XfaReport,
 };
 pub use object::{PdfDictionary, PdfObject};
 pub use ocr::preprocess::{

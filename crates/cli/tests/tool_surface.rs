@@ -687,7 +687,130 @@ fn huge_page_pdf() -> Vec<u8> {
     pdf.into_bytes()
 }
 
+fn simple_secret_pdf() -> Vec<u8> {
+    let content = b"BT /F1 20 Tf 1 0 0 1 72 720 Tm (Public SECRET text) Tj ET\n";
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
+            .to_string(),
+        format!(
+            "<< /Length {} >>\nstream\n{}endstream",
+            content.len(),
+            String::from_utf8_lossy(content)
+        ),
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>"
+            .to_string(),
+    ];
+    let mut pdf = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (idx, body) in objects.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", idx + 1, body));
+    }
+    let xref_off = pdf.len();
+    pdf.push_str(&format!("xref\n0 {}\n", objects.len() + 1));
+    pdf.push_str("0000000000 65535 f \n");
+    for off in offsets {
+        pdf.push_str(&format!("{off:010} 00000 n \n"));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+        objects.len() + 1,
+        xref_off
+    ));
+    pdf.into_bytes()
+}
+
 // --- Unified-surface additions (Prompt 7) -----------------------------------
+
+#[test]
+fn prompt07_report_commands_emit_json() {
+    let forms = assert_json(
+        &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),
+        "forms-report",
+    );
+    assert!(
+        forms.get("has_acroform").is_some(),
+        "forms report should expose AcroForm state"
+    );
+
+    let annots = assert_json(
+        &run(&[
+            "annotations-report",
+            fx("attach_annot.pdf").to_str().unwrap(),
+        ]),
+        "annotations-report",
+    );
+    assert!(
+        annots.get("annotations").is_some(),
+        "annotations report should expose annotation list"
+    );
+
+    let pages = assert_json(
+        &run(&["pages-report", fx("tracemonkey.pdf").to_str().unwrap()]),
+        "pages-report",
+    );
+    assert!(
+        pages["page_count"].as_u64().unwrap_or(0) > 0,
+        "pages report should expose page count"
+    );
+
+    let combined = assert_json(
+        &run(&[
+            "interactive-report",
+            fx("attach_annot.pdf").to_str().unwrap(),
+        ]),
+        "interactive-report",
+    );
+    assert_eq!(combined["schema_version"], 1);
+    assert!(combined.get("forms").is_some());
+    assert!(combined.get("annotations").is_some());
+    assert!(combined.get("page_operations").is_some());
+}
+
+#[test]
+fn prompt07_redact_search_term_writes_verified_pdf() {
+    let input = tmp("prompt07_redact_input.pdf");
+    let output = tmp("prompt07_redact_output.pdf");
+    remove_path(&input);
+    remove_path(&output);
+    std::fs::write(&input, simple_secret_pdf()).expect("write redaction fixture");
+
+    let report = assert_json(
+        &run(&[
+            "redact",
+            input.to_str().unwrap(),
+            "--text",
+            "SECRET",
+            "--pages",
+            "1",
+            "--out",
+            output.to_str().unwrap(),
+            "--json",
+            "--strict",
+        ]),
+        "redact --text",
+    );
+    assert_eq!(report["verification"]["verified_absent"], true);
+    assert!(output.exists(), "redacted PDF should be written");
+
+    let text = run(&["extract-text", output.to_str().unwrap(), "-p", "1"]);
+    assert_ok(&text, "extract-text redacted output");
+    let extracted = String::from_utf8_lossy(&text.stdout);
+    assert!(
+        !extracted.contains("SECRET"),
+        "redacted term should not extract: {extracted}"
+    );
+    assert!(
+        extracted.contains("Public"),
+        "unredacted text should remain: {extracted}"
+    );
+
+    remove_path(&input);
+    remove_path(&output);
+}
 
 #[test]
 fn version_reports_engine_and_ocr_status() {

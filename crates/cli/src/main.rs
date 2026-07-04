@@ -176,6 +176,16 @@ enum Commands {
     /// exact AcroForm fields, a spatial label→value engine, and document-type
     /// profiles — works on digital-born and OCR'd documents alike.
     ExtractFields(ExtractFieldsArgs),
+    /// Report AcroForm field trees, inheritance, widgets, XFA, and form diagnostics
+    FormsReport(FormsReportArgs),
+    /// Report annotations, QuadPoints, appearances, and unsafe actions
+    AnnotationsReport(AnnotationsReportArgs),
+    /// Report page boxes, labels/outlines/destinations, and page-op preservation risks
+    PagesReport(PagesReportArgs),
+    /// Combined Prompt 07 interactive/data-layer report
+    InteractiveReport(InteractiveReportArgs),
+    /// Apply true redaction from search terms and/or explicit rectangles
+    Redact(RedactArgs),
     /// Split a PDF into RAG-ready semantic chunks (structure-aware, token-sized,
     /// with overlap + heading context) as a JSON chunks array for embedding
     /// pipelines. Tables/figures stay intact; headings drive boundaries.
@@ -704,6 +714,85 @@ struct ExtractFieldsArgs {
 }
 
 #[derive(Parser)]
+struct FormsReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output file, defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AnnotationsReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output file, defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct PagesReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output file, defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct InteractiveReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output file, defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct RedactArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output file
+    #[arg(short, long, alias = "out", default_value = "redacted.pdf")]
+    output: PathBuf,
+    /// Search term to redact. Repeat for multiple terms.
+    #[arg(long = "text")]
+    text: Vec<String>,
+    /// Explicit redaction rectangle as page:x,y,w,h in PDF user-space points.
+    /// Repeat for multiple rectangles.
+    #[arg(long = "rect")]
+    rects: Vec<String>,
+    /// Page range used for --text search: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Disable metadata/XMP/attachment string scrubbing for removed text.
+    #[arg(long)]
+    no_metadata_scrub: bool,
+    /// Emit a JSON result summary.
+    #[arg(long)]
+    json: bool,
+    /// Fail if verification finds any requested term after redaction.
+    #[arg(long)]
+    strict: bool,
+}
+
+#[derive(Parser)]
 struct ChunkArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -1202,6 +1291,11 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Parse(args) => run_parse(args),
         Commands::DocumentModel(args) => run_document_model(args),
         Commands::ExtractFields(args) => run_extract_fields(args),
+        Commands::FormsReport(args) => run_forms_report(args),
+        Commands::AnnotationsReport(args) => run_annotations_report(args),
+        Commands::PagesReport(args) => run_pages_report(args),
+        Commands::InteractiveReport(args) => run_interactive_report(args),
+        Commands::Redact(args) => run_redact(args),
         Commands::Chunk(args) => run_chunk(args),
         Commands::EvalScore(args) => run_eval_score(args),
         Commands::ExtractImages(args) => run_extract_images(args),
@@ -1881,6 +1975,122 @@ fn run_extract_fields(args: ExtractFieldsArgs) -> Result<(), Box<dyn Error>> {
         },
         result.line_items.len(),
     );
+    Ok(())
+}
+
+fn run_forms_report(args: FormsReportArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let output = serde_json::to_string_pretty(&oxide_engine::forms_report(&engine)?)?;
+    write_output_optional(&args.output, &output)?;
+    Ok(())
+}
+
+fn run_annotations_report(args: AnnotationsReportArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let output = serde_json::to_string_pretty(&oxide_engine::annotation_report(&engine)?)?;
+    write_output_optional(&args.output, &output)?;
+    Ok(())
+}
+
+fn run_pages_report(args: PagesReportArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let output = serde_json::to_string_pretty(&oxide_engine::page_operations_report(&engine)?)?;
+    write_output_optional(&args.output, &output)?;
+    Ok(())
+}
+
+fn run_interactive_report(args: InteractiveReportArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let output = serde_json::to_string_pretty(&oxide_engine::interactive_report(&engine)?)?;
+    write_output_optional(&args.output, &output)?;
+    Ok(())
+}
+
+fn run_redact(args: RedactArgs) -> Result<(), Box<dyn Error>> {
+    if args.text.is_empty() && args.rects.is_empty() {
+        return Err("redact requires at least one --text or --rect".into());
+    }
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let engine = oxide_engine::ContentEngine::open_bytes(input.clone())?;
+    let total = engine.page_count()?;
+    let search_pages = parse_page_range_cli(&args.pages, total)?;
+    let mut explicit_regions = Vec::new();
+    for spec in &args.rects {
+        explicit_regions.push(parse_redact_rect_cli(spec, total)?);
+    }
+
+    let mut editor = oxide_engine::PdfEditor::open_bytes(input)?;
+    let redaction_options = oxide_engine::RedactionOptions {
+        fill: oxide_engine::Color::black(),
+        scrub_metadata: !args.no_metadata_scrub,
+    };
+    let mut search_regions = Vec::new();
+    for term in &args.text {
+        if term.trim().is_empty() {
+            continue;
+        }
+        let matches = engine.search_text(
+            &search_pages,
+            term,
+            oxide_engine::TextSearchOptions {
+                case_sensitive: false,
+                include_hidden: true,
+                ..oxide_engine::TextSearchOptions::default()
+            },
+        )?;
+        for hit in matches {
+            if let Some(rect) = redaction_rect_from_quads(&hit.quads) {
+                editor.redact(hit.page, rect, redaction_options.clone())?;
+                search_regions.push(serde_json::json!({
+                    "term": term,
+                    "page": hit.page,
+                    "rect": [rect.x, rect.y, rect.width, rect.height],
+                    "provenance": hit.provenance,
+                    "role": hit.role,
+                    "includes_hidden": hit.includes_hidden,
+                }));
+            }
+        }
+    }
+    for region in &explicit_regions {
+        editor.redact(region.page, region.rect, redaction_options.clone())?;
+    }
+    let redact_count = search_regions.len() + explicit_regions.len();
+    if redact_count == 0 {
+        return Err("redact found no matching text and no usable rectangles".into());
+    }
+
+    let bytes = editor.save_to_bytes(oxide_engine::EditMode::FullRewrite)?;
+    let verification = oxide_engine::redaction_verification_report(&bytes, &args.text)?;
+    if args.strict && !verification.verified_absent {
+        return Err("strict redaction verification failed: requested term remains".into());
+    }
+    std::fs::write(&args.output, &bytes)?;
+
+    let summary = serde_json::json!({
+        "op": "redact",
+        "output": args.output.display().to_string(),
+        "bytes": bytes.len(),
+        "search_terms": args.text,
+        "search_regions": search_regions,
+        "explicit_regions": explicit_regions.iter().map(|r| {
+            serde_json::json!({
+                "page": r.page,
+                "rect": [r.rect.x, r.rect.y, r.rect.width, r.rect.height],
+            })
+        }).collect::<Vec<_>>(),
+        "metadata_scrub": !args.no_metadata_scrub,
+        "verification": verification,
+    });
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        eprintln!(
+            "Redacted {} region(s) -> {}",
+            redact_count,
+            args.output.display()
+        );
+    }
     Ok(())
 }
 
@@ -2669,6 +2879,14 @@ fn open_engine(
     Ok(engine)
 }
 
+fn write_output_optional(output: &Option<PathBuf>, text: &str) -> Result<(), Box<dyn Error>> {
+    match output {
+        Some(path) => std::fs::write(path, text)?,
+        None => println!("{text}"),
+    }
+    Ok(())
+}
+
 fn read_edit_input(
     pdf: &std::path::Path,
     password: &Option<String>,
@@ -2699,6 +2917,54 @@ fn parse_rgb_color(value: &str) -> Result<oxide_engine::RgbColor, Box<dyn Error>
         g: f64::from(g) / 255.0,
         b: f64::from(b) / 255.0,
     })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RedactRegionSpec {
+    page: usize,
+    rect: oxide_engine::ImageRect,
+}
+
+fn parse_redact_rect_cli(
+    spec: &str,
+    total_pages: usize,
+) -> Result<RedactRegionSpec, Box<dyn Error>> {
+    let (page_str, rect_str) = spec
+        .split_once(':')
+        .ok_or_else(|| usage_error("redaction rect must be page:x,y,w,h"))?;
+    let page = page_str.trim().parse::<usize>()?;
+    if !(1..=total_pages).contains(&page) {
+        return Err(usage_error(format!(
+            "redaction rect page {page} is out of range 1..={total_pages}"
+        )));
+    }
+    let values: Vec<f64> = rect_str
+        .split(',')
+        .map(|part| part.trim().parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.len() != 4 {
+        return Err(usage_error("redaction rect must be page:x,y,w,h"));
+    }
+    if values.iter().any(|v| !v.is_finite()) || values[2] <= 0.0 || values[3] <= 0.0 {
+        return Err(usage_error(
+            "redaction rect coordinates must be finite and width/height must be positive",
+        ));
+    }
+    Ok(RedactRegionSpec {
+        page,
+        rect: oxide_engine::ImageRect::new(values[0], values[1], values[2], values[3]),
+    })
+}
+
+fn redaction_rect_from_quads(quads: &[oxide_engine::TextQuad]) -> Option<oxide_engine::ImageRect> {
+    let bbox = oxide_engine::TextQuad::union(quads)?;
+    let pad = 0.5;
+    Some(oxide_engine::ImageRect::new(
+        bbox.x0 - pad,
+        bbox.y0 - pad,
+        (bbox.x1 - bbox.x0 + pad * 2.0).max(0.1),
+        (bbox.y1 - bbox.y0 + pad * 2.0).max(0.1),
+    ))
 }
 
 fn run_info(args: InfoArgs) -> Result<(), Box<dyn Error>> {

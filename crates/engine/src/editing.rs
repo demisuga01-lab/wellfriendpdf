@@ -2697,10 +2697,6 @@ fn write_full_rewrite(reader: &PdfReader, changes: Vec<IncrementalObject>) -> Re
         objects.insert(number, object);
     }
 
-    let outputs = objects
-        .into_iter()
-        .map(|(number, object)| OutputObject { number, object })
-        .collect();
     let (root, root_generation) = reader.root_reference().ok_or_else(|| {
         OxideError::MalformedPdf("editing full rewrite: trailer is missing /Root".to_string())
     })?;
@@ -2718,11 +2714,61 @@ fn write_full_rewrite(reader: &PdfReader, changes: Vec<IncrementalObject>) -> Re
         }
         None => None,
     };
+    retain_reachable_objects(&mut objects, root, info);
+
+    let outputs = objects
+        .into_iter()
+        .map(|(number, object)| OutputObject { number, object })
+        .collect();
     PdfWriter::new(outputs, root)
         .with_info(info)
         .with_id(reader.first_file_id())
         .with_mode(WriterMode::XrefStreamWithObjStm)
         .write()
+}
+
+fn retain_reachable_objects(objects: &mut BTreeMap<u32, PdfObject>, root: u32, info: Option<u32>) {
+    let mut stack = vec![root];
+    if let Some(info) = info {
+        stack.push(info);
+    }
+    let mut seen = BTreeSet::new();
+    while let Some(number) = stack.pop() {
+        if !seen.insert(number) {
+            continue;
+        }
+        if let Some(object) = objects.get(&number) {
+            collect_references(object, &mut stack);
+        }
+    }
+    objects.retain(|number, _| seen.contains(number));
+}
+
+fn collect_references(object: &PdfObject, out: &mut Vec<u32>) {
+    match object {
+        PdfObject::Reference { number, .. } => out.push(*number),
+        PdfObject::Array(items) => {
+            for item in items {
+                collect_references(item, out);
+            }
+        }
+        PdfObject::Dictionary(dict) => {
+            for (_, value) in dict.entries() {
+                collect_references(value, out);
+            }
+        }
+        PdfObject::Stream { dict, .. } => {
+            for (_, value) in dict.entries() {
+                collect_references(value, out);
+            }
+        }
+        PdfObject::Boolean(_)
+        | PdfObject::Integer(_)
+        | PdfObject::Real(_)
+        | PdfObject::String(_)
+        | PdfObject::Name(_)
+        | PdfObject::Null => {}
+    }
 }
 
 fn is_xref_stream(object: &PdfObject) -> bool {

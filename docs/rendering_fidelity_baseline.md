@@ -495,3 +495,41 @@ Artifacts:
 - `target\competitive-benchmark\prompt06b-text-after`
 - `target\competitive-benchmark\prompt06b-fields-after`
 - `target\competitive-benchmark\prompt06b-tables-after`
+
+## Prompt 07 Interactive/Data Anchor
+
+Prompt 07 targets tables, forms, annotations, page operations, and true
+redaction. The baseline gates before code changes were rerun with the same
+competitive benchmark harness:
+
+```powershell
+cargo build --release -p oxide-cli
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-tables --limit 200 --tools oxide --tasks tables --output-dir target\competitive-benchmark\prompt07-tables-before --report target\competitive-benchmark\prompt07-tables-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools oxide --tasks fields --output-dir target\competitive-benchmark\prompt07-fields-before --report target\competitive-benchmark\prompt07-fields-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools oxide --tasks text --output-dir target\competitive-benchmark\prompt07-text-before --report target\competitive-benchmark\prompt07-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+```
+
+| metric | Prompt 07 before | Prompt 07 after |
+| --- | ---: | ---: |
+| table files | 200 | 200 |
+| table cell-F1 in current scorer | 0.987 | 0.987 |
+| table TEDS approx | 0.981 | 0.981 |
+| strict field-F1 | 0.725 | 0.725 |
+| field value-only F1 | 0.814 | 0.814 |
+| text files | 200 | 200 |
+| text char similarity | 0.927 | 0.927 |
+| text word-F1 | 1.000 | 1.000 |
+| text reading order | 0.960 | 0.960 |
+
+Prompt 07 adds interactive reports, CLI surfaces, and a redaction safety fix in
+the full-rewrite path. It does not intentionally change text/table/field
+extraction scoring.
+
+Artifacts:
+
+- `target\competitive-benchmark\prompt07-tables-before`
+- `target\competitive-benchmark\prompt07-fields-before`
+- `target\competitive-benchmark\prompt07-text-before`
+- `target\competitive-benchmark\prompt07-tables-after`
+- `target\competitive-benchmark\prompt07-fields-after`
+- `target\competitive-benchmark\prompt07-text-after`
