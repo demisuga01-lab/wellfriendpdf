@@ -558,3 +558,31 @@ Prompt 07B artifacts:
 - `target\prompt07b-baseline`
 - `target\prompt07b-*`
 - `target\competitive-benchmark\prompt07b-*`
+
+## Prompt 08 Editing/Conversion Anchor
+
+Prompt 08 is an additive editing and conversion phase. It introduces a shared
+editable model, model-backed HTML/Markdown/JSON exports, routes Office exports
+through the editable model, adds a verified text replacement path, and adds
+deterministic versioning helpers. It is not intended to change extraction gates.
+
+Expected unchanged gates:
+
+| metric | Prompt 08 anchor |
+| --- | ---: |
+| table shape-F1 | 0.96232 |
+| table cell-F1 in current scorer | 0.987 |
+| table TEDS approx | 0.981 |
+| strict field-F1 | 0.72503 |
+| text char similarity | 0.92743 |
+| text word-F1 | 1.0 |
+| semantic reading order | 0.96019 |
+
+Prompt 08 baseline artifacts:
+
+- `target\prompt08-baseline`
+
+Prompt 08 implementation artifacts:
+
+- `target\prompt08-artifacts`
+- `target\competitive-benchmark\prompt08-*`

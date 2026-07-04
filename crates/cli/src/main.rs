@@ -216,6 +216,18 @@ enum Commands {
     PdfToPptx(PdfToPptxArgs),
     /// Convert PDF content to a flowing DOCX document
     PdfToDocx(PdfToDocxArgs),
+    /// Convert PDF content to semantic HTML through the editable model
+    PdfToHtml(PdfToHtmlArgs),
+    /// Convert PDF content to Markdown through the editable model
+    PdfToMarkdown(PdfToMarkdownArgs),
+    /// Convert PDF content to JSON through the editable model
+    PdfToJson(PdfToJsonArgs),
+    /// Export the shared Prompt 08 editable document model as JSON
+    ExportEditableModel(ExportEditableModelArgs),
+    /// Replace text by full-rewrite redaction plus replacement text overlay
+    EditText(EditTextArgs),
+    /// Append a small incremental text overlay update for writer verification
+    SaveIncremental(SaveIncrementalArgs),
     /// Convert a DOCX document to PDF with Oxide's native writer
     DocxToPdf(OfficeToPdfArgs),
     /// Convert an XLSX workbook to PDF with Oxide's native writer
@@ -1166,6 +1178,144 @@ struct PdfToDocxArgs {
 }
 
 #[derive(Parser)]
+struct PdfToHtmlArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output HTML file
+    #[arg(short, long, alias = "out", default_value = "output.html")]
+    output: PathBuf,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PdfToMarkdownArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output Markdown file
+    #[arg(short, long, alias = "out", default_value = "output.md")]
+    output: PathBuf,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct PdfToJsonArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output JSON file
+    #[arg(short, long, alias = "out", default_value = "output.json")]
+    output: PathBuf,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct ExportEditableModelArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output editable-model JSON file
+    #[arg(short, long, alias = "out", default_value = "editable-model.json")]
+    output: PathBuf,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct EditTextArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Text to search for and replace
+    #[arg(long)]
+    query: String,
+    /// Replacement text to draw in the matched source region
+    #[arg(long)]
+    replacement: String,
+    /// Output PDF file
+    #[arg(short, long, alias = "out", default_value = "edited.pdf")]
+    output: PathBuf,
+    /// Page range used for search: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Case-insensitive matching
+    #[arg(long)]
+    ignore_case: bool,
+    /// Maximum replacements to apply
+    #[arg(long, default_value_t = 1)]
+    max_replacements: usize,
+    /// Replacement font size in PDF points
+    #[arg(long, default_value_t = 12.0)]
+    font_size: f64,
+    /// Replacement fill color as #RRGGBB
+    #[arg(long, default_value = "#000000")]
+    color: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct SaveIncrementalArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output PDF file
+    #[arg(short, long, alias = "out", default_value = "incremental.pdf")]
+    output: PathBuf,
+    /// Page number for the incremental text overlay
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Text to append as an incremental overlay
+    #[arg(long)]
+    text: String,
+    /// X position in PDF user-space points
+    #[arg(long, default_value_t = 72.0)]
+    x: f64,
+    /// Y position in PDF user-space points
+    #[arg(long, default_value_t = 72.0)]
+    y: f64,
+    /// Font size in PDF points
+    #[arg(long, default_value_t = 12.0)]
+    font_size: f64,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Emit a JSON result summary
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
 struct OfficeToPdfArgs {
     /// Input Office file
     input: PathBuf,
@@ -1453,6 +1603,12 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::PdfToXlsx(args) => run_pdf_to_xlsx(args),
         Commands::PdfToPptx(args) => run_pdf_to_pptx(args),
         Commands::PdfToDocx(args) => run_pdf_to_docx(args),
+        Commands::PdfToHtml(args) => run_pdf_to_html(args),
+        Commands::PdfToMarkdown(args) => run_pdf_to_markdown(args),
+        Commands::PdfToJson(args) => run_pdf_to_json(args),
+        Commands::ExportEditableModel(args) => run_export_editable_model(args),
+        Commands::EditText(args) => run_edit_text(args),
+        Commands::SaveIncremental(args) => run_save_incremental(args),
         Commands::DocxToPdf(args) => run_docx_to_pdf(args),
         Commands::XlsxToPdf(args) => run_xlsx_to_pdf(args),
         Commands::PptxToPdf(args) => run_pptx_to_pdf(args),
@@ -2854,6 +3010,197 @@ fn run_pdf_to_docx(args: PdfToDocxArgs) -> Result<(), Box<dyn Error>> {
             "Wrote DOCX document to {} ({} bytes).",
             args.output.display(),
             bytes.len()
+        );
+    }
+    Ok(())
+}
+
+fn run_pdf_to_html(args: PdfToHtmlArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let model = engine.build_editable_document(&oxide_engine::EditableBuildOptions {
+        pages: pages.clone(),
+        ..oxide_engine::EditableBuildOptions::default()
+    })?;
+    let output = model.to_semantic_html();
+    std::fs::write(&args.output, output.as_bytes())?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "pdf-to-html",
+                "input": args.pdf,
+                "output": args.output,
+                "pages": pages,
+                "blocks": model.blocks.len(),
+                "output_bytes": output.len(),
+            }))?
+        );
+    } else {
+        eprintln!("Wrote semantic HTML to {}.", args.output.display());
+    }
+    Ok(())
+}
+
+fn run_pdf_to_markdown(args: PdfToMarkdownArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let model = engine.build_editable_document(&oxide_engine::EditableBuildOptions {
+        pages: pages.clone(),
+        ..oxide_engine::EditableBuildOptions::default()
+    })?;
+    let output = model.to_markdown();
+    std::fs::write(&args.output, output.as_bytes())?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "pdf-to-markdown",
+                "input": args.pdf,
+                "output": args.output,
+                "pages": pages,
+                "blocks": model.blocks.len(),
+                "output_bytes": output.len(),
+            }))?
+        );
+    } else {
+        eprintln!("Wrote Markdown to {}.", args.output.display());
+    }
+    Ok(())
+}
+
+fn run_pdf_to_json(args: PdfToJsonArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let model = engine.build_editable_document(&oxide_engine::EditableBuildOptions {
+        pages: pages.clone(),
+        ..oxide_engine::EditableBuildOptions::default()
+    })?;
+    let output = serde_json::to_string_pretty(&model)?;
+    std::fs::write(&args.output, output.as_bytes())?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "pdf-to-json",
+                "input": args.pdf,
+                "output": args.output,
+                "pages": pages,
+                "blocks": model.blocks.len(),
+                "output_bytes": output.len(),
+            }))?
+        );
+    } else {
+        eprintln!("Wrote editable JSON to {}.", args.output.display());
+    }
+    Ok(())
+}
+
+fn run_export_editable_model(args: ExportEditableModelArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let model = engine.build_editable_document(&oxide_engine::EditableBuildOptions {
+        pages: pages.clone(),
+        ..oxide_engine::EditableBuildOptions::default()
+    })?;
+    let output = serde_json::to_string_pretty(&model)?;
+    std::fs::write(&args.output, output.as_bytes())?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "export-editable-model",
+                "input": args.pdf,
+                "output": args.output,
+                "schema_version": model.schema_version,
+                "pages": pages,
+                "blocks": model.blocks.len(),
+                "diagnostics": model.diagnostics.len(),
+                "output_bytes": output.len(),
+            }))?
+        );
+    } else {
+        eprintln!("Wrote editable model JSON to {}.", args.output.display());
+    }
+    Ok(())
+}
+
+fn run_edit_text(args: EditTextArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let rgb = parse_rgb_color(&args.color)?;
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let style = oxide_engine::EditTextStyle::new(args.font_size)
+        .fill(oxide_engine::Color::device_rgb(rgb.r, rgb.g, rgb.b));
+    let (bytes, report) = oxide_engine::replace_text_pdf(
+        input,
+        &args.query,
+        &args.replacement,
+        oxide_engine::TextReplacementOptions {
+            pages,
+            case_sensitive: !args.ignore_case,
+            max_replacements: args.max_replacements.max(1),
+            replacement_style: style,
+            ..oxide_engine::TextReplacementOptions::default()
+        },
+    )?;
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "edit-text",
+                "output": args.output,
+                "output_bytes": bytes.len(),
+                "report": report,
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Replaced {} match(es) -> {}.",
+            report.replacements,
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_save_incremental(args: SaveIncrementalArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let mut editor = oxide_engine::PdfEditor::open_bytes(input.clone())?;
+    editor.draw_text(
+        args.page,
+        args.text,
+        args.x,
+        args.y,
+        oxide_engine::EditTextStyle::new(args.font_size),
+        oxide_engine::OverlayLayer::Overlay,
+    )?;
+    let bytes = editor.save_to_bytes(oxide_engine::EditMode::Incremental)?;
+    let original_prefix_preserved = bytes.starts_with(&input);
+    std::fs::write(&args.output, &bytes)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "op": "save-incremental",
+                "input": args.pdf,
+                "output": args.output,
+                "page": args.page,
+                "output_bytes": bytes.len(),
+                "original_prefix_preserved": original_prefix_preserved,
+            }))?
+        );
+    } else {
+        eprintln!(
+            "Wrote incremental update to {} (prefix preserved: {}).",
+            args.output.display(),
+            original_prefix_preserved
         );
     }
     Ok(())

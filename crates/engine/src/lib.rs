@@ -86,6 +86,7 @@ pub mod decode_scanner;
 pub mod decode_scheduler;
 pub mod docmodel;
 pub mod document;
+pub mod editable;
 pub mod editing;
 pub mod engine;
 pub mod error;
@@ -114,6 +115,7 @@ pub mod signature;
 pub mod structural;
 pub mod text;
 pub mod utilities;
+pub mod versioning;
 pub mod writer;
 
 /// Semantic version of the oxide-engine crate.
@@ -175,10 +177,18 @@ pub use docmodel::{
     ModelSource, RegionKind,
 };
 pub use document::{PdfDocument, PdfPage};
+pub use editable::{
+    build_editable_document, build_editable_document_with_parse_options, EditOperation, EditSafety,
+    EditTransaction, EditTransactionLog, EditableBlock, EditableBuildOptions, EditableDiagnostic,
+    EditableDiagnosticSeverity, EditableDocument, EditableImage, EditableListInfo, EditablePage,
+    EditableParagraph, EditableProvenance, EditableRole, EditableRun, EditableSection,
+    EditableTable, EditableTableCell, EditableTextStyle, EDITABLE_SCHEMA_VERSION,
+};
 pub use editing::{
-    AnnotationOptions, AttachmentRedactionPolicy, EditMode, EditRectStyle, EditTextStyle,
-    HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions, OverlayLayer,
-    PdfEditor, RedactionOptions, WatermarkOptions,
+    replace_text_pdf, AnnotationOptions, AttachmentRedactionPolicy, EditMode, EditRectStyle,
+    EditTextStyle, HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions,
+    OverlayLayer, PdfEditor, RedactionOptions, TextReplacementOptions, TextReplacementReport,
+    WatermarkOptions,
 };
 pub use engine::{
     max_decode_pixels, max_render_pixels, ContentEngine, ExtractionProfile, PageRegion,
@@ -282,6 +292,9 @@ pub use utilities::{
     ImageWatermarkOptions, NUpOptions, PageNumberOptions, RasterImageFormat, RasterPageResult,
     RgbColor, ScalePagesOptions, StampPosition, TextWatermarkOptions,
 };
+pub use versioning::{
+    content_defined_chunks, hamming_distance, resource_digest, simhash_text, ContentChunk,
+};
 pub use writer::{
     build_merged, build_subset, rewrite_document, rewrite_document_objects,
     rewrite_document_with_mode, rewrite_references, serialize_object, write_document_linearized,
@@ -337,10 +350,15 @@ pub mod prelude {
         validate_pdfua, ComplianceSeverity, ComplianceViolation, PdfAConversionReport, PdfAProfile,
         PdfAValidationReport, PdfUaValidationReport,
     };
+    pub use crate::editable::{
+        build_editable_document, EditableBuildOptions, EditableDocument, EditableRole,
+        EDITABLE_SCHEMA_VERSION,
+    };
     pub use crate::editing::{
-        AnnotationOptions, AttachmentRedactionPolicy, EditMode, EditRectStyle, EditTextStyle,
-        HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions, OverlayLayer,
-        PdfEditor, RedactionOptions, WatermarkOptions,
+        replace_text_pdf, AnnotationOptions, AttachmentRedactionPolicy, EditMode, EditRectStyle,
+        EditTextStyle, HeaderFooterOptions, ImageRect, ImageRedactionPolicy, ImageStampOptions,
+        OverlayLayer, PdfEditor, RedactionOptions, TextReplacementOptions, TextReplacementReport,
+        WatermarkOptions,
     };
     pub use crate::engine::ContentEngine;
     pub use crate::error::{ErrorKind, OxideError, Result};

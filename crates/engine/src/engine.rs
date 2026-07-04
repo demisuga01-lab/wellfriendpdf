@@ -819,6 +819,16 @@ impl ContentEngine {
         self.parse_document(&options)
     }
 
+    /// Build the Prompt 08 shared editable document model. This is the model
+    /// conversion and edit-planning surfaces consume before writing PDF, Office,
+    /// HTML, Markdown, JSON, or RAG-oriented output.
+    pub fn build_editable_document(
+        &self,
+        options: &crate::editable::EditableBuildOptions,
+    ) -> Result<crate::editable::EditableDocument> {
+        crate::editable::build_editable_document(self, options)
+    }
+
     /// Serialize selected pages to Markdown, optionally disabling heading
     /// detection for callers that want a flat text-like Markdown export.
     pub fn to_markdown_with_options(

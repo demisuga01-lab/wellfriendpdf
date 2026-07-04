@@ -5,12 +5,14 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+use serde::Serialize;
+
 use crate::content::{
     concat_matrix, transform_point, Color, ColorSpace, ContentOperation, ContentParser, Matrix,
     Operand, IDENTITY_MATRIX,
 };
 use crate::document::{PdfDocument, PdfPage};
-use crate::engine::PageResources;
+use crate::engine::{ContentEngine, PageResources};
 use crate::error::{OxideError, Result};
 use crate::filters::{decode_stream_lossless, flate_encode};
 use crate::fonts::FontResolver;
@@ -20,6 +22,7 @@ use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::text::collector::extract_char_codes;
+use crate::text::{TextQuad, TextSearchOptions};
 use crate::writer::{
     write_incremental_update, IncrementalObject, OutputObject, PdfWriter, WriterMode,
 };
@@ -189,6 +192,39 @@ impl Default for RedactionOptions {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextReplacementOptions {
+    /// 1-based pages to search. Empty means all pages.
+    pub pages: Vec<usize>,
+    pub case_sensitive: bool,
+    pub max_replacements: usize,
+    pub replacement_style: EditTextStyle,
+    pub redaction_fill: Color,
+}
+
+impl Default for TextReplacementOptions {
+    fn default() -> Self {
+        Self {
+            pages: Vec::new(),
+            case_sensitive: true,
+            max_replacements: 1,
+            replacement_style: EditTextStyle::default(),
+            redaction_fill: Color::device_gray(1.0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TextReplacementReport {
+    pub query: String,
+    pub replacement: String,
+    pub replacements: usize,
+    pub pages: Vec<usize>,
+    pub edit_mode: String,
+    pub verified_old_absent: bool,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageRedactionPolicy {
     /// Try to rewrite intersecting image pixels; fall back to whole-image removal
@@ -210,6 +246,130 @@ pub enum AttachmentRedactionPolicy {
     /// Remove file-attachment annotations that overlap redaction regions; keep
     /// catalog-level embedded files.
     RemoveOverlapping,
+}
+
+/// Replace visible/searchable text by removing matched source content with a
+/// full-rewrite redaction pass, then placing replacement text in the same
+/// conservative bounding boxes. This is intentionally not an incremental edit:
+/// incremental output would keep the previous revision recoverable.
+pub fn replace_text_pdf(
+    input: Vec<u8>,
+    query: &str,
+    replacement: &str,
+    options: TextReplacementOptions,
+) -> Result<(Vec<u8>, TextReplacementReport)> {
+    if query.is_empty() {
+        return Err(OxideError::MalformedPdf(
+            "text replacement query must not be empty".to_string(),
+        ));
+    }
+    let engine = ContentEngine::open_bytes(input.clone())?;
+    let pages = if options.pages.is_empty() {
+        (1..=engine.page_count()?).collect::<Vec<_>>()
+    } else {
+        options.pages.clone()
+    };
+    let matches = engine.search_text(
+        &pages,
+        query,
+        TextSearchOptions {
+            case_sensitive: options.case_sensitive,
+            include_hidden: true,
+            max_matches: options.max_replacements.max(1),
+            ..TextSearchOptions::default()
+        },
+    )?;
+    if matches.is_empty() {
+        return Ok((
+            input,
+            TextReplacementReport {
+                query: query.to_string(),
+                replacement: replacement.to_string(),
+                replacements: 0,
+                pages,
+                edit_mode: "none".to_string(),
+                verified_old_absent: false,
+                warnings: vec!["no matching text was found".to_string()],
+            },
+        ));
+    }
+
+    let mut warnings = Vec::new();
+    let mut regions = Vec::new();
+    for text_match in &matches {
+        if let Some(rect) = rect_from_quads(&text_match.quads) {
+            regions.push((text_match.page, rect));
+        } else {
+            warnings.push(format!(
+                "match on page {} had no quad geometry and was skipped",
+                text_match.page
+            ));
+        }
+    }
+    if regions.is_empty() {
+        return Err(OxideError::UnsupportedFeature(
+            "text replacement found matches but no usable glyph quads".to_string(),
+        ));
+    }
+
+    let mut redactor = PdfEditor::open_bytes(input)?;
+    let redaction_options = RedactionOptions {
+        fill: options.redaction_fill.clone(),
+        scrub_metadata: true,
+        image_policy: ImageRedactionPolicy::Partial,
+        attachment_policy: AttachmentRedactionPolicy::Keep,
+    };
+    for (page, rect) in &regions {
+        redactor.redact(*page, *rect, redaction_options.clone())?;
+    }
+    let redacted = redactor.save_to_bytes(EditMode::FullRewrite)?;
+
+    let mut editor = PdfEditor::open_bytes(redacted)?;
+    for (page, rect) in &regions {
+        let baseline = rect.y + (rect.height * 0.25).max(2.0);
+        editor.draw_text(
+            *page,
+            replacement,
+            rect.x,
+            baseline,
+            options.replacement_style.clone(),
+            OverlayLayer::Overlay,
+        )?;
+    }
+    let output = editor.save_to_bytes(EditMode::FullRewrite)?;
+
+    let verified_old_absent = if replacement.contains(query) {
+        warnings.push(
+            "replacement contains the query; absence verification is not meaningful".to_string(),
+        );
+        false
+    } else {
+        let verify_engine = ContentEngine::open_bytes(output.clone())?;
+        verify_engine
+            .search_text(
+                &pages,
+                query,
+                TextSearchOptions {
+                    case_sensitive: options.case_sensitive,
+                    include_hidden: true,
+                    max_matches: 1,
+                    ..TextSearchOptions::default()
+                },
+            )?
+            .is_empty()
+    };
+    Ok((
+        output,
+        TextReplacementReport {
+            query: query.to_string(),
+            replacement: replacement.to_string(),
+            replacements: regions.len(),
+            pages,
+            edit_mode: "full_rewrite_redact_then_overlay".to_string(),
+            verified_old_absent,
+            warnings,
+        },
+    ))
 }
 
 /// Common annotation styling and metadata.
@@ -1011,6 +1171,17 @@ impl ImageRect {
             height,
         }
     }
+}
+
+fn rect_from_quads(quads: &[TextQuad]) -> Option<ImageRect> {
+    let quad = TextQuad::union(quads)?;
+    let pad = ((quad.y1 - quad.y0).abs() * 0.12).clamp(0.5, 3.0);
+    Some(ImageRect::new(
+        (quad.x0 - pad).max(0.0),
+        (quad.y0 - pad).max(0.0),
+        (quad.x1 - quad.x0 + pad * 2.0).max(0.5),
+        (quad.y1 - quad.y0 + pad * 2.0).max(0.5),
+    ))
 }
 
 #[derive(Debug, Clone)]

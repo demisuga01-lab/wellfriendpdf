@@ -16,6 +16,7 @@ use crate::authoring::{
     FlowDocument, ImageHandle, Margins, PageSize, ParagraphStyle, PdfBuilder, TableBuilder,
     TableColumn, TextStyle,
 };
+use crate::editable::{EditableBuildOptions, EditableDocument};
 use crate::engine::{ContentEngine, ExtractionProfile};
 use crate::error::{OxideError, Result};
 use crate::images::encoder::ImageOutputFormat;
@@ -285,7 +286,10 @@ pub fn pptx_to_pdf(bytes: &[u8], _options: &OfficeToPdfOptions) -> Result<Vec<u8
 }
 
 fn parse_for_office(engine: &ContentEngine, profile: ExtractionProfile) -> Result<Document> {
-    engine.parse_document_with_profile(profile, &ParseOptions::default())
+    let document = engine.parse_document_with_profile(profile, &ParseOptions::default())?;
+    let editable =
+        EditableDocument::from_parse_document(engine, document, &EditableBuildOptions::default());
+    Ok(editable.to_parse_document())
 }
 
 fn xlsx_sheets_by_page(document: &Document) -> Vec<XlsxSheet> {
