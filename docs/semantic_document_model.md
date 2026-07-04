@@ -7,6 +7,13 @@ Oxide has two related semantic surfaces:
 
 The Prompt 06 model is intentionally text-focused. It does not replace the canonical parser model.
 
+Prompt 06B merges tagged-PDF StructTree/MCID metadata into the Prompt 06 text
+model. Characters, spans, blocks, and search matches can now carry MCID,
+normalized/original tag role, role source, and compact provenance summaries. The
+older `--semantic --format json` tree remains available for authored-tag
+inspection; `--format model-json` is the geometry-backed surface for search,
+RAG citation, and redaction planning.
+
 ## Prompt 06 Text Model
 
 `TextSemanticDocument`
@@ -34,6 +41,11 @@ The Prompt 06 model is intentionally text-focused. It does not replace the canon
 - `quad`
 - `confidence`
 - `provenance`
+- `provenance_summary`
+- `mcids`
+- `role_source`
+- `role_confidence`
+- optional `struct_role` and `original_role`
 
 `TextSemanticLine`
 
@@ -47,7 +59,9 @@ The Prompt 06 model is intentionally text-focused. It does not replace the canon
 - `confidence`
 - `provenance`
 
-`TextSemanticWord`, `TextSemanticSpan`, and `TextSemanticChar` all carry quads. Characters additionally carry font name, font size, direction, mapping source, provenance flags, and confidence.
+`TextSemanticWord`, `TextSemanticSpan`, and `TextSemanticChar` all carry quads.
+Characters additionally carry font name, font size, direction, mapping source,
+MCID, StructTree role metadata, provenance flags, and confidence.
 
 ## Provenance Flags
 
@@ -55,15 +69,27 @@ The stable flags are:
 
 - `native_pdf_text`
 - `tagged_pdf`
+- `tagged_mcid`
+- `struct_tree_role`
 - `actual_text`
+- `tounicode`
 - `ocr`
 - `fallback_cmap`
+- `predefined_cmap`
 - `fallback_glyph_name`
+- `encoding_differences`
+- `font_cmap`
+- `identity_cid`
+- `ligature_expansion`
+- `hyphenation_join`
+- `normalized_whitespace`
 - `synthetic_layout`
+- `heuristic_role`
 - `low_confidence_order`
 - `deduplicated`
 - `hidden_or_invisible`
 - `artifact_header_footer_candidate`
+- `unknown_unmapped`
 
 ## Roles
 

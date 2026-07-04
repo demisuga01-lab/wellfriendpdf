@@ -472,3 +472,26 @@ Artifacts:
 - `target\competitive-benchmark\prompt06-text-before`
 - `target\competitive-benchmark\prompt06-text-after`
 - `target\prompt06-model-smoke.json`
+
+## Prompt 06B Semantic Closure Anchor
+
+Prompt 06B is additive semantic-model work. The pre-change gates were rerun
+before code changes:
+
+| metric | before | after |
+| --- | ---: | ---: |
+| text files | 200 | 200 |
+| text char similarity | 0.927 | 0.927 |
+| text word-F1 | 1.000 | 1.000 |
+| text reading order | 0.960 | 0.960 |
+| strict field-F1 | 0.725 | 0.725 |
+| table cell-F1 in current scorer | 0.987 | 0.987 |
+
+Artifacts:
+
+- `target\competitive-benchmark\prompt06b-text-before`
+- `target\competitive-benchmark\prompt06b-fields-before`
+- `target\competitive-benchmark\prompt06b-tables-before`
+- `target\competitive-benchmark\prompt06b-text-after`
+- `target\competitive-benchmark\prompt06b-fields-after`
+- `target\competitive-benchmark\prompt06b-tables-after`

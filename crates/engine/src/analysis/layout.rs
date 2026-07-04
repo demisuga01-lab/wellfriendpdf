@@ -606,6 +606,7 @@ mod tests {
             is_vertical: false,
             is_invisible: false,
             is_actual_text: false,
+            mapping_sources: Vec::new(),
         }
     }
 

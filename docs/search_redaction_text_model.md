@@ -24,6 +24,9 @@ Each `TextSearchMatch` contains:
 - source quads
 - confidence
 - provenance flags
+- provenance summary
+- MCIDs and tagged role when available
+- hidden-text inclusion flag
 
 ## Matching
 
@@ -37,6 +40,20 @@ Supported by the default normalizer:
 - hidden text exclusion by default
 
 `include_hidden` can be enabled for audit/search-all modes.
+
+## Prompt 06B Provenance
+
+Search matches now expose the same structure/provenance layer as the semantic
+model:
+
+- `mcids`: tagged-PDF marked-content IDs when available.
+- `role` and `role_source`: tagged/RoleMap role metadata or `unknown`.
+- `provenance_summary`: counts for ActualText, ToUnicode, CMap, glyph-name,
+  hidden/OCR, unknown, tagged MCID, and synthetic layout sources.
+- `includes_hidden`: whether the match uses hidden/invisible text.
+
+Prompt 07 redaction apply should consume these match quads and provenance fields
+instead of re-searching raw content streams.
 
 ## Redaction Readiness
 

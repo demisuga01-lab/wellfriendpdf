@@ -17,7 +17,11 @@ use crate::error::{OxideError, Result};
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
-use crate::text::{MarkedTextChunk, ReadingOrderReconstructor, TextChunk, TextCollector};
+use crate::text::{
+    text_role_from_tag, MarkedTextChunk, ReadingOrderReconstructor, TextChunk, TextCollector,
+    TextDiagnostic, TextDiagnosticSeverity, TextRoleSource, TextStructureContext,
+    TextStructureEntry,
+};
 
 const MAX_STRUCT_DEPTH: usize = 128;
 
@@ -50,6 +54,8 @@ impl SemanticDocument {
 pub struct SemanticElement {
     #[serde(rename = "type")]
     pub element_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_type: Option<String>,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub alt_text: Option<String>,
@@ -141,6 +147,7 @@ pub fn extract_semantic_document(
         page_by_ref,
         marked_text,
         visited: HashSet::new(),
+        role_map: parse_role_map(root_dict),
     };
     let mut elements = Vec::new();
     if let Some(kids) = root_dict.get("K") {
@@ -161,6 +168,122 @@ pub fn extract_semantic_document(
     })
 }
 
+pub fn extract_text_structure_context(
+    engine: &ContentEngine,
+    pages: &[usize],
+    max_nodes: usize,
+    max_mcids: usize,
+) -> Result<TextStructureContext> {
+    let catalog = engine.document().get_catalog()?;
+    if catalog.get("StructTreeRoot").is_none() {
+        return Ok(TextStructureContext::empty());
+    }
+
+    let document = extract_semantic_document(engine, pages)?;
+    if !document.tagged {
+        return Ok(TextStructureContext::empty());
+    }
+
+    let mut context = TextStructureContext::empty();
+    let mut seen = HashSet::new();
+    for element in &document.elements {
+        flatten_structure_element(element, "", max_nodes, max_mcids, &mut seen, &mut context);
+        if context.capped {
+            break;
+        }
+    }
+    Ok(context)
+}
+
+fn flatten_structure_element(
+    element: &SemanticElement,
+    parent_path: &str,
+    max_nodes: usize,
+    max_mcids: usize,
+    seen: &mut HashSet<McidKey>,
+    context: &mut TextStructureContext,
+) {
+    if context.entries.len() >= max_mcids || context.entries.len() >= max_nodes {
+        context.capped = true;
+        context.diagnostics.push(TextDiagnostic {
+            code: "text.structure.cap".to_string(),
+            severity: TextDiagnosticSeverity::Warning,
+            page: element.page,
+            message: "structure-to-MCID mapping hit configured cap".to_string(),
+        });
+        return;
+    }
+    let path = if parent_path.is_empty() {
+        element.element_type.clone()
+    } else {
+        format!("{parent_path}/{}", element.element_type)
+    };
+    let original_role = element
+        .original_type
+        .clone()
+        .unwrap_or_else(|| element.element_type.clone());
+    let role_source = if element.original_type.is_some() {
+        TextRoleSource::RoleMap
+    } else {
+        TextRoleSource::Tagged
+    };
+    for mcid in &element.mcids {
+        if context.entries.len() >= max_mcids {
+            context.capped = true;
+            context.diagnostics.push(TextDiagnostic {
+                code: "text.structure.mcid_cap".to_string(),
+                severity: TextDiagnosticSeverity::Warning,
+                page: Some(mcid.page),
+                message: "MCID mapping hit configured cap".to_string(),
+            });
+            return;
+        }
+        if !seen.insert((mcid.page, mcid.mcid)) {
+            context.diagnostics.push(TextDiagnostic {
+                code: "text.structure.duplicate_mcid".to_string(),
+                severity: TextDiagnosticSeverity::Warning,
+                page: Some(mcid.page),
+                message: format!("duplicate StructTree mapping for MCID {}", mcid.mcid),
+            });
+        }
+        if element.text.trim().is_empty()
+            && element.actual_text.is_none()
+            && element.alt_text.is_none()
+        {
+            context.diagnostics.push(TextDiagnostic {
+                code: "text.structure.empty_mcid".to_string(),
+                severity: TextDiagnosticSeverity::Info,
+                page: Some(mcid.page),
+                message: format!("StructTree MCID {} has no resolved text", mcid.mcid),
+            });
+        }
+        context.entries.push(TextStructureEntry {
+            page: mcid.page,
+            mcid: mcid.mcid,
+            role: text_role_from_tag(&element.element_type),
+            normalized_role: element.element_type.clone(),
+            original_role: original_role.clone(),
+            role_source,
+            confidence: if role_source == TextRoleSource::Tagged {
+                0.94
+            } else {
+                0.82
+            },
+            artifact: element.element_type.eq_ignore_ascii_case("Artifact"),
+            actual_text: element.actual_text.clone(),
+            alt_text: element.alt_text.clone(),
+            lang: element.lang.clone(),
+            struct_path: Some(path.clone()),
+        });
+    }
+    for child in &element.children {
+        flatten_structure_element(child, &path, max_nodes, max_mcids, seen, context);
+        if context.capped {
+            break;
+        }
+    }
+}
+
 fn geometric_fallback(engine: &ContentEngine, pages: &[usize]) -> Result<SemanticDocument> {
     let mut children = Vec::new();
     for &page in pages {
@@ -179,6 +302,7 @@ fn geometric_fallback(engine: &ContentEngine, pages: &[usize]) -> Result<Semanti
         tables: Vec::new(),
         elements: vec![SemanticElement {
             element_type: "Document".to_string(),
+            original_type: None,
             text: String::new(),
             alt_text: None,
             actual_text: None,
@@ -194,6 +318,7 @@ fn geometric_fallback(engine: &ContentEngine, pages: &[usize]) -> Result<Semanti
 fn block_to_element(page: usize, block: LayoutBlock) -> SemanticElement {
     SemanticElement {
         element_type: "P".to_string(),
+        original_type: None,
         text: block.text(),
         alt_text: None,
         actual_text: None,
@@ -210,6 +335,7 @@ struct StructParser<'a> {
     page_by_ref: HashMap<PageRef, usize>,
     marked_text: McidTextMap,
     visited: HashSet<PageRef>,
+    role_map: HashMap<String, String>,
 }
 
 impl<'a> StructParser<'a> {
@@ -263,7 +389,13 @@ impl<'a> StructParser<'a> {
                 "structure tree exceeded depth limit".to_string(),
             ));
         }
-        let element_type = dict.get_name("S").unwrap_or("Span").to_string();
+        let original_type = dict.get_name("S").unwrap_or("Span").to_string();
+        let element_type = self
+            .role_map
+            .get(&original_type)
+            .cloned()
+            .unwrap_or_else(|| original_type.clone());
+        let original_type_field = (original_type != element_type).then_some(original_type);
         let page = dict
             .get("Pg")
             .and_then(|obj| page_from_object(obj, &self.page_by_ref))
@@ -286,6 +418,7 @@ impl<'a> StructParser<'a> {
 
         Ok(SemanticElement {
             element_type,
+            original_type: original_type_field,
             text,
             alt_text,
             actual_text,
@@ -375,6 +508,19 @@ fn pdf_text_value(object: &PdfObject) -> Option<String> {
         PdfObject::Name(name) => Some(name.clone()),
         _ => None,
     }
+}
+
+fn parse_role_map(root: &PdfDictionary) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    let Some(map) = root.get("RoleMap").and_then(PdfObject::as_dict) else {
+        return out;
+    };
+    for (from, to) in map.iter() {
+        if let Some(role) = to.as_name() {
+            out.insert(from.clone(), role.to_string());
+        }
+    }
+    out
 }
 
 fn collect_marked_text(engine: &ContentEngine, pages: &[usize]) -> Result<McidTextMap> {

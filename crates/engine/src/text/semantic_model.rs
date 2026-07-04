@@ -1,17 +1,21 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde::Serialize;
 
 use crate::analysis::layout::{analyze_page, BBox, LayoutConfig, PageLayout};
-use crate::text::{ReadingOrderReconstructor, TextChunk};
+use crate::fonts::FontDecodeSource;
+use crate::text::{MarkedTextChunk, ReadingOrderReconstructor, TextChunk};
 
 const DEFAULT_MAX_CHUNKS_PER_PAGE: usize = 250_000;
 const DEFAULT_MAX_CHARS_PER_PAGE: usize = 2_000_000;
+const DEFAULT_MAX_STRUCTURE_NODES: usize = 250_000;
+const DEFAULT_MAX_MCID_ENTRIES: usize = 500_000;
+const DEFAULT_MAX_CJK_RUN_CHARS: usize = 64;
 const DEDUPE_X_TOLERANCE: f64 = 0.75;
 const DEDUPE_Y_TOLERANCE: f64 = 0.75;
 const DEDUPE_FONT_TOLERANCE: f64 = 0.5;
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TextExtractionMode {
     ExtractAllText,
@@ -28,8 +32,14 @@ pub struct TextSemanticOptions {
     pub include_hidden: bool,
     pub deduplicate: bool,
     pub prefer_actual_text: bool,
+    pub include_structure: bool,
+    pub include_detailed_provenance: bool,
+    pub cjk_segmentation: CjkSegmentationMode,
     pub max_chunks_per_page: usize,
     pub max_chars_per_page: usize,
+    pub max_structure_nodes: usize,
+    pub max_mcid_entries: usize,
+    pub max_cjk_run_chars: usize,
 }
 
 impl Default for TextSemanticOptions {
@@ -40,8 +50,14 @@ impl Default for TextSemanticOptions {
             include_hidden: true,
             deduplicate: true,
             prefer_actual_text: true,
+            include_structure: true,
+            include_detailed_provenance: false,
+            cjk_segmentation: CjkSegmentationMode::Char,
             max_chunks_per_page: DEFAULT_MAX_CHUNKS_PER_PAGE,
             max_chars_per_page: DEFAULT_MAX_CHARS_PER_PAGE,
+            max_structure_nodes: DEFAULT_MAX_STRUCTURE_NODES,
+            max_mcid_entries: DEFAULT_MAX_MCID_ENTRIES,
+            max_cjk_run_chars: DEFAULT_MAX_CJK_RUN_CHARS,
         }
     }
 }
@@ -72,7 +88,7 @@ impl TextSemanticOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticTextDirection {
     LeftToRight,
@@ -81,7 +97,7 @@ pub enum SemanticTextDirection {
     Mixed,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TextRole {
     BodyText,
@@ -96,16 +112,39 @@ pub enum TextRole {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum TextRoleSource {
+    Tagged,
+    RoleMap,
+    ActualText,
+    Heuristic,
+    Synthetic,
+    Unknown,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CjkSegmentationMode {
+    Char,
+    Simple,
+    Dictionary,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TextMappingSource {
     NativePdfText,
     TaggedPdf,
     ActualText,
     ToUnicode,
-    CMap,
+    EmbeddedCMap,
+    PredefinedCMap,
     EncodingDifferences,
     GlyphName,
+    UniName,
+    FontCMap,
+    IdentityCid,
     Ocr,
     Unknown,
 }
@@ -115,15 +154,109 @@ pub enum TextMappingSource {
 pub enum TextProvenanceFlag {
     NativePdfText,
     TaggedPdf,
+    TaggedMcid,
+    StructTreeRole,
     ActualText,
+    ToUnicode,
     Ocr,
     FallbackCMap,
+    PredefinedCMap,
     FallbackGlyphName,
+    EncodingDifferences,
+    FontCMap,
+    IdentityCid,
+    LigatureExpansion,
+    HyphenationJoin,
+    NormalizedWhitespace,
     SyntheticLayout,
+    HeuristicRole,
     LowConfidenceOrder,
     Deduplicated,
     HiddenOrInvisible,
     ArtifactHeaderFooterCandidate,
+    UnknownUnmapped,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct TextProvenanceSummary {
+    pub actual_text: usize,
+    pub tounicode: usize,
+    pub embedded_cmap: usize,
+    pub predefined_cmap: usize,
+    pub encoding_differences: usize,
+    pub glyph_name: usize,
+    pub font_cmap: usize,
+    pub identity_cid: usize,
+    pub ocr: usize,
+    pub synthetic_layout: usize,
+    pub hidden_or_invisible: usize,
+    pub unknown_unmapped: usize,
+    pub tagged_mcid: usize,
+    pub heuristic_role: usize,
+    pub ligature_expansion: usize,
+    pub hyphenation_join: usize,
+    pub normalized_whitespace: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TextStructureEntry {
+    pub page: usize,
+    pub mcid: i64,
+    pub role: TextRole,
+    pub normalized_role: String,
+    pub original_role: String,
+    pub role_source: TextRoleSource,
+    pub confidence: f32,
+    pub artifact: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alt_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub struct_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct TextStructureContext {
+    pub entries: Vec<TextStructureEntry>,
+    pub diagnostics: Vec<TextDiagnostic>,
+    pub capped: bool,
+}
+
+impl TextStructureContext {
+    pub fn empty() -> Self {
+        Self::default()
+    }
+
+    fn by_mcid(&self) -> HashMap<(usize, i64), TextStructureEntry> {
+        let mut map = HashMap::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            map.entry((entry.page, entry.mcid))
+                .or_insert_with(|| entry.clone());
+        }
+        map
+    }
+
+    pub fn page_summary(
+        &self,
+        page: usize,
+        mapped_mcids: usize,
+        unmapped_mcids: usize,
+    ) -> TextStructurePageSummary {
+        TextStructurePageSummary {
+            enabled: !self.entries.is_empty() || !self.diagnostics.is_empty(),
+            entries: self
+                .entries
+                .iter()
+                .filter(|entry| entry.page == page)
+                .count(),
+            mapped_mcids,
+            unmapped_mcids,
+            capped: self.capped,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
@@ -195,6 +328,13 @@ pub struct TextSemanticChar {
     pub direction: SemanticTextDirection,
     pub mapping_source: TextMappingSource,
     pub provenance: Vec<TextProvenanceFlag>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcid: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub struct_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_role: Option<String>,
+    pub role_source: TextRoleSource,
     pub quad: TextQuad,
     pub confidence: f32,
 }
@@ -207,6 +347,9 @@ pub struct TextSemanticWord {
     pub quad: TextQuad,
     pub confidence: f32,
     pub provenance: Vec<TextProvenanceFlag>,
+    pub provenance_summary: TextProvenanceSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -220,6 +363,14 @@ pub struct TextSemanticSpan {
     pub direction: SemanticTextDirection,
     pub mapping_source: TextMappingSource,
     pub provenance: Vec<TextProvenanceFlag>,
+    pub provenance_summary: TextProvenanceSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcids: Vec<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub struct_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_role: Option<String>,
+    pub role_source: TextRoleSource,
     pub confidence: f32,
 }
 
@@ -235,6 +386,11 @@ pub struct TextSemanticLine {
     pub quad: TextQuad,
     pub confidence: f32,
     pub provenance: Vec<TextProvenanceFlag>,
+    pub provenance_summary: TextProvenanceSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcids: Vec<i64>,
+    pub role_source: TextRoleSource,
+    pub role_confidence: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -245,6 +401,8 @@ pub struct TextSemanticParagraph {
     pub role: TextRole,
     pub quad: TextQuad,
     pub confidence: f32,
+    pub role_source: TextRoleSource,
+    pub role_confidence: f32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -257,6 +415,15 @@ pub struct TextSemanticBlock {
     pub quad: TextQuad,
     pub confidence: f32,
     pub provenance: Vec<TextProvenanceFlag>,
+    pub provenance_summary: TextProvenanceSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcids: Vec<i64>,
+    pub role_source: TextRoleSource,
+    pub role_confidence: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub struct_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_role: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -279,6 +446,11 @@ pub struct TextExtractionCounters {
     pub vertical_runs: usize,
     pub deduplicated_runs: usize,
     pub low_confidence_order_edges: usize,
+    pub struct_tree_nodes: usize,
+    pub mcids_mapped: usize,
+    pub mcids_unmapped: usize,
+    pub cjk_tokens: usize,
+    pub cjk_simple_tokens: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -290,6 +462,7 @@ pub struct TextSemanticPage {
     pub confidence: f32,
     pub counters: TextExtractionCounters,
     pub diagnostics: Vec<TextDiagnostic>,
+    pub structure: TextStructurePageSummary,
 }
 
 impl TextSemanticPage {
@@ -307,6 +480,15 @@ pub struct TextSemanticDocument {
     pub pages: Vec<TextSemanticPage>,
     pub counters: TextExtractionCounters,
     pub diagnostics: Vec<TextDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct TextStructurePageSummary {
+    pub enabled: bool,
+    pub entries: usize,
+    pub mapped_mcids: usize,
+    pub unmapped_mcids: usize,
+    pub capped: bool,
 }
 
 impl TextSemanticDocument {
@@ -355,6 +537,12 @@ pub struct TextSearchMatch {
     pub quads: Vec<TextQuad>,
     pub confidence: f32,
     pub provenance: Vec<TextProvenanceFlag>,
+    pub provenance_summary: TextProvenanceSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcids: Vec<i64>,
+    pub role: TextRole,
+    pub role_source: TextRoleSource,
+    pub includes_hidden: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -362,6 +550,8 @@ struct ChunkRef {
     chunk: TextChunk,
     original_index: usize,
     bbox: TextQuad,
+    mcid: Option<i64>,
+    structure: Option<TextStructureEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -381,14 +571,46 @@ pub fn build_text_semantic_page(
     chunks: Vec<TextChunk>,
     options: &TextSemanticOptions,
 ) -> TextSemanticPage {
+    let marked = chunks
+        .into_iter()
+        .map(|chunk| MarkedTextChunk { chunk, mcid: None })
+        .collect();
+    build_text_semantic_page_from_marked_chunks(page, page_box, marked, None, options)
+}
+
+pub fn build_text_semantic_page_from_marked_chunks(
+    page: usize,
+    page_box: [f64; 4],
+    chunks: Vec<MarkedTextChunk>,
+    structure: Option<&TextStructureContext>,
+    options: &TextSemanticOptions,
+) -> TextSemanticPage {
     let mut diagnostics = Vec::new();
     let mut counters = TextExtractionCounters {
         pages: 1,
         total_glyph_runs: chunks.len(),
         ..Default::default()
     };
+    if let Some(ctx) = structure {
+        diagnostics.extend(
+            ctx.diagnostics
+                .iter()
+                .filter(|diag| diag.page == Some(page) || diag.page.is_none())
+                .cloned(),
+        );
+    }
 
-    let mut working = filter_chunks(page, chunks, options, &mut counters, &mut diagnostics);
+    let structure_map = structure
+        .map(TextStructureContext::by_mcid)
+        .unwrap_or_default();
+    let mut working = filter_chunks(
+        page,
+        chunks,
+        &structure_map,
+        options,
+        &mut counters,
+        &mut diagnostics,
+    );
     if working.len() > options.max_chunks_per_page {
         diagnostics.push(TextDiagnostic {
             code: "text.semantic.chunk_cap".to_string(),
@@ -467,13 +689,35 @@ pub fn build_text_semantic_page(
                 });
                 break;
             }
+            let cjk_tokens = built
+                .words
+                .iter()
+                .filter(|word| word.text.chars().any(is_cjk_char))
+                .count();
+            counters.cjk_tokens += cjk_tokens;
+            if !matches!(options.cjk_segmentation, CjkSegmentationMode::Char) {
+                counters.cjk_simple_tokens += cjk_tokens;
+            }
             counters.words += built.words.len();
             counters.chars += built.chars.len();
-            let role = classify_line(&built.text, role, built.quad, page_box, median_font_size);
+            let heuristic_role =
+                classify_line(&built.text, role, built.quad, page_box, median_font_size);
+            let (line_role, role_source, role_confidence) = role_from_spans(&built.spans)
+                .unwrap_or((heuristic_role, TextRoleSource::Heuristic, 0.64));
+            let line_summary = provenance_summary_for_spans(&built.spans);
+            let line_mcids = mcids_for_spans(&built.spans);
+            counters.mapped_via_tounicode += line_summary.tounicode;
+            counters.mapped_via_cmap += line_summary.embedded_cmap
+                + line_summary.predefined_cmap
+                + line_summary.identity_cid;
+            counters.mapped_via_encoding_differences += line_summary.encoding_differences;
+            counters.mapped_via_glyph_name += line_summary.glyph_name;
+            counters.mapped_via_ocr += line_summary.ocr;
+            counters.unknown_unmapped += line_summary.unknown_unmapped;
             lines.push(TextSemanticLine {
                 text: built.text,
                 line_index,
-                role,
+                role: line_role,
                 direction: built.direction,
                 words: built.words,
                 spans: built.spans,
@@ -488,6 +732,10 @@ pub fn build_text_semantic_page(
                     0.86
                 },
                 provenance: built.provenance,
+                provenance_summary: line_summary,
+                mcids: line_mcids,
+                role_source,
+                role_confidence,
             });
             line_index += 1;
         }
@@ -508,22 +756,33 @@ pub fn build_text_semantic_page(
             .map(|line| line.text.as_str())
             .collect::<Vec<_>>()
             .join("\n");
-        let paragraphs = build_paragraphs(&lines, role);
+        let (block_role, block_role_source, block_role_confidence) =
+            role_from_lines(&lines).unwrap_or((role, TextRoleSource::Heuristic, 0.58));
+        let paragraphs = build_paragraphs(&lines, block_role);
         counters.lines += lines.len();
         counters.blocks += 1;
+        let block_summary = provenance_summary_for_lines(&lines);
+        let block_mcids = mcids_for_lines(&lines);
+        let (struct_role, original_role) = block_structure_roles(&lines);
         blocks.push(TextSemanticBlock {
             text,
             block_index,
-            role,
+            role: block_role,
             lines,
             paragraphs,
             quad,
-            confidence: if matches!(role, TextRole::Unknown) {
+            confidence: if matches!(block_role, TextRole::Unknown) {
                 0.58
             } else {
                 0.78
             },
             provenance: vec![TextProvenanceFlag::SyntheticLayout],
+            provenance_summary: block_summary,
+            mcids: block_mcids,
+            role_source: block_role_source,
+            role_confidence: block_role_confidence,
+            struct_role,
+            original_role,
         });
     }
 
@@ -566,6 +825,10 @@ pub fn build_text_semantic_page(
         });
     }
 
+    let structure_summary = structure
+        .map(|ctx| ctx.page_summary(page, counters.mcids_mapped, counters.mcids_unmapped))
+        .unwrap_or_default();
+
     TextSemanticPage {
         page,
         page_box,
@@ -578,6 +841,7 @@ pub fn build_text_semantic_page(
         },
         counters,
         diagnostics,
+        structure: structure_summary,
     }
 }
 
@@ -599,13 +863,17 @@ pub fn build_text_semantic_document(
 
 fn filter_chunks(
     page: usize,
-    chunks: Vec<TextChunk>,
+    chunks: Vec<MarkedTextChunk>,
+    structure_map: &HashMap<(usize, i64), TextStructureEntry>,
     options: &TextSemanticOptions,
     counters: &mut TextExtractionCounters,
     diagnostics: &mut Vec<TextDiagnostic>,
 ) -> Vec<ChunkRef> {
     let mut out = Vec::new();
-    for (idx, chunk) in chunks.into_iter().enumerate() {
+    let mut mapped_mcids = HashSet::new();
+    let mut unmapped_mcids = HashSet::new();
+    for (idx, marked) in chunks.into_iter().enumerate() {
+        let chunk = marked.chunk;
         if chunk.text.is_empty() {
             continue;
         }
@@ -621,18 +889,33 @@ fn filter_chunks(
         if chunk.is_actual_text {
             counters.mapped_via_actual_text += chunk.text.chars().count();
         }
-        if chunk.text.contains('\u{FFFD}') {
-            counters.unknown_unmapped += chunk.text.matches('\u{FFFD}').count();
-        }
         if chunk.is_invisible && !options.include_hidden {
             continue;
+        }
+        let structure = marked
+            .mcid
+            .and_then(|mcid| structure_map.get(&(page, mcid)).cloned());
+        if let Some(mcid) = marked.mcid {
+            if structure.is_some() {
+                mapped_mcids.insert(mcid);
+            } else {
+                unmapped_mcids.insert(mcid);
+            }
         }
         out.push(ChunkRef {
             bbox: chunk_bbox(&chunk),
             chunk,
             original_index: idx,
+            mcid: marked.mcid,
+            structure,
         });
     }
+    counters.mcids_mapped += mapped_mcids.len();
+    counters.mcids_unmapped += unmapped_mcids.len();
+    counters.struct_tree_nodes += structure_map
+        .values()
+        .filter(|entry| entry.page == page)
+        .count();
 
     if options.deduplicate {
         let before = out.len();
@@ -863,12 +1146,15 @@ fn build_line_from_text(
         is_vertical: matches!(direction, SemanticTextDirection::Vertical),
         is_invisible: false,
         is_actual_text: false,
+        mapping_sources: Vec::new(),
     };
     build_line_from_chunks(
         &[ChunkRef {
             chunk: synthetic,
             original_index: line_index,
             bbox: TextQuad::from_bbox([bbox.x0, bbox.y0, bbox.x1, bbox.y1]),
+            mcid: None,
+            structure: None,
         }],
         bbox,
         direction,
@@ -923,6 +1209,10 @@ fn build_line_from_chunks(
                 direction,
                 mapping_source: TextMappingSource::NativePdfText,
                 provenance: vec![TextProvenanceFlag::SyntheticLayout],
+                mcid: None,
+                struct_role: None,
+                original_role: None,
+                role_source: TextRoleSource::Synthetic,
                 quad,
                 confidence: 0.62,
             });
@@ -933,9 +1223,19 @@ fn build_line_from_chunks(
         let start_char = *global_char_index;
         let chunk_chars = char_quads_for_chunk(chunk, chunk_ref.original_index, global_char_index);
         let mut span_chars = Vec::new();
-        for (ch, quad, char_index) in chunk_chars {
-            let mapping_source = mapping_source_for_chunk(chunk);
-            let provenance = provenance_for_chunk(chunk);
+        for (char_offset, ch, quad, char_index) in chunk_chars {
+            let mapping_source = mapping_source_for_char(chunk, char_offset);
+            let mut provenance = provenance_for_char(chunk, char_offset);
+            if chunk_ref.mcid.is_some() {
+                provenance.push(TextProvenanceFlag::TaggedMcid);
+            }
+            if chunk_ref.structure.is_some() {
+                provenance.push(TextProvenanceFlag::TaggedPdf);
+                provenance.push(TextProvenanceFlag::StructTreeRole);
+            }
+            provenance = flags_union(&provenance);
+            let (struct_role, original_role, role_source) =
+                structure_role_fields(&chunk_ref.structure);
             span_chars.push(TextSemanticChar {
                 text: ch.to_string(),
                 unicode: ch.to_string(),
@@ -946,6 +1246,10 @@ fn build_line_from_chunks(
                 direction: direction_for_chunk(chunk, direction),
                 mapping_source,
                 provenance,
+                mcid: chunk_ref.mcid,
+                struct_role,
+                original_role,
+                role_source,
                 quad,
                 confidence: if ch == '\u{FFFD}' { 0.1 } else { 0.82 },
             });
@@ -961,8 +1265,28 @@ fn build_line_from_chunks(
             font_name: chunk.font_name.clone(),
             font_size: chunk.font_size,
             direction: direction_for_chunk(chunk, direction),
-            mapping_source: mapping_source_for_chunk(chunk),
-            provenance: provenance_for_chunk(chunk),
+            mapping_source: aggregate_mapping_source(&span_chars),
+            provenance: flags_union(
+                &span_chars
+                    .iter()
+                    .flat_map(|ch| ch.provenance.iter().copied())
+                    .collect::<Vec<_>>(),
+            ),
+            provenance_summary: provenance_summary_for_chars(&span_chars),
+            mcids: mcids_for_chars(&span_chars),
+            struct_role: chunk_ref
+                .structure
+                .as_ref()
+                .map(|entry| entry.normalized_role.clone()),
+            original_role: chunk_ref
+                .structure
+                .as_ref()
+                .map(|entry| entry.original_role.clone()),
+            role_source: chunk_ref
+                .structure
+                .as_ref()
+                .map(|entry| entry.role_source)
+                .unwrap_or(TextRoleSource::Unknown),
             confidence: if chunk.text.contains('\u{FFFD}') {
                 0.2
             } else {
@@ -974,8 +1298,12 @@ fn build_line_from_chunks(
     }
 
     let line_text = text_parts.join("").trim().to_string();
-    let token_ranges = tokenize_words_from_chars(&chars);
+    let token_ranges = tokenize_words_from_chars(chars.as_slice(), options);
     for (word_text, start, end) in token_ranges {
+        let word_semantic_chars: Vec<&TextSemanticChar> = chars
+            .iter()
+            .filter(|ch| ch.char_index >= start && ch.char_index < end)
+            .collect();
         let word_chars: Vec<TextQuad> = chars
             .iter()
             .filter(|ch| ch.char_index >= start && ch.char_index < end)
@@ -990,12 +1318,13 @@ fn build_line_from_chunks(
             quad,
             confidence: 0.84,
             provenance: flags_union(
-                &chars
+                &word_semantic_chars
                     .iter()
-                    .filter(|ch| ch.char_index >= start && ch.char_index < end)
                     .flat_map(|ch| ch.provenance.iter().copied())
                     .collect::<Vec<_>>(),
             ),
+            provenance_summary: provenance_summary_for_char_refs(&word_semantic_chars),
+            mcids: mcids_for_char_refs(&word_semantic_chars),
         });
         *global_word_index += 1;
     }
@@ -1038,7 +1367,7 @@ fn char_quads_for_chunk(
     chunk: &TextChunk,
     chunk_index: usize,
     global_char_index: &mut usize,
-) -> Vec<(char, TextQuad, usize)> {
+) -> Vec<(usize, char, TextQuad, usize)> {
     let chars: Vec<char> = chunk.text.chars().collect();
     if chars.is_empty() {
         return Vec::new();
@@ -1056,7 +1385,7 @@ fn char_quads_for_chunk(
                 x1: chunk.x + chunk.font_size.max(1.0),
                 y1: y0.max(y1) + chunk.font_size.min(step),
             };
-            out.push((ch, quad, *global_char_index));
+            out.push((idx, ch, quad, *global_char_index));
             *global_char_index += 1;
         }
     } else {
@@ -1075,7 +1404,7 @@ fn char_quads_for_chunk(
                 x1,
                 y1: chunk.y + chunk.font_size.max(1.0),
             };
-            out.push((ch, quad, *global_char_index));
+            out.push((idx, ch, quad, *global_char_index));
             *global_char_index += 1;
         }
     }
@@ -1083,10 +1412,14 @@ fn char_quads_for_chunk(
     out
 }
 
-fn tokenize_words_from_chars(chars: &[TextSemanticChar]) -> Vec<(String, usize, usize)> {
+fn tokenize_words_from_chars(
+    chars: &[TextSemanticChar],
+    options: &TextSemanticOptions,
+) -> Vec<(String, usize, usize)> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut start = None;
+    let mut cjk_run_script: Option<CjkScript> = None;
 
     for ch in chars {
         let Some(c) = ch.text.chars().next() else {
@@ -1094,11 +1427,36 @@ fn tokenize_words_from_chars(chars: &[TextSemanticChar]) -> Vec<(String, usize, 
         };
         if c.is_whitespace() {
             flush_token(&mut tokens, &mut current, &mut start, ch.char_index);
+            cjk_run_script = None;
             continue;
         }
         if is_cjk_char(c) {
+            match options.cjk_segmentation {
+                CjkSegmentationMode::Char => {
+                    flush_token(&mut tokens, &mut current, &mut start, ch.char_index);
+                    tokens.push((c.to_string(), ch.char_index, ch.char_index + 1));
+                }
+                CjkSegmentationMode::Simple | CjkSegmentationMode::Dictionary => {
+                    let script = cjk_script(c);
+                    let over_cap = current.chars().count() >= options.max_cjk_run_chars.max(1);
+                    if cjk_run_script.is_some_and(|active| active != script) || over_cap {
+                        flush_token(&mut tokens, &mut current, &mut start, ch.char_index);
+                    }
+                    cjk_run_script = Some(script);
+                    if start.is_none() {
+                        start = Some(ch.char_index);
+                    }
+                    current.push(c);
+                }
+            }
+            continue;
+        }
+        if cjk_run_script.is_some() {
             flush_token(&mut tokens, &mut current, &mut start, ch.char_index);
-            tokens.push((c.to_string(), ch.char_index, ch.char_index + 1));
+        }
+        cjk_run_script = None;
+        if is_cjk_punctuation(c) {
+            flush_token(&mut tokens, &mut current, &mut start, ch.char_index);
             continue;
         }
         if start.is_none() {
@@ -1109,6 +1467,33 @@ fn tokenize_words_from_chars(chars: &[TextSemanticChar]) -> Vec<(String, usize, 
     let end = chars.last().map(|ch| ch.char_index + 1).unwrap_or(0);
     flush_token(&mut tokens, &mut current, &mut start, end);
     tokens
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CjkScript {
+    Han,
+    Hiragana,
+    Katakana,
+    Hangul,
+    Other,
+}
+
+fn cjk_script(c: char) -> CjkScript {
+    let cp = c as u32;
+    match cp {
+        0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF => CjkScript::Han,
+        0x3040..=0x309F => CjkScript::Hiragana,
+        0x30A0..=0x30FF => CjkScript::Katakana,
+        0xAC00..=0xD7AF => CjkScript::Hangul,
+        _ => CjkScript::Other,
+    }
+}
+
+fn is_cjk_punctuation(c: char) -> bool {
+    matches!(
+        c,
+        '\u{3000}'..='\u{303F}' | '\u{FF00}'..='\u{FFEF}'
+    )
 }
 
 fn flush_token(
@@ -1201,6 +1586,8 @@ fn push_paragraph(
         role,
         quad,
         confidence: 0.72,
+        role_source: TextRoleSource::Heuristic,
+        role_confidence: 0.58,
     });
 }
 
@@ -1264,30 +1651,283 @@ fn starts_with_numbered_list(text: &str) -> bool {
     saw_digit && matches!(chars.next(), Some('.') | Some(')'))
 }
 
-fn mapping_source_for_chunk(chunk: &TextChunk) -> TextMappingSource {
+fn mapping_source_for_char(chunk: &TextChunk, char_offset: usize) -> TextMappingSource {
     if chunk.is_actual_text {
-        TextMappingSource::ActualText
-    } else if chunk.is_invisible {
-        TextMappingSource::Ocr
-    } else if chunk.text.contains('\u{FFFD}') {
-        TextMappingSource::Unknown
-    } else {
-        TextMappingSource::NativePdfText
+        return TextMappingSource::ActualText;
+    }
+    if chunk.is_invisible {
+        return TextMappingSource::Ocr;
+    }
+    match chunk.mapping_sources.get(char_offset).copied() {
+        Some(FontDecodeSource::ActualText) => TextMappingSource::ActualText,
+        Some(FontDecodeSource::ToUnicode) => TextMappingSource::ToUnicode,
+        Some(FontDecodeSource::PredefinedCMap) => TextMappingSource::PredefinedCMap,
+        Some(FontDecodeSource::EncodingDifferences) => TextMappingSource::EncodingDifferences,
+        Some(FontDecodeSource::GlyphName) => TextMappingSource::GlyphName,
+        Some(FontDecodeSource::FontCMap) => TextMappingSource::FontCMap,
+        Some(FontDecodeSource::IdentityCid) => TextMappingSource::IdentityCid,
+        Some(FontDecodeSource::NativePdfText) => TextMappingSource::NativePdfText,
+        Some(FontDecodeSource::Unknown) => TextMappingSource::Unknown,
+        None if chunk.text.contains('\u{FFFD}') => TextMappingSource::Unknown,
+        None => TextMappingSource::NativePdfText,
     }
 }
 
-fn provenance_for_chunk(chunk: &TextChunk) -> Vec<TextProvenanceFlag> {
+fn provenance_for_char(chunk: &TextChunk, char_offset: usize) -> Vec<TextProvenanceFlag> {
     let mut flags = Vec::new();
-    if chunk.is_actual_text {
-        flags.push(TextProvenanceFlag::ActualText);
-    } else {
-        flags.push(TextProvenanceFlag::NativePdfText);
-    }
+    flags.push(match mapping_source_for_char(chunk, char_offset) {
+        TextMappingSource::ActualText => TextProvenanceFlag::ActualText,
+        TextMappingSource::ToUnicode => TextProvenanceFlag::ToUnicode,
+        TextMappingSource::PredefinedCMap => TextProvenanceFlag::PredefinedCMap,
+        TextMappingSource::EmbeddedCMap => TextProvenanceFlag::FallbackCMap,
+        TextMappingSource::EncodingDifferences => TextProvenanceFlag::EncodingDifferences,
+        TextMappingSource::GlyphName | TextMappingSource::UniName => {
+            TextProvenanceFlag::FallbackGlyphName
+        }
+        TextMappingSource::FontCMap => TextProvenanceFlag::FontCMap,
+        TextMappingSource::IdentityCid => TextProvenanceFlag::IdentityCid,
+        TextMappingSource::Ocr => TextProvenanceFlag::Ocr,
+        TextMappingSource::Unknown => TextProvenanceFlag::UnknownUnmapped,
+        TextMappingSource::TaggedPdf | TextMappingSource::NativePdfText => {
+            TextProvenanceFlag::NativePdfText
+        }
+    });
     if chunk.is_invisible {
         flags.push(TextProvenanceFlag::HiddenOrInvisible);
         flags.push(TextProvenanceFlag::Ocr);
     }
+    if chunk
+        .text
+        .chars()
+        .nth(char_offset)
+        .is_some_and(|ch| matches!(ch, '\u{FB00}'..='\u{FB06}'))
+    {
+        flags.push(TextProvenanceFlag::LigatureExpansion);
+    }
     flags
+}
+
+fn structure_role_fields(
+    entry: &Option<TextStructureEntry>,
+) -> (Option<String>, Option<String>, TextRoleSource) {
+    entry
+        .as_ref()
+        .map(|entry| {
+            (
+                Some(entry.normalized_role.clone()),
+                Some(entry.original_role.clone()),
+                entry.role_source,
+            )
+        })
+        .unwrap_or((None, None, TextRoleSource::Unknown))
+}
+
+fn aggregate_mapping_source(chars: &[TextSemanticChar]) -> TextMappingSource {
+    let mut counts: HashMap<TextMappingSource, usize> = HashMap::new();
+    for ch in chars {
+        *counts.entry(ch.mapping_source).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(source, _)| source)
+        .unwrap_or(TextMappingSource::Unknown)
+}
+
+fn provenance_summary_for_chars(chars: &[TextSemanticChar]) -> TextProvenanceSummary {
+    let refs: Vec<&TextSemanticChar> = chars.iter().collect();
+    provenance_summary_for_char_refs(&refs)
+}
+
+fn provenance_summary_for_char_refs(chars: &[&TextSemanticChar]) -> TextProvenanceSummary {
+    let mut summary = TextProvenanceSummary::default();
+    for ch in chars {
+        add_char_to_summary(&mut summary, ch);
+    }
+    summary
+}
+
+fn provenance_summary_for_spans(spans: &[TextSemanticSpan]) -> TextProvenanceSummary {
+    let mut summary = TextProvenanceSummary::default();
+    for span in spans {
+        merge_summary(&mut summary, &span.provenance_summary);
+    }
+    summary
+}
+
+fn provenance_summary_for_lines(lines: &[TextSemanticLine]) -> TextProvenanceSummary {
+    let mut summary = TextProvenanceSummary::default();
+    for line in lines {
+        merge_summary(&mut summary, &line.provenance_summary);
+    }
+    summary
+}
+
+fn add_char_to_summary(summary: &mut TextProvenanceSummary, ch: &TextSemanticChar) {
+    match ch.mapping_source {
+        TextMappingSource::ActualText => summary.actual_text += 1,
+        TextMappingSource::ToUnicode => summary.tounicode += 1,
+        TextMappingSource::EmbeddedCMap => summary.embedded_cmap += 1,
+        TextMappingSource::PredefinedCMap => summary.predefined_cmap += 1,
+        TextMappingSource::EncodingDifferences => summary.encoding_differences += 1,
+        TextMappingSource::GlyphName | TextMappingSource::UniName => summary.glyph_name += 1,
+        TextMappingSource::FontCMap => summary.font_cmap += 1,
+        TextMappingSource::IdentityCid => summary.identity_cid += 1,
+        TextMappingSource::Ocr => summary.ocr += 1,
+        TextMappingSource::Unknown => summary.unknown_unmapped += 1,
+        TextMappingSource::NativePdfText | TextMappingSource::TaggedPdf => {}
+    }
+    for flag in &ch.provenance {
+        match flag {
+            TextProvenanceFlag::SyntheticLayout => summary.synthetic_layout += 1,
+            TextProvenanceFlag::HiddenOrInvisible => summary.hidden_or_invisible += 1,
+            TextProvenanceFlag::TaggedMcid => summary.tagged_mcid += 1,
+            TextProvenanceFlag::HeuristicRole => summary.heuristic_role += 1,
+            TextProvenanceFlag::LigatureExpansion => summary.ligature_expansion += 1,
+            TextProvenanceFlag::HyphenationJoin => summary.hyphenation_join += 1,
+            TextProvenanceFlag::NormalizedWhitespace => summary.normalized_whitespace += 1,
+            _ => {}
+        }
+    }
+}
+
+fn merge_summary(into: &mut TextProvenanceSummary, other: &TextProvenanceSummary) {
+    into.actual_text += other.actual_text;
+    into.tounicode += other.tounicode;
+    into.embedded_cmap += other.embedded_cmap;
+    into.predefined_cmap += other.predefined_cmap;
+    into.encoding_differences += other.encoding_differences;
+    into.glyph_name += other.glyph_name;
+    into.font_cmap += other.font_cmap;
+    into.identity_cid += other.identity_cid;
+    into.ocr += other.ocr;
+    into.synthetic_layout += other.synthetic_layout;
+    into.hidden_or_invisible += other.hidden_or_invisible;
+    into.unknown_unmapped += other.unknown_unmapped;
+    into.tagged_mcid += other.tagged_mcid;
+    into.heuristic_role += other.heuristic_role;
+    into.ligature_expansion += other.ligature_expansion;
+    into.hyphenation_join += other.hyphenation_join;
+    into.normalized_whitespace += other.normalized_whitespace;
+}
+
+fn mcids_for_chars(chars: &[TextSemanticChar]) -> Vec<i64> {
+    let refs: Vec<&TextSemanticChar> = chars.iter().collect();
+    mcids_for_char_refs(&refs)
+}
+
+fn mcids_for_char_refs(chars: &[&TextSemanticChar]) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for ch in chars {
+        if let Some(mcid) = ch.mcid {
+            if seen.insert(mcid) {
+                out.push(mcid);
+            }
+        }
+    }
+    out
+}
+
+fn mcids_for_spans(spans: &[TextSemanticSpan]) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for span in spans {
+        for mcid in &span.mcids {
+            if seen.insert(*mcid) {
+                out.push(*mcid);
+            }
+        }
+    }
+    out
+}
+
+fn mcids_for_lines(lines: &[TextSemanticLine]) -> Vec<i64> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for line in lines {
+        for mcid in &line.mcids {
+            if seen.insert(*mcid) {
+                out.push(*mcid);
+            }
+        }
+    }
+    out
+}
+
+fn role_from_spans(spans: &[TextSemanticSpan]) -> Option<(TextRole, TextRoleSource, f32)> {
+    let mut counts: HashMap<TextRole, (usize, TextRoleSource)> = HashMap::new();
+    for span in spans {
+        let Some(role) = span
+            .struct_role
+            .as_ref()
+            .map(|role| text_role_from_tag(role))
+            .filter(|role| *role != TextRole::Unknown)
+        else {
+            continue;
+        };
+        let entry = counts.entry(role).or_insert((0, span.role_source));
+        entry.0 += 1;
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, (count, _))| *count)
+        .map(|(role, (_, source))| {
+            (
+                role,
+                source,
+                if source == TextRoleSource::Tagged {
+                    0.94
+                } else {
+                    0.82
+                },
+            )
+        })
+}
+
+fn role_from_lines(lines: &[TextSemanticLine]) -> Option<(TextRole, TextRoleSource, f32)> {
+    let mut counts: HashMap<TextRole, (usize, TextRoleSource, f32)> = HashMap::new();
+    for line in lines {
+        if !matches!(
+            line.role_source,
+            TextRoleSource::Tagged | TextRoleSource::RoleMap
+        ) {
+            continue;
+        }
+        let entry = counts
+            .entry(line.role)
+            .or_insert((0, line.role_source, line.role_confidence));
+        entry.0 += 1;
+        entry.2 = entry.2.max(line.role_confidence);
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, (count, _, _))| *count)
+        .map(|(role, (_, source, confidence))| (role, source, confidence))
+}
+
+fn block_structure_roles(lines: &[TextSemanticLine]) -> (Option<String>, Option<String>) {
+    for line in lines {
+        for span in &line.spans {
+            if span.struct_role.is_some() || span.original_role.is_some() {
+                return (span.struct_role.clone(), span.original_role.clone());
+            }
+        }
+    }
+    (None, None)
+}
+
+pub fn text_role_from_tag(role: &str) -> TextRole {
+    match role {
+        "H" | "H1" | "H2" | "H3" | "H4" | "H5" | "H6" => TextRole::Heading,
+        "L" | "LI" | "Lbl" | "LBody" => TextRole::List,
+        "Table" | "TR" | "TH" | "TD" | "THead" | "TBody" | "TFoot" => TextRole::TableCandidate,
+        "Figure" | "Caption" => TextRole::FigureCaption,
+        "Note" | "Reference" => TextRole::Footnote,
+        "Artifact" => TextRole::Unknown,
+        "P" | "Span" | "Sect" | "Part" | "Document" | "Div" => TextRole::BodyText,
+        _ => TextRole::Unknown,
+    }
 }
 
 fn direction_for_chunk(
@@ -1364,6 +2004,11 @@ fn merge_counters(into: &mut TextExtractionCounters, other: &TextExtractionCount
     into.vertical_runs += other.vertical_runs;
     into.deduplicated_runs += other.deduplicated_runs;
     into.low_confidence_order_edges += other.low_confidence_order_edges;
+    into.struct_tree_nodes += other.struct_tree_nodes;
+    into.mcids_mapped += other.mcids_mapped;
+    into.mcids_unmapped += other.mcids_unmapped;
+    into.cjk_tokens += other.cjk_tokens;
+    into.cjk_simple_tokens += other.cjk_simple_tokens;
 }
 
 fn search_semantic_document(
@@ -1422,6 +2067,28 @@ fn search_semantic_document(
                     quads,
                     confidence: 0.86,
                     provenance,
+                    provenance_summary: provenance_summary_for_char_refs(&unique_refs),
+                    mcids: mcids_for_char_refs(&unique_refs),
+                    role: unique_refs
+                        .iter()
+                        .find_map(|ch| {
+                            ch.struct_role
+                                .as_ref()
+                                .map(|role| text_role_from_tag(role))
+                                .filter(|role| *role != TextRole::Unknown)
+                        })
+                        .unwrap_or(TextRole::Unknown),
+                    role_source: unique_refs
+                        .iter()
+                        .map(|ch| ch.role_source)
+                        .find(|source| {
+                            matches!(source, TextRoleSource::Tagged | TextRoleSource::RoleMap)
+                        })
+                        .unwrap_or(TextRoleSource::Unknown),
+                    includes_hidden: unique_refs.iter().any(|ch| {
+                        ch.provenance
+                            .contains(&TextProvenanceFlag::HiddenOrInvisible)
+                    }),
                 });
             }
             start = to.max(start + 1);
@@ -1558,6 +2225,7 @@ mod tests {
             is_vertical: false,
             is_invisible: false,
             is_actual_text: false,
+            mapping_sources: Vec::new(),
         }
     }
 

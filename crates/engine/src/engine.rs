@@ -574,6 +574,19 @@ impl ContentEngine {
         Ok(collector.collect(&ops))
     }
 
+    /// Collect positioned text runs with active marked-content IDs. This is used
+    /// by the Prompt 06B semantic model bridge so `/StructTreeRoot` MCIDs attach
+    /// to the same character/quad model used by search and redaction planning.
+    pub fn collect_page_marked_text_chunks(
+        &self,
+        page_number: usize,
+    ) -> Result<Vec<crate::text::MarkedTextChunk>> {
+        let ops = self.get_page_content(page_number)?;
+        let resources = self.get_page_resources(page_number)?;
+        let mut collector = crate::text::TextCollector::new(resources, self.doc.reader());
+        Ok(collector.collect_marked(&ops))
+    }
+
     /// Structured (layout-aware) text for a page: the page's text in
     /// reading order recovered by XY-cut segmentation, with blocks separated by
     /// a blank line. Correct for multi-column pages where the default
@@ -677,16 +690,37 @@ impl ContentEngine {
         } else {
             pages.to_vec()
         };
+        let structure = if options.include_structure {
+            Some(crate::semantic::extract_text_structure_context(
+                self,
+                &page_numbers,
+                options.max_structure_nodes,
+                options.max_mcid_entries,
+            )?)
+        } else {
+            None
+        };
         let mut out = Vec::with_capacity(page_numbers.len());
         for page_number in page_numbers {
             let page_box = self.page_box(page_number)?;
-            let chunks = self.collect_page_text_chunks(page_number)?;
-            out.push(crate::text::build_text_semantic_page(
-                page_number,
-                page_box,
-                chunks,
-                &options,
-            ));
+            if options.include_structure {
+                let chunks = self.collect_page_marked_text_chunks(page_number)?;
+                out.push(crate::text::build_text_semantic_page_from_marked_chunks(
+                    page_number,
+                    page_box,
+                    chunks,
+                    structure.as_ref(),
+                    &options,
+                ));
+            } else {
+                let chunks = self.collect_page_text_chunks(page_number)?;
+                out.push(crate::text::build_text_semantic_page(
+                    page_number,
+                    page_box,
+                    chunks,
+                    &options,
+                ));
+            }
         }
         Ok(crate::text::build_text_semantic_document(out, Vec::new()))
     }

@@ -1019,6 +1019,7 @@ fn ocr_word_to_chunk(
         is_vertical: false,
         is_invisible: false,
         is_actual_text: false,
+        mapping_sources: Vec::new(),
     }
 }
 
@@ -1124,6 +1125,7 @@ fn merge_ocr_words_into_lines(
             is_vertical: false,
             is_invisible: false,
             is_actual_text: false,
+            mapping_sources: Vec::new(),
         });
     }
     lines
@@ -1253,6 +1255,7 @@ fn build_ocr_run(words: &[crate::text::TextChunk], idxs: &[usize]) -> crate::tex
         is_vertical: false,
         is_invisible: false,
         is_actual_text: false,
+        mapping_sources: Vec::new(),
     }
 }
 

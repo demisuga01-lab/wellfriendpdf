@@ -752,6 +752,7 @@ fn reading_order_reconstructor_handles_all_new_chunk_fields() {
             is_vertical: false,
             is_invisible: false,
             is_actual_text: false,
+            mapping_sources: Vec::new(),
         },
         TextChunk {
             text: "B".to_string(),
@@ -764,6 +765,7 @@ fn reading_order_reconstructor_handles_all_new_chunk_fields() {
             is_vertical: false,
             is_invisible: true,
             is_actual_text: false,
+            mapping_sources: Vec::new(),
         },
         TextChunk {
             text: "C".to_string(),
@@ -776,6 +778,7 @@ fn reading_order_reconstructor_handles_all_new_chunk_fields() {
             is_vertical: true,
             is_invisible: false,
             is_actual_text: false,
+            mapping_sources: Vec::new(),
         },
     ];
     let lines = r.reconstruct(chunks);

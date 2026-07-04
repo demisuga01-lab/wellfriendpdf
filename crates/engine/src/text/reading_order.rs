@@ -709,6 +709,7 @@ mod tests {
             is_vertical: false,
             is_invisible: false,
             is_actual_text: false,
+            mapping_sources: Vec::new(),
         }
     }
 
@@ -725,6 +726,7 @@ mod tests {
             is_vertical: true,
             is_invisible: false,
             is_actual_text: false,
+            mapping_sources: Vec::new(),
         }
     }
 
@@ -1163,6 +1165,7 @@ mod tests {
                 is_vertical: false,
                 is_invisible: false,
                 is_actual_text: false,
+                mapping_sources: Vec::new(),
             },
             TextChunk {
                 text: "\u{05DC}".to_string(), // lamed, middle
@@ -1175,6 +1178,7 @@ mod tests {
                 is_vertical: false,
                 is_invisible: false,
                 is_actual_text: false,
+                mapping_sources: Vec::new(),
             },
             TextChunk {
                 text: "\u{05D4}".to_string(), // he, rightmost on page
@@ -1187,6 +1191,7 @@ mod tests {
                 is_vertical: false,
                 is_invisible: false,
                 is_actual_text: false,
+                mapping_sources: Vec::new(),
             },
         ];
         let lines = r.reconstruct(chunks);

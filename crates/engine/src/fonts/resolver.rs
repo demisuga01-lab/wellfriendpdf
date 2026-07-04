@@ -85,6 +85,19 @@ pub struct FontResolver {
     wmode: u8,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FontDecodeSource {
+    ActualText,
+    ToUnicode,
+    PredefinedCMap,
+    EncodingDifferences,
+    GlyphName,
+    FontCMap,
+    IdentityCid,
+    NativePdfText,
+    Unknown,
+}
+
 impl FontResolver {
     pub fn new(font_dict: &PdfDictionary, reader: &PdfReader) -> Self {
         Self::build(font_dict, Some(reader))
@@ -150,12 +163,64 @@ impl FontResolver {
     }
 
     pub fn decode_char(&self, code: u16) -> String {
+        self.decode_char_with_source(code).0
+    }
+
+    pub fn decode_char_with_source(&self, code: u16) -> (String, FontDecodeSource) {
         let bytes = if self.code_size == 2 {
             vec![(code >> 8) as u8, (code & 0xFF) as u8]
         } else {
             vec![code as u8]
         };
-        self.decode_string(&bytes)
+        self.decode_code_bytes_with_source(code, &bytes)
+    }
+
+    fn decode_code_bytes_with_source(
+        &self,
+        code: u16,
+        _bytes: &[u8],
+    ) -> (String, FontDecodeSource) {
+        if let Some(text) = self.to_unicode.as_ref().and_then(|cmap| cmap.lookup(code)) {
+            return (text.to_string(), FontDecodeSource::ToUnicode);
+        }
+
+        let glyph_name = self
+            .encoding_table
+            .as_ref()
+            .and_then(|table| table.get(code as usize))
+            .map(String::as_str)
+            .unwrap_or(".notdef");
+
+        if glyph_name != ".notdef" {
+            if let Some(ch) = glyph_name_to_unicode(glyph_name) {
+                let source = if glyph_name.starts_with("uni") || glyph_name.starts_with('u') {
+                    FontDecodeSource::GlyphName
+                } else {
+                    FontDecodeSource::EncodingDifferences
+                };
+                return (expand_ligature(ch), source);
+            }
+        }
+
+        if let Some(ch) = char::from_u32(u32::from(code)) {
+            if !ch.is_control() || ch.is_whitespace() {
+                let source = if self.font_type.is_cid() {
+                    FontDecodeSource::IdentityCid
+                } else {
+                    FontDecodeSource::NativePdfText
+                };
+                return (ch.to_string(), source);
+            }
+        }
+        if let Some(text) = self
+            .predefined_cmap
+            .as_ref()
+            .and_then(|info| predefined_cmap::unicode_for_code(info.name, code))
+        {
+            return (text, FontDecodeSource::PredefinedCMap);
+        }
+        log::warn!("font decode produced replacement character for code {code:#06X}");
+        ("\u{FFFD}".to_string(), FontDecodeSource::Unknown)
     }
 
     pub fn glyph_name(&self, code: u16) -> Option<&str> {

@@ -28,6 +28,11 @@ The new semantic text model adds lower-level geometry:
 
 Future RAG chunking can use these fields for span-level citations and highlight previews without changing chunk boundaries.
 
+Prompt 06B adds MCID, StructTree role, and provenance summaries to the same
+model. RAG citations should prefer spans/search matches whose provenance is
+native PDF text, ToUnicode, or tagged ActualText, and should surface
+low-confidence, hidden/OCR, or unknown provenance to callers.
+
 ## Recommended Use
 
 - Use `oxide chunk` for production RAG ingestion.

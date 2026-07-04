@@ -492,6 +492,20 @@ struct ExtractTextArgs {
     /// (Prompt 06 geometry/provenance model). Ignored without either flag.
     #[arg(long, default_value = "text")]
     format: String,
+    /// Include detailed structure attachment in model-json output.
+    #[arg(long)]
+    include_structure: bool,
+    /// Include detailed char/span provenance in model-json output.
+    #[arg(long)]
+    include_provenance: bool,
+    /// CJK tokenization for model-json: char, simple, or dictionary (dictionary
+    /// currently aliases the bounded simple segmenter unless an API caller
+    /// supplies a dictionary in a later phase).
+    #[arg(long, default_value = "char")]
+    cjk_segmentation: String,
+    /// Include invisible/hidden text in model-json output.
+    #[arg(long)]
+    include_hidden: bool,
     /// Restrict extraction to a page box in PDF user-space points:
     /// x0,y0,x1,y1 with origin bottom-left.
     #[arg(long)]
@@ -1331,8 +1345,7 @@ fn run_extract_text_structured(
         format.as_str(),
         "model-json" | "model_json" | "semantic-model"
     ) {
-        let model = engine
-            .extract_text_semantic_model(page_nums, oxide_engine::TextSemanticOptions::default())?;
+        let model = engine.extract_text_semantic_model(page_nums, semantic_model_options(args)?)?;
         let s = serde_json::to_string_pretty(&model)?;
         match &args.output {
             Some(path) => std::fs::write(path, s)?,
@@ -1408,8 +1421,7 @@ fn run_extract_text_semantic(
         format.as_str(),
         "model-json" | "model_json" | "semantic-model"
     ) {
-        let model = engine
-            .extract_text_semantic_model(page_nums, oxide_engine::TextSemanticOptions::default())?;
+        let model = engine.extract_text_semantic_model(page_nums, semantic_model_options(args)?)?;
         let output = serde_json::to_string_pretty(&model)?;
         match &args.output {
             Some(path) => std::fs::write(path, output)?,
@@ -1449,6 +1461,29 @@ fn run_extract_text_semantic(
         }
     }
     Ok(())
+}
+
+fn semantic_model_options(
+    args: &ExtractTextArgs,
+) -> Result<oxide_engine::TextSemanticOptions, Box<dyn Error>> {
+    let cjk_segmentation = match args.cjk_segmentation.to_ascii_lowercase().as_str() {
+        "char" => oxide_engine::CjkSegmentationMode::Char,
+        "simple" => oxide_engine::CjkSegmentationMode::Simple,
+        "dictionary" | "dict" => oxide_engine::CjkSegmentationMode::Dictionary,
+        other => {
+            return Err(usage_error(format!(
+                "unknown --cjk-segmentation '{other}'; use char, simple, or dictionary"
+            )));
+        }
+    };
+    let defaults = oxide_engine::TextSemanticOptions::default();
+    Ok(oxide_engine::TextSemanticOptions {
+        include_structure: args.include_structure || args.semantic,
+        include_detailed_provenance: args.include_provenance,
+        cjk_segmentation,
+        include_hidden: args.include_hidden || defaults.include_hidden,
+        ..defaults
+    })
 }
 
 /// OCR-aware text extraction: parse the document through the OCR seam so that

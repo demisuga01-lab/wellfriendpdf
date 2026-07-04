@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::content::{ContentOperation, GraphicsState, Operand};
 use crate::engine::PageResources;
-use crate::fonts::FontResolver;
+use crate::fonts::{FontDecodeSource, FontResolver};
 use crate::info::decode_pdf_text_string;
 use crate::reader::PdfReader;
 
@@ -18,6 +18,7 @@ pub struct TextChunk {
     pub is_vertical: bool,
     pub is_invisible: bool,
     pub is_actual_text: bool,
+    pub mapping_sources: Vec<FontDecodeSource>,
 }
 
 #[derive(Debug, Clone)]
@@ -288,15 +289,21 @@ impl<'a> TextCollector<'a> {
         let is_vertical = resolver.map(FontResolver::is_vertical).unwrap_or(false);
         let codes = extract_char_codes(&bytes, code_size);
         let mut decoded_text = String::new();
+        let mut mapping_sources = Vec::new();
         let mut total_advance = 0.0_f64;
 
         for code in &codes {
-            let ch_text = match resolver {
-                Some(resolver) => resolver.decode_char(*code),
-                None if (0x20..=0x7E).contains(code) => char::from(*code as u8).to_string(),
-                None => "\u{FFFD}".to_string(),
+            let (ch_text, source) = match resolver {
+                Some(resolver) => resolver.decode_char_with_source(*code),
+                None if (0x20..=0x7E).contains(code) => (
+                    char::from(*code as u8).to_string(),
+                    FontDecodeSource::NativePdfText,
+                ),
+                None => ("\u{FFFD}".to_string(), FontDecodeSource::Unknown),
             };
+            let source_count = ch_text.chars().count().max(1);
             decoded_text.push_str(&ch_text);
+            mapping_sources.extend(std::iter::repeat_n(source, source_count));
 
             let is_space = resolver
                 .map(|resolver| resolver.is_space_code(*code))
@@ -359,6 +366,7 @@ impl<'a> TextCollector<'a> {
                 is_vertical,
                 is_invisible,
                 is_actual_text: false,
+                mapping_sources,
             });
         }
     }
@@ -438,6 +446,8 @@ fn apply_actual_text_override(
     } else {
         chunks[before].text = text;
         chunks[before].is_actual_text = true;
+        chunks[before].mapping_sources =
+            vec![FontDecodeSource::ActualText; chunks[before].text.chars().count()];
         chunks.truncate(before + 1);
     }
     frame.emitted = true;
@@ -835,6 +845,7 @@ mod tests {
             is_vertical: false,
             is_invisible: true,
             is_actual_text: false,
+            mapping_sources: Vec::new(),
         };
         assert_eq!(chunk.right(), 15.0);
         assert!(chunk.is_whitespace());

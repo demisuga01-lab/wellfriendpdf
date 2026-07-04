@@ -196,8 +196,9 @@ pub use filters::{
 };
 pub use fonts::variations::{AxisValue, VariationRequest};
 pub use fonts::{
-    BundledFontProvider, FontMatch, FontMatchRequest, FontProvider, FontProviderSource,
-    FontResolver, FontType, ShapeOptions, ShapedGlyph, ShapedRun, TextDirection, TextShaper,
+    BundledFontProvider, FontDecodeSource, FontMatch, FontMatchRequest, FontProvider,
+    FontProviderSource, FontResolver, FontType, ShapeOptions, ShapedGlyph, ShapedRun,
+    TextDirection, TextShaper,
 };
 pub use fonts_report::{list_fonts, FontInfo};
 pub use html::{HtmlExporter, HtmlMode, HtmlOptions};
@@ -249,13 +250,14 @@ pub use structural::{
     encrypt, linearize::linearize, optimize, repair, rotate_pages, OptimizeReport, Rotation,
 };
 pub use text::{
-    bounded_text_parallel_window, LineEnding, MarkedTextChunk, ReadingOrderReconstructor,
-    SemanticTextDirection, TextChunk, TextCollector, TextDiagnostic, TextExtractOptions,
-    TextExtractionCounters, TextExtractionMode, TextExtractor, TextFormatOptions, TextFormatter,
-    TextLayoutStrategy, TextLine, TextMappingSource, TextProvenanceFlag, TextQuad, TextRole,
-    TextSearchMatch, TextSearchOptions, TextSemanticBlock, TextSemanticChar, TextSemanticDocument,
-    TextSemanticLine, TextSemanticOptions, TextSemanticPage, TextSemanticParagraph,
-    TextSemanticSpan, TextSemanticWord,
+    bounded_text_parallel_window, CjkSegmentationMode, LineEnding, MarkedTextChunk,
+    ReadingOrderReconstructor, SemanticTextDirection, TextChunk, TextCollector, TextDiagnostic,
+    TextExtractOptions, TextExtractionCounters, TextExtractionMode, TextExtractor,
+    TextFormatOptions, TextFormatter, TextLayoutStrategy, TextLine, TextMappingSource,
+    TextProvenanceFlag, TextProvenanceSummary, TextQuad, TextRole, TextRoleSource, TextSearchMatch,
+    TextSearchOptions, TextSemanticBlock, TextSemanticChar, TextSemanticDocument, TextSemanticLine,
+    TextSemanticOptions, TextSemanticPage, TextSemanticParagraph, TextSemanticSpan,
+    TextSemanticWord, TextStructureContext, TextStructureEntry, TextStructurePageSummary,
 };
 pub use utilities::{
     add_page_numbers_pdf, attachments_json, decrypt_pdf, encrypt_pdf, export_pdf_pages_to_images,
