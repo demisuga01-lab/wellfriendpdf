@@ -34,12 +34,21 @@ same JSON envelope and native ownership rules.
 
 ## Honest Gaps
 
-Password open is public in WASM but remains partial for .NET/Java because the
-C ABI open function is byte-only. Progress and cancellation stay unsupported on
-WASM/.NET/Java because the current synchronous facade calls do not observe a
-binding-level token. Browser/WebWorker WASM does not read host paths or write
-files directly. WASM package glue must be regenerated with `wasm-pack` or
-`wasm-bindgen` before publish.
+Prompt 02B closed the bounded leftovers from the initial Prompt 02 report.
+Password open is public in WASM and now also routes through the C ABI, .NET,
+and Java byte-based open paths. Progress remains `progress_not_supported` in
+the shared feature report. Cancellation remains unsupported for the Prompt 02
+WASM/.NET/Java report/output bindings; the feature report names the existing
+engine render internals that can observe `CancelToken`, but no binding exposes
+a no-op token API. Java Maven/JAR package smoke is covered by
+`scripts/prompt02b_java_package_smoke.ps1`; Gradle is documented as
+consumer-only because Maven is the authoritative Java package producer.
+
+Browser/WebWorker WASM does not read host paths or write files directly. WASM
+package glue must be regenerated with `wasm-pack` or `wasm-bindgen` before
+publish.
+
+The Prompt 02B closure table is `docs/bindings_prompt02b_closure_audit.md`.
 
 The bounded gap list is generated in
 `docs/bindings_prompt02_gap_matrix.md` and

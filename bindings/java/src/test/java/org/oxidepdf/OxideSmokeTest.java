@@ -53,6 +53,29 @@ public final class OxideSmokeTest {
             writePrompt02Artifact(fixture, reports, sanitized, canonicalized);
         }
 
+        try (Oxide.Document emptyPassword = Oxide.Document.open(fixture, "")) {
+            assertTrue(emptyPassword.pageCount() >= 1, "explicit empty password open");
+        }
+        try (Oxide.Document ignoredPassword = Oxide.Document.open(
+                Files.readAllBytes(fixture),
+                "ignored-for-unencrypted")) {
+            assertTrue(ignoredPassword.pageCount() >= 1, "password open from bytes");
+        }
+        String feature = Oxide.featureReportJson();
+        assertTrue(feature.contains("\"progress\""), "progress feature posture");
+        assertTrue(feature.contains("progress_not_supported"), "progress unsupported status");
+        assertTrue(feature.contains("\"cancellation\""), "cancellation feature posture");
+        assertTrue(
+            feature.contains("cancellation_not_supported_for_prompt02_bindings"),
+            "cancellation unsupported status");
+
+        for (int i = 0; i < 25; i++) {
+            try (Oxide.Document doc = Oxide.Document.open(fixture)) {
+                assertTrue(doc.pageCount() >= 1, "stress page count");
+                assertReport(doc.securityReportJson(), "stress security report");
+            }
+        }
+
         boolean threw = false;
         try {
             Oxide.Document.open(new byte[] {1, 2, 3, 4});
@@ -60,6 +83,14 @@ public final class OxideSmokeTest {
             threw = expected.status() != 0;
         }
         assertTrue(threw, "malformed input exception");
+
+        String secret = "do-not-echo-java-password";
+        try {
+            Oxide.Document.open(new byte[] {1, 2, 3, 4}, secret);
+            throw new AssertionError("malformed password open should fail");
+        } catch (Oxide.OxideException expected) {
+            assertTrue(!expected.getMessage().contains(secret), "password not echoed");
+        }
     }
 
     private static void assertReport(String json, String label) {

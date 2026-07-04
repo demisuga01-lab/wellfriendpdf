@@ -34,10 +34,16 @@ may return bytes plus report JSON, but the report JSON itself remains the same.
 ## Limits, Progress, and Cancellation
 
 Limit exceeded states are preserved as engine errors or report diagnostics.
-Progress callbacks and cancellation tokens are not exposed in WASM, .NET, or
-Java because the current facade calls are synchronous and do not observe a
-binding-level token. The gap matrix records these rows as
-`unsupported_reported`.
+Prompt 02B makes progress and cancellation posture machine-readable in the
+shared feature report. Progress is reported as `progress_not_supported` because
+the Prompt 02 report/output facade has no phase or step callback events.
+Cancellation is reported as
+`cancellation_not_supported_for_prompt02_bindings`: engine render internals
+already have `render_page_cancellable` and
+`render_display_list_cancellable_with_mode`, but WASM/.NET/Java Prompt 02
+bindings do not expose token-aware render operations or token-aware facade
+report/output calls. No binding exposes a fake callback, no-op abort signal, or
+ignored cancellation token.
 
 ## Golden Parity
 

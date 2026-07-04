@@ -1,0 +1,75 @@
+{
+  "abi_versions": {
+    "dotnet": 1,
+    "java": 1
+  },
+  "basis": "byte-identical UTF-8 JSON report hashes from .NET and Java C ABI wrappers",
+  "c_abi_basis": "oxide-capi facade tests exercise the same exported functions directly",
+  "common_reports": {
+    "annotations": {
+      "dotnet_sha256": "ac1c91acf43f7cffba9bea61e28ae8e7d2212dc7104c7bbb0fd97aaa7c135232",
+      "java_sha256": "ac1c91acf43f7cffba9bea61e28ae8e7d2212dc7104c7bbb0fd97aaa7c135232",
+      "match": true
+    },
+    "canonicalize": {
+      "dotnet_sha256": "0f4ccfa362091ce2e59939d5da38277faa0f903a98afed9f910ac2d113dfc741",
+      "java_sha256": "0f4ccfa362091ce2e59939d5da38277faa0f903a98afed9f910ac2d113dfc741",
+      "match": true
+    },
+    "chunks": {
+      "dotnet_sha256": "41bd83b50dfec1dee8eaacaf729d15862415e631fd59062611fb8b02c67e083f",
+      "java_sha256": "41bd83b50dfec1dee8eaacaf729d15862415e631fd59062611fb8b02c67e083f",
+      "match": true
+    },
+    "color": {
+      "dotnet_sha256": "4a517b7e233c55d5243625b30ff18c30dd33a0df2d5167136e321454c03f20ea",
+      "java_sha256": "4a517b7e233c55d5243625b30ff18c30dd33a0df2d5167136e321454c03f20ea",
+      "match": true
+    },
+    "feature": {
+      "dotnet_sha256": "43d78aba1ecd8108664437a0be53b8dbe6f04de2c94cbde648d5812106df2540",
+      "java_sha256": "43d78aba1ecd8108664437a0be53b8dbe6f04de2c94cbde648d5812106df2540",
+      "match": true
+    },
+    "forms": {
+      "dotnet_sha256": "c657ca9d7e88b253083c15404c05b8245c9aa4b4e41fe7ca666605ed7cd8a4a2",
+      "java_sha256": "c657ca9d7e88b253083c15404c05b8245c9aa4b4e41fe7ca666605ed7cd8a4a2",
+      "match": true
+    },
+    "interactive": {
+      "dotnet_sha256": "cc1e1a61e1497b0c518b279a3a7f0b61446abcc1a06ec7e9ea1a0bbea92288a8",
+      "java_sha256": "cc1e1a61e1497b0c518b279a3a7f0b61446abcc1a06ec7e9ea1a0bbea92288a8",
+      "match": true
+    },
+    "pages": {
+      "dotnet_sha256": "ca83702e8ca26a0226b8dce870141e74b5a4a32be88a2139f803c2f0f0c2350a",
+      "java_sha256": "ca83702e8ca26a0226b8dce870141e74b5a4a32be88a2139f803c2f0f0c2350a",
+      "match": true
+    },
+    "parser": {
+      "dotnet_sha256": "0ceed52840510991c9c57f90088d1f4d83ef71c7b6045c9b0d3a494b6d304934",
+      "java_sha256": "0ceed52840510991c9c57f90088d1f4d83ef71c7b6045c9b0d3a494b6d304934",
+      "match": true
+    },
+    "sanitize": {
+      "dotnet_sha256": "3354f9c8a9bd9936f8304643a6d81923d6363e94974fb2581be1858329ec934d",
+      "java_sha256": "3354f9c8a9bd9936f8304643a6d81923d6363e94974fb2581be1858329ec934d",
+      "match": true
+    },
+    "security": {
+      "dotnet_sha256": "a9a1e700acc839a2b224c48cc9edc2ea1e7a7ea2faa8ccbf5d1e9eb6b90ae899",
+      "java_sha256": "a9a1e700acc839a2b224c48cc9edc2ea1e7a7ea2faa8ccbf5d1e9eb6b90ae899",
+      "match": true
+    },
+    "validate_security": {
+      "dotnet_sha256": "b8c7cd063bd8654f8e1e2ef61fcccf58feef6529e3911c8d9e0ff58ae8886dee",
+      "java_sha256": "b8c7cd063bd8654f8e1e2ef61fcccf58feef6529e3911c8d9e0ff58ae8886dee",
+      "match": true
+    }
+  },
+  "dotnet_engine_version": "0.1.0",
+  "java_engine_version": "0.1.0",
+  "mismatches": [],
+  "status": "pass",
+  "wasm_basis": "oxide-wasm methods call oxide_engine::sdk directly; runtime hash comparison awaits regenerated wasm-bindgen glue"
+}

@@ -283,6 +283,21 @@ pub fn feature_report_json() -> Result<String> {
             "signature_report", "font_report", "decode_budget_report",
             "resource_dedup_report", "redaction",
         ],
+        "progress": {
+            "status": "progress_not_supported",
+            "exposed_bindings": [],
+            "engine_observable_operations": [],
+            "reason": "Prompt 02 SDK report/output facade operations do not emit progress events yet."
+        },
+        "cancellation": {
+            "status": "cancellation_not_supported_for_prompt02_bindings",
+            "exposed_bindings": [],
+            "engine_observable_operations": [
+                "render_page_cancellable",
+                "render_display_list_cancellable_with_mode"
+            ],
+            "reason": "Engine render internals can observe CancelToken, but the Prompt 02 WASM/.NET/Java report/output SDK surfaces do not expose a cancellable render operation or accept binding-level cancellation tokens."
+        },
     });
     serde_json::to_string(&json!({
         "schema_version": REPORT_ENVELOPE_VERSION,
@@ -558,6 +573,16 @@ mod tests {
         );
         let v = assert_envelope(&feature_report_json().unwrap(), "feature_report");
         assert!(v["report"]["engine_version"].is_string());
+        assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
+        assert_eq!(
+            v["report"]["cancellation"]["status"],
+            "cancellation_not_supported_for_prompt02_bindings"
+        );
+        assert!(v["report"]["cancellation"]["engine_observable_operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|op| op == "render_page_cancellable"));
     }
 
     #[test]

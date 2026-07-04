@@ -9,6 +9,8 @@ import java.lang.foreign.MemorySegment;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -59,18 +61,39 @@ public final class Oxide {
         }
 
         public static Document open(Path path) throws IOException {
-            return open(Files.readAllBytes(path));
+            return open(path, null);
+        }
+
+        public static Document open(Path path, String password) throws IOException {
+            Objects.requireNonNull(path, "path");
+            return open(Files.readAllBytes(path), password);
         }
 
         public static Document open(byte[] bytes) {
+            return open(bytes, null);
+        }
+
+        public static Document open(byte[] bytes, String password) {
             Objects.requireNonNull(bytes, "bytes");
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment data = arena.allocate(bytes.length);
                 data.copyFrom(MemorySegment.ofArray(bytes));
                 MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
-                MemorySegment handle = (MemorySegment) Native.OPEN.invokeExact(
+                MemorySegment passwordPtr = MemorySegment.NULL;
+                long passwordLen = 0;
+                if (password != null) {
+                    byte[] passwordBytes = password.getBytes(StandardCharsets.UTF_8);
+                    passwordLen = passwordBytes.length;
+                    passwordPtr = arena.allocate(Math.max(passwordBytes.length, 1));
+                    if (passwordBytes.length > 0) {
+                        passwordPtr.copyFrom(MemorySegment.ofArray(passwordBytes));
+                    }
+                }
+                MemorySegment handle = (MemorySegment) Native.OPEN_WITH_PASSWORD.invokeExact(
                     data,
                     (long) bytes.length,
+                    passwordPtr,
+                    passwordLen,
                     err
                 );
                 if (Native.isNull(handle)) {
@@ -291,6 +314,10 @@ public final class Oxide {
             "oxide_document_open_from_bytes",
             FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle OPEN_WITH_PASSWORD = downcall(
+            "oxide_document_open_from_bytes_with_password",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle FREE_DOC = downcall(
             "oxide_document_free",
             FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
@@ -394,11 +421,15 @@ public final class Oxide {
 
             String mapped = mappedLibraryName();
             String rid = runtimeIdentifier();
-            List<Path> roots = List.of(
-                Path.of("").toAbsolutePath(),
-                Path.of("").toAbsolutePath().resolve("target/debug"),
-                Path.of("").toAbsolutePath().resolve("target/release")
-            );
+            Path cwd = Path.of("").toAbsolutePath();
+            List<Path> roots = new ArrayList<>();
+            roots.add(cwd);
+            roots.add(cwd.resolve("target/debug"));
+            roots.add(cwd.resolve("target/release"));
+            Path packageBase = packageBase();
+            if (packageBase != null) {
+                roots.add(packageBase);
+            }
             for (Path root : roots) {
                 Path direct = root.resolve(mapped);
                 if (Files.exists(direct)) {
@@ -410,6 +441,15 @@ public final class Oxide {
                 }
             }
             return null;
+        }
+
+        private static Path packageBase() {
+            try {
+                Path location = Path.of(Oxide.class.getProtectionDomain().getCodeSource().getLocation().toURI());
+                return Files.isRegularFile(location) ? location.getParent() : location;
+            } catch (NullPointerException | SecurityException | URISyntaxException ex) {
+                return null;
+            }
         }
 
         private static String mappedLibraryName() {

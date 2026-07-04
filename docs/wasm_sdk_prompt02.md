@@ -61,6 +61,10 @@ Input bytes are copied into the WASM object so facade calls can reopen through
 the same byte source. Output bytes are returned as fresh JS-owned `Uint8Array`
 values. A closed document rejects future calls.
 
-WASM does not fetch URLs, read host file paths, write host files, spawn OCR,
-load native binaries, or expose progress/cancellation callbacks. Those entries
-are matrixed as unsupported or partial instead of hidden behind no-op wrappers.
+WASM does not fetch URLs, read host file paths, write host files, spawn OCR, or
+load native binaries. Prompt 02B closes progress/cancellation posture through
+the shared feature report: `progress_not_supported` and
+`cancellation_not_supported_for_prompt02_bindings` are reported, and the WASM
+SDK does not expose fake callbacks or ignored `AbortSignal` options. Those
+entries are matrixed as unsupported or partial instead of hidden behind no-op
+wrappers.

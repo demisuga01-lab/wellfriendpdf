@@ -58,15 +58,61 @@ pub unsafe extern "C" fn oxide_document_open_from_bytes(
     len: usize,
     error_out: *mut *mut c_char,
 ) -> *mut OxideDocument {
+    unsafe { open_document_from_parts(data, len, ptr::null(), 0, error_out) }
+}
+
+/// Opens a PDF document from bytes with an optional UTF-8 password.
+///
+/// `password == NULL && password_len == 0` means no password was supplied.
+/// `password != NULL && password_len == 0` means an explicit empty password was
+/// supplied. The password is used only during this open call and is not logged
+/// or retained by the C ABI wrapper.
+///
+/// # Safety
+///
+/// `data` must point to `len` readable bytes. If `password` is non-null, it
+/// must point to `password_len` readable bytes. Passing `password == NULL` with
+/// `password_len > 0` returns an error. If `error_out` is non-null, it must be
+/// writable and any returned string must be freed with `oxide_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_open_from_bytes_with_password(
+    data: *const u8,
+    len: usize,
+    password: *const u8,
+    password_len: usize,
+    error_out: *mut *mut c_char,
+) -> *mut OxideDocument {
+    unsafe { open_document_from_parts(data, len, password, password_len, error_out) }
+}
+
+unsafe fn open_document_from_parts(
+    data: *const u8,
+    len: usize,
+    password: *const u8,
+    password_len: usize,
+    error_out: *mut *mut c_char,
+) -> *mut OxideDocument {
     clear_error(error_out);
     if data.is_null() {
         set_error(error_out, "data pointer is null");
         return ptr::null_mut();
     }
+    if password.is_null() && password_len > 0 {
+        set_error(
+            error_out,
+            "password pointer is null but password_len is non-zero",
+        );
+        return ptr::null_mut();
+    }
 
     match catch_unwind(AssertUnwindSafe(|| {
         let bytes = unsafe { slice::from_raw_parts(data, len) }.to_vec();
-        ContentEngine::open_bytes(bytes)
+        if password.is_null() {
+            ContentEngine::open_bytes(bytes)
+        } else {
+            let password = unsafe { slice::from_raw_parts(password, password_len) };
+            ContentEngine::open_bytes_with_password(bytes, password)
+        }
     })) {
         Ok(Ok(engine)) => Box::into_raw(Box::new(OxideDocument { engine, ocr: None })),
         Ok(Err(err)) => {
@@ -1622,6 +1668,7 @@ fn clear_error(error_out: *mut *mut c_char) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_engine::{crypto::secret_bytes, encrypt, EncryptAlgorithm, EncryptParams};
     use std::ffi::CStr;
 
     struct PdfBuilder {
@@ -1695,6 +1742,20 @@ mod tests {
         b.build()
     }
 
+    fn encrypted_sample_pdf(password: &[u8]) -> Vec<u8> {
+        let engine = ContentEngine::open_bytes(sample_pdf()).expect("sample opens");
+        encrypt(
+            &engine,
+            &EncryptParams {
+                algorithm: EncryptAlgorithm::Aes256,
+                user_password: secret_bytes(password.to_vec()),
+                owner_password: secret_bytes(b"owner-password".to_vec()),
+                ..Default::default()
+            },
+        )
+        .expect("encrypt sample")
+    }
+
     #[test]
     fn capi_open_count_extract_and_free() {
         let pdf = sample_pdf();
@@ -1719,6 +1780,121 @@ mod tests {
             oxide_string_free(text);
             oxide_document_free(doc);
         }
+    }
+
+    #[test]
+    fn capi_open_with_password_accepts_null_empty_and_ignored_passwords() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+
+        let doc = unsafe {
+            oxide_document_open_from_bytes_with_password(
+                pdf.as_ptr(),
+                pdf.len(),
+                std::ptr::null(),
+                0,
+                &mut error,
+            )
+        };
+        assert!(!doc.is_null());
+        assert!(error.is_null());
+        unsafe { oxide_document_free(doc) };
+
+        let explicit_empty = [0u8; 1];
+        let doc = unsafe {
+            oxide_document_open_from_bytes_with_password(
+                pdf.as_ptr(),
+                pdf.len(),
+                explicit_empty.as_ptr(),
+                0,
+                &mut error,
+            )
+        };
+        assert!(!doc.is_null());
+        assert!(error.is_null());
+        unsafe { oxide_document_free(doc) };
+
+        let ignored = b"ignored-for-unencrypted";
+        let doc = unsafe {
+            oxide_document_open_from_bytes_with_password(
+                pdf.as_ptr(),
+                pdf.len(),
+                ignored.as_ptr(),
+                ignored.len(),
+                &mut error,
+            )
+        };
+        assert!(!doc.is_null());
+        assert!(error.is_null());
+        unsafe { oxide_document_free(doc) };
+    }
+
+    #[test]
+    fn capi_open_with_password_handles_encrypted_fixture_and_redacts_secret() {
+        let password = b"open-sesame";
+        let pdf = encrypted_sample_pdf(password);
+        let mut error = std::ptr::null_mut();
+
+        let doc = unsafe {
+            oxide_document_open_from_bytes_with_password(
+                pdf.as_ptr(),
+                pdf.len(),
+                password.as_ptr(),
+                password.len(),
+                &mut error,
+            )
+        };
+        assert!(!doc.is_null());
+        assert!(error.is_null());
+        let mut count = 0usize;
+        let status = unsafe { oxide_document_page_count(doc, &mut count, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        assert_eq!(count, 1);
+        unsafe { oxide_document_free(doc) };
+
+        let wrong = b"do-not-echo-this-password";
+        let doc = unsafe {
+            oxide_document_open_from_bytes_with_password(
+                pdf.as_ptr(),
+                pdf.len(),
+                wrong.as_ptr(),
+                wrong.len(),
+                &mut error,
+            )
+        };
+        assert!(doc.is_null());
+        assert!(!error.is_null());
+        let message = unsafe { CStr::from_ptr(error) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(message.contains("password-protected") || message.contains("password"));
+        assert!(
+            !message.contains("do-not-echo-this-password"),
+            "password leaked in error: {message}"
+        );
+        unsafe { oxide_error_free(error) };
+    }
+
+    #[test]
+    fn capi_open_with_password_rejects_invalid_password_pointer_shape() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc = unsafe {
+            oxide_document_open_from_bytes_with_password(
+                pdf.as_ptr(),
+                pdf.len(),
+                std::ptr::null(),
+                4,
+                &mut error,
+            )
+        };
+        assert!(doc.is_null());
+        assert!(!error.is_null());
+        let message = unsafe { CStr::from_ptr(error) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(message.contains("password pointer is null"));
+        unsafe { oxide_error_free(error) };
     }
 
     #[test]
@@ -2193,6 +2369,27 @@ mod tests {
         unsafe { oxide_string_free(version) };
 
         assert_eq!(oxide_abi_version(), 1);
+    }
+
+    #[test]
+    fn capi_repeated_open_report_free_stress() {
+        let pdf = sample_pdf();
+        for _ in 0..50 {
+            let mut error = std::ptr::null_mut();
+            let doc =
+                unsafe { oxide_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+            assert!(!doc.is_null());
+            assert!(error.is_null());
+
+            let mut json = std::ptr::null_mut();
+            let status = unsafe { oxide_document_security_report_json(doc, &mut json, &mut error) };
+            assert_eq!(status, OXIDE_STATUS_OK);
+            assert!(!json.is_null());
+            unsafe {
+                oxide_string_free(json);
+                oxide_document_free(doc);
+            }
+        }
     }
 
     #[test]

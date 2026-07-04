@@ -5,7 +5,7 @@ Memory API. The verified local build uses JDK 25 on Windows x64. The binding
 wraps the stable C ABI and preserves the shared versioned JSON report envelope.
 
 ```java
-try (var doc = Oxide.Document.open(Path.of("report.pdf"))) {
+try (var doc = Oxide.Document.open(Path.of("report.pdf"), null)) {
     System.out.println(doc.pageCount());
     System.out.println(doc.page(1).text());
     System.out.println(doc.securityReportJson());
@@ -23,7 +23,8 @@ try (var doc = Oxide.Document.open(Path.of("report.pdf"))) {
 
 Set `OXIDE_NATIVE_LIBRARY` to the platform-specific `oxide_capi` dynamic library
 during development. The loader also checks the current directory,
-`target/debug`, `target/release`, and `runtimes/<rid>/native`.
+`target/debug`, `target/release`, and `runtimes/<rid>/native` under both the
+current directory and the JAR/package directory.
 
 Run the smoke test directly:
 
@@ -43,7 +44,16 @@ forms, annotations, page operations, interactive content, and chunks.
 Outputs: sanitize, canonicalize, redact terms, DOCX, XLSX, PPTX, and Office to
 PDF conversion helpers.
 
-Known limits: password open is not yet exposed through the C ABI-backed Java
-surface; progress and cancellation are not exposed because current engine calls
-do not observe binding-level tokens. Mobile packaging is out of scope for this
-binding.
+Password open is available through `Oxide.Document.open(path, password)` and
+`Oxide.Document.open(bytes, password)`. Passwords are UTF-8 operation-scoped
+inputs and are not retained on the Java document object.
+
+Maven is the authoritative package flow. `scripts/prompt02b_java_package_smoke.ps1`
+runs Maven test/package, inspects `bindings/java/target/oxide-sdk-0.1.0.jar`,
+and runs a JAR-based package smoke. Gradle is documented as consumer-only over
+the Maven/JAR artifact rather than a second build system.
+
+Known limits: progress and cancellation are reported through
+`Oxide.featureReportJson()` as unsupported for the Prompt 02 binding surface; no
+no-op callbacks or ignored interruption APIs are exposed. Mobile packaging is
+out of scope for this binding.

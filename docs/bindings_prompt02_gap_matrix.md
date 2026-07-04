@@ -2,21 +2,21 @@
 
 Human-readable view of `target/prompt02-binding-parity/binding-gap-matrix.json`.
 
-**Rows:** 195
+**Rows:** 204
 
 ## Surface Counts
 
 | Surface | implemented_public | partial_public | unsupported_reported | missing | deferred | implemented_internal | cli_only | blocked |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| rust | 111 | 36 | 0 | 1 | 15 | 31 | 1 | 0 |
-| python | 109 | 40 | 7 | 24 | 15 | 0 | 0 | 0 |
-| c_abi | 104 | 44 | 7 | 24 | 15 | 1 | 0 | 0 |
-| wasm | 86 | 67 | 12 | 0 | 30 | 0 | 0 | 0 |
-| dotnet | 73 | 85 | 6 | 2 | 29 | 0 | 0 | 0 |
-| java | 72 | 86 | 6 | 2 | 29 | 0 | 0 | 0 |
-| cli | 138 | 35 | 0 | 1 | 15 | 6 | 0 | 0 |
-| docs | 34 | 161 | 0 | 0 | 0 | 0 | 0 | 0 |
-| packaging | 13 | 182 | 0 | 0 | 0 | 0 | 0 | 0 |
+| rust | 111 | 36 | 0 | 1 | 24 | 31 | 1 | 0 |
+| python | 109 | 40 | 7 | 24 | 24 | 0 | 0 | 0 |
+| c_abi | 106 | 44 | 7 | 24 | 22 | 1 | 0 | 0 |
+| wasm | 86 | 67 | 14 | 0 | 37 | 0 | 0 | 0 |
+| dotnet | 77 | 84 | 8 | 2 | 33 | 0 | 0 | 0 |
+| java | 79 | 84 | 9 | 2 | 30 | 0 | 0 | 0 |
+| cli | 138 | 35 | 0 | 1 | 24 | 6 | 0 | 0 |
+| docs | 43 | 161 | 0 | 0 | 0 | 0 | 0 | 0 |
+| packaging | 23 | 181 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_only`, `unsupported_reported`, `missing`, `deferred`, `blocked`.
 
@@ -137,7 +137,7 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| document open options (`open.options`) | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
+| document open options (`open.options`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Prompt 02 action; public or report-backed on WASM/.NET/Java. |
 | byte-source abstraction (`open.byte_source`) | implemented_public | implemented_public | partial_public | partial_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
 | xref table and xref stream access (`parser.xref`) | partial_public | implemented_public | implemented_public | partial_public | partial_public | partial_public | implemented_public | partial_public | partial_public | Partial coverage is report-backed; add standalone typed wrapper only when the shared facade supports it. |
 | trailer and document ID reporting (`parser.trailer_id`) | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | implemented_public | partial_public | partial_public | No Prompt 02 action; public or report-backed on WASM/.NET/Java. |
@@ -159,7 +159,7 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | cross-binding JSON envelope parity (`diag.cross_binding_envelope`) | deferred | deferred | deferred | implemented_public | implemented_public | implemented_public | deferred | implemented_public | implemented_public | All Prompt 02 wrappers call shared facade or C ABI report functions. |
 | progress callback posture (`diag.progress_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | No progress callbacks are exposed until engine calls can observe them. |
-| cancellation token posture (`diag.cancel_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | No binding-level cancellation claims; matrix records unsupported status. |
+| cancellation token posture (`diag.cancel_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Engine render internals can observe CancelToken, but Prompt 02 WASM/.NET/Java report/output bindings expose no cancellable render or token-aware facade operation. |
 | panic and exception boundary (`diag.panic_boundary`) | deferred | deferred | deferred | implemented_public | implemented_public | implemented_public | deferred | implemented_public | implemented_public | WASM maps errors to JsValue; .NET/Java preserve C ABI status and messages. |
 
 ## prompt02-dotnet
@@ -175,7 +175,7 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | Java native binary loading (`java.native.loading`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | FFM loader checks OXIDE_NATIVE_LIBRARY and RID runtime/native locations. |
-| Java Maven package metadata (`java.maven`) | deferred | deferred | deferred | deferred | deferred | partial_public | deferred | implemented_public | partial_public | pom.xml records Maven metadata; local smoke still uses javac/java because the FFM preview flags are host-JDK sensitive. |
+| Java Maven package metadata (`java.maven`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | pom.xml records Maven metadata and binds OxideSmokeTest into mvn test; Prompt 02B package smoke runs mvn test/package. |
 | Java output buffer ownership (`java.binary.output`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | BinaryResult copies native buffers into byte[] before freeing them. |
 
 ## prompt02-release
@@ -192,6 +192,20 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | WASM open from host file path (`wasm.input.path`) | deferred | deferred | deferred | unsupported_reported | deferred | deferred | deferred | implemented_public | implemented_public | Browser/WebWorker cannot read host paths; callers pass bytes from File/API/Node fs. |
 | TypeScript declarations (`wasm.typescript`) | deferred | deferred | deferred | implemented_public | deferred | deferred | deferred | implemented_public | implemented_public | crates/oxide-wasm/oxide.d.ts declares reports and output ownership. |
 | WASM package metadata (`wasm.package`) | deferred | deferred | deferred | partial_public | deferred | deferred | deferred | implemented_public | partial_public | package.json and docs added; wasm-pack is required to regenerate publishable pkg glue. |
+
+## prompt02b-closure
+
+| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| C ABI open with optional password (`prompt02b.cabi.password_open`) | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | deferred | implemented_public | implemented_public | oxide_document_open_from_bytes_with_password uses UTF-8 pointer+length and preserves existing open ABI. |
+| .NET password-open parity (`prompt02b.dotnet.password_open`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | OxideDocument.Open(path/bytes, string? password) routes through the password-aware C ABI. |
+| Java password-open parity (`prompt02b.java.password_open`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Oxide.Document.open(Path/byte[], String password) routes UTF-8 bytes through the password-aware C ABI. |
+| Java Maven package smoke (`prompt02b.java.maven_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/prompt02b_java_package_smoke.ps1 runs Maven version/test/package with a target-local Maven fallback. |
+| Java Gradle package policy (`prompt02b.java.gradle_policy`) | deferred | deferred | deferred | deferred | deferred | unsupported_reported | deferred | implemented_public | implemented_public | Java SDK is Maven-first; Gradle consumers depend on the Maven/JAR artifact and no second build system is authoritative. |
+| Java JAR package verification (`prompt02b.java.jar_verification`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Package smoke inspects the JAR as a ZIP, rejects test/native/build-junk entries, and runs from the packaged artifact. |
+| Prompt 02B progress closure (`prompt02b.progress_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Shared feature report records progress_not_supported; no binding exposes no-op callbacks. |
+| Prompt 02B cancellation closure (`prompt02b.cancellation_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Shared feature report records binding cancellation unsupported while naming render internals that already observe CancelToken. |
+| Prompt 02B memory/leak evidence (`prompt02b.memory_evidence`) | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | deferred | implemented_public | implemented_public | C ABI/.NET/Java repeated open/report/dispose stress tests plus existing Linux sanitizer CI gate; local Valgrind/LLVM cov unavailable on Windows host. |
 
 ## release
 

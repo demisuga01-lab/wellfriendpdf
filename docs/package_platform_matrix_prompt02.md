@@ -26,9 +26,18 @@ Native files should be packaged under `runtimes/<rid>/native`.
 | --- | --- | --- |
 | Windows x64, JDK 25 | implemented_public | Verified with Java FFM preview flags. |
 | Linux/macOS | partial_public | Loader supports mapped library names; not built in this run. |
-| Maven metadata | partial_public | `pom.xml` is present; host must use a JDK with the preview FFM API. |
+| Maven metadata/package | implemented_public | `scripts/prompt02b_java_package_smoke.ps1` ran Maven 3.9.9 fallback, `mvn clean test`, and `mvn package`. |
+| JAR artifact | implemented_public | `bindings/java/target/oxide-sdk-0.1.0.jar` was inspected as a ZIP and run through `PackageSmoke`. |
+| Gradle | unsupported_reported | Maven is the authoritative Java package flow; Gradle is consumer-only over the Maven/JAR artifact. |
 
 Run Java with `--enable-preview --enable-native-access=ALL-UNNAMED`.
+For Gradle consumers, publish/install the Maven artifact and use normal Maven
+coordinates:
+
+```gradle
+repositories { mavenLocal() }
+dependencies { implementation("org.oxidepdf:oxide-sdk:0.1.0") }
+```
 
 ## CI Smoke Expectations
 
@@ -38,5 +47,7 @@ Prompt 02 package CI should run:
 - wasm-pack or wasm-bindgen package regeneration where installed
 - `.NET` build, tests, and `dotnet pack`
 - Java compile/test with matching JDK preview flags
+- `scripts/prompt02b_java_package_smoke.ps1` for Maven/JAR/package runtime smoke
+- `scripts/prompt02b_memory_gate.ps1` for local handle-lifetime stress evidence
 - `python scripts/gen_prompt02_binding_matrix.py`
 - `python scripts/write_prompt02_smoke_artifacts.py`

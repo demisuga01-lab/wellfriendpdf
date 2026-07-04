@@ -19,6 +19,7 @@ The C API uses an opaque `OxideDocument *` handle and caller-owned return
 buffers:
 
 - `oxide_document_open_from_bytes`
+- `oxide_document_open_from_bytes_with_password`
 - `oxide_document_page_count`
 - `oxide_document_extract_text`
 - `oxide_document_parse_markdown` — parse → canonical model → Markdown (RAG-facing)
@@ -59,6 +60,12 @@ schema** the CLI `oxide parse` and the server `POST /api/v1/parse` produce, so
 output is consistent across every surface. The parser ops over C are
 digital-born only (OCR is not wired through the C ABI). Returned strings are
 freed with `oxide_string_free`.
+
+`oxide_document_open_from_bytes_with_password` accepts a UTF-8 password as
+pointer plus byte length. `password == NULL && password_len == 0` means no
+password; a non-null pointer with zero length means an explicit empty password.
+The C ABI reads the password only for the open operation and does not log or
+retain it. Existing callers can keep using `oxide_document_open_from_bytes`.
 
 ### Report / version surfaces (Prompt 01)
 

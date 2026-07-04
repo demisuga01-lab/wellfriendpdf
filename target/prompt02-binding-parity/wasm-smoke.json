@@ -1,0 +1,17 @@
+{
+  "browser_example": true,
+  "command": "cargo build -p oxide-wasm --target wasm32-unknown-unknown",
+  "package_json": true,
+  "runtime_smoke": {
+    "node_glue": "target\\prompt02-binding-parity\\wasm-node-pkg\\oxide_wasm.js",
+    "pages": 14,
+    "sanitizeBytes": 1014158,
+    "sanitizeReportBytes": 199,
+    "securityBytes": 714,
+    "status": "pass"
+  },
+  "status": "pass",
+  "surface": "wasm",
+  "typescript_declarations": true,
+  "wasm_artifact": "target\\wasm32-unknown-unknown\\release\\oxide_wasm.wasm"
+}

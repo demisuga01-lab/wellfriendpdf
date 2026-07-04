@@ -1,0 +1,30 @@
+﻿{
+    "schema_version":  1,
+    "surface":  "java",
+    "maven_tool":  "E:\\wellpdfsdk\\target\\prompt02b-tools\\apache-maven-3.9.9\\bin\\mvn.cmd",
+    "maven_version":  "3.9.9",
+    "jar_path":  "E:\\wellpdfsdk\\bindings\\java\\target\\oxide-sdk-0.1.0.jar",
+    "native_library":  "E:\\wellpdfsdk\\target\\debug\\oxide_capi.dll",
+    "runtime_native_layout":  "E:\\wellpdfsdk\\bindings\\java\\target\\runtimes\\win-x64\\native\\oxide_capi.dll",
+    "commands":  [
+                     "mvn -version",
+                     "mvn clean test",
+                     "mvn package",
+                     "javac package smoke",
+                     "JAR runtime smoke"
+                 ],
+    "jar_contents":  {
+                         "entry_count":  16,
+                         "required_entries_present":  true,
+                         "forbidden_entries_absent":  true,
+                         "native_libraries_in_jar":  [
+
+                                                     ],
+                         "tests_in_jar":  [
+
+                                          ]
+                     },
+    "native_loading":  "JAR smoke ran from target/prompt02b-package-smoke/run with OXIDE_NATIVE_LIBRARY unset and oxide_capi copied to bindings/java/target/runtimes/win-x64/native.",
+    "gradle_policy":  "Maven-first package producer; Gradle consumption is documented and non-authoritative for Prompt 02B.",
+    "result":  "passed"
+}

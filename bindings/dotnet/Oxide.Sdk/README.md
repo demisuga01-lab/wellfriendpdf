@@ -7,7 +7,7 @@ as Rust, Python, C ABI, WASM, and Java.
 ```csharp
 using Oxide.Sdk;
 
-using var doc = OxideDocument.Open("report.pdf");
+using var doc = OxideDocument.Open("report.pdf", password: null);
 Console.WriteLine(doc.PageCount);
 Console.WriteLine(doc.GetPage(1).Text);
 Console.WriteLine(doc.SecurityReportJson());
@@ -45,7 +45,11 @@ forms, annotations, page operations, interactive content, and chunks.
 Outputs: sanitize, canonicalize, redact terms, DOCX, XLSX, PPTX, and Office to
 PDF conversion helpers.
 
-Known limits: password open is not yet exposed through the C ABI-backed .NET
-surface; progress and cancellation are not exposed because current engine calls
-do not observe binding-level tokens. Mobile packaging is out of scope for this
-package.
+Password open is available through `OxideDocument.Open(path, password)` and
+`OxideDocument.Open(bytes, password)`. Passwords are UTF-8 operation-scoped
+inputs and are not retained on the managed document object.
+
+Known limits: progress and cancellation are reported through
+`FeatureReportJson()` as unsupported for the Prompt 02 binding surface; no
+no-op callbacks or ignored `CancellationToken` overloads are exposed. Mobile
+packaging is out of scope for this package.

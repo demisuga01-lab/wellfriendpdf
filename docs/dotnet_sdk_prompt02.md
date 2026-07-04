@@ -18,6 +18,8 @@ Lifecycle:
 
 - `OxideDocument.Open(string path)`
 - `OxideDocument.Open(byte[] bytes)`
+- `OxideDocument.Open(string path, string? password = null)`
+- `OxideDocument.Open(byte[] bytes, string? password = null)`
 - `Dispose()` / `using`
 - `PageCount`, `Pages`, `GetPage(n)`, `ExtractText(n)`
 
@@ -53,6 +55,14 @@ Errors preserve the C ABI status code and message in `OxideException`.
 
 ## Limits
 
-Password open is not yet public because the current C ABI open function accepts
-bytes only. Progress and cancellation tokens are not exposed because the engine
-facade calls used here do not observe binding-level cancellation.
+Prompt 02B added password-aware open overloads. Passwords are encoded as UTF-8
+for the native open call, are not logged, and are not retained on the managed
+document object. C ABI tests cover correct/wrong passwords on a generated
+encrypted fixture; .NET tests cover the public overloads and verify malformed
+input errors do not echo the supplied password.
+
+Progress and cancellation tokens are not exposed as .NET callbacks or
+`CancellationToken` overloads because the Prompt 02 report/output facade calls
+used by this binding do not observe binding-level tokens. Query
+`FeatureReportJson()` for the machine-readable `progress_not_supported` and
+`cancellation_not_supported_for_prompt02_bindings` statuses.

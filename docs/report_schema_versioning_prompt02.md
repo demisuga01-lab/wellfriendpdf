@@ -35,3 +35,18 @@ empty payloads.
 
 An envelope-shape change must bump the report envelope version and update the
 gap matrix, docs, and parity fixtures in the same change.
+
+## Prompt 02B Diagnostic Fields
+
+Prompt 02B adds progress/cancellation posture inside the `feature_report`
+payload without changing the envelope shape or envelope version:
+
+- `report.progress.status = "progress_not_supported"`
+- `report.cancellation.status =
+  "cancellation_not_supported_for_prompt02_bindings"`
+- `report.cancellation.engine_observable_operations` names existing engine
+  render internals that can observe `CancelToken`
+
+Bindings return this JSON unchanged. They must not expose convenience progress
+or cancellation APIs until the shared facade accepts callbacks or tokens that
+the engine actually observes.

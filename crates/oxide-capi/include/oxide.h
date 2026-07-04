@@ -75,6 +75,18 @@ OXIDE_API OxideDocument *oxide_document_open_from_bytes(
     size_t len,
     char **error_out);
 
+/* Opens a document from bytes with an optional UTF-8 password.
+ * password == NULL && password_len == 0 means no password was supplied.
+ * password != NULL && password_len == 0 means an explicit empty password.
+ * The password buffer is read only for the duration of this call and is not
+ * retained by the C ABI wrapper. */
+OXIDE_API OxideDocument *oxide_document_open_from_bytes_with_password(
+    const uint8_t *data,
+    size_t len,
+    const uint8_t *password,
+    size_t password_len,
+    char **error_out);
+
 OXIDE_API void oxide_document_free(OxideDocument *document);
 
 OXIDE_API void oxide_string_free(char *value);
@@ -301,7 +313,8 @@ OXIDE_API int oxide_merge_pdfs_from_bytes(
  *   - All functions return an int status code: OXIDE_STATUS_OK (0) on success,
  *     OXIDE_STATUS_ERROR (2) on a handled error (message in *error_out),
  *     OXIDE_STATUS_PANIC (3) on an internal panic (never UB).
- *   - `document` must be a valid handle from oxide_document_open_from_bytes.
+ *   - `document` must be a valid handle from oxide_document_open_from_bytes
+ *     or oxide_document_open_from_bytes_with_password.
  *     A null handle yields OXIDE_STATUS_ERROR and a message; never a crash.
  *   - On success, `*out_json` is a heap-allocated NUL-terminated UTF-8 string
  *     OWNED BY THE CALLER: free it with oxide_string_free. On error it is left

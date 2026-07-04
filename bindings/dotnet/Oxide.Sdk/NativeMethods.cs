@@ -116,6 +116,14 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern DocumentHandle oxide_document_open_from_bytes_with_password(
+        byte[] data,
+        UIntPtr len,
+        byte[] password,
+        UIntPtr passwordLen,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void oxide_document_free(IntPtr document);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

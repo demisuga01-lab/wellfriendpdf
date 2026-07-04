@@ -38,13 +38,34 @@
         <groupId>org.codehaus.mojo</groupId>
         <artifactId>exec-maven-plugin</artifactId>
         <version>3.3.0</version>
+        <executions>
+          <execution>
+            <id>prompt02b-smoke-test</id>
+            <phase>test</phase>
+            <goals>
+              <goal>exec</goal>
+            </goals>
+          </execution>
+        </executions>
         <configuration>
           <mainClass>org.oxidepdf.OxideSmokeTest</mainClass>
-          <arguments />
+          <classpathScope>test</classpathScope>
           <includeProjectDependencies>true</includeProjectDependencies>
           <includePluginDependencies>false</includePluginDependencies>
           <executable>java</executable>
           <commandlineArgs>--enable-preview --enable-native-access=ALL-UNNAMED -cp %classpath org.oxidepdf.OxideSmokeTest</commandlineArgs>
+        </configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-jar-plugin</artifactId>
+        <version>3.4.2</version>
+        <configuration>
+          <archive>
+            <manifestEntries>
+              <Automatic-Module-Name>org.oxidepdf</Automatic-Module-Name>
+            </manifestEntries>
+          </archive>
         </configuration>
       </plugin>
     </plugins>

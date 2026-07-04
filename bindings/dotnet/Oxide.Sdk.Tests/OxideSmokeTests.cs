@@ -65,6 +65,46 @@ public sealed class OxideSmokeTests
     }
 
     [Fact]
+    public void PasswordOpenRoutesThroughNativeAbiWithoutLeakingSecrets()
+    {
+        using (var empty = OxideDocument.Open(FixturePath(), password: ""))
+        {
+            Assert.True(empty.PageCount >= 1);
+        }
+
+        var bytes = File.ReadAllBytes(FixturePath());
+        using (var ignored = OxideDocument.Open(bytes, password: "ignored-for-unencrypted"))
+        {
+            Assert.True(ignored.PageCount >= 1);
+        }
+
+        const string secret = "do-not-echo-dotnet-password";
+        var ex = Assert.Throws<OxideException>(() => OxideDocument.Open(new byte[] { 1, 2, 3, 4 }, secret));
+        Assert.DoesNotContain(secret, ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FeatureReportRecordsPrompt02BProgressAndCancellationPosture()
+    {
+        var feature = OxideDocument.FeatureReportJson();
+        Assert.Contains("\"progress\"", feature);
+        Assert.Contains("progress_not_supported", feature);
+        Assert.Contains("\"cancellation\"", feature);
+        Assert.Contains("cancellation_not_supported_for_prompt02_bindings", feature);
+    }
+
+    [Fact]
+    public void RepeatedOpenReportAndDisposeStress()
+    {
+        for (var i = 0; i < 25; i++)
+        {
+            using var doc = OxideDocument.Open(FixturePath());
+            Assert.True(doc.PageCount >= 1);
+            Assert.Contains("\"schema_version\"", doc.SecurityReportJson());
+        }
+    }
+
+    [Fact]
     public void DisposeIsIdempotent()
     {
         var doc = OxideDocument.Open(FixturePath());

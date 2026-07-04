@@ -26,6 +26,7 @@ inputs. Shell command injection is not used for PDF processing.
 The C ABI is the only place with Rust `unsafe` pointer boundaries:
 
 - `oxide_document_open_from_bytes`
+- `oxide_document_open_from_bytes_with_password`
 - `oxide_document_free`
 - `oxide_string_free`
 - `oxide_error_free`
@@ -36,9 +37,11 @@ Defenses:
 
 - Null pointers are checked.
 - Input bytes are copied before parsing, so caller-owned buffers are not kept.
+- Password bytes are pointer+length operation-scoped inputs; they are not
+  logged or retained by the C ABI wrapper.
 - Returned buffers/strings have explicit free functions.
-- C ABI tests cover null handling, open/count/extract/free, parse JSON, and
-  field extraction.
+- C ABI tests cover null handling, password-open shape, encrypted correct/wrong
+  password behavior, open/count/extract/free, parse JSON, and field extraction.
 
 Residual risk: callers must pair returned pointers with the matching free
 function and must not double-free or pass invalid pointers.

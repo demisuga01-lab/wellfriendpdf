@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace Oxide.Sdk;
 
@@ -25,16 +26,35 @@ public sealed class OxideDocument : IDisposable
 
     public IReadOnlyList<Page> Pages => Enumerable.Range(1, PageCount).Select(n => new Page(this, n)).ToArray();
 
-    public static OxideDocument Open(string path)
+    public static OxideDocument Open(string path, string? password = null)
     {
         ArgumentNullException.ThrowIfNull(path);
-        return Open(File.ReadAllBytes(path));
+        return Open(File.ReadAllBytes(path), password);
     }
 
-    public static OxideDocument Open(byte[] bytes)
+    public static OxideDocument Open(byte[] bytes, string? password = null)
     {
         ArgumentNullException.ThrowIfNull(bytes);
-        var handle = NativeMethods.oxide_document_open_from_bytes(bytes, (UIntPtr)bytes.Length, out var error);
+        NativeMethods.DocumentHandle handle;
+        IntPtr error;
+        if (password is null)
+        {
+            handle = NativeMethods.oxide_document_open_from_bytes(bytes, (UIntPtr)bytes.Length, out error);
+        }
+        else
+        {
+            var encoded = Encoding.UTF8.GetBytes(password);
+            // Keep a non-null password pointer even when the caller supplied an
+            // explicit empty string; the native length remains the actual UTF-8
+            // byte count.
+            var nativePassword = encoded.Length == 0 ? new byte[1] : encoded;
+            handle = NativeMethods.oxide_document_open_from_bytes_with_password(
+                bytes,
+                (UIntPtr)bytes.Length,
+                nativePassword,
+                (UIntPtr)encoded.Length,
+                out error);
+        }
         if (handle.IsInvalid)
         {
             NativeMethods.ThrowIfError(2, error);
