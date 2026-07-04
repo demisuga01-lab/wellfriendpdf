@@ -60,6 +60,25 @@ output is consistent across every surface. The parser ops over C are
 digital-born only (OCR is not wired through the C ABI). Returned strings are
 freed with `oxide_string_free`.
 
+### Report / version surfaces (Prompt 01)
+
+The C ABI, Python, and Rust `oxide_engine::sdk` facade share one versioned-JSON
+report layer (envelope `{"schema_version","kind","report"}`). New C functions
+returning owned JSON strings (free with `oxide_string_free`):
+`oxide_document_security_report_json`, `oxide_document_parser_report_json`,
+`oxide_document_color_report_json`, `oxide_document_validate_json`,
+`oxide_document_forms_report_json`, `oxide_document_annotations_report_json`,
+`oxide_document_pages_report_json`, `oxide_document_interactive_report_json`,
+`oxide_document_chunks_json`, plus output ops
+`oxide_document_sanitize_json`, `oxide_document_canonicalize_json`,
+`oxide_document_redact_terms_json` (owned `OxideBuffer` + report), and
+version/capability queries `oxide_feature_report_json`, `oxide_version`,
+`oxide_abi_version`. See [`c_abi_prompt01.md`](c_abi_prompt01.md),
+[`python_sdk_prompt01.md`](python_sdk_prompt01.md),
+[`public_api_rust_prompt01.md`](public_api_rust_prompt01.md),
+[`report_schema_versioning_prompt01.md`](report_schema_versioning_prompt01.md),
+and the gap matrix [`bindings_prompt01_gap_matrix.md`](bindings_prompt01_gap_matrix.md).
+
 Every exported function catches Rust panics before the FFI boundary and returns
 one of:
 

@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use oxide_engine::{
-    ContentEngine, DocType, DocumentInfo, ExtractOptions, ExtractionProfile, ImageLocateOptions,
-    ImageOutputFormat, OcrPolicy, PageRegion, ParseOptions, SerializeOptions,
+    sdk, ContentEngine, DocType, DocumentInfo, ExtractOptions, ExtractionProfile,
+    ImageLocateOptions, ImageOutputFormat, OcrPolicy, PageRegion, ParseOptions, SerializeOptions,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyIndexError, PyTypeError, PyValueError};
@@ -249,6 +249,197 @@ impl PyDocument {
     #[pyo3(signature = (page, dpi=150))]
     fn render(&self, page: usize, dpi: u32) -> PyResult<Vec<u8>> {
         run_oxide(|| self.engine.render_page_png_fast(page, dpi))
+    }
+
+    // ── Report surfaces (shared oxide_engine::sdk facade) ────────────────────
+    //
+    // Each returns a Python dict parsed from the SDK's versioned-JSON envelope
+    // `{"schema_version", "kind", "report"}`. The same facade backs the C ABI,
+    // so a report requested from Python and from C is byte-identical JSON.
+
+    /// Security report: encryption, signatures, risky active content, findings.
+    fn security_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::security_report_json(bytes, None))
+    }
+
+    /// Risky active-content inventory (JavaScript, launch/URI actions, etc.).
+    fn risky_content_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::risky_content_report_json(bytes, None))
+    }
+
+    /// Parser diagnostics: repair/xref/revisions/linearization/encryption.
+    /// `mode` is one of "strict" | "repair" | "audit".
+    #[pyo3(signature = (mode="repair"))]
+    fn parser_report<'py>(&self, py: Python<'py>, mode: &str) -> PyResult<Py<PyAny>> {
+        let mode = mode.to_string();
+        self.report_json(py, |bytes| {
+            sdk::parser_report_json(bytes, Some(&mode), None)
+        })
+    }
+
+    /// Color / prepress report. `profile` is "generic" | "pdfa" | "pdfx".
+    #[pyo3(signature = (profile="generic"))]
+    fn color_report<'py>(&self, py: Python<'py>, profile: &str) -> PyResult<Py<PyAny>> {
+        let profile = profile.to_string();
+        self.report_json(py, |bytes| sdk::color_report_json(bytes, Some(&profile)))
+    }
+
+    /// PDF/A validation report. `profile` in pdfa1b/pdfa2b/pdfa2a/pdfa3b/pdfa3a.
+    #[pyo3(signature = (profile="pdfa2b"))]
+    fn validate_pdfa<'py>(&self, py: Python<'py>, profile: &str) -> PyResult<Py<PyAny>> {
+        let profile = profile.to_string();
+        self.report_json(py, |bytes| {
+            sdk::pdfa_validation_json(bytes, Some(&profile), None)
+        })
+    }
+
+    /// PDF/UA (accessibility) validation report.
+    fn validate_pdfua<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::pdfua_validation_json(bytes, None))
+    }
+
+    /// Standards-profile report. `profile` in pdfa/pdfua/pdfx/security/all.
+    #[pyo3(signature = (profile="all"))]
+    fn validate<'py>(&self, py: Python<'py>, profile: &str) -> PyResult<Py<PyAny>> {
+        let profile = profile.to_string();
+        self.report_json(py, |bytes| {
+            sdk::standards_profile_json(bytes, Some(&profile), None)
+        })
+    }
+
+    /// Combined interactive report (forms + annotations + page operations).
+    fn interactive_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::interactive_report_json(bytes, None))
+    }
+
+    /// AcroForm field inventory (trees, inheritance, widgets, XFA status).
+    fn forms_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::forms_report_json(bytes, None))
+    }
+
+    /// Annotation inventory (kinds, quads, appearance status, unsafe actions).
+    fn annotations_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::annotation_report_json(bytes, None))
+    }
+
+    /// Page-operations report (boxes, labels, destinations, preservation risk).
+    fn pages_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::page_operations_report_json(bytes, None))
+    }
+
+    /// Signature report (validity, trust, coverage, LTV, certificate).
+    fn signature_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::signature_report_json(bytes, None))
+    }
+
+    /// Font inventory (name, type, embedding status, subsetting, encoding).
+    fn font_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::font_report_json(bytes, None))
+    }
+
+    /// Text semantic model: pages → blocks → paragraphs → lines → words/spans
+    /// with geometry, confidence, provenance, and reading order. `pages` empty
+    /// or None means all pages.
+    #[pyo3(signature = (pages=None))]
+    fn text_semantic<'py>(
+        &self,
+        py: Python<'py>,
+        pages: Option<Vec<usize>>,
+    ) -> PyResult<Py<PyAny>> {
+        let pages = pages.unwrap_or_default();
+        self.report_json(py, |bytes| sdk::text_semantic_json(bytes, &pages, None))
+    }
+
+    /// RAG-ready semantic chunk set (canonical model → chunks).
+    fn chunks<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::chunk_report_json(bytes, None))
+    }
+
+    /// Tagged-structure semantic document (structure tree / MCID model).
+    #[pyo3(signature = (pages=None))]
+    fn semantic_document<'py>(
+        &self,
+        py: Python<'py>,
+        pages: Option<Vec<usize>>,
+    ) -> PyResult<Py<PyAny>> {
+        let pages = pages.unwrap_or_default();
+        self.report_json(py, |bytes| sdk::semantic_document_json(bytes, &pages, None))
+    }
+
+    // ── Output-producing operations (return (bytes, report) tuples) ──────────
+
+    /// Sanitize: remove active/risky content and re-scan. `policy` is one of
+    /// "strict" | "balanced" | "preserve-visual". Returns `(bytes, report)` and
+    /// optionally writes the sanitized PDF to `output`.
+    #[pyo3(signature = (policy="balanced", output=None))]
+    fn sanitize<'py>(
+        &self,
+        py: Python<'py>,
+        policy: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::sanitize_json(&bytes, Some(policy), None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Canonicalize: deterministic full-rewrite copy + audit report. Returns
+    /// `(bytes, report)`; `date_epoch` fixes the source date epoch.
+    #[pyo3(signature = (date_epoch=None, output=None))]
+    fn canonicalize<'py>(
+        &self,
+        py: Python<'py>,
+        date_epoch: Option<i64>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::canonicalize_json(&bytes, date_epoch, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Redact every occurrence of `terms` (case-insensitive), full-rewrite, and
+    /// verify absence. Returns `(bytes, report)`. `strict=True` raises if a term
+    /// survives. Writes to `output` when given.
+    #[pyo3(signature = (terms, strict=false, output=None))]
+    fn redact<'py>(
+        &self,
+        py: Python<'py>,
+        terms: Vec<String>,
+        strict: bool,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::redact_terms_json(&bytes, &terms, strict, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+}
+
+impl PyDocument {
+    /// The original file bytes backing this document (copied out of the reader).
+    fn file_bytes(&self) -> Vec<u8> {
+        self.engine.document().reader().file_bytes().to_vec()
+    }
+
+    /// Run a facade report over this document's bytes and parse it to a dict.
+    fn report_json<'py, F>(&self, py: Python<'py>, f: F) -> PyResult<Py<PyAny>>
+    where
+        F: FnOnce(&[u8]) -> oxide_engine::Result<String>,
+    {
+        let bytes = self.file_bytes();
+        let json = run_oxide(|| f(&bytes))?;
+        parse_json_str(py, &json)
     }
 }
 
@@ -801,6 +992,40 @@ fn verify_signatures<'py>(
     json_to_py(py, &sigs)
 }
 
+/// Feature / capability report: SDK version, envelope version, and which
+/// optional engine capabilities are compiled into this build. No document input.
+#[pyfunction]
+fn feature_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let json = run_oxide(sdk::feature_report_json)?;
+    parse_json_str(py, &json)
+}
+
+/// Decode budget report for a hypothetical image stream: shows the decode-limit
+/// / decompression-bomb policy that decoding a `filter`/`width`/`height`/
+/// `components` image would trigger. No document input.
+#[pyfunction]
+#[pyo3(signature = (filter, width, height, components=3))]
+fn decode_budget_report(
+    py: Python<'_>,
+    filter: &str,
+    width: u32,
+    height: u32,
+    components: u8,
+) -> PyResult<Py<PyAny>> {
+    let filter = filter.to_string();
+    let json = run_oxide(|| sdk::decode_budget_report_json(&filter, width, height, components))?;
+    parse_json_str(py, &json)
+}
+
+/// Resource-dedup report over caller-supplied resource byte buffers. Groups
+/// byte-identical resources by content digest (the deterministic-writer dedup
+/// evidence). Pass a list of `bytes`.
+#[pyfunction]
+fn resource_dedup_report(py: Python<'_>, resources: Vec<Vec<u8>>) -> PyResult<Py<PyAny>> {
+    let json = run_oxide(|| sdk::resource_dedup_report_json(&resources))?;
+    parse_json_str(py, &json)
+}
+
 #[pymodule]
 fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("OxideError", py.get_type::<OxideError>())?;
@@ -829,7 +1054,14 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(organize_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(fonts, module)?)?;
     module.add_function(wrap_pyfunction!(verify_signatures, module)?)?;
+    module.add_function(wrap_pyfunction!(feature_report, module)?)?;
+    module.add_function(wrap_pyfunction!(decode_budget_report, module)?)?;
+    module.add_function(wrap_pyfunction!(resource_dedup_report, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
+    module.add(
+        "__report_envelope_version__",
+        oxide_engine::REPORT_ENVELOPE_VERSION,
+    )?;
     Ok(())
 }
 
@@ -1039,6 +1271,11 @@ fn all_text_with_profile(engine: &ContentEngine, profile: ExtractionProfile) -> 
 fn json_to_py<'py, T: Serialize>(py: Python<'py>, value: &T) -> PyResult<Py<PyAny>> {
     let raw = serde_json::to_string(value)
         .map_err(|err| OxideError::new_err(format!("JSON serialization error: {err}")))?;
+    parse_json_str(py, &raw)
+}
+
+/// Parse a JSON string (an SDK-facade envelope) into a native Python object.
+fn parse_json_str<'py>(py: Python<'py>, raw: &str) -> PyResult<Py<PyAny>> {
     let json = py.import("json")?;
     Ok(json.call_method1("loads", (raw,))?.unbind())
 }

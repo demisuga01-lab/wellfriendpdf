@@ -93,6 +93,16 @@ impl OxideError {
         self.kind().code()
     }
 
+    /// Construct an input-validation error (bad argument / unusable request).
+    ///
+    /// Convenience constructor for the SDK facade and bindings, where a caller
+    /// hands in an argument that cannot be honored (empty term list, no match to
+    /// act on, failed strict check). Categorized as [`ErrorKind::Parse`] so it is
+    /// reported as an input error, not an internal invariant violation.
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self::ParseError(message.into())
+    }
+
     /// True when the caller can usually fix the request/input without retrying
     /// the same bytes unchanged.
     pub const fn is_input_error(&self) -> bool {

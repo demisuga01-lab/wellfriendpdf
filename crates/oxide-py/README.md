@@ -27,6 +27,38 @@ docx_bytes = oxide.pdf_to_docx("input.pdf", output="input.docx")
 pdf_bytes = oxide.docx_to_pdf("input.docx", output="from_docx.pdf")
 ```
 
+### Report surfaces
+
+Every report method returns a native dict (versioned-JSON envelope
+`{"schema_version", "kind", "report"}`), backed by the shared
+`oxide_engine::sdk` facade the C ABI also uses:
+
+```python
+doc.security_report()          # encryption, signatures, risky content
+doc.parser_report(mode="audit")# repair/xref/revisions/linearization/encryption
+doc.color_report()             # ICC, output intents, spot/DeviceN, overprint
+doc.forms_report()             # AcroForm fields, XFA status
+doc.annotations_report()       # annotations, appearances, unsafe actions
+doc.pages_report()             # boxes, labels, destinations
+doc.interactive_report()       # forms + annotations + page ops
+doc.signature_report()         # validity, trust, coverage, LTV
+doc.font_report()              # fonts, embedding, subsetting
+doc.validate_pdfa(); doc.validate_pdfua(); doc.validate(profile="all")
+doc.text_semantic(); doc.chunks(); doc.semantic_document()
+
+# Output-producing (return (bytes, report)):
+data, rep = doc.sanitize(policy="balanced", output="clean.pdf")
+data, rep = doc.canonicalize(date_epoch=0)          # deterministic
+data, rep = doc.redact(["SECRET"], strict=True)     # verifies absence
+
+# No-document queries:
+oxide.feature_report()                               # version + capabilities
+oxide.decode_budget_report("DCTDecode", 4096, 4096, 3)
+oxide.resource_dedup_report([b"a", b"a", b"b"])
+```
+
+See `../../docs/python_sdk_prompt01.md` and `examples/sdk_reports.py`.
+
 Scanned-page OCR can be supplied by any Python object implementing
 `recognize(image_bytes, info) -> list[dict]`:
 

@@ -288,6 +288,142 @@ OXIDE_API int oxide_merge_pdfs_from_bytes(
     OxideBuffer *out_buffer,
     char **error_out);
 
+/* --- Report surfaces (versioned-JSON envelopes) --------------------------- *
+ *
+ * Every function below returns a versioned-JSON envelope string of the shape
+ *
+ *     {"schema_version": <int>, "kind": "<report kind>", "report": { ... }}
+ *
+ * through `out_json`. These are backed by the shared `oxide_engine::sdk` facade,
+ * so the JSON is byte-identical to what the Python bindings return for the same
+ * document. Ownership / lifetime / null / thread-safety rules:
+ *
+ *   - All functions return an int status code: OXIDE_STATUS_OK (0) on success,
+ *     OXIDE_STATUS_ERROR (2) on a handled error (message in *error_out),
+ *     OXIDE_STATUS_PANIC (3) on an internal panic (never UB).
+ *   - `document` must be a valid handle from oxide_document_open_from_bytes.
+ *     A null handle yields OXIDE_STATUS_ERROR and a message; never a crash.
+ *   - On success, `*out_json` is a heap-allocated NUL-terminated UTF-8 string
+ *     OWNED BY THE CALLER: free it with oxide_string_free. On error it is left
+ *     untouched (still null if you initialized it so).
+ *   - `*error_out` (if non-null on entry) receives an owned message on error;
+ *     free it with oxide_error_free. It is cleared to null on success.
+ *   - Output-producing operations additionally write the produced PDF to an
+ *     OxideBuffer OWNED BY THE CALLER: free it with oxide_buffer_free.
+ *   - Documents are Send + Sync; a single handle may be read concurrently from
+ *     multiple threads. These report calls do not mutate the handle. Do not,
+ *     however, free a handle while another thread is using it.
+ *   - String parameters marked "may be NULL" fall back to a documented default.
+ */
+
+/* Security report: encryption, signatures, risky active content, findings. */
+OXIDE_API int oxide_document_security_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* Parser diagnostics. `mode` is "strict"|"repair"|"audit" (NULL => "repair"). */
+OXIDE_API int oxide_document_parser_report_json(
+    const OxideDocument *document,
+    const char *mode,
+    char **out_json,
+    char **error_out);
+
+/* Color / prepress report. `profile` is "generic"|"pdfa"|"pdfx" (NULL =>
+ * "generic"). */
+OXIDE_API int oxide_document_color_report_json(
+    const OxideDocument *document,
+    const char *profile,
+    char **out_json,
+    char **error_out);
+
+/* Standards-profile validation. `profile` is "pdfa"|"pdfua"|"pdfx"|"security"|
+ * "all" (NULL => "all"). */
+OXIDE_API int oxide_document_validate_json(
+    const OxideDocument *document,
+    const char *profile,
+    char **out_json,
+    char **error_out);
+
+/* AcroForm field inventory. */
+OXIDE_API int oxide_document_forms_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* Annotation inventory. */
+OXIDE_API int oxide_document_annotations_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* Page-operations report (boxes, labels, destinations, preservation risk). */
+OXIDE_API int oxide_document_pages_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* Combined interactive report (forms + annotations + page operations). */
+OXIDE_API int oxide_document_interactive_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* RAG-ready semantic chunk set. */
+OXIDE_API int oxide_document_chunks_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* Sanitize. `policy` is "strict"|"balanced"|"preserve-visual" (NULL =>
+ * "balanced"). Writes the sanitized PDF to `out_buffer` and a JSON report to
+ * `out_json`. Free both. */
+OXIDE_API int oxide_document_sanitize_json(
+    const OxideDocument *document,
+    const char *policy,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+/* Canonicalize deterministically. Set `has_date_epoch` non-zero to fix the
+ * source date epoch to `date_epoch`; pass 0 to leave it unset. Writes the
+ * canonical PDF to `out_buffer` and an audit JSON report to `out_json`. */
+OXIDE_API int oxide_document_canonicalize_json(
+    const OxideDocument *document,
+    int64_t date_epoch,
+    int has_date_epoch,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+/* Redact every occurrence of the NUL-terminated UTF-8 strings in `terms`
+ * (case-insensitive), full-rewrite, and verify absence. `strict` non-zero fails
+ * the call if any term survives. Writes the redacted PDF to `out_buffer` and a
+ * JSON report (with verification) to `out_json`. */
+OXIDE_API int oxide_document_redact_terms_json(
+    const OxideDocument *document,
+    const char *const *terms,
+    size_t terms_len,
+    int strict,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
+/* --- Version / capability query (no document needed) ---------------------- */
+
+/* SDK feature / capability report JSON: engine version, envelope version, and
+ * compiled capabilities. Free `*out_json` with oxide_string_free. */
+OXIDE_API int oxide_feature_report_json(
+    char **out_json,
+    char **error_out);
+
+/* The oxide-engine semantic version as a NUL-terminated string owned by the
+ * caller (free with oxide_string_free). NULL only on allocation failure. */
+OXIDE_API char *oxide_version(void);
+
+/* The C-ABI report envelope version. Bumps signal an envelope-shape change. */
+OXIDE_API uint32_t oxide_abi_version(void);
+
 #ifdef __cplusplus
 }
 #endif

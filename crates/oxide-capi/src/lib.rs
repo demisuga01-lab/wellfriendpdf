@@ -8,7 +8,7 @@ use std::slice;
 use std::sync::Arc;
 
 use oxide_engine::{
-    ContentEngine, DocType, ExtractOptions, OcrPolicy, ParseOptions, Result as OxideResult,
+    sdk, ContentEngine, DocType, ExtractOptions, OcrPolicy, ParseOptions, Result as OxideResult,
     TextExtractor,
 };
 
@@ -1138,6 +1138,372 @@ pub unsafe extern "C" fn oxide_merge_pdfs_from_bytes(
     })
 }
 
+// ── Report surfaces (shared oxide_engine::sdk facade) ─────────────────────────
+//
+// Each returns a versioned-JSON envelope string
+// `{"schema_version", "kind", "report"}` — the SAME bytes Python's report
+// methods return, since both call the identical facade. The returned string is
+// caller-owned; free it with `oxide_string_free`. Output-producing operations
+// (sanitize/canonicalize/redact) return the produced PDF via an `OxideBuffer`
+// (free with `oxide_buffer_free`) AND the report string.
+
+/// The original file bytes backing an open document (copied out of the reader).
+fn doc_bytes(doc: &OxideDocument) -> Vec<u8> {
+    doc.engine.document().reader().file_bytes().to_vec()
+}
+
+/// Run a facade report closure over the document bytes and write the resulting
+/// JSON string to `out_json`. Shared implementation for every read-only report.
+unsafe fn report_json_impl(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+    f: impl FnOnce(&[u8]) -> OxideResult<String>,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let json = oxide(f(&doc_bytes(doc)))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Run a facade output-producing closure and write both the produced bytes and
+/// the JSON report. Shared implementation for sanitize/canonicalize/redact.
+unsafe fn report_output_impl(
+    document: *const OxideDocument,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+    f: impl FnOnce(&[u8]) -> OxideResult<(Vec<u8>, String)>,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let (bytes, json) = oxide(f(&doc_bytes(doc)))?;
+        unsafe {
+            *out_buffer = into_buffer(bytes);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Security report JSON. See `report_json_impl` for ownership.
+///
+/// # Safety
+/// `document` must be a valid open document. `out_json`/`error_out` must be
+/// writable; free the returned string with `oxide_string_free` / the error with
+/// `oxide_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_security_report_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::security_report_json(b, None)
+        })
+    }
+}
+
+/// Parser diagnostics report JSON. `mode` is `strict`|`repair`|`audit` (NULL →
+/// `repair`).
+///
+/// # Safety
+/// See `oxide_document_security_report_json`; `mode` may be NULL or a
+/// NUL-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_parser_report_json(
+    document: *const OxideDocument,
+    mode: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let mode = unsafe { optional_c_string(mode) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            let mode = mode.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::parser_report_json(b, mode.as_deref(), None)
+        })
+    }
+}
+
+/// Color / prepress report JSON. `profile` is `generic`|`pdfa`|`pdfx` (NULL →
+/// `generic`).
+///
+/// # Safety
+/// See `oxide_document_security_report_json`; `profile` may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_color_report_json(
+    document: *const OxideDocument,
+    profile: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let profile = unsafe { optional_c_string(profile) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            let profile = profile.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::color_report_json(b, profile.as_deref())
+        })
+    }
+}
+
+/// Standards-profile validation report JSON. `profile` is
+/// `pdfa`|`pdfua`|`pdfx`|`security`|`all` (NULL → `all`).
+///
+/// # Safety
+/// See `oxide_document_security_report_json`; `profile` may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_validate_json(
+    document: *const OxideDocument,
+    profile: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let profile = unsafe { optional_c_string(profile) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            let profile = profile.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::standards_profile_json(b, profile.as_deref(), None)
+        })
+    }
+}
+
+/// AcroForm field-inventory report JSON.
+///
+/// # Safety
+/// See `oxide_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_forms_report_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::forms_report_json(b, None)
+        })
+    }
+}
+
+/// Annotation-inventory report JSON.
+///
+/// # Safety
+/// See `oxide_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_annotations_report_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::annotation_report_json(b, None)
+        })
+    }
+}
+
+/// Page-operations report JSON (boxes, labels, destinations, preservation risk).
+///
+/// # Safety
+/// See `oxide_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_pages_report_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::page_operations_report_json(b, None)
+        })
+    }
+}
+
+/// Combined interactive report JSON (forms + annotations + page operations).
+///
+/// # Safety
+/// See `oxide_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_interactive_report_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::interactive_report_json(b, None)
+        })
+    }
+}
+
+/// RAG-ready semantic chunk-set JSON.
+///
+/// # Safety
+/// See `oxide_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_chunks_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::chunk_report_json(b, None)
+        })
+    }
+}
+
+/// Sanitize the document. `policy` is `strict`|`balanced`|`preserve-visual`
+/// (NULL → `balanced`). Writes the sanitized PDF to `out_buffer` and the JSON
+/// report to `out_json`.
+///
+/// # Safety
+/// `document` valid; `out_buffer`/`out_json`/`error_out` writable. Free the
+/// buffer with `oxide_buffer_free`, the string with `oxide_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_sanitize_json(
+    document: *const OxideDocument,
+    policy: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let policy = unsafe { optional_c_string(policy) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |b| {
+            let policy = policy.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::sanitize_json(b, policy.as_deref(), None)
+        })
+    }
+}
+
+/// Canonicalize the document deterministically. `date_epoch` fixes the source
+/// date epoch (pass a negative value to leave it unset). Writes the canonical
+/// PDF to `out_buffer` and the audit JSON to `out_json`.
+///
+/// # Safety
+/// See `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_canonicalize_json(
+    document: *const OxideDocument,
+    date_epoch: i64,
+    has_date_epoch: c_int,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let epoch = if has_date_epoch != 0 {
+        Some(date_epoch)
+    } else {
+        None
+    };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |b| {
+            sdk::canonicalize_json(b, epoch, None)
+        })
+    }
+}
+
+/// Redact every occurrence of the given NUL-terminated `terms` (case
+/// insensitive), full-rewrite, and verify absence. `strict != 0` fails the call
+/// if a term survives. Writes the redacted PDF to `out_buffer` and a JSON report
+/// (with verification) to `out_json`.
+///
+/// # Safety
+/// `terms` must point to `terms_len` non-null NUL-terminated UTF-8 strings.
+/// See `oxide_document_sanitize_json` for the outputs.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_redact_terms_json(
+    document: *const OxideDocument,
+    terms: *const *const c_char,
+    terms_len: usize,
+    strict: c_int,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let collected = unsafe { read_c_string_array(terms, terms_len) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |b| {
+            let terms = collected
+                .clone()
+                .map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::redact_terms_json(b, &terms, strict != 0, None)
+        })
+    }
+}
+
+/// SDK / ABI version and capability report as JSON (no document needed): engine
+/// version, envelope version, compiled capabilities. Free with
+/// `oxide_string_free`.
+///
+/// # Safety
+/// `out_json`/`error_out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_feature_report_json(
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let json = oxide(sdk::feature_report_json())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// The oxide-engine semantic version as a NUL-terminated string. The returned
+/// pointer is owned by the caller and must be freed with `oxide_string_free`.
+/// Safe to call (takes no pointers).
+#[no_mangle]
+pub extern "C" fn oxide_version() -> *mut c_char {
+    into_c_string(oxide_engine::ENGINE_VERSION.to_string())
+}
+
+/// The C-ABI report envelope version (bump signals an envelope-shape change).
+/// Safe to call (takes no pointers).
+#[no_mangle]
+pub extern "C" fn oxide_abi_version() -> u32 {
+    oxide_engine::REPORT_ENVELOPE_VERSION
+}
+
+/// Read `len` NUL-terminated UTF-8 strings from a C string array.
+unsafe fn read_c_string_array(
+    ptr: *const *const c_char,
+    len: usize,
+) -> Result<Vec<String>, String> {
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+    if ptr.is_null() {
+        return Err("terms pointer is null".to_string());
+    }
+    let mut out = Vec::with_capacity(len);
+    for idx in 0..len {
+        let item = unsafe { *ptr.add(idx) };
+        out.push(unsafe { required_c_string(item, "term") }?);
+    }
+    Ok(out)
+}
+
 fn checked_doc<'a>(document: *const OxideDocument) -> Result<&'a OxideDocument, String> {
     if document.is_null() {
         Err("document pointer is null".to_string())
@@ -1628,5 +1994,216 @@ mod tests {
             oxide_string_free(md);
             oxide_document_free(doc);
         }
+    }
+
+    // ── Prompt-01 report surfaces ─────────────────────────────────────────────
+
+    /// Open the sample PDF, returning the opaque handle (caller frees).
+    fn open_sample() -> (*mut OxideDocument, Vec<u8>) {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc = unsafe { oxide_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        (doc, pdf)
+    }
+
+    /// Call a report fn, parse its JSON, assert the envelope kind, then free.
+    fn report_envelope(
+        f: unsafe extern "C" fn(*const OxideDocument, *mut *mut c_char, *mut *mut c_char) -> c_int,
+        kind: &str,
+    ) -> serde_json::Value {
+        let (doc, _pdf) = open_sample();
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let status = unsafe { f(doc, &mut json, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK, "report fn returned error");
+        assert!(!json.is_null());
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+        assert_eq!(value["schema_version"], 1);
+        assert_eq!(value["kind"], kind);
+        assert!(value.get("report").is_some());
+        unsafe {
+            oxide_string_free(json);
+            oxide_document_free(doc);
+        }
+        value
+    }
+
+    #[test]
+    fn capi_read_only_report_envelopes() {
+        report_envelope(oxide_document_security_report_json, "security_report");
+        report_envelope(oxide_document_forms_report_json, "forms_report");
+        report_envelope(oxide_document_annotations_report_json, "annotation_report");
+        report_envelope(oxide_document_pages_report_json, "page_operations_report");
+        report_envelope(oxide_document_interactive_report_json, "interactive_report");
+        report_envelope(oxide_document_chunks_json, "chunk_set");
+    }
+
+    #[test]
+    fn capi_parametrized_reports() {
+        let (doc, _pdf) = open_sample();
+        let mut error = std::ptr::null_mut();
+
+        // parser report with explicit mode.
+        let mode = CString::new("audit").unwrap();
+        let mut json = std::ptr::null_mut();
+        let status =
+            unsafe { oxide_document_parser_report_json(doc, mode.as_ptr(), &mut json, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "parser_report");
+        assert_eq!(value["report"]["opened"], true);
+        unsafe { oxide_string_free(json) };
+
+        // color report with NULL profile (defaults to generic).
+        let mut json = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_color_report_json(doc, std::ptr::null(), &mut json, &mut error)
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()["kind"] == "color_report"
+        );
+        unsafe { oxide_string_free(json) };
+
+        // validate with a profile.
+        let profile = CString::new("all").unwrap();
+        let mut json = std::ptr::null_mut();
+        let status =
+            unsafe { oxide_document_validate_json(doc, profile.as_ptr(), &mut json, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        unsafe { oxide_string_free(json) };
+
+        unsafe { oxide_document_free(doc) };
+    }
+
+    #[test]
+    fn capi_sanitize_and_canonicalize_output_and_report() {
+        let (doc, _pdf) = open_sample();
+        let mut error = std::ptr::null_mut();
+
+        let mut buf = OxideBuffer::empty();
+        let mut json = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_sanitize_json(doc, std::ptr::null(), &mut buf, &mut json, &mut error)
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let bytes = unsafe { slice::from_raw_parts(buf.data, buf.len) };
+        assert!(bytes.starts_with(b"%PDF-"));
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()["kind"],
+            "sanitize_report"
+        );
+        unsafe {
+            oxide_buffer_free(buf);
+            oxide_string_free(json);
+        }
+
+        let mut buf = OxideBuffer::empty();
+        let mut json = std::ptr::null_mut();
+        let status =
+            unsafe { oxide_document_canonicalize_json(doc, 0, 1, &mut buf, &mut json, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let bytes = unsafe { slice::from_raw_parts(buf.data, buf.len) };
+        assert!(bytes.starts_with(b"%PDF-"));
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "canonicalize_report");
+        assert_eq!(value["report"]["deterministic"], true);
+        unsafe {
+            oxide_buffer_free(buf);
+            oxide_string_free(json);
+            oxide_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_redact_terms_output_and_report() {
+        let (doc, _pdf) = open_sample();
+        let mut error = std::ptr::null_mut();
+        let term = CString::new("Hello").unwrap();
+        let terms = [term.as_ptr()];
+        let mut buf = OxideBuffer::empty();
+        let mut json = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_redact_terms_json(
+                doc,
+                terms.as_ptr(),
+                terms.len(),
+                0,
+                &mut buf,
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let bytes = unsafe { slice::from_raw_parts(buf.data, buf.len) };
+        assert!(bytes.starts_with(b"%PDF-"));
+        // The redacted output no longer surfaces the term.
+        let reopened = ContentEngine::open_bytes(bytes.to_vec()).unwrap();
+        assert!(!reopened.get_page_text(1).unwrap().contains("Hello"));
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&text).unwrap()["kind"],
+            "redaction_report"
+        );
+        unsafe {
+            oxide_buffer_free(buf);
+            oxide_string_free(json);
+            oxide_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_feature_and_version() {
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let status = unsafe { oxide_feature_report_json(&mut json, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "feature_report");
+        assert!(value["report"]["engine_version"].is_string());
+        unsafe { oxide_string_free(json) };
+
+        let version = oxide_version();
+        assert!(!version.is_null());
+        let v = unsafe { CStr::from_ptr(version) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(!v.is_empty());
+        unsafe { oxide_string_free(version) };
+
+        assert_eq!(oxide_abi_version(), 1);
+    }
+
+    #[test]
+    fn capi_report_null_document_is_error_not_panic() {
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let status =
+            unsafe { oxide_document_security_report_json(std::ptr::null(), &mut json, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_ERROR);
+        assert!(json.is_null());
+        assert!(!error.is_null());
+        unsafe { oxide_error_free(error) };
     }
 }

@@ -110,6 +110,7 @@ pub mod parser;
 pub mod parser_report;
 pub mod reader;
 pub mod render;
+pub mod sdk;
 pub mod security;
 pub mod semantic;
 pub mod signature;
@@ -268,6 +269,7 @@ pub use render::{
     WuLineRenderer, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
 };
 pub use render::{render_page_svg, svg, text_decode};
+pub use sdk::REPORT_ENVELOPE_VERSION;
 pub use security::{
     canonicalize_pdf, sanitize_pdf, scan_risky_content, security_report, CanonicalizeOptions,
     CanonicalizeReport, RiskyContentReport, SanitizerOptions, SanitizerPolicy, SanitizerReport,
