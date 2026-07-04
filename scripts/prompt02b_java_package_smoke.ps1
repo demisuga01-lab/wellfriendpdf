@@ -11,6 +11,7 @@ $ArtifactDir = Join-Path $Repo "target/prompt02-binding-parity"
 $ToolDir = Join-Path $Repo "target/prompt02b-tools"
 $SmokeDir = Join-Path $Repo "target/prompt02b-package-smoke"
 $Fixture = Join-Path $Repo "crates/engine/tests/fixtures/tracemonkey.pdf"
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Invoke-Checked {
     param([string]$FilePath, [string[]]$Arguments, [string]$Display)
@@ -19,6 +20,12 @@ function Invoke-Checked {
     if ($LASTEXITCODE -ne 0) {
         throw "$Display failed with exit code $LASTEXITCODE"
     }
+}
+
+function Write-JsonNoBom {
+    param([string]$Path, [object]$Payload)
+    $json = $Payload | ConvertTo-Json -Depth 8
+    [System.IO.File]::WriteAllText($Path, $json + [Environment]::NewLine, $Utf8NoBom)
 }
 
 function Get-HostRid {
@@ -186,9 +193,9 @@ $payload = [ordered]@{
         tests_in_jar = @($entries | Where-Object { $_ -like "*Test*" })
     }
     native_loading = "JAR smoke ran from target/prompt02b-package-smoke/run with OXIDE_NATIVE_LIBRARY unset and oxide_capi copied to bindings/java/target/runtimes/$rid/native."
-    gradle_policy = "Maven-first package producer; Gradle consumption is documented and non-authoritative for Prompt 02B."
+    gradle_policy = "Prompt 02B Maven package smoke preserved; Prompt 02C adds authoritative Gradle build/package support."
     result = "passed"
 }
 
-$payload | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $ArtifactDir "java-package-smoke.json") -Encoding UTF8
+Write-JsonNoBom (Join-Path $ArtifactDir "java-package-smoke.json") $payload
 Write-Host "wrote $(Join-Path $ArtifactDir 'java-package-smoke.json')"

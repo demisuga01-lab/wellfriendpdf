@@ -313,9 +313,16 @@ EXTRA_ROWS = [
     {
         "id": "prompt02b.java.gradle_policy",
         "category": "prompt02b-closure",
-        "feature": "Java Gradle package policy",
-        "surfaces": {"java": UNSUP, "docs": PUB, "packaging": PUB},
-        "note": "Java SDK is Maven-first; Gradle consumers depend on the Maven/JAR artifact and no second build system is authoritative.",
+        "feature": "Java Gradle package support",
+        "surfaces": {"java": PUB, "docs": PUB, "packaging": PUB},
+        "note": "Prompt 02C adds build.gradle/settings.gradle plus a target-local Gradle 9.6.1 bootstrap that runs clean test, jar, build, JAR inspection, runtime smoke, and Maven/Gradle equivalence.",
+    },
+    {
+        "id": "prompt02c.java.gradle_package",
+        "category": "prompt02c-closure",
+        "feature": "Java Gradle build/package/JAR smoke",
+        "surfaces": {"java": PUB, "docs": PUB, "packaging": PUB},
+        "note": "scripts/prompt02c_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/oxide-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts.",
     },
     {
         "id": "prompt02b.java.jar_verification",

@@ -1,0 +1,70 @@
+{
+    "schema_version":  1,
+    "result":  "passed",
+    "maven_artifact":  "E:\\wellpdfsdk\\bindings\\java\\target\\oxide-sdk-0.1.0.jar",
+    "gradle_artifact":  "E:\\wellpdfsdk\\bindings\\java\\build\\libs\\oxide-sdk-0.1.0.jar",
+    "class_list":  {
+                       "match":  true,
+                       "maven_count":  7,
+                       "gradle_count":  7,
+                       "only_maven":  [
+
+                                      ],
+                       "only_gradle":  [
+
+                                       ]
+                   },
+    "api":  {
+                "match":  true,
+                "only_maven":  [
+
+                               ],
+                "only_gradle":  [
+
+                                ],
+                "password_open_methods":  [
+                                              "org.oxidepdf.Oxide$Document#public static open(java.nio.file.Path,java.lang.String):org.oxidepdf.Oxide$Document",
+                                              "org.oxidepdf.Oxide$Document#public static open(byte[],java.lang.String):org.oxidepdf.Oxide$Document"
+                                          ]
+            },
+    "manifest":  {
+                     "common":  {
+                                    "Automatic-Module-Name":  {
+                                                                  "maven":  "org.oxidepdf",
+                                                                  "gradle":  "org.oxidepdf",
+                                                                  "match":  true
+                                                              }
+                                },
+                     "intentional_differences":  [
+                                                     {
+                                                         "key":  "Build-Jdk-Spec",
+                                                         "maven":  "25",
+                                                         "gradle":  null
+                                                     },
+                                                     {
+                                                         "key":  "Created-By",
+                                                         "maven":  "Maven JAR Plugin 3.4.2",
+                                                         "gradle":  null
+                                                     },
+                                                     {
+                                                         "key":  "Implementation-Title",
+                                                         "maven":  null,
+                                                         "gradle":  "Oxide Java SDK"
+                                                     },
+                                                     {
+                                                         "key":  "Implementation-Version",
+                                                         "maven":  null,
+                                                         "gradle":  "0.1.0"
+                                                     }
+                                                 ],
+                     "note":  "Build-tool generated manifest fields may differ; Automatic-Module-Name must match."
+                 },
+    "smoke_result":  {
+                         "maven":  "passed in target/prompt02-binding-parity/java-package-smoke.json",
+                         "gradle":  "passed in target/prompt02-binding-parity/gradle-jar-smoke.json"
+                     },
+    "native_loading":  {
+                           "maven":  "runtimes/win-x64/native under bindings/java/target",
+                           "gradle":  "runtimes/win-x64/native under bindings/java/build/libs"
+                       }
+}

@@ -1,6 +1,6 @@
 {
   "envelope_version": 1,
-  "feature_count": 204,
+  "feature_count": 205,
   "features": [
     {
       "action": "No Prompt 02 action; public or report-backed on WASM/.NET/Java.",
@@ -3746,17 +3746,36 @@
       "tests": "Prompt 02 focused binding smokes and generated artifacts"
     },
     {
-      "action": "Java SDK is Maven-first; Gradle consumers depend on the Maven/JAR artifact and no second build system is authoritative.",
+      "action": "Prompt 02C adds build.gradle/settings.gradle plus a target-local Gradle 9.6.1 bootstrap that runs clean test, jar, build, JAR inspection, runtime smoke, and Maven/Gradle equivalence.",
       "category": "prompt02b-closure",
-      "feature": "Java Gradle package policy",
+      "feature": "Java Gradle package support",
       "id": "prompt02b.java.gradle_policy",
-      "note": "Java SDK is Maven-first; Gradle consumers depend on the Maven/JAR artifact and no second build system is authoritative.",
+      "note": "Prompt 02C adds build.gradle/settings.gradle plus a target-local Gradle 9.6.1 bootstrap that runs clean test, jar, build, JAR inspection, runtime smoke, and Maven/Gradle equivalence.",
       "surfaces": {
         "c_abi": "deferred",
         "cli": "deferred",
         "docs": "implemented_public",
         "dotnet": "deferred",
-        "java": "unsupported_reported",
+        "java": "implemented_public",
+        "packaging": "implemented_public",
+        "python": "deferred",
+        "rust": "deferred",
+        "wasm": "deferred"
+      },
+      "tests": "Prompt 02 focused binding smokes and generated artifacts"
+    },
+    {
+      "action": "scripts/prompt02c_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/oxide-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts.",
+      "category": "prompt02c-closure",
+      "feature": "Java Gradle build/package/JAR smoke",
+      "id": "prompt02c.java.gradle_package",
+      "note": "scripts/prompt02c_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/oxide-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts.",
+      "surfaces": {
+        "c_abi": "deferred",
+        "cli": "deferred",
+        "docs": "implemented_public",
+        "dotnet": "deferred",
+        "java": "implemented_public",
         "packaging": "implemented_public",
         "python": "deferred",
         "rust": "deferred",
@@ -5197,12 +5216,20 @@
       }
     },
     {
-      "action": "Java SDK is Maven-first; Gradle consumers depend on the Maven/JAR artifact and no second build system is authoritative.",
-      "feature": "Java Gradle package policy",
+      "action": "Prompt 02C adds build.gradle/settings.gradle plus a target-local Gradle 9.6.1 bootstrap that runs clean test, jar, build, JAR inspection, runtime smoke, and Maven/Gradle equivalence.",
+      "feature": "Java Gradle package support",
       "id": "prompt02b.java.gradle_policy",
       "surfaces": {
         "dotnet": "deferred",
-        "java": "unsupported_reported",
+        "wasm": "deferred"
+      }
+    },
+    {
+      "action": "scripts/prompt02c_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/oxide-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts.",
+      "feature": "Java Gradle build/package/JAR smoke",
+      "id": "prompt02c.java.gradle_package",
+      "surfaces": {
+        "dotnet": "deferred",
         "wasm": "deferred"
       }
     },
@@ -5266,7 +5293,7 @@
   ],
   "surface_tallies": {
     "c_abi": {
-      "deferred": 22,
+      "deferred": 23,
       "implemented_internal": 1,
       "implemented_public": 106,
       "missing": 24,
@@ -5274,18 +5301,18 @@
       "unsupported_reported": 7
     },
     "cli": {
-      "deferred": 24,
+      "deferred": 25,
       "implemented_internal": 6,
       "implemented_public": 138,
       "missing": 1,
       "partial_public": 35
     },
     "docs": {
-      "implemented_public": 43,
+      "implemented_public": 44,
       "partial_public": 161
     },
     "dotnet": {
-      "deferred": 33,
+      "deferred": 34,
       "implemented_public": 77,
       "missing": 2,
       "partial_public": 84,
@@ -5293,17 +5320,17 @@
     },
     "java": {
       "deferred": 30,
-      "implemented_public": 79,
+      "implemented_public": 81,
       "missing": 2,
       "partial_public": 84,
-      "unsupported_reported": 9
+      "unsupported_reported": 8
     },
     "packaging": {
-      "implemented_public": 23,
+      "implemented_public": 24,
       "partial_public": 181
     },
     "python": {
-      "deferred": 24,
+      "deferred": 25,
       "implemented_public": 109,
       "missing": 24,
       "partial_public": 40,
@@ -5311,14 +5338,14 @@
     },
     "rust": {
       "cli_only": 1,
-      "deferred": 24,
+      "deferred": 25,
       "implemented_internal": 31,
       "implemented_public": 111,
       "missing": 1,
       "partial_public": 36
     },
     "wasm": {
-      "deferred": 37,
+      "deferred": 38,
       "implemented_public": 86,
       "partial_public": 67,
       "unsupported_reported": 14

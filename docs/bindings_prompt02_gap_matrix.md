@@ -2,21 +2,21 @@
 
 Human-readable view of `target/prompt02-binding-parity/binding-gap-matrix.json`.
 
-**Rows:** 204
+**Rows:** 205
 
 ## Surface Counts
 
 | Surface | implemented_public | partial_public | unsupported_reported | missing | deferred | implemented_internal | cli_only | blocked |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| rust | 111 | 36 | 0 | 1 | 24 | 31 | 1 | 0 |
-| python | 109 | 40 | 7 | 24 | 24 | 0 | 0 | 0 |
-| c_abi | 106 | 44 | 7 | 24 | 22 | 1 | 0 | 0 |
-| wasm | 86 | 67 | 14 | 0 | 37 | 0 | 0 | 0 |
-| dotnet | 77 | 84 | 8 | 2 | 33 | 0 | 0 | 0 |
-| java | 79 | 84 | 9 | 2 | 30 | 0 | 0 | 0 |
-| cli | 138 | 35 | 0 | 1 | 24 | 6 | 0 | 0 |
-| docs | 43 | 161 | 0 | 0 | 0 | 0 | 0 | 0 |
-| packaging | 23 | 181 | 0 | 0 | 0 | 0 | 0 | 0 |
+| rust | 111 | 36 | 0 | 1 | 25 | 31 | 1 | 0 |
+| python | 109 | 40 | 7 | 24 | 25 | 0 | 0 | 0 |
+| c_abi | 106 | 44 | 7 | 24 | 23 | 1 | 0 | 0 |
+| wasm | 86 | 67 | 14 | 0 | 38 | 0 | 0 | 0 |
+| dotnet | 77 | 84 | 8 | 2 | 34 | 0 | 0 | 0 |
+| java | 81 | 84 | 8 | 2 | 30 | 0 | 0 | 0 |
+| cli | 138 | 35 | 0 | 1 | 25 | 6 | 0 | 0 |
+| docs | 44 | 161 | 0 | 0 | 0 | 0 | 0 | 0 |
+| packaging | 24 | 181 | 0 | 0 | 0 | 0 | 0 | 0 |
 
 Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_only`, `unsupported_reported`, `missing`, `deferred`, `blocked`.
 
@@ -201,11 +201,17 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | .NET password-open parity (`prompt02b.dotnet.password_open`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | OxideDocument.Open(path/bytes, string? password) routes through the password-aware C ABI. |
 | Java password-open parity (`prompt02b.java.password_open`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Oxide.Document.open(Path/byte[], String password) routes UTF-8 bytes through the password-aware C ABI. |
 | Java Maven package smoke (`prompt02b.java.maven_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/prompt02b_java_package_smoke.ps1 runs Maven version/test/package with a target-local Maven fallback. |
-| Java Gradle package policy (`prompt02b.java.gradle_policy`) | deferred | deferred | deferred | deferred | deferred | unsupported_reported | deferred | implemented_public | implemented_public | Java SDK is Maven-first; Gradle consumers depend on the Maven/JAR artifact and no second build system is authoritative. |
+| Java Gradle package support (`prompt02b.java.gradle_policy`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Prompt 02C adds build.gradle/settings.gradle plus a target-local Gradle 9.6.1 bootstrap that runs clean test, jar, build, JAR inspection, runtime smoke, and Maven/Gradle equivalence. |
 | Java JAR package verification (`prompt02b.java.jar_verification`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Package smoke inspects the JAR as a ZIP, rejects test/native/build-junk entries, and runs from the packaged artifact. |
 | Prompt 02B progress closure (`prompt02b.progress_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Shared feature report records progress_not_supported; no binding exposes no-op callbacks. |
 | Prompt 02B cancellation closure (`prompt02b.cancellation_posture`) | deferred | deferred | deferred | unsupported_reported | unsupported_reported | unsupported_reported | deferred | implemented_public | implemented_public | Shared feature report records binding cancellation unsupported while naming render internals that already observe CancelToken. |
 | Prompt 02B memory/leak evidence (`prompt02b.memory_evidence`) | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | deferred | implemented_public | implemented_public | C ABI/.NET/Java repeated open/report/dispose stress tests plus existing Linux sanitizer CI gate; local Valgrind/LLVM cov unavailable on Windows host. |
+
+## prompt02c-closure
+
+| Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Java Gradle build/package/JAR smoke (`prompt02c.java.gradle_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/prompt02c_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/oxide-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts. |
 
 ## release
 

@@ -10,6 +10,8 @@ JDK 25 preview FFM on Windows x64.
 - Smoke test: `bindings/java/src/test/java/org/oxidepdf/OxideSmokeTest.java`
 - Example: `bindings/java/examples/Prompt02Reports.java`
 - Maven metadata: `bindings/java/pom.xml`
+- Gradle metadata: `bindings/java/settings.gradle`, `bindings/java/build.gradle`,
+  `bindings/java/gradle.properties`
 
 ## Public API
 
@@ -61,26 +63,40 @@ document object. C ABI tests cover correct/wrong passwords on a generated
 encrypted fixture; Java tests cover the public overloads and verify malformed
 input errors do not echo the supplied password.
 
-Maven is the authoritative Java package flow. `bindings/java/pom.xml` compiles
-with JDK 25 preview FFM flags, binds `OxideSmokeTest` into `mvn test`, and
-produces `bindings/java/target/oxide-sdk-0.1.0.jar`. The Prompt 02B package
-script (`scripts/prompt02b_java_package_smoke.ps1`) downloads Maven 3.9.9 into
+Maven and Gradle are both real Java package surfaces.
+
+Maven: `bindings/java/pom.xml` compiles with JDK 25 preview FFM flags, binds
+`OxideSmokeTest` into `mvn test`, and produces
+`bindings/java/target/oxide-sdk-0.1.0.jar`. The Prompt 02B package script
+(`scripts/prompt02b_java_package_smoke.ps1`) downloads Maven 3.9.9 into
 `target/prompt02b-tools` if no host `mvn` exists, runs `mvn clean test` and
 `mvn package`, inspects the JAR, and runs `PackageSmoke` from the packaged JAR
 with native loading through `runtimes/<rid>/native`.
 
-Gradle is consumer-only for Prompt 02B: publish/install the Maven artifact, then
-consume it from Gradle with normal Maven coordinates, for example:
+Gradle: `bindings/java/build.gradle` uses the same JDK 25 preview FFM policy,
+runs the existing `OxideSmokeTest` from the Gradle `test` task, and produces
+`bindings/java/build/libs/oxide-sdk-0.1.0.jar`. The Prompt 02C package script
+(`scripts/prompt02c_gradle_package_smoke.ps1`) downloads pinned Gradle 9.6.1
+into `target/prompt02c-tools` if no host `gradle` exists, verifies the archive
+checksum, runs Gradle `clean test`, `jar`, and `build`, inspects the Gradle JAR,
+runs `PackageSmoke` from the Gradle-built artifact with native loading through
+`build/libs/runtimes/<rid>/native`, and writes Maven/Gradle equivalence evidence.
 
-```gradle
-repositories {
-    mavenLocal()
-}
+Direct Gradle commands:
 
-dependencies {
-    implementation("org.oxidepdf:oxide-sdk:0.1.0")
-}
+```powershell
+gradle --no-daemon -p bindings/java clean test
+gradle --no-daemon -p bindings/java jar
+gradle --no-daemon -p bindings/java build
 ```
+
+The Gradle `test` task uses a test-scope JUnit wrapper that invokes the same
+dependency-free `OxideSmokeTest` main class used by the direct Java smoke path.
+
+Maven and Gradle JARs are not required to be byte-identical because build-tool
+manifest fields can differ. Prompt 02C requires public class/API equivalence,
+matching `Automatic-Module-Name`, clean package contents, and successful runtime
+smokes for both artifacts.
 
 Progress and cancellation are not exposed because the current Prompt 02
 report/output facade calls do not observe binding-level tokens. Query

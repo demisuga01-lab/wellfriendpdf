@@ -17,14 +17,26 @@ public final class PackageSmoke {
         if (!Files.exists(fixture)) {
             throw new IllegalArgumentException("fixture does not exist: " + fixture);
         }
+        Oxide.Document.class.getMethod("open", Path.class, String.class);
+        Oxide.Document.class.getMethod("open", byte[].class, String.class);
+        if (Oxide.engineVersion().isBlank() || Oxide.abiVersion() < 1) {
+            throw new AssertionError("version queries failed");
+        }
 
         try (Oxide.Document doc = Oxide.Document.open(fixture, "")) {
             if (doc.pageCount() < 1) {
                 throw new AssertionError("expected at least one page");
             }
+            if (doc.page(1).text().isBlank()) {
+                throw new AssertionError("text extraction returned blank");
+            }
             String security = doc.securityReportJson();
             if (!security.contains("\"schema_version\"")) {
                 throw new AssertionError("security report missing schema_version");
+            }
+            String parser = doc.parserReportJson("repair");
+            if (!parser.contains("\"schema_version\"")) {
+                throw new AssertionError("parser report missing schema_version");
             }
             Oxide.BinaryResult sanitized = doc.sanitize("balanced");
             if (sanitized.bytes().length == 0 || !sanitized.reportJson().contains("sanitize_report")) {

@@ -55,6 +55,8 @@ large-file-profile/results/
 # .NET/Java build products are machine output and must not enter checkpoints.
 bindings/**/bin/
 bindings/**/obj/
+bindings/java/.gradle/
+bindings/java/build/
 bindings/java/target/
 
 # wasm-bindgen / wasm-pack generated package for the browser demo. This is a

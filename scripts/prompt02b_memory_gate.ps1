@@ -11,6 +11,7 @@ $NativeName = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatf
 }
 $NativePath = Join-Path $Repo "target/debug/$NativeName"
 $JavaClasses = Join-Path $Repo "bindings/java/target/classes"
+$Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 function Invoke-Checked {
     param([string]$FilePath, [string[]]$Arguments, [string]$Display)
@@ -26,6 +27,12 @@ function Tool-Status {
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if ($cmd) { return $cmd.Source }
     return "<missing>"
+}
+
+function Write-JsonNoBom {
+    param([string]$Path, [object]$Payload)
+    $json = $Payload | ConvertTo-Json -Depth 6
+    [System.IO.File]::WriteAllText($Path, $json + [Environment]::NewLine, $Utf8NoBom)
 }
 
 New-Item -ItemType Directory -Force -Path $ArtifactDir | Out-Null
@@ -45,7 +52,8 @@ $commands.Add("dotnet test bindings/dotnet/Oxide.Sdk.Tests --filter RepeatedOpen
 
 $javaSources = @(
     (Get-ChildItem -LiteralPath (Join-Path $Repo "bindings/java/src/main/java") -Recurse -Filter "*.java").FullName
-    (Get-ChildItem -LiteralPath (Join-Path $Repo "bindings/java/src/test/java") -Recurse -Filter "*.java").FullName
+    (Get-ChildItem -LiteralPath (Join-Path $Repo "bindings/java/src/test/java") -Recurse -Filter "*.java" |
+        Where-Object { $_.Name -ne "OxideJUnitTest.java" }).FullName
 )
 New-Item -ItemType Directory -Force -Path $JavaClasses | Out-Null
 $javacArgs = @("--enable-preview", "--release", "25", "-d", $JavaClasses) + $javaSources
@@ -71,5 +79,5 @@ $payload = [ordered]@{
     native_library = $NativePath
 }
 
-$payload | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $ArtifactDir "memory-smoke.json") -Encoding UTF8
+Write-JsonNoBom (Join-Path $ArtifactDir "memory-smoke.json") $payload
 Write-Host "wrote $(Join-Path $ArtifactDir 'memory-smoke.json')"

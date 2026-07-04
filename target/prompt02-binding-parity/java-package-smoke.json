@@ -1,4 +1,4 @@
-﻿{
+{
     "schema_version":  1,
     "surface":  "java",
     "maven_tool":  "E:\\wellpdfsdk\\target\\prompt02b-tools\\apache-maven-3.9.9\\bin\\mvn.cmd",
@@ -25,6 +25,6 @@
                                           ]
                      },
     "native_loading":  "JAR smoke ran from target/prompt02b-package-smoke/run with OXIDE_NATIVE_LIBRARY unset and oxide_capi copied to bindings/java/target/runtimes/win-x64/native.",
-    "gradle_policy":  "Maven-first package producer; Gradle consumption is documented and non-authoritative for Prompt 02B.",
+    "gradle_policy":  "Prompt 02B Maven package smoke preserved; Prompt 02C adds authoritative Gradle build/package support.",
     "result":  "passed"
 }

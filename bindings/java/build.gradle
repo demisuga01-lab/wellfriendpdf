@@ -1,0 +1,100 @@
+plugins {
+    id "java-library"
+    id "maven-publish"
+}
+
+group = "org.oxidepdf"
+version = "0.1.0"
+description = "Java FFM binding for the Oxide PDF SDK."
+
+base {
+    archivesName = "oxide-sdk"
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(25)
+    }
+    withSourcesJar()
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = "UTF-8"
+    options.release = 25
+    options.compilerArgs += ["--enable-preview"]
+}
+
+tasks.withType(JavaExec).configureEach {
+    jvmArgs("--enable-preview", "--enable-native-access=ALL-UNNAMED")
+}
+
+dependencies {
+    testImplementation "junit:junit:4.13.2"
+}
+
+tasks.withType(Test).configureEach {
+    useJUnit()
+    jvmArgs("--enable-preview", "--enable-native-access=ALL-UNNAMED")
+    doFirst {
+        def nativeFile = oxideNativeLibrary()
+        if (nativeFile == null) {
+            throw new GradleException("Build oxide-capi or set OXIDE_NATIVE_LIBRARY before running Java smoke tests")
+        }
+        environment "OXIDE_NATIVE_LIBRARY", nativeFile.absolutePath
+        def artifactDir = System.getenv("OXIDE_PROMPT02_ARTIFACT_DIR")
+        if (artifactDir != null && !artifactDir.isBlank()) {
+            environment "OXIDE_PROMPT02_ARTIFACT_DIR", artifactDir
+        }
+    }
+}
+
+jar {
+    manifest {
+        attributes(
+            "Automatic-Module-Name": "org.oxidepdf",
+            "Implementation-Title": "Oxide Java SDK",
+            "Implementation-Version": project.version
+        )
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+            pom {
+                name = "Oxide Java SDK"
+                description = project.description
+                url = "https://github.com/oxide-pdf/oxide"
+                licenses {
+                    license {
+                        name = "MIT OR Apache-2.0"
+                    }
+                }
+            }
+        }
+    }
+}
+
+File oxideNativeLibrary() {
+    def explicit = System.getenv("OXIDE_NATIVE_LIBRARY")
+    if (explicit != null && !explicit.isBlank()) {
+        def file = file(explicit)
+        if (file.exists()) {
+            return file
+        }
+    }
+
+    def os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT)
+    def mapped = os.contains("win")
+        ? "oxide_capi.dll"
+        : (os.contains("mac") || os.contains("darwin") ? "liboxide_capi.dylib" : "liboxide_capi.so")
+    def repoRoot = projectDir.toPath().resolve("../..").normalize().toFile()
+    def candidates = [
+        new File(repoRoot, "target/debug/${mapped}"),
+        new File(repoRoot, "target/release/${mapped}"),
+        new File(projectDir, "target/debug/${mapped}"),
+        new File(projectDir, "target/release/${mapped}")
+    ]
+    return candidates.find { it.exists() }
+}

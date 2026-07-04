@@ -48,10 +48,18 @@ Password open is available through `Oxide.Document.open(path, password)` and
 `Oxide.Document.open(bytes, password)`. Passwords are UTF-8 operation-scoped
 inputs and are not retained on the Java document object.
 
-Maven is the authoritative package flow. `scripts/prompt02b_java_package_smoke.ps1`
+Maven and Gradle are both package flows. `scripts/prompt02b_java_package_smoke.ps1`
 runs Maven test/package, inspects `bindings/java/target/oxide-sdk-0.1.0.jar`,
-and runs a JAR-based package smoke. Gradle is documented as consumer-only over
-the Maven/JAR artifact rather than a second build system.
+and runs a JAR-based package smoke. `scripts/prompt02c_gradle_package_smoke.ps1`
+downloads pinned Gradle 9.6.1 when needed, runs Gradle `clean test`, `jar`, and
+`build`, inspects `bindings/java/build/libs/oxide-sdk-0.1.0.jar`, runs the same
+JAR-based smoke from the Gradle artifact, and writes Maven/Gradle equivalence
+evidence.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/prompt02b_java_package_smoke.ps1
+powershell -ExecutionPolicy Bypass -File scripts/prompt02c_gradle_package_smoke.ps1
+```
 
 Known limits: progress and cancellation are reported through
 `Oxide.featureReportJson()` as unsupported for the Prompt 02 binding surface; no
