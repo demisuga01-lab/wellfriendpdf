@@ -19,12 +19,14 @@ use std::collections::HashSet;
 use serde::Serialize;
 
 use crate::crypto::md5;
+use crate::decode_scheduler::{estimate_stream_decode_bytes, DecodeSchedulerContext};
 use crate::document::PdfDocument;
 use crate::error::{OxideError, Result};
-use crate::filters::decode_stream;
+use crate::filters::{decode_stream_with_limits, DecodeLimits};
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
+use crate::CancelToken;
 
 /// Maximum name-tree recursion depth (intermediate `/Kids` nesting). Real name
 /// trees are shallow; this bounds a malformed/cyclic tree alongside the
@@ -233,6 +235,14 @@ fn build_attachment(
 /// data), the decoded bytes are checked against it; a mismatch is logged as a
 /// warning (not an error — some producers store a wrong/absent checksum).
 pub fn extract_attachment(doc: &PdfDocument, attachment: &Attachment) -> Result<Vec<u8>> {
+    extract_attachment_with_limits(doc, attachment, &DecodeLimits::default())
+}
+
+pub fn extract_attachment_with_limits(
+    doc: &PdfDocument,
+    attachment: &Attachment,
+    limits: &DecodeLimits,
+) -> Result<Vec<u8>> {
     let reader = doc.reader();
     let stream_obj =
         reader.get_and_resolve(attachment.stream_object, attachment.stream_generation)?;
@@ -242,7 +252,13 @@ pub fn extract_attachment(doc: &PdfDocument, attachment: &Attachment) -> Result<
             attachment.stream_object, attachment.stream_generation
         )));
     }
-    let bytes = decode_stream(&stream_obj, reader)?;
+    let scheduler = DecodeSchedulerContext::new(limits);
+    let bytes = scheduler.run(
+        estimate_stream_decode_bytes(&stream_obj),
+        &CancelToken::none(),
+        "embedded file attachment decode",
+        || decode_stream_with_limits(&stream_obj, reader, limits),
+    )?;
 
     // Verify the stored MD5 checksum if present.
     if let Some(expected_hex) = &attachment.checksum_md5 {

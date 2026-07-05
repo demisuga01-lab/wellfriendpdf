@@ -37,7 +37,9 @@ use crate::{
     color_report::{color_report_bytes, ColorValidationProfile},
     compliance::{validate_pdfa, validate_pdfua, PdfAProfile},
     decode_scanner::scanner_availability_report,
-    decode_scheduler::renderer_decode_scheduler_adoption_report,
+    decode_scheduler::{
+        non_render_decode_scheduler_adoption_report, renderer_decode_scheduler_adoption_report,
+    },
     editing::{EditMode, ImageRect, PdfEditor, RedactionOptions},
     filters::{decode_image_budget_report, DecodeLimits},
     interactive::{
@@ -303,6 +305,27 @@ pub fn feature_report_json() -> Result<String> {
             "rlbox_wasm": {
                 "status": "hard_blocked_with_prompt04_evidence",
                 "report_artifact": "target/prompt04-codec-boundary-scheduler/rlbox-wasm-feasibility.json"
+            }
+        },
+        "prompt05": {
+            "decode_scheduler": non_render_decode_scheduler_adoption_report(),
+            "hostile_corpus": {
+                "status": "deterministic_generated_corpus_with_local_runner",
+                "generator": "scripts/prompt05_hostile_codec_corpus.py",
+                "manifest_artifact": "target/prompt05-codec-closeout/hostile-corpus-manifest.json",
+                "run_artifact": "target/prompt05-codec-closeout/hostile-corpus-run.json"
+            },
+            "fuzz_campaign": {
+                "status": "campaign_scripts_and_smoke_artifacts",
+                "script": "scripts/prompt05_codec_fuzz_campaign.py",
+                "target_inventory_artifact": "target/prompt05-codec-closeout/fuzz-target-inventory.json",
+                "smoke_artifact": "target/prompt05-codec-closeout/fuzz-smoke-report.json"
+            },
+            "closeout": {
+                "status": "prompt05_closeout_artifacts_required_for_release_grade_verdict",
+                "script": "scripts/prompt05_codec_closeout.py",
+                "performance_artifact": "target/prompt05-codec-closeout/performance-report.json",
+                "verdict_artifact": "target/prompt05-codec-closeout/closeout-verdict.json"
             }
         },
         // Capabilities that are always present in the default build regardless of
@@ -615,6 +638,18 @@ mod tests {
         assert_eq!(
             v["report"]["prompt04"]["native_codec_boundary"]["default_posture"],
             "deny_native_by_default"
+        );
+        assert_eq!(
+            v["report"]["prompt05"]["decode_scheduler"]["status"],
+            "adopted_for_prompt05_non_render_decode_paths"
+        );
+        assert_eq!(
+            v["report"]["prompt05"]["hostile_corpus"]["generator"],
+            "scripts/prompt05_hostile_codec_corpus.py"
+        );
+        assert_eq!(
+            v["report"]["prompt05"]["fuzz_campaign"]["script"],
+            "scripts/prompt05_codec_fuzz_campaign.py"
         );
         assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
         assert_eq!(

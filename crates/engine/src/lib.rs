@@ -134,7 +134,8 @@ pub use arlington::{
     ArlingtonCoverage, ArlingtonValidationMode,
 };
 pub use attachments::{
-    extract_attachment, list_attachments, sanitize_filename, Attachment, AttachmentSource,
+    extract_attachment, extract_attachment_with_limits, list_attachments, sanitize_filename,
+    Attachment, AttachmentSource,
 };
 pub use authoring::{
     CustomFontId, FlowDocument, FontFace, GraphicsStyle, ImageHandle, Margins,
@@ -186,8 +187,11 @@ pub use decode_scanner::{
     MarkerCandidate, MarkerScanResult, ScannerImplementation, PDF_DELIMITER_MARKERS,
 };
 pub use decode_scheduler::{
+    estimate_image_decode_bytes, estimate_raw_stream_decode_bytes, estimate_stream_decode_bytes,
+    estimate_stream_parts_decode_bytes, non_render_decode_scheduler_adoption_report,
     renderer_decode_scheduler_adoption_report, run_scheduled_decode_jobs, DecodeMemoryBudget,
-    DecodeSchedulerMetrics, RendererDecodeSchedulerAdoptionReport, ScheduledDecodeJob,
+    DecodeSchedulerContext, DecodeSchedulerMetrics, NonRenderDecodeSchedulerAdoptionReport,
+    RendererDecodeSchedulerAdoptionReport, ScheduledDecodeJob,
 };
 pub use docmodel::{
     render_markdown as render_document_markdown, ClassifiedType, DocBlock, DocumentModel, ListItem,
@@ -223,7 +227,8 @@ pub use extract::{
 };
 pub use filters::{
     decode_image_budget_report, decode_stream, decode_stream_lossless,
-    decode_stream_lossless_with_limits, flate_encode, DecodeDiagnostic, DecodeDiagnosticSource,
+    decode_stream_lossless_with_limits, decode_stream_report_from_dict_scheduled,
+    decode_stream_with_limits, flate_encode, DecodeDiagnostic, DecodeDiagnosticSource,
     DecodeImageParams, DecodeLimits, DecodeMetrics, DecodePredictorParams, DecodeReport,
     DecodeSeverity, DecodedStream, StreamDecodeStatus, MAX_FLATE_DECOMPRESSED_BYTES,
 };

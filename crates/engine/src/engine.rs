@@ -1,11 +1,11 @@
 use std::collections::{BTreeSet, HashMap};
-use std::io::{self, Read};
+use std::io::{self, Cursor, Read};
 use std::path::Path;
 
 use crate::content::{ContentOperation, ContentParser, StreamingContentTokenizer};
 use crate::document::{PdfDocument, PdfPage};
 use crate::error::{OxideError, Result};
-use crate::filters::{decode_stream_lossless_reader, StreamDecodeStatus};
+use crate::filters::{decode_stream_lossless_reader_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::encoder::{ImageEncoder, ImageOutputFormat};
 use crate::images::locator::{ImageLocateOptions, ImageLocator, ImageReference};
@@ -15,6 +15,12 @@ use crate::render::{
     DisplayList, PageRenderer, PixelBuffer, RenderCache, RenderMode, RenderTile, Viewport, WHITE,
 };
 use crate::text::{TextExtractOptions, TextExtractor, TextFormatOptions};
+use crate::{
+    decode_scheduler::{
+        estimate_image_decode_bytes, estimate_raw_stream_decode_bytes, DecodeSchedulerContext,
+    },
+    CancelToken,
+};
 
 #[derive(Debug, Clone, Default)]
 pub struct PageResources {
@@ -468,23 +474,58 @@ impl ContentEngine {
 
     pub fn get_page_content(&self, page_number: usize) -> Result<Vec<ContentOperation>> {
         self.validate_page(page_number)?;
+        let limits = DecodeLimits::default();
+        let scheduler = DecodeSchedulerContext::new(&limits);
         if let Some(streams) = self.doc.content_stream_ranges(page_number)? {
             let mut readers = Vec::with_capacity(streams.len());
-            for stream in streams {
-                let decoded = decode_stream_lossless_reader(
-                    &stream.dict,
-                    stream.reader,
-                    Some(self.doc.reader()),
+            for (stream_index, stream) in streams.into_iter().enumerate() {
+                let estimate = stream
+                    .dict
+                    .get("Length")
+                    .and_then(PdfObject::as_integer)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .map(estimate_raw_stream_decode_bytes)
+                    .unwrap_or(1);
+                let (status, bytes) = scheduler.run(
+                    estimate,
+                    &CancelToken::none(),
+                    "text extraction content stream decode",
+                    || {
+                        let decoded = decode_stream_lossless_reader_with_limits(
+                            &stream.dict,
+                            stream.reader,
+                            Some(self.doc.reader()),
+                            &limits,
+                        )?;
+                        let mut bytes = Vec::new();
+                        let status = decoded.status;
+                        let mut reader = decoded.reader;
+                        reader.read_to_end(&mut bytes)?;
+                        Ok((status, bytes))
+                    },
                 )?;
-                if let StreamDecodeStatus::StoppedAtImageFilter(filter) = &decoded.status {
+                if let StreamDecodeStatus::StoppedAtImageFilter(filter) = &status {
                     log::warn!("page content stream stopped at image filter {filter}");
                 }
-                readers.push(decoded.reader);
+                if stream_index > 0 {
+                    readers.push(Box::new(Cursor::new(vec![b'\n'])) as Box<dyn Read>);
+                }
+                readers.push(Box::new(Cursor::new(bytes)) as Box<dyn Read>);
             }
             let tokens = StreamingContentTokenizer::new(JoinedContentStreams::new(readers));
             return ContentParser::parse_tokens_propagating_io(tokens);
         }
-        let bytes = self.doc.get_page_content_bytes(page_number)?;
+        let page = self.doc.get_page(page_number)?;
+        let estimate = estimate_raw_stream_decode_bytes(page.contents.len().saturating_mul(1024));
+        let bytes = scheduler.run(
+            estimate,
+            &CancelToken::none(),
+            "text extraction fallback content decode",
+            || {
+                self.doc
+                    .get_page_content_bytes_with_limits(page_number, &limits)
+            },
+        )?;
         ContentParser::parse(&bytes)
     }
 
@@ -1096,15 +1137,37 @@ impl ContentEngine {
     /// Inline images (BI/ID/EI) are decoded from the pixel bytes captured on the
     /// reference; XObject images are decoded from their PDF object.
     pub fn decode_image(&self, image: &ImageReference) -> Result<RawImage> {
+        self.decode_image_with_limits(image, &DecodeLimits::default())
+    }
+
+    pub fn decode_image_with_limits(
+        &self,
+        image: &ImageReference,
+        limits: &DecodeLimits,
+    ) -> Result<RawImage> {
         // TODO: parallel-decode multi-image pages (decode is currently serial per call).
         if image.is_inline {
-            return self.decode_inline_image(image);
+            return self.decode_inline_image_with_limits(image, limits);
         }
-        ImageDecoder::decode(image, self.document().reader())
+        let scheduler = DecodeSchedulerContext::new(limits);
+        scheduler.run(
+            estimate_image_decode_bytes(image),
+            &CancelToken::none(),
+            "image extraction XObject decode",
+            || ImageDecoder::decode_with_limits(image, self.document().reader(), limits),
+        )
     }
 
     /// Decode an inline image from the raw data captured during location.
     pub fn decode_inline_image(&self, image: &ImageReference) -> Result<RawImage> {
+        self.decode_inline_image_with_limits(image, &DecodeLimits::default())
+    }
+
+    pub fn decode_inline_image_with_limits(
+        &self,
+        image: &ImageReference,
+        limits: &DecodeLimits,
+    ) -> Result<RawImage> {
         let data = image.inline_data.as_ref().ok_or_else(|| {
             OxideError::UnsupportedFeature(format!(
                 "inline image '{}' has no captured pixel data",
@@ -1112,14 +1175,23 @@ impl ContentEngine {
             ))
         })?;
         let filters: Vec<&str> = data.filters.iter().map(String::as_str).collect();
-        ImageDecoder::decode_inline(
-            &data.bytes,
-            image.width,
-            image.height,
-            data.bits_per_component,
-            &image.color_space,
-            &filters,
-            None,
+        let scheduler = DecodeSchedulerContext::new(limits);
+        scheduler.run(
+            estimate_image_decode_bytes(image),
+            &CancelToken::none(),
+            "image extraction inline image decode",
+            || {
+                ImageDecoder::decode_inline_with_limits(
+                    &data.bytes,
+                    image.width,
+                    image.height,
+                    data.bits_per_component,
+                    &image.color_space,
+                    &filters,
+                    None,
+                    limits,
+                )
+            },
         )
     }
 

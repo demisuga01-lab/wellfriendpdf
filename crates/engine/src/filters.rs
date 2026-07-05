@@ -4,6 +4,11 @@ use std::io::{self, Cursor, Read};
 use flate2::read::{DeflateDecoder, ZlibDecoder};
 use serde::{Deserialize, Serialize};
 
+use crate::cancel::CancelToken;
+use crate::decode_scheduler::{
+    estimate_raw_stream_decode_bytes, estimate_stream_decode_bytes,
+    estimate_stream_parts_decode_bytes, DecodeSchedulerContext,
+};
 use crate::error::{OxideError, Result};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
@@ -315,6 +320,9 @@ pub struct DecodeMetrics {
     pub cache_misses: usize,
     pub cache_evictions: usize,
     pub scheduler_jobs: usize,
+    pub scheduler_peak_reserved_bytes: u64,
+    pub scheduler_wait_count: usize,
+    pub scheduler_budget_denials: usize,
     pub scanner_candidates: usize,
 }
 
@@ -335,6 +343,11 @@ impl DecodeMetrics {
         self.cache_misses += other.cache_misses;
         self.cache_evictions += other.cache_evictions;
         self.scheduler_jobs += other.scheduler_jobs;
+        self.scheduler_peak_reserved_bytes = self
+            .scheduler_peak_reserved_bytes
+            .max(other.scheduler_peak_reserved_bytes);
+        self.scheduler_wait_count += other.scheduler_wait_count;
+        self.scheduler_budget_denials += other.scheduler_budget_denials;
         self.scanner_candidates += other.scanner_candidates;
         for (filter, count) in other.filters_histogram {
             *self.filters_histogram.entry(filter).or_default() += count;
@@ -387,7 +400,15 @@ impl DecodeReport {
 /// [`decode_stream_lossless`] when callers want bytes decoded through preceding
 /// lossless filters and an explicit status naming the remaining image filter.
 pub fn decode_stream(stream: &PdfObject, reader: &PdfReader) -> Result<Vec<u8>> {
-    let decoded = decode_stream_lossless(stream, reader)?;
+    decode_stream_with_limits(stream, reader, &DecodeLimits::default())
+}
+
+pub fn decode_stream_with_limits(
+    stream: &PdfObject,
+    reader: &PdfReader,
+    limits: &DecodeLimits,
+) -> Result<Vec<u8>> {
+    let decoded = decode_stream_lossless_with_limits(stream, reader, limits)?;
     match decoded.status {
         StreamDecodeStatus::Complete => Ok(decoded.data),
         StreamDecodeStatus::StoppedAtImageFilter(filter) => Err(OxideError::UnsupportedFeature(
@@ -422,7 +443,13 @@ pub fn decode_stream_lossless_with_limits(
     let (dict, raw) = stream.as_stream().ok_or_else(|| {
         OxideError::MalformedPdf("decode_stream requires a stream object".to_string())
     })?;
-    decode_stream_parts_with_limits(dict, raw, Some(reader), limits)
+    let scheduler = DecodeSchedulerContext::new(limits);
+    scheduler.run(
+        estimate_stream_decode_bytes(stream),
+        &CancelToken::none(),
+        "raw stream lossless decode",
+        || decode_stream_parts_with_limits(dict, raw, Some(reader), limits),
+    )
 }
 
 pub(crate) fn decode_stream_from_dict(dict: &PdfDictionary, raw: &[u8]) -> Result<Vec<u8>> {
@@ -434,7 +461,13 @@ pub(crate) fn decode_stream_from_dict_with_limits(
     raw: &[u8],
     limits: &DecodeLimits,
 ) -> Result<Vec<u8>> {
-    let decoded = decode_stream_parts_with_limits(dict, raw, None, limits)?;
+    let scheduler = DecodeSchedulerContext::new(limits);
+    let decoded = scheduler.run(
+        estimate_raw_stream_decode_bytes(raw.len()),
+        &CancelToken::none(),
+        "filter-chain stream decode",
+        || decode_stream_parts_with_limits(dict, raw, None, limits),
+    )?;
     match decoded.status {
         StreamDecodeStatus::Complete => Ok(decoded.data),
         StreamDecodeStatus::StoppedAtImageFilter(filter) => Err(OxideError::UnsupportedFeature(
@@ -443,6 +476,7 @@ pub(crate) fn decode_stream_from_dict_with_limits(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn decode_stream_lossless_reader<'a, R: Read + 'a>(
     dict: &PdfDictionary,
     raw: R,
@@ -458,14 +492,6 @@ pub(crate) fn decode_stream_lossless_reader_with_limits<'a, R: Read + 'a>(
     limits: &DecodeLimits,
 ) -> Result<DecodedStreamReader<'a>> {
     decode_stream_reader_with_cap(dict, raw, reader, limits.max_decoded_bytes_per_stream)
-}
-
-pub(crate) fn apply_filter_bytes(
-    filter_name: &str,
-    input: &[u8],
-    decode_parms: Option<&PdfDictionary>,
-) -> Result<Vec<u8>> {
-    apply_filter_bytes_with_limits(filter_name, input, decode_parms, &DecodeLimits::default())
 }
 
 pub(crate) fn apply_filter_bytes_with_limits(
@@ -619,6 +645,72 @@ pub fn decode_stream_report_from_dict(
     }
 
     report
+}
+
+pub fn decode_stream_report_from_dict_scheduled(
+    dict: &PdfDictionary,
+    raw: &[u8],
+    reader: Option<&PdfReader>,
+    limits: &DecodeLimits,
+    object: Option<(u32, u16)>,
+    cancel: &CancelToken,
+    context: &str,
+) -> DecodeReport {
+    let scheduler = DecodeSchedulerContext::new(limits);
+    let estimate = estimate_stream_parts_decode_bytes(dict, raw);
+    let result = scheduler.run(estimate, cancel, context, || {
+        Ok(decode_stream_report_from_dict(
+            dict, raw, reader, limits, object,
+        ))
+    });
+    let scheduler_metrics = scheduler.metrics();
+    match result {
+        Ok(mut report) => {
+            attach_scheduler_metrics(&mut report.metrics, &scheduler_metrics);
+            report
+        }
+        Err(err) => {
+            let mut report = DecodeReport::empty(limits.clone());
+            report.ok = false;
+            report.metrics.streams_seen = 1;
+            report.metrics.streams_failed = 1;
+            report.metrics.total_raw_bytes = raw.len() as u64;
+            attach_scheduler_metrics(&mut report.metrics, &scheduler_metrics);
+            let mut diagnostic = DecodeDiagnostic::new(
+                if matches!(err, OxideError::Cancelled(_)) {
+                    "decode_scheduler_cancelled"
+                } else {
+                    "decode_scheduler_admission_failed"
+                },
+                DecodeSeverity::SecurityLimit,
+                DecodeDiagnosticSource::Scheduler,
+                err.to_string(),
+            )
+            .for_object(object)
+            .with_raw_len(raw.len() as u64)
+            .with_limit(
+                "scheduler_memory_budget_bytes",
+                limits.scheduler_memory_budget_bytes,
+                Some(estimate),
+            );
+            diagnostic.partial_output_discarded = true;
+            report.metrics.hit_limit("scheduler_memory_budget_bytes");
+            report.diagnostics.push(diagnostic);
+            report
+        }
+    }
+}
+
+fn attach_scheduler_metrics(
+    metrics: &mut DecodeMetrics,
+    scheduler: &crate::decode_scheduler::DecodeSchedulerMetrics,
+) {
+    metrics.scheduler_jobs += scheduler.jobs;
+    metrics.scheduler_peak_reserved_bytes = metrics
+        .scheduler_peak_reserved_bytes
+        .max(scheduler.peak_reserved_bytes);
+    metrics.scheduler_wait_count += scheduler.wait_count;
+    metrics.scheduler_budget_denials += scheduler.budget_denials;
 }
 
 /// Check image dimensions/components against decode limits and return a structured report.
@@ -915,7 +1007,7 @@ pub fn fuzz_decode_filter(input: &[u8]) -> Result<Vec<u8>> {
         // DecodeParms so the predictor code is reachable from the fuzzer.
         _ => "FlateDecode",
     };
-    apply_filter_bytes(filter, rest, None)
+    apply_filter_bytes_with_limits(filter, rest, None, &DecodeLimits::default())
 }
 
 /// Fuzz-only entry point for the PNG/TIFF predictor stage in isolation: the

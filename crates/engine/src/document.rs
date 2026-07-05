@@ -3,7 +3,7 @@ use std::path::Path;
 use std::sync::OnceLock;
 
 use crate::error::{OxideError, Result};
-use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
+use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::{ContentStreamRange, PdfReader};
 
@@ -147,6 +147,14 @@ impl PdfDocument {
     }
 
     pub fn get_page_content_bytes(&self, page_number: usize) -> Result<Vec<u8>> {
+        self.get_page_content_bytes_with_limits(page_number, &DecodeLimits::default())
+    }
+
+    pub fn get_page_content_bytes_with_limits(
+        &self,
+        page_number: usize,
+        limits: &DecodeLimits,
+    ) -> Result<Vec<u8>> {
         let page = self.get_page(page_number)?;
         let mut out = Vec::new();
 
@@ -186,7 +194,7 @@ impl PdfDocument {
             if wrote_stream {
                 out.push(b'\n');
             }
-            let decoded = match decode_stream_lossless(&object, &self.reader) {
+            let decoded = match decode_stream_lossless_with_limits(&object, &self.reader, limits) {
                 Ok(decoded) => decoded,
                 Err(err) => {
                     log::warn!(

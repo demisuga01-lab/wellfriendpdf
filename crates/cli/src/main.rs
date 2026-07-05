@@ -244,6 +244,8 @@ enum Commands {
     ExtractPages(ExtractPagesArgs),
     /// Report document metadata and structural facts (pdfinfo-equivalent)
     Info(InfoArgs),
+    /// Emit shared SDK feature, codec, scheduler, corpus, and fuzz capability report
+    FeatureReport(FeatureReportArgs),
     /// Emit structured parser diagnostics, repair/audit status, and source metrics
     ParserReport(ParserReportArgs),
     /// Exercise codec subprocess isolation policy and emit a JSON diagnostic report
@@ -1464,6 +1466,16 @@ struct InfoArgs {
 }
 
 #[derive(Parser)]
+struct FeatureReportArgs {
+    /// Pretty-print the shared JSON envelope
+    #[arg(long)]
+    pretty: bool,
+    /// Output report file; defaults to stdout
+    #[arg(short, long, alias = "out")]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
 struct ParserReportArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -1518,6 +1530,9 @@ struct ParserReportArgs {
     /// Override decoded-stream cache budget, in MiB
     #[arg(long)]
     decode_cache_mb: Option<u64>,
+    /// Override scheduler memory-token budget, in MiB
+    #[arg(long)]
+    decode_scheduler_mb: Option<u64>,
     /// Maximum diagnostics to emit in the top-level diagnostics array
     #[arg(long)]
     max_diagnostics: Option<usize>,
@@ -1747,6 +1762,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Split(args) => run_split(args),
         Commands::ExtractPages(args) => run_extract_pages(args),
         Commands::Info(args) => run_info(args),
+        Commands::FeatureReport(args) => run_feature_report(args),
         Commands::ParserReport(args) => run_parser_report(args),
         Commands::CodecIsolationReport(args) => run_codec_isolation_report(args),
         Commands::Fonts(args) => run_fonts(args),
@@ -3872,6 +3888,17 @@ fn run_info(args: InfoArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_feature_report(args: FeatureReportArgs) -> Result<(), Box<dyn Error>> {
+    let json = oxide_engine::sdk::feature_report_json()?;
+    let output = if args.pretty {
+        let value: serde_json::Value = serde_json::from_str(&json)?;
+        serde_json::to_string_pretty(&value)?
+    } else {
+        json
+    };
+    write_output_optional(&args.output, &output)
+}
+
 fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
     let mode = match args.mode.to_ascii_lowercase().as_str() {
         "strict" => oxide_engine::ParserMode::Strict,
@@ -3990,6 +4017,11 @@ fn parser_report_decode_limits(
             mb.checked_mul(1024 * 1024)
                 .ok_or("--decode-cache-mb overflows u64")?,
         )?;
+    }
+    if let Some(mb) = args.decode_scheduler_mb {
+        limits.scheduler_memory_budget_bytes = mb
+            .checked_mul(1024 * 1024)
+            .ok_or("--decode-scheduler-mb overflows u64")?;
     }
     Ok(limits)
 }

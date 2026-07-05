@@ -84,6 +84,13 @@ def test_module_level_reports():
         feature["prompt04"]["renderer_decode_scheduler"]["status"]
         == "adopted_for_immediate_renderer_decode_paths"
     )
+    assert (
+        feature["prompt05"]["decode_scheduler"]["status"]
+        == "adopted_for_prompt05_non_render_decode_paths"
+    )
+    assert feature["prompt05"]["hostile_corpus"]["generator"].endswith(
+        "prompt05_hostile_codec_corpus.py"
+    )
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

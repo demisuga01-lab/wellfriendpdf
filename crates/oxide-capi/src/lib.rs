@@ -2406,6 +2406,10 @@ mod tests {
             value["report"]["prompt04"]["renderer_decode_scheduler"]["status"],
             "adopted_for_immediate_renderer_decode_paths"
         );
+        assert_eq!(
+            value["report"]["prompt05"]["decode_scheduler"]["status"],
+            "adopted_for_prompt05_non_render_decode_paths"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

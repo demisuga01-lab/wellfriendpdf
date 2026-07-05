@@ -1,7 +1,10 @@
 use std::io::Cursor;
 
 use crate::error::{OxideError, Result};
-use crate::filters::{apply_filter_bytes, decode_stream_lossless, StreamDecodeStatus};
+use crate::filters::{
+    apply_filter_bytes_with_limits, decode_stream_lossless_with_limits, DecodeLimits,
+    StreamDecodeStatus,
+};
 use crate::images::locator::{ImageLocator, ImageReference};
 use crate::images::{ccitt, jbig2, jpx};
 use crate::object::{PdfDictionary, PdfObject};
@@ -75,6 +78,14 @@ pub struct ImageDecoder;
 impl ImageDecoder {
     /// Decode an image from its PDF ImageReference.
     pub fn decode(image: &ImageReference, reader: &PdfReader) -> Result<RawImage> {
+        Self::decode_with_limits(image, reader, &DecodeLimits::default())
+    }
+
+    pub fn decode_with_limits(
+        image: &ImageReference,
+        reader: &PdfReader,
+        limits: &DecodeLimits,
+    ) -> Result<RawImage> {
         if image.object_number == 0 {
             return Err(OxideError::UnsupportedFeature(
                 "inline image decoding via decode() is not supported; use decode_inline() with the raw pixel bytes"
@@ -97,7 +108,7 @@ impl ImageDecoder {
             dict: dict.clone(),
             raw,
         };
-        let decoded = decode_stream_lossless(&stream_obj, reader)?;
+        let decoded = decode_stream_lossless_with_limits(&stream_obj, reader, limits)?;
 
         match decoded.status {
             StreamDecodeStatus::Complete => Self::build_raw_image(
@@ -110,7 +121,14 @@ impl ImageDecoder {
                 Some(reader),
             ),
             StreamDecodeStatus::StoppedAtImageFilter(filter) => {
-                Self::decode_remaining_image_filter(&decoded.data, &filter, image, reader, &dict)
+                Self::decode_remaining_image_filter(
+                    &decoded.data,
+                    &filter,
+                    image,
+                    reader,
+                    &dict,
+                    limits,
+                )
             }
         }
     }
@@ -125,7 +143,31 @@ impl ImageDecoder {
         filter: &[&str],
         decode_parms: Option<&PdfDictionary>,
     ) -> Result<RawImage> {
-        let decompressed = Self::apply_filters_direct(pixel_data, filter, decode_parms)?;
+        Self::decode_inline_with_limits(
+            pixel_data,
+            width,
+            height,
+            bpc,
+            color_space,
+            filter,
+            decode_parms,
+            &DecodeLimits::default(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_inline_with_limits(
+        pixel_data: &[u8],
+        width: u32,
+        height: u32,
+        bpc: u8,
+        color_space: &str,
+        filter: &[&str],
+        decode_parms: Option<&PdfDictionary>,
+        limits: &DecodeLimits,
+    ) -> Result<RawImage> {
+        let decompressed =
+            Self::apply_filters_direct_with_limits(pixel_data, filter, decode_parms, limits)?;
         if let Some(last_filter) = filter.last() {
             match *last_filter {
                 "DCTDecode" | "DCT" => {
@@ -258,6 +300,7 @@ impl ImageDecoder {
         image: &ImageReference,
         reader: &PdfReader,
         dict: &PdfDictionary,
+        limits: &DecodeLimits,
     ) -> Result<RawImage> {
         match filter {
             "DCTDecode" | "DCT" => {
@@ -295,7 +338,7 @@ impl ImageDecoder {
             }
             "JBIG2Decode" => {
                 let decode_params = image_decode_params(dict, Some(reader), filter)?;
-                let globals = jbig2_globals(decode_params.as_ref(), reader)?;
+                let globals = jbig2_globals(decode_params.as_ref(), reader, limits)?;
                 jbig2::decode(data, globals.as_deref())
             }
             other => {
@@ -308,10 +351,11 @@ impl ImageDecoder {
         }
     }
 
-    fn apply_filters_direct(
+    fn apply_filters_direct_with_limits(
         raw: &[u8],
         filters: &[&str],
         decode_parms: Option<&PdfDictionary>,
+        limits: &DecodeLimits,
     ) -> Result<Vec<u8>> {
         let mut data = raw.to_vec();
         for &filter in filters {
@@ -321,7 +365,7 @@ impl ImageDecoder {
             ) {
                 return Ok(data);
             }
-            data = apply_filter_bytes(filter, &data, decode_parms)?;
+            data = apply_filter_bytes_with_limits(filter, &data, decode_parms, limits)?;
         }
         Ok(data)
     }
@@ -749,7 +793,11 @@ fn ccitt_decode_params(
     })
 }
 
-fn jbig2_globals(params: Option<&PdfDictionary>, reader: &PdfReader) -> Result<Option<Vec<u8>>> {
+fn jbig2_globals(
+    params: Option<&PdfDictionary>,
+    reader: &PdfReader,
+    limits: &DecodeLimits,
+) -> Result<Option<Vec<u8>>> {
     let Some(globals_obj) = params.and_then(|dict| dict.get("JBIG2Globals")) else {
         return Ok(None);
     };
@@ -757,7 +805,7 @@ fn jbig2_globals(params: Option<&PdfDictionary>, reader: &PdfReader) -> Result<O
     match globals_obj {
         PdfObject::Stream { dict, raw } => {
             let stream = PdfObject::Stream { dict, raw };
-            let decoded = decode_stream_lossless(&stream, reader)?;
+            let decoded = decode_stream_lossless_with_limits(&stream, reader, limits)?;
             match decoded.status {
                 StreamDecodeStatus::Complete => Ok(Some(decoded.data)),
                 StreamDecodeStatus::StoppedAtImageFilter(filter) => {

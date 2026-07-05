@@ -34,4 +34,12 @@ Combined Prompt 04 keeps the engine's codec default pure Rust and adds a central
 
 RLBox/WASM codec sandboxing is explicitly hard-blocked for this repository state by `target/prompt04-codec-boundary-scheduler/rlbox-wasm-feasibility.json`; Oxide must not claim RLBox production support until a reproducible cross-platform prototype exists.
 
+Prompt 05 extends the codec threat model from renderer decode into extraction,
+image extraction, parser-report decode probes, and attachment extraction. These
+paths now inherit scheduler memory-token admission and fail-closed diagnostics
+through the shared decode/report layer. Hostile codec corpus and fuzz campaign
+artifacts are generated under `target/prompt05-codec-closeout/`; long fuzz
+campaigns remain release hardening work, not a prerequisite for starting the
+renderer parity phase.
+
 Renderer decode paths now acquire scheduler memory tokens before image/stream decode and observe render cancellation before decoder entry. This is a bounded-memory and deterministic-order improvement, not a renderer parity phase.

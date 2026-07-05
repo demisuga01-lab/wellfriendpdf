@@ -1,10 +1,14 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
+use crate::cancel::CancelToken;
 use crate::error::{OxideError, Result};
 use crate::filters::DecodeLimits;
+use crate::images::locator::ImageReference;
+use crate::object::{PdfDictionary, PdfObject};
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DecodeSchedulerMetrics {
@@ -13,6 +17,7 @@ pub struct DecodeSchedulerMetrics {
     pub memory_budget_bytes: u64,
     pub peak_reserved_bytes: u64,
     pub wait_count: usize,
+    pub budget_denials: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -26,6 +31,21 @@ pub struct RendererDecodeSchedulerAdoptionReport {
     pub adopted_paths: Vec<String>,
     pub audited_deferred_paths: Vec<String>,
     pub timeout_posture: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NonRenderDecodeSchedulerAdoptionReport {
+    pub status: String,
+    pub execution_model: String,
+    pub memory_tokens: bool,
+    pub deterministic_output_order: bool,
+    pub cancellation_observed_before_decode: bool,
+    pub adopted_paths: Vec<String>,
+    pub metadata_only_paths: Vec<String>,
+    pub unsupported_reported_paths: Vec<String>,
+    pub ocr_prep_posture: String,
+    pub timeout_posture: String,
+    pub public_report_artifacts: Vec<String>,
 }
 
 pub fn renderer_decode_scheduler_adoption_report() -> RendererDecodeSchedulerAdoptionReport {
@@ -54,6 +74,48 @@ pub fn renderer_decode_scheduler_adoption_report() -> RendererDecodeSchedulerAdo
             "parallel renderer predecode is intentionally not enabled in Prompt 04".to_string(),
         ],
         timeout_posture: "renderer exposes cooperative cancellation through CancelToken; no binding-level fake progress/cancellation was added".to_string(),
+    }
+}
+
+pub fn non_render_decode_scheduler_adoption_report() -> NonRenderDecodeSchedulerAdoptionReport {
+    NonRenderDecodeSchedulerAdoptionReport {
+        status: "adopted_for_prompt05_non_render_decode_paths".to_string(),
+        execution_model:
+            "synchronous_deterministic_decode_with_shared_scheduler_memory_tokens".to_string(),
+        memory_tokens: true,
+        deterministic_output_order: true,
+        cancellation_observed_before_decode: true,
+        adopted_paths: vec![
+            "parser_report_include_decode_stream_inventory".to_string(),
+            "image_extraction_xobject_decode".to_string(),
+            "image_extraction_inline_image_decode".to_string(),
+            "embedded_file_attachment_decode".to_string(),
+            "hostile_corpus_decode_runner".to_string(),
+            "codec_fuzz_smoke_report".to_string(),
+        ],
+        metadata_only_paths: vec![
+            "security_report_active_content_scan".to_string(),
+            "standards_validation_stream_inspection".to_string(),
+            "attachment_listing_without_extract".to_string(),
+            "image_inventory_without_extract".to_string(),
+        ],
+        unsupported_reported_paths: vec![
+            "OCR engine absent unless optional ocr feature/backend is supplied".to_string(),
+            "unsafe native codec backend remains denied by native boundary policy".to_string(),
+        ],
+        ocr_prep_posture:
+            "OCR page-image preparation uses renderer decode scheduling when OCR is compiled; no OCR support is claimed without the optional backend"
+                .to_string(),
+        timeout_posture:
+            "non-render scheduler observes cooperative cancellation before decode; OS worker timeouts remain enforced by Prompt 03 codec isolation"
+                .to_string(),
+        public_report_artifacts: vec![
+            "target/prompt05-codec-closeout/decode-callsite-inventory.json".to_string(),
+            "target/prompt05-codec-closeout/codec-coverage-matrix.json".to_string(),
+            "target/prompt05-codec-closeout/hostile-corpus-run.json".to_string(),
+            "target/prompt05-codec-closeout/fuzz-smoke-report.json".to_string(),
+            "target/prompt05-codec-closeout/closeout-verdict.json".to_string(),
+        ],
     }
 }
 
@@ -117,7 +179,58 @@ impl DecodeMemoryBudget {
             memory_budget_bytes: self.limit,
             peak_reserved_bytes: state.peak,
             wait_count: state.waits,
+            budget_denials: 0,
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct DecodeSchedulerContext {
+    workers: usize,
+    budget: Arc<DecodeMemoryBudget>,
+    jobs: AtomicUsize,
+    denials: AtomicUsize,
+}
+
+impl DecodeSchedulerContext {
+    pub fn new(limits: &DecodeLimits) -> Self {
+        Self {
+            workers: limits.max_concurrent_decode_jobs.max(1),
+            budget: Arc::new(DecodeMemoryBudget::new(
+                limits.scheduler_memory_budget_bytes.max(1),
+            )),
+            jobs: AtomicUsize::new(0),
+            denials: AtomicUsize::new(0),
+        }
+    }
+
+    pub fn run<T>(
+        &self,
+        estimated_bytes: u64,
+        cancel: &CancelToken,
+        context: &str,
+        work: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        self.jobs.fetch_add(1, Ordering::Relaxed);
+        cancel.check(context)?;
+        let token = match self.budget.acquire(estimated_bytes) {
+            Ok(token) => token,
+            Err(err) => {
+                self.denials.fetch_add(1, Ordering::Relaxed);
+                return Err(err);
+            }
+        };
+        let result = work();
+        drop(token);
+        result
+    }
+
+    pub fn metrics(&self) -> DecodeSchedulerMetrics {
+        let mut metrics = self.budget.metrics();
+        metrics.jobs = self.jobs.load(Ordering::Relaxed);
+        metrics.workers = self.workers;
+        metrics.budget_denials = self.denials.load(Ordering::Relaxed);
+        metrics
     }
 }
 
@@ -170,13 +283,17 @@ pub fn run_scheduled_decode_jobs<T: Send + 'static>(
         .build()
         .expect("decode scheduler thread pool");
 
+    let denials = AtomicUsize::new(0);
     let mut indexed = pool.install(|| {
         jobs.into_par_iter()
             .map(|job| {
                 let token = memory_budget.acquire(job.estimated_bytes);
                 let result = match token {
                     Ok(_token) => (job.work)(),
-                    Err(err) => Err(err),
+                    Err(err) => {
+                        denials.fetch_add(1, Ordering::Relaxed);
+                        Err(err)
+                    }
                 };
                 (job.index, result)
             })
@@ -187,7 +304,42 @@ pub fn run_scheduled_decode_jobs<T: Send + 'static>(
     let mut metrics = memory_budget.metrics();
     metrics.jobs = job_count;
     metrics.workers = workers;
+    metrics.budget_denials = denials.load(Ordering::Relaxed);
     (results, metrics)
+}
+
+pub fn estimate_raw_stream_decode_bytes(raw_len: usize) -> u64 {
+    let raw = raw_len as u64;
+    raw.saturating_mul(4).max(raw).max(1)
+}
+
+pub fn estimate_stream_decode_bytes(stream: &PdfObject) -> u64 {
+    match stream.as_stream() {
+        Some((dict, raw)) => estimate_stream_parts_decode_bytes(dict, raw),
+        None => 1,
+    }
+}
+
+pub fn estimate_stream_parts_decode_bytes(dict: &PdfDictionary, raw: &[u8]) -> u64 {
+    let declared = dict
+        .get("Length")
+        .and_then(PdfObject::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(raw.len() as u64);
+    estimate_raw_stream_decode_bytes(raw.len()).max(declared)
+}
+
+pub fn estimate_image_decode_bytes(image: &ImageReference) -> u64 {
+    let pixels = u64::from(image.width).saturating_mul(u64::from(image.height));
+    let bits = u64::from(image.bits_per_component.max(1));
+    let bytes = pixels.saturating_mul(bits).saturating_add(7) / 8;
+    bytes.max(estimate_raw_stream_decode_bytes(
+        image
+            .inline_data
+            .as_ref()
+            .map(|data| data.bytes.len())
+            .unwrap_or(0),
+    ))
 }
 
 #[cfg(test)]

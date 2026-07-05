@@ -2,8 +2,10 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 
+use crate::cancel::CancelToken;
 use crate::filters::{
-    decode_stream_report_from_dict, DecodeDiagnostic, DecodeLimits, DecodeReport, DecodeSeverity,
+    decode_stream_report_from_dict_scheduled, DecodeDiagnostic, DecodeLimits, DecodeReport,
+    DecodeSeverity,
 };
 use crate::reader::PdfReader;
 
@@ -513,12 +515,15 @@ fn summarize_decode(reader: &PdfReader, limits: &DecodeLimits) -> DecodeReport {
         let Some((dict, raw)) = object.as_stream() else {
             continue;
         };
-        let report = decode_stream_report_from_dict(
+        let context = format!("parser report decode object {number} {generation}");
+        let report = decode_stream_report_from_dict_scheduled(
             dict,
             raw,
             Some(reader),
             limits,
             Some((number, generation)),
+            &CancelToken::none(),
+            &context,
         );
         aggregate.merge(report);
     }
