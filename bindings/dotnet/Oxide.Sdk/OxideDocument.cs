@@ -68,6 +68,39 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public static string CodecIsolationReportJson(
+        string filter,
+        byte[] encodedBytes,
+        string policy = "in_process")
+    {
+        ArgumentNullException.ThrowIfNull(filter);
+        ArgumentNullException.ThrowIfNull(encodedBytes);
+        var filterPtr = NativeMethods.StringToNativeOrNull(filter);
+        var policyPtr = NativeMethods.StringToNativeOrNull(policy);
+        try
+        {
+            var status = NativeMethods.oxide_codec_isolation_report_json(
+                filterPtr,
+                encodedBytes,
+                (UIntPtr)encodedBytes.Length,
+                policyPtr,
+                out var json,
+                out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (filterPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(filterPtr);
+            }
+            if (policyPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(policyPtr);
+            }
+        }
+    }
+
     public static string EngineVersion()
     {
         return NativeMethods.TakeString(NativeMethods.oxide_version());

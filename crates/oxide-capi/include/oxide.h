@@ -430,6 +430,19 @@ OXIDE_API int oxide_feature_report_json(
     char **out_json,
     char **error_out);
 
+/* Codec isolation probe/decode report. `filter` is a PDF stream filter name,
+ * `data` points to the encoded stream bytes, and `policy` is
+ * "in_process"|"isolated_preferred"|"isolated_required"|"report_only"|
+ * "disabled" (NULL => "in_process"). Free `*out_json` with
+ * oxide_string_free. */
+OXIDE_API int oxide_codec_isolation_report_json(
+    const char *filter,
+    const uint8_t *data,
+    size_t len,
+    const char *policy,
+    char **out_json,
+    char **error_out);
+
 /* The oxide-engine semantic version as a NUL-terminated string owned by the
  * caller (free with oxide_string_free). NULL only on allocation failure. */
 OXIDE_API char *oxide_version(void);

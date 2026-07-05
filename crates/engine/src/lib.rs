@@ -77,6 +77,7 @@ pub mod authoring;
 pub mod cancel;
 pub mod chunk;
 pub mod classify;
+pub mod codec_isolation;
 pub mod color_report;
 pub mod compliance;
 pub mod content;
@@ -145,6 +146,13 @@ pub use cancel::CancelToken;
 pub use chunk::{chunk, estimate_tokens, Chunk, ChunkOptions, ChunkSet, CHUNK_SCHEMA_VERSION};
 pub use classify::{
     classify_document, classify_page, ClassifyConfig, PageClassification, PageSource,
+};
+pub use codec_isolation::{
+    codec_dimension_report, codec_isolation_availability_report, decode_filter_with_isolation,
+    default_worker_path, platform_supports_process_isolation, supported_worker_codecs,
+    CodecDimensions, CodecIsolationConfig, CodecIsolationDecode, CodecIsolationLimits,
+    CodecIsolationPolicy, CodecIsolationReport, CodecWorkerRequest, CodecWorkerResponse,
+    CODEC_WORKER_PROTOCOL_VERSION, CODEC_WORKER_VERSION,
 };
 pub use color_report::{
     color_report, color_report_bytes, ColorBackendDecision, ColorDiagnostic, ColorLimits,

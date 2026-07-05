@@ -293,6 +293,15 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_codec_isolation_report_json(
+        IntPtr filter,
+        byte[] data,
+        UIntPtr len,
+        IntPtr policy,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern IntPtr oxide_version();
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

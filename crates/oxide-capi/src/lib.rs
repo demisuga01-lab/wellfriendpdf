@@ -1516,6 +1516,46 @@ pub unsafe extern "C" fn oxide_feature_report_json(
     })
 }
 
+/// Codec isolation diagnostic report over caller-supplied encoded stream bytes.
+///
+/// `filter` must be a NUL-terminated UTF-8 filter name such as `FlateDecode`.
+/// `policy` may be NULL (defaults to `in_process`) or one of
+/// `in_process`, `isolated_preferred`, `isolated_required`, `report_only`, or
+/// `disabled`.
+///
+/// # Safety
+/// `data` must point to `len` readable bytes unless `len == 0`.
+/// `out_json`/`error_out` must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_codec_isolation_report_json(
+    filter: *const c_char,
+    data: *const u8,
+    len: usize,
+    policy: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let filter = unsafe { required_c_string(filter, "filter") };
+    let policy = unsafe { optional_c_string(policy) };
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let filter = filter?;
+        let policy = policy?;
+        let input = unsafe { read_input_bytes(data, len, "data") }?;
+        let json = oxide(sdk::codec_isolation_report_json(
+            &filter,
+            input,
+            policy.as_deref(),
+        ))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
 /// The oxide-engine semantic version as a NUL-terminated string. The returned
 /// pointer is owned by the caller and must be freed with `oxide_string_free`.
 /// Safe to call (takes no pointers).
@@ -2369,6 +2409,33 @@ mod tests {
         unsafe { oxide_string_free(version) };
 
         assert_eq!(oxide_abi_version(), 1);
+    }
+
+    #[test]
+    fn capi_codec_isolation_report_envelope() {
+        let filter = CString::new("FlateDecode").unwrap();
+        let policy = CString::new("report_only").unwrap();
+        let input = oxide_engine::flate_encode(b"capi isolation", 6);
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_codec_isolation_report_json(
+                filter.as_ptr(),
+                input.as_ptr(),
+                input.len(),
+                policy.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "codec_isolation_report");
+        assert_eq!(value["report"]["status"], "report_only");
+        unsafe { oxide_string_free(json) };
     }
 
     #[test]

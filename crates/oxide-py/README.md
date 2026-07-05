@@ -54,6 +54,7 @@ data, rep = doc.redact(["SECRET"], strict=True)     # verifies absence
 # No-document queries:
 oxide.feature_report()                               # version + capabilities
 oxide.decode_budget_report("DCTDecode", 4096, 4096, 3)
+oxide.codec_isolation_report("FlateDecode", b"...", policy="in_process")
 oxide.resource_dedup_report([b"a", b"a", b"b"])
 ```
 

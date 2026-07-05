@@ -11,6 +11,10 @@ using var doc = OxideDocument.Open("report.pdf", password: null);
 Console.WriteLine(doc.PageCount);
 Console.WriteLine(doc.GetPage(1).Text);
 Console.WriteLine(doc.SecurityReportJson());
+Console.WriteLine(OxideDocument.CodecIsolationReportJson(
+    "FlateDecode",
+    Convert.FromHexString("789ccb48cdc9c957c8afc84c49050019dd044e"),
+    "in_process"));
 
 var sanitized = doc.Sanitize("balanced");
 File.WriteAllBytes("sanitized.pdf", sanitized.Bytes);

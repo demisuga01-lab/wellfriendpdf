@@ -31,6 +31,9 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::{
+    codec_isolation::{
+        codec_isolation_availability_report, decode_filter_with_isolation, CodecIsolationConfig,
+    },
     color_report::{color_report_bytes, ColorValidationProfile},
     compliance::{validate_pdfa, validate_pdfua, PdfAProfile},
     editing::{EditMode, ImageRect, PdfEditor, RedactionOptions},
@@ -217,6 +220,20 @@ pub fn decode_budget_report_json(
     envelope("decode_budget_report", &report)
 }
 
+/// Codec isolation report for a caller-supplied stream payload. `policy` is one
+/// of `in_process`, `isolated_preferred`, `isolated_required`, `report_only`,
+/// or `disabled`. The report names whether a subprocess worker was used,
+/// failed closed, or fell back by explicit policy.
+pub fn codec_isolation_report_json(
+    filter: &str,
+    input: &[u8],
+    policy: Option<&str>,
+) -> Result<String> {
+    let config = CodecIsolationConfig::from_policy_str(policy)?;
+    let decoded = decode_filter_with_isolation(filter, input, &config);
+    envelope("codec_isolation_report", &decoded.report)
+}
+
 /// Resource-dedup report over caller-supplied resource byte buffers. Groups
 /// byte-identical resources by content digest — the writer's dedup evidence.
 pub fn resource_dedup_report_json(resources: &[Vec<u8>]) -> Result<String> {
@@ -274,6 +291,7 @@ pub fn feature_report_json() -> Result<String> {
             "pdfa": cfg!(feature = "pdfa"),
             "ocr": cfg!(feature = "ocr"),
         },
+        "codec_isolation": codec_isolation_availability_report(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [

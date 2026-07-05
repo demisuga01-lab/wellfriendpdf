@@ -474,6 +474,15 @@ pub(crate) fn apply_filter_bytes_with_limits(
     decode_parms: Option<&PdfDictionary>,
     limits: &DecodeLimits,
 ) -> Result<Vec<u8>> {
+    apply_filter_bytes_in_process_with_limits(filter_name, input, decode_parms, limits)
+}
+
+pub(crate) fn apply_filter_bytes_in_process_with_limits(
+    filter_name: &str,
+    input: &[u8],
+    decode_parms: Option<&PdfDictionary>,
+    limits: &DecodeLimits,
+) -> Result<Vec<u8>> {
     match filter_name {
         "FlateDecode" | "Fl" => {
             let data = flate_decode_capped(input, limits.max_decoded_bytes_per_stream)?;

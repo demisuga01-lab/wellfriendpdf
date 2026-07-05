@@ -28,8 +28,13 @@ close and use-after-close checks, page count, parser methods (`parseMarkdown`,
 `parseJson`), RAG `chunk`, key-value `extractFieldsJson`, plain/structured text
 extraction, info JSON, render-page-to-PNG, facade-backed report JSON methods
 for inspection/security/parser/color/validation/forms/annotations/pages/fonts/
-signatures/semantics, and output methods for sanitize, canonicalize, and
-redact-terms workflows.
+signatures/semantics, output methods for sanitize, canonicalize, and
+redact-terms workflows, and `OxidePdf.codecIsolationReportJson(filter, bytes,
+policy)` for Prompt 03 codec policy diagnostics.
+
+Use `policy="in_process"` for browser-safe local decode reports. Subprocess
+policies return a structured unavailable/fail-closed report because
+wasm/browser targets cannot spawn OS codec workers.
 
 OCR is intentionally excluded in the browser: the Tesseract backend is an
 external process, so the WASM surface is digital-born only. The WASM wrapper

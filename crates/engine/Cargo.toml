@@ -10,7 +10,7 @@ documentation = "https://docs.rs/oxide-engine"
 homepage = "https://github.com/oxide-pdf/oxide"
 keywords = ["pdf", "parser", "rendering", "documents", "signatures"]
 categories = ["parser-implementations", "rendering", "text-processing"]
-include = ["src/**/*", "fonts/*.ttf", "fonts/LICENSE-*.txt", "fonts/README.md"]
+include = ["src/**/*", "examples/**/*", "fonts/*.ttf", "fonts/LICENSE-*.txt", "fonts/README.md"]
 
 [dependencies]
 aes = "0.8"

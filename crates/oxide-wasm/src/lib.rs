@@ -94,6 +94,16 @@ mod wasm_api {
             sdk::decode_budget_report_json(filter, width, height, components).map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = codecIsolationReportJson)]
+        pub fn codec_isolation_report_json(
+            filter: &str,
+            data: &[u8],
+            policy: Option<String>,
+        ) -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::codec_isolation_report_json(filter, data, policy.as_deref()).map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = close)]
         pub fn close(&mut self) {
             self.closed = true;

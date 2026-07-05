@@ -25,6 +25,12 @@ public final class Oxide {
         return Native.featureReportJson();
     }
 
+    public static String codecIsolationReportJson(String filter, byte[] encodedBytes, String policy) {
+        Objects.requireNonNull(filter, "filter");
+        Objects.requireNonNull(encodedBytes, "encodedBytes");
+        return Native.codecIsolationReportJson(filter, encodedBytes, policy);
+    }
+
     public static String engineVersion() {
         return Native.engineVersion();
     }
@@ -395,6 +401,10 @@ public final class Oxide {
             "oxide_feature_report_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle CODEC_ISOLATION_REPORT = downcall(
+            "oxide_codec_isolation_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle VERSION = downcall(
             "oxide_version",
             FunctionDescriptor.of(ValueLayout.ADDRESS)
@@ -502,6 +512,37 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide feature_report failed", ex);
+            }
+        }
+
+        private static String codecIsolationReportJson(String filter, byte[] encodedBytes, String policy) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment filterPtr = arena.allocateFrom(filter);
+                MemorySegment data = encodedBytes.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(encodedBytes.length);
+                if (encodedBytes.length > 0) {
+                    data.copyFrom(MemorySegment.ofArray(encodedBytes));
+                }
+                MemorySegment policyPtr = policy == null || policy.isBlank()
+                    ? MemorySegment.NULL
+                    : arena.allocateFrom(policy);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) CODEC_ISOLATION_REPORT.invokeExact(
+                    filterPtr,
+                    data,
+                    (long) encodedBytes.length,
+                    policyPtr,
+                    jsonOut,
+                    err
+                );
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide codec isolation report failed", ex);
             }
         }
 

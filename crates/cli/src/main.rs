@@ -246,6 +246,8 @@ enum Commands {
     Info(InfoArgs),
     /// Emit structured parser diagnostics, repair/audit status, and source metrics
     ParserReport(ParserReportArgs),
+    /// Exercise codec subprocess isolation policy and emit a JSON diagnostic report
+    CodecIsolationReport(CodecIsolationReportArgs),
     /// List the fonts used in a PDF (pdffonts-equivalent)
     Fonts(FontsArgs),
     /// List or extract embedded file attachments (pdfdetach-equivalent)
@@ -385,6 +387,34 @@ struct LinearizeArgs {
     /// Emit a JSON result summary
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Parser)]
+struct CodecIsolationReportArgs {
+    /// PDF stream filter to decode, for example FlateDecode or RunLengthDecode
+    #[arg(long, default_value = "FlateDecode")]
+    filter: String,
+    /// Read encoded stream bytes from this file
+    #[arg(long, conflicts_with_all = ["input_hex", "sample_text"])]
+    input_file: Option<PathBuf>,
+    /// Encoded stream bytes as hex, for small reproducible examples
+    #[arg(long, conflicts_with_all = ["input_file", "sample_text"])]
+    input_hex: Option<String>,
+    /// Convenience sample text. For FlateDecode this is zlib-compressed first.
+    #[arg(long, conflicts_with_all = ["input_file", "input_hex"])]
+    sample_text: Option<String>,
+    /// Isolation policy: in_process, isolated_preferred, isolated_required, report_only, disabled
+    #[arg(long, default_value = "in_process")]
+    policy: String,
+    /// Explicit worker binary path. Otherwise OXIDE_CODEC_WORKER or a sibling binary is used.
+    #[arg(long)]
+    worker: Option<PathBuf>,
+    /// Worker timeout in milliseconds
+    #[arg(long, default_value_t = 2000)]
+    timeout_ms: u64,
+    /// Maximum decoded bytes accepted from the worker or in-process fallback
+    #[arg(long, default_value_t = 536870912)]
+    max_output_bytes: u64,
 }
 
 #[derive(Parser)]
@@ -1718,6 +1748,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::ExtractPages(args) => run_extract_pages(args),
         Commands::Info(args) => run_info(args),
         Commands::ParserReport(args) => run_parser_report(args),
+        Commands::CodecIsolationReport(args) => run_codec_isolation_report(args),
         Commands::Fonts(args) => run_fonts(args),
         Commands::Detach(args) => run_detach(args),
         Commands::ToHtml(args) => run_to_html(args),
@@ -5069,6 +5100,41 @@ fn run_linearize(args: LinearizeArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn run_codec_isolation_report(args: CodecIsolationReportArgs) -> Result<(), Box<dyn Error>> {
+    let input = if let Some(path) = args.input_file {
+        std::fs::read(path)?
+    } else if let Some(hex) = args.input_hex {
+        parse_hex_bytes_cli(&hex)?
+    } else if let Some(text) = args.sample_text {
+        if matches!(args.filter.as_str(), "FlateDecode" | "Fl") {
+            oxide_engine::flate_encode(text.as_bytes(), 6)
+        } else {
+            text.into_bytes()
+        }
+    } else {
+        return Err(usage_error(
+            "pass one of --input-file, --input-hex, or --sample-text",
+        ));
+    };
+
+    let mut config = oxide_engine::CodecIsolationConfig::from_policy_str(Some(&args.policy))?
+        .with_timeout_ms(args.timeout_ms)
+        .with_max_decoded_bytes(args.max_output_bytes);
+    if let Some(worker) = args.worker {
+        config = config.with_worker_path(worker);
+    }
+    let result = oxide_engine::decode_filter_with_isolation(&args.filter, &input, &config);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::json!({
+            "schema_version": oxide_engine::REPORT_ENVELOPE_VERSION,
+            "kind": "codec_isolation_report",
+            "report": result.report,
+        }))?
+    );
+    Ok(())
+}
+
 /// Expand a split output pattern. Supports `%d` and `%0Nd` (zero-padded width
 /// N) for the page number. If the pattern contains no `%`, the page number is
 /// appended before the extension to avoid overwriting a single file.
@@ -5197,6 +5263,27 @@ fn parse_page_range_cli(spec: &str, total: usize) -> Result<Vec<usize>, Box<dyn 
     pages.sort_unstable();
     pages.dedup();
     Ok(pages)
+}
+
+fn parse_hex_bytes_cli(spec: &str) -> Result<Vec<u8>, Box<dyn Error>> {
+    let compact: String = spec.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    if !compact.len().is_multiple_of(2) {
+        return Err(usage_error(
+            "--input-hex must contain an even number of hex digits",
+        ));
+    }
+    let mut out = Vec::with_capacity(compact.len() / 2);
+    let bytes = compact.as_bytes();
+    for idx in (0..bytes.len()).step_by(2) {
+        let pair = std::str::from_utf8(&bytes[idx..idx + 2])?;
+        out.push(u8::from_str_radix(pair, 16).map_err(|_| {
+            CliError::new(
+                CliExitCode::Usage,
+                format!("--input-hex contains invalid hex byte '{pair}'"),
+            )
+        })?);
+    }
+    Ok(out)
 }
 
 fn parse_char_range_cli(spec: &str) -> Result<(usize, usize), Box<dyn Error>> {

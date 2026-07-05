@@ -1017,6 +1017,23 @@ fn decode_budget_report(
     parse_json_str(py, &json)
 }
 
+/// Codec isolation diagnostic report over caller-supplied encoded stream bytes.
+/// `policy` is "in_process", "isolated_preferred", "isolated_required",
+/// "report_only", or "disabled".
+#[pyfunction]
+#[pyo3(signature = (filter, data, policy="in_process"))]
+fn codec_isolation_report(
+    py: Python<'_>,
+    filter: &str,
+    data: Vec<u8>,
+    policy: &str,
+) -> PyResult<Py<PyAny>> {
+    let filter = filter.to_string();
+    let policy = policy.to_string();
+    let json = run_oxide(|| sdk::codec_isolation_report_json(&filter, &data, Some(&policy)))?;
+    parse_json_str(py, &json)
+}
+
 /// Resource-dedup report over caller-supplied resource byte buffers. Groups
 /// byte-identical resources by content digest (the deterministic-writer dedup
 /// evidence). Pass a list of `bytes`.
@@ -1056,6 +1073,7 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(verify_signatures, module)?)?;
     module.add_function(wrap_pyfunction!(feature_report, module)?)?;
     module.add_function(wrap_pyfunction!(decode_budget_report, module)?)?;
+    module.add_function(wrap_pyfunction!(codec_isolation_report, module)?)?;
     module.add_function(wrap_pyfunction!(resource_dedup_report, module)?)?;
     module.add("__version__", env!("CARGO_PKG_VERSION"))?;
     module.add(

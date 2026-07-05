@@ -9,6 +9,10 @@ try (var doc = Oxide.Document.open(Path.of("report.pdf"), null)) {
     System.out.println(doc.pageCount());
     System.out.println(doc.page(1).text());
     System.out.println(doc.securityReportJson());
+    System.out.println(Oxide.codecIsolationReportJson(
+        "FlateDecode",
+        new byte[] {(byte) 0x78, (byte) 0x9c, (byte) 0xcb},
+        "report_only"));
 
     Oxide.BinaryResult sanitized = doc.sanitize("balanced");
     Files.write(Path.of("sanitized.pdf"), sanitized.bytes());

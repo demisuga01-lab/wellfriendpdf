@@ -68,6 +68,13 @@ public final class OxideSmokeTest {
         assertTrue(
             feature.contains("cancellation_not_supported_for_prompt02_bindings"),
             "cancellation unsupported status");
+        assertTrue(feature.contains("\"codec_isolation\""), "codec isolation feature posture");
+        String isolation = Oxide.codecIsolationReportJson(
+            "FlateDecode",
+            "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),
+            "report_only");
+        assertTrue(isolation.contains("codec_isolation_report"), "codec isolation report");
+        assertTrue(isolation.contains("report_only"), "codec isolation report_only status");
 
         for (int i = 0; i < 25; i++) {
             try (Oxide.Document doc = Oxide.Document.open(fixture)) {

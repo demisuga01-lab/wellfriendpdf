@@ -91,6 +91,13 @@ public sealed class OxideSmokeTests
         Assert.Contains("progress_not_supported", feature);
         Assert.Contains("\"cancellation\"", feature);
         Assert.Contains("cancellation_not_supported_for_prompt02_bindings", feature);
+        Assert.Contains("\"codec_isolation\"", feature);
+        var isolation = OxideDocument.CodecIsolationReportJson(
+            "FlateDecode",
+            Encoding.UTF8.GetBytes("not-decoded-in-report-only"),
+            "report_only");
+        Assert.Contains("codec_isolation_report", isolation);
+        Assert.Contains("report_only", isolation);
     }
 
     [Fact]
