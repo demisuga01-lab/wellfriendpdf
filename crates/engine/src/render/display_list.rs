@@ -2,9 +2,10 @@
 //!
 //! This module is intentionally conservative: the normalized vector operations
 //! are replayed directly through the CPU rasterizer, while higher-level content
-//! categories can be carried as a replayable compatibility run. That bridge is
-//! the display-list seam for text, images, XObjects, shadings, patterns, and
-//! transparency until later font/color passes deepen those primitives.
+//! categories are represented as typed native replay operations or measured
+//! compatibility fallbacks. That bridge is the display-list path for text,
+//! images, XObjects, shadings, patterns, and transparency until later font/color
+//! passes deepen those primitives.
 
 use crate::content::operation::ContentOperation;
 use crate::content::state::{BlendMode, Color, ColorSpace, GraphicsState, LineCap, LineJoin};
@@ -14,7 +15,7 @@ use crate::render::color::ColorSpaceHandler;
 use crate::render::line::DashState;
 use crate::render::path::{flatten_path, FillRule, Path, PathPainter};
 use crate::render::transform::{Transform2D, Viewport};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// A replayable page-level drawing program.
 #[derive(Debug, Clone)]
@@ -38,7 +39,9 @@ impl DisplayList {
     }
 
     pub fn native_vector_only(&self) -> bool {
-        self.is_fully_supported() && !self.has_compatibility_runs()
+        self.is_fully_supported()
+            && !self.has_compatibility_runs()
+            && !self.ops.iter().any(DisplayOp::is_native_high_level)
     }
 
     pub fn approximate_memory_bytes(&self) -> usize {
@@ -51,7 +54,12 @@ impl DisplayList {
                 | DisplayOp::StrokePath { path, .. } => {
                     std::mem::size_of_val(path.segments.as_slice())
                 }
-                DisplayOp::ContentRun { approx_bytes, .. } => *approx_bytes,
+                DisplayOp::ContentRun { approx_bytes, .. }
+                | DisplayOp::StateOp { approx_bytes, .. } => *approx_bytes,
+                DisplayOp::NativeTextOp { approx_bytes, .. }
+                | DisplayOp::NativeImageXObject { approx_bytes, .. }
+                | DisplayOp::NativeFormXObject { approx_bytes, .. }
+                | DisplayOp::NativeInlineImage { approx_bytes, .. } => *approx_bytes,
                 DisplayOp::Save | DisplayOp::Restore => 0,
             })
             .sum();
@@ -92,6 +100,48 @@ pub enum DisplayOp {
         ops: Vec<ContentOperation>,
         approx_bytes: usize,
     },
+    /// Replayable graphics-state mutation needed before native high-level ops.
+    ///
+    /// Direct vector replay ignores this because normalized path ops already
+    /// carry captured draw state. RenderState replay dispatches it before native
+    /// text, image, and Form XObject operations.
+    StateOp {
+        op: ContentOperation,
+        approx_bytes: usize,
+    },
+    /// Native replay of one text/text-state operation through the page
+    /// renderer's glyph path.
+    NativeTextOp {
+        op: ContentOperation,
+        approx_bytes: usize,
+    },
+    /// Native replay of an Image XObject `Do` operation.
+    NativeImageXObject {
+        op: ContentOperation,
+        approx_bytes: usize,
+    },
+    /// Native replay of an inline image `ID` plus payload operation.
+    NativeInlineImage {
+        ops: Vec<ContentOperation>,
+        approx_bytes: usize,
+    },
+    /// Native replay of a Form XObject `Do` operation.
+    NativeFormXObject {
+        op: ContentOperation,
+        approx_bytes: usize,
+    },
+}
+
+impl DisplayOp {
+    pub fn is_native_high_level(&self) -> bool {
+        matches!(
+            self,
+            DisplayOp::NativeTextOp { .. }
+                | DisplayOp::NativeImageXObject { .. }
+                | DisplayOp::NativeInlineImage { .. }
+                | DisplayOp::NativeFormXObject { .. }
+        )
+    }
 }
 
 /// Coarse category for a compatibility content run.
@@ -149,6 +199,11 @@ pub struct DisplayListStats {
     pub compatibility_runs: usize,
     pub compatibility_ops: usize,
     pub compatibility_bytes: usize,
+    pub compatibility_fallback_reasons: BTreeMap<String, usize>,
+    pub native_text_ops: usize,
+    pub native_image_xobjects: usize,
+    pub native_inline_images: usize,
+    pub native_form_xobjects: usize,
     pub unsupported_ops: usize,
     pub max_stack_depth: usize,
 }
@@ -321,6 +376,36 @@ pub trait RenderDevice {
             ops.len()
         );
     }
+    fn state_op(&mut self, op: &ContentOperation) {
+        log::trace!(
+            "DisplayList device ignored state op '{}' because vector ops carry captured state",
+            op.operator
+        );
+    }
+    fn native_text_op(&mut self, op: &ContentOperation) {
+        log::warn!(
+            "DisplayList device cannot replay native text op '{}' without page context",
+            op.operator
+        );
+    }
+    fn native_image_xobject(&mut self, op: &ContentOperation) {
+        log::warn!(
+            "DisplayList device cannot replay native image op '{}' without page context",
+            op.operator
+        );
+    }
+    fn native_inline_image(&mut self, ops: &[ContentOperation]) {
+        log::warn!(
+            "DisplayList device cannot replay native inline image ({} ops) without page context",
+            ops.len()
+        );
+    }
+    fn native_form_xobject(&mut self, op: &ContentOperation) {
+        log::warn!(
+            "DisplayList device cannot replay native Form XObject op '{}' without page context",
+            op.operator
+        );
+    }
 }
 
 /// CPU raster device backed by the existing [`PixelBuffer`] rasterizer.
@@ -426,6 +511,11 @@ pub fn replay_display_list(list: &DisplayList, device: &mut dyn RenderDevice) {
             DisplayOp::FillPath { path, state, rule } => device.fill_path(path, state, *rule),
             DisplayOp::StrokePath { path, state } => device.stroke_path(path, state),
             DisplayOp::ContentRun { kind, ops, .. } => device.content_run(*kind, ops),
+            DisplayOp::StateOp { op, .. } => device.state_op(op),
+            DisplayOp::NativeTextOp { op, .. } => device.native_text_op(op),
+            DisplayOp::NativeImageXObject { op, .. } => device.native_image_xobject(op),
+            DisplayOp::NativeInlineImage { ops, .. } => device.native_inline_image(ops),
+            DisplayOp::NativeFormXObject { op, .. } => device.native_form_xobject(op),
         }
     }
 }
@@ -443,19 +533,23 @@ pub fn build_display_list(
     resources: &PageResources,
 ) -> DisplayList {
     let stats = classify_content(ops, resources);
-    if requires_compatibility_run(&stats) {
+    if let Some(reason) = page_compatibility_fallback_reason(&stats) {
+        let approx_bytes = estimate_ops_bytes(ops);
+        let mut compatibility_fallback_reasons = BTreeMap::new();
+        compatibility_fallback_reasons.insert(reason.to_string(), 1);
         return DisplayList {
             viewport,
             ops: vec![DisplayOp::ContentRun {
                 kind: DisplayRunKind::PageContent,
                 ops: ops.to_vec(),
-                approx_bytes: estimate_ops_bytes(ops),
+                approx_bytes,
             }],
             stats: DisplayListStats {
                 operations: 1,
                 compatibility_runs: 1,
                 compatibility_ops: ops.len(),
-                compatibility_bytes: estimate_ops_bytes(ops),
+                compatibility_bytes: approx_bytes,
+                compatibility_fallback_reasons,
                 ..stats
             },
             supported: true,
@@ -469,14 +563,16 @@ pub fn build_display_list(
     builder.finish()
 }
 
-fn requires_compatibility_run(stats: &DisplayListStats) -> bool {
-    stats.text_ops > 0
-        || stats.image_xobjects > 0
-        || stats.inline_images > 0
-        || stats.form_xobjects > 0
-        || stats.shadings > 0
-        || stats.patterns > 0
-        || stats.transparency_ops > 0
+fn page_compatibility_fallback_reason(stats: &DisplayListStats) -> Option<&'static str> {
+    if stats.transparency_ops > 0 {
+        Some("unsupported_graphics_state")
+    } else if stats.shadings > 0 {
+        Some("unsupported_operator_shading")
+    } else if stats.patterns > 0 {
+        Some("unsupported_operator_pattern")
+    } else {
+        None
+    }
 }
 
 fn estimate_ops_bytes(ops: &[ContentOperation]) -> usize {
@@ -513,9 +609,15 @@ fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> Disp
             "Tj" | "TJ" | "'" | "\"" => stats.text_ops += 1,
             "BT" | "ET" | "Tf" | "Td" | "TD" | "Tm" | "T*" | "Tc" | "Tw" | "Tz" | "TL" | "Tr"
             | "Ts" => {}
-            "Do" => {
-                stats.image_xobjects += 1;
-            }
+            "Do" => match op
+                .name(0)
+                .and_then(|name| resources.xobject_subtypes.get(name))
+                .map(String::as_str)
+            {
+                Some("Image") => stats.image_xobjects += 1,
+                Some("Form") => stats.form_xobjects += 1,
+                _ => stats.image_xobjects += 1,
+            },
             "sh" => stats.shadings += 1,
             "ID" => pending_inline = true,
             "inline_image_data" if pending_inline => {
@@ -564,6 +666,7 @@ struct DisplayListBuilder<'a> {
     ops: Vec<DisplayOp>,
     unsupported: Vec<UnsupportedRenderOp>,
     stats: DisplayListStats,
+    pending_inline: Option<ContentOperation>,
 }
 
 impl<'a> DisplayListBuilder<'a> {
@@ -577,6 +680,7 @@ impl<'a> DisplayListBuilder<'a> {
             ops: Vec::new(),
             unsupported: Vec::new(),
             stats: DisplayListStats::default(),
+            pending_inline: None,
         }
     }
 
@@ -683,6 +787,7 @@ impl<'a> DisplayListBuilder<'a> {
             "cm" | "w" | "J" | "j" | "M" | "d" | "ri" | "i" | "G" | "g" | "RG" | "rg" | "K"
             | "k" | "CS" | "cs" | "SC" | "SCN" | "sc" | "scn" => {
                 self.gs.process(op);
+                self.push_state_op(op);
                 if self.uses_pattern_or_named_space() {
                     self.mark_unsupported(
                         op,
@@ -690,21 +795,23 @@ impl<'a> DisplayListBuilder<'a> {
                     );
                 }
             }
-            "gs" => self.apply_ext_g_state(op),
+            "gs" => {
+                self.apply_ext_g_state(op);
+                self.push_state_op(op);
+            }
             "BMC" | "BDC" | "EMC" | "MP" | "DP" | "BX" | "EX" => {}
             "BT" | "ET" | "Tf" | "Td" | "TD" | "Tm" | "T*" | "Tc" | "Tw" | "Tz" | "TL" | "Tr"
             | "Ts" | "Tj" | "TJ" | "'" | "\"" => {
                 self.gs.process(op);
-                self.mark_unsupported(
-                    op,
-                    "text/glyph operations are not display-list replayed yet",
-                );
+                self.push_native_text(op);
             }
-            "Do" => self.mark_unsupported(op, "XObject image/form replay is not captured yet"),
+            "Do" => self.push_native_xobject(op),
             "sh" => self.mark_unsupported(op, "shading replay is not captured yet"),
-            "BI" | "ID" | "EI" | "inline_image_data" => {
-                self.mark_unsupported(op, "inline image replay is not captured yet");
+            "BI" | "EI" => {}
+            "ID" => {
+                self.pending_inline = Some(op.clone());
             }
+            "inline_image_data" => self.push_native_inline_image(op),
             _ => {
                 self.gs.process(op);
                 self.mark_unsupported(op, "operator is not represented in display-list subset");
@@ -845,6 +952,85 @@ impl<'a> DisplayListBuilder<'a> {
             || self.gs.stroke_pattern_name.is_some()
     }
 
+    fn push_native_text(&mut self, op: &ContentOperation) {
+        self.stats.native_text_ops += 1;
+        self.ops.push(DisplayOp::NativeTextOp {
+            op: op.clone(),
+            approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+        });
+    }
+
+    fn push_state_op(&mut self, op: &ContentOperation) {
+        self.ops.push(DisplayOp::StateOp {
+            op: op.clone(),
+            approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+        });
+    }
+
+    fn push_native_xobject(&mut self, op: &ContentOperation) {
+        let subtype = op
+            .name(0)
+            .and_then(|name| self.resources.xobject_subtypes.get(name))
+            .map(String::as_str);
+        match subtype {
+            Some("Image") => {
+                self.stats.native_image_xobjects += 1;
+                self.ops.push(DisplayOp::NativeImageXObject {
+                    op: op.clone(),
+                    approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+                });
+            }
+            Some("Form") => {
+                self.stats.native_form_xobjects += 1;
+                self.ops.push(DisplayOp::NativeFormXObject {
+                    op: op.clone(),
+                    approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+                });
+            }
+            _ => {
+                self.push_compatibility_fallback(
+                    DisplayRunKind::Mixed,
+                    std::slice::from_ref(op),
+                    "unsupported_xobject_subtype",
+                );
+            }
+        }
+    }
+
+    fn push_native_inline_image(&mut self, data_op: &ContentOperation) {
+        let Some(id_op) = self.pending_inline.take() else {
+            self.mark_unsupported(data_op, "inline image data without ID parameters");
+            return;
+        };
+        let ops = vec![id_op, data_op.clone()];
+        let approx_bytes = estimate_ops_bytes(&ops);
+        self.stats.native_inline_images += 1;
+        self.ops
+            .push(DisplayOp::NativeInlineImage { ops, approx_bytes });
+    }
+
+    fn push_compatibility_fallback(
+        &mut self,
+        kind: DisplayRunKind,
+        ops: &[ContentOperation],
+        reason: &str,
+    ) {
+        let approx_bytes = estimate_ops_bytes(ops);
+        self.stats.compatibility_runs += 1;
+        self.stats.compatibility_ops += ops.len();
+        self.stats.compatibility_bytes += approx_bytes;
+        *self
+            .stats
+            .compatibility_fallback_reasons
+            .entry(reason.to_string())
+            .or_insert(0) += 1;
+        self.ops.push(DisplayOp::ContentRun {
+            kind,
+            ops: ops.to_vec(),
+            approx_bytes,
+        });
+    }
+
     fn mark_unsupported(&mut self, op: &ContentOperation, reason: &str) {
         self.unsupported.push(UnsupportedRenderOp {
             operator: op.operator.clone(),
@@ -955,23 +1141,18 @@ mod tests {
     }
 
     #[test]
-    fn text_is_replayable_as_compatibility_run() {
+    fn text_is_replayable_as_native_operation() {
         let ops = vec![op("Tj", vec![Operand::String(b"hello".to_vec())])];
         let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
         let list = build_display_list(&ops, viewport, &PageResources::default());
 
         assert!(list.is_fully_supported());
-        assert!(list.has_compatibility_runs());
+        assert!(!list.has_compatibility_runs());
         assert_eq!(list.stats.text_ops, 1);
-        assert_eq!(list.stats.compatibility_runs, 1);
-        assert_eq!(list.stats.compatibility_ops, 1);
-        assert!(matches!(
-            list.ops[0],
-            DisplayOp::ContentRun {
-                kind: DisplayRunKind::PageContent,
-                ..
-            }
-        ));
+        assert_eq!(list.stats.native_text_ops, 1);
+        assert_eq!(list.stats.compatibility_runs, 0);
+        assert_eq!(list.stats.compatibility_ops, 0);
+        assert!(matches!(list.ops[0], DisplayOp::NativeTextOp { .. }));
     }
 
     #[test]
@@ -1010,7 +1191,11 @@ mod tests {
         let viewport = Viewport::new([0.0, 0.0, 10.0, 10.0], 72);
         let list = build_display_list(&ops, viewport, &resources);
 
-        let DisplayOp::FillPath { state, .. } = &list.ops[0] else {
+        let Some(DisplayOp::FillPath { state, .. }) = list
+            .ops
+            .iter()
+            .find(|op| matches!(op, DisplayOp::FillPath { .. }))
+        else {
             panic!("expected captured fill path");
         };
         assert!(state.stroke_overprint);

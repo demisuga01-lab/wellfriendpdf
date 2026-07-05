@@ -564,8 +564,11 @@ impl<'a> RenderState<'a> {
             DisplayOp::Save => {
                 self.clip_stack.push(self.buf.clip_mask().cloned());
                 self.smask_stack.push(self.buf.smask_mask().cloned());
+                self.gs.push();
             }
             DisplayOp::Restore => {
+                self.gs.pop();
+                self.sync_blend_mode();
                 match self.clip_stack.pop() {
                     Some(saved) => self.buf.restore_clip(saved),
                     None => log::warn!("DisplayList replay: restore with empty clip stack"),
@@ -611,6 +614,11 @@ impl<'a> RenderState<'a> {
                 self.buf.blend_mode = saved_blend;
             }
             DisplayOp::ContentRun { ops, .. } => self.dispatch_all(ops),
+            DisplayOp::StateOp { op, .. } => self.dispatch(op),
+            DisplayOp::NativeTextOp { op, .. }
+            | DisplayOp::NativeImageXObject { op, .. }
+            | DisplayOp::NativeFormXObject { op, .. } => self.dispatch(op),
+            DisplayOp::NativeInlineImage { ops, .. } => self.dispatch_all(ops),
         }
     }
 
@@ -4308,26 +4316,27 @@ mod tests {
     }
 
     #[test]
-    fn display_list_replays_text_page_through_compatibility_run() {
+    fn display_list_replays_text_page_through_native_ops() {
         let engine = ContentEngine::open_path(fixture("flate.pdf")).expect("open text fixture");
         let list = engine
             .build_page_display_list(1, 72)
             .expect("build display list");
 
         assert!(list.is_fully_supported());
-        assert!(list.has_compatibility_runs());
+        assert!(!list.has_compatibility_runs());
         assert!(list.stats.text_ops > 0);
+        assert!(list.stats.native_text_ops > 0);
 
         let immediate = engine.render_page(1, 72).expect("immediate render");
         let replay = engine
             .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
             .expect("display-list replay query")
-            .expect("text page should replay through compatibility run");
+            .expect("text page should replay through native operations");
         assert_same_pixels(&immediate, &replay);
     }
 
     #[test]
-    fn display_list_replays_image_page_through_compatibility_run() {
+    fn display_list_replays_image_page_through_native_ops() {
         let engine =
             ContentEngine::open_path(fixture("image_only.pdf")).expect("open image fixture");
         let list = engine
@@ -4335,14 +4344,15 @@ mod tests {
             .expect("build display list");
 
         assert!(list.is_fully_supported());
-        assert!(list.has_compatibility_runs());
+        assert!(!list.has_compatibility_runs());
         assert!(list.stats.image_xobjects > 0 || list.stats.inline_images > 0);
+        assert!(list.stats.native_image_xobjects > 0 || list.stats.native_inline_images > 0);
 
         let immediate = engine.render_page(1, 72).expect("immediate render");
         let replay = engine
             .render_page_display_list_with_mode(1, 72, RenderMode::Compat)
             .expect("display-list replay query")
-            .expect("image page should replay through compatibility run");
+            .expect("image page should replay through native operations");
         assert_same_pixels(&immediate, &replay);
     }
 

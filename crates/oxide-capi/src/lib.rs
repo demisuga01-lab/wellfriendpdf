@@ -2410,6 +2410,10 @@ mod tests {
             value["report"]["prompt05"]["decode_scheduler"]["status"],
             "adopted_for_prompt05_non_render_decode_paths"
         );
+        assert_eq!(
+            value["report"]["prompt06"]["native_replay"]["status"],
+            "native_text_image_form_display_list_foundation"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

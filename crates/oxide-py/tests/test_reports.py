@@ -91,6 +91,13 @@ def test_module_level_reports():
     assert feature["prompt05"]["hostile_corpus"]["generator"].endswith(
         "prompt05_hostile_codec_corpus.py"
     )
+    assert (
+        feature["prompt06"]["native_replay"]["status"]
+        == "native_text_image_form_display_list_foundation"
+    )
+    assert feature["prompt06"]["renderer_parity_audit"]["script"].endswith(
+        "prompt06_renderer_parity_audit.py"
+    )
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

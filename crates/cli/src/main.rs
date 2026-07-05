@@ -40,7 +40,7 @@ fn long_version() -> &'static str {
     about = "Oxide — pure-Rust PDF processing tool",
     version,
     long_version = long_version(),
-    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  oxide extract-text input.pdf --structured --format json\n  oxide parser-report input.pdf --mode audit\n  oxide pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  oxide image-to-pdf img1.jpg img2.png --out combined.pdf\n  oxide pdf-to-xlsx report.pdf --out report.xlsx\n  oxide pdf-to-pptx deck.pdf --out deck.pptx\n  oxide pdf-to-docx report.pdf --out report.docx\n  oxide xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  oxide watermark input.pdf --text CONFIDENTIAL --out out.pdf"
+    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, render-compare, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  oxide extract-text input.pdf --structured --format json\n  oxide parser-report input.pdf --mode audit\n  oxide pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  oxide image-to-pdf img1.jpg img2.png --out combined.pdf\n  oxide pdf-to-xlsx report.pdf --out report.xlsx\n  oxide pdf-to-pptx deck.pdf --out deck.pptx\n  oxide pdf-to-docx report.pdf --out report.docx\n  oxide xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  oxide watermark input.pdf --text CONFIDENTIAL --out out.pdf"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -205,6 +205,8 @@ enum Commands {
     ExtractImages(ExtractImagesArgs),
     /// Render PDF pages to images as a ZIP
     Render(RenderArgs),
+    /// Emit Prompt 06 display-list/native-replay counters for rendered pages
+    RenderCompare(RenderCompareArgs),
     /// Rasterize PDF pages to individual JPG/PNG image files
     #[command(alias = "pdf-to-image")]
     PdfToJpg(PdfToJpgArgs),
@@ -1117,6 +1119,30 @@ struct RenderArgs {
 }
 
 #[derive(Parser)]
+struct RenderCompareArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output report file; defaults to stdout
+    #[arg(short, long, alias = "out")]
+    output: Option<PathBuf>,
+    /// Page range: all, 1, 2-5, or 1,3,7
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// Resolution in DPI used for display-list render verification
+    #[arg(short, long, default_value = "72")]
+    dpi: u32,
+    /// Raster compositing mode: compat matches Poppler/Splash; high uses linear-light RGB compositing
+    #[arg(long, default_value = "compat", value_parser = ["compat", "high", "high-quality", "hq"])]
+    render_quality: String,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+    /// Pretty-print the JSON report
+    #[arg(long)]
+    pretty: bool,
+}
+
+#[derive(Parser)]
 struct PdfToJpgArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -1743,6 +1769,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::EvalScore(args) => run_eval_score(args),
         Commands::ExtractImages(args) => run_extract_images(args),
         Commands::Render(args) => run_render(args),
+        Commands::RenderCompare(args) => run_render_compare(args),
         Commands::PdfToJpg(args) => run_pdf_to_jpg(args),
         Commands::ImageToPdf(args) => run_image_to_pdf(args),
         Commands::PdfToXlsx(args) => run_pdf_to_xlsx(args),
@@ -2887,6 +2914,144 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
         );
     }
     Ok(())
+}
+
+fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
+    use oxide_engine::RenderMode;
+
+    let dpi = args.dpi.clamp(24, 600);
+    if dpi != args.dpi {
+        eprintln!("Warning: DPI clamped to {} (valid range: 24-600)", dpi);
+    }
+
+    let render_mode = RenderMode::from_name(&args.render_quality)
+        .ok_or_else(|| format!("unknown render quality '{}'", args.render_quality))?;
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+
+    let mut totals_fallback_reasons = std::collections::BTreeMap::<String, usize>::new();
+    let mut totals = serde_json::json!({
+        "operations": 0usize,
+        "text_ops": 0usize,
+        "image_xobjects": 0usize,
+        "inline_images": 0usize,
+        "form_xobjects": 0usize,
+        "native_text_ops": 0usize,
+        "native_image_xobjects": 0usize,
+        "native_inline_images": 0usize,
+        "native_form_xobjects": 0usize,
+        "compatibility_runs": 0usize,
+        "compatibility_ops": 0usize,
+        "unsupported_ops": 0usize,
+    });
+    let mut page_reports = Vec::new();
+
+    for page in &pages {
+        let list = engine.build_page_display_list(*page, dpi)?;
+        let rendered = engine.render_page_display_list_with_mode(*page, dpi, render_mode)?;
+        let stats = &list.stats;
+        for (reason, count) in &stats.compatibility_fallback_reasons {
+            *totals_fallback_reasons.entry(reason.clone()).or_insert(0) += count;
+        }
+
+        for (key, value) in [
+            ("operations", stats.operations),
+            ("text_ops", stats.text_ops),
+            ("image_xobjects", stats.image_xobjects),
+            ("inline_images", stats.inline_images),
+            ("form_xobjects", stats.form_xobjects),
+            ("native_text_ops", stats.native_text_ops),
+            ("native_image_xobjects", stats.native_image_xobjects),
+            ("native_inline_images", stats.native_inline_images),
+            ("native_form_xobjects", stats.native_form_xobjects),
+            ("compatibility_runs", stats.compatibility_runs),
+            ("compatibility_ops", stats.compatibility_ops),
+            ("unsupported_ops", stats.unsupported_ops),
+        ] {
+            if let Some(slot) = totals.get_mut(key) {
+                *slot = serde_json::json!(slot.as_u64().unwrap_or(0) + value as u64);
+            }
+        }
+
+        let render = match rendered {
+            Some(buffer) => serde_json::json!({
+                "status": "display_list_rendered",
+                "width": buffer.width,
+                "height": buffer.height,
+            }),
+            None => serde_json::json!({
+                "status": "not_replayable",
+            }),
+        };
+        let unsupported = list
+            .unsupported
+            .iter()
+            .map(|op| {
+                serde_json::json!({
+                    "operator": &op.operator,
+                    "reason": &op.reason,
+                })
+            })
+            .collect::<Vec<_>>();
+
+        page_reports.push(serde_json::json!({
+            "page": page,
+            "display_list": {
+                "fully_supported": list.is_fully_supported(),
+                "has_compatibility_runs": list.has_compatibility_runs(),
+                "approximate_memory_bytes": list.approximate_memory_bytes(),
+                "stats": {
+                    "operations": stats.operations,
+                    "saves": stats.saves,
+                    "restores": stats.restores,
+                    "clips": stats.clips,
+                    "fills": stats.fills,
+                    "strokes": stats.strokes,
+                    "paths": stats.paths,
+                    "path_segments": stats.path_segments,
+                    "text_ops": stats.text_ops,
+                    "image_xobjects": stats.image_xobjects,
+                    "inline_images": stats.inline_images,
+                    "form_xobjects": stats.form_xobjects,
+                    "shadings": stats.shadings,
+                    "patterns": stats.patterns,
+                    "transparency_ops": stats.transparency_ops,
+                    "native_text_ops": stats.native_text_ops,
+                    "native_image_xobjects": stats.native_image_xobjects,
+                    "native_inline_images": stats.native_inline_images,
+                    "native_form_xobjects": stats.native_form_xobjects,
+                    "compatibility_runs": stats.compatibility_runs,
+                    "compatibility_ops": stats.compatibility_ops,
+                    "compatibility_bytes": stats.compatibility_bytes,
+                    "compatibility_fallback_reasons": stats.compatibility_fallback_reasons.clone(),
+                    "unsupported_ops": stats.unsupported_ops,
+                    "max_stack_depth": stats.max_stack_depth,
+                },
+                "unsupported": unsupported,
+            },
+            "render": render,
+        }));
+    }
+
+    let report = serde_json::json!({
+        "schema_version": 1,
+        "kind": "render_compare",
+        "prompt": "combined_prompt_06",
+        "input": args.pdf.display().to_string(),
+        "dpi": dpi,
+        "render_quality": args.render_quality,
+        "pages": pages,
+        "totals": totals,
+        "compatibility_fallback_reasons": totals_fallback_reasons,
+        "page_reports": page_reports,
+    });
+    let output = if args.pretty {
+        serde_json::to_string_pretty(&report)?
+    } else {
+        serde_json::to_string(&report)?
+    };
+    write_output_optional(&args.output, &output)
 }
 
 fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {

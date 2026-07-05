@@ -26,6 +26,7 @@ use crate::{
 pub struct PageResources {
     pub fonts: HashMap<String, PdfDictionary>,
     pub xobjects: HashMap<String, (u32, u16)>,
+    pub xobject_subtypes: HashMap<String, String>,
     pub color_spaces: HashMap<String, PdfObject>,
     pub ext_g_states: HashMap<String, PdfDictionary>,
     pub patterns: HashMap<String, PdfObject>,
@@ -344,6 +345,15 @@ impl PageResources {
             for (name, value) in xobject_dict.entries() {
                 if let Some(reference) = value.as_reference() {
                     page_resources.xobjects.insert(name.clone(), reference);
+                    if let Ok(PdfObject::Stream { dict, .. }) =
+                        reader.get_object(reference.0, reference.1)
+                    {
+                        if let Some(subtype) = dict.get_name("Subtype") {
+                            page_resources
+                                .xobject_subtypes
+                                .insert(name.clone(), subtype.to_string());
+                        }
+                    }
                 } else {
                     log::warn!(
                         "PageResources: XObject '{}' is not an indirect reference",

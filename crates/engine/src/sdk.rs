@@ -328,6 +328,40 @@ pub fn feature_report_json() -> Result<String> {
                 "verdict_artifact": "target/prompt05-codec-closeout/closeout-verdict.json"
             }
         },
+        "prompt06": {
+            "renderer_parity_audit": {
+                "status": "reference_aware_corpus_harness",
+                "script": "scripts/prompt06_renderer_parity_audit.py",
+                "baseline_artifact": "target/prompt06-renderer-native-replay/parity-baseline.json",
+                "post_native_artifact": "target/prompt06-renderer-native-replay/parity-after-native-replay.json",
+                "reference_availability_artifact": "target/prompt06-renderer-native-replay/reference-availability.json"
+            },
+            "native_replay": {
+                "status": "native_text_image_form_display_list_foundation",
+                "text": "BT/ET state and common text-showing operators are represented as native display-list operations",
+                "image": "Image XObject and inline image operations are represented as native display-list operations while decode remains in renderer paths",
+                "form_xobject": "Form XObject invocations are represented as native display-list operations with fallback diagnostics for unsupported groups and limits",
+                "counter_artifact": "target/prompt06-renderer-native-replay/native-replay-counters.json",
+                "regression_script": "scripts/prompt06_native_replay_regression.py"
+            },
+            "compatibility_fallback_policy": {
+                "status": "measured_by_operation_kind_and_reason",
+                "measured_reasons": [
+                    "unsupported_operator_shading",
+                    "unsupported_operator_pattern",
+                    "unsupported_graphics_state",
+                    "unsupported_xobject_subtype",
+                    "safety_limit_exceeded",
+                    "malformed_content"
+                ],
+                "policy_doc": "docs/prompt06_compatibility_fallback_policy.md"
+            },
+            "failure_taxonomy": {
+                "status": "json_taxonomy_for_reference_and_oxide_failures",
+                "artifact": "target/prompt06-renderer-native-replay/failure-taxonomy.json",
+                "doc": "docs/prompt06_renderer_failure_taxonomy.md"
+            }
+        },
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -650,6 +684,14 @@ mod tests {
         assert_eq!(
             v["report"]["prompt05"]["fuzz_campaign"]["script"],
             "scripts/prompt05_codec_fuzz_campaign.py"
+        );
+        assert_eq!(
+            v["report"]["prompt06"]["native_replay"]["status"],
+            "native_text_image_form_display_list_foundation"
+        );
+        assert_eq!(
+            v["report"]["prompt06"]["renderer_parity_audit"]["script"],
+            "scripts/prompt06_renderer_parity_audit.py"
         );
         assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
         assert_eq!(
