@@ -10,7 +10,7 @@ The example suite uses public SDK surfaces only. Existing Prompt 01/02 examples 
 | CLI | CLI subcommands and help examples | `examples/cli/codec_isolation_report.ps1` | `target/debug/oxide codec-isolation-report ...` |
 | Python | `crates/oxide-py/examples/sdk_reports.py` | `crates/oxide-py/examples/codec_isolation_report.py` | maturin wheel when available |
 | C ABI | `crates/oxide-capi/examples/sdk_reports.c` | `crates/oxide-capi/examples/codec_isolation_report.c` | built `oxide_capi` header/lib |
-| WASM | `crates/oxide-wasm/examples/browser` | `codec_isolation_report.mjs` | wasm-bindgen/wasm-pack package |
+| WASM | `crates/oxide-wasm/examples/browser` | `codec_isolation_report.mjs` | `scripts/prompt03b_wasm_pack_gate.ps1` wasm-pack web/Node packages |
 | .NET | `bindings/dotnet/examples/Prompt02Reports.cs` | `Prompt03CodecIsolation.cs` | `dotnet pack` artifact |
 | Java | `bindings/java/examples/Prompt02Reports.java` | `Prompt03CodecIsolation.java` | Maven and Gradle JARs |
 
@@ -51,9 +51,12 @@ cl /I crates\oxide-capi\include crates\oxide-capi\examples\codec_isolation_repor
 WASM:
 
 ```powershell
-cargo build -p oxide-wasm --target wasm32-unknown-unknown --release
-wasm-bindgen --target web --out-dir crates\oxide-wasm\examples\browser\pkg target\wasm32-unknown-unknown\release\oxide_wasm.wasm
-node crates\oxide-wasm\examples\browser\codec_isolation_report.mjs
+powershell -ExecutionPolicy Bypass -File scripts\prompt03b_wasm_pack_gate.ps1
+node scripts\prompt03b_wasm_pack_node_smoke.mjs target\prompt03-packaging-codec-isolation\wasm-pack\node-pkg crates\engine\tests\fixtures\minimal.pdf target\prompt03-packaging-codec-isolation\wasm-pack\wasm-pack-node-smoke.json
 ```
+
+The Prompt 03B WASM gate imports the generated `nodejs` package directory, not
+an internal build artifact. Browser smoke remains manual; the web package is
+built and inspected by the same gate.
 
 .NET and Java examples are package-consumer snippets; run them against the NuGet/JAR outputs after the package gate creates them.

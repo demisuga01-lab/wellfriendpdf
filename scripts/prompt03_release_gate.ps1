@@ -154,11 +154,7 @@ if ((Get-Command java -ErrorAction SilentlyContinue) -and (Get-Command javac -Er
     Add-Step "java gradle package smoke" "scripts/prompt02c_gradle_package_smoke.ps1" "unavailable" 127 "" "java or javac is not on PATH"
 }
 
-if (Get-Command wasm-pack -ErrorAction SilentlyContinue) {
-    Invoke-GateStep "wasm-pack package" "wasm-pack" @("build", "crates/oxide-wasm", "--target", "web", "--out-dir", "examples/browser/pkg") $false
-} else {
-    Add-Step "wasm-pack package" "wasm-pack build crates/oxide-wasm --target web" "unavailable" 127 "" "wasm-pack is not on PATH"
-}
+Invoke-GateStep "wasm-pack package" "powershell" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/prompt03b_wasm_pack_gate.ps1", "-OutDir", $OutDir)
 
 Add-Artifact "oxide cli debug binary" $oxide "cli"
 Add-Artifact "codec worker debug binary" $worker "codec_worker"
@@ -167,6 +163,10 @@ Add-Artifact "c abi header" (Join-Path $Repo "crates/oxide-capi/include/oxide.h"
 Add-Artifact "python codec isolation example" (Join-Path $Repo "crates/oxide-py/examples/codec_isolation_report.py") "python"
 Add-Artifact "rust codec isolation example" (Join-Path $Repo "crates/engine/examples/prompt03_codec_isolation.rs") "rust"
 Add-Artifact "wasm codec isolation example" (Join-Path $Repo "crates/oxide-wasm/examples/browser/codec_isolation_report.mjs") "wasm"
+Add-Artifact "wasm-pack web package" (Join-Path $OutDir "wasm-pack/web-pkg") "wasm"
+Add-Artifact "wasm-pack node package" (Join-Path $OutDir "wasm-pack/node-pkg") "wasm"
+Add-Artifact "wasm-pack inspection report" (Join-Path $OutDir "wasm-pack/wasm-package-inspection.json") "wasm"
+Add-Artifact "wasm-pack node smoke report" (Join-Path $OutDir "wasm-pack/wasm-pack-node-smoke.json") "wasm"
 Add-Artifact "dotnet codec isolation example" (Join-Path $Repo "bindings/dotnet/examples/Prompt03CodecIsolation.cs") "dotnet"
 Add-Artifact "java codec isolation example" (Join-Path $Repo "bindings/java/examples/Prompt03CodecIsolation.java") "java"
 
@@ -178,7 +178,7 @@ $examplesMatrix = [ordered]@{
         @{ surface = "cli"; example = "examples/cli/codec_isolation_report.ps1"; command = "oxide codec-isolation-report --filter FlateDecode --sample-text 'hello oxide' --policy in_process" },
         @{ surface = "python"; example = "crates/oxide-py/examples/sdk_reports.py"; codec_isolation = "crates/oxide-py/examples/codec_isolation_report.py"; package_command = "python -m maturin build --manifest-path crates/oxide-py/Cargo.toml" },
         @{ surface = "c_abi"; example = "crates/oxide-capi/examples/sdk_reports.c"; codec_isolation = "crates/oxide-capi/examples/codec_isolation_report.c"; package_command = "cargo build -p oxide-capi" },
-        @{ surface = "wasm"; example = "crates/oxide-wasm/examples/browser"; codec_isolation = "crates/oxide-wasm/examples/browser/codec_isolation_report.mjs"; package_command = "wasm-pack build crates/oxide-wasm --target web" },
+        @{ surface = "wasm"; example = "crates/oxide-wasm/examples/browser"; codec_isolation = "crates/oxide-wasm/examples/browser/codec_isolation_report.mjs"; package_command = "scripts/prompt03b_wasm_pack_gate.ps1"; package_status = "implemented_public" },
         @{ surface = "dotnet"; example = "bindings/dotnet/examples/Prompt02Reports.cs"; codec_isolation = "bindings/dotnet/examples/Prompt03CodecIsolation.cs"; package_command = "dotnet pack bindings/dotnet/Oxide.Sdk/Oxide.Sdk.csproj" },
         @{ surface = "java_maven"; example = "bindings/java/examples/Prompt02Reports.java"; codec_isolation = "bindings/java/examples/Prompt03CodecIsolation.java"; package_command = "scripts/prompt02b_java_package_smoke.ps1" },
         @{ surface = "java_gradle"; example = "bindings/java/examples/Prompt02Reports.java"; codec_isolation = "bindings/java/examples/Prompt03CodecIsolation.java"; package_command = "scripts/prompt02c_gradle_package_smoke.ps1" }
@@ -218,7 +218,13 @@ $manifest = [ordered]@{
     head = $head
     dirty_entries = $status
     generated_at_utc = [DateTime]::UtcNow.ToString("o")
-    result = if ($HadFailure) { "failed" } else { "passed_or_unavailable_optional" }
+    result = if ($HadFailure) {
+        "failed"
+    } elseif (@($Steps | Where-Object { $_.status -eq "unavailable" }).Count -gt 0) {
+        "passed_with_unavailable_optional"
+    } else {
+        "passed"
+    }
     steps = $Steps
     artifacts = $Artifacts
     docs = @(
@@ -229,6 +235,9 @@ $manifest = [ordered]@{
         "docs/codec_threat_model_prompt03.md",
         "docs/codec_isolation_design_prompt03.md",
         "docs/codec_isolation_user_guide_prompt03.md",
+        "docs/bindings_prompt03b_wasm_pack_closure.md",
+        "docs/packaging_gate_prompt03.md",
+        "docs/package_platform_matrix_prompt03.md",
         "docs/security_policy.md"
     )
 }

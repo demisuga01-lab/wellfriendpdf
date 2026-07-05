@@ -19,11 +19,17 @@ pdf.close();
 
 ## Package Shape
 
-- Build with `wasm-pack build crates/oxide-wasm --target web --out-dir pkg` for
-  browser/WebWorker use.
-- Build with `wasm-pack build crates/oxide-wasm --target nodejs --out-dir pkg-node`
-  for Node use.
-- `oxide.d.ts` documents the Prompt 02 public TypeScript surface.
+- For release evidence, run
+  `powershell -ExecutionPolicy Bypass -File scripts\prompt03b_wasm_pack_gate.ps1`
+  from the repository root. The gate bootstraps target-local `wasm-pack 0.13.1`,
+  builds web and Node package directories, inspects contents, and runs a
+  packaged Node smoke.
+- Direct package commands remain:
+  `wasm-pack build crates/oxide-wasm --target web --out-dir pkg` for
+  browser/WebWorker use and
+  `wasm-pack build crates/oxide-wasm --target nodejs --out-dir pkg-node` for
+  Node use.
+- `oxide.d.ts` documents the Prompt 02/03 public TypeScript surface.
 
 The checked-in browser example under `examples/browser` must be regenerated
 after source changes; its prebuilt `pkg/` directory is an example artifact, not
@@ -34,8 +40,9 @@ the source of truth.
 Public report methods include document info, security, risky-content, parser,
 color, validation, forms, annotations, page operations, interactive content,
 signature, font, semantic text, semantic document, chunks, and decode-budget
-reports. Output-producing methods include `sanitize`, `canonicalize`, and
-`redactTermsJson`.
+reports, plus `OxidePdf.codecIsolationReportJson(filter, bytes, policy)` for
+Prompt 03 codec policy diagnostics. Output-producing methods include
+`sanitize`, `canonicalize`, and `redactTermsJson`.
 
 Legacy parser and extraction methods remain available: `parseJson`,
 `parseMarkdown`, `chunk`, `extractText`, `extractStructuredText`,
@@ -53,3 +60,7 @@ The WASM surface does not read host file paths, fetch URLs, spawn OCR processes,
 write output files, or expose native library loading. Progress callbacks and
 cancellation tokens are not advertised because the current facade calls are
 synchronous and do not observe binding-level cancellation.
+
+Subprocess codec isolation is not available in WASM because the target cannot
+spawn the OS codec worker. Use `policy = "in_process"` for browser/Node local
+decode reports; fail-closed subprocess policies return structured reports.

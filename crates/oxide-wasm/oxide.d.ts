@@ -15,6 +15,7 @@ export class OxidePdf {
   static abiVersion(): number;
   static featureReportJson(): ReportJson;
   static decodeBudgetReportJson(filter: string, width: number, height: number, components: number): ReportJson;
+  static codecIsolationReportJson(filter: string, data: Uint8Array | ArrayBuffer | ArrayLike<number>, policy?: string): ReportJson;
 
   close(): void;
   isClosed(): boolean;

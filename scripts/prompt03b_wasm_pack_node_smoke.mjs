@@ -1,0 +1,83 @@
+import { createRequire } from "node:module";
+import { readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
+
+const [, , packageDirArg, fixtureArg, outJsonArg] = process.argv;
+if (!packageDirArg || !fixtureArg || !outJsonArg) {
+  console.error("usage: node prompt03b_wasm_pack_node_smoke.mjs <package-dir> <fixture.pdf> <out.json>");
+  process.exit(2);
+}
+
+const packageDir = resolve(packageDirArg);
+const fixture = resolve(fixtureArg);
+const outJson = resolve(outJsonArg);
+const require = createRequire(import.meta.url);
+
+const result = {
+  schema_version: 1,
+  status: "failed",
+  package_dir: packageDir,
+  fixture,
+  node_version: process.version,
+  apis_tested: [],
+  errors: [],
+};
+
+try {
+  const oxide = require(packageDir);
+  result.apis_tested.push("package import");
+
+  const feature = JSON.parse(oxide.OxidePdf.featureReportJson());
+  result.apis_tested.push("OxidePdf.featureReportJson");
+  result.feature_has_codec_isolation = JSON.stringify(feature).includes("codec_isolation");
+
+  const bytes = new Uint8Array(readFileSync(fixture));
+  const pdf = new oxide.OxidePdf(bytes);
+  result.apis_tested.push("new OxidePdf(bytes)");
+  result.page_count = pdf.pageCount();
+  result.apis_tested.push("pageCount");
+
+  const security = JSON.parse(pdf.securityReportJson());
+  result.security_kind = security.kind;
+  result.apis_tested.push("securityReportJson");
+
+  const codec = JSON.parse(
+    oxide.OxidePdf.codecIsolationReportJson(
+      "FlateDecode",
+      new Uint8Array([0x78, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0xc8, 0xaf, 0xc8, 0x4c, 0x49, 0x05, 0x00, 0x19, 0xdd, 0x04, 0x4e]),
+      "in_process",
+    ),
+  );
+  result.codec_isolation_status = codec.report?.status;
+  result.codec_isolation_mode = codec.report?.isolation_mode;
+  result.apis_tested.push("codecIsolationReportJson");
+
+  try {
+    new oxide.OxidePdf(new Uint8Array([0x25, 0x50, 0x44, 0x46]));
+    result.invalid_input_error = null;
+    result.errors.push("invalid input unexpectedly opened");
+  } catch (error) {
+    result.invalid_input_error = String(error?.message ?? error);
+    result.apis_tested.push("invalid input error");
+  }
+
+  pdf.close();
+  result.apis_tested.push("close");
+
+  const checks = [
+    result.feature_has_codec_isolation === true,
+    result.page_count >= 1,
+    result.security_kind === "security_report",
+    result.codec_isolation_status === "success",
+    typeof result.invalid_input_error === "string" && result.invalid_input_error.length > 0,
+  ];
+  result.status = checks.every(Boolean) ? "passed" : "failed";
+} catch (error) {
+  result.errors.push(String(error?.stack ?? error));
+}
+
+writeFileSync(outJson, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+if (result.status !== "passed") {
+  console.error(JSON.stringify(result, null, 2));
+  process.exit(1);
+}

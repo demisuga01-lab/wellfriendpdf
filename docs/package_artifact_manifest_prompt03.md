@@ -14,7 +14,7 @@ target/prompt03-packaging-codec-isolation/release-manifest.json
 - `prompt`: `combined_prompt03`.
 - `head`: short git commit used for the run.
 - `dirty_entries`: `git status --short` at gate start.
-- `result`: `passed`, `failed`, or `passed_or_unavailable_optional`.
+- `result`: `passed`, `failed`, or `passed_with_unavailable_optional`.
 - `steps`: command, status, exit code, log path, and unavailable/failure reason.
 - `artifacts`: artifact path, surface, existence, size, and SHA-256 when file-backed.
 - `docs`: tracked Prompt 03 docs expected in the release bundle.
@@ -23,4 +23,9 @@ target/prompt03-packaging-codec-isolation/release-manifest.json
 
 The gate records Rust crate package output, CLI binary, codec worker binary, C ABI library/header, Python example/wheel status, WASM package status, .NET package status, Maven JAR status, Gradle JAR status, schema/report docs, and all Prompt 03 example files.
 
-If a package ecosystem cannot be built on the current host, the entry must be `unavailable` with a concrete reason such as missing `dotnet`, `maturin`, `wasm-pack`, `java`, or `javac`.
+If a non-WASM package ecosystem cannot be built on the current host, the entry must be `unavailable` with a concrete reason such as missing `dotnet`, `maturin`, `java`, or `javac`.
+
+WASM is no longer allowed to be a soft unavailable artifact after Prompt 03B.
+The release gate bootstraps target-local `wasm-pack`, builds web and Node
+packages, inspects the generated package contents, and records packaged Node
+smoke evidence before marking the WASM package artifact passed.

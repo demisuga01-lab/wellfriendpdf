@@ -53,9 +53,22 @@
 - Rust crate/package: `cargo package -p oxide-engine --allow-dirty`.
 - CLI/native/C ABI: `cargo build -p oxide-cli -p oxide-capi -p oxide-engine --bin oxide-codec-worker`.
 - Python wheel: `python -m maturin build --manifest-path crates/oxide-py/Cargo.toml`.
-- WASM: `cargo check -p oxide-wasm --target wasm32-unknown-unknown`; package with `wasm-pack build crates/oxide-wasm --target web`.
+- WASM: `cargo check -p oxide-wasm --target wasm32-unknown-unknown`; package with `scripts/prompt03b_wasm_pack_gate.ps1`.
 - .NET: `dotnet test bindings/dotnet/Oxide.Sdk.Tests/Oxide.Sdk.Tests.csproj`; `dotnet pack bindings/dotnet/Oxide.Sdk/Oxide.Sdk.csproj`.
 - Java Maven: `scripts/prompt02b_java_package_smoke.ps1`.
 - Java Gradle: `scripts/prompt02c_gradle_package_smoke.ps1`.
 
 Prompt 03 consolidates those commands in `scripts/prompt03_release_gate.ps1`.
+
+## Prompt 03B Closure Addendum
+
+- Prompt 03B starting HEAD: `d125e05`.
+- Prompt 03B starting worktree: clean.
+- Prompt 03B scope: close only the wasm-pack package artifact caveat from the
+  Prompt 03 release manifest.
+- Prompt 03B result: `scripts/prompt03_release_gate.ps1` now requires
+  `scripts/prompt03b_wasm_pack_gate.ps1`; that script bootstraps target-local
+  `wasm-pack 0.13.1`, builds web and Node package directories, inspects package
+  contents, and runs packaged Node smoke.
+- Evidence directory:
+  `target/prompt03-packaging-codec-isolation/wasm-pack/`.

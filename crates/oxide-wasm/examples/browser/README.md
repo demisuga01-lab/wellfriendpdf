@@ -15,6 +15,16 @@ Alternatively, `wasm-pack` can produce the same web package:
 wasm-pack build crates/oxide-wasm --target web --out-dir examples/browser/pkg
 ```
 
+The release evidence path is the Prompt 03B gate:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\prompt03b_wasm_pack_gate.ps1
+```
+
+That gate bootstraps target-local `wasm-pack 0.13.1`, builds both web and Node
+package outputs under `target/prompt03-packaging-codec-isolation/wasm-pack/`,
+inspects generated files, and imports the packaged Node output in a smoke test.
+
 Then serve `crates/oxide-wasm/examples/browser` with any static server and open
 `index.html`. The demo reads a selected PDF as a `Uint8Array`, opens it with
 `OxidePdf`, parses it to Markdown, splits it into RAG chunks, extracts
@@ -41,7 +51,7 @@ external process, so the WASM surface is digital-born only. The WASM wrapper
 also does not expose server endpoints, filesystem batch tools, async jobs,
 C/Python bindings, native binary loading, or multi-threaded rayon execution.
 
-Verified for Prompt 02: `cargo build -p oxide-wasm --target
-wasm32-unknown-unknown` compiles the report and output bindings. Regenerate the
-checked-in example `pkg/` glue with the commands above before using newly added
-methods from `oxide_wasm.js`.
+Verified for Prompt 03B: `scripts/prompt03b_wasm_pack_gate.ps1` produces real
+wasm-pack web and Node package directories and runs packaged Node smoke.
+Regenerate the checked-in example `pkg/` glue with the commands above before
+using newly added methods from `oxide_wasm.js`.

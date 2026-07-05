@@ -10,7 +10,9 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -632,14 +634,14 @@ fn in_process_decode(
     report: CodecIsolationReport,
     config: &CodecIsolationConfig,
 ) -> CodecIsolationDecode {
-    let started = Instant::now();
+    let started = decode_timer_start();
     let limits = config.limits.as_decode_limits();
     match apply_filter_bytes_in_process_with_limits(filter_name, input, None, &limits) {
         Ok(decoded) => {
             let len = decoded.len();
             CodecIsolationDecode {
                 decoded: Some(decoded),
-                report: report.success("in_process", len, elapsed_ms(started)),
+                report: report.success("in_process", len, decode_elapsed_ms(started)),
             }
         }
         Err(err) => CodecIsolationDecode {
@@ -656,7 +658,7 @@ fn fallback_in_process(
     reason: &str,
     config: &CodecIsolationConfig,
 ) -> CodecIsolationDecode {
-    let started = Instant::now();
+    let started = decode_timer_start();
     let limits = config.limits.as_decode_limits();
     match apply_filter_bytes_in_process_with_limits(filter_name, input, None, &limits) {
         Ok(decoded) => {
@@ -667,7 +669,7 @@ fn fallback_in_process(
             report.fallback_used = true;
             report.fallback_reason = Some(reason.to_string());
             report.decoded_byte_length = Some(len);
-            report.elapsed_milliseconds = elapsed_ms(started);
+            report.elapsed_milliseconds = decode_elapsed_ms(started);
             CodecIsolationDecode {
                 decoded: Some(decoded),
                 report,
@@ -988,13 +990,44 @@ fn elapsed_ms(started: Instant) -> u64 {
     u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_timer_start() -> Instant {
+    Instant::now()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn decode_elapsed_ms(started: Instant) -> u64 {
+    elapsed_ms(started)
+}
+
+#[cfg(target_arch = "wasm32")]
+fn decode_timer_start() {}
+
+#[cfg(target_arch = "wasm32")]
+fn decode_elapsed_ms(_: ()) -> u64 {
+    0
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 fn new_request_id() -> String {
-    let pid = std::process::id();
+    let pid = process_id_for_request();
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("{pid}-{now}")
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn process_id_for_request() -> u32 {
+    std::process::id()
+}
+
+#[cfg(target_arch = "wasm32")]
+fn new_request_id() -> String {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("wasm-{id}")
 }
 
 pub fn write_worker_response(path: &Path, response: &CodecWorkerResponse) -> std::io::Result<()> {
