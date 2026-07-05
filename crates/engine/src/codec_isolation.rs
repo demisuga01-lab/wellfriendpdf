@@ -26,6 +26,277 @@ const DEFAULT_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_MAX_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 const RESPONSE_OVERHEAD_BYTES: u64 = 64 * 1024;
 const MAX_RESPONSE_JSON_BYTES: u64 = 64 * 1024 * 1024;
+const NATIVE_CODEC_FEATURE: &str = "native-codecs";
+
+const ALL_CORE_PLATFORMS: &[&str] = &["windows", "linux", "macos", "wasm32"];
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CodecBackendRegistryEntry {
+    pub codec_kind: &'static str,
+    pub aliases: &'static [&'static str],
+    pub backend_name: &'static str,
+    pub implementation_language: &'static str,
+    pub rust_dependency: Option<&'static str>,
+    pub native_dependency: Option<&'static str>,
+    pub native_dependency_allowed: bool,
+    pub default_enabled: bool,
+    pub feature_flag: Option<&'static str>,
+    pub worker_supported: bool,
+    pub worker_required_for_native: bool,
+    pub in_process_allowed_by_default: bool,
+    pub supported_platforms: &'static [&'static str],
+    pub sandbox_requirement: &'static str,
+    pub known_limits: &'static str,
+    pub report_field: &'static str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct NativeCodecDependencyAllowlistEntry {
+    pub library_name: &'static str,
+    pub version: &'static str,
+    pub license: &'static str,
+    pub build_source: &'static str,
+    pub security_history: &'static str,
+    pub required_feature_flag: &'static str,
+    pub sandbox_mode: &'static str,
+    pub fallback_behavior: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodecBackendPreference {
+    #[default]
+    Default,
+    PureRust,
+    NativeWorker,
+    NativeInProcess,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CodecBackendSelectionReport {
+    pub requested_backend: String,
+    pub codec_kind: String,
+    pub status: String,
+    pub ok: bool,
+    pub selected_backend: Option<String>,
+    pub implementation_language: Option<String>,
+    pub rust_dependency: Option<String>,
+    pub native_dependency: Option<String>,
+    pub native_dependency_allowed: bool,
+    pub native_codecs_compiled: bool,
+    pub feature_flag: Option<String>,
+    pub feature_enabled: bool,
+    pub worker_required: bool,
+    pub in_process_allowed: bool,
+    pub sandbox_requirement: String,
+    pub fallback_behavior: String,
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct CodecNativeBoundaryReport {
+    pub default_posture: String,
+    pub pure_rust_default: bool,
+    pub native_codecs_compiled: bool,
+    pub native_dependency_allowlist_entries: usize,
+    pub native_in_process_allowed_by_default: bool,
+    pub worker_required_for_native_codecs: bool,
+    pub unknown_native_dependencies_fail_closed: bool,
+    pub no_silent_isolation_downgrade: bool,
+}
+
+const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
+    CodecBackendRegistryEntry {
+        codec_kind: "FlateDecode",
+        aliases: &["Fl"],
+        backend_name: "oxide-rust-flate2",
+        implementation_language: "rust",
+        rust_dependency: Some("flate2"),
+        native_dependency: None,
+        native_dependency_allowed: false,
+        default_enabled: true,
+        feature_flag: None,
+        worker_supported: true,
+        worker_required_for_native: false,
+        in_process_allowed_by_default: true,
+        supported_platforms: ALL_CORE_PLATFORMS,
+        sandbox_requirement: "none_pure_rust",
+        known_limits:
+            "input cap, decoded output cap, decompression ratio cap, timeout in worker mode",
+        report_field: "backend_selection",
+    },
+    CodecBackendRegistryEntry {
+        codec_kind: "ASCIIHexDecode",
+        aliases: &["AHx"],
+        backend_name: "oxide-rust-asciihex",
+        implementation_language: "rust",
+        rust_dependency: None,
+        native_dependency: None,
+        native_dependency_allowed: false,
+        default_enabled: true,
+        feature_flag: None,
+        worker_supported: true,
+        worker_required_for_native: false,
+        in_process_allowed_by_default: true,
+        supported_platforms: ALL_CORE_PLATFORMS,
+        sandbox_requirement: "none_pure_rust",
+        known_limits: "decoded output cap, malformed terminator diagnostics",
+        report_field: "backend_selection",
+    },
+    CodecBackendRegistryEntry {
+        codec_kind: "ASCII85Decode",
+        aliases: &["A85"],
+        backend_name: "oxide-rust-ascii85",
+        implementation_language: "rust",
+        rust_dependency: None,
+        native_dependency: None,
+        native_dependency_allowed: false,
+        default_enabled: true,
+        feature_flag: None,
+        worker_supported: true,
+        worker_required_for_native: false,
+        in_process_allowed_by_default: true,
+        supported_platforms: ALL_CORE_PLATFORMS,
+        sandbox_requirement: "none_pure_rust",
+        known_limits: "decoded output cap, malformed group diagnostics",
+        report_field: "backend_selection",
+    },
+    CodecBackendRegistryEntry {
+        codec_kind: "RunLengthDecode",
+        aliases: &["RL"],
+        backend_name: "oxide-rust-runlength",
+        implementation_language: "rust",
+        rust_dependency: None,
+        native_dependency: None,
+        native_dependency_allowed: false,
+        default_enabled: true,
+        feature_flag: None,
+        worker_supported: true,
+        worker_required_for_native: false,
+        in_process_allowed_by_default: true,
+        supported_platforms: ALL_CORE_PLATFORMS,
+        sandbox_requirement: "none_pure_rust",
+        known_limits: "decoded output cap, packet structure diagnostics",
+        report_field: "backend_selection",
+    },
+    CodecBackendRegistryEntry {
+        codec_kind: "LZWDecode",
+        aliases: &["LZW"],
+        backend_name: "oxide-rust-lzw",
+        implementation_language: "rust",
+        rust_dependency: None,
+        native_dependency: None,
+        native_dependency_allowed: false,
+        default_enabled: true,
+        feature_flag: None,
+        worker_supported: true,
+        worker_required_for_native: false,
+        in_process_allowed_by_default: true,
+        supported_platforms: ALL_CORE_PLATFORMS,
+        sandbox_requirement: "none_pure_rust",
+        known_limits: "decoded output cap, dictionary growth cap through output accounting",
+        report_field: "backend_selection",
+    },
+    CodecBackendRegistryEntry {
+        codec_kind: "DCTDecode",
+        aliases: &["DCT"],
+        backend_name: "oxide-rust-jpeg-decoder",
+        implementation_language: "rust",
+        rust_dependency: Some("jpeg-decoder"),
+        native_dependency: None,
+        native_dependency_allowed: false,
+        default_enabled: true,
+        feature_flag: None,
+        worker_supported: false,
+        worker_required_for_native: false,
+        in_process_allowed_by_default: true,
+        supported_platforms: ALL_CORE_PLATFORMS,
+        sandbox_requirement: "none_pure_rust",
+        known_limits: "dimension cap, decoded pixel cap, decoder buffer cap",
+        report_field: "backend_selection",
+    },
+    CodecBackendRegistryEntry {
+        codec_kind: "JPXDecode",
+        aliases: &[],
+        backend_name: "oxide-rust-hayro-jpeg2000",
+        implementation_language: "rust",
+        rust_dependency: Some("hayro-jpeg2000"),
+        native_dependency: None,
+        native_dependency_allowed: false,
+        default_enabled: true,
+        feature_flag: None,
+        worker_supported: false,
+        worker_required_for_native: false,
+        in_process_allowed_by_default: true,
+        supported_platforms: ALL_CORE_PLATFORMS,
+        sandbox_requirement: "none_pure_rust",
+        known_limits: "dimension cap, tile/component/resolution caps",
+        report_field: "backend_selection",
+    },
+    CodecBackendRegistryEntry {
+        codec_kind: "CCITTFaxDecode",
+        aliases: &["CCF"],
+        backend_name: "oxide-rust-hayro-ccitt",
+        implementation_language: "rust",
+        rust_dependency: Some("hayro-ccitt"),
+        native_dependency: None,
+        native_dependency_allowed: false,
+        default_enabled: true,
+        feature_flag: None,
+        worker_supported: false,
+        worker_required_for_native: false,
+        in_process_allowed_by_default: true,
+        supported_platforms: ALL_CORE_PLATFORMS,
+        sandbox_requirement: "none_pure_rust",
+        known_limits: "dimension cap, row/column caps",
+        report_field: "backend_selection",
+    },
+    CodecBackendRegistryEntry {
+        codec_kind: "JBIG2Decode",
+        aliases: &[],
+        backend_name: "oxide-rust-hayro-jbig2",
+        implementation_language: "rust",
+        rust_dependency: Some("hayro-jbig2"),
+        native_dependency: None,
+        native_dependency_allowed: false,
+        default_enabled: true,
+        feature_flag: None,
+        worker_supported: false,
+        worker_required_for_native: false,
+        in_process_allowed_by_default: true,
+        supported_platforms: ALL_CORE_PLATFORMS,
+        sandbox_requirement: "none_pure_rust",
+        known_limits: "dimension cap, segment/symbol/region/page caps",
+        report_field: "backend_selection",
+    },
+];
+
+const NATIVE_CODEC_DEPENDENCY_ALLOWLIST: &[NativeCodecDependencyAllowlistEntry] = &[];
+
+pub fn codec_backend_registry() -> &'static [CodecBackendRegistryEntry] {
+    CODEC_BACKEND_REGISTRY
+}
+
+pub fn native_codec_dependency_allowlist() -> &'static [NativeCodecDependencyAllowlistEntry] {
+    NATIVE_CODEC_DEPENDENCY_ALLOWLIST
+}
+
+pub fn native_codecs_compiled() -> bool {
+    cfg!(feature = "native-codecs")
+}
+
+pub fn codec_native_boundary_report() -> CodecNativeBoundaryReport {
+    CodecNativeBoundaryReport {
+        default_posture: "deny_native_by_default".to_string(),
+        pure_rust_default: true,
+        native_codecs_compiled: native_codecs_compiled(),
+        native_dependency_allowlist_entries: NATIVE_CODEC_DEPENDENCY_ALLOWLIST.len(),
+        native_in_process_allowed_by_default: false,
+        worker_required_for_native_codecs: true,
+        unknown_native_dependencies_fail_closed: true,
+        no_silent_isolation_downgrade: true,
+    }
+}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -60,6 +331,206 @@ impl CodecIsolationPolicy {
             Self::ReportOnly => "report_only",
             Self::Disabled => "disabled",
         }
+    }
+}
+
+impl CodecBackendPreference {
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::PureRust => "pure_rust",
+            Self::NativeWorker => "native_worker",
+            Self::NativeInProcess => "native_in_process",
+        }
+    }
+}
+
+pub fn validate_codec_registry_policy() -> Vec<String> {
+    let mut failures = Vec::new();
+    for entry in CODEC_BACKEND_REGISTRY {
+        let is_native = entry.native_dependency.is_some()
+            || !matches!(entry.implementation_language, "rust" | "wasm");
+        if !is_native {
+            continue;
+        }
+        if entry.default_enabled {
+            failures.push(format!(
+                "{}:{} native backend must not be enabled by default",
+                entry.codec_kind, entry.backend_name
+            ));
+        }
+        if entry.feature_flag != Some(NATIVE_CODEC_FEATURE) {
+            failures.push(format!(
+                "{}:{} native backend must require feature {NATIVE_CODEC_FEATURE}",
+                entry.codec_kind, entry.backend_name
+            ));
+        }
+        if !entry.worker_required_for_native {
+            failures.push(format!(
+                "{}:{} native backend must require worker/sandbox execution",
+                entry.codec_kind, entry.backend_name
+            ));
+        }
+        if entry.in_process_allowed_by_default {
+            failures.push(format!(
+                "{}:{} native backend must not allow default in-process execution",
+                entry.codec_kind, entry.backend_name
+            ));
+        }
+        if let Some(library) = entry.native_dependency {
+            let allowlisted = NATIVE_CODEC_DEPENDENCY_ALLOWLIST
+                .iter()
+                .any(|item| item.library_name == library);
+            if !allowlisted || !entry.native_dependency_allowed {
+                failures.push(format!(
+                    "{}:{} native dependency {library} is not allowlisted",
+                    entry.codec_kind, entry.backend_name
+                ));
+            }
+        }
+    }
+    failures
+}
+
+pub fn select_codec_backend(
+    filter_name: &str,
+    preference: CodecBackendPreference,
+    policy: &CodecIsolationPolicy,
+) -> CodecBackendSelectionReport {
+    let canonical = canonical_filter_name(filter_name).to_string();
+    let requested_backend = preference.as_str().to_string();
+    let entries = CODEC_BACKEND_REGISTRY
+        .iter()
+        .filter(|entry| entry.codec_kind == canonical)
+        .collect::<Vec<_>>();
+
+    if entries.is_empty() {
+        return CodecBackendSelectionReport {
+            requested_backend,
+            codec_kind: canonical,
+            status: "unsupported_codec".to_string(),
+            ok: false,
+            selected_backend: None,
+            implementation_language: None,
+            rust_dependency: None,
+            native_dependency: None,
+            native_dependency_allowed: false,
+            native_codecs_compiled: native_codecs_compiled(),
+            feature_flag: None,
+            feature_enabled: false,
+            worker_required: false,
+            in_process_allowed: false,
+            sandbox_requirement: "unregistered".to_string(),
+            fallback_behavior: "fail_closed".to_string(),
+            reason: Some("codec is not present in the central codec registry".to_string()),
+        };
+    }
+
+    let wants_native = matches!(
+        preference,
+        CodecBackendPreference::NativeWorker | CodecBackendPreference::NativeInProcess
+    );
+    let selected = if wants_native {
+        entries.iter().copied().find(|entry| {
+            entry.native_dependency.is_some() || entry.implementation_language != "rust"
+        })
+    } else {
+        entries
+            .iter()
+            .copied()
+            .find(|entry| entry.implementation_language == "rust" && entry.default_enabled)
+    };
+
+    let Some(entry) = selected else {
+        return CodecBackendSelectionReport {
+            requested_backend,
+            codec_kind: canonical,
+            status: if wants_native {
+                "native_backend_blocked"
+            } else {
+                "backend_unavailable"
+            }
+            .to_string(),
+            ok: false,
+            selected_backend: None,
+            implementation_language: None,
+            rust_dependency: None,
+            native_dependency: None,
+            native_dependency_allowed: false,
+            native_codecs_compiled: native_codecs_compiled(),
+            feature_flag: wants_native.then(|| NATIVE_CODEC_FEATURE.to_string()),
+            feature_enabled: native_codecs_compiled(),
+            worker_required: wants_native,
+            in_process_allowed: false,
+            sandbox_requirement: if wants_native {
+                "subprocess_required_for_native"
+            } else {
+                "unavailable"
+            }
+            .to_string(),
+            fallback_behavior: "fail_closed".to_string(),
+            reason: Some(if wants_native {
+                "no native backend is registered and allowlisted for this codec".to_string()
+            } else {
+                "no default pure-Rust backend is registered for this codec".to_string()
+            }),
+        };
+    };
+
+    let is_native = entry.native_dependency.is_some() || entry.implementation_language != "rust";
+    let feature_enabled = entry
+        .feature_flag
+        .map(|feature| feature == NATIVE_CODEC_FEATURE && native_codecs_compiled())
+        .unwrap_or(true);
+    let mut ok = true;
+    let mut status = "selected".to_string();
+    let mut reason = None;
+    let in_process_allowed = entry.in_process_allowed_by_default
+        && (!is_native || preference != CodecBackendPreference::NativeInProcess);
+
+    if is_native {
+        ok = false;
+        status = "native_backend_blocked".to_string();
+        reason = Some("native codec backends are denied unless feature, allowlist, and worker sandbox requirements are all satisfied".to_string());
+        if !feature_enabled {
+            reason = Some(format!(
+                "native backend requires disabled feature {}",
+                entry.feature_flag.unwrap_or(NATIVE_CODEC_FEATURE)
+            ));
+        } else if !entry.native_dependency_allowed {
+            reason = Some("native dependency is not allowlisted".to_string());
+        } else if preference == CodecBackendPreference::NativeInProcess {
+            reason = Some("native in-process backend is forbidden by default policy".to_string());
+        } else if !matches!(
+            policy,
+            CodecIsolationPolicy::IsolatedRequired | CodecIsolationPolicy::IsolatedPreferred
+        ) {
+            reason = Some("native worker backend requires an isolated policy".to_string());
+        }
+    }
+
+    CodecBackendSelectionReport {
+        requested_backend,
+        codec_kind: canonical,
+        status,
+        ok,
+        selected_backend: Some(entry.backend_name.to_string()),
+        implementation_language: Some(entry.implementation_language.to_string()),
+        rust_dependency: entry.rust_dependency.map(str::to_string),
+        native_dependency: entry.native_dependency.map(str::to_string),
+        native_dependency_allowed: entry.native_dependency_allowed,
+        native_codecs_compiled: native_codecs_compiled(),
+        feature_flag: entry.feature_flag.map(str::to_string),
+        feature_enabled,
+        worker_required: is_native && entry.worker_required_for_native,
+        in_process_allowed,
+        sandbox_requirement: entry.sandbox_requirement.to_string(),
+        fallback_behavior: if is_native {
+            "fail_closed_or_safe_pure_rust_with_report".to_string()
+        } else {
+            "pure_rust_default".to_string()
+        },
+        reason,
     }
 }
 
@@ -161,6 +632,8 @@ pub struct CodecIsolationReport {
     pub protocol_version: u32,
     pub request_id: String,
     pub codec_kind: String,
+    pub backend_selection: CodecBackendSelectionReport,
+    pub native_boundary: CodecNativeBoundaryReport,
     pub requested_policy: String,
     pub isolation_mode: String,
     pub status: String,
@@ -193,6 +666,12 @@ impl CodecIsolationReport {
             protocol_version: CODEC_WORKER_PROTOCOL_VERSION,
             request_id,
             codec_kind: canonical_filter_name(filter_name).to_string(),
+            backend_selection: select_codec_backend(
+                filter_name,
+                CodecBackendPreference::Default,
+                policy,
+            ),
+            native_boundary: codec_native_boundary_report(),
             requested_policy: policy.as_str().to_string(),
             isolation_mode: policy.as_str().to_string(),
             status: "pending".to_string(),
@@ -315,6 +794,7 @@ pub fn default_worker_path() -> Option<PathBuf> {
 }
 
 pub fn codec_isolation_availability_report() -> serde_json::Value {
+    let registry_errors = validate_codec_registry_policy();
     serde_json::json!({
         "status": if platform_supports_process_isolation() { "available_when_worker_present" } else { "unavailable_on_target" },
         "default_policy": CodecIsolationPolicy::InProcess.as_str(),
@@ -330,6 +810,11 @@ pub fn codec_isolation_availability_report() -> serde_json::Value {
             .map(|p| p.display().to_string())
             .unwrap_or_else(|| "not_found".to_string()),
         "supported_worker_codecs": supported_worker_codecs(),
+        "codec_registry": codec_backend_registry(),
+        "native_codec_boundary": codec_native_boundary_report(),
+        "native_dependency_allowlist": native_codec_dependency_allowlist(),
+        "native_registry_policy_ok": registry_errors.is_empty(),
+        "native_registry_policy_errors": registry_errors,
         "wasm": {
             "subprocess_isolation": "unavailable",
             "reason": "browser and wasm32-unknown-unknown targets cannot spawn OS codec workers"
@@ -350,6 +835,20 @@ pub fn decode_filter_with_isolation(
         request_id.clone(),
         config.trace_id.clone(),
     );
+
+    if !report.backend_selection.ok {
+        let message = report
+            .backend_selection
+            .reason
+            .clone()
+            .unwrap_or_else(|| "codec backend selection failed".to_string());
+        report.status = report.backend_selection.status.clone();
+        report.errors.push(message);
+        return CodecIsolationDecode {
+            decoded: None,
+            report,
+        };
+    }
 
     if input.len() as u64 > config.limits.max_input_bytes {
         report.status = "input_cap_exceeded".to_string();

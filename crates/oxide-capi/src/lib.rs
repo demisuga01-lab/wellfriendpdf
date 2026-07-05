@@ -2398,6 +2398,14 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&text).unwrap();
         assert_eq!(value["kind"], "feature_report");
         assert!(value["report"]["engine_version"].is_string());
+        assert_eq!(
+            value["report"]["prompt04"]["scanner"]["default_implementation"],
+            "safe_first_byte_chunked"
+        );
+        assert_eq!(
+            value["report"]["prompt04"]["renderer_decode_scheduler"]["status"],
+            "adopted_for_immediate_renderer_decode_paths"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

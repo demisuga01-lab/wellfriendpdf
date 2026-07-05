@@ -99,3 +99,20 @@ codec adapters under `crates/engine/src/images/`.
   directories and records clean errors, unsupported paths, and timeouts.
 - `scripts/run_decode_fuzz_campaign.py --group risky-codec` runs the risky-codec
   fuzz target set.
+
+## Prompt 04 Update
+
+Prompt 03 added `oxide-codec-worker` subprocess containment for the supported
+lossless worker codecs. Prompt 04 keeps that worker boundary and adds the
+long-term native/C codec policy:
+
+- pure Rust remains the default;
+- native dependencies are denied by default;
+- the native dependency allowlist is empty;
+- future native backends must be feature-gated, worker/sandbox-required, and
+  report-visible;
+- RLBox/WASM remains unsupported until a reproducible cross-platform prototype
+  exists.
+
+The Prompt 04 hard-block evidence for RLBox/WASM is generated at
+`target/prompt04-codec-boundary-scheduler/rlbox-wasm-feasibility.json`.

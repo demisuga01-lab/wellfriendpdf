@@ -1,11 +1,13 @@
 use crate::cancel::CancelToken;
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{BlendMode, ColorSpace, GraphicsState};
+use crate::decode_scheduler::DecodeMemoryBudget;
 use crate::engine::{ContentEngine, PageResources};
 use crate::error::{OxideError, Result};
+use crate::filters::DecodeLimits;
 use crate::fonts::resolver::{detect_font_subtype, get_descendant_font, FontSubtype};
 use crate::fonts::variations::VariationRequest;
-use crate::images::decoder::ImageDecoder;
+use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::locator::ImageReference;
 use crate::images::SmaskLoader;
 use crate::info::decode_pdf_text_string;
@@ -25,6 +27,7 @@ use crate::render::shading::ShadingRenderer;
 use crate::render::text_decode::{decode_text_bytes as decode_font_text_bytes, DecodedGlyph};
 use crate::render::transform::{Transform2D, Viewport};
 use std::fmt::Write as _;
+use std::sync::{Arc, Mutex};
 
 pub struct PageRenderer;
 
@@ -319,6 +322,104 @@ struct RenderState<'a> {
     /// the tiling-pattern tile loop so a runaway page can be stopped from
     /// outside. Child states (Form groups, soft masks) share the same token.
     cancel: CancelToken,
+    /// Per-render decode scheduler context. Current renderer decode is
+    /// synchronous for deterministic composition, but every image/stream decode
+    /// still acquires a memory token and observes cancellation before work.
+    decode_scheduler: RenderDecodeScheduler,
+}
+
+#[derive(Clone, Debug)]
+struct RenderDecodeScheduler {
+    budget: Arc<DecodeMemoryBudget>,
+    state: Arc<Mutex<RenderDecodeSchedulerState>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RenderDecodeSchedulerState {
+    jobs: usize,
+    rejected_jobs: usize,
+    cancelled_before_decode: usize,
+    failed_jobs: usize,
+}
+
+impl RenderDecodeScheduler {
+    fn new(limits: &DecodeLimits) -> Self {
+        Self {
+            budget: Arc::new(DecodeMemoryBudget::new(
+                limits.scheduler_memory_budget_bytes.max(1),
+            )),
+            state: Arc::new(Mutex::new(RenderDecodeSchedulerState::default())),
+        }
+    }
+
+    fn run<T>(
+        &self,
+        estimated_bytes: u64,
+        cancel: &CancelToken,
+        context: &str,
+        work: impl FnOnce() -> Result<T>,
+    ) -> Result<T> {
+        if let Ok(mut state) = self.state.lock() {
+            state.jobs += 1;
+        }
+        if cancel.is_cancelled() {
+            if let Ok(mut state) = self.state.lock() {
+                state.cancelled_before_decode += 1;
+            }
+            return Err(OxideError::Cancelled(context.to_string()));
+        }
+        let token = match self.budget.acquire(estimated_bytes.max(1)) {
+            Ok(token) => token,
+            Err(err) => {
+                if let Ok(mut state) = self.state.lock() {
+                    state.rejected_jobs += 1;
+                    state.failed_jobs += 1;
+                }
+                return Err(err);
+            }
+        };
+        let result = work();
+        drop(token);
+        if result.is_err() {
+            if let Ok(mut state) = self.state.lock() {
+                state.failed_jobs += 1;
+            }
+        }
+        result
+    }
+
+    #[cfg(test)]
+    fn metrics(&self) -> RendererDecodeSchedulerMetrics {
+        let budget = self.budget.metrics();
+        let state = self
+            .state
+            .lock()
+            .expect("renderer decode scheduler metrics lock")
+            .clone();
+        RendererDecodeSchedulerMetrics {
+            jobs: state.jobs,
+            workers: 1,
+            memory_budget_bytes: budget.memory_budget_bytes,
+            peak_reserved_bytes: budget.peak_reserved_bytes,
+            wait_count: budget.wait_count,
+            rejected_jobs: state.rejected_jobs,
+            cancelled_before_decode: state.cancelled_before_decode,
+            failed_jobs: state.failed_jobs,
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RendererDecodeSchedulerMetrics {
+    jobs: usize,
+    workers: usize,
+    memory_budget_bytes: u64,
+    peak_reserved_bytes: u64,
+    wait_count: usize,
+    rejected_jobs: usize,
+    cancelled_before_decode: usize,
+    failed_jobs: usize,
 }
 
 impl<'a> RenderState<'a> {
@@ -345,6 +446,7 @@ impl<'a> RenderState<'a> {
             pending_inline: None,
             base_ctm: Transform2D::identity(),
             cancel: CancelToken::none(),
+            decode_scheduler: RenderDecodeScheduler::new(&DecodeLimits::default()),
         }
     }
 
@@ -368,6 +470,83 @@ impl<'a> RenderState<'a> {
             }
             self.dispatch(op);
         }
+    }
+
+    fn scheduled_decode_stream(
+        &self,
+        stream_obj: &PdfObject,
+        reader: &crate::reader::PdfReader,
+        context: &str,
+    ) -> Result<Vec<u8>> {
+        let estimated = estimate_stream_decode_bytes(stream_obj);
+        self.decode_scheduler
+            .run(estimated, &self.cancel, context, || {
+                crate::filters::decode_stream(stream_obj, reader)
+            })
+    }
+
+    fn scheduled_decode_image(
+        &self,
+        image_ref: &ImageReference,
+        context: &str,
+    ) -> Result<RawImage> {
+        let estimated = estimate_image_ref_decode_bytes(image_ref);
+        self.decode_scheduler
+            .run(estimated, &self.cancel, context, || {
+                ImageDecoder::decode(image_ref, self.engine.document().reader())
+            })
+    }
+
+    fn scheduled_decode_inline_image(
+        &self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        bpc: u8,
+        color_space: &str,
+        filters: &[&str],
+    ) -> Result<RawImage> {
+        let estimated = estimate_inline_image_decode_bytes(data.len(), width, height, bpc);
+        self.decode_scheduler.run(
+            estimated,
+            &self.cancel,
+            "renderer inline image decode",
+            || ImageDecoder::decode_inline(data, width, height, bpc, color_space, filters, None),
+        )
+    }
+
+    fn scheduled_load_smask(
+        &self,
+        image_ref: &ImageReference,
+        raw: RawImage,
+    ) -> Result<Option<RawImage>> {
+        let estimated = u64::from(image_ref.width)
+            .saturating_mul(u64::from(image_ref.height))
+            .saturating_mul(2)
+            .max(raw.byte_count() as u64)
+            .max(1);
+        self.decode_scheduler.run(
+            estimated,
+            &self.cancel,
+            "renderer soft mask image decode",
+            || SmaskLoader::load_and_combine(image_ref, raw, self.engine.document().reader()),
+        )
+    }
+
+    fn shading_mesh_data(
+        &self,
+        shading_obj: &PdfObject,
+        shading_dict: &PdfDictionary,
+        reader: &crate::reader::PdfReader,
+    ) -> Option<Vec<u8>> {
+        let st = shading_dict.get_integer("ShadingType").unwrap_or(0);
+        if !(4..=7).contains(&st) {
+            return None;
+        }
+        let (dict, raw) = resolve_to_stream(shading_obj, reader)?;
+        let stream_obj = PdfObject::Stream { dict, raw };
+        self.scheduled_decode_stream(&stream_obj, reader, "renderer mesh shading stream decode")
+            .ok()
     }
 
     fn replay_display_list(&mut self, list: &DisplayList) {
@@ -835,7 +1014,11 @@ impl<'a> RenderState<'a> {
             dict: g_dict.clone(),
             raw: g_raw,
         };
-        let content_bytes = match crate::filters::decode_stream(&stream_obj, reader) {
+        let content_bytes = match self.scheduled_decode_stream(
+            &stream_obj,
+            reader,
+            "renderer soft mask group stream decode",
+        ) {
             Ok(bytes) => bytes,
             Err(err) => {
                 log::warn!("PageRenderer: SMask /G stream decode failed: {}", err);
@@ -906,6 +1089,7 @@ impl<'a> RenderState<'a> {
             pending_inline: None,
             base_ctm: mask_base_ctm,
             cancel: self.cancel.clone(),
+            decode_scheduler: self.decode_scheduler.clone(),
         };
 
         if let Some(bbox) = extract_bbox(&g_dict) {
@@ -992,14 +1176,13 @@ impl<'a> RenderState<'a> {
         // Inline image masks are stencil masks: paint the current fill color
         // through the 1-bit mask. We currently decode them as a grayscale image
         // and paint that; full stencil-color application is a follow-up.
-        let raw = match ImageDecoder::decode_inline(
+        let raw = match self.scheduled_decode_inline_image(
             data,
             width,
             height,
             bpc,
             color_space,
             &filters,
-            None,
         ) {
             Ok(raw) => raw,
             Err(err) => {
@@ -1086,18 +1269,14 @@ impl<'a> RenderState<'a> {
             inline_data: None,
         };
 
-        match ImageDecoder::decode(&image_ref, self.engine.document().reader()) {
+        match self.scheduled_decode_image(&image_ref, "renderer image XObject decode") {
             Ok(raw) => {
                 let raw = if image_ref.is_mask {
                     let color =
                         self.resolve_paint_color(&self.gs.fill_color, self.gs.fill_alpha as f32);
                     image_mask_to_stencil_rgba(raw, color, image_mask_paints_ones(dict))
                 } else if dict.contains_key("SMask") {
-                    match SmaskLoader::load_and_combine(
-                        &image_ref,
-                        raw.clone(),
-                        self.engine.document().reader(),
-                    ) {
+                    match self.scheduled_load_smask(&image_ref, raw.clone()) {
                         Ok(Some(masked)) => masked,
                         Ok(None) => raw,
                         Err(err) => {
@@ -1179,7 +1358,11 @@ impl<'a> RenderState<'a> {
                 dict: form_dict.clone(),
                 raw: raw_bytes.clone(),
             };
-            let content_bytes = match crate::filters::decode_stream(&stream_obj, reader) {
+            let content_bytes = match self.scheduled_decode_stream(
+                &stream_obj,
+                reader,
+                "renderer transparency form stream decode",
+            ) {
                 Ok(bytes) => bytes,
                 Err(err) => {
                     log::warn!(
@@ -1244,7 +1427,11 @@ impl<'a> RenderState<'a> {
             dict: form_dict.clone(),
             raw: raw_bytes,
         };
-        let content_bytes = match crate::filters::decode_stream(&stream_obj, reader) {
+        let content_bytes = match self.scheduled_decode_stream(
+            &stream_obj,
+            reader,
+            "renderer form XObject stream decode",
+        ) {
             Ok(bytes) => bytes,
             Err(err) => {
                 log::warn!(
@@ -1358,6 +1545,7 @@ impl<'a> RenderState<'a> {
             pending_inline: None,
             base_ctm: group_base_ctm,
             cancel: self.cancel.clone(),
+            decode_scheduler: self.decode_scheduler.clone(),
         };
 
         // Carry the parent clip into the group so content is bounded the same
@@ -1526,7 +1714,11 @@ impl<'a> RenderState<'a> {
             raw: raw_bytes.clone(),
         };
         let reader = self.engine.document().reader();
-        let content_bytes = match crate::filters::decode_stream(&stream_obj, reader) {
+        let content_bytes = match self.scheduled_decode_stream(
+            &stream_obj,
+            reader,
+            "renderer annotation appearance stream decode",
+        ) {
             Ok(bytes) => bytes,
             Err(err) => {
                 log::warn!(
@@ -1637,7 +1829,7 @@ impl<'a> RenderState<'a> {
             return;
         };
         let ctm = self.ctm();
-        let mesh_data = shading_mesh_data(&shading_obj, &shading_dict, reader);
+        let mesh_data = self.shading_mesh_data(&shading_obj, &shading_dict, reader);
         ShadingRenderer::paint(
             &shading_dict,
             &ctm,
@@ -1783,7 +1975,11 @@ impl<'a> RenderState<'a> {
                 dict: pat_dict.clone(),
                 raw: raw_bytes,
             };
-            match crate::filters::decode_stream(&stream_obj, reader) {
+            match self.scheduled_decode_stream(
+                &stream_obj,
+                reader,
+                "renderer tiling pattern stream decode",
+            ) {
                 Ok(bytes) => bytes,
                 Err(err) => {
                     log::warn!("tiling pattern: content decode failed: {err}");
@@ -1934,7 +2130,7 @@ impl<'a> RenderState<'a> {
         let saved_clip = self.buf.clip_mask().cloned();
         self.buf.set_clip(path_clip); // intersects with any existing clip
 
-        let mesh_data = shading_mesh_data(&shading_obj, &shading_dict, reader);
+        let mesh_data = self.shading_mesh_data(&shading_obj, &shading_dict, reader);
         ShadingRenderer::paint(
             &shading_dict,
             &ctm,
@@ -2657,18 +2853,45 @@ fn uncolored_pattern_color(
 /// For a mesh shading (ShadingType 4–7), decode and return the shading stream's
 /// data (the packed vertex/patch records). Returns `None` for dictionary-only
 /// shadings (Types 1–3) or if the object is not a stream.
-fn shading_mesh_data(
-    shading_obj: &PdfObject,
-    shading_dict: &PdfDictionary,
-    reader: &crate::reader::PdfReader,
-) -> Option<Vec<u8>> {
-    let st = shading_dict.get_integer("ShadingType").unwrap_or(0);
-    if !(4..=7).contains(&st) {
-        return None;
+fn estimate_stream_decode_bytes(stream_obj: &PdfObject) -> u64 {
+    let raw_len = match stream_obj {
+        PdfObject::Stream { raw, .. } => raw.len() as u64,
+        _ => 1,
+    };
+    let limits = DecodeLimits::default();
+    raw_len
+        .saturating_mul(4)
+        .max(raw_len)
+        .max(1)
+        .min(limits.max_decoded_bytes_per_stream)
+}
+
+fn estimate_image_ref_decode_bytes(image: &ImageReference) -> u64 {
+    u64::from(image.width)
+        .saturating_mul(u64::from(image.height))
+        .saturating_mul(u64::from(image.bits_per_component.max(1)).div_ceil(8))
+        .saturating_mul(estimated_image_channels(&image.color_space, image.is_mask))
+        .max(1)
+}
+
+fn estimate_inline_image_decode_bytes(raw_len: usize, width: u32, height: u32, bpc: u8) -> u64 {
+    u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(u64::from(bpc.max(1)).div_ceil(8))
+        .max(raw_len as u64)
+        .max(1)
+}
+
+fn estimated_image_channels(color_space: &str, is_mask: bool) -> u64 {
+    if is_mask {
+        1
+    } else if color_space.contains("CMYK") {
+        4
+    } else if color_space.contains("RGB") {
+        3
+    } else {
+        1
     }
-    let (dict, raw) = resolve_to_stream(shading_obj, reader)?;
-    let stream_obj = PdfObject::Stream { dict, raw };
-    crate::filters::decode_stream(&stream_obj, reader).ok()
 }
 
 fn crop_buffer(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
@@ -3824,6 +4047,64 @@ mod tests {
             vertical_advance: None,
             vertical_origin: None,
         }
+    }
+
+    fn blank_render_state(engine: &ContentEngine) -> RenderState<'_> {
+        let viewport = Viewport::new([0.0, 0.0, 10.0, 10.0], 72);
+        let buf = PixelBuffer::new_filled_with_mode(
+            viewport.width_px,
+            viewport.height_px,
+            WHITE,
+            RenderMode::Compat,
+        );
+        RenderState::new(buf, viewport, PageResources::default(), engine, 1)
+    }
+
+    #[test]
+    fn renderer_inline_decode_acquires_scheduler_token() {
+        let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
+        let state = blank_render_state(&engine);
+        let raw = state
+            .scheduled_decode_inline_image(&[128], 1, 1, 8, "DeviceGray", &[])
+            .expect("inline image decode");
+        assert_eq!(raw.width, 1);
+        let metrics = state.decode_scheduler.metrics();
+        assert_eq!(metrics.jobs, 1);
+        assert!(metrics.peak_reserved_bytes >= 1);
+        assert_eq!(metrics.rejected_jobs, 0);
+    }
+
+    #[test]
+    fn renderer_decode_scheduler_fails_closed_over_budget() {
+        let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
+        let mut state = blank_render_state(&engine);
+        state.decode_scheduler = RenderDecodeScheduler::new(&DecodeLimits {
+            scheduler_memory_budget_bytes: 1,
+            ..DecodeLimits::default()
+        });
+        let err = state
+            .scheduled_decode_inline_image(&[0; 16], 4, 4, 8, "DeviceGray", &[])
+            .expect_err("decode estimate should exceed scheduler budget");
+        assert!(err.to_string().contains("exceeding scheduler budget"));
+        let metrics = state.decode_scheduler.metrics();
+        assert_eq!(metrics.jobs, 1);
+        assert_eq!(metrics.rejected_jobs, 1);
+        assert_eq!(metrics.failed_jobs, 1);
+    }
+
+    #[test]
+    fn renderer_decode_scheduler_observes_cancel_before_decode() {
+        let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
+        let mut state = blank_render_state(&engine);
+        state.cancel = CancelToken::new();
+        state.cancel.cancel();
+        let err = state
+            .scheduled_decode_inline_image(&[0], 1, 1, 8, "DeviceGray", &[])
+            .expect_err("pre-cancelled decode should fail");
+        assert!(matches!(err, OxideError::Cancelled(_)));
+        let metrics = state.decode_scheduler.metrics();
+        assert_eq!(metrics.jobs, 1);
+        assert_eq!(metrics.cancelled_before_decode, 1);
     }
 
     #[test]

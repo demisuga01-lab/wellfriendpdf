@@ -28,3 +28,10 @@
 - Full malware scanning of embedded payloads.
 - Full legal PDF/A/UA/X certification.
 - Full PKI, TSA, OCSP, CRL, and PAdES policy validation.
+# Prompt 04 Codec Boundary Note
+
+Combined Prompt 04 keeps the engine's codec default pure Rust and adds a central native codec registry/allowlist policy. Native/C codec dependencies remain denied by default, native in-process decode is forbidden by default, and future native backends must be feature-gated, worker-required, allowlisted, and report-visible.
+
+RLBox/WASM codec sandboxing is explicitly hard-blocked for this repository state by `target/prompt04-codec-boundary-scheduler/rlbox-wasm-feasibility.json`; Oxide must not claim RLBox production support until a reproducible cross-platform prototype exists.
+
+Renderer decode paths now acquire scheduler memory tokens before image/stream decode and observe render cancellation before decoder entry. This is a bounded-memory and deterministic-order improvement, not a renderer parity phase.

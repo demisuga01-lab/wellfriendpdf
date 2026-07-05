@@ -58,6 +58,10 @@ structural = []
 sign = []
 pdfa = []
 ocr = []
+# Prompt 04 native/C codec boundary guard. This compiles no native dependency by
+# itself; it only allows future explicitly-registered native backend metadata to
+# report as compiled. Defaults remain pure Rust.
+native-codecs = []
 # Exposes internal parse/decode entry points (stream filters, etc.) as a
 # stable `pub` surface for the out-of-tree `fuzz/` workspace member. Off by
 # default so the normal build keeps these implementation details private;

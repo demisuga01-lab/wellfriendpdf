@@ -13,6 +13,7 @@ use crate::crypto::{
     derive_v5_file_key_from_user, verify_user_password, verify_v5_owner_password, verify_v5_perms,
     verify_v5_user_password, CryptMethod, EncryptionInfo, SecretBytes,
 };
+use crate::decode_scanner::{find_marker_accelerated, rfind_marker_accelerated};
 use crate::error::{OxideError, Result};
 use crate::filters::decode_stream_from_dict;
 use crate::object::{PdfDictionary, PdfObject};
@@ -1411,10 +1412,14 @@ fn rebuild_xref_from_object_scan(
 fn find_last_trailer_dictionary(data: &[u8]) -> Option<PdfDictionary> {
     let marker = b"trailer";
     let mut positions = Vec::new();
-    for (pos, window) in data.windows(marker.len()).enumerate() {
-        if window == marker {
-            positions.push(pos);
-        }
+    let mut start = 0usize;
+    while start <= data.len() {
+        let Some(rel) = find_marker_accelerated(&data[start..], marker) else {
+            break;
+        };
+        let pos = start + rel;
+        positions.push(pos);
+        start = pos + 1;
     }
     for pos in positions.into_iter().rev() {
         let dict_pos = pos + marker.len();
@@ -1454,22 +1459,28 @@ fn find_catalog_reference(data: &[u8], scanned: &HashMap<(u32, u16), usize>) -> 
 fn scan_indirect_object_headers(data: &[u8]) -> HashMap<(u32, u16), usize> {
     let mut offsets = HashMap::new();
     let stream_spans = stream_data_spans(data);
-    for (rel, window) in data.windows(b" obj".len()).enumerate() {
-        if window != b" obj" {
-            continue;
-        }
+    let marker = b" obj";
+    let mut rel = 0usize;
+    while rel <= data.len() {
+        let Some(found) = find_marker_accelerated(&data[rel..], marker) else {
+            break;
+        };
+        rel += found;
         let line_start = data[..rel]
             .iter()
             .rposition(|byte| *byte == b'\r' || *byte == b'\n')
             .map_or(0, |pos| pos + 1);
         let object_start = skip_ws_and_comments(data, line_start);
         if offset_in_spans(object_start, &stream_spans) {
+            rel += 1;
             continue;
         }
         let Some((number, generation)) = parse_indirect_object_header(data, object_start) else {
+            rel += 1;
             continue;
         };
         offsets.insert((number, generation), object_start);
+        rel += 1;
     }
     offsets
 }
@@ -1478,10 +1489,10 @@ fn stream_data_spans(data: &[u8]) -> Vec<(usize, usize)> {
     let marker = b"stream";
     let mut spans = Vec::new();
     let mut pos = 0usize;
-    while let Some(rel) = data[pos..]
-        .windows(marker.len())
-        .position(|window| window == marker)
-    {
+    while pos <= data.len() {
+        let Some(rel) = find_marker_accelerated(&data[pos..], marker) else {
+            break;
+        };
         let stream_pos = pos + rel;
         let after_marker = stream_pos + marker.len();
         let Some(data_start) = stream_data_start(data, after_marker) else {
@@ -1504,10 +1515,10 @@ fn stream_data_start(data: &[u8], pos: usize) -> Option<usize> {
 }
 
 fn find_endstream(data: &[u8], start: usize) -> Option<usize> {
-    data[start..]
-        .windows(b"endstream".len())
-        .position(|window| window == b"endstream")
-        .map(|rel| start + rel)
+    if start > data.len() {
+        return None;
+    }
+    find_marker_accelerated(&data[start..], b"endstream").map(|rel| start + rel)
 }
 
 fn offset_in_spans(offset: usize, spans: &[(usize, usize)]) -> bool {
@@ -1581,21 +1592,26 @@ fn nearby_classic_xref_offset(data: &[u8], offset: usize) -> Option<usize> {
     let start = offset.saturating_sub(64);
     let end = offset.saturating_add(1024).min(data.len());
     data.get(start..end).and_then(|slice| {
-        slice
-            .windows(b"xref".len())
-            .enumerate()
-            .filter_map(|(rel, window)| {
-                if window != b"xref" {
-                    return None;
-                }
-                let pos = start + rel;
-                let is_word = pos == 0
-                    || data
-                        .get(pos - 1)
-                        .copied()
-                        .is_none_or(|b| !b.is_ascii_alphabetic());
-                is_word.then_some(pos)
-            })
+        let mut candidates = Vec::new();
+        let mut rel_start = 0usize;
+        while rel_start <= slice.len() {
+            let Some(rel) = find_marker_accelerated(&slice[rel_start..], b"xref") else {
+                break;
+            };
+            let rel = rel_start + rel;
+            let pos = start + rel;
+            let is_word = pos == 0
+                || data
+                    .get(pos - 1)
+                    .copied()
+                    .is_none_or(|b| !b.is_ascii_alphabetic());
+            if is_word {
+                candidates.push(pos);
+            }
+            rel_start = rel + 1;
+        }
+        candidates
+            .into_iter()
             .min_by_key(|candidate| candidate.abs_diff(offset))
     })
 }
@@ -2021,9 +2037,7 @@ fn parse_header_version(data: &[u8]) -> Result<String> {
 
 fn find_startxref(data: &[u8]) -> Result<usize> {
     let marker = b"startxref";
-    let marker_pos = data
-        .windows(marker.len())
-        .rposition(|window| window == marker)
+    let marker_pos = rfind_marker_accelerated(data, marker)
         .ok_or_else(|| OxideError::MalformedPdf("missing startxref".to_string()))?;
     let mut pos = marker_pos + marker.len();
     pos = skip_ws_and_comments(data, pos);

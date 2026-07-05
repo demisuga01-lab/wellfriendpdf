@@ -148,11 +148,15 @@ pub use classify::{
     classify_document, classify_page, ClassifyConfig, PageClassification, PageSource,
 };
 pub use codec_isolation::{
-    codec_dimension_report, codec_isolation_availability_report, decode_filter_with_isolation,
-    default_worker_path, platform_supports_process_isolation, supported_worker_codecs,
+    codec_backend_registry, codec_dimension_report, codec_isolation_availability_report,
+    codec_native_boundary_report, decode_filter_with_isolation, default_worker_path,
+    native_codec_dependency_allowlist, native_codecs_compiled, platform_supports_process_isolation,
+    select_codec_backend, supported_worker_codecs, validate_codec_registry_policy,
+    CodecBackendPreference, CodecBackendRegistryEntry, CodecBackendSelectionReport,
     CodecDimensions, CodecIsolationConfig, CodecIsolationDecode, CodecIsolationLimits,
-    CodecIsolationPolicy, CodecIsolationReport, CodecWorkerRequest, CodecWorkerResponse,
-    CODEC_WORKER_PROTOCOL_VERSION, CODEC_WORKER_VERSION,
+    CodecIsolationPolicy, CodecIsolationReport, CodecNativeBoundaryReport, CodecWorkerRequest,
+    CodecWorkerResponse, NativeCodecDependencyAllowlistEntry, CODEC_WORKER_PROTOCOL_VERSION,
+    CODEC_WORKER_VERSION,
 };
 pub use color_report::{
     color_report, color_report_bytes, ColorBackendDecision, ColorDiagnostic, ColorLimits,
@@ -177,11 +181,13 @@ pub use crypto::{
 };
 pub use decode_cache::{DecodeCache, DecodeCacheKey, DecodeCacheMetrics};
 pub use decode_scanner::{
-    scan_pdf_markers_accelerated, scan_pdf_markers_scalar, MarkerCandidate, MarkerScanResult,
-    ScannerImplementation, PDF_DELIMITER_MARKERS,
+    find_marker_accelerated, find_marker_scalar, rfind_marker_accelerated, rfind_marker_scalar,
+    scan_pdf_markers_accelerated, scan_pdf_markers_scalar, scanner_availability_report,
+    MarkerCandidate, MarkerScanResult, ScannerImplementation, PDF_DELIMITER_MARKERS,
 };
 pub use decode_scheduler::{
-    run_scheduled_decode_jobs, DecodeMemoryBudget, DecodeSchedulerMetrics, ScheduledDecodeJob,
+    renderer_decode_scheduler_adoption_report, run_scheduled_decode_jobs, DecodeMemoryBudget,
+    DecodeSchedulerMetrics, RendererDecodeSchedulerAdoptionReport, ScheduledDecodeJob,
 };
 pub use docmodel::{
     render_markdown as render_document_markdown, ClassifiedType, DocBlock, DocumentModel, ListItem,

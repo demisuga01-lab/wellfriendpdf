@@ -79,6 +79,11 @@ def test_module_level_reports():
     feature = _envelope(oxide.feature_report(), "feature_report")
     assert isinstance(feature["engine_version"], str)
     assert feature["report_envelope_version"] == 1
+    assert feature["prompt04"]["scanner"]["default_implementation"] == "safe_first_byte_chunked"
+    assert (
+        feature["prompt04"]["renderer_decode_scheduler"]["status"]
+        == "adopted_for_immediate_renderer_decode_paths"
+    )
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

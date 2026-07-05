@@ -188,3 +188,10 @@ path = "fuzz_targets/display_list.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "decode_scanner"
+path = "fuzz_targets/decode_scanner.rs"
+test = false
+doc = false
+bench = false

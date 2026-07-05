@@ -35,3 +35,18 @@ This threat model is specific to Oxide's current decode architecture. It covers 
 ## Residual Risk
 
 Subprocess isolation contains worker crash, timeout, and oversized response failures. It is not a formally verified sandbox, not a syscall filter, and not a substitute for container/OS sandboxing in hostile multi-tenant deployments.
+
+## Prompt 04 Native Boundary Update
+
+Prompt 04 adds a central codec backend registry and an explicit native/C codec policy:
+
+- pure Rust remains the default implementation posture;
+- native/C codec dependencies are denied by default;
+- the native dependency allowlist is empty;
+- future native entries must require the `native-codecs` feature, worker/sandbox execution, and report fields;
+- native in-process decode is forbidden by default;
+- unknown native dependencies must fail closed rather than silently falling back.
+
+RLBox/WASM sandboxing is not claimed. The Prompt 04 feasibility artifact hard-blocks it for this repository state because the required C/C++ WASM toolchain and reproducible sandbox integration were not available in the local evidence pass.
+
+Renderer decode now uses scheduler memory tokens for image, inline image, soft mask, Form, annotation, tiling-pattern, and mesh-shading decode paths while preserving deterministic content order.

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use crate::decode_scanner::find_marker_accelerated;
 use crate::error::{OxideError, Result};
 use crate::object::{PdfDictionary, PdfObject};
 
@@ -505,15 +506,14 @@ impl<'a> PdfParser<'a> {
     }
 
     fn scan_stream_until_endstream(&mut self, stream_start: usize) -> Result<Vec<u8>> {
-        let mut cursor = stream_start;
-        while cursor + b"endstream".len() <= self.data.len() {
-            if bytes_at(self.data, cursor, b"endstream") {
+        if stream_start <= self.data.len() {
+            if let Some(rel) = find_marker_accelerated(&self.data[stream_start..], b"endstream") {
+                let cursor = stream_start + rel;
                 let raw_end = trim_single_eol_before(self.data, stream_start, cursor);
                 let raw = self.data[stream_start..raw_end].to_vec();
                 self.pos = cursor + b"endstream".len();
                 return Ok(raw);
             }
-            cursor += 1;
         }
         Err(OxideError::ParseError(
             "stream is missing endstream".to_string(),

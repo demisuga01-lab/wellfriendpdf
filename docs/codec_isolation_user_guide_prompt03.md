@@ -40,3 +40,16 @@ All bindings expose the same report shape:
 Ship `oxide-codec-worker` beside `oxide` or set `OXIDE_CODEC_WORKER` to the worker path. Use `isolated_required` for hostile customer PDFs when fail-closed behavior is acceptable. Use `isolated_preferred` only when an explicit in-process fallback is acceptable to the product.
 
 Do not describe this as a full sandbox. It is crash, timeout, and output-size containment.
+
+## Prompt 04 Additions
+
+Prompt 04 adds an enforceable native/C codec boundary on top of the Prompt 03 subprocess worker:
+
+- default builds remain pure Rust;
+- native/C codec dependencies are denied by default;
+- future native backends must be represented in the central codec registry;
+- the native dependency allowlist is empty unless explicitly extended;
+- native backends must be feature-gated and worker/sandbox-required;
+- `CodecIsolationReport` now includes `backend_selection` and `native_boundary` fields.
+
+The feature report also exposes Prompt 04 scanner, renderer scheduler, and RLBox/WASM posture under `report.prompt04`. The SDK envelope version remains `1`.

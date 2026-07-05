@@ -15,6 +15,48 @@ pub struct DecodeSchedulerMetrics {
     pub wait_count: usize,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RendererDecodeSchedulerAdoptionReport {
+    pub status: String,
+    pub execution_model: String,
+    pub bounded_parallelism: String,
+    pub memory_tokens: bool,
+    pub deterministic_output_order: bool,
+    pub cancellation_observed_before_decode: bool,
+    pub adopted_paths: Vec<String>,
+    pub audited_deferred_paths: Vec<String>,
+    pub timeout_posture: String,
+}
+
+pub fn renderer_decode_scheduler_adoption_report() -> RendererDecodeSchedulerAdoptionReport {
+    RendererDecodeSchedulerAdoptionReport {
+        status: "adopted_for_immediate_renderer_decode_paths".to_string(),
+        execution_model: "synchronous_deterministic_decode_with_scheduler_memory_tokens".to_string(),
+        bounded_parallelism: "renderer uses one decode job at a time today; batch decode scheduler remains bounded by DecodeLimits::max_concurrent_decode_jobs".to_string(),
+        memory_tokens: true,
+        deterministic_output_order: true,
+        cancellation_observed_before_decode: true,
+        adopted_paths: vec![
+            "image_xobject_decode".to_string(),
+            "inline_image_decode".to_string(),
+            "soft_mask_image_decode".to_string(),
+            "stencil_mask_image_decode".to_string(),
+            "form_xobject_stream_decode".to_string(),
+            "transparency_form_stream_decode".to_string(),
+            "annotation_appearance_stream_decode".to_string(),
+            "tiling_pattern_stream_decode".to_string(),
+            "mesh_shading_stream_decode".to_string(),
+            "tile_render_full_page_decode_via_shared_path".to_string(),
+            "band_render_full_page_decode_via_shared_path".to_string(),
+        ],
+        audited_deferred_paths: vec![
+            "render_image_cache stores final tile buffers, not decoded image streams".to_string(),
+            "parallel renderer predecode is intentionally not enabled in Prompt 04".to_string(),
+        ],
+        timeout_posture: "renderer exposes cooperative cancellation through CancelToken; no binding-level fake progress/cancellation was added".to_string(),
+    }
+}
+
 #[derive(Debug)]
 struct BudgetState {
     reserved: u64,

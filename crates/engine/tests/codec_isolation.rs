@@ -3,8 +3,9 @@ use std::thread;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 use oxide_engine::{
-    codec_dimension_report, decode_filter_with_isolation, CodecIsolationConfig,
-    CodecIsolationPolicy,
+    codec_backend_registry, codec_dimension_report, decode_filter_with_isolation,
+    native_codec_dependency_allowlist, select_codec_backend, validate_codec_registry_policy,
+    CodecBackendPreference, CodecIsolationConfig, CodecIsolationPolicy,
 };
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -109,6 +110,79 @@ fn disabled_reports_unavailable() {
     );
     assert!(result.decoded.is_none());
     assert_eq!(result.report.status, "disabled");
+}
+
+#[test]
+fn central_codec_registry_enforces_pure_rust_defaults() {
+    let entries = codec_backend_registry();
+    assert!(
+        entries.iter().any(|entry| entry.codec_kind == "FlateDecode"
+            && entry.implementation_language == "rust"
+            && entry.default_enabled
+            && entry.worker_supported),
+        "FlateDecode must be represented in the central registry"
+    );
+    assert!(
+        entries
+            .iter()
+            .filter(|entry| entry.native_dependency.is_some())
+            .all(|entry| !entry.default_enabled
+                && entry.feature_flag == Some("native-codecs")
+                && entry.worker_required_for_native
+                && !entry.in_process_allowed_by_default),
+        "native entries must be denied by default and worker-gated"
+    );
+    assert!(
+        validate_codec_registry_policy().is_empty(),
+        "registry policy errors: {:?}",
+        validate_codec_registry_policy()
+    );
+    assert_eq!(native_codec_dependency_allowlist().len(), 0);
+}
+
+#[test]
+fn native_backend_selection_is_denied_by_default() {
+    let selection = select_codec_backend(
+        "DCTDecode",
+        CodecBackendPreference::NativeInProcess,
+        &CodecIsolationPolicy::InProcess,
+    );
+    assert!(!selection.ok);
+    assert_eq!(selection.status, "native_backend_blocked");
+    assert!(!selection.native_codecs_compiled);
+    assert_eq!(
+        selection.reason.as_deref(),
+        Some("no native backend is registered and allowlisted for this codec")
+    );
+}
+
+#[test]
+fn codec_isolation_report_exposes_backend_boundary_fields() {
+    let result = decode_filter_with_isolation(
+        "FlateDecode",
+        &flate_bytes(b"boundary fields"),
+        &CodecIsolationConfig::with_policy(CodecIsolationPolicy::InProcess),
+    );
+    assert_eq!(result.decoded.as_deref(), Some(&b"boundary fields"[..]));
+    assert_eq!(
+        result.report.backend_selection.selected_backend.as_deref(),
+        Some("oxide-rust-flate2")
+    );
+    assert_eq!(
+        result
+            .report
+            .backend_selection
+            .implementation_language
+            .as_deref(),
+        Some("rust")
+    );
+    assert!(result.report.native_boundary.pure_rust_default);
+    assert!(
+        result
+            .report
+            .native_boundary
+            .unknown_native_dependencies_fail_closed
+    );
 }
 
 #[test]

@@ -36,6 +36,8 @@ use crate::{
     },
     color_report::{color_report_bytes, ColorValidationProfile},
     compliance::{validate_pdfa, validate_pdfua, PdfAProfile},
+    decode_scanner::scanner_availability_report,
+    decode_scheduler::renderer_decode_scheduler_adoption_report,
     editing::{EditMode, ImageRect, PdfEditor, RedactionOptions},
     filters::{decode_image_budget_report, DecodeLimits},
     interactive::{
@@ -277,6 +279,8 @@ pub fn semantic_document_json(
 /// optional engine capabilities are compiled into this build. Bindings expose
 /// this so integrators can query availability instead of guessing.
 pub fn feature_report_json() -> Result<String> {
+    let codec_isolation = codec_isolation_availability_report();
+    let native_codec_boundary = codec_isolation["native_codec_boundary"].clone();
     let features = json!({
         "engine_version": crate::ENGINE_VERSION,
         "report_envelope_version": REPORT_ENVELOPE_VERSION,
@@ -291,7 +295,16 @@ pub fn feature_report_json() -> Result<String> {
             "pdfa": cfg!(feature = "pdfa"),
             "ocr": cfg!(feature = "ocr"),
         },
-        "codec_isolation": codec_isolation_availability_report(),
+        "codec_isolation": codec_isolation,
+        "prompt04": {
+            "native_codec_boundary": native_codec_boundary,
+            "scanner": scanner_availability_report(),
+            "renderer_decode_scheduler": renderer_decode_scheduler_adoption_report(),
+            "rlbox_wasm": {
+                "status": "hard_blocked_with_prompt04_evidence",
+                "report_artifact": "target/prompt04-codec-boundary-scheduler/rlbox-wasm-feasibility.json"
+            }
+        },
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -591,6 +604,18 @@ mod tests {
         );
         let v = assert_envelope(&feature_report_json().unwrap(), "feature_report");
         assert!(v["report"]["engine_version"].is_string());
+        assert_eq!(
+            v["report"]["prompt04"]["scanner"]["default_implementation"],
+            "safe_first_byte_chunked"
+        );
+        assert_eq!(
+            v["report"]["prompt04"]["renderer_decode_scheduler"]["status"],
+            "adopted_for_immediate_renderer_decode_paths"
+        );
+        assert_eq!(
+            v["report"]["prompt04"]["native_codec_boundary"]["default_posture"],
+            "deny_native_by_default"
+        );
         assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
         assert_eq!(
             v["report"]["cancellation"]["status"],
