@@ -1,7 +1,7 @@
 use crate::cancel::CancelToken;
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{BlendMode, ColorSpace, GraphicsState};
-use crate::decode_scheduler::DecodeMemoryBudget;
+use crate::decode_scheduler::{DecodeMemoryBudget, DecodeMemoryToken};
 use crate::engine::{ContentEngine, PageResources};
 use crate::error::{OxideError, Result};
 use crate::filters::DecodeLimits;
@@ -388,6 +388,33 @@ impl RenderDecodeScheduler {
         result
     }
 
+    fn reserve_memory(
+        &self,
+        estimated_bytes: u64,
+        cancel: &CancelToken,
+        context: &str,
+    ) -> Result<DecodeMemoryToken> {
+        if let Ok(mut state) = self.state.lock() {
+            state.jobs += 1;
+        }
+        if cancel.is_cancelled() {
+            if let Ok(mut state) = self.state.lock() {
+                state.cancelled_before_decode += 1;
+            }
+            return Err(OxideError::Cancelled(context.to_string()));
+        }
+        match self.budget.acquire(estimated_bytes.max(1)) {
+            Ok(token) => Ok(token),
+            Err(err) => {
+                if let Ok(mut state) = self.state.lock() {
+                    state.rejected_jobs += 1;
+                    state.failed_jobs += 1;
+                }
+                Err(err)
+            }
+        }
+    }
+
     #[cfg(test)]
     fn metrics(&self) -> RendererDecodeSchedulerMetrics {
         let budget = self.budget.metrics();
@@ -530,6 +557,19 @@ impl<'a> RenderState<'a> {
             &self.cancel,
             "renderer soft mask image decode",
             || SmaskLoader::load_and_combine(image_ref, raw, self.engine.document().reader()),
+        )
+    }
+
+    fn reserve_offscreen_surface(
+        &self,
+        width: u32,
+        height: u32,
+        context: &str,
+    ) -> Result<DecodeMemoryToken> {
+        self.decode_scheduler.reserve_memory(
+            estimate_rgba_surface_bytes(width, height),
+            &self.cancel,
+            context,
         )
     }
 
@@ -1064,6 +1104,20 @@ impl<'a> RenderState<'a> {
         //    observed convention by using the opaque /BC backdrop only when
         //    /TR(0) is effectively transparent (or /TR is absent).
         let render_mode = self.buf.render_mode();
+        let _surface_token = match self.reserve_offscreen_surface(
+            self.buf.width,
+            self.buf.height,
+            "renderer soft mask offscreen surface",
+        ) {
+            Ok(token) => token,
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: SMask /G offscreen surface allocation denied: {}",
+                    err
+                );
+                return;
+            }
+        };
         let mut mask_buf = if is_alpha {
             if alpha_smask_uses_opaque_bc_backdrop(&smask_dict, reader) {
                 PixelBuffer::new_filled_with_mode(
@@ -1507,6 +1561,21 @@ impl<'a> RenderState<'a> {
         // contribution again before compositing the group result back, so the
         // backdrop is not counted twice (PDF 32000-1 §11.4.8).
         let render_mode = self.buf.render_mode();
+        let _surface_token = match self.reserve_offscreen_surface(
+            self.buf.width,
+            self.buf.height,
+            "renderer transparency group offscreen surface",
+        ) {
+            Ok(token) => token,
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: transparency Form XObject '{}' offscreen surface allocation denied: {}",
+                    name,
+                    err
+                );
+                return;
+            }
+        };
         let mut group_buf = if isolated {
             PixelBuffer::new_transparent_with_mode(self.buf.width, self.buf.height, render_mode)
         } else {
@@ -2890,6 +2959,13 @@ fn estimate_inline_image_decode_bytes(raw_len: usize, width: u32, height: u32, b
         .max(1)
 }
 
+fn estimate_rgba_surface_bytes(width: u32, height: u32) -> u64 {
+    u64::from(width)
+        .saturating_mul(u64::from(height))
+        .saturating_mul(4)
+        .max(1)
+}
+
 fn estimated_image_channels(color_space: &str, is_mask: bool) -> u64 {
     if is_mask {
         1
@@ -4093,6 +4169,40 @@ mod tests {
         let err = state
             .scheduled_decode_inline_image(&[0; 16], 4, 4, 8, "DeviceGray", &[])
             .expect_err("decode estimate should exceed scheduler budget");
+        assert!(err.to_string().contains("exceeding scheduler budget"));
+        let metrics = state.decode_scheduler.metrics();
+        assert_eq!(metrics.jobs, 1);
+        assert_eq!(metrics.rejected_jobs, 1);
+        assert_eq!(metrics.failed_jobs, 1);
+    }
+
+    #[test]
+    fn renderer_offscreen_surface_acquires_scheduler_token() {
+        let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
+        let state = blank_render_state(&engine);
+        {
+            let _token = state
+                .reserve_offscreen_surface(10, 10, "test offscreen surface")
+                .expect("10x10 RGBA surface should fit default budget");
+            let metrics = state.decode_scheduler.metrics();
+            assert_eq!(metrics.jobs, 1);
+            assert!(metrics.peak_reserved_bytes >= 400);
+            assert_eq!(metrics.rejected_jobs, 0);
+        }
+    }
+
+    #[test]
+    fn renderer_offscreen_surface_fails_closed_over_budget() {
+        let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
+        let mut state = blank_render_state(&engine);
+        state.decode_scheduler = RenderDecodeScheduler::new(&DecodeLimits {
+            scheduler_memory_budget_bytes: 399,
+            ..DecodeLimits::default()
+        });
+        let err = match state.reserve_offscreen_surface(10, 10, "test offscreen surface") {
+            Ok(_) => panic!("10x10 RGBA surface should exceed the 399-byte budget"),
+            Err(err) => err,
+        };
         assert!(err.to_string().contains("exceeding scheduler budget"));
         let metrics = state.decode_scheduler.metrics();
         assert_eq!(metrics.jobs, 1);

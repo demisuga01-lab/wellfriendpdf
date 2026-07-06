@@ -727,6 +727,16 @@ fn simple_secret_pdf() -> Vec<u8> {
 
 #[test]
 fn prompt07_report_commands_emit_json() {
+    let feature = assert_json(&run(&["feature-report"]), "feature-report");
+    assert_eq!(
+        feature["report"]["prompt07_transparency_compositing"]["status"],
+        "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"
+    );
+    assert_eq!(
+        feature["report"]["prompt07_transparency_compositing"]["reference_audit"]["memory_cap_mb"],
+        4096
+    );
+
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),
         "forms-report",

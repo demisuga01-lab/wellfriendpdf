@@ -66,6 +66,8 @@ pub fn renderer_decode_scheduler_adoption_report() -> RendererDecodeSchedulerAdo
             "annotation_appearance_stream_decode".to_string(),
             "tiling_pattern_stream_decode".to_string(),
             "mesh_shading_stream_decode".to_string(),
+            "transparency_group_offscreen_surface_allocation".to_string(),
+            "soft_mask_group_offscreen_surface_allocation".to_string(),
             "tile_render_full_page_decode_via_shared_path".to_string(),
             "band_render_full_page_decode_via_shared_path".to_string(),
         ],

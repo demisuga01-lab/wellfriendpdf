@@ -2,6 +2,13 @@
 
 Human-readable view of `target/prompt02-binding-parity/binding-gap-matrix.json`.
 
+Prompt 07 addendum: the shared feature-report surface now exposes
+`prompt07_transparency_compositing` through Rust, CLI `feature-report`, Python,
+C ABI, WASM, .NET, and Java without changing the report envelope version. The
+section reports transparency group, blend mode, soft-mask, knockout/isolation,
+multi-reference audit, memory cap, and known-limit posture. Binding smokes assert
+that the section is visible through the package surfaces.
+
 **Rows:** 205
 
 ## Surface Counts

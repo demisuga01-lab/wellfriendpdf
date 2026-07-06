@@ -102,6 +102,15 @@ def test_module_level_reports():
         feature["prompt06"]["prompt06b_multi_reference_audit"]["status"]
         == "multi_reference_audit_complete"
     )
+    assert (
+        feature["prompt07_transparency_compositing"]["status"]
+        == "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"
+    )
+    assert (
+        feature["prompt07_transparency_compositing"]["reference_audit"]["memory_cap_mb"]
+        == 4096
+    )
+    assert "Luminosity" in feature["prompt07_transparency_compositing"]["blend_modes"]["implemented"]
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

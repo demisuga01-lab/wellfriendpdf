@@ -69,6 +69,12 @@ public final class OxideSmokeTest {
             feature.contains("cancellation_not_supported_for_prompt02_bindings"),
             "cancellation unsupported status");
         assertTrue(feature.contains("\"codec_isolation\""), "codec isolation feature posture");
+        assertTrue(feature.contains("\"prompt07_transparency_compositing\""), "prompt07 feature posture");
+        assertTrue(
+            feature.contains("native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"),
+            "prompt07 native foundation status");
+        assertTrue(feature.contains("\"memory_cap_mb\":4096"), "prompt07 memory cap");
+        assertTrue(feature.contains("\"Luminosity\""), "prompt07 blend mode report");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),

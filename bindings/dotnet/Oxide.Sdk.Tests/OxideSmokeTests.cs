@@ -92,6 +92,10 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"cancellation\"", feature);
         Assert.Contains("cancellation_not_supported_for_prompt02_bindings", feature);
         Assert.Contains("\"codec_isolation\"", feature);
+        Assert.Contains("\"prompt07_transparency_compositing\"", feature);
+        Assert.Contains("native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus", feature);
+        Assert.Contains("\"memory_cap_mb\":4096", feature);
+        Assert.Contains("\"Luminosity\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

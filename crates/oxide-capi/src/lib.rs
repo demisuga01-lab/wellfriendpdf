@@ -2418,6 +2418,22 @@ mod tests {
             value["report"]["prompt06"]["prompt06b_multi_reference_audit"]["status"],
             "multi_reference_audit_complete"
         );
+        assert_eq!(
+            value["report"]["prompt07_transparency_compositing"]["status"],
+            "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"
+        );
+        assert_eq!(
+            value["report"]["prompt07_transparency_compositing"]["reference_audit"]
+                ["memory_cap_mb"],
+            4096
+        );
+        assert!(
+            value["report"]["prompt07_transparency_compositing"]["blend_modes"]["implemented"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|mode| mode == "Luminosity")
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

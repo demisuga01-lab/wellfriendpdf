@@ -15,8 +15,8 @@ Rules:
 
 Current measured fallback reasons:
 
-- `unsupported_operator_pattern`: owner Prompt 07+ pattern renderer parity.
-- `unsupported_operator_shading`: owner Prompt 07+ shading renderer parity.
+- `unsupported_operator_pattern`: owner Prompt 08 pattern renderer parity.
+- `unsupported_operator_shading`: owner Prompt 08 shading renderer parity.
 - `unsupported_graphics_state`: owner Prompt 07 transparency and soft-mask
   renderer parity.
 - `unsupported_xobject_subtype`: owner Form/image resource subtype closure if a
@@ -39,3 +39,12 @@ Missing or failing PDFium/MuPDF commands are closure failures. Pattern, shading,
 and transparency pixel mismatches are renderer-roadmap findings only after all
 required reference tools produced artifacts and the multi-reference report
 classified the page.
+
+Prompt 07 narrows the transparency bucket. Common transparency groups, alpha
+state, blend modes, soft masks, isolated groups, and knockout flags now have a
+native bounded-surface path and a dedicated Poppler/PDFium/MuPDF corpus under
+`target/prompt07-transparency-compositing/`. Remaining transparency fallbacks
+must name the specific partial owner, such as full ICC group color-space
+conversion, exact knockout interior overlap, or matte/background soft-mask edge
+cases. Patterns and shadings remain Prompt 08 even when they are painted inside
+a transparency group.

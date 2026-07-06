@@ -387,6 +387,111 @@ pub fn feature_report_json() -> Result<String> {
                 "multi_reference_audit_complete": true
             }
         },
+        "prompt07_transparency_compositing": {
+            "status": "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus",
+            "audit_script": "scripts/prompt07_transparency_compositing_audit.py",
+            "powershell_wrapper": "scripts/prompt07_transparency_compositing_audit.ps1",
+            "artifacts": {
+                "corpus_manifest": "target/prompt07-transparency-compositing/corpus-manifest.json",
+                "baseline_results": "target/prompt07-transparency-compositing/baseline-render-results.json",
+                "post_results": "target/prompt07-transparency-compositing/post-implementation-render-results.json",
+                "reference_disagreement_summary": "target/prompt07-transparency-compositing/reference-disagreement-summary.json",
+                "blend_mode_matrix": "target/prompt07-transparency-compositing/blend-mode-matrix.json",
+                "soft_mask_matrix": "target/prompt07-transparency-compositing/soft-mask-matrix.json",
+                "group_isolation_knockout_matrix": "target/prompt07-transparency-compositing/group-isolation-knockout-matrix.json",
+                "fallback_taxonomy": "target/prompt07-transparency-compositing/fallback-taxonomy.json",
+                "memory_budget_report": "target/prompt07-transparency-compositing/memory-budget-report.json",
+                "html_report": "target/prompt07-transparency-compositing/html-report/index.html"
+            },
+            "transparency_groups": {
+                "status": "native_common_path",
+                "implemented": [
+                    "group_dictionary_detection",
+                    "form_xobject_group_integration",
+                    "isolated_group_backdrop",
+                    "non_isolated_group_backdrop",
+                    "bbox_clipping",
+                    "nested_group_stack",
+                    "group_compositing_back_to_parent",
+                    "malformed_group_diagnostics"
+                ],
+                "bounded_memory": "transparency group RGBA surfaces reserve scheduler memory before allocation",
+                "memory_denial_unit_test": "renderer_offscreen_surface_fails_closed_over_budget",
+                "partial": [
+                    "page_group_and_annotation_group_color_space_posture_is_device_space",
+                    "full_icc_group_color_management",
+                    "cropped_coordinate_offscreen_surfaces"
+                ]
+            },
+            "blend_modes": {
+                "status": "implemented_central_dispatch",
+                "implemented": [
+                    "Normal",
+                    "Multiply",
+                    "Screen",
+                    "Overlay",
+                    "Darken",
+                    "Lighten",
+                    "ColorDodge",
+                    "ColorBurn",
+                    "HardLight",
+                    "SoftLight",
+                    "Difference",
+                    "Exclusion",
+                    "Hue",
+                    "Saturation",
+                    "Color",
+                    "Luminosity"
+                ],
+                "posture": "separable and nonseparable formulas are centralized in the render buffer/compositing path"
+            },
+            "soft_masks": {
+                "status": "alpha_and_luminosity_common_path",
+                "implemented": [
+                    "SMask_graphics_state_detection",
+                    "alpha_soft_mask",
+                    "luminosity_soft_mask",
+                    "mask_bbox_clipping",
+                    "mask_matrix_posture",
+                    "text_image_form_sources",
+                    "transfer_function_lut",
+                    "malformed_mask_fail_closed"
+                ],
+                "bounded_memory": "soft mask group RGBA surfaces reserve scheduler memory before allocation",
+                "partial": [
+                    "exact_color_managed_luminosity_conversion",
+                    "matte_background_edge_cases"
+                ]
+            },
+            "knockout_isolation": {
+                "status": "common_path_native_with_knockout_approximation_reported",
+                "implemented": [
+                    "isolated_group_flag",
+                    "non_isolated_backdrop",
+                    "knockout_group_flag",
+                    "nested_isolated_group",
+                    "nested_knockout_group",
+                    "state_stack_restore",
+                    "fallback_metrics"
+                ],
+                "partial": [
+                    "exact_pdf_knockout_interior_overlap"
+                ]
+            },
+            "reference_audit": {
+                "status": "poppler_pdfium_mupdf_required",
+                "tool_manifest": "target/prompt06-renderer-native-replay/reference-tool-manifest-prompt06b.json",
+                "fixture_count": 37,
+                "memory_cap_mb": 4096,
+                "classification_artifact": "target/prompt07-transparency-compositing/reference-disagreement-summary.json"
+            },
+            "known_limits": [
+                "Prompt 08 owns tiling patterns and shadings painted into transparency groups",
+                "Group color spaces remain device-space unless current color conversion can resolve them",
+                "Exact matte/background soft-mask behavior remains partial",
+                "Offscreen buffers are scheduler-bounded page-coordinate surfaces with bbox clipping rather than cropped coordinate surfaces"
+            ]
+        },
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -726,6 +831,21 @@ mod tests {
             v["report"]["prompt06"]["prompt06b_multi_reference_audit"]
                 ["total_pairwise_comparisons"],
             78
+        );
+        assert_eq!(
+            v["report"]["prompt07_transparency_compositing"]["status"],
+            "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"
+        );
+        assert_eq!(
+            v["report"]["prompt07_transparency_compositing"]["reference_audit"]["memory_cap_mb"],
+            4096
+        );
+        assert!(
+            v["report"]["prompt07_transparency_compositing"]["blend_modes"]["implemented"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|mode| mode == "Luminosity")
         );
         assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
         assert_eq!(
