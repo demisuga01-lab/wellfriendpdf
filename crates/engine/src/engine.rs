@@ -12,7 +12,8 @@ use crate::images::locator::{ImageLocateOptions, ImageLocator, ImageReference};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::render::{
-    DisplayList, PageRenderer, PixelBuffer, RenderCache, RenderMode, RenderTile, Viewport, WHITE,
+    DisplayList, PageRenderer, PixelBuffer, ProgressiveRenderJob, RenderCache, RenderMode,
+    RenderTile, Viewport, WHITE,
 };
 use crate::text::{TextExtractOptions, TextExtractor, TextFormatOptions};
 use crate::{
@@ -31,6 +32,7 @@ pub struct PageResources {
     pub ext_g_states: HashMap<String, PdfDictionary>,
     pub patterns: HashMap<String, PdfObject>,
     pub shadings: HashMap<String, PdfObject>,
+    pub properties: HashMap<String, PdfObject>,
 }
 
 struct JoinedContentStreams<'a> {
@@ -409,6 +411,14 @@ impl PageResources {
         if let Some(shading_dict) = resolve_subdict(resources, "Shading", reader) {
             for (name, value) in shading_dict.entries() {
                 page_resources.shadings.insert(name.clone(), value.clone());
+            }
+        }
+
+        if let Some(properties_dict) = resolve_subdict(resources, "Properties", reader) {
+            for (name, value) in properties_dict.entries() {
+                page_resources
+                    .properties
+                    .insert(name.clone(), value.clone());
             }
         }
 
@@ -1371,6 +1381,19 @@ impl ContentEngine {
         render_mode: RenderMode,
     ) -> Result<Vec<PixelBuffer>> {
         PageRenderer::render_page_bands_with_mode(self, page_number, dpi, band_height, render_mode)
+    }
+
+    /// Create an in-process progressive render job that can checkpoint at tile
+    /// boundaries and resume without re-rendering completed tiles.
+    pub fn progressive_render_job_with_mode(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        tile_width: u32,
+        tile_height: u32,
+        render_mode: RenderMode,
+    ) -> Result<ProgressiveRenderJob<'_>> {
+        ProgressiveRenderJob::new(self, page_number, dpi, render_mode, tile_width, tile_height)
     }
 
     /// Verify every digital signature field in the document (the `verify-sig`

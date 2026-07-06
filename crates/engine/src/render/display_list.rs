@@ -196,6 +196,7 @@ pub struct DisplayListStats {
     pub shadings: usize,
     pub patterns: usize,
     pub transparency_ops: usize,
+    pub optional_content_ops: usize,
     pub compatibility_runs: usize,
     pub compatibility_ops: usize,
     pub compatibility_bytes: usize,
@@ -247,15 +248,27 @@ pub struct RenderCacheKey {
     pub dpi: u32,
     pub render_mode: &'static str,
     pub tile: RenderTile,
+    pub visibility_fingerprint: String,
 }
 
 impl RenderCacheKey {
     pub fn new(page_number: usize, dpi: u32, render_mode: RenderMode, tile: RenderTile) -> Self {
+        Self::new_with_visibility(page_number, dpi, render_mode, tile, "ocg:none")
+    }
+
+    pub fn new_with_visibility(
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+        tile: RenderTile,
+        visibility_fingerprint: impl Into<String>,
+    ) -> Self {
         Self {
             page_number,
             dpi,
             render_mode: render_mode.as_str(),
             tile,
+            visibility_fingerprint: visibility_fingerprint.into(),
         }
     }
 }
@@ -566,6 +579,8 @@ pub fn build_display_list(
 fn page_compatibility_fallback_reason(stats: &DisplayListStats) -> Option<&'static str> {
     if stats.transparency_ops > 0 {
         Some("unsupported_graphics_state")
+    } else if stats.optional_content_ops > 0 {
+        Some("optional_content_visibility_requires_immediate_interpreter")
     } else if stats.shadings > 0 {
         Some("unsupported_operator_shading")
     } else if stats.patterns > 0 {
@@ -602,6 +617,9 @@ fn estimate_operand_bytes(operand: &crate::content::operation::Operand) -> usize
 
 fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> DisplayListStats {
     let mut stats = DisplayListStats::default();
+    if !resources.properties.is_empty() {
+        stats.optional_content_ops += resources.properties.len();
+    }
     let mut gs = GraphicsState::default();
     let mut pending_inline = false;
     for op in ops {
@@ -619,6 +637,7 @@ fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> Disp
                 _ => stats.image_xobjects += 1,
             },
             "sh" => stats.shadings += 1,
+            "BMC" | "BDC" | "EMC" => stats.optional_content_ops += 1,
             "ID" => pending_inline = true,
             "inline_image_data" if pending_inline => {
                 stats.inline_images += 1;

@@ -12,6 +12,7 @@ use crate::images::locator::ImageReference;
 use crate::images::SmaskLoader;
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
+use crate::optional_content::OptionalContentContext;
 use crate::render::buffer::{AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, WHITE};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::display_list::{
@@ -193,7 +194,16 @@ impl PageRenderer {
         render_mode: RenderMode,
         cache: Option<&mut RenderCache>,
     ) -> Result<PixelBuffer> {
-        let key = RenderCacheKey::new(page_number, dpi, render_mode, tile);
+        let ocg_fingerprint = OptionalContentContext::from_document(engine.document())
+            .visibility_fingerprint()
+            .to_string();
+        let key = RenderCacheKey::new_with_visibility(
+            page_number,
+            dpi,
+            render_mode,
+            tile,
+            ocg_fingerprint,
+        );
         if let Some(cache) = cache {
             if let Some(hit) = cache.get(&key) {
                 return Ok(hit);
@@ -329,6 +339,11 @@ struct RenderState<'a> {
     /// synchronous for deterministic composition, but every image/stream decode
     /// still acquires a memory token and observes cancellation before work.
     decode_scheduler: RenderDecodeScheduler,
+    /// Document optional-content state for the active view configuration.
+    optional_content: OptionalContentContext,
+    /// Visibility stack for nested BMC/BDC/EMC marked-content sections.
+    oc_visibility_stack: Vec<bool>,
+    oc_current_visible: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -478,6 +493,9 @@ impl<'a> RenderState<'a> {
             base_ctm: Transform2D::identity(),
             cancel: CancelToken::none(),
             decode_scheduler: RenderDecodeScheduler::new(&DecodeLimits::default()),
+            optional_content: OptionalContentContext::from_document(engine.document()),
+            oc_visibility_stack: Vec::new(),
+            oc_current_visible: true,
         }
     }
 
@@ -668,6 +686,20 @@ impl<'a> RenderState<'a> {
 
     fn dispatch(&mut self, op: &ContentOperation) {
         match op.operator.as_str() {
+            "BMC" | "BDC" => {
+                self.push_optional_content_visibility(op);
+                return;
+            }
+            "EMC" => {
+                self.pop_optional_content_visibility();
+                return;
+            }
+            _ => {}
+        }
+        if !self.oc_current_visible {
+            return;
+        }
+        match op.operator.as_str() {
             "m" => {
                 if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
                     self.path.move_to(x, y);
@@ -816,9 +848,33 @@ impl<'a> RenderState<'a> {
                     self.paint_inline_image(&params, bytes);
                 }
             }
-            "BMC" | "BDC" | "EMC" | "MP" | "DP" | "BX" | "EX" | "BI" | "EI" => {}
+            "MP" | "DP" | "BX" | "EX" | "BI" | "EI" => {}
             _ => self.gs.process(op),
         }
+    }
+
+    fn push_optional_content_visibility(&mut self, op: &ContentOperation) {
+        let parent_visible = self.oc_current_visible;
+        let mut visible = parent_visible;
+        if op.operator == "BDC" && op.name(0) == Some("OC") {
+            visible = op
+                .name(1)
+                .map(|name| {
+                    self.optional_content.is_resource_visible(
+                        name,
+                        &self.resources.properties,
+                        self.engine.document().reader(),
+                    )
+                })
+                .unwrap_or(true);
+            visible = parent_visible && visible;
+        }
+        self.oc_visibility_stack.push(parent_visible);
+        self.oc_current_visible = visible;
+    }
+
+    fn pop_optional_content_visibility(&mut self) {
+        self.oc_current_visible = self.oc_visibility_stack.pop().unwrap_or(true);
     }
 
     fn ctm(&self) -> Transform2D {
@@ -1195,6 +1251,9 @@ impl<'a> RenderState<'a> {
             base_ctm: mask_base_ctm,
             cancel: self.cancel.clone(),
             decode_scheduler: self.decode_scheduler.clone(),
+            optional_content: self.optional_content.clone(),
+            oc_visibility_stack: self.oc_visibility_stack.clone(),
+            oc_current_visible: self.oc_current_visible,
         };
 
         if let Some(bbox) = extract_bbox(&g_dict) {
@@ -1341,6 +1400,12 @@ impl<'a> RenderState<'a> {
             log::warn!("PageRenderer: XObject '{}' is not a stream", name);
             return;
         };
+        if !self
+            .optional_content
+            .is_object_visible(dict.get("OC"), self.engine.document().reader())
+        {
+            return;
+        }
 
         match dict.get_name("Subtype") {
             Some("Image") => self.handle_do_image(name, obj_num, gen_num, dict),
@@ -1682,6 +1747,9 @@ impl<'a> RenderState<'a> {
             base_ctm: group_base_ctm,
             cancel: self.cancel.clone(),
             decode_scheduler: self.decode_scheduler.clone(),
+            optional_content: self.optional_content.clone(),
+            oc_visibility_stack: self.oc_visibility_stack.clone(),
+            oc_current_visible: self.oc_current_visible,
         };
 
         // Carry the parent clip into the group so content is bounded the same
@@ -1788,6 +1856,12 @@ impl<'a> RenderState<'a> {
                 _ => continue,
             };
             if annotation_is_hidden_or_no_view(&annot) {
+                continue;
+            }
+            if !self
+                .optional_content
+                .is_object_visible(annot.get("OC"), reader)
+            {
                 continue;
             }
             if annot.get_name("Subtype") != Some("Widget") {
@@ -1969,6 +2043,12 @@ impl<'a> RenderState<'a> {
             log::warn!("sh: shading '{}' did not resolve to a dictionary", name);
             return;
         };
+        if !self
+            .optional_content
+            .is_object_visible(shading_dict.get("OC"), reader)
+        {
+            return;
+        }
         let ctm = self.ctm();
         let mesh_data = self.shading_mesh_data(&shading_obj, &shading_dict, reader);
         ShadingRenderer::paint(
@@ -1998,6 +2078,12 @@ impl<'a> RenderState<'a> {
             );
             return;
         };
+        if !self
+            .optional_content
+            .is_object_visible(pattern_dict.get("OC"), reader)
+        {
+            return;
+        }
 
         match pattern_dict.get_integer("PatternType").unwrap_or(0) {
             1 => self.paint_tiling_pattern_fill(rule, &pattern_obj),
@@ -4791,6 +4877,9 @@ fn merge_resources(form_res: PageResources, page_res: &PageResources) -> PageRes
     for (k, v) in form_res.shadings {
         merged.shadings.insert(k, v);
     }
+    for (k, v) in form_res.properties {
+        merged.properties.insert(k, v);
+    }
     merged
 }
 
@@ -5047,6 +5136,41 @@ mod tests {
         out
     }
 
+    fn simple_ocg_pdf() -> Vec<u8> {
+        let content = "/OC /L1 BDC 1 0 0 rg 10 10 80 80 re f EMC\n0 0 1 rg 0 0 10 10 re f\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R /OCProperties << /OCGs [5 0 R] /D << /Name (Default) /BaseState /ON /OFF [5 0 R] /Order [5 0 R] >> >> >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /Properties << /L1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+            b"<< /Type /OCG /Name (Hidden Layer) /Intent /View >>".to_vec(),
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
     fn assert_same_pixels(expected: &PixelBuffer, actual: &PixelBuffer) {
         assert_eq!(expected.width, actual.width);
         assert_eq!(expected.height, actual.height);
@@ -5080,6 +5204,52 @@ mod tests {
             .expect("vector page should be display-list compatible");
         assert_eq!(via_list.get_pixel(20, 70), RED);
         assert_ne!(via_list.get_pixel(50, 50), WHITE);
+    }
+
+    #[test]
+    fn optional_content_marked_content_hides_off_layer() {
+        let engine = ContentEngine::open_bytes(simple_ocg_pdf()).expect("open OCG PDF");
+        let list = engine
+            .build_page_display_list(1, 72)
+            .expect("build display list");
+        assert!(list.has_compatibility_runs());
+        assert!(list.stats.optional_content_ops > 0);
+
+        let report = OptionalContentContext::from_document(engine.document());
+        assert_eq!(report.report().layers.len(), 1);
+        assert!(!report.report().layers[0].default_state);
+
+        let buf = engine.render_page(1, 72).expect("render OCG PDF");
+        assert_eq!(buf.get_pixel(50, 50), WHITE);
+        assert_eq!(buf.get_pixel(5, 95), BLUE);
+    }
+
+    #[test]
+    fn progressive_render_resume_matches_full_page() {
+        let pdf = simple_vector_pdf(
+            "q 1 0 0 rg 10 10 40 40 re f Q\n\
+             q 0 0 1 rg 50 50 40 40 re f Q\n\
+             0 0 0 RG 3 w 0 0 m 100 100 l S\n",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let full = engine.render_page(1, 72).expect("render full page");
+        let mut job = engine
+            .progressive_render_job_with_mode(1, 72, 25, 25, RenderMode::Compat)
+            .expect("create progressive job");
+
+        let first = job
+            .render_next(3, &CancelToken::none())
+            .expect("first progressive step");
+        assert_eq!(first.rendered_this_step, 3);
+        assert!(first.resume_possible);
+        assert!(!job.token().complete);
+
+        while !job.is_complete() {
+            job.render_next(2, &CancelToken::none())
+                .expect("progressive resume step");
+        }
+        let progressive = job.finish().expect("completed progressive surface");
+        assert_same_pixels(&full, &progressive);
     }
 
     #[test]

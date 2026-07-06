@@ -106,6 +106,7 @@ pub mod interactive;
 pub mod object;
 pub mod ocr;
 pub mod office;
+pub mod optional_content;
 pub mod parse;
 pub mod parser;
 pub mod parser_report;
@@ -266,6 +267,10 @@ pub use office::{
     docx_to_pdf, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf, xlsx_to_pdf, DocxLayout,
     DocxOptions, OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
 };
+pub use optional_content::{
+    OptionalContentContext, OptionalContentLayerReport, OptionalContentMembershipReport,
+    OptionalContentReport,
+};
 pub use parse::{
     parse, Block, BlockKind, Document, DocumentMetadata, ImageHandling, ImageRef, InlineSpan,
     InlineText, ListEntry, Page, ParseOptions, SerializeOptions, SourceInfo, SCHEMA_VERSION,
@@ -283,9 +288,10 @@ pub use render::{
     ColorSpaceHandler, CpuRenderDevice, DashState, DisplayList, DisplayListStats, DisplayOp,
     DisplayRunKind, DrawState, FillRule, FlatPath, FontRasterizer, GlyphCache, GlyphCacheKey,
     ImagePainter, LinePainter, PageRenderer, Path, PathPainter, PathSegment, PixelBuffer,
-    PixelColor, RenderCache, RenderCacheKey, RenderCacheMetrics, RenderColor, RenderDevice,
-    RenderMode, RenderQuality, RenderTile, SvgPage, Transform2D, UnsupportedRenderOp, Viewport,
-    WuLineRenderer, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
+    PixelColor, ProgressiveRenderJob, ProgressiveRenderStepReport, ProgressiveRenderToken,
+    RenderCache, RenderCacheKey, RenderCacheMetrics, RenderColor, RenderDevice, RenderMode,
+    RenderQuality, RenderTile, SvgPage, Transform2D, UnsupportedRenderOp, Viewport, WuLineRenderer,
+    BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
 };
 pub use render::{render_page_svg, svg, text_decode};
 pub use sdk::REPORT_ENVELOPE_VERSION;

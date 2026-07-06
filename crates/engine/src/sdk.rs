@@ -280,6 +280,111 @@ pub fn semantic_document_json(
 /// Feature / capability report: SDK version, envelope version, and which
 /// optional engine capabilities are compiled into this build. Bindings expose
 /// this so integrators can query availability instead of guessing.
+pub fn prompt09_renderer_report_json() -> Result<String> {
+    envelope(
+        "prompt09_renderer_report",
+        &prompt09_renderer_report_value(),
+    )
+}
+
+fn prompt09_renderer_report_value() -> serde_json::Value {
+    json!({
+        "status": "implemented_with_bounded_unsupported_reports",
+        "artifact_root": "target/prompt09-annotation-ocg-progressive-cache",
+        "audit_doc": "docs/prompt09_annotation_ocg_progressive_cache_audit.md",
+        "known_limits_doc": "docs/prompt09_known_limits.md",
+        "audit_script": "scripts/prompt09_annotation_ocg_progressive_cache_audit.py",
+        "reference_policy": {
+            "reference_engines": ["Poppler", "PDFium", "MuPDF"],
+            "bootstrap_source": "Prompt 06B reference-tool manifest and bootstrap scripts",
+            "missing_reference_policy": "affected rows are partial unless target-local bootstrap proves unavailable"
+        },
+        "annotation_rendering": {
+            "status": "widget_ap_native_form_path_with_subtype_taxonomy",
+            "implemented": [
+                "widget_AP_N_streams",
+                "widget_AP_N_state_dictionary_selection_via_AS",
+                "widget_text_button_choice_synthesis_when_NeedAppearances_requires_bounded_generation",
+                "annotation_hidden_and_no_view_flags",
+                "annotation_OC_visibility",
+                "annotation_AP_Form_resources_BBox_Matrix_transparency_group_soft_mask_pattern_shading_replay",
+                "annotation_page_rotation_rect_mapping",
+                "malformed_AP_fail_closed_without_panic"
+            ],
+            "unsupported_reported": [
+                "generated_non_widget_Text_icons",
+                "generated_FreeText_layout",
+                "generated_Line_PolyLine_Square_Circle_Polygon_Ink_markup_and_stamp_shapes",
+                "caret_file_attachment_sound_movie_rich_media_playback",
+                "dynamic_XFA"
+            ],
+            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/annotation-matrix.json"
+        },
+        "optional_content": {
+            "status": "default_view_configuration_evaluator",
+            "implemented": [
+                "catalog_OCProperties_discovery",
+                "OCG_inventory",
+                "default_configuration",
+                "BaseState_ON_OFF_arrays",
+                "Intent_matching",
+                "Usage_View_state",
+                "RBGroups_and_Order_and_Locked_metadata_reporting",
+                "OCMD_AnyOn_AllOn_AnyOff_AllOff",
+                "marked_content_visibility_stack",
+                "XObject_OC_visibility",
+                "annotation_OC_visibility",
+                "pattern_and_shading_OC_visibility",
+                "OCG_visibility_fingerprint_for_cache_keys"
+            ],
+            "unsupported_reported": [
+                "alternate_configuration_selection_public_option",
+                "Usage_Print_Export_active_mode_selection",
+                "malformed_or_cyclic_OCG_references_fail_open_with_diagnostic"
+            ],
+            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/ocg-layer-matrix.json"
+        },
+        "progressive_render": {
+            "status": "engine_tile_checkpoint_resume_model",
+            "granularity": ["tile"],
+            "implemented": [
+                "ProgressiveRenderJob",
+                "ProgressiveRenderToken",
+                "tile_level_progress",
+                "cancelled_resumable_step_reports",
+                "partial_surface_preservation_in_process",
+                "full_vs_progressive_equivalence_tests",
+                "page_box_rotation_render_mode_and_OCG_visibility_fingerprint_in_token"
+            ],
+            "binding_limit": "Rust engine surface is available; callback-style Python/C/WASM/.NET/Java cancellation/progress tokens remain later binding work",
+            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/progressive-render-matrix.json"
+        },
+        "tile_band_cache_performance": {
+            "status": "deterministic_compatibility_safe_tile_band_cache_path",
+            "implemented": [
+                "tile_scheduler_full_page_crop_equivalence",
+                "band_renderer_vertical_band_equivalence",
+                "byte_budgeted_LRU_render_tile_cache",
+                "deterministic_cache_metrics",
+                "OCG_visibility_fingerprint_in_cache_key",
+                "memory_budget_eviction",
+                "large_page_fail_closed_via_render_pixel_cap"
+            ],
+            "unsupported_reported": [
+                "global_image_Form_pattern_shading_clip_mask_surface_caches_beyond_tile_cache",
+                "parallel_tile_renderer_enabled_by_default"
+            ],
+            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/cache-performance-matrix.json"
+        },
+        "closure_gates": {
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0,
+            "memory_cap_mb": 4096,
+            "public_report_schema": "additive_feature_report_prompt09"
+        }
+    })
+}
+
 pub fn feature_report_json() -> Result<String> {
     let codec_isolation = codec_isolation_availability_report();
     let native_codec_boundary = codec_isolation["native_codec_boundary"].clone();
@@ -766,6 +871,7 @@ pub fn feature_report_json() -> Result<String> {
                 ]
             }
         },
+        "prompt09_annotation_ocg_progressive_cache": prompt09_renderer_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -776,19 +882,24 @@ pub fn feature_report_json() -> Result<String> {
             "resource_dedup_report", "redaction",
         ],
         "progress": {
-            "status": "progress_not_supported",
+            "status": "engine_tile_progressive_resume_supported",
             "exposed_bindings": [],
-            "engine_observable_operations": [],
-            "reason": "Prompt 02 SDK report/output facade operations do not emit progress events yet."
+            "engine_observable_operations": [
+                "progressive_render_job_with_mode",
+                "ProgressiveRenderJob::render_next",
+                "ProgressiveRenderJob::token"
+            ],
+            "reason": "Prompt 09 adds an engine-level tile checkpoint model; callback-style binding progress APIs remain later binding work."
         },
         "cancellation": {
-            "status": "cancellation_not_supported_for_prompt02_bindings",
+            "status": "engine_render_cancellation_supported_binding_tokens_later",
             "exposed_bindings": [],
             "engine_observable_operations": [
                 "render_page_cancellable",
-                "render_display_list_cancellable_with_mode"
+                "render_display_list_cancellable_with_mode",
+                "ProgressiveRenderJob::render_next"
             ],
-            "reason": "Engine render internals can observe CancelToken, but the Prompt 02 WASM/.NET/Java report/output SDK surfaces do not expose a cancellable render operation or accept binding-level cancellation tokens."
+            "reason": "Engine render internals observe CancelToken and progressive steps return resumable cancellation reports; Python/C/WASM/.NET/Java binding-level cancellation tokens remain later work."
         },
     });
     serde_json::to_string(&json!({
@@ -1168,10 +1279,30 @@ mod tests {
             v["report"]["prompt08b_type3_cid_tensor_closure"]["type7_tensor_patch"]["status"],
             "native_tensor_product_interior"
         );
-        assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
+        assert_eq!(
+            v["report"]["prompt09_annotation_ocg_progressive_cache"]["status"],
+            "implemented_with_bounded_unsupported_reports"
+        );
+        assert_eq!(
+            v["report"]["prompt09_annotation_ocg_progressive_cache"]["optional_content"]["status"],
+            "default_view_configuration_evaluator"
+        );
+        assert_eq!(
+            v["report"]["prompt09_annotation_ocg_progressive_cache"]["closure_gates"]
+                ["memory_cap_mb"],
+            4096
+        );
+        assert_envelope(
+            &prompt09_renderer_report_json().unwrap(),
+            "prompt09_renderer_report",
+        );
+        assert_eq!(
+            v["report"]["progress"]["status"],
+            "engine_tile_progressive_resume_supported"
+        );
         assert_eq!(
             v["report"]["cancellation"]["status"],
-            "cancellation_not_supported_for_prompt02_bindings"
+            "engine_render_cancellation_supported_binding_tokens_later"
         );
         assert!(v["report"]["cancellation"]["engine_observable_operations"]
             .as_array()
