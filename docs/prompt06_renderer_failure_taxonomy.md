@@ -33,3 +33,22 @@ Fallback reasons:
 Future renderer prompts should add categories only when they are needed for a
 new failure mode. They should not merge reference failures, Oxide mismatches,
 and unsupported comparisons into one generic bucket.
+
+Prompt 06B writes the multi-reference taxonomy to
+`target/prompt06-renderer-native-replay/renderer-parity-taxonomy-prompt06b.json`.
+It adds page-level classifications for the three-reference audit:
+
+- `all_references_agree_oxide_pass`
+- `all_references_agree_oxide_mismatch`
+- `references_disagree_oxide_matches_poppler`
+- `references_disagree_oxide_matches_pdfium`
+- `references_disagree_oxide_matches_mupdf`
+- `references_disagree_oxide_between_references`
+- `reference_tool_failure`
+- `oxide_render_failure`
+- `dimension_mismatch`
+- `needs_manual_review`
+
+The Prompt 06B taxonomy also records the renderer gap matrix posture:
+Poppler/PDFium/MuPDF reference comparison is `implemented_public`; full pattern,
+shading, transparency, and soft-mask parity remains `later_owned`.

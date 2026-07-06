@@ -26,10 +26,39 @@ Prompt 06 artifacts under `target/prompt06-renderer-native-replay/`:
 - `visual-diff-summary.json`
 - `report.html`
 
+Prompt 06B adds a closure harness without changing the native replay
+implementation:
+
+- `scripts/prompt06b_bootstrap_reference_renderers.ps1`
+- `scripts/prompt06b_multi_reference_audit.ps1`
+- `scripts/prompt06b_render_compare.py`
+- `target/prompt06-renderer-native-replay/reference-tool-manifest-prompt06b.json`
+- `target/prompt06-renderer-native-replay/multi-reference-corpus-manifest-prompt06b.json`
+- `target/prompt06-renderer-native-replay/multi-reference-render-results-prompt06b.json`
+- `target/prompt06-renderer-native-replay/multi-reference-diff-metrics-prompt06b.json`
+- `target/prompt06-renderer-native-replay/reference-disagreement-summary-prompt06b.json`
+- `target/prompt06-renderer-native-replay/renderer-parity-taxonomy-prompt06b.json`
+- `target/prompt06-renderer-native-replay/prompt06b-html-report/index.html`
+
 The current corpus has 13 page-level entries: simple text, positioned text,
 RTL placeholder text, CJK/CID text, Image XObject, generated inline image,
 Form XObject, nested Form XObject, annotation appearance, tiling pattern,
 shading, transparency, and malformed-renderable coverage.
+
+Prompt 06B reuses that same 13-page corpus across Oxide, Poppler, PDFium, and
+MuPDF. For each page it records Oxide-vs-Poppler, Oxide-vs-PDFium,
+Oxide-vs-MuPDF, Poppler-vs-PDFium, Poppler-vs-MuPDF, and PDFium-vs-MuPDF
+metrics. Pages are classified as reference agreement, Oxide mismatch, reference
+disagreement with Oxide matching a specific reference, dimension mismatch,
+reference-tool failure, Oxide render failure, or manual-review/later-owned
+renderer work.
+
+The Prompt 06B closure run rendered all 13 pages with all four renderers and
+produced 78 pairwise comparisons. It classified 10 pages as
+`all_references_agree_oxide_pass` and 3 pages as
+`references_disagree_oxide_between_references`: annotation appearance, tiling
+pattern, and shading. No reference-tool failure, Oxide render failure, or
+dimension mismatch was recorded in that run.
 
 Baseline is recorded as a Prompt 05 policy model: high-level text/image/form
 content was treated as compatibility page content before this Prompt 06 native
@@ -40,3 +69,8 @@ Prompt 06 deliberately does not claim full renderer parity. It creates the
 repeatable evidence path and moves common text, image, inline image, and Form
 XObject replay into typed native operations while keeping later categories
 measured as fallback.
+
+Prompt 06B closes the multi-reference audit bootstrap gap. Remaining failures in
+pattern, shading, transparency, soft-mask, advanced annotation, CJK/RTL raster,
+and related categories stay bounded to later renderer prompts and are classified
+instead of hidden.

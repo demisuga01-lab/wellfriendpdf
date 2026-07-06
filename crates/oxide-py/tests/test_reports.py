@@ -98,6 +98,10 @@ def test_module_level_reports():
     assert feature["prompt06"]["renderer_parity_audit"]["script"].endswith(
         "prompt06_renderer_parity_audit.py"
     )
+    assert (
+        feature["prompt06"]["prompt06b_multi_reference_audit"]["status"]
+        == "multi_reference_audit_complete"
+    )
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

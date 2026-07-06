@@ -27,3 +27,15 @@ Current measured fallback reasons:
 The Prompt 06 audit currently reports three compatibility fallback pages in the
 13-page corpus: tiling pattern, shading, and transparency. These are intentional
 later-roadmap categories, not hidden success cases.
+
+Prompt 06B keeps that policy while adding Poppler/PDFium/MuPDF comparison. A
+page may now be visually compared against three reference engines and still
+report compatibility fallback. That is acceptable only when the fallback reason
+is explicit in the Oxide render report and the page category is owned by a
+later renderer prompt.
+
+Prompt 06B must not use fallback status to excuse reference-tool failures.
+Missing or failing PDFium/MuPDF commands are closure failures. Pattern, shading,
+and transparency pixel mismatches are renderer-roadmap findings only after all
+required reference tools produced artifacts and the multi-reference report
+classified the page.

@@ -360,6 +360,31 @@ pub fn feature_report_json() -> Result<String> {
                 "status": "json_taxonomy_for_reference_and_oxide_failures",
                 "artifact": "target/prompt06-renderer-native-replay/failure-taxonomy.json",
                 "doc": "docs/prompt06_renderer_failure_taxonomy.md"
+            },
+            "prompt06b_multi_reference_audit": {
+                "status": "multi_reference_audit_complete",
+                "bootstrap_script": "scripts/prompt06b_bootstrap_reference_renderers.ps1",
+                "audit_script": "scripts/prompt06b_multi_reference_audit.ps1",
+                "tool_manifest_artifact": "target/prompt06-renderer-native-replay/reference-tool-manifest-prompt06b.json",
+                "corpus_manifest_artifact": "target/prompt06-renderer-native-replay/multi-reference-corpus-manifest-prompt06b.json",
+                "render_results_artifact": "target/prompt06-renderer-native-replay/multi-reference-render-results-prompt06b.json",
+                "diff_metrics_artifact": "target/prompt06-renderer-native-replay/multi-reference-diff-metrics-prompt06b.json",
+                "disagreement_summary_artifact": "target/prompt06-renderer-native-replay/reference-disagreement-summary-prompt06b.json",
+                "taxonomy_artifact": "target/prompt06-renderer-native-replay/renderer-parity-taxonomy-prompt06b.json",
+                "html_report": "target/prompt06-renderer-native-replay/prompt06b-html-report/index.html",
+                "reference_engines": {
+                    "poppler": "pdftoppm",
+                    "pdfium": "target-local pypdfium2/pdfium_test-compatible wrapper",
+                    "mupdf": "target-local mutool"
+                },
+                "corpus_page_count": 13,
+                "total_pairwise_comparisons": 78,
+                "known_later_owned_renderer_categories": [
+                    "pattern/later",
+                    "shading/later",
+                    "transparency/later"
+                ],
+                "multi_reference_audit_complete": true
             }
         },
         // Capabilities that are always present in the default build regardless of
@@ -692,6 +717,15 @@ mod tests {
         assert_eq!(
             v["report"]["prompt06"]["renderer_parity_audit"]["script"],
             "scripts/prompt06_renderer_parity_audit.py"
+        );
+        assert_eq!(
+            v["report"]["prompt06"]["prompt06b_multi_reference_audit"]["status"],
+            "multi_reference_audit_complete"
+        );
+        assert_eq!(
+            v["report"]["prompt06"]["prompt06b_multi_reference_audit"]
+                ["total_pairwise_comparisons"],
+            78
         );
         assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
         assert_eq!(

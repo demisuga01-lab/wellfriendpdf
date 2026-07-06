@@ -2414,6 +2414,10 @@ mod tests {
             value["report"]["prompt06"]["native_replay"]["status"],
             "native_text_image_form_display_list_foundation"
         );
+        assert_eq!(
+            value["report"]["prompt06"]["prompt06b_multi_reference_audit"]["status"],
+            "multi_reference_audit_complete"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();
