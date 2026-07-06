@@ -1,14 +1,13 @@
 //! PDF shading and function evaluation.
 //!
-//! Implements the subset of PDF shading needed for the common cases:
+//! Implements the common native shading families:
 //!
-//! - PDF Functions: Type 2 (exponential interpolation) and Type 3 (stitching).
-//! - Axial shading (ShadingType 2): a linear gradient between two points.
-//! - Radial shading (ShadingType 3): a gradient between two circles.
+//! - PDF Functions: Type 0, 2, 3, and bounded Type 4 calculator evaluation.
+//! - Function-based shading (ShadingType 1).
+//! - Axial and radial shadings (ShadingTypes 2 and 3).
 //!
-//! Deliberately deferred (logged, no output):
-//! - Function Type 0 (sampled) and Type 4 (PostScript calculator).
-//! - ShadingType 1 (function-based) and 4–7 (mesh gradients).
+//! - Gouraud and patch mesh shadings (ShadingTypes 4-7), with bounded stream
+//!   decoding and tessellation.
 //!
 //! Rendering is pixel-by-pixel: for each device pixel we map back to user
 //! space, project onto the gradient geometry to obtain the parametric value

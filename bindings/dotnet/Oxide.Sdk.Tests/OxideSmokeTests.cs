@@ -98,6 +98,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"oxide_outlier_failures\":0", feature);
         Assert.Contains("\"memory_cap_mb\":4096", feature);
         Assert.Contains("\"Luminosity\"", feature);
+        Assert.Contains("\"prompt08_text_clipping_shading_patterns\"", feature);
+        Assert.Contains("native_common_paths_with_bounded_unsupported_reports", feature);
+        Assert.Contains("\"rendering_modes\":[4,5,6,7]", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

@@ -1,4 +1,4 @@
-//! Render tests for mesh shadings (ShadingType 1, 4, 5, 6, 7).
+//! Render tests for shadings (ShadingType 1-7).
 //! Minimal PDFs paint a shading via the `sh` operator and assert pixel
 //! colors at known points against hand-computed expectations.
 
@@ -63,6 +63,70 @@ fn render_pixel(pdf: Vec<u8>, dpi: u32, fx: f64, fy: f64) -> [u8; 4] {
         x.clamp(0, buf.width as i32 - 1),
         y.clamp(0, buf.height as i32 - 1),
     )
+}
+
+#[test]
+fn axial_shading_type2_extends_across_page() {
+    let mut b = PdfBuilder::new();
+    b.add("<< /Type /Catalog /Pages 2 0 R >>"); // 1
+    b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
+    b.add(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Contents 4 0 R \
+         /Resources << /Shading << /Sh1 5 0 R >> >> >>",
+    ); // 3
+    b.add_stream("", b"/Sh1 sh\n"); // 4
+    b.add(
+        "<< /ShadingType 2 /ColorSpace /DeviceRGB /Coords [4 10 16 10] \
+         /Domain [0 1] /Extend [true true] /Function 6 0 R >>",
+    ); // 5
+    b.add("<< /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >>"); // 6
+
+    let pdf = b.build();
+    let left = render_pixel(pdf.clone(), 72, 0.1, 0.5);
+    let right = render_pixel(pdf, 72, 0.9, 0.5);
+
+    assert!(
+        left[0] > 150 && left[2] < 120,
+        "extended left side should be red-ish: {:?}",
+        left
+    );
+    assert!(
+        right[2] > 150 && right[0] < 120,
+        "extended right side should be blue-ish: {:?}",
+        right
+    );
+}
+
+#[test]
+fn radial_shading_type3_interpolates_between_circles() {
+    let mut b = PdfBuilder::new();
+    b.add("<< /Type /Catalog /Pages 2 0 R >>"); // 1
+    b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
+    b.add(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Contents 4 0 R \
+         /Resources << /Shading << /Sh1 5 0 R >> >> >>",
+    ); // 3
+    b.add_stream("", b"/Sh1 sh\n"); // 4
+    b.add(
+        "<< /ShadingType 3 /ColorSpace /DeviceRGB /Coords [10 10 0 10 10 10] \
+         /Domain [0 1] /Extend [true true] /Function 6 0 R >>",
+    ); // 5
+    b.add("<< /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >>"); // 6
+
+    let pdf = b.build();
+    let center = render_pixel(pdf.clone(), 72, 0.5, 0.5);
+    let edge = render_pixel(pdf, 72, 0.92, 0.5);
+
+    assert!(
+        center[0] > center[2],
+        "center should be closer to C0 red: {:?}",
+        center
+    );
+    assert!(
+        edge[2] > edge[0],
+        "outer circle should be closer to C1 blue: {:?}",
+        edge
+    );
 }
 
 #[test]
@@ -328,4 +392,81 @@ fn coons_patch_type6_renders_smooth_fill() {
         painted > 50,
         "Coons patch should paint a filled region: {painted}"
     );
+}
+
+#[test]
+fn tensor_patch_type7_renders_bounded_patch() {
+    // A single tensor patch (flag 0). The renderer uses the 12 boundary points
+    // through the shared Coons tessellator and safely ignores the 4 interior
+    // tensor points until exact tensor interpolation becomes a later CMM/math
+    // refinement.
+    let mut data: Vec<u8> = Vec::new();
+    let vmax: u32 = 0xFFFF;
+    let coord = |c: f64| -> u32 { ((c / 20.0) * vmax as f64).round() as u32 };
+    let pt = |buf: &mut Vec<u8>, x: f64, y: f64| {
+        push_be(buf, coord(x), 2);
+        push_be(buf, coord(y), 2);
+    };
+    data.push(0); // flag 0 = new patch
+    for (x, y) in [
+        (2.0, 2.0),
+        (2.0, 7.33),
+        (2.0, 12.66),
+        (2.0, 18.0),
+        (7.33, 18.0),
+        (12.66, 18.0),
+        (18.0, 18.0),
+        (18.0, 12.66),
+        (18.0, 7.33),
+        (18.0, 2.0),
+        (12.66, 2.0),
+        (7.33, 2.0),
+        (7.0, 7.0),
+        (13.0, 7.0),
+        (7.0, 13.0),
+        (13.0, 13.0),
+    ] {
+        pt(&mut data, x, y);
+    }
+    for col in [[255u8, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]] {
+        data.push(col[0]);
+        data.push(col[1]);
+        data.push(col[2]);
+    }
+
+    let mut b = PdfBuilder::new();
+    b.add("<< /Type /Catalog /Pages 2 0 R >>"); // 1
+    b.add("<< /Type /Pages /Kids [3 0 R] /Count 1 >>"); // 2
+    b.add(
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 20 20] /Contents 4 0 R \
+         /Resources << /Shading << /Sh1 5 0 R >> >> >>",
+    ); // 3
+    b.add_stream("", b"/Sh1 sh\n"); // 4
+    b.add_stream(
+        "/ShadingType 7 /ColorSpace /DeviceRGB /BitsPerCoordinate 16 \
+         /BitsPerComponent 8 /BitsPerFlag 8 /Decode [0 20 0 20 0 1 0 1 0 1]",
+        &data,
+    ); // 5
+
+    let pdf = b.build();
+    let engine = ContentEngine::open_bytes(pdf).unwrap();
+    let buf = engine.render_page(1, 72).unwrap();
+
+    let painted = count_painted_pixels(&buf);
+    assert!(
+        painted > 50,
+        "tensor patch should paint a bounded filled region: {painted}"
+    );
+}
+
+fn count_painted_pixels(buf: &oxide_engine::PixelBuffer) -> usize {
+    let mut painted = 0;
+    for y in 0..buf.height as i32 {
+        for x in 0..buf.width as i32 {
+            if buf.get_pixel(x, y) != [0, 0, 0, 0] {
+                painted += 1;
+            }
+        }
+    }
+    painted
 }

@@ -308,6 +308,7 @@ struct RenderState<'a> {
     smask_stack: Vec<Option<AlphaMask>>,
     path: Path,
     pending_clip: Option<FillRule>,
+    pending_text_clip: Option<ClipMask>,
     glyph_cache: GlyphCache,
     /// Current Form XObject nesting depth, used to bound recursion.
     form_depth: usize,
@@ -468,6 +469,7 @@ impl<'a> RenderState<'a> {
             smask_stack: Vec::new(),
             path: Path::new(),
             pending_clip: None,
+            pending_text_clip: None,
             glyph_cache: GlyphCache::with_default_capacity(),
             form_depth: 0,
             pending_inline: None,
@@ -782,9 +784,17 @@ impl<'a> RenderState<'a> {
                     self.render_text_string(bytes);
                 }
             }
-            "BT" | "ET" | "Tf" | "Td" | "TD" | "Tm" | "T*" | "Tc" | "Tw" | "Tz" | "TL" | "Tr"
-            | "Ts" | "cm" | "w" | "J" | "j" | "M" | "d" | "ri" | "i" | "G" | "g" | "RG" | "rg"
-            | "K" | "k" | "CS" | "cs" | "SC" | "SCN" | "sc" | "scn" => {
+            "BT" => {
+                self.pending_text_clip = None;
+                self.gs.process(op);
+            }
+            "ET" => {
+                self.apply_pending_text_clip();
+                self.gs.process(op);
+            }
+            "Tf" | "Td" | "TD" | "Tm" | "T*" | "Tc" | "Tw" | "Tz" | "TL" | "Tr" | "Ts" | "cm"
+            | "w" | "J" | "j" | "M" | "d" | "ri" | "i" | "G" | "g" | "RG" | "rg" | "K" | "k"
+            | "CS" | "cs" | "SC" | "SCN" | "sc" | "scn" => {
                 self.gs.process(op);
             }
             "sh" => {
@@ -867,6 +877,22 @@ impl<'a> RenderState<'a> {
             let flat = flatten_path(&self.path, &ctm, &self.viewport, 0.5);
             let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
             self.buf.set_clip(clip);
+        }
+    }
+
+    fn apply_pending_text_clip(&mut self) {
+        if let Some(clip) = self.pending_text_clip.take() {
+            self.buf.set_clip(clip);
+        }
+    }
+
+    fn accumulate_text_clip(&mut self, glyph_path: &Path, glyph_ctm: &Transform2D) {
+        let flat = flatten_path(glyph_path, glyph_ctm, &self.viewport, 0.25);
+        let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, FillRule::NonZero);
+        if let Some(existing) = &mut self.pending_text_clip {
+            existing.union_with(&clip);
+        } else {
+            self.pending_text_clip = Some(clip);
         }
     }
 
@@ -1146,6 +1172,7 @@ impl<'a> RenderState<'a> {
             smask_stack: Vec::new(),
             path: Path::new(),
             pending_clip: None,
+            pending_text_clip: None,
             glyph_cache: GlyphCache::with_default_capacity(),
             form_depth: self.form_depth + 1,
             pending_inline: None,
@@ -1632,6 +1659,7 @@ impl<'a> RenderState<'a> {
             smask_stack: Vec::new(),
             path: Path::new(),
             pending_clip: None,
+            pending_text_clip: None,
             glyph_cache: GlyphCache::with_default_capacity(),
             form_depth: self.form_depth + 1,
             pending_inline: None,
@@ -2282,7 +2310,10 @@ impl<'a> RenderState<'a> {
 
         for glyph in decoded {
             let mut ttf_advance = None;
-            if !matches!(self.gs.text.rendering_mode, 3 | 7) && should_paint_decoded_glyph(&glyph) {
+            let text_mode = self.gs.text.rendering_mode;
+            if should_paint_decoded_glyph(&glyph)
+                && (text_rendering_mode_paints(text_mode) || text_rendering_mode_clips(text_mode))
+            {
                 if let (Some(font_bytes), Some(font_hash)) = (font_bytes.as_ref(), font_hash) {
                     if !font_bytes.is_empty() {
                         ttf_advance = self.render_glyph_with_cache(GlyphRenderRequest {
@@ -2342,6 +2373,11 @@ impl<'a> RenderState<'a> {
 
         let advance_width = cached.advance_width;
         let Some(glyph_path) = cached.path else {
+            if text_rendering_mode_clips(self.gs.text.rendering_mode) {
+                log::debug!(
+                    "PageRenderer: text clipping requested but glyph outline was unavailable"
+                );
+            }
             return Some(advance_width);
         };
 
@@ -2365,6 +2401,12 @@ impl<'a> RenderState<'a> {
             .concat(&rise_t)
             .concat(&tm_t)
             .concat(&ctm);
+        if text_rendering_mode_clips(self.gs.text.rendering_mode) {
+            self.accumulate_text_clip(&glyph_path, &glyph_ctm);
+        }
+        if !text_rendering_mode_paints(self.gs.text.rendering_mode) {
+            return Some(advance_width);
+        }
         let fill_color = self.fill_pixel_color();
         let stroke_color = self.stroke_pixel_color();
 
@@ -2593,6 +2635,14 @@ fn should_paint_decoded_glyph(glyph: &DecodedGlyph) -> bool {
     }
     let codepoint = glyph.unicode as u32;
     !(codepoint < 0x20 || codepoint == 0x7F)
+}
+
+fn text_rendering_mode_paints(mode: i32) -> bool {
+    matches!(mode, 0 | 1 | 2 | 4 | 5 | 6)
+}
+
+fn text_rendering_mode_clips(mode: i32) -> bool {
+    matches!(mode, 4..=7)
 }
 
 fn positive_u32(value: Option<i64>, default: u32) -> u32 {

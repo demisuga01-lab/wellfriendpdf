@@ -53,5 +53,9 @@ public final class PackageSmoke {
                 || !feature.contains("\"oxide_outlier_failures\":0")) {
             throw new AssertionError("feature report missing Prompt 07B transparency closure posture");
         }
+        if (!feature.contains("\"prompt08_text_clipping_shading_patterns\"")
+                || !feature.contains("\"rendering_modes\":[4,5,6,7]")) {
+            throw new AssertionError("feature report missing Prompt 08 text/shading/pattern posture");
+        }
     }
 }

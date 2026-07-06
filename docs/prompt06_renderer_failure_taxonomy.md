@@ -49,6 +49,9 @@ It adds page-level classifications for the three-reference audit:
 - `dimension_mismatch`
 - `needs_manual_review`
 
-The Prompt 06B taxonomy also records the renderer gap matrix posture:
-Poppler/PDFium/MuPDF reference comparison is `implemented_public`; full pattern,
-shading, transparency, and soft-mask parity remains `later_owned`.
+Prompt 08 updates the current renderer gap posture: text clipping, common
+shadings, mesh/patch shadings, and tiling patterns are no longer vague
+`later_owned` buckets. Current remaining limits must use precise categories such
+as `advanced_icc_device_link_multicolor_cmm`,
+`type3_text_clip_outline_extraction`, `missing_glyph_outline_for_text_clip`, or
+`type7_exact_tensor_interior_interpolation`.

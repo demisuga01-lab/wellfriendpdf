@@ -77,6 +77,13 @@ public final class OxideSmokeTest {
         assertTrue(feature.contains("\"oxide_outlier_failures\":0"), "prompt07b outlier count");
         assertTrue(feature.contains("\"memory_cap_mb\":4096"), "prompt07 memory cap");
         assertTrue(feature.contains("\"Luminosity\""), "prompt07 blend mode report");
+        assertTrue(
+            feature.contains("\"prompt08_text_clipping_shading_patterns\""),
+            "prompt08 feature posture");
+        assertTrue(
+            feature.contains("native_common_paths_with_bounded_unsupported_reports"),
+            "prompt08 native status");
+        assertTrue(feature.contains("\"rendering_modes\":[4,5,6,7]"), "prompt08 text clip modes");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),

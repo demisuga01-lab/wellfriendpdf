@@ -48,8 +48,10 @@ native bounded-surface path and a dedicated Poppler/PDFium/MuPDF corpus under
 Prompt 07B closes the Prompt 07-owned transparency fallbacks for image alpha,
 common image `/SMask /Matte`, ExtGState soft-mask `/BC`, DeviceGray/RGB/CMYK
 luminosity masks, common DeviceGray/RGB/CMYK group color-space fixtures, and
-interior knockout overlap for supported vector/Form groups. Remaining
-transparency fallback reasons must now name later-owned work precisely:
-advanced ICC/device-link/multicolor CMM, text clipping, or Prompt 08
-pattern/shading paints. Patterns and shadings remain Prompt 08 even when they
-are painted inside a transparency group.
+interior knockout overlap for supported vector/Form groups.
+
+Prompt 08 removes text clipping, common shadings, and tiling patterns from the
+generic compatibility fallback set. Remaining fallbacks must name exact limits:
+advanced ICC/device-link/multicolor CMM, Type3 text-clip outline extraction,
+missing glyph outlines, exact Type 7 tensor interior interpolation, malformed
+stream fail-closed, or pattern recursion/step safety caps.

@@ -745,6 +745,15 @@ fn prompt07_report_commands_emit_json() {
             ["oxide_outlier_failures"],
         0
     );
+    assert_eq!(
+        feature["report"]["prompt08_text_clipping_shading_patterns"]["reference_audit"]["status"],
+        "multi_reference_audit_complete"
+    );
+    assert_eq!(
+        feature["report"]["prompt08_text_clipping_shading_patterns"]["reference_audit"]
+            ["oxide_outlier_failures"],
+        0
+    );
 
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),

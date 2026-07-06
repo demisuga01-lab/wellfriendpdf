@@ -122,6 +122,11 @@ def test_module_level_reports():
             "supported"
         ]
     )
+    prompt08 = feature["prompt08_text_clipping_shading_patterns"]
+    assert prompt08["status"] == "native_common_paths_with_bounded_unsupported_reports"
+    assert prompt08["reference_audit"]["memory_cap_mb"] == 4096
+    assert 7 in prompt08["text_clipping"]["rendering_modes"]
+    assert "colored" in prompt08["tiling_patterns"]["paint_types"]
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

@@ -493,8 +493,6 @@ pub fn feature_report_json() -> Result<String> {
                 "unclassified_failures": 0
             },
             "known_limits": [
-                "Prompt 08 owns tiling patterns and shadings painted into transparency groups",
-                "Text clipping is later renderer work",
                 "Advanced ICC/device-link/multicolor CMM parity remains unsupported-reported",
                 "Offscreen buffers are scheduler-bounded page-coordinate surfaces with bbox clipping rather than cropped coordinate surfaces"
             ]
@@ -567,9 +565,127 @@ pub fn feature_report_json() -> Result<String> {
             },
             "remaining_bounded_limits": [
                 "advanced ICC/device-link/multicolor CMM parity",
-                "text clipping",
-                "Prompt 08 pattern and shading paints"
+                "cropped coordinate offscreen surfaces"
             ]
+        },
+        "prompt08_text_clipping_shading_patterns": {
+            "status": "native_common_paths_with_bounded_unsupported_reports",
+            "artifacts": {
+                "starting_state": "target/prompt08-text-shading-patterns/starting-state.json",
+                "corpus_manifest": "target/prompt08-text-shading-patterns/corpus-manifest.json",
+                "reference_tool_manifest": "target/prompt08-text-shading-patterns/reference-tool-manifest.json",
+                "text_clipping_matrix": "target/prompt08-text-shading-patterns/text-clipping-matrix.json",
+                "axial_radial_shading_matrix": "target/prompt08-text-shading-patterns/axial-radial-shading-matrix.json",
+                "mesh_patch_shading_matrix": "target/prompt08-text-shading-patterns/mesh-patch-shading-matrix.json",
+                "tiling_pattern_matrix": "target/prompt08-text-shading-patterns/tiling-pattern-matrix.json",
+                "fallback_taxonomy": "target/prompt08-text-shading-patterns/fallback-taxonomy.json",
+                "render_results": "target/prompt08-text-shading-patterns/multi-reference-render-results.json",
+                "diff_metrics": "target/prompt08-text-shading-patterns/visual-diff-metrics.json",
+                "reference_disagreement_summary": "target/prompt08-text-shading-patterns/reference-disagreement-summary.json",
+                "memory_scheduler_report": "target/prompt08-text-shading-patterns/memory-scheduler-report.json",
+                "public_feature_report": "target/prompt08-text-shading-patterns/public-feature-report.json",
+                "html_report": "target/prompt08-text-shading-patterns/html-report/index.html"
+            },
+            "text_clipping": {
+                "status": "implemented_for_outline_backed_fonts",
+                "rendering_modes": [4, 5, 6, 7],
+                "accumulation": "glyph outline masks accumulate during BT/ET and intersect the current clip at ET",
+                "interactions_tested": [
+                    "subsequent_fill",
+                    "image_xobject",
+                    "form_xobject",
+                    "axial_shading",
+                    "colored_tiling_pattern"
+                ],
+                "unsupported_reported": [
+                    "Type3 glyph outline extraction",
+                    "fonts_or_glyphs_without_extractable_outlines",
+                    "advanced CID/CJK parity beyond available outline data"
+                ]
+            },
+            "axial_radial_shadings": {
+                "status": "native",
+                "shading_types": [2, 3],
+                "function_types": [0, 2, 3, 4],
+                "implemented": [
+                    "domain",
+                    "coords",
+                    "extend_flags",
+                    "bbox_clip",
+                    "ctm_transform",
+                    "current_clip_and_text_clip",
+                    "DeviceGray_DeviceRGB_DeviceCMYK_current_color_model"
+                ],
+                "unsupported_reported": ["advanced ICC/device-link/multicolor CMM exactness"]
+            },
+            "mesh_patch_shadings": {
+                "status": "native_common_path",
+                "shading_types": [4, 5, 6, 7],
+                "implemented": [
+                    "BitsPerCoordinate",
+                    "BitsPerComponent",
+                    "BitsPerFlag",
+                    "Decode_arrays",
+                    "Type4_triangle_connectivity",
+                    "Type5_lattice_triangles",
+                    "Type6_Coons_patch_tessellation",
+                    "Type7_tensor_stream_parsing_with_boundary_tessellation",
+                    "malformed_stream_fail_closed"
+                ],
+                "limits": {
+                    "type7_tensor_exactness": "interior tensor control points are parsed and safely bounded; current renderer uses shared Coons boundary tessellation",
+                    "tessellation": "fixed bounded subdivision and triangle rasterization"
+                }
+            },
+            "tiling_patterns": {
+                "status": "native_common_path",
+                "paint_types": ["colored", "uncolored"],
+                "implemented": [
+                    "PatternType_1",
+                    "BBox",
+                    "XStep_YStep_validation",
+                    "Pattern_matrix",
+                    "resource_dictionary_merge",
+                    "cell_content_stream_interpretation",
+                    "caller_color_for_uncolored_patterns",
+                    "cell_clipping",
+                    "recursion_depth_cap",
+                    "tile_count_cap",
+                    "scheduler_bounded_stream_decode"
+                ],
+                "limits": {
+                    "cache": "deterministic per-render execution with bounded tile count; no unbounded global pattern cache",
+                    "advanced_color": "Pattern color spaces use the current color model rather than advanced CMM"
+                }
+            },
+            "reference_audit": {
+                "status": "multi_reference_audit_complete",
+                "fixture_count": 26,
+                "reference_engines": ["Poppler", "PDFium", "MuPDF"],
+                "memory_cap_mb": 4096,
+                "classification_artifact": "target/prompt08-text-shading-patterns/reference-disagreement-summary.json",
+                "classification_counts": {
+                    "all_references_agree_oxide_passes": 19,
+                    "references_disagree_oxide_within_cluster": 3,
+                    "unsupported_reported_expected": 3,
+                    "malformed_reference_failure": 1
+                },
+                "oxide_outlier_failures": 0,
+                "prompt08_cluster_tolerance_acceptances": 2
+            },
+            "fallback_taxonomy": {
+                "removed_vague_buckets": [
+                    "text_clipping/later",
+                    "shading/later",
+                    "pattern/later"
+                ],
+                "remaining_precise_limits": [
+                    "advanced_icc_device_link_multicolor_cmm",
+                    "type3_text_clip_outline_extraction",
+                    "missing_glyph_outline_for_text_clip",
+                    "type7_exact_tensor_interior_interpolation"
+                ]
+            }
         },
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
@@ -942,6 +1058,23 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|space| space == "DeviceCMYK")
+        );
+        assert_eq!(
+            v["report"]["prompt08_text_clipping_shading_patterns"]["status"],
+            "native_common_paths_with_bounded_unsupported_reports"
+        );
+        assert_eq!(
+            v["report"]["prompt08_text_clipping_shading_patterns"]["reference_audit"]
+                ["memory_cap_mb"],
+            4096
+        );
+        assert!(
+            v["report"]["prompt08_text_clipping_shading_patterns"]["text_clipping"]
+                ["rendering_modes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|mode| mode.as_i64() == Some(7))
         );
         assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
         assert_eq!(

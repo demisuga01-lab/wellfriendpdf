@@ -2449,6 +2449,23 @@ mod tests {
             .unwrap()
             .iter()
             .any(|space| space == "DeviceCMYK"));
+        assert_eq!(
+            value["report"]["prompt08_text_clipping_shading_patterns"]["status"],
+            "native_common_paths_with_bounded_unsupported_reports"
+        );
+        assert_eq!(
+            value["report"]["prompt08_text_clipping_shading_patterns"]["reference_audit"]
+                ["memory_cap_mb"],
+            4096
+        );
+        assert!(
+            value["report"]["prompt08_text_clipping_shading_patterns"]["text_clipping"]
+                ["rendering_modes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|mode| mode.as_i64() == Some(7))
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

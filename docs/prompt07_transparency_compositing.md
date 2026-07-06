@@ -24,5 +24,7 @@ Primary artifacts:
 - `target/prompt07-transparency-compositing/prompt07b-transparency-matrix.json`
 - `target/prompt07-transparency-compositing/prompt07b-html-report/index.html`
 
-Remaining later-owned limits are advanced ICC/device-link/multicolor CMM, text
-clipping, and Prompt 08 pattern/shading paints.
+After Prompt 08, text clipping and common pattern/shading paints have native
+coverage through the current clip/compositing pipeline. Remaining transparency
+limits are advanced ICC/device-link/multicolor CMM and cropped-coordinate
+offscreen surface exactness.

@@ -216,6 +216,23 @@ impl ClipMask {
         }
     }
 
+    /// Union this mask with another mask.
+    pub fn union_with(&mut self, other: &ClipMask) {
+        if self.width != other.width || self.height != other.height {
+            log::warn!(
+                "ClipMask::union_with size mismatch: {}x{} vs {}x{}",
+                self.width,
+                self.height,
+                other.width,
+                other.height
+            );
+            return;
+        }
+        for (a, b) in self.mask.iter_mut().zip(other.mask.iter()) {
+            *a = (*a).max(*b);
+        }
+    }
+
     /// Fill a rectangular mask region with visible or clipped.
     pub fn fill_rect(&mut self, x: i32, y: i32, w: i32, h: i32, visible: bool) {
         if w <= 0 || h <= 0 {
