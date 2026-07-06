@@ -71,8 +71,10 @@ public final class OxideSmokeTest {
         assertTrue(feature.contains("\"codec_isolation\""), "codec isolation feature posture");
         assertTrue(feature.contains("\"prompt07_transparency_compositing\""), "prompt07 feature posture");
         assertTrue(
-            feature.contains("native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"),
+            feature.contains("native_foundation_with_prompt07b_closure"),
             "prompt07 native foundation status");
+        assertTrue(feature.contains("\"prompt07b_transparency_closure\""), "prompt07b closure posture");
+        assertTrue(feature.contains("\"oxide_outlier_failures\":0"), "prompt07b outlier count");
         assertTrue(feature.contains("\"memory_cap_mb\":4096"), "prompt07 memory cap");
         assertTrue(feature.contains("\"Luminosity\""), "prompt07 blend mode report");
         String isolation = Oxide.codecIsolationReportJson(

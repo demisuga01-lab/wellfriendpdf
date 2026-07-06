@@ -388,7 +388,7 @@ pub fn feature_report_json() -> Result<String> {
             }
         },
         "prompt07_transparency_compositing": {
-            "status": "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus",
+            "status": "native_foundation_with_prompt07b_closure",
             "audit_script": "scripts/prompt07_transparency_compositing_audit.py",
             "powershell_wrapper": "scripts/prompt07_transparency_compositing_audit.ps1",
             "artifacts": {
@@ -401,7 +401,8 @@ pub fn feature_report_json() -> Result<String> {
                 "group_isolation_knockout_matrix": "target/prompt07-transparency-compositing/group-isolation-knockout-matrix.json",
                 "fallback_taxonomy": "target/prompt07-transparency-compositing/fallback-taxonomy.json",
                 "memory_budget_report": "target/prompt07-transparency-compositing/memory-budget-report.json",
-                "html_report": "target/prompt07-transparency-compositing/html-report/index.html"
+                "html_report": "target/prompt07-transparency-compositing/html-report/index.html",
+                "prompt07b_closure_audit": "target/prompt07-transparency-compositing/prompt07b-closure-audit.json"
             },
             "transparency_groups": {
                 "status": "native_common_path",
@@ -417,9 +418,9 @@ pub fn feature_report_json() -> Result<String> {
                 ],
                 "bounded_memory": "transparency group RGBA surfaces reserve scheduler memory before allocation",
                 "memory_denial_unit_test": "renderer_offscreen_surface_fails_closed_over_budget",
-                "partial": [
-                    "page_group_and_annotation_group_color_space_posture_is_device_space",
-                    "full_icc_group_color_management",
+                "color_space_status": "DeviceGray_DeviceRGB_DeviceCMYK_common_group_paths_exercised_by_prompt07b",
+                "unsupported_reported": [
+                    "advanced_icc_device_link_multicolor_group_color_management",
                     "cropped_coordinate_offscreen_surfaces"
                 ]
             },
@@ -458,38 +459,116 @@ pub fn feature_report_json() -> Result<String> {
                     "malformed_mask_fail_closed"
                 ],
                 "bounded_memory": "soft mask group RGBA surfaces reserve scheduler memory before allocation",
-                "partial": [
-                    "exact_color_managed_luminosity_conversion",
-                    "matte_background_edge_cases"
+                "matte_background_status": "image_smask_matte_and_extgstate_bc_backdrop_closed_by_prompt07b",
+                "luminosity_color_spaces": ["DeviceGray", "DeviceRGB", "DeviceCMYK"],
+                "unsupported_reported": [
+                    "advanced_icc_device_link_matte_conversion",
+                    "advanced_icc_calibrated_luminosity_cmm_parity"
                 ]
             },
             "knockout_isolation": {
-                "status": "common_path_native_with_knockout_approximation_reported",
+                "status": "common_path_native_with_exact_interior_overlap_for_supported_groups",
                 "implemented": [
                     "isolated_group_flag",
                     "non_isolated_backdrop",
                     "knockout_group_flag",
                     "nested_isolated_group",
                     "nested_knockout_group",
+                    "interior_knockout_overlap",
                     "state_stack_restore",
                     "fallback_metrics"
                 ],
-                "partial": [
-                    "exact_pdf_knockout_interior_overlap"
+                "unsupported_reported": [
+                    "text_clipping_inside_knockout_groups",
+                    "pattern_and_shading_paints_inside_knockout_groups"
                 ]
             },
             "reference_audit": {
                 "status": "poppler_pdfium_mupdf_required",
                 "tool_manifest": "target/prompt06-renderer-native-replay/reference-tool-manifest-prompt06b.json",
-                "fixture_count": 37,
+                "fixture_count": 47,
                 "memory_cap_mb": 4096,
-                "classification_artifact": "target/prompt07-transparency-compositing/reference-disagreement-summary.json"
+                "classification_artifact": "target/prompt07-transparency-compositing/prompt07b-reference-disagreement-summary.json",
+                "oxide_outlier_failures": 0,
+                "unclassified_failures": 0
             },
             "known_limits": [
                 "Prompt 08 owns tiling patterns and shadings painted into transparency groups",
-                "Group color spaces remain device-space unless current color conversion can resolve them",
-                "Exact matte/background soft-mask behavior remains partial",
+                "Text clipping is later renderer work",
+                "Advanced ICC/device-link/multicolor CMM parity remains unsupported-reported",
                 "Offscreen buffers are scheduler-bounded page-coordinate surfaces with bbox clipping rather than cropped coordinate surfaces"
+            ]
+        },
+        "prompt07b_transparency_closure": {
+            "status": "complete",
+            "audit_script": "scripts/prompt07b_transparency_closure_audit.py",
+            "artifacts": {
+                "reference_tool_manifest": "target/prompt07-transparency-compositing/prompt07b-reference-tool-manifest.json",
+                "corpus_manifest": "target/prompt07-transparency-compositing/prompt07b-corpus-manifest.json",
+                "render_results": "target/prompt07-transparency-compositing/prompt07b-render-results.json",
+                "diff_metrics": "target/prompt07-transparency-compositing/prompt07b-diff-metrics.json",
+                "reference_disagreement_summary": "target/prompt07-transparency-compositing/prompt07b-reference-disagreement-summary.json",
+                "transparency_matrix": "target/prompt07-transparency-compositing/prompt07b-transparency-matrix.json",
+                "memory_report": "target/prompt07-transparency-compositing/prompt07b-memory-report.json",
+                "closure_audit": "target/prompt07-transparency-compositing/prompt07b-closure-audit.json",
+                "html_report": "target/prompt07-transparency-compositing/prompt07b-html-report/index.html"
+            },
+            "alpha_image": {
+                "status": "closed",
+                "root_cause": "image_painter_ignored_graphics_state_nonstroking_alpha",
+                "fixture": "alpha_image",
+                "classification": "all_references_agree_and_oxide_passes"
+            },
+            "soft_mask_matte_background": {
+                "status": "closed",
+                "implemented": [
+                    "image_smask_matte_unblend_for_common_device_spaces",
+                    "extgstate_alpha_smask_bc_backdrop"
+                ],
+                "fixtures": ["image_smask_matte", "softmask_alpha_bc_background"],
+                "unsupported_reported": ["advanced_icc_device_link_matte_conversion"]
+            },
+            "luminosity_soft_mask_color_spaces": {
+                "status": "closed",
+                "supported": ["DeviceGray", "DeviceRGB", "DeviceCMYK"],
+                "fixtures": [
+                    "softmask_luminosity_devicegray",
+                    "softmask_luminosity_devicergb",
+                    "softmask_luminosity_devicecmyk"
+                ],
+                "unsupported_reported": ["ICCBased_exact_CMM", "CalGray_CalRGB_exact_CMM"]
+            },
+            "transparency_group_color_spaces": {
+                "status": "closed_for_common_device_spaces",
+                "supported": ["DeviceGray", "DeviceRGB", "DeviceCMYK"],
+                "fixtures": [
+                    "group_colorspace_devicegray",
+                    "group_colorspace_devicergb",
+                    "group_colorspace_devicecmyk"
+                ],
+                "unsupported_reported": ["advanced_icc_device_link_multicolor_group_blending"]
+            },
+            "knockout_overlap": {
+                "status": "closed",
+                "implemented": ["initial_backdrop_per_pixel_knockout_for_vector_and_form_groups"],
+                "fixtures": ["knockout_overlap_exact", "knockout_overlap_nested_form"],
+                "unsupported_reported": ["text_clipping_and_pattern_shading_inside_knockout_groups"]
+            },
+            "reference_audit": {
+                "fixture_count": 47,
+                "classification_counts": {
+                    "all_references_agree_and_oxide_passes": 41,
+                    "references_disagree_and_oxide_within_cluster": 5,
+                    "malformed_or_reference_failure": 1
+                },
+                "oxide_outlier_failures": 0,
+                "unclassified_failures": 0,
+                "memory_cap_mb": 4096
+            },
+            "remaining_bounded_limits": [
+                "advanced ICC/device-link/multicolor CMM parity",
+                "text clipping",
+                "Prompt 08 pattern and shading paints"
             ]
         },
         // Capabilities that are always present in the default build regardless of
@@ -834,7 +913,7 @@ mod tests {
         );
         assert_eq!(
             v["report"]["prompt07_transparency_compositing"]["status"],
-            "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"
+            "native_foundation_with_prompt07b_closure"
         );
         assert_eq!(
             v["report"]["prompt07_transparency_compositing"]["reference_audit"]["memory_cap_mb"],
@@ -846,6 +925,23 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|mode| mode == "Luminosity")
+        );
+        assert_eq!(
+            v["report"]["prompt07b_transparency_closure"]["status"],
+            "complete"
+        );
+        assert_eq!(
+            v["report"]["prompt07b_transparency_closure"]["reference_audit"]
+                ["oxide_outlier_failures"],
+            0
+        );
+        assert!(
+            v["report"]["prompt07b_transparency_closure"]["luminosity_soft_mask_color_spaces"]
+                ["supported"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|space| space == "DeviceCMYK")
         );
         assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
         assert_eq!(

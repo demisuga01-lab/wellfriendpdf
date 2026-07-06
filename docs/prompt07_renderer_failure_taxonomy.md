@@ -23,6 +23,15 @@ specific classifications.
 - `oxide_render_failure`: Oxide failed to render.
 - `dimension_mismatch`: outputs rendered at incompatible dimensions.
 
+Prompt 07B also writes normalized closure classifications:
+
+- `all_references_agree_and_oxide_passes`
+- `all_references_agree_and_oxide_mismatches`
+- `references_disagree_and_oxide_within_cluster`
+- `references_disagree_and_oxide_outlier`
+- `malformed_or_reference_failure`
+- `unsupported_reported`
+
 ## Ownership Categories
 
 - `oxide/bug`: references agree and Oxide differs.
@@ -34,3 +43,6 @@ specific classifications.
 
 The generated JSON taxonomy is
 `target/prompt07-transparency-compositing/fallback-taxonomy.json`.
+Prompt 07B closure evidence is in
+`target/prompt07-transparency-compositing/prompt07b-reference-disagreement-summary.json`
+and `target/prompt07-transparency-compositing/prompt07b-transparency-matrix.json`.

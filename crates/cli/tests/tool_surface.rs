@@ -730,11 +730,20 @@ fn prompt07_report_commands_emit_json() {
     let feature = assert_json(&run(&["feature-report"]), "feature-report");
     assert_eq!(
         feature["report"]["prompt07_transparency_compositing"]["status"],
-        "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"
+        "native_foundation_with_prompt07b_closure"
     );
     assert_eq!(
         feature["report"]["prompt07_transparency_compositing"]["reference_audit"]["memory_cap_mb"],
         4096
+    );
+    assert_eq!(
+        feature["report"]["prompt07b_transparency_closure"]["status"],
+        "complete"
+    );
+    assert_eq!(
+        feature["report"]["prompt07b_transparency_closure"]["reference_audit"]
+            ["oxide_outlier_failures"],
+        0
     );
 
     let forms = assert_json(

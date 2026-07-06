@@ -1,8 +1,10 @@
 use crate::error::{OxideError, Result};
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::locator::ImageReference;
+use crate::object::PdfDictionary;
 use crate::object::PdfObject;
 use crate::reader::PdfReader;
+use crate::render::color::ColorSpaceHandler;
 
 #[derive(Debug, Clone)]
 pub struct SmaskLoader;
@@ -27,6 +29,13 @@ impl SmaskLoader {
             Some(PdfObject::Reference { number, generation }) => (*number, *generation),
             _ => return Ok(None),
         };
+        let smask_dict = match reader.get_object(smask_ref.0, smask_ref.1) {
+            Ok(PdfObject::Stream { dict, .. }) => Some(dict),
+            _ => None,
+        };
+        let matte = smask_dict
+            .as_ref()
+            .and_then(|mask_dict| smask_matte_rgb(mask_dict, &main_image.color_space));
 
         let smask_image_ref = ImageReference {
             page_number: main_image.page_number,
@@ -56,11 +65,21 @@ impl SmaskLoader {
             }
         };
 
-        Self::combine_rgba(main_raw, smask_raw).map(Some)
+        Self::combine_rgba_with_matte(main_raw, smask_raw, matte).map(Some)
     }
 
     /// Combine a main image with a grayscale alpha mask into RGBA.
     pub fn combine_rgba(main: RawImage, mask: RawImage) -> Result<RawImage> {
+        Self::combine_rgba_with_matte(main, mask, None)
+    }
+
+    /// Combine a main image with a grayscale alpha mask into RGBA, optionally
+    /// undoing producer-side matte preblending from an image SMask `/Matte`.
+    pub fn combine_rgba_with_matte(
+        main: RawImage,
+        mask: RawImage,
+        matte: Option<[u8; 3]>,
+    ) -> Result<RawImage> {
         if main.width != mask.width || main.height != mask.height {
             log::warn!(
                 "SMask dimensions {}x{} don't match image {}x{}; ignoring SMask",
@@ -97,6 +116,14 @@ impl SmaskLoader {
             let g = rgb.get(i * 3 + 1).copied().unwrap_or(0);
             let b = rgb.get(i * 3 + 2).copied().unwrap_or(0);
             let a = mask.pixels.get(i).copied().unwrap_or(255);
+            let (r, g, b) = match matte {
+                Some(matte) => (
+                    unmatte_channel(r, matte[0], a),
+                    unmatte_channel(g, matte[1], a),
+                    unmatte_channel(b, matte[2], a),
+                ),
+                None => (r, g, b),
+            };
             rgba.push(r);
             rgba.push(g);
             rgba.push(b);
@@ -111,6 +138,36 @@ impl SmaskLoader {
             pixels: rgba,
         })
     }
+}
+
+fn smask_matte_rgb(dict: &PdfDictionary, main_color_space: &str) -> Option<[u8; 3]> {
+    let comps = dict
+        .get("Matte")?
+        .as_array()?
+        .iter()
+        .filter_map(PdfObject::as_number)
+        .collect::<Vec<f64>>();
+    if comps.is_empty() {
+        log::warn!("Image SMask /Matte is empty; ignoring matte");
+        return None;
+    }
+    let color = ColorSpaceHandler::from_components(main_color_space, &comps, 1.0).to_pixel_color();
+    Some([color[0], color[1], color[2]])
+}
+
+fn unmatte_channel(sample: u8, matte: u8, alpha: u8) -> u8 {
+    let a = alpha as f32 / 255.0;
+    if a <= 1e-6 {
+        return 0;
+    }
+    if a >= 0.999 {
+        return sample;
+    }
+    let src = sample as f32 / 255.0;
+    let matte = matte as f32 / 255.0;
+    (((src - matte * (1.0 - a)) / a) * 255.0)
+        .round()
+        .clamp(0.0, 255.0) as u8
 }
 
 #[cfg(test)]
@@ -179,5 +236,51 @@ mod tests {
         let out = SmaskLoader::combine_rgba(main, mask).unwrap();
         assert_eq!(out.pixels[3], 128);
         assert_eq!(out.pixels[7], 255);
+    }
+
+    #[test]
+    fn combine_rgba_with_matte_unblends_preblended_rgb() {
+        let main = RawImage {
+            width: 1,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![255, 128, 128],
+        };
+        let mask = RawImage {
+            width: 1,
+            height: 1,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels: vec![128],
+        };
+
+        let out = SmaskLoader::combine_rgba_with_matte(main, mask, Some([255, 255, 255])).unwrap();
+
+        assert_eq!(out.pixels[0], 255);
+        assert!(
+            out.pixels[1] <= 2 && out.pixels[2] <= 2,
+            "white-matte preblend should recover red, got {:?}",
+            out.pixels
+        );
+        assert_eq!(out.pixels[3], 128);
+    }
+
+    #[test]
+    fn smask_matte_rgb_uses_main_image_color_space() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert(
+            "Matte".to_string(),
+            PdfObject::Array(vec![
+                PdfObject::Real(0.0),
+                PdfObject::Real(0.0),
+                PdfObject::Real(0.0),
+                PdfObject::Real(0.0),
+            ]),
+        );
+
+        let matte = smask_matte_rgb(&dict, "DeviceCMYK").expect("CMYK matte");
+
+        assert_eq!(matte, [255, 255, 255]);
     }
 }

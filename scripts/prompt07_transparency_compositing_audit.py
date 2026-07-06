@@ -769,7 +769,11 @@ def write_summary_artifacts(entries: list[dict[str, Any]], results: dict[str, An
                 for e in entries
                 if e["category"].startswith("softmask/")
             ],
-            "known_limits": ["matte/background is documented as partial", "exact color-managed luminosity conversion remains partial"],
+            "known_limits": [
+                "Prompt 07B closes common image /SMask /Matte and ExtGState /BC backdrop behavior",
+                "Prompt 07B closes DeviceGray/DeviceRGB/DeviceCMYK luminosity mask color-space coverage",
+                "advanced ICC/device-link luminosity parity remains unsupported-reported CMM work",
+            ],
         },
     )
     write_json(
@@ -786,7 +790,10 @@ def write_summary_artifacts(entries: list[dict[str, Any]], results: dict[str, An
                 for e in entries
                 if e["category"].startswith("group/")
             ],
-            "known_limits": ["knockout interior overlap remains approximate; group compositing is native"],
+            "known_limits": [
+                "Prompt 07B closes interior knockout overlap for common vector/Form group cases",
+                "text clipping plus pattern/shading paints inside knockout groups remain later prompt ownership",
+            ],
         },
     )
     write_json(
@@ -798,9 +805,8 @@ def write_summary_artifacts(entries: list[dict[str, Any]], results: dict[str, An
             "remaining": [
                 "pattern/later remains Prompt 08",
                 "shading/later remains Prompt 08",
-                "knockout interior overlap approximation",
-                "full ICC/group color-space management",
-                "SMask matte/background edge cases",
+                "advanced ICC/device-link/multicolor group color-space management",
+                "text clipping plus pattern/shading paints inside knockout groups remain later prompt ownership",
             ],
             "measured_fallback_reasons": results.get("fallback_reasons", {}) if results else {},
         },

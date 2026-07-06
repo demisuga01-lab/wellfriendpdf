@@ -49,5 +49,9 @@ public final class PackageSmoke {
                 || !feature.contains("cancellation_not_supported_for_prompt02_bindings")) {
             throw new AssertionError("feature report missing Prompt 02B progress/cancellation posture");
         }
+        if (!feature.contains("\"prompt07b_transparency_closure\"")
+                || !feature.contains("\"oxide_outlier_failures\":0")) {
+            throw new AssertionError("feature report missing Prompt 07B transparency closure posture");
+        }
     }
 }

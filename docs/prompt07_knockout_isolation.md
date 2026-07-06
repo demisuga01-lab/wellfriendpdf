@@ -10,8 +10,9 @@ MuPDF.
 - `/I true` isolated groups start from a transparent surface.
 - `/I false` non-isolated groups copy the parent backdrop, replay content, and
   subtract the copied backdrop before compositing back to the parent.
-- `/K true` knockout groups are detected, counted, and use the current native
-  knockout approximation in the render buffer.
+- `/K true` knockout groups retain the group's initial backdrop in the
+  offscreen buffer. Each covered interior pixel recomposes against that initial
+  backdrop, so later overlapping objects knock out earlier group objects.
 - Nested isolated and knockout groups recurse through the same scheduler-admitted
   group surface path.
 - State restore covers alpha, blend mode, CTM, clip, and soft-mask state through
@@ -25,9 +26,15 @@ written to:
 
 - `target/prompt07-transparency-compositing/group-isolation-knockout-matrix.json`
 - `target/prompt07-transparency-compositing/post-implementation-render-results.json`
+- `target/prompt07-transparency-compositing/prompt07b-render-results.json`
+- `target/prompt07-transparency-compositing/prompt07b-transparency-matrix.json`
 
-## Remaining Bound
+## Prompt 07B Closure
 
-Exact PDF knockout behavior for every interior object-overlap case remains a
-measured partial implementation. The public feature report says this explicitly
-as `exact_pdf_knockout_interior_overlap`.
+Prompt 07B adds `knockout_overlap_exact` and
+`knockout_overlap_nested_form`. Poppler, PDFium, and MuPDF disagree on these
+semi-transparent overlap fixtures; Oxide matches MuPDF and is classified inside
+the reference cluster, with zero Oxide-outlier failures.
+
+Remaining bounds are later-owned: text clipping inside knockout groups and
+pattern/shading paints inside knockout groups are not Prompt 07B work.

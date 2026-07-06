@@ -40,9 +40,10 @@ optimization for a later renderer prompt.
 - Group BBox and Matrix are honored on the common Form XObject path.
 - Nested groups are supported through recursive render state with scheduler
   admission on every offscreen surface.
-- Group color spaces currently use the renderer's device-space posture unless
-  the existing color conversion layer can resolve the space. Full ICC-managed
-  group color-space parity is not claimed.
+- Prompt 07B exercises explicit DeviceGray, DeviceRGB, and DeviceCMYK group
+  color spaces through the native group stack for common source colors. Full
+  ICC/device-link/multicolor group blending remains unsupported-reported CMM
+  work, not a hidden fallback.
 
 ## Failure Modes
 

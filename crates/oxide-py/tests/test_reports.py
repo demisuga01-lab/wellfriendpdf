@@ -104,13 +104,24 @@ def test_module_level_reports():
     )
     assert (
         feature["prompt07_transparency_compositing"]["status"]
-        == "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"
+        == "native_foundation_with_prompt07b_closure"
     )
     assert (
         feature["prompt07_transparency_compositing"]["reference_audit"]["memory_cap_mb"]
         == 4096
     )
     assert "Luminosity" in feature["prompt07_transparency_compositing"]["blend_modes"]["implemented"]
+    assert feature["prompt07b_transparency_closure"]["status"] == "complete"
+    assert (
+        feature["prompt07b_transparency_closure"]["reference_audit"]["oxide_outlier_failures"]
+        == 0
+    )
+    assert (
+        "DeviceCMYK"
+        in feature["prompt07b_transparency_closure"]["luminosity_soft_mask_color_spaces"][
+            "supported"
+        ]
+    )
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

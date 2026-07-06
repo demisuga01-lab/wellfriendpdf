@@ -19,7 +19,18 @@ impl ImagePainter {
         ctm: &Transform2D,
         viewport: &Viewport,
     ) {
-        Self::paint_image_with_options(buf, image, ctm, viewport, false);
+        Self::paint_image_with_options_and_alpha(buf, image, ctm, viewport, false, 1.0);
+    }
+
+    /// Paint a decoded image with an additional graphics-state alpha.
+    pub fn paint_image_with_alpha(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        paint_alpha: f32,
+    ) {
+        Self::paint_image_with_options_and_alpha(buf, image, ctm, viewport, false, paint_alpha);
     }
 
     /// Paint with optional `/Interpolate` smoothing when the image is magnified.
@@ -34,23 +45,44 @@ impl ImagePainter {
         viewport: &Viewport,
         interpolate: bool,
     ) {
+        Self::paint_image_with_options_and_alpha(buf, image, ctm, viewport, interpolate, 1.0);
+    }
+
+    /// Paint with optional `/Interpolate` smoothing and an additional
+    /// graphics-state alpha multiplier.
+    pub fn paint_image_with_options_and_alpha(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        interpolate: bool,
+        paint_alpha: f32,
+    ) {
         let mode = if interpolate {
             SmoothMode::Interpolate
         } else {
             SmoothMode::None
         };
-        Self::paint_image_with_mode(buf, image, ctm, viewport, mode);
+        Self::paint_image_with_mode(buf, image, ctm, viewport, mode, paint_alpha);
     }
 
     /// Preserve the older JPX compatibility path where Poppler smooths some
     /// magnified JPXDecode images even without an explicit `/Interpolate true`.
-    pub(crate) fn paint_image_with_jpx_compat(
+    pub(crate) fn paint_image_with_jpx_compat_and_alpha(
         buf: &mut PixelBuffer,
         image: &RawImage,
         ctm: &Transform2D,
         viewport: &Viewport,
+        paint_alpha: f32,
     ) {
-        Self::paint_image_with_mode(buf, image, ctm, viewport, SmoothMode::LegacyBilinear);
+        Self::paint_image_with_mode(
+            buf,
+            image,
+            ctm,
+            viewport,
+            SmoothMode::LegacyBilinear,
+            paint_alpha,
+        );
     }
 
     fn paint_image_with_mode(
@@ -59,7 +91,12 @@ impl ImagePainter {
         ctm: &Transform2D,
         viewport: &Viewport,
         smooth_mode: SmoothMode,
+        paint_alpha: f32,
     ) {
+        let paint_alpha = paint_alpha.clamp(0.0, 1.0);
+        if paint_alpha <= 0.0 {
+            return;
+        }
         if image.width == 0 || image.height == 0 || image.channels == 0 || image.pixels.is_empty() {
             return;
         }
@@ -72,9 +109,9 @@ impl ImagePainter {
         let combined = ctm.concat(&vp_transform);
 
         if ctm.is_axis_aligned() {
-            Self::paint_axis_aligned(buf, image, &combined, smooth_mode);
+            Self::paint_axis_aligned(buf, image, &combined, smooth_mode, paint_alpha);
         } else {
-            Self::paint_affine(buf, image, &combined, smooth_mode);
+            Self::paint_affine(buf, image, &combined, smooth_mode, paint_alpha);
         }
     }
 
@@ -111,6 +148,7 @@ impl ImagePainter {
         image: &RawImage,
         combined: &Transform2D,
         smooth_mode: SmoothMode,
+        paint_alpha: f32,
     ) {
         let corners = [
             combined.transform_point(0.0, 0.0),
@@ -149,7 +187,7 @@ impl ImagePainter {
                     sample[3] as f32 / 255.0
                 } else {
                     1.0
-                };
+                } * paint_alpha;
                 buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
             }
         }
@@ -160,6 +198,7 @@ impl ImagePainter {
         image: &RawImage,
         combined: &Transform2D,
         smooth_mode: SmoothMode,
+        paint_alpha: f32,
     ) {
         let inv = match combined.inverse() {
             Some(matrix) => matrix,
@@ -208,7 +247,7 @@ impl ImagePainter {
                     sample[3] as f32 / 255.0
                 } else {
                     1.0
-                };
+                } * paint_alpha;
                 buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
             }
         }
@@ -705,6 +744,33 @@ mod tests {
         ImagePainter::paint_image(&mut buf_transp, &transparent, &ctm, &vp);
         assert!(buf_opaque.get_pixel(50, 50)[0] > 200);
         assert_eq!(buf_transp.get_pixel(50, 50), WHITE);
+    }
+
+    #[test]
+    fn paint_image_with_alpha_multiplies_source_coverage() {
+        let vp = Viewport::new([0.0, 0.0, 10.0, 10.0], 72);
+        let mut buf = PixelBuffer::new_filled(10, 10, WHITE);
+        let ctm = Transform2D::new(10.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+        let image = RawImage {
+            width: 1,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![0, 0, 255],
+        };
+
+        ImagePainter::paint_image_with_alpha(&mut buf, &image, &ctm, &vp, 0.5);
+
+        let center = buf.get_pixel(5, 5);
+        assert!(
+            (center[0] as i32 - 128).abs() <= 1,
+            "half-alpha blue over white should retain half red, got {center:?}"
+        );
+        assert!(
+            (center[1] as i32 - 128).abs() <= 1,
+            "half-alpha blue over white should retain half green, got {center:?}"
+        );
+        assert_eq!(center[2], 255);
     }
 
     #[test]

@@ -8,10 +8,16 @@ operations.
 ## Implemented Common Path
 
 - Alpha masks use the rendered mask surface alpha as coverage.
-- Luminosity masks derive coverage from rendered RGB luminance.
+- Luminosity masks derive coverage from rendered RGB luminance after supported
+  DeviceGray, DeviceRGB, and DeviceCMYK paint has passed through the current
+  deterministic color converter.
 - Mask BBox and Matrix are part of the Form XObject replay posture.
 - Text, image XObject, and Form XObject sources paint through the active mask.
 - Transfer functions are converted to a lookup table when present.
+- Image soft masks with `/Matte` unblend common DeviceGray/RGB/CMYK matte values
+  before applying mask alpha.
+- ExtGState soft-mask `/BC` backdrop behavior is implemented for common alpha
+  and luminosity mask groups.
 - Denied mask surface allocation fails closed through the scheduler budget.
 
 ## Memory Posture
@@ -23,14 +29,21 @@ decode limits.
 
 The denial test is `renderer_offscreen_surface_fails_closed_over_budget`.
 
-## Partial Behavior
+## Prompt 07B Closure
 
-The implementation does not claim exact matte/background parity for every PDF
-edge case. Luminosity masks use the current device-space color posture; exact
-ICC-managed luminosity conversion remains partial. Unsupported or malformed mask
+Prompt 07B adds focused fixtures for `image_smask_matte`,
+`softmask_alpha_bc_background`, `softmask_luminosity_devicegray`,
+`softmask_luminosity_devicergb`, and `softmask_luminosity_devicecmyk`. The
+multi-reference audit classifies these as either Oxide passing against agreeing
+references or Oxide inside a reference-disagreement cluster.
+
+Advanced ICC/device-link matte conversion and exact ICC/calibrated luminosity
+CMM parity remain unsupported-reported CMM work. Unsupported or malformed mask
 structures must be reported instead of silently ignored.
 
 Artifacts:
 
 - `target/prompt07-transparency-compositing/soft-mask-matrix.json`
+- `target/prompt07-transparency-compositing/prompt07b-transparency-matrix.json`
+- `target/prompt07-transparency-compositing/prompt07b-render-results.json`
 - `target/prompt07-transparency-compositing/memory-budget-report.json`

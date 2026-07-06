@@ -1260,12 +1260,18 @@ impl<'a> RenderState<'a> {
         };
 
         let ctm = self.ctm();
-        ImagePainter::paint_image_with_options(
+        let paint_alpha = if is_mask {
+            1.0
+        } else {
+            self.gs.fill_alpha as f32
+        };
+        ImagePainter::paint_image_with_options_and_alpha(
             &mut self.buf,
             &raw,
             &ctm,
             &self.viewport,
             interpolate,
+            paint_alpha,
         );
     }
 
@@ -1351,23 +1357,36 @@ impl<'a> RenderState<'a> {
                 };
                 let ctm = self.ctm();
                 let smooth_jpx = image_ref.filter.iter().any(|filter| filter == "JPXDecode");
+                let paint_alpha = if image_ref.is_mask {
+                    1.0
+                } else {
+                    self.gs.fill_alpha as f32
+                };
                 if image_interpolate(dict) {
-                    ImagePainter::paint_image_with_options(
+                    ImagePainter::paint_image_with_options_and_alpha(
                         &mut self.buf,
                         &raw,
                         &ctm,
                         &self.viewport,
                         true,
+                        paint_alpha,
                     );
                 } else if smooth_jpx {
-                    ImagePainter::paint_image_with_jpx_compat(
+                    ImagePainter::paint_image_with_jpx_compat_and_alpha(
                         &mut self.buf,
                         &raw,
                         &ctm,
                         &self.viewport,
+                        paint_alpha,
                     );
                 } else {
-                    ImagePainter::paint_image(&mut self.buf, &raw, &ctm, &self.viewport);
+                    ImagePainter::paint_image_with_alpha(
+                        &mut self.buf,
+                        &raw,
+                        &ctm,
+                        &self.viewport,
+                        paint_alpha,
+                    );
                 }
             }
             Err(err) => log::warn!("PageRenderer: image '{}' decode failed: {}", name, err),
@@ -1545,13 +1564,9 @@ impl<'a> RenderState<'a> {
             // Knockout (/K true): interior elements should knock out the group
             // backdrop rather than accumulate. We track the flag on the group
             // RenderState and apply knockout compositing at the group's
-            // backdrop seam; per-element knockout among overlapping interior
-            // elements is approximated as normal accumulation (rare in
-            // practice — typically used for non-overlapping outline effects).
-            log::debug!(
-                "PageRenderer: knockout transparency group '{}' (interior overlap approximated)",
-                name
-            );
+            // initial backdrop, so overlapping interior elements replace
+            // earlier group elements at covered pixels.
+            log::debug!("PageRenderer: knockout transparency group '{}'", name);
         }
 
         // An isolated group starts from a fully transparent backdrop. A
@@ -1633,6 +1648,10 @@ impl<'a> RenderState<'a> {
         if let Some(bbox) = extract_bbox(form_dict) {
             group_state.apply_form_bbox_clip(bbox);
         }
+        if knockout {
+            let knockout_backdrop = group_state.buf.clone();
+            group_state.buf.set_knockout_backdrop(knockout_backdrop);
+        }
 
         let ops = match crate::content::ContentParser::parse(content_bytes) {
             Ok(ops) => ops,
@@ -1647,6 +1666,7 @@ impl<'a> RenderState<'a> {
         };
         group_state.dispatch_all(&ops);
         let mut group_buf = group_state.into_buffer();
+        group_buf.clear_knockout_backdrop();
         group_buf.clear_clip();
 
         // For a non-isolated group, subtract the backdrop we seeded it with so

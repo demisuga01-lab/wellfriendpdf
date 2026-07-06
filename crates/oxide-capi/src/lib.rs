@@ -2420,7 +2420,7 @@ mod tests {
         );
         assert_eq!(
             value["report"]["prompt07_transparency_compositing"]["status"],
-            "native_foundation_with_bounded_offscreen_admission_and_multi_reference_corpus"
+            "native_foundation_with_prompt07b_closure"
         );
         assert_eq!(
             value["report"]["prompt07_transparency_compositing"]["reference_audit"]
@@ -2434,6 +2434,21 @@ mod tests {
                 .iter()
                 .any(|mode| mode == "Luminosity")
         );
+        assert_eq!(
+            value["report"]["prompt07b_transparency_closure"]["status"],
+            "complete"
+        );
+        assert_eq!(
+            value["report"]["prompt07b_transparency_closure"]["reference_audit"]
+                ["oxide_outlier_failures"],
+            0
+        );
+        assert!(value["report"]["prompt07b_transparency_closure"]
+            ["luminosity_soft_mask_color_spaces"]["supported"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|space| space == "DeviceCMYK"));
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

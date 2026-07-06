@@ -539,6 +539,7 @@ pub struct PixelBuffer {
     data: Vec<u8>,
     clip: Option<ClipMask>,
     smask: Option<AlphaMask>,
+    knockout_backdrop: Option<Box<PixelBuffer>>,
 }
 
 impl PixelBuffer {
@@ -561,6 +562,7 @@ impl PixelBuffer {
             data: vec![0u8; len],
             clip: None,
             smask: None,
+            knockout_backdrop: None,
         }
     }
 
@@ -666,22 +668,44 @@ impl PixelBuffer {
         // earlier revision composited in linear light, which is arguably more
         // physically correct but diverged from Poppler on every semi-transparent
         // fill; the benchmark reference wins here.)
-        if self.render_mode.is_high_quality() {
-            self.blend_pixel_linear_light(idx, color, eff_a);
-            return;
-        }
-
-        let dst_rgb = [
-            self.data[idx] as f32 / 255.0,
-            self.data[idx + 1] as f32 / 255.0,
-            self.data[idx + 2] as f32 / 255.0,
-        ];
-        let dst_a = self.data[idx + 3] as f32 / 255.0;
-        let src_rgb = [
-            color[0] as f32 / 255.0,
-            color[1] as f32 / 255.0,
-            color[2] as f32 / 255.0,
-        ];
+        let backdrop_pixel = self
+            .knockout_backdrop
+            .as_ref()
+            .map(|backdrop| backdrop.get_pixel(x, y));
+        let dst_pixel = backdrop_pixel.unwrap_or([
+            self.data[idx],
+            self.data[idx + 1],
+            self.data[idx + 2],
+            self.data[idx + 3],
+        ]);
+        let dst_a = dst_pixel[3] as f32 / 255.0;
+        let (src_rgb, dst_rgb) = if self.render_mode.is_high_quality() {
+            (
+                [
+                    gamma::to_linear(color[0]),
+                    gamma::to_linear(color[1]),
+                    gamma::to_linear(color[2]),
+                ],
+                [
+                    gamma::to_linear(dst_pixel[0]),
+                    gamma::to_linear(dst_pixel[1]),
+                    gamma::to_linear(dst_pixel[2]),
+                ],
+            )
+        } else {
+            (
+                [
+                    color[0] as f32 / 255.0,
+                    color[1] as f32 / 255.0,
+                    color[2] as f32 / 255.0,
+                ],
+                [
+                    dst_pixel[0] as f32 / 255.0,
+                    dst_pixel[1] as f32 / 255.0,
+                    dst_pixel[2] as f32 / 255.0,
+                ],
+            )
+        };
         let (out_rgb, out_a) =
             composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, self.blend_mode);
 
@@ -693,10 +717,16 @@ impl PixelBuffer {
             return;
         }
 
-        let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
-        self.data[idx] = to_byte(out_rgb[0]);
-        self.data[idx + 1] = to_byte(out_rgb[1]);
-        self.data[idx + 2] = to_byte(out_rgb[2]);
+        if self.render_mode.is_high_quality() {
+            self.data[idx] = gamma::to_srgb(out_rgb[0]);
+            self.data[idx + 1] = gamma::to_srgb(out_rgb[1]);
+            self.data[idx + 2] = gamma::to_srgb(out_rgb[2]);
+        } else {
+            let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+            self.data[idx] = to_byte(out_rgb[0]);
+            self.data[idx + 1] = to_byte(out_rgb[1]);
+            self.data[idx + 2] = to_byte(out_rgb[2]);
+        }
         self.data[idx + 3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
     }
 
@@ -777,35 +807,6 @@ impl PixelBuffer {
         self.data[idx + 3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
     }
 
-    fn blend_pixel_linear_light(&mut self, idx: usize, color: PixelColor, eff_a: f32) {
-        let dst_rgb = [
-            gamma::to_linear(self.data[idx]),
-            gamma::to_linear(self.data[idx + 1]),
-            gamma::to_linear(self.data[idx + 2]),
-        ];
-        let dst_a = self.data[idx + 3] as f32 / 255.0;
-        let src_rgb = [
-            gamma::to_linear(color[0]),
-            gamma::to_linear(color[1]),
-            gamma::to_linear(color[2]),
-        ];
-        let (out_rgb, out_a) =
-            composite_source_over(src_rgb, eff_a, dst_rgb, dst_a, self.blend_mode);
-
-        if out_a < 1e-6 {
-            self.data[idx] = 0;
-            self.data[idx + 1] = 0;
-            self.data[idx + 2] = 0;
-            self.data[idx + 3] = 0;
-            return;
-        }
-
-        self.data[idx] = gamma::to_srgb(out_rgb[0]);
-        self.data[idx + 1] = gamma::to_srgb(out_rgb[1]);
-        self.data[idx + 2] = gamma::to_srgb(out_rgb[2]);
-        self.data[idx + 3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
-    }
-
     /// Fill the entire buffer with a solid color.
     pub fn fill(&mut self, color: PixelColor) {
         for chunk in self.data.chunks_exact_mut(4) {
@@ -832,8 +833,10 @@ impl PixelBuffer {
             return;
         }
 
-        let should_blend =
-            color[3] < 255 || self.blend_mode != BlendMode::Normal || self.smask.is_some();
+        let should_blend = color[3] < 255
+            || self.blend_mode != BlendMode::Normal
+            || self.smask.is_some()
+            || self.knockout_backdrop.is_some();
         if should_blend {
             for row in y0..y1 {
                 for col in x0..x1 {
@@ -906,6 +909,15 @@ impl PixelBuffer {
 
     pub fn smask_mask(&self) -> Option<&AlphaMask> {
         self.smask.as_ref()
+    }
+
+    pub(crate) fn set_knockout_backdrop(&mut self, mut backdrop: PixelBuffer) {
+        backdrop.clear_knockout_backdrop();
+        self.knockout_backdrop = Some(Box::new(backdrop));
+    }
+
+    pub(crate) fn clear_knockout_backdrop(&mut self) {
+        self.knockout_backdrop = None;
     }
 
     /// True if the pixel at (x, y) is paintable under the current clip. With no
@@ -1716,6 +1728,31 @@ mod tests {
         let p = dst.get_pixel(0, 0);
         assert_eq!([p[0], p[1], p[2]], [10, 20, 30], "color replaced outright");
         assert!((p[3] as i32 - 128).abs() <= 1, "alpha scaled, got {}", p[3]);
+    }
+
+    #[test]
+    fn knockout_backdrop_prevents_interior_overlap_accumulation() {
+        let mut normal = PixelBuffer::new_filled(1, 1, WHITE);
+        normal.blend_pixel(0, 0, [255, 0, 0, 128], 1.0);
+        normal.blend_pixel(0, 0, [0, 0, 255, 128], 1.0);
+
+        let mut knockout = PixelBuffer::new_filled(1, 1, WHITE);
+        knockout.set_knockout_backdrop(PixelBuffer::new_filled(1, 1, WHITE));
+        knockout.blend_pixel(0, 0, [255, 0, 0, 128], 1.0);
+        knockout.blend_pixel(0, 0, [0, 0, 255, 128], 1.0);
+
+        let normal_pixel = normal.get_pixel(0, 0);
+        let knockout_pixel = knockout.get_pixel(0, 0);
+        assert!(
+            normal_pixel[1] < knockout_pixel[1],
+            "normal overlap should accumulate over the first paint: normal={normal_pixel:?} knockout={knockout_pixel:?}"
+        );
+        assert!(
+            (knockout_pixel[0] as i32 - 127).abs() <= 2
+                && (knockout_pixel[1] as i32 - 127).abs() <= 2
+                && knockout_pixel[2] == 255,
+            "second knockout paint should be half-blue over white: {knockout_pixel:?}"
+        );
     }
 
     #[test]

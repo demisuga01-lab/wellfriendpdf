@@ -43,8 +43,13 @@ classified the page.
 Prompt 07 narrows the transparency bucket. Common transparency groups, alpha
 state, blend modes, soft masks, isolated groups, and knockout flags now have a
 native bounded-surface path and a dedicated Poppler/PDFium/MuPDF corpus under
-`target/prompt07-transparency-compositing/`. Remaining transparency fallbacks
-must name the specific partial owner, such as full ICC group color-space
-conversion, exact knockout interior overlap, or matte/background soft-mask edge
-cases. Patterns and shadings remain Prompt 08 even when they are painted inside
-a transparency group.
+`target/prompt07-transparency-compositing/`.
+
+Prompt 07B closes the Prompt 07-owned transparency fallbacks for image alpha,
+common image `/SMask /Matte`, ExtGState soft-mask `/BC`, DeviceGray/RGB/CMYK
+luminosity masks, common DeviceGray/RGB/CMYK group color-space fixtures, and
+interior knockout overlap for supported vector/Form groups. Remaining
+transparency fallback reasons must now name later-owned work precisely:
+advanced ICC/device-link/multicolor CMM, text clipping, or Prompt 08
+pattern/shading paints. Patterns and shadings remain Prompt 08 even when they
+are painted inside a transparency group.
