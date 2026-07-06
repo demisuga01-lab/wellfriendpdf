@@ -1,6 +1,6 @@
 use crate::cancel::CancelToken;
 use crate::content::operation::{ContentOperation, Operand};
-use crate::content::state::{BlendMode, ColorSpace, GraphicsState};
+use crate::content::state::{BlendMode, ColorSpace, GraphicsState, LineCap, LineJoin};
 use crate::decode_scheduler::{DecodeMemoryBudget, DecodeMemoryToken};
 use crate::engine::{ContentEngine, PageResources};
 use crate::error::{OxideError, Result};
@@ -22,7 +22,9 @@ use crate::render::font_rasterizer::{get_fallback_font, FontRasterizer};
 use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey};
 use crate::render::image_painter::ImagePainter;
 use crate::render::line::DashState;
-use crate::render::path::{flatten_path, FillRule, FlatPath, GlyphHinting, Path, PathPainter};
+use crate::render::path::{
+    flatten_path, stroke_flat_path, FillRule, FlatPath, GlyphHinting, Path, PathPainter,
+};
 use crate::render::shading::ShadingRenderer;
 use crate::render::text_decode::{decode_text_bytes as decode_font_text_bytes, DecodedGlyph};
 use crate::render::transform::{Transform2D, Viewport};
@@ -889,11 +891,25 @@ impl<'a> RenderState<'a> {
     fn accumulate_text_clip(&mut self, glyph_path: &Path, glyph_ctm: &Transform2D) {
         let flat = flatten_path(glyph_path, glyph_ctm, &self.viewport, 0.25);
         let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, FillRule::NonZero);
+        self.accumulate_text_clip_mask(clip);
+    }
+
+    fn accumulate_text_clip_mask(&mut self, clip: ClipMask) {
         if let Some(existing) = &mut self.pending_text_clip {
             existing.union_with(&clip);
         } else {
             self.pending_text_clip = Some(clip);
         }
+    }
+
+    fn fail_closed_text_clip(&mut self) {
+        let empty = ClipMask::from_path(
+            &FlatPath::default(),
+            self.buf.width,
+            self.buf.height,
+            FillRule::NonZero,
+        );
+        self.pending_text_clip = Some(empty);
     }
 
     fn stroke_and_clear(&mut self) {
@@ -2295,6 +2311,12 @@ impl<'a> RenderState<'a> {
             &self.resources,
             self.engine.document().reader(),
         );
+        let font_dict = self.resources.fonts.get(&font_name).cloned();
+        let font_subtype = font_dict
+            .as_ref()
+            .map(detect_font_subtype)
+            .unwrap_or(FontSubtype::Unknown);
+        let is_type3 = font_subtype == FontSubtype::Type3;
         let font_bytes = self.get_font_bytes(&font_name);
         let variation = self.font_variation_request(&font_name);
         let font_hash = font_bytes
@@ -2314,9 +2336,16 @@ impl<'a> RenderState<'a> {
             if should_paint_decoded_glyph(&glyph)
                 && (text_rendering_mode_paints(text_mode) || text_rendering_mode_clips(text_mode))
             {
-                if let (Some(font_bytes), Some(font_hash)) = (font_bytes.as_ref(), font_hash) {
+                if is_type3 {
+                    if let Some(font_dict) = font_dict.as_ref() {
+                        ttf_advance = self.render_type3_glyph(font_dict, &glyph);
+                    }
+                } else if let (Some(font_bytes), Some(font_hash)) = (font_bytes.as_ref(), font_hash)
+                {
                     if !font_bytes.is_empty() {
                         ttf_advance = self.render_glyph_with_cache(GlyphRenderRequest {
+                            font_name: &font_name,
+                            font_subtype: font_subtype.clone(),
                             code: glyph.code,
                             ch: glyph.unicode,
                             glyph_name: glyph.glyph_name.as_deref(),
@@ -2375,8 +2404,15 @@ impl<'a> RenderState<'a> {
         let Some(glyph_path) = cached.path else {
             if text_rendering_mode_clips(self.gs.text.rendering_mode) {
                 log::debug!(
-                    "PageRenderer: text clipping requested but glyph outline was unavailable"
+                    "PageRenderer: text clipping requested but glyph outline was unavailable: font='{}' subtype={:?} {}={} unicode=U+{:04X} glyph_name={:?}",
+                    request.font_name,
+                    request.font_subtype,
+                    if request.is_gid { "gid" } else { "code" },
+                    request.code,
+                    request.ch as u32,
+                    request.glyph_name
                 );
+                self.fail_closed_text_clip();
             }
             return Some(advance_width);
         };
@@ -2466,6 +2502,216 @@ impl<'a> RenderState<'a> {
             other => log::warn!("PageRenderer: unknown text render mode {}", other),
         }
         Some(advance_width)
+    }
+
+    fn render_type3_glyph(
+        &mut self,
+        font_dict: &PdfDictionary,
+        glyph: &DecodedGlyph,
+    ) -> Option<f64> {
+        let fallback_name;
+        let glyph_name = if let Some(name) = glyph.glyph_name.as_deref() {
+            name
+        } else {
+            fallback_name = type3_fallback_charproc_name(glyph.unicode)?;
+            fallback_name.as_str()
+        };
+        let geometry = match self.collect_type3_glyph_geometry(font_dict, glyph_name) {
+            Some(geometry) => geometry,
+            None => {
+                if text_rendering_mode_clips(self.gs.text.rendering_mode) {
+                    log::debug!(
+                        "PageRenderer: Type3 text clipping requested but charproc '{}' did not yield supported path geometry",
+                        glyph_name
+                    );
+                    self.fail_closed_text_clip();
+                }
+                return None;
+            }
+        };
+        let glyph_ctm = self.type3_glyph_ctm(font_dict);
+        if text_rendering_mode_clips(self.gs.text.rendering_mode) {
+            self.accumulate_type3_text_clip(&geometry, &glyph_ctm);
+        }
+        if text_rendering_mode_paints(self.gs.text.rendering_mode) {
+            self.paint_type3_geometry(&geometry, &glyph_ctm);
+        }
+        geometry.advance_width
+    }
+
+    fn collect_type3_glyph_geometry(
+        &self,
+        font_dict: &PdfDictionary,
+        glyph_name: &str,
+    ) -> Option<Type3GlyphGeometry> {
+        let reader = self.engine.document().reader();
+        let stream_obj = resolve_type3_charproc_object(font_dict, glyph_name, reader)?;
+        let content = match self.scheduled_decode_stream(
+            &stream_obj,
+            reader,
+            "renderer Type3 charproc clip extraction",
+        ) {
+            Ok(content) => content,
+            Err(err) => {
+                log::debug!(
+                    "PageRenderer: Type3 charproc '{}' decode failed: {}",
+                    glyph_name,
+                    err
+                );
+                return None;
+            }
+        };
+        if content.len() > TYPE3_MAX_CHARPROC_BYTES {
+            log::debug!(
+                "PageRenderer: Type3 charproc '{}' exceeded byte cap {}",
+                glyph_name,
+                TYPE3_MAX_CHARPROC_BYTES
+            );
+            return None;
+        }
+        let ops = match crate::content::ContentParser::parse(&content) {
+            Ok(ops) => ops,
+            Err(err) => {
+                log::debug!(
+                    "PageRenderer: Type3 charproc '{}' parse failed: {}",
+                    glyph_name,
+                    err
+                );
+                return None;
+            }
+        };
+        Type3PathCollector::collect(glyph_name, &ops)
+    }
+
+    fn type3_glyph_ctm(&self, font_dict: &PdfDictionary) -> Transform2D {
+        let font_matrix = type3_font_matrix(font_dict);
+        let th = self.gs.text.horizontal_scaling / 100.0;
+        let scale_t = Transform2D::scale(self.gs.text.font_size * th, self.gs.text.font_size);
+        let rise_t = Transform2D::translation(0.0, self.gs.text.rise);
+        let tm_t = Transform2D::from(self.gs.text.tm);
+        font_matrix
+            .concat(&scale_t)
+            .concat(&rise_t)
+            .concat(&tm_t)
+            .concat(&self.ctm())
+    }
+
+    fn accumulate_type3_text_clip(
+        &mut self,
+        geometry: &Type3GlyphGeometry,
+        glyph_ctm: &Transform2D,
+    ) {
+        for fill in &geometry.fills {
+            let flat = flatten_path(&fill.path, glyph_ctm, &self.viewport, 0.25);
+            let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, fill.rule);
+            self.accumulate_text_clip_mask(clip);
+        }
+        for stroke in &geometry.strokes {
+            let flat = flatten_path(&stroke.path, glyph_ctm, &self.viewport, 0.25);
+            let width_px = (stroke.width * glyph_ctm.scale_factor() * self.viewport.scale).max(1.0);
+            let outline = stroke_flat_path(
+                &flat,
+                width_px,
+                &stroke.dash,
+                stroke.cap.clone(),
+                stroke.join.clone(),
+                stroke.miter_limit,
+            );
+            if !outline.subpaths.is_empty() {
+                let clip = ClipMask::from_path(
+                    &outline,
+                    self.buf.width,
+                    self.buf.height,
+                    FillRule::NonZero,
+                );
+                self.accumulate_text_clip_mask(clip);
+            }
+        }
+    }
+
+    fn paint_type3_geometry(&mut self, geometry: &Type3GlyphGeometry, glyph_ctm: &Transform2D) {
+        let fill_color = self.fill_pixel_color();
+        let stroke_color = self.stroke_pixel_color();
+        match self.gs.text.rendering_mode {
+            0 | 4 => {
+                for fill in &geometry.fills {
+                    PathPainter::fill(
+                        &mut self.buf,
+                        &fill.path,
+                        glyph_ctm,
+                        &self.viewport,
+                        fill_color,
+                        fill.rule,
+                    );
+                }
+            }
+            1 | 5 => {
+                for fill in &geometry.fills {
+                    PathPainter::stroke_with_style(
+                        &mut self.buf,
+                        &fill.path,
+                        glyph_ctm,
+                        &self.viewport,
+                        stroke_color,
+                        self.gs.line_width,
+                        &DashState::solid(),
+                        &self.gs.line_cap,
+                        &self.gs.line_join,
+                        self.gs.miter_limit,
+                    );
+                }
+                self.paint_type3_strokes(geometry, glyph_ctm, stroke_color);
+            }
+            2 | 6 => {
+                for fill in &geometry.fills {
+                    PathPainter::fill(
+                        &mut self.buf,
+                        &fill.path,
+                        glyph_ctm,
+                        &self.viewport,
+                        fill_color,
+                        fill.rule,
+                    );
+                    PathPainter::stroke_with_style(
+                        &mut self.buf,
+                        &fill.path,
+                        glyph_ctm,
+                        &self.viewport,
+                        stroke_color,
+                        self.gs.line_width,
+                        &DashState::solid(),
+                        &self.gs.line_cap,
+                        &self.gs.line_join,
+                        self.gs.miter_limit,
+                    );
+                }
+                self.paint_type3_strokes(geometry, glyph_ctm, stroke_color);
+            }
+            3 | 7 => {}
+            _ => {}
+        }
+    }
+
+    fn paint_type3_strokes(
+        &mut self,
+        geometry: &Type3GlyphGeometry,
+        glyph_ctm: &Transform2D,
+        stroke_color: PixelColor,
+    ) {
+        for stroke in &geometry.strokes {
+            PathPainter::stroke_with_style(
+                &mut self.buf,
+                &stroke.path,
+                glyph_ctm,
+                &self.viewport,
+                stroke_color,
+                stroke.width,
+                &stroke.dash,
+                &stroke.cap,
+                &stroke.join,
+                stroke.miter_limit,
+            );
+        }
     }
 
     #[cfg(test)]
@@ -2590,6 +2836,8 @@ impl<'a> RenderState<'a> {
 }
 
 struct GlyphRenderRequest<'a> {
+    font_name: &'a str,
+    font_subtype: FontSubtype,
     code: u16,
     ch: char,
     glyph_name: Option<&'a str>,
@@ -2601,6 +2849,373 @@ struct GlyphRenderRequest<'a> {
     upem: f64,
     offset_x: f64,
     offset_y: f64,
+}
+
+const TYPE3_MAX_CHARPROC_BYTES: usize = 1_048_576;
+const TYPE3_MAX_CHARPROC_OPS: usize = 4096;
+const TYPE3_MAX_PATH_SEGMENTS: usize = 8192;
+const TYPE3_MAX_Q_DEPTH: usize = 32;
+
+#[derive(Clone)]
+struct Type3Fill {
+    path: Path,
+    rule: FillRule,
+}
+
+#[derive(Clone)]
+struct Type3Stroke {
+    path: Path,
+    width: f64,
+    dash: DashState,
+    cap: LineCap,
+    join: LineJoin,
+    miter_limit: f64,
+}
+
+struct Type3GlyphGeometry {
+    fills: Vec<Type3Fill>,
+    strokes: Vec<Type3Stroke>,
+    advance_width: Option<f64>,
+}
+
+#[derive(Clone)]
+struct Type3CollectorState {
+    ctm: Transform2D,
+    line_width: f64,
+    dash: DashState,
+    cap: LineCap,
+    join: LineJoin,
+    miter_limit: f64,
+}
+
+struct Type3PathCollector {
+    glyph_name: String,
+    path: Path,
+    fills: Vec<Type3Fill>,
+    strokes: Vec<Type3Stroke>,
+    state: Type3CollectorState,
+    stack: Vec<Type3CollectorState>,
+    advance_width: Option<f64>,
+    unsupported: Option<String>,
+}
+
+impl Type3PathCollector {
+    fn collect(glyph_name: &str, ops: &[ContentOperation]) -> Option<Type3GlyphGeometry> {
+        if ops.len() > TYPE3_MAX_CHARPROC_OPS {
+            log::debug!(
+                "PageRenderer: Type3 charproc '{}' exceeded op cap {}",
+                glyph_name,
+                TYPE3_MAX_CHARPROC_OPS
+            );
+            return None;
+        }
+
+        let mut collector = Self {
+            glyph_name: glyph_name.to_string(),
+            path: Path::new(),
+            fills: Vec::new(),
+            strokes: Vec::new(),
+            state: Type3CollectorState {
+                ctm: Transform2D::identity(),
+                line_width: 1.0,
+                dash: DashState::solid(),
+                cap: LineCap::Butt,
+                join: LineJoin::Miter,
+                miter_limit: 10.0,
+            },
+            stack: Vec::new(),
+            advance_width: None,
+            unsupported: None,
+        };
+
+        for op in ops {
+            collector.dispatch(op);
+            if collector.unsupported.is_some() || collector.path_too_large() {
+                break;
+            }
+        }
+
+        if let Some(reason) = collector.unsupported {
+            log::debug!(
+                "PageRenderer: Type3 charproc '{}' unsupported for clipping: {}",
+                collector.glyph_name,
+                reason
+            );
+            return None;
+        }
+        if collector.fills.is_empty() && collector.strokes.is_empty() {
+            return None;
+        }
+        Some(Type3GlyphGeometry {
+            fills: collector.fills,
+            strokes: collector.strokes,
+            advance_width: collector.advance_width,
+        })
+    }
+
+    fn dispatch(&mut self, op: &ContentOperation) {
+        match op.operator.as_str() {
+            "m" => {
+                if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
+                    let (x, y) = self.state.ctm.transform_point(x, y);
+                    self.path.move_to(x, y);
+                }
+            }
+            "l" => {
+                if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
+                    let (x, y) = self.state.ctm.transform_point(x, y);
+                    self.path.line_to(x, y);
+                }
+            }
+            "c" => {
+                if let (Some(x1), Some(y1), Some(x2), Some(y2), Some(x3), Some(y3)) = (
+                    op.number(0),
+                    op.number(1),
+                    op.number(2),
+                    op.number(3),
+                    op.number(4),
+                    op.number(5),
+                ) {
+                    let (x1, y1) = self.state.ctm.transform_point(x1, y1);
+                    let (x2, y2) = self.state.ctm.transform_point(x2, y2);
+                    let (x3, y3) = self.state.ctm.transform_point(x3, y3);
+                    self.path.curve_to(x1, y1, x2, y2, x3, y3);
+                }
+            }
+            "v" => {
+                if let (Some(x2), Some(y2), Some(x3), Some(y3)) =
+                    (op.number(0), op.number(1), op.number(2), op.number(3))
+                {
+                    let (cx, cy) = self.path.current_point.unwrap_or((x2, y2));
+                    let (x2, y2) = self.state.ctm.transform_point(x2, y2);
+                    let (x3, y3) = self.state.ctm.transform_point(x3, y3);
+                    self.path.curve_to(cx, cy, x2, y2, x3, y3);
+                }
+            }
+            "y" => {
+                if let (Some(x1), Some(y1), Some(x3), Some(y3)) =
+                    (op.number(0), op.number(1), op.number(2), op.number(3))
+                {
+                    let (x1, y1) = self.state.ctm.transform_point(x1, y1);
+                    let (x3, y3) = self.state.ctm.transform_point(x3, y3);
+                    self.path.curve_to(x1, y1, x3, y3, x3, y3);
+                }
+            }
+            "h" => self.path.close(),
+            "re" => {
+                if let (Some(x), Some(y), Some(w), Some(h)) =
+                    (op.number(0), op.number(1), op.number(2), op.number(3))
+                {
+                    self.transformed_rect(x, y, w, h);
+                }
+            }
+            "f" | "F" => self.collect_fill(FillRule::NonZero),
+            "f*" => self.collect_fill(FillRule::EvenOdd),
+            "S" => self.collect_stroke(),
+            "s" => {
+                self.path.close();
+                self.collect_stroke();
+            }
+            "B" => self.collect_fill_stroke(FillRule::NonZero),
+            "B*" => self.collect_fill_stroke(FillRule::EvenOdd),
+            "b" => {
+                self.path.close();
+                self.collect_fill_stroke(FillRule::NonZero);
+            }
+            "b*" => {
+                self.path.close();
+                self.collect_fill_stroke(FillRule::EvenOdd);
+            }
+            "n" => self.path.clear(),
+            "cm" => self.op_cm(op),
+            "q" => {
+                if self.stack.len() >= TYPE3_MAX_Q_DEPTH {
+                    self.unsupported = Some("graphics state depth cap reached".to_string());
+                } else {
+                    self.stack.push(self.state.clone());
+                }
+            }
+            "Q" => {
+                if let Some(state) = self.stack.pop() {
+                    self.state = state;
+                }
+            }
+            "w" => {
+                self.state.line_width = op.number(0).unwrap_or(1.0).max(0.0);
+            }
+            "J" => {
+                self.state.cap = match op.number(0).map(|n| n as i32).unwrap_or(0) {
+                    1 => LineCap::Round,
+                    2 => LineCap::ProjectingSquare,
+                    _ => LineCap::Butt,
+                };
+            }
+            "j" => {
+                self.state.join = match op.number(0).map(|n| n as i32).unwrap_or(0) {
+                    1 => LineJoin::Round,
+                    2 => LineJoin::Bevel,
+                    _ => LineJoin::Miter,
+                };
+            }
+            "M" => {
+                self.state.miter_limit = op.number(0).unwrap_or(10.0).max(1.0);
+            }
+            "d" => self.op_dash(op),
+            "d0" | "d1" => {
+                self.advance_width = op
+                    .number(0)
+                    .filter(|value| value.is_finite() && *value > 0.0);
+            }
+            // Color state does not alter clip geometry.
+            "G" | "g" | "RG" | "rg" | "K" | "k" | "CS" | "cs" | "SC" | "SCN" | "sc" | "scn"
+            | "ri" | "i" => {}
+            // Resource-heavy glyphs need a real recursive Type3 interpreter,
+            // not a bounding-box fallback.
+            "Do" | "sh" | "BI" | "ID" | "inline_image_data" | "Tj" | "TJ" | "'" | "\"" | "BT"
+            | "ET" | "W" | "W*" => {
+                self.unsupported = Some(format!("operator '{}' is not path-only", op.operator));
+            }
+            _ => {}
+        }
+    }
+
+    fn op_cm(&mut self, op: &ContentOperation) {
+        let m = Transform2D::from([
+            op.number(0).unwrap_or(1.0),
+            op.number(1).unwrap_or(0.0),
+            op.number(2).unwrap_or(0.0),
+            op.number(3).unwrap_or(1.0),
+            op.number(4).unwrap_or(0.0),
+            op.number(5).unwrap_or(0.0),
+        ]);
+        self.state.ctm = m.concat(&self.state.ctm);
+    }
+
+    fn op_dash(&mut self, op: &ContentOperation) {
+        let pattern = op
+            .operand(0)
+            .and_then(Operand::as_array)
+            .map(|items| items.iter().filter_map(Operand::as_number).collect())
+            .unwrap_or_default();
+        let phase = op.number(1).unwrap_or(0.0);
+        self.state.dash = DashState::new(pattern, phase);
+    }
+
+    fn transformed_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
+        let points = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
+        let [(x0, y0), (x1, y1), (x2, y2), (x3, y3)] =
+            points.map(|(px, py)| self.state.ctm.transform_point(px, py));
+        self.path.move_to(x0, y0);
+        self.path.line_to(x1, y1);
+        self.path.line_to(x2, y2);
+        self.path.line_to(x3, y3);
+        self.path.close();
+    }
+
+    fn collect_fill_stroke(&mut self, rule: FillRule) {
+        let path = self.path.clone();
+        self.collect_fill(rule);
+        if !path.is_empty() {
+            self.strokes.push(Type3Stroke {
+                path,
+                width: self.effective_line_width(),
+                dash: self.state.dash.clone(),
+                cap: self.state.cap.clone(),
+                join: self.state.join.clone(),
+                miter_limit: self.state.miter_limit,
+            });
+        }
+    }
+
+    fn collect_fill(&mut self, rule: FillRule) {
+        if !self.path.is_empty() {
+            self.fills.push(Type3Fill {
+                path: self.path.clone(),
+                rule,
+            });
+        }
+        self.path.clear();
+    }
+
+    fn collect_stroke(&mut self) {
+        if !self.path.is_empty() {
+            self.strokes.push(Type3Stroke {
+                path: self.path.clone(),
+                width: self.effective_line_width(),
+                dash: self.state.dash.clone(),
+                cap: self.state.cap.clone(),
+                join: self.state.join.clone(),
+                miter_limit: self.state.miter_limit,
+            });
+        }
+        self.path.clear();
+    }
+
+    fn effective_line_width(&self) -> f64 {
+        (self.state.line_width * self.state.ctm.scale_factor()).max(0.0)
+    }
+
+    fn path_too_large(&mut self) -> bool {
+        let segments = self.path.segments.len()
+            + self
+                .fills
+                .iter()
+                .map(|fill| fill.path.segments.len())
+                .sum::<usize>()
+            + self
+                .strokes
+                .iter()
+                .map(|stroke| stroke.path.segments.len())
+                .sum::<usize>();
+        if segments > TYPE3_MAX_PATH_SEGMENTS {
+            self.unsupported = Some(format!(
+                "path segment cap {} exceeded",
+                TYPE3_MAX_PATH_SEGMENTS
+            ));
+            true
+        } else {
+            false
+        }
+    }
+}
+
+fn type3_fallback_charproc_name(ch: char) -> Option<String> {
+    match ch {
+        '\u{FFFD}' | '\0' => None,
+        ' ' => Some("space".to_string()),
+        other if other.is_ascii_alphanumeric() => Some(other.to_string()),
+        other => Some(format!("uni{:04X}", other as u32)),
+    }
+}
+
+fn resolve_type3_charproc_object(
+    font_dict: &PdfDictionary,
+    glyph_name: &str,
+    reader: &crate::reader::PdfReader,
+) -> Option<PdfObject> {
+    let charprocs_obj = font_dict.get("CharProcs")?.clone();
+    let charprocs = match reader.resolve(charprocs_obj).ok()? {
+        PdfObject::Dictionary(dict) => dict,
+        _ => return None,
+    };
+    let glyph_obj = charprocs.get(glyph_name)?.clone();
+    match reader.resolve(glyph_obj).ok()? {
+        PdfObject::Stream { dict, raw } => Some(PdfObject::Stream { dict, raw }),
+        _ => None,
+    }
+}
+
+fn type3_font_matrix(font_dict: &PdfDictionary) -> Transform2D {
+    let Some(items) = font_dict.get("FontMatrix").and_then(PdfObject::as_array) else {
+        return Transform2D::scale(0.001, 0.001);
+    };
+    let values: Vec<f64> = items.iter().filter_map(PdfObject::as_number).collect();
+    if values.len() < 6 || !values.iter().all(|value| value.is_finite()) {
+        return Transform2D::scale(0.001, 0.001);
+    }
+    Transform2D::from([
+        values[0], values[1], values[2], values[3], values[4], values[5],
+    ])
 }
 
 #[cfg(test)]

@@ -608,7 +608,7 @@ struct StrokeSegment {
     normal: (f64, f64),
 }
 
-fn stroke_flat_path(
+pub(crate) fn stroke_flat_path(
     flat: &FlatPath,
     width_px: f64,
     dash: &DashState,

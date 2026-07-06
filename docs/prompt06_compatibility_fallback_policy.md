@@ -51,7 +51,8 @@ luminosity masks, common DeviceGray/RGB/CMYK group color-space fixtures, and
 interior knockout overlap for supported vector/Form groups.
 
 Prompt 08 removes text clipping, common shadings, and tiling patterns from the
-generic compatibility fallback set. Remaining fallbacks must name exact limits:
-advanced ICC/device-link/multicolor CMM, Type3 text-clip outline extraction,
-missing glyph outlines, exact Type 7 tensor interior interpolation, malformed
-stream fail-closed, or pattern recursion/step safety caps.
+generic compatibility fallback set. Prompt 08B closes the common Type3/CID
+text-clip and Type 7 tensor-interior leftovers. Remaining fallbacks must name
+exact limits: advanced ICC/device-link/multicolor CMM, image/resource-only Type3
+charprocs that fail closed, exotic missing glyph outlines, malformed streams,
+or pattern/Type3/patch recursion and count safety caps.

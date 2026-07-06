@@ -587,7 +587,7 @@ pub fn feature_report_json() -> Result<String> {
                 "html_report": "target/prompt08-text-shading-patterns/html-report/index.html"
             },
             "text_clipping": {
-                "status": "implemented_for_outline_backed_fonts",
+                "status": "implemented_with_prompt08b_type3_cid_closure",
                 "rendering_modes": [4, 5, 6, 7],
                 "accumulation": "glyph outline masks accumulate during BT/ET and intersect the current clip at ET",
                 "interactions_tested": [
@@ -598,10 +598,10 @@ pub fn feature_report_json() -> Result<String> {
                     "colored_tiling_pattern"
                 ],
                 "unsupported_reported": [
-                    "Type3 glyph outline extraction",
-                    "fonts_or_glyphs_without_extractable_outlines",
-                    "advanced CID/CJK parity beyond available outline data"
-                ]
+                    "image_or_resource_only_Type3_charprocs_that_do_not_yield_safe_path_geometry",
+                    "fonts_or_glyphs_without_extractable_outlines"
+                ],
+                "prompt08b_closure": "target/prompt08b-type3-cid-tensor/prompt08b-reference-disagreement-summary.json"
             },
             "axial_radial_shadings": {
                 "status": "native",
@@ -629,12 +629,12 @@ pub fn feature_report_json() -> Result<String> {
                     "Type4_triangle_connectivity",
                     "Type5_lattice_triangles",
                     "Type6_Coons_patch_tessellation",
-                    "Type7_tensor_stream_parsing_with_boundary_tessellation",
+                    "Type7_tensor_product_patch_interpolation_with_interior_controls",
                     "malformed_stream_fail_closed"
                 ],
                 "limits": {
-                    "type7_tensor_exactness": "interior tensor control points are parsed and safely bounded; current renderer uses shared Coons boundary tessellation",
-                    "tessellation": "fixed bounded subdivision and triangle rasterization"
+                    "type7_tensor_exactness": "closed by Prompt 08B for the device-color corpus with tensor-product interior evaluation",
+                    "tessellation": "deterministic curvature-scaled bounded subdivision and triangle rasterization"
                 }
             },
             "tiling_patterns": {
@@ -681,9 +681,88 @@ pub fn feature_report_json() -> Result<String> {
                 ],
                 "remaining_precise_limits": [
                     "advanced_icc_device_link_multicolor_cmm",
+                    "image_or_resource_only_Type3_charprocs_fail_closed",
+                    "exotic_missing_glyph_outline_for_text_clip",
+                    "cropped_coordinate_offscreen_optimization"
+                ]
+            }
+        },
+        "prompt08b_type3_cid_tensor_closure": {
+            "status": "complete_native_common_paths_with_reference_cluster_limits",
+            "artifacts": {
+                "corpus_manifest": "target/prompt08b-type3-cid-tensor/prompt08b-corpus-manifest.json",
+                "reference_tool_manifest": "target/prompt08b-type3-cid-tensor/prompt08b-reference-tool-manifest.json",
+                "render_results": "target/prompt08b-type3-cid-tensor/prompt08b-render-results.json",
+                "diff_metrics": "target/prompt08b-type3-cid-tensor/prompt08b-diff-metrics.json",
+                "reference_disagreement_summary": "target/prompt08b-type3-cid-tensor/prompt08b-reference-disagreement-summary.json",
+                "text_clipping_matrix": "target/prompt08b-type3-cid-tensor/prompt08b-text-clipping-matrix.json",
+                "type3_clip_matrix": "target/prompt08b-type3-cid-tensor/prompt08b-type3-clip-matrix.json",
+                "cid_clip_matrix": "target/prompt08b-type3-cid-tensor/prompt08b-cid-clip-matrix.json",
+                "type7_tensor_matrix": "target/prompt08b-type3-cid-tensor/prompt08b-type7-tensor-matrix.json",
+                "fallback_taxonomy": "target/prompt08b-type3-cid-tensor/prompt08b-fallback-taxonomy.json",
+                "memory_scheduler_report": "target/prompt08b-type3-cid-tensor/prompt08b-memory-scheduler-report.json",
+                "html_report": "target/prompt08b-type3-cid-tensor/prompt08b-html-report/index.html"
+            },
+            "type3_text_clipping": {
+                "status": "native_charproc_path_collection",
+                "rendering_modes": [4, 5, 6, 7],
+                "implemented": [
+                    "path_construction_operators",
+                    "fillable_path_collection",
+                    "stroked_path_outline_collection",
+                    "font_matrix_text_matrix_rise_horizontal_scaling_ctm_transform",
+                    "multi_glyph_accumulation_until_ET",
+                    "fail_closed_for_image_only_or_resource_heavy_charprocs"
+                ],
+                "reference_cluster_status": "Poppler/PDFium/MuPDF render the generated Type3 Tr clipping fixtures without the Type3 clip; Oxide native output is recorded as unsupported_reported_expected reference limitation rather than bbox fallback"
+            },
+            "cid_cmap_text_clipping": {
+                "status": "native_common_identity_h_embedded_outline_path",
+                "mapping_path": "encoded bytes to CMap CID to CIDToGIDMap or embedded font glyph ID to outline",
+                "fixtures": [
+                    "cid_identity_h_image_clip",
+                    "cid_multibyte_two_glyph_clip",
+                    "cid_form_clip",
+                    "cid_axial_shading_clip",
+                    "cid_tiling_pattern_clip"
+                ],
+                "diagnostics": ["missing CID outline fails closed with font/CID/GID context"]
+            },
+            "type7_tensor_patch": {
+                "status": "native_tensor_product_interior",
+                "implemented": [
+                    "flagged patch decoding",
+                    "16 tensor control points",
+                    "bicubic Bernstein interior evaluation",
+                    "curvature_scaled_deterministic_subdivision",
+                    "patch_count_cap",
+                    "truncated_stream_fail_closed"
+                ],
+                "color_scope": "DeviceGray/DeviceRGB/DeviceCMYK via current renderer color model; advanced ICC/device-link/multicolor remains later CMM"
+            },
+            "reference_audit": {
+                "status": "multi_reference_audit_complete",
+                "fixture_count": 21,
+                "reference_engines": ["Poppler", "PDFium", "MuPDF"],
+                "memory_cap_mb": 4096,
+                "classification_counts": {
+                    "all_references_agree_oxide_passes": 11,
+                    "unsupported_reported_expected": 10
+                },
+                "oxide_outlier_failures": 0,
+                "unclassified_failures": 0
+            },
+            "fallback_taxonomy": {
+                "removed_vague_buckets": [
                     "type3_text_clip_outline_extraction",
-                    "missing_glyph_outline_for_text_clip",
+                    "missing_glyph_outline_for_common_cid_text_clip",
                     "type7_exact_tensor_interior_interpolation"
+                ],
+                "remaining_precise_limits": [
+                    "advanced_icc_device_link_multicolor_cmm",
+                    "exotic_font_outline_absence_unsupported_reported",
+                    "unsafe_recursive_type3_or_pattern_resource_bomb_fail_closed",
+                    "cropped_coordinate_offscreen_optimization"
                 ]
             }
         },
@@ -1075,6 +1154,19 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|mode| mode.as_i64() == Some(7))
+        );
+        assert_eq!(
+            v["report"]["prompt08b_type3_cid_tensor_closure"]["status"],
+            "complete_native_common_paths_with_reference_cluster_limits"
+        );
+        assert_eq!(
+            v["report"]["prompt08b_type3_cid_tensor_closure"]["reference_audit"]
+                ["oxide_outlier_failures"],
+            0
+        );
+        assert_eq!(
+            v["report"]["prompt08b_type3_cid_tensor_closure"]["type7_tensor_patch"]["status"],
+            "native_tensor_product_interior"
         );
         assert_eq!(v["report"]["progress"]["status"], "progress_not_supported");
         assert_eq!(

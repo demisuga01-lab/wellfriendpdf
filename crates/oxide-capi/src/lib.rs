@@ -2466,6 +2466,19 @@ mod tests {
                 .iter()
                 .any(|mode| mode.as_i64() == Some(7))
         );
+        assert_eq!(
+            value["report"]["prompt08b_type3_cid_tensor_closure"]["status"],
+            "complete_native_common_paths_with_reference_cluster_limits"
+        );
+        assert_eq!(
+            value["report"]["prompt08b_type3_cid_tensor_closure"]["reference_audit"]
+                ["oxide_outlier_failures"],
+            0
+        );
+        assert_eq!(
+            value["report"]["prompt08b_type3_cid_tensor_closure"]["type7_tensor_patch"]["status"],
+            "native_tensor_product_interior"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

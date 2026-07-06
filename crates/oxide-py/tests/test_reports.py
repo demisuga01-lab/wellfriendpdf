@@ -127,6 +127,10 @@ def test_module_level_reports():
     assert prompt08["reference_audit"]["memory_cap_mb"] == 4096
     assert 7 in prompt08["text_clipping"]["rendering_modes"]
     assert "colored" in prompt08["tiling_patterns"]["paint_types"]
+    prompt08b = feature["prompt08b_type3_cid_tensor_closure"]
+    assert prompt08b["status"] == "complete_native_common_paths_with_reference_cluster_limits"
+    assert prompt08b["reference_audit"]["oxide_outlier_failures"] == 0
+    assert prompt08b["type7_tensor_patch"]["status"] == "native_tensor_product_interior"
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

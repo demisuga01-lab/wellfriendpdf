@@ -57,5 +57,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"rendering_modes\":[4,5,6,7]")) {
             throw new AssertionError("feature report missing Prompt 08 text/shading/pattern posture");
         }
+        if (!feature.contains("\"prompt08b_type3_cid_tensor_closure\"")
+                || !feature.contains("complete_native_common_paths_with_reference_cluster_limits")
+                || !feature.contains("native_tensor_product_interior")) {
+            throw new AssertionError("feature report missing Prompt 08B Type3/CID/tensor closure posture");
+        }
     }
 }

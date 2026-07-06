@@ -101,6 +101,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt08_text_clipping_shading_patterns\"", feature);
         Assert.Contains("native_common_paths_with_bounded_unsupported_reports", feature);
         Assert.Contains("\"rendering_modes\":[4,5,6,7]", feature);
+        Assert.Contains("\"prompt08b_type3_cid_tensor_closure\"", feature);
+        Assert.Contains("complete_native_common_paths_with_reference_cluster_limits", feature);
+        Assert.Contains("native_tensor_product_interior", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

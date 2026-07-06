@@ -5,8 +5,8 @@
   "abi_version": 1,
   "reports": {
     "feature": {
-      "sha256": "43d78aba1ecd8108664437a0be53b8dbe6f04de2c94cbde648d5812106df2540",
-      "bytes": 1146
+      "sha256": "503c379663594cef9bb80a4e4900118c83efe72de75b0b6c23c8f5fbbddd1b2a",
+      "bytes": 28587
     },
     "security": {
       "sha256": "a9a1e700acc839a2b224c48cc9edc2ea1e7a7ea2faa8ccbf5d1e9eb6b90ae899",

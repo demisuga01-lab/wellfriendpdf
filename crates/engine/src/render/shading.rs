@@ -7,7 +7,7 @@
 //! - Axial and radial shadings (ShadingTypes 2 and 3).
 //!
 //! - Gouraud and patch mesh shadings (ShadingTypes 4-7), with bounded stream
-//!   decoding and tessellation.
+//!   decoding, Coons surfaces, and Type 7 tensor-product interpolation.
 //!
 //! Rendering is pixel-by-pixel: for each device pixel we map back to user
 //! space, project onto the gradient geometry to obtain the parametric value
@@ -194,6 +194,7 @@ fn shading_color_space_name(dict: &PdfDictionary) -> String {
 pub struct ShadingRenderer;
 
 const SHADING_LUT_STEPS: usize = 4096;
+const MAX_PATCH_MESH_PATCHES: usize = 4096;
 
 const BAYER_8X8: [u8; 64] = [
     0, 48, 12, 60, 3, 51, 15, 63, 32, 16, 44, 28, 35, 19, 47, 31, 8, 56, 4, 52, 11, 59, 7, 55, 40,
@@ -813,8 +814,9 @@ impl ShadingRenderer {
     }
 
     /// ShadingType 6 (Coons) and 7 (tensor-product) patch meshes. Each patch is
-    /// subdivided into a fixed grid of Gouraud quads using bilinear corner-color
-    /// interpolation and bicubic Bezier surface positions.
+    /// subdivided into a bounded Gouraud grid using bilinear corner-color
+    /// interpolation and bicubic surface positions. Type 7 retains the tensor
+    /// interior controls instead of degrading to a boundary-only Coons surface.
     fn paint_patch_mesh(
         dict: &PdfDictionary,
         ctm: &Transform2D,
@@ -845,8 +847,16 @@ impl ShadingRenderer {
         // corner colors, for edge sharing (flags 1/2/3).
         let mut prev_pts: Vec<(f64, f64)> = Vec::new();
         let mut prev_cols: Vec<RenderColor> = Vec::new();
+        let mut patch_count = 0usize;
 
         loop {
+            if patch_count >= MAX_PATCH_MESH_PATCHES {
+                log::warn!(
+                    "patch mesh: patch count exceeded cap {}",
+                    MAX_PATCH_MESH_PATCHES
+                );
+                break;
+            }
             if br.bits_remaining() < dec.bits_per_flag {
                 break;
             }
@@ -919,7 +929,7 @@ impl ShadingRenderer {
 
             // Assemble the full 12 (Coons) control points and 4 corner colors,
             // sharing an edge from the previous patch when flag != 0.
-            let (pts12, cols4) = match assemble_patch(
+            let (patch_pts, cols4) = match assemble_patch(
                 flag,
                 &new_pts,
                 &new_cols,
@@ -931,11 +941,15 @@ impl ShadingRenderer {
                 None => break,
             };
 
-            // Render the patch by fixed-grid subdivision.
-            render_coons_patch(buf, &pts12, &cols4, &to_device);
+            if shading_type == 7 {
+                render_tensor_patch(buf, &patch_pts, &cols4, &to_device);
+            } else {
+                render_coons_patch(buf, &patch_pts, &cols4, &to_device);
+            }
 
-            prev_pts = pts12;
+            prev_pts = patch_pts;
             prev_cols = cols4;
+            patch_count += 1;
         }
     }
 }
@@ -945,12 +959,11 @@ type PatchPoint = (f64, f64);
 /// A patch's resolved control points and 4 corner colors.
 type PatchData = (Vec<PatchPoint>, Vec<RenderColor>);
 
-/// Assemble a patch's full 12 Coons boundary control points and 4 corner colors,
-/// honoring edge-sharing flags 1/2/3 (the new patch shares one edge with the
-/// previous one). For tensor patches (type 7) the 4 internal points (p13..p16,
-/// stream indices 12..15) are dropped here — the Coons surface in
-/// [`coons_point`] uses only the 12 boundary points, which is visually very
-/// close for the smooth fills these files use.
+/// Assemble a patch's full control points and 4 corner colors, honoring
+/// edge-sharing flags 1/2/3 (the new patch shares one edge with the previous
+/// one). Coons patches carry 12 boundary points. Tensor patches carry those 12
+/// boundary points plus the 4 interior controls required for Type 7 bicubic
+/// tensor-product evaluation.
 ///
 /// **Spec mapping (ISO 32000-1 §8.7.4.5.7, Table 85; cross-checked against
 /// Apache PDFBox `Patch`/`CoonsPatch`, GSoC 2014, Apache-2.0).** The boundary
@@ -979,19 +992,11 @@ fn assemble_patch(
     prev_cols: &[RenderColor],
     shading_type: i64,
 ) -> Option<PatchData> {
-    // Keep only the 12 boundary points; tensor patches carry 4 extra interior
-    // points after them (stream indices 12..15) that the Coons surface ignores.
-    let take_coons = |pts: &[(f64, f64)]| -> Vec<(f64, f64)> {
-        if shading_type == 7 {
-            pts.iter().take(12).copied().collect()
-        } else {
-            pts.to_vec()
-        }
-    };
+    let required_points = if shading_type == 7 { 16 } else { 12 };
 
     if flag == 0 {
-        let pts = take_coons(new_pts);
-        if pts.len() < 12 || new_cols.len() < 4 {
+        let pts: Vec<_> = new_pts.iter().take(required_points).copied().collect();
+        if pts.len() < required_points || new_cols.len() < 4 {
             return None;
         }
         return Some((pts, new_cols.to_vec()));
@@ -999,25 +1004,24 @@ fn assemble_patch(
 
     // Shared-edge patches reuse one edge (4 points + 2 colors) of the previous
     // patch; the previous patch must therefore be fully formed.
-    if prev_pts.len() < 12 || prev_cols.len() < 4 {
+    if prev_pts.len() < required_points || prev_cols.len() < 4 {
         return None;
     }
     let shared_edge: [usize; 4] = shared_edge_indices(flag);
     let shared_cols: [usize; 2] = shared_color_indices(flag);
 
-    // new boundary = [shared edge p1..p4] ++ [8 new points p5..p12].
-    let mut pts = Vec::with_capacity(12);
+    // new boundary/tensor = [shared edge p1..p4] ++ stream points p5...
+    let mut pts = Vec::with_capacity(required_points);
     for &i in &shared_edge {
         pts.push(prev_pts[i]);
     }
-    let new_coons = take_coons(new_pts);
-    for &p in new_coons.iter().take(8) {
+    for &p in new_pts.iter().take(required_points.saturating_sub(4)) {
         pts.push(p);
     }
-    if pts.len() < 12 {
+    if pts.len() < required_points {
         return None;
     }
-    pts.truncate(12);
+    pts.truncate(required_points);
 
     // new corner colors = [shared c1, c2] ++ [2 new colors c3, c4].
     let mut cols = Vec::with_capacity(4);
@@ -1124,6 +1128,112 @@ fn coons_point(p: &[(f64, f64)], u: f64, v: f64) -> (f64, f64) {
             + u * (1.0 - v) * p10.1
             + u * v * p11.1);
     (sx, sy)
+}
+
+/// Render a Type 7 tensor-product patch. The first 12 points trace the same
+/// boundary order as a Coons patch; points 13..16 are the tensor interior
+/// controls. The 4x4 grid below follows the PDFBox/ISO boundary convention.
+fn render_tensor_patch(
+    buf: &mut PixelBuffer,
+    pts16: &[(f64, f64)],
+    cols4: &[RenderColor],
+    to_device: &Transform2D,
+) {
+    if pts16.len() < 16 || cols4.len() < 4 {
+        return;
+    }
+    let n = tensor_subdivision_count(pts16);
+    let mut grid: Vec<Vec<MeshVertex>> = Vec::with_capacity(n + 1);
+    for iu in 0..=n {
+        let u = iu as f64 / n as f64;
+        let mut row = Vec::with_capacity(n + 1);
+        for iv in 0..=n {
+            let v = iv as f64 / n as f64;
+            let (ux, uy) = tensor_point(pts16, u, v);
+            let (dx, dy) = to_device.transform_point(ux, uy);
+            let color = bilerp_color(cols4, u, v);
+            row.push(MeshVertex { dx, dy, color });
+        }
+        grid.push(row);
+    }
+    for iu in 0..n {
+        for iv in 0..n {
+            let a = grid[iu][iv];
+            let b = grid[iu + 1][iv];
+            let c = grid[iu][iv + 1];
+            let d = grid[iu + 1][iv + 1];
+            fill_gouraud_triangle(buf, a, b, c);
+            fill_gouraud_triangle(buf, b, d, c);
+        }
+    }
+}
+
+fn tensor_subdivision_count(p: &[(f64, f64)]) -> usize {
+    let min_x = p.iter().map(|pt| pt.0).fold(f64::INFINITY, f64::min);
+    let max_x = p.iter().map(|pt| pt.0).fold(f64::NEG_INFINITY, f64::max);
+    let min_y = p.iter().map(|pt| pt.1).fold(f64::INFINITY, f64::min);
+    let max_y = p.iter().map(|pt| pt.1).fold(f64::NEG_INFINITY, f64::max);
+    let span = (max_x - min_x).abs().hypot((max_y - min_y).abs()).max(1.0);
+    let corners = [p[0], p[3], p[6], p[9]];
+    let probes = [
+        (12, 1.0 / 3.0, 1.0 / 3.0),
+        (13, 1.0 / 3.0, 2.0 / 3.0),
+        (15, 2.0 / 3.0, 1.0 / 3.0),
+        (14, 2.0 / 3.0, 2.0 / 3.0),
+    ];
+    let mut max_deviation = 0.0_f64;
+    for &(idx, u, v) in &probes {
+        max_deviation = max_deviation.max(distance_point(p[idx], bilerp_point(corners, u, v)));
+    }
+    let curvature = (max_deviation / span).clamp(0.0, 1.0);
+    (10.0 + curvature * 18.0).ceil() as usize
+}
+
+fn tensor_point(p: &[(f64, f64)], u: f64, v: f64) -> (f64, f64) {
+    let grid = [
+        [p[0], p[1], p[2], p[3]],
+        [p[11], p[12], p[13], p[4]],
+        [p[10], p[15], p[14], p[5]],
+        [p[9], p[8], p[7], p[6]],
+    ];
+    let bu = cubic_bernstein(u);
+    let bv = cubic_bernstein(v);
+    let mut x = 0.0;
+    let mut y = 0.0;
+    for i in 0..4 {
+        for (j, bv_j) in bv.iter().enumerate() {
+            let weight = bu[i] * *bv_j;
+            x += weight * grid[i][j].0;
+            y += weight * grid[i][j].1;
+        }
+    }
+    (x, y)
+}
+
+fn cubic_bernstein(t: f64) -> [f64; 4] {
+    let mt = 1.0 - t;
+    [mt * mt * mt, 3.0 * mt * mt * t, 3.0 * mt * t * t, t * t * t]
+}
+
+fn bilerp_point(corners: [(f64, f64); 4], u: f64, v: f64) -> (f64, f64) {
+    let p00 = corners[0];
+    let p01 = corners[1];
+    let p11 = corners[2];
+    let p10 = corners[3];
+    (
+        (1.0 - u) * (1.0 - v) * p00.0
+            + (1.0 - u) * v * p01.0
+            + u * v * p11.0
+            + u * (1.0 - v) * p10.0,
+        (1.0 - u) * (1.0 - v) * p00.1
+            + (1.0 - u) * v * p01.1
+            + u * v * p11.1
+            + u * (1.0 - v) * p10.1,
+    )
+}
+
+fn distance_point(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).hypot(a.1 - b.1)
 }
 
 /// Cubic Bezier interpolation of four control points at parameter t.
@@ -1523,30 +1633,65 @@ mod tests {
     }
 
     #[test]
-    fn assemble_tensor_patch_drops_interior_points() {
-        // Tensor flag 0: 16 stream points; only the first 12 boundary points are
-        // kept (interior points 12..15 are dropped by the Coons surface).
+    fn assemble_tensor_patch_retains_interior_points() {
+        // Tensor flag 0: all 16 stream points are kept so the tensor surface can
+        // evaluate its four interior controls.
         let new_pts: Vec<(f64, f64)> = (0..16).map(|i| (i as f64, 0.0)).collect();
         let new_cols: Vec<RenderColor> = (0..4).map(|_| rc(0.0, 0.0, 0.0, 1.0)).collect();
         let (pts, _cols) =
             assemble_patch(0, &new_pts, &new_cols, &[], &[], 7).expect("tensor flag 0");
-        assert_eq!(pts.len(), 12);
-        assert_eq!(pts[11], (11.0, 0.0)); // p12, not p16
+        assert_eq!(pts.len(), 16);
+        assert_eq!(pts[11], (11.0, 0.0));
+        assert_eq!(pts[15], (15.0, 0.0));
     }
 
     #[test]
     fn assemble_tensor_flag1_shares_edge_uses_12_new_points() {
         // Tensor flagged patch reads 12 new points (8 boundary p5..p12 + 4
-        // interior); only the 8 boundary ones are appended after the shared edge.
-        let (pp, pc) = prev_patch();
+        // interior), all appended after the shared edge.
+        let (mut pp, pc) = prev_patch();
+        pp.extend((12..16).map(|i| (i as f64 * 10.0, i as f64 * 10.0)));
         let new_pts: Vec<(f64, f64)> = (0..12).map(|i| (100.0 + i as f64, -1.0)).collect();
         let new_cols = vec![rc(0.7, 0.0, 0.0, 1.0), rc(0.8, 0.0, 0.0, 1.0)];
         let (pts, cols) =
             assemble_patch(1, &new_pts, &new_cols, &pp, &pc, 7).expect("tensor flag 1");
-        assert_eq!(pts.len(), 12);
+        assert_eq!(pts.len(), 16);
         assert_eq!(pts[0], pp[3]); // shared edge
         assert_eq!(pts[4], new_pts[0]); // first new boundary point
-        assert_eq!(pts[11], new_pts[7]); // 8th new boundary point (interior dropped)
+        assert_eq!(pts[11], new_pts[7]); // 8th new boundary point
+        assert_eq!(pts[15], new_pts[11]); // 4th interior point
         assert_eq!(cols[0], pc[1]);
+    }
+
+    #[test]
+    fn tensor_point_uses_interior_controls() {
+        let mut pts = vec![
+            (0.0, 0.0),
+            (0.0, 0.3),
+            (0.0, 0.7),
+            (0.0, 1.0),
+            (0.3, 1.0),
+            (0.7, 1.0),
+            (1.0, 1.0),
+            (1.0, 0.7),
+            (1.0, 0.3),
+            (1.0, 0.0),
+            (0.7, 0.0),
+            (0.3, 0.0),
+            (0.25, 0.85),
+            (0.25, 0.95),
+            (0.75, 0.95),
+            (0.75, 0.85),
+        ];
+        let lifted = tensor_point(&pts, 0.5, 0.5);
+        pts[12] = (0.25, 0.15);
+        pts[13] = (0.25, 0.05);
+        pts[14] = (0.75, 0.05);
+        pts[15] = (0.75, 0.15);
+        let lowered = tensor_point(&pts, 0.5, 0.5);
+        assert!(
+            (lifted.1 - lowered.1).abs() > 0.15,
+            "tensor interior controls should move the surface: lifted={lifted:?} lowered={lowered:?}"
+        );
     }
 }

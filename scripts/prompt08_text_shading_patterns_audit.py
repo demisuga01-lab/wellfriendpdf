@@ -736,9 +736,9 @@ def write_static_matrices(entries: list[dict[str, Any]]) -> None:
             "removed_vague_buckets": ["text_clipping/later", "shading/later", "pattern/later"],
             "remaining_precise_limits": [
                 "advanced_icc_device_link_multicolor_cmm",
-                "type3_text_clip_outline_extraction",
-                "missing_glyph_outline_for_text_clip",
-                "type7_exact_tensor_interior_interpolation",
+                "image_or_resource_only_Type3_charproc_fail_closed",
+                "exotic_missing_glyph_outline_for_text_clip",
+                "cropped_coordinate_offscreen_optimization",
             ],
             "fail_closed_categories": [
                 "malformed_shading_stream",

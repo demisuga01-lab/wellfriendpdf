@@ -51,7 +51,9 @@ It adds page-level classifications for the three-reference audit:
 
 Prompt 08 updates the current renderer gap posture: text clipping, common
 shadings, mesh/patch shadings, and tiling patterns are no longer vague
-`later_owned` buckets. Current remaining limits must use precise categories such
-as `advanced_icc_device_link_multicolor_cmm`,
-`type3_text_clip_outline_extraction`, `missing_glyph_outline_for_text_clip`, or
-`type7_exact_tensor_interior_interpolation`.
+`later_owned` buckets. Prompt 08B closes the common Type3/CID text-clipping and
+Type 7 tensor-interior leftovers. Current remaining limits must use precise
+categories such as `advanced_icc_device_link_multicolor_cmm`,
+`image_or_resource_only_Type3_charproc_fail_closed`,
+`exotic_missing_glyph_outline_for_text_clip`, malformed stream fail-closed, or
+bounded recursion/patch/tile caps.
