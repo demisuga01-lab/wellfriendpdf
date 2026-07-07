@@ -1509,12 +1509,14 @@ fn decode_elapsed_ms(_: ()) -> u64 {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn new_request_id() -> String {
+    static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let pid = process_id_for_request();
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    format!("{pid}-{now}")
+    format!("{pid}-{now}-{id}")
 }
 
 #[cfg(not(target_arch = "wasm32"))]

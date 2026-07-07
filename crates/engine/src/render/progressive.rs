@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::cancel::CancelToken;
 use crate::engine::ContentEngine;
-use crate::error::Result;
+use crate::error::{OxideError, Result};
 use crate::optional_content::OptionalContentContext;
 use crate::render::{PageRenderer, PixelBuffer, RenderMode, RenderTile, WHITE};
 
@@ -116,6 +116,40 @@ impl<'a> ProgressiveRenderJob<'a> {
             visibility_fingerprint: self.visibility_fingerprint.clone(),
             resumable: !self.aborted,
             complete: self.is_complete(),
+        }
+    }
+
+    pub fn validate_resume_token(&self, token: &ProgressiveRenderToken) -> Result<()> {
+        if !token.resumable {
+            return Err(OxideError::invalid_input(
+                "progressive resume token is marked non-resumable",
+            ));
+        }
+        let expected_mode = self.render_mode.as_str();
+        let mismatches = [
+            (token.page_number != self.page_number).then_some("page_number"),
+            (token.dpi != self.dpi).then_some("dpi"),
+            (token.render_mode.as_str() != expected_mode).then_some("render_mode"),
+            (token.tile_width != self.tile_width).then_some("tile_width"),
+            (token.tile_height != self.tile_height).then_some("tile_height"),
+            (token.page_width != self.page_width).then_some("page_width"),
+            (token.page_height != self.page_height).then_some("page_height"),
+            (token.next_tile_index != self.next_tile_index).then_some("next_tile_index"),
+            (token.total_tiles != self.tiles.len()).then_some("total_tiles"),
+            (token.completed_tiles != self.completed_count()).then_some("completed_tiles"),
+            (token.visibility_fingerprint != self.visibility_fingerprint)
+                .then_some("visibility_fingerprint"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        if mismatches.is_empty() {
+            Ok(())
+        } else {
+            Err(OxideError::invalid_input(format!(
+                "progressive resume token mismatch: {}",
+                mismatches.join(", ")
+            )))
         }
     }
 

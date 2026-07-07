@@ -2479,6 +2479,19 @@ mod tests {
             value["report"]["prompt08b_type3_cid_tensor_closure"]["type7_tensor_patch"]["status"],
             "native_tensor_product_interior"
         );
+        assert_eq!(
+            value["report"]["prompt09_annotation_ocg_progressive_cache"]["status"],
+            "implemented_with_bounded_unsupported_reports"
+        );
+        assert_eq!(
+            value["report"]["prompt09b_annotation_progressive_cache_validation"]["status"],
+            "implemented_and_proven"
+        );
+        assert_eq!(
+            value["report"]["prompt09b_annotation_progressive_cache_validation"]
+                ["multi_reference_audit"]["oxide_outlier_failures"],
+            0
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

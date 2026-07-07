@@ -131,6 +131,14 @@ def test_module_level_reports():
     assert prompt08b["status"] == "complete_native_common_paths_with_reference_cluster_limits"
     assert prompt08b["reference_audit"]["oxide_outlier_failures"] == 0
     assert prompt08b["type7_tensor_patch"]["status"] == "native_tensor_product_interior"
+    prompt09 = feature["prompt09_annotation_ocg_progressive_cache"]
+    assert prompt09["status"] == "implemented_with_bounded_unsupported_reports"
+    assert prompt09["closure_gates"]["oxide_outlier_failures"] == 0
+    prompt09b = feature["prompt09b_annotation_progressive_cache_validation"]
+    assert prompt09b["status"] == "implemented_and_proven"
+    assert prompt09b["multi_reference_audit"]["oxide_outlier_failures"] == 0
+    assert prompt09b["multi_reference_audit"]["unclassified_failures"] == 0
+    assert prompt09b["public_report_parity"]["schema_change"] == "additive_section_only"
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

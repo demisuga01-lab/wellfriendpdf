@@ -88,9 +88,9 @@ public sealed class OxideSmokeTests
     {
         var feature = OxideDocument.FeatureReportJson();
         Assert.Contains("\"progress\"", feature);
-        Assert.Contains("progress_not_supported", feature);
+        Assert.Contains("engine_tile_progressive_resume_supported", feature);
         Assert.Contains("\"cancellation\"", feature);
-        Assert.Contains("cancellation_not_supported_for_prompt02_bindings", feature);
+        Assert.Contains("engine_render_cancellation_supported_binding_tokens_later", feature);
         Assert.Contains("\"codec_isolation\"", feature);
         Assert.Contains("\"prompt07_transparency_compositing\"", feature);
         Assert.Contains("native_foundation_with_prompt07b_closure", feature);
@@ -104,6 +104,11 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt08b_type3_cid_tensor_closure\"", feature);
         Assert.Contains("complete_native_common_paths_with_reference_cluster_limits", feature);
         Assert.Contains("native_tensor_product_interior", feature);
+        Assert.Contains("\"prompt09_annotation_ocg_progressive_cache\"", feature);
+        Assert.Contains("implemented_with_bounded_unsupported_reports", feature);
+        Assert.Contains("\"prompt09b_annotation_progressive_cache_validation\"", feature);
+        Assert.Contains("implemented_and_proven", feature);
+        Assert.Contains("\"schema_change\":\"additive_section_only\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

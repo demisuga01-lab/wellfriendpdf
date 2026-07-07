@@ -287,6 +287,13 @@ pub fn prompt09_renderer_report_json() -> Result<String> {
     )
 }
 
+pub fn prompt09b_validation_report_json() -> Result<String> {
+    envelope(
+        "prompt09b_validation_report",
+        &prompt09b_validation_report_value(),
+    )
+}
+
 fn prompt09_renderer_report_value() -> serde_json::Value {
     json!({
         "status": "implemented_with_bounded_unsupported_reports",
@@ -382,6 +389,67 @@ fn prompt09_renderer_report_value() -> serde_json::Value {
             "memory_cap_mb": 4096,
             "public_report_schema": "additive_feature_report_prompt09"
         }
+    })
+}
+
+fn prompt09b_validation_report_value() -> serde_json::Value {
+    json!({
+        "status": "implemented_and_proven",
+        "artifact_root": "target/prompt09-annotation-ocg-progressive-cache",
+        "audit_doc": "docs/prompt09b_validation_closure_audit.md",
+        "audit_script": "scripts/prompt09b_validation_closure_audit.py",
+        "annotation_parity": {
+            "status": "matrix_proven_with_bounded_non_widget_policy",
+            "subtype_style_rows": 25,
+            "native_rendered": 1,
+            "appearance_stream_rendered": 4,
+            "generated_appearance_rendered": 4,
+            "policy_reported_not_rendered": 8,
+            "unsupported_reported": 8,
+            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/annotation-appearance-matrix-prompt09b.json"
+        },
+        "ocg_validation": {
+            "status": "default_view_ocg_ocmd_visibility_proven",
+            "marked_content": "proven",
+            "xobjects": "proven",
+            "annotations": "proven",
+            "patterns_shadings": "proven",
+            "cache_fingerprint": "proven",
+            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/ocg-layer-matrix-prompt09b.json",
+            "cache_fingerprint_artifact": "target/prompt09-annotation-ocg-progressive-cache/ocg-cache-key-fingerprint-prompt09b.json"
+        },
+        "progressive_resume_equivalence": {
+            "status": "full_vs_resumed_equivalent",
+            "granularity": "tile",
+            "invalid_token_handling": "mismatched page/DPI/render_mode/tile_geometry/cursor/OCG_fingerprint rejected",
+            "artifact": "target/prompt09-annotation-ocg-progressive-cache/progressive-resume-equivalence-prompt09b.json"
+        },
+        "tile_band_cache_equivalence": {
+            "tile_full": "proven",
+            "band_full": "proven",
+            "cache_no_cache": "proven",
+            "performance_artifact": "target/prompt09-annotation-ocg-progressive-cache/tile-band-cache-performance-prompt09b.json",
+            "memory_artifact": "target/prompt09-annotation-ocg-progressive-cache/tile-band-cache-memory-prompt09b.json"
+        },
+        "multi_reference_audit": {
+            "status": "prompt09b_corpus_classified",
+            "reference_engines": ["Poppler", "PDFium", "MuPDF"],
+            "artifact": "target/prompt09-annotation-ocg-progressive-cache/multi-reference-render-results-prompt09b.json",
+            "diff_metrics": "target/prompt09-annotation-ocg-progressive-cache/multi-reference-diff-metrics-prompt09b.json",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
+        },
+        "public_report_parity": {
+            "schema_change": "additive_section_only",
+            "report_envelope_version": REPORT_ENVELOPE_VERSION,
+            "bindings": ["Rust SDK", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
+        },
+        "remaining_bounded_limits": [
+            "non_widget_generated_annotation_shapes remain policy-reported unless an author AP stream exists",
+            "alternate OCG configuration selection remains parsed/report-only without public selection API",
+            "binding-level progressive callbacks remain later binding work",
+            "global image/Form/pattern/shading resource caches remain outside Prompt 09 tile-cache closure"
+        ]
     })
 }
 
@@ -872,6 +940,7 @@ pub fn feature_report_json() -> Result<String> {
             }
         },
         "prompt09_annotation_ocg_progressive_cache": prompt09_renderer_report_value(),
+        "prompt09b_annotation_progressive_cache_validation": prompt09b_validation_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -1292,9 +1361,27 @@ mod tests {
                 ["memory_cap_mb"],
             4096
         );
+        assert_eq!(
+            v["report"]["prompt09b_annotation_progressive_cache_validation"]["status"],
+            "implemented_and_proven"
+        );
+        assert_eq!(
+            v["report"]["prompt09b_annotation_progressive_cache_validation"]
+                ["multi_reference_audit"]["oxide_outlier_failures"],
+            0
+        );
+        assert_eq!(
+            v["report"]["prompt09b_annotation_progressive_cache_validation"]
+                ["public_report_parity"]["schema_change"],
+            "additive_section_only"
+        );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),
             "prompt09_renderer_report",
+        );
+        assert_envelope(
+            &prompt09b_validation_report_json().unwrap(),
+            "prompt09b_validation_report",
         );
         assert_eq!(
             v["report"]["progress"]["status"],

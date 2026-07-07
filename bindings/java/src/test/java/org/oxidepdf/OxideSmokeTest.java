@@ -63,11 +63,13 @@ public final class OxideSmokeTest {
         }
         String feature = Oxide.featureReportJson();
         assertTrue(feature.contains("\"progress\""), "progress feature posture");
-        assertTrue(feature.contains("progress_not_supported"), "progress unsupported status");
+        assertTrue(
+            feature.contains("engine_tile_progressive_resume_supported"),
+            "progressive resume feature status");
         assertTrue(feature.contains("\"cancellation\""), "cancellation feature posture");
         assertTrue(
-            feature.contains("cancellation_not_supported_for_prompt02_bindings"),
-            "cancellation unsupported status");
+            feature.contains("engine_render_cancellation_supported_binding_tokens_later"),
+            "cancellation binding token status");
         assertTrue(feature.contains("\"codec_isolation\""), "codec isolation feature posture");
         assertTrue(feature.contains("\"prompt07_transparency_compositing\""), "prompt07 feature posture");
         assertTrue(
@@ -84,6 +86,19 @@ public final class OxideSmokeTest {
             feature.contains("native_common_paths_with_bounded_unsupported_reports"),
             "prompt08 native status");
         assertTrue(feature.contains("\"rendering_modes\":[4,5,6,7]"), "prompt08 text clip modes");
+        assertTrue(
+            feature.contains("\"prompt09_annotation_ocg_progressive_cache\""),
+            "prompt09 feature posture");
+        assertTrue(
+            feature.contains("implemented_with_bounded_unsupported_reports"),
+            "prompt09 implementation status");
+        assertTrue(
+            feature.contains("\"prompt09b_annotation_progressive_cache_validation\""),
+            "prompt09b feature posture");
+        assertTrue(feature.contains("implemented_and_proven"), "prompt09b closure status");
+        assertTrue(
+            feature.contains("\"schema_change\":\"additive_section_only\""),
+            "prompt09b additive schema status");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),

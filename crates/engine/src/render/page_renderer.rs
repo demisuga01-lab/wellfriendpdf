@@ -5253,6 +5253,62 @@ mod tests {
     }
 
     #[test]
+    fn progressive_resume_token_rejects_mismatched_state() {
+        let pdf = simple_vector_pdf(
+            "q 1 0 0 rg 10 10 40 40 re f Q\n\
+             q 0 0 1 rg 50 50 40 40 re f Q\n",
+        );
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let mut job = engine
+            .progressive_render_job_with_mode(1, 72, 25, 25, RenderMode::Compat)
+            .expect("create progressive job");
+
+        job.render_next(2, &CancelToken::none())
+            .expect("first progressive step");
+        let token = job.token();
+        job.validate_resume_token(&token)
+            .expect("current token should validate");
+
+        let mut bad_dpi = token.clone();
+        bad_dpi.dpi = 144;
+        let err = job
+            .validate_resume_token(&bad_dpi)
+            .expect_err("changed DPI must reject a resume token");
+        assert!(format!("{err}").contains("dpi"));
+
+        let mut bad_ocg = token.clone();
+        bad_ocg.visibility_fingerprint = "ocg:view:changed".to_string();
+        let err = job
+            .validate_resume_token(&bad_ocg)
+            .expect_err("changed OCG fingerprint must reject a resume token");
+        assert!(format!("{err}").contains("visibility_fingerprint"));
+    }
+
+    #[test]
+    fn progressive_cancel_report_retains_only_completed_tile_memory() {
+        let pdf = simple_vector_pdf("1 0 0 rg 0 0 100 100 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let mut job = engine
+            .progressive_render_job_with_mode(1, 72, 25, 25, RenderMode::Compat)
+            .expect("create progressive job");
+        let cancel = CancelToken::new();
+
+        job.render_next(1, &CancelToken::none())
+            .expect("first progressive tile");
+        cancel.cancel();
+        let report = job
+            .render_next(4, &cancel)
+            .expect("cancelled progressive step");
+
+        assert!(report.cancelled);
+        assert!(report.resume_possible);
+        assert_eq!(report.completed_units, 1);
+        assert_eq!(report.memory_bytes_retained, 25 * 25 * 4);
+        job.validate_resume_token(&job.token())
+            .expect("cancelled job should remain resumable with current token");
+    }
+
+    #[test]
     fn display_list_replay_matches_immediate_vector_render() {
         let pdf = simple_vector_pdf(
             "q 0 0 1 rg 10 10 60 60 re f Q\n\

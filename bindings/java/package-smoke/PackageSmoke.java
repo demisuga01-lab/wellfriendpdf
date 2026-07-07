@@ -45,9 +45,9 @@ public final class PackageSmoke {
         }
 
         String feature = Oxide.featureReportJson();
-        if (!feature.contains("progress_not_supported")
-                || !feature.contains("cancellation_not_supported_for_prompt02_bindings")) {
-            throw new AssertionError("feature report missing Prompt 02B progress/cancellation posture");
+        if (!feature.contains("engine_tile_progressive_resume_supported")
+                || !feature.contains("engine_render_cancellation_supported_binding_tokens_later")) {
+            throw new AssertionError("feature report missing Prompt 09 progress/cancellation posture");
         }
         if (!feature.contains("\"prompt07b_transparency_closure\"")
                 || !feature.contains("\"oxide_outlier_failures\":0")) {
@@ -61,6 +61,15 @@ public final class PackageSmoke {
                 || !feature.contains("complete_native_common_paths_with_reference_cluster_limits")
                 || !feature.contains("native_tensor_product_interior")) {
             throw new AssertionError("feature report missing Prompt 08B Type3/CID/tensor closure posture");
+        }
+        if (!feature.contains("\"prompt09_annotation_ocg_progressive_cache\"")
+                || !feature.contains("implemented_with_bounded_unsupported_reports")) {
+            throw new AssertionError("feature report missing Prompt 09 renderer posture");
+        }
+        if (!feature.contains("\"prompt09b_annotation_progressive_cache_validation\"")
+                || !feature.contains("implemented_and_proven")
+                || !feature.contains("\"schema_change\":\"additive_section_only\"")) {
+            throw new AssertionError("feature report missing Prompt 09B validation posture");
         }
     }
 }

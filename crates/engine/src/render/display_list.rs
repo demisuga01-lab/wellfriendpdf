@@ -1275,4 +1275,33 @@ mod tests {
         assert!(cache.get(&key).is_none());
         assert_eq!(cache.metrics().skipped_oversized, 1);
     }
+
+    #[test]
+    fn render_cache_key_includes_visibility_fingerprint() {
+        let tile = RenderTile {
+            x: 0,
+            y: 0,
+            width: 10,
+            height: 10,
+        };
+        let visible = RenderCacheKey::new_with_visibility(
+            1,
+            72,
+            RenderMode::Compat,
+            tile,
+            "ocg:view:visible",
+        );
+        let hidden =
+            RenderCacheKey::new_with_visibility(1, 72, RenderMode::Compat, tile, "ocg:view:hidden");
+
+        assert_ne!(visible, hidden);
+        let mut cache = RenderCache::new(4_000, 4_000);
+        cache.insert(
+            visible.clone(),
+            PixelBuffer::new_transparent_with_mode(10, 10, RenderMode::Compat),
+        );
+
+        assert!(cache.get(&hidden).is_none());
+        assert!(cache.get(&visible).is_some());
+    }
 }
