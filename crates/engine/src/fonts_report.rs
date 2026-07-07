@@ -68,6 +68,12 @@ pub struct FontInfo {
     pub predefined_cmap_supported: bool,
     /// Detected OpenType color-glyph table tags.
     pub color_font_tables: Vec<String>,
+    /// Rendering posture for detected color glyph tables.
+    pub color_glyph_status: String,
+    /// Color glyph tables rendered natively by the current engine build.
+    pub color_glyph_supported_tables: Vec<String>,
+    /// Color glyph tables reported as unsupported instead of silently ignored.
+    pub color_glyph_unsupported_tables: Vec<String>,
     /// Raster path used by the engine for this font class.
     pub rasterization: String,
     /// Authoring/subsetting posture for this font class.
@@ -379,6 +385,9 @@ fn describe_font(font_dict: &PdfDictionary, reader: &PdfReader, num: u32, gen: u
     let color_font_tables = font_program_bytes(font_dict, descendant.as_ref(), reader)
         .map(|bytes| detect_color_font_tables(&bytes))
         .unwrap_or_default();
+    let color_glyph_status = color_glyph_status(&color_font_tables).to_string();
+    let color_glyph_supported_tables = supported_color_glyph_tables(&color_font_tables);
+    let color_glyph_unsupported_tables = unsupported_color_glyph_tables(&color_font_tables);
     let rasterization = rasterization_label(subtype, &font_type);
     let embedding_policy = embedding_policy_label(embedded, &font_file_kind, subset);
     let fallback_required = !embedded;
@@ -394,6 +403,7 @@ fn describe_font(font_dict: &PdfDictionary, reader: &PdfReader, num: u32, gen: u
         predefined_cmap: predefined_cmap.as_deref(),
         predefined_cmap_supported,
         color_font_tables: &color_font_tables,
+        color_glyph_unsupported_tables: &color_glyph_unsupported_tables,
         embedding_policy: &embedding_policy,
     });
 
@@ -413,6 +423,9 @@ fn describe_font(font_dict: &PdfDictionary, reader: &PdfReader, num: u32, gen: u
         predefined_cmap,
         predefined_cmap_supported,
         color_font_tables,
+        color_glyph_status,
+        color_glyph_supported_tables,
+        color_glyph_unsupported_tables,
         rasterization,
         embedding_policy,
         fallback_required,
@@ -617,6 +630,22 @@ fn detect_color_font_tables(bytes: &[u8]) -> Vec<String> {
     tags
 }
 
+fn color_glyph_status(tables: &[String]) -> &'static str {
+    if tables.is_empty() {
+        "no_color_glyph_tables"
+    } else {
+        "monochrome_outline_fallback_unsupported_color_tables_reported"
+    }
+}
+
+fn supported_color_glyph_tables(_tables: &[String]) -> Vec<String> {
+    Vec::new()
+}
+
+fn unsupported_color_glyph_tables(tables: &[String]) -> Vec<String> {
+    tables.to_vec()
+}
+
 fn rasterization_label(subtype: &str, font_type: &str) -> String {
     match subtype {
         "Type3" => "Type3 CharProc through PDF content interpreter".to_string(),
@@ -657,6 +686,7 @@ struct FontDiagnosticInput<'a> {
     predefined_cmap: Option<&'a str>,
     predefined_cmap_supported: bool,
     color_font_tables: &'a [String],
+    color_glyph_unsupported_tables: &'a [String],
     embedding_policy: &'a str,
 }
 
@@ -778,10 +808,58 @@ fn font_diagnostics(input: FontDiagnosticInput<'_>) -> Vec<FontDiagnostic> {
             severity: "warning",
             code: "font.color_glyphs.detected",
             message: format!(
-                "Color glyph tables detected ({}); renderer uses monochrome outline fallback",
+                "Color glyph tables detected ({}); unsupported color layers are reported and renderer uses monochrome outline fallback",
                 input.color_font_tables.join(", ")
             ),
         });
+        if input
+            .color_glyph_unsupported_tables
+            .iter()
+            .any(|table| table == "COLR" || table == "CPAL")
+        {
+            diagnostics.push(FontDiagnostic {
+                severity: "warning",
+                code: "font.color_glyphs.colr_cpal.unsupported",
+                message: "COLR/CPAL layered color glyph rendering is not enabled in this pure-rust renderer build; glyphs use monochrome outlines"
+                    .to_string(),
+            });
+        }
+        if input
+            .color_glyph_unsupported_tables
+            .iter()
+            .any(|table| table == "CBDT" || table == "CBLC")
+        {
+            diagnostics.push(FontDiagnostic {
+                severity: "warning",
+                code: "font.color_glyphs.cbdt_cblc.unsupported",
+                message: "CBDT/CBLC bitmap color glyph strikes are not decoded by the renderer; glyphs use monochrome outlines"
+                    .to_string(),
+            });
+        }
+        if input
+            .color_glyph_unsupported_tables
+            .iter()
+            .any(|table| table == "sbix")
+        {
+            diagnostics.push(FontDiagnostic {
+                severity: "warning",
+                code: "font.color_glyphs.sbix.unsupported",
+                message: "sbix bitmap color glyph strikes are not decoded by the renderer; glyphs use monochrome outlines"
+                    .to_string(),
+            });
+        }
+        if input
+            .color_glyph_unsupported_tables
+            .iter()
+            .any(|table| table == "SVG")
+        {
+            diagnostics.push(FontDiagnostic {
+                severity: "warning",
+                code: "font.color_glyphs.svg_unsupported_security",
+                message: "SVG-in-OpenType glyph documents are not executed or dereferenced; renderer uses monochrome outlines for this security boundary"
+                    .to_string(),
+            });
+        }
     }
     if input.embedding_policy.contains("full-font") {
         diagnostics.push(FontDiagnostic {
@@ -881,6 +959,7 @@ mod tests {
             predefined_cmap: None,
             predefined_cmap_supported: false,
             color_font_tables: &[],
+            color_glyph_unsupported_tables: &[],
             embedding_policy: "not embedded in source",
         });
 
@@ -909,6 +988,7 @@ mod tests {
             predefined_cmap: Some("Identity-V"),
             predefined_cmap_supported: true,
             color_font_tables: &[],
+            color_glyph_unsupported_tables: &[],
             embedding_policy: "source subset FontFile2",
         });
 
@@ -926,6 +1006,7 @@ mod tests {
     #[test]
     fn diagnostics_report_predefined_cmap_support_and_color_tables() {
         let color_tables = vec!["COLR".to_string(), "CPAL".to_string()];
+        let unsupported_tables = unsupported_color_glyph_tables(&color_tables);
         let diagnostics = font_diagnostics(FontDiagnosticInput {
             name: "ABCDEE+ColorCjk",
             subtype: "Type0",
@@ -938,6 +1019,7 @@ mod tests {
             predefined_cmap: Some("UniJIS-UTF16-H"),
             predefined_cmap_supported: true,
             color_font_tables: &color_tables,
+            color_glyph_unsupported_tables: &unsupported_tables,
             embedding_policy: "source full-font FontFile2",
         });
 
@@ -949,7 +1031,35 @@ mod tests {
             .any(|diag| diag.code == "font.color_glyphs.detected"));
         assert!(diagnostics
             .iter()
+            .any(|diag| diag.code == "font.color_glyphs.colr_cpal.unsupported"));
+        assert!(diagnostics
+            .iter()
             .any(|diag| diag.code == "font.subset.sfnt_deferred"));
+    }
+
+    #[test]
+    fn color_glyph_posture_reports_unsupported_tables() {
+        let color_tables = vec![
+            "CBDT".to_string(),
+            "CBLC".to_string(),
+            "SVG".to_string(),
+            "sbix".to_string(),
+        ];
+
+        assert_eq!(
+            color_glyph_status(&color_tables),
+            "monochrome_outline_fallback_unsupported_color_tables_reported"
+        );
+        assert!(supported_color_glyph_tables(&color_tables).is_empty());
+        assert_eq!(
+            unsupported_color_glyph_tables(&color_tables),
+            vec![
+                "CBDT".to_string(),
+                "CBLC".to_string(),
+                "SVG".to_string(),
+                "sbix".to_string()
+            ]
+        );
     }
 
     #[test]

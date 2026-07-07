@@ -71,5 +71,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"schema_change\":\"additive_section_only\"")) {
             throw new AssertionError("feature report missing Prompt 09B validation posture");
         }
+        if (!feature.contains("\"prompt10_cjk_rtl_color_glyph_reference_harness\"")
+                || !feature.contains("unsupported_color_tables_are_detected_and_reported")
+                || !feature.contains("\"additive_feature_report_prompt10\"")) {
+            throw new AssertionError("feature report missing Prompt 10 CJK/RTL/color glyph reference posture");
+        }
     }
 }

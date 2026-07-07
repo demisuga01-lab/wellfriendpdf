@@ -164,6 +164,9 @@ fn script_for_char(ch: char) -> Option<Script> {
     if is_arabic_codepoint(code) {
         return Some(script::ARABIC);
     }
+    if is_hebrew_codepoint(code) {
+        return Some(script::HEBREW);
+    }
     if is_devanagari_codepoint(code) {
         return Some(script::DEVANAGARI);
     }
@@ -195,7 +198,7 @@ fn script_for_char(ch: char) -> Option<Script> {
 }
 
 fn text_direction_for_script(script: Script) -> TextDirection {
-    if script == script::ARABIC {
+    if script == script::ARABIC || script == script::HEBREW {
         TextDirection::RightToLeft
     } else {
         TextDirection::LeftToRight
@@ -211,6 +214,10 @@ fn is_arabic_codepoint(code: u32) -> bool {
             | 0xFB50..=0xFDFF
             | 0xFE70..=0xFEFF
     )
+}
+
+fn is_hebrew_codepoint(code: u32) -> bool {
+    matches!(code, 0x0590..=0x05FF | 0xFB1D..=0xFB4F)
 }
 
 fn is_devanagari_codepoint(code: u32) -> bool {
@@ -274,6 +281,22 @@ mod tests {
             ShapeOptions::default(),
         )
         .expect("shape arabic");
+
+        assert!(run.used_complex_shaping);
+        assert_eq!(run.direction, TextDirection::RightToLeft);
+        assert!(!run.glyphs.is_empty());
+        assert!(run.glyphs.iter().all(|glyph| glyph.glyph_id > 0));
+    }
+
+    #[test]
+    fn hebrew_uses_complex_rtl_shaping_when_font_supports_it() {
+        let font = get_fallback_font("Symbol").expect("DejaVu fallback");
+        let run = TextShaper::shape(
+            font,
+            "\u{05E9}\u{05DC}\u{05D5}\u{05DD}",
+            ShapeOptions::default(),
+        )
+        .expect("shape hebrew");
 
         assert!(run.used_complex_shaping);
         assert_eq!(run.direction, TextDirection::RightToLeft);

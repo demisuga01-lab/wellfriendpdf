@@ -139,6 +139,13 @@ def test_module_level_reports():
     assert prompt09b["multi_reference_audit"]["oxide_outlier_failures"] == 0
     assert prompt09b["multi_reference_audit"]["unclassified_failures"] == 0
     assert prompt09b["public_report_parity"]["schema_change"] == "additive_section_only"
+    prompt10 = feature["prompt10_cjk_rtl_color_glyph_reference_harness"]
+    assert prompt10["status"] == "implemented_with_bounded_unsupported_reports"
+    assert prompt10["closure_gates"]["memory_cap_mb"] == 4096
+    assert (
+        prompt10["color_glyph_rendering"]["status"]
+        == "unsupported_color_tables_are_detected_and_reported"
+    )
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

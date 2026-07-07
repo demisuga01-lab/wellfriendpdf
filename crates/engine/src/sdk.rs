@@ -294,6 +294,13 @@ pub fn prompt09b_validation_report_json() -> Result<String> {
     )
 }
 
+pub fn prompt10_renderer_report_json() -> Result<String> {
+    envelope(
+        "prompt10_renderer_report",
+        &prompt10_renderer_report_value(),
+    )
+}
+
 fn prompt09_renderer_report_value() -> serde_json::Value {
     json!({
         "status": "implemented_with_bounded_unsupported_reports",
@@ -449,6 +456,106 @@ fn prompt09b_validation_report_value() -> serde_json::Value {
             "alternate OCG configuration selection remains parsed/report-only without public selection API",
             "binding-level progressive callbacks remain later binding work",
             "global image/Form/pattern/shading resource caches remain outside Prompt 09 tile-cache closure"
+        ]
+    })
+}
+
+fn prompt10_renderer_report_value() -> serde_json::Value {
+    json!({
+        "status": "implemented_with_bounded_unsupported_reports",
+        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/prompt10_cjk_rtl_color_glyph_reference_harness.md",
+        "audit_script": "scripts/prompt10_cjk_rtl_color_glyph_reference_harness.py",
+        "reference_policy": {
+            "reference_engines": ["Poppler", "PDFium", "MuPDF"],
+            "bootstrap_source": "scripts/prompt06b_bootstrap_reference_renderers.ps1 reused with Prompt 10 artifact manifests",
+            "missing_reference_policy": "Prompt 10 bootstrap fails the direct audit unless all three reference renderers are available"
+        },
+        "cjk_raster_hinting": {
+            "status": "direct_corpus_audit_with_existing_pdf_glyph_painting_boundary",
+            "fixture_categories": [
+                "simplified_chinese",
+                "traditional_chinese_or_cjk_variant",
+                "japanese_horizontal",
+                "japanese_vertical",
+                "mixed_latin_cjk",
+                "type0_cid",
+                "identity_h",
+                "identity_v",
+                "cid_to_gid",
+                "missing_tounicode",
+                "malformed_cmap"
+            ],
+            "rendering_boundary": "visual glyph painting maps PDF character codes through CMap/CID/GID/font data and stays independent from ToUnicode extraction",
+            "hinting_posture": "pure-rust analytic/light grid-fitting raster path; no new native hinting dependency is enabled by default",
+            "diagnostics": [
+                "font.type0.descendant_missing",
+                "font.cmap.predefined.unsupported",
+                "font.cmap.identity",
+                "font.cmap.vertical",
+                "font.tounicode.missing_type0"
+            ]
+        },
+        "rtl_raster_shaping": {
+            "status": "generated_text_complex_shaping_boundary_documented",
+            "fixture_categories": ["arabic", "hebrew", "mixed_bidi", "pre_shaped_pdf_text", "rtl_annotation_appearance"],
+            "painting_boundary": "existing PDF content streams preserve encoded glyph order and PDF text-state positioning; Oxide does not blindly reshape painted PDF glyph streams",
+            "generated_text_boundary": "rustybuzz is used for generated/fallback text paths that own Unicode-to-glyph layout",
+            "shaped_scripts": ["Arabic", "Hebrew", "Indic complex-script families"]
+        },
+        "color_glyph_rendering": {
+            "status": "unsupported_color_tables_are_detected_and_reported",
+            "implemented_formats": [],
+            "unsupported_reported": [
+                "COLR/CPAL v0 layered glyphs",
+                "COLR/CPAL v1 paint graph glyphs",
+                "CBDT/CBLC bitmap strikes",
+                "sbix bitmap strikes",
+                "SVG-in-OpenType static or scripted glyph documents"
+            ],
+            "report_fields": [
+                "color_font_tables",
+                "color_glyph_status",
+                "color_glyph_supported_tables",
+                "color_glyph_unsupported_tables",
+                "diagnostics"
+            ],
+            "security_boundary": "SVG-in-OpenType is not executed and external references are not dereferenced"
+        },
+        "pdfium_direct_harness": {
+            "status": "target_local_direct_renderer",
+            "wrapper_choices": ["pdfium_test when configured", "target-local pypdfium2 wrapper fallback"],
+            "version_checksum_manifest": "target/prompt10-cjk-rtl-color-glyph-reference/reference-tool-manifest-prompt10.json",
+            "command_normalization": ["PNG output", "explicit page range", "explicit DPI", "white background/form drawing where wrapper supports it"]
+        },
+        "mupdf_direct_harness": {
+            "status": "target_local_direct_renderer",
+            "wrapper_choices": ["mutool draw"],
+            "version_checksum_manifest": "target/prompt10-cjk-rtl-color-glyph-reference/reference-tool-manifest-prompt10.json",
+            "command_normalization": ["PNG output by extension", "explicit page", "explicit DPI", "target-local checksum posture"]
+        },
+        "multi_reference_audit": {
+            "status": "prompt10_corpus_classified_by_direct_harness",
+            "corpus_manifest": "target/prompt10-cjk-rtl-color-glyph-reference/corpus-manifest-prompt10.json",
+            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-render-results-prompt10.json",
+            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10.json",
+            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10.json",
+            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/html-report/index.html"
+        },
+        "public_report_parity": {
+            "schema_change": "additive_section_only",
+            "report_envelope_version": REPORT_ENVELOPE_VERSION,
+            "bindings": ["Rust SDK", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
+        },
+        "closure_gates": {
+            "memory_cap_mb": 4096,
+            "public_report_schema": "additive_feature_report_prompt10"
+        },
+        "remaining_bounded_limits": [
+            "color glyph tables are exposed as precise unsupported diagnostics rather than rendered color layers",
+            "complex CID-keyed CFF geometry under real-world text clipping is policy-reported when it falls outside the reference cluster",
+            "existing PDF content-stream glyph painting is not reshaped as authoring text",
+            "native hinting backends remain outside the default dependency boundary"
         ]
     })
 }
@@ -941,6 +1048,7 @@ pub fn feature_report_json() -> Result<String> {
         },
         "prompt09_annotation_ocg_progressive_cache": prompt09_renderer_report_value(),
         "prompt09b_annotation_progressive_cache_validation": prompt09b_validation_report_value(),
+        "prompt10_cjk_rtl_color_glyph_reference_harness": prompt10_renderer_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -1375,6 +1483,20 @@ mod tests {
                 ["public_report_parity"]["schema_change"],
             "additive_section_only"
         );
+        assert_eq!(
+            v["report"]["prompt10_cjk_rtl_color_glyph_reference_harness"]["status"],
+            "implemented_with_bounded_unsupported_reports"
+        );
+        assert_eq!(
+            v["report"]["prompt10_cjk_rtl_color_glyph_reference_harness"]["closure_gates"]
+                ["memory_cap_mb"],
+            4096
+        );
+        assert_eq!(
+            v["report"]["prompt10_cjk_rtl_color_glyph_reference_harness"]["color_glyph_rendering"]
+                ["status"],
+            "unsupported_color_tables_are_detected_and_reported"
+        );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),
             "prompt09_renderer_report",
@@ -1382,6 +1504,10 @@ mod tests {
         assert_envelope(
             &prompt09b_validation_report_json().unwrap(),
             "prompt09b_validation_report",
+        );
+        assert_envelope(
+            &prompt10_renderer_report_json().unwrap(),
+            "prompt10_renderer_report",
         );
         assert_eq!(
             v["report"]["progress"]["status"],

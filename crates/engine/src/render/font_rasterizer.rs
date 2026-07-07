@@ -252,7 +252,7 @@ pub(crate) mod cff_support {
     /// whitespace) and `None` entirely when the font is not bare CFF.
     pub(crate) fn outline_by_gid(font_bytes: &[u8], gid: u16) -> Option<(Option<Path>, f64)> {
         let table = parse(font_bytes)?;
-        let glyph_id = GlyphId(gid);
+        let glyph_id = GlyphId(cid_keyed_gid_for_cid(font_bytes, gid).unwrap_or(gid));
         let advance = table
             .glyph_width(glyph_id)
             .map(f64::from)
@@ -261,6 +261,18 @@ pub(crate) mod cff_support {
             // neutral 1000 here is only a fallback.
             .unwrap_or(1000.0);
         Some((outline_table_path(&table, font_bytes, glyph_id, 0), advance))
+    }
+
+    /// In CID-keyed CFF fonts, PDF character codes map to CIDs and the CFF
+    /// charset maps charstring GIDs back to those CIDs. Invert that charset so
+    /// CIDFontType0 / Identity-H text paints the intended charstring instead of
+    /// treating the CID itself as a charstring index.
+    pub(crate) fn cid_keyed_gid_for_cid(font_bytes: &[u8], cid: u16) -> Option<u16> {
+        if !cff_is_cid_keyed(font_bytes) {
+            return None;
+        }
+        let (charset_offset, charstrings_index) = cff_metadata(font_bytes)?;
+        cff_charset_gid_for_sid(font_bytes, charset_offset, charstrings_index.count, cid)
     }
 
     /// Extract a glyph outline and advance for an original 8-bit PDF character
@@ -774,6 +786,13 @@ pub(crate) mod cff_support {
     }
 
     fn cff_metadata(font_bytes: &[u8]) -> Option<(usize, CffIndex)> {
+        let top_dict = cff_top_dict_bytes(font_bytes)?;
+        let (charset_offset, charstrings_offset) = cff_top_dict_offsets(top_dict)?;
+        let charstrings_index = cff_index_at(font_bytes, charstrings_offset)?;
+        Some((charset_offset, charstrings_index))
+    }
+
+    fn cff_top_dict_bytes(font_bytes: &[u8]) -> Option<&[u8]> {
         let header_size = usize::from(*font_bytes.get(2)?);
         if header_size < 4 || header_size > font_bytes.len() {
             return None;
@@ -781,10 +800,43 @@ pub(crate) mod cff_support {
 
         let name_index = cff_index_at(font_bytes, header_size)?;
         let top_index = cff_index_at(font_bytes, name_index.end)?;
-        let top_dict = cff_index_object(font_bytes, &top_index, 0)?;
-        let (charset_offset, charstrings_offset) = cff_top_dict_offsets(top_dict)?;
-        let charstrings_index = cff_index_at(font_bytes, charstrings_offset)?;
-        Some((charset_offset, charstrings_index))
+        cff_index_object(font_bytes, &top_index, 0)
+    }
+
+    fn cff_is_cid_keyed(font_bytes: &[u8]) -> bool {
+        let Some(dict) = cff_top_dict_bytes(font_bytes) else {
+            return false;
+        };
+        let mut pos = 0usize;
+        while pos < dict.len() {
+            let byte = dict[pos];
+            pos += 1;
+            match byte {
+                12 => {
+                    let Some(escaped) = dict.get(pos).copied() else {
+                        return false;
+                    };
+                    pos += 1;
+                    if escaped == 30 {
+                        return true;
+                    }
+                }
+                28 => pos = pos.saturating_add(2),
+                29 | 255 => pos = pos.saturating_add(4),
+                30 => {
+                    while pos < dict.len() {
+                        let nibbles = dict[pos];
+                        pos += 1;
+                        if nibbles >> 4 == 0x0F || (nibbles & 0x0F) == 0x0F {
+                            break;
+                        }
+                    }
+                }
+                247..=254 => pos = pos.saturating_add(1),
+                _ => {}
+            }
+        }
+        false
     }
 
     fn cff_strings_index(font_bytes: &[u8]) -> Option<CffIndex> {
@@ -1825,6 +1877,42 @@ mod tests {
             found_outline,
             "at least one CFF glyph should produce outline segments"
         );
+    }
+
+    #[test]
+    fn cid_keyed_cff_maps_cid_through_charset_before_outline() {
+        use crate::engine::ContentEngine;
+        use crate::fonts::resolver::get_descendant_font;
+
+        let path = format!(
+            "{}/../../renderer-benchmark/corpus/real-world/pdfjs-full/text_clip_cff_cid.pdf",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let engine = ContentEngine::open_path(path).expect("open CID-keyed CFF fixture");
+        let resources = engine.get_page_resources(1).expect("page resources");
+        let reader = engine.document().reader();
+        let font = resources
+            .fonts
+            .values()
+            .find(|dict| {
+                dict.get_name("BaseFont")
+                    .is_some_and(|name| name.contains("Reitam"))
+            })
+            .expect("Reitam CID font");
+        let descendant = get_descendant_font(font, reader).expect("descendant CIDFont");
+        let font_bytes =
+            FontRasterizer::extract_font_bytes(&descendant, reader).expect("embedded CFF bytes");
+
+        assert!(cff_support::is_bare_cff(&font_bytes));
+        let gid_for_a = cff_support::cid_keyed_gid_for_cid(&font_bytes, 0x0044)
+            .expect("CFF charset maps CID 0x0044");
+        assert_ne!(
+            gid_for_a, 0x0044,
+            "CID-keyed CFF lookup must invert charset before charstring lookup"
+        );
+        let (path, _) = cff_support::outline_by_gid(&font_bytes, 0x0044)
+            .expect("CID lookup should return a CFF outline result");
+        assert!(path.is_some(), "mapped CID should produce an outline");
     }
 
     #[test]

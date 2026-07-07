@@ -2492,6 +2492,15 @@ mod tests {
                 ["multi_reference_audit"]["oxide_outlier_failures"],
             0
         );
+        assert_eq!(
+            value["report"]["prompt10_cjk_rtl_color_glyph_reference_harness"]["status"],
+            "implemented_with_bounded_unsupported_reports"
+        );
+        assert_eq!(
+            value["report"]["prompt10_cjk_rtl_color_glyph_reference_harness"]["closure_gates"]
+                ["memory_cap_mb"],
+            4096
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

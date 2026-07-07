@@ -109,6 +109,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt09b_annotation_progressive_cache_validation\"", feature);
         Assert.Contains("implemented_and_proven", feature);
         Assert.Contains("\"schema_change\":\"additive_section_only\"", feature);
+        Assert.Contains("\"prompt10_cjk_rtl_color_glyph_reference_harness\"", feature);
+        Assert.Contains("unsupported_color_tables_are_detected_and_reported", feature);
+        Assert.Contains("\"additive_feature_report_prompt10\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),
