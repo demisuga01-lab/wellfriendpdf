@@ -2501,6 +2501,15 @@ mod tests {
                 ["memory_cap_mb"],
             4096
         );
+        assert_eq!(
+            value["report"]["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]["status"],
+            "complete"
+        );
+        assert_eq!(
+            value["report"]["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]
+                ["multi_reference_audit"]["oxide_outlier_failures"],
+            0
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

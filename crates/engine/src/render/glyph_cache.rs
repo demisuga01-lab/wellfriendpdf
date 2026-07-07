@@ -14,6 +14,12 @@ pub struct GlyphCacheKey {
     pub code: u16,
     /// True when `code` is a glyph ID rather than a Unicode code point.
     pub is_gid: bool,
+    /// Rendering class for the source glyph: 0 = monochrome outline, 1 =
+    /// COLR/CPAL, 2 = embedded bitmap strike, 3 = SVG-in-OpenType security
+    /// blocked. This keeps Prompt 10B color-glyph paths from sharing a stale
+    /// monochrome cache entry when the same glyph ID is painted in different
+    /// modes.
+    pub color_mode: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +255,7 @@ mod tests {
             variation_hash: 0,
             code: 65,
             is_gid: false,
+            color_mode: 0,
         };
         let glyph = CachedGlyph {
             path: None,
@@ -272,6 +279,7 @@ mod tests {
                 variation_hash: 0,
                 code: i,
                 is_gid: false,
+                color_mode: 0,
             };
             let glyph = CachedGlyph {
                 path: None,
@@ -286,6 +294,7 @@ mod tests {
             variation_hash: 0,
             code: 99,
             is_gid: false,
+            color_mode: 0,
         };
         cache.insert(
             key4.clone(),
@@ -329,6 +338,7 @@ mod tests {
                 variation_hash: 0,
                 code: 0,
                 is_gid: false,
+                color_mode: 0,
             },
             CachedGlyph {
                 path: None,
@@ -353,6 +363,7 @@ mod tests {
             variation_hash: 0,
             code: 65,
             is_gid: false,
+            color_mode: 0,
         };
         cache.insert(
             key.clone(),
@@ -382,6 +393,7 @@ mod tests {
             variation_hash: 0,
             code: 65,
             is_gid: false,
+            color_mode: 0,
         };
         assert!(cache.get(&key).is_none());
     }
@@ -394,12 +406,14 @@ mod tests {
             variation_hash: 0,
             code: 65,
             is_gid: false,
+            color_mode: 0,
         };
         let key_b = GlyphCacheKey {
             font_hash: 1,
             variation_hash: 0,
             code: 66,
             is_gid: false,
+            color_mode: 0,
         };
         cache.insert(
             key_a.clone(),
@@ -427,12 +441,14 @@ mod tests {
             variation_hash: 0,
             code: 65,
             is_gid: false,
+            color_mode: 0,
         };
         let key_font2 = GlyphCacheKey {
             font_hash: 222,
             variation_hash: 0,
             code: 65,
             is_gid: false,
+            color_mode: 0,
         };
         cache.insert(
             key_font1.clone(),
@@ -459,12 +475,14 @@ mod tests {
             variation_hash: 0,
             code: 65,
             is_gid: false,
+            color_mode: 0,
         };
         let key_gid = GlyphCacheKey {
             font_hash: 1,
             variation_hash: 0,
             code: 65,
             is_gid: true,
+            color_mode: 0,
         };
 
         assert_ne!(key_char, key_gid);
@@ -480,6 +498,7 @@ mod tests {
                     variation_hash: 0,
                     code: i,
                     is_gid: false,
+                    color_mode: 0,
                 },
                 CachedGlyph {
                     path: None,
@@ -514,6 +533,7 @@ mod tests {
             variation_hash: 0,
             code,
             is_gid: false,
+            color_mode: 0,
         }
     }
 

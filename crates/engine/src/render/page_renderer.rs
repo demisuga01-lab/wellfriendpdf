@@ -2452,11 +2452,24 @@ impl<'a> RenderState<'a> {
     }
 
     fn render_glyph_with_cache(&mut self, request: GlyphRenderRequest<'_>) -> Option<f64> {
+        let glyph_id = crate::render::color_glyph::resolve_request_glyph_id(
+            request.font_bytes,
+            request.is_gid,
+            request.code,
+            request.ch,
+            request.glyph_name,
+            request.variation,
+        );
+        let color_mode = glyph_id
+            .map(|gid| crate::render::color_glyph::color_glyph_kind(request.font_bytes, gid))
+            .unwrap_or(crate::render::color_glyph::ColorGlyphKind::None)
+            .cache_mode();
         let cache_key = GlyphCacheKey {
             font_hash: request.font_hash,
             variation_hash: request.variation.cache_hash(),
             code: request.code,
             is_gid: request.is_gid,
+            color_mode,
         };
         let cached = self.glyph_cache.get(&cache_key).cloned();
         let cached = match cached {
@@ -2487,21 +2500,6 @@ impl<'a> RenderState<'a> {
         };
 
         let advance_width = cached.advance_width;
-        let Some(glyph_path) = cached.path else {
-            if text_rendering_mode_clips(self.gs.text.rendering_mode) {
-                log::debug!(
-                    "PageRenderer: text clipping requested but glyph outline was unavailable: font='{}' subtype={:?} {}={} unicode=U+{:04X} glyph_name={:?}",
-                    request.font_name,
-                    request.font_subtype,
-                    if request.is_gid { "gid" } else { "code" },
-                    request.code,
-                    request.ch as u32,
-                    request.glyph_name
-                );
-                self.fail_closed_text_clip();
-            }
-            return Some(advance_width);
-        };
 
         let scale = font_size_scale(self.gs.text.font_size, request.upem);
         let th = self.gs.text.horizontal_scaling / 100.0;
@@ -2523,14 +2521,6 @@ impl<'a> RenderState<'a> {
             .concat(&rise_t)
             .concat(&tm_t)
             .concat(&ctm);
-        if text_rendering_mode_clips(self.gs.text.rendering_mode) {
-            self.accumulate_text_clip(&glyph_path, &glyph_ctm);
-        }
-        if !text_rendering_mode_paints(self.gs.text.rendering_mode) {
-            return Some(advance_width);
-        }
-        let fill_color = self.fill_pixel_color();
-        let stroke_color = self.stroke_pixel_color();
 
         // Light baseline grid-fitting is bounded to normal body-text sizes in
         // `GlyphHinting::light`, and is only enabled for TrueType-backed
@@ -2545,19 +2535,69 @@ impl<'a> RenderState<'a> {
             GlyphHinting::disabled()
         };
 
+        let glyph_path = cached.path;
+        if text_rendering_mode_clips(self.gs.text.rendering_mode) {
+            if let Some(path) = glyph_path.as_ref() {
+                self.accumulate_text_clip(path, &glyph_ctm);
+            } else {
+                log::debug!(
+                    "PageRenderer: text clipping requested but glyph outline was unavailable: font='{}' subtype={:?} {}={} unicode=U+{:04X} glyph_name={:?}",
+                    request.font_name,
+                    request.font_subtype,
+                    if request.is_gid { "gid" } else { "code" },
+                    request.code,
+                    request.ch as u32,
+                    request.glyph_name
+                );
+                self.fail_closed_text_clip();
+                return Some(advance_width);
+            }
+        }
+        if !text_rendering_mode_paints(self.gs.text.rendering_mode) {
+            return Some(advance_width);
+        }
+
+        let fill_color = self.fill_pixel_color();
+        let stroke_color = self.stroke_pixel_color();
+        let fill_mode = matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6);
+        let color_fill_painted = if fill_mode {
+            glyph_id
+                .map(|gid| {
+                    self.paint_color_glyph_fill(
+                        &request,
+                        gid,
+                        &glyph_ctm,
+                        glyph_hinting,
+                        fill_color,
+                        glyph_pixel_size,
+                    )
+                })
+                .unwrap_or(false)
+        } else {
+            false
+        };
+
+        let Some(glyph_path) = glyph_path.as_ref() else {
+            return Some(advance_width);
+        };
+
         match self.gs.text.rendering_mode {
-            0 | 4 => PathPainter::fill_glyph(
-                &mut self.buf,
-                &glyph_path,
-                &glyph_ctm,
-                &self.viewport,
-                fill_color,
-                FillRule::NonZero,
-                glyph_hinting,
-            ),
+            0 | 4 => {
+                if !color_fill_painted {
+                    PathPainter::fill_glyph(
+                        &mut self.buf,
+                        glyph_path,
+                        &glyph_ctm,
+                        &self.viewport,
+                        fill_color,
+                        FillRule::NonZero,
+                        glyph_hinting,
+                    );
+                }
+            }
             1 | 5 => PathPainter::stroke(
                 &mut self.buf,
-                &glyph_path,
+                glyph_path,
                 &glyph_ctm,
                 &self.viewport,
                 stroke_color,
@@ -2565,18 +2605,20 @@ impl<'a> RenderState<'a> {
                 &DashState::solid(),
             ),
             2 | 6 => {
-                PathPainter::fill_glyph(
-                    &mut self.buf,
-                    &glyph_path,
-                    &glyph_ctm,
-                    &self.viewport,
-                    fill_color,
-                    FillRule::NonZero,
-                    glyph_hinting,
-                );
+                if !color_fill_painted {
+                    PathPainter::fill_glyph(
+                        &mut self.buf,
+                        glyph_path,
+                        &glyph_ctm,
+                        &self.viewport,
+                        fill_color,
+                        FillRule::NonZero,
+                        glyph_hinting,
+                    );
+                }
                 PathPainter::stroke(
                     &mut self.buf,
-                    &glyph_path,
+                    glyph_path,
                     &glyph_ctm,
                     &self.viewport,
                     stroke_color,
@@ -2588,6 +2630,84 @@ impl<'a> RenderState<'a> {
             other => log::warn!("PageRenderer: unknown text render mode {}", other),
         }
         Some(advance_width)
+    }
+
+    fn paint_color_glyph_fill(
+        &mut self,
+        request: &GlyphRenderRequest<'_>,
+        glyph_id: ttf_parser::GlyphId,
+        glyph_ctm: &Transform2D,
+        glyph_hinting: GlyphHinting,
+        fill_color: PixelColor,
+        glyph_pixel_size: f64,
+    ) -> bool {
+        if let Some(layers) = crate::render::color_glyph::colr_cpal_layers(
+            request.font_bytes,
+            glyph_id,
+            fill_color,
+            fill_color[3],
+            request.variation,
+        ) {
+            let mut painted = false;
+            for layer in layers {
+                if let Some(path) = crate::render::color_glyph::outline_gid_path(
+                    request.font_bytes,
+                    layer.glyph_id,
+                    request.variation,
+                ) {
+                    PathPainter::fill_glyph(
+                        &mut self.buf,
+                        &path,
+                        glyph_ctm,
+                        &self.viewport,
+                        layer.color,
+                        FillRule::NonZero,
+                        glyph_hinting,
+                    );
+                    painted = true;
+                }
+            }
+            if painted {
+                return true;
+            }
+        }
+
+        let target_ppem = glyph_pixel_size.round().clamp(1.0, f64::from(u16::MAX)) as u16;
+        let raster = match crate::render::color_glyph::decode_raster_glyph_image(
+            request.font_bytes,
+            glyph_id,
+            target_ppem,
+        ) {
+            Ok(Some(raster)) => raster,
+            Ok(None) => return false,
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: color glyph raster decode failed for font='{}' glyph={} error={}",
+                    request.font_name,
+                    glyph_id.0,
+                    err
+                );
+                return false;
+            }
+        };
+        let units_per_pixel = request.upem / f64::from(raster.pixels_per_em);
+        let image_ctm = Transform2D::scale(
+            f64::from(raster.image.width) * units_per_pixel,
+            f64::from(raster.image.height) * units_per_pixel,
+        )
+        .concat(&Transform2D::translation(
+            f64::from(raster.x) * units_per_pixel,
+            f64::from(raster.y) * units_per_pixel,
+        ))
+        .concat(glyph_ctm);
+        ImagePainter::paint_image_with_alpha(
+            &mut self.buf,
+            &raster.image,
+            &image_ctm,
+            &self.viewport,
+            f32::from(fill_color[3]) / 255.0,
+        );
+        true
     }
 
     fn render_type3_glyph(

@@ -146,6 +146,11 @@ def test_module_level_reports():
         prompt10["color_glyph_rendering"]["status"]
         == "unsupported_color_tables_are_detected_and_reported"
     )
+    prompt10b = feature["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]
+    assert prompt10b["status"] == "complete"
+    assert prompt10b["color_glyph_rendering"]["colr_cpal"]["status"] == "implemented_and_proven"
+    assert prompt10b["multi_reference_audit"]["oxide_outlier_failures"] == 0
+    assert prompt10b["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10b"
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

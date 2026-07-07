@@ -112,6 +112,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt10_cjk_rtl_color_glyph_reference_harness\"", feature);
         Assert.Contains("unsupported_color_tables_are_detected_and_reported", feature);
         Assert.Contains("\"additive_feature_report_prompt10\"", feature);
+        Assert.Contains("\"prompt10b_color_glyph_cjk_rtl_fidelity_closure\"", feature);
+        Assert.Contains("\"implemented_with_precise_security_and_exotic_limits\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt10b\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

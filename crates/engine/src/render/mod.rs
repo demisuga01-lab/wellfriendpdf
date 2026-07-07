@@ -1,6 +1,7 @@
 pub mod buffer;
 pub(crate) mod cmm;
 pub mod color;
+pub(crate) mod color_glyph;
 pub mod colorspace;
 pub mod display_list;
 pub mod font_rasterizer;

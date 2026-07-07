@@ -76,5 +76,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"additive_feature_report_prompt10\"")) {
             throw new AssertionError("feature report missing Prompt 10 CJK/RTL/color glyph reference posture");
         }
+        if (!feature.contains("\"prompt10b_color_glyph_cjk_rtl_fidelity_closure\"")
+                || !feature.contains("\"implemented_with_precise_security_and_exotic_limits\"")
+                || !feature.contains("\"additive_feature_report_prompt10b\"")) {
+            throw new AssertionError("feature report missing Prompt 10B color glyph closure posture");
+        }
     }
 }

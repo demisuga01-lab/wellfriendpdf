@@ -94,8 +94,11 @@ The font report detects OpenType color glyph tables:
 - `sbix`
 - `SVG`
 
-The current renderer does not claim color-layer rendering. Detected color glyph
-tables are exposed through:
+Prompt 10B supersedes the original detection-only posture. The renderer now
+supports the bounded safe/common paths documented in
+`docs/prompt10_color_glyph_rendering.md`: COLR/CPAL v0 solid layers and bounded
+embedded bitmap color glyph payloads, including sbix PNG fixtures. Detected
+color glyph tables are exposed through:
 
 - `color_font_tables`
 - `color_glyph_status`
@@ -103,9 +106,10 @@ tables are exposed through:
 - `color_glyph_unsupported_tables`
 - format-specific diagnostics
 
-Unsupported formats are reported precisely rather than silently replaced:
-COLR/CPAL layered glyphs, CBDT/CBLC bitmap strikes, sbix bitmap strikes, and
-SVG-in-OpenType. SVG glyph documents are not executed, and external references
+Unsupported formats are reported precisely rather than silently replaced.
+COLR/CPAL v1 complex paint graphs remain an exotic unsupported case, malformed
+or unsafe bitmap payloads fail closed, and SVG-in-OpenType is blocked by
+security policy. SVG glyph documents are not executed, and external references
 are not dereferenced.
 
 ## Public Surfaces
@@ -122,11 +126,11 @@ prompt10_cjk_rtl_color_glyph_reference_harness
 
 ## Known Bounded Limits
 
-- Color glyph tables are reported with precise unsupported diagnostics; color
-  layers/bitmaps are not rendered by the default renderer.
+- COLR/CPAL v1 complex paint graphs remain unsupported unless they fit the
+  supported solid-layer path.
+- SVG-in-OpenType remains blocked by security policy.
 - Complex CID-keyed CFF geometry under real-world text clipping is classified as
   a bounded unsupported edge when it falls outside the reference cluster.
 - Existing PDF glyph painting is not reshaped as authoring-time text.
 - Native hinting remains outside the default dependency boundary.
-- Korean/Hebrew visual page fixtures and color-glyph fixture PDFs remain policy
-  rows when no safe fixture is present in the repo corpus.
+- Prompt 10B closes the Korean and Hebrew visual page fixture gaps.

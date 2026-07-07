@@ -221,6 +221,15 @@ fn glyph_index_from_non_unicode_cmap(face: &ttf_parser::Face<'_>, code: u32) -> 
     None
 }
 
+pub(crate) fn resolve_glyph_id_for_simple(
+    face: &ttf_parser::Face<'_>,
+    code: u16,
+    ch: char,
+    glyph_name: Option<&str>,
+) -> Option<GlyphId> {
+    glyph_index_for_simple(face, code, ch, glyph_name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
