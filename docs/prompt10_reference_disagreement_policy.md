@@ -1,9 +1,10 @@
 # Prompt 10 Reference Disagreement Policy
 
-Prompt 10B keeps the multi-reference rule from Prompt 10: a single-reference
+Prompt 10C keeps the multi-reference rule from Prompt 10: a single-reference
 visual pass is not enough. Supported rendered fixtures are compared across
 Oxide, Poppler, PDFium, and MuPDF, with per-page pairwise metrics and explicit
-classification.
+classification. Policy-only rows are allowed only when they are exact
+operator/payload/security diagnostics and not visual claims.
 
 ## Classifications
 
@@ -15,7 +16,11 @@ classification.
   security reason.
 - `unsupported_reported_exotic_case`: the feature requires geometry or paint
   behavior not safely exposed by the current renderer.
-- `partial_blocker`: not acceptable for Prompt 10B closure.
+- `unsupported_reported_exotic_format`: the feature is a named unsupported
+  payload or paint operator.
+- `implemented_with_limits`: the safe subset is implemented or classified and
+  every remaining limit is exact.
+- `blocked`: not acceptable for Prompt 10C closure.
 
 ## Prompt 10B Outcome
 
@@ -33,3 +38,21 @@ Evidence:
 - `prompt10b-multi-reference-diff-metrics.json`
 - `prompt10b-reference-disagreement-summary.json`
 - `prompt10b-html-report/index.html`
+
+## Prompt 10C Outcome
+
+The current summary is:
+
+- rendered pages: 5
+- policy-only rows: 4
+- `all_references_agree_oxide_pass`: 4 pages
+- `unsupported_reported_exotic_case_cid_keyed_cff_clip_geometry`: 1 page
+- Oxide outlier failures: 0
+- unclassified failures: 0
+
+Evidence:
+
+- `multi-reference-render-results-prompt10c.json`
+- `multi-reference-diff-metrics-prompt10c.json`
+- `reference-disagreement-summary-prompt10c.json`
+- `prompt10c-html-report/index.html`

@@ -671,6 +671,13 @@ fn supported_color_glyph_tables(
     {
         supported.push("COLR/CPAL v0 solid layered glyphs".to_string());
     }
+    if summary.supports_colr_cpal_v1_subset()
+        && tables.iter().any(|table| table == "COLR")
+        && tables.iter().any(|table| table == "CPAL")
+    {
+        supported
+            .push("COLR/CPAL v1 PaintSolid/PaintColrGlyph/transform/SourceOver subset".to_string());
+    }
     if summary.has_cbdt && summary.has_cblc {
         supported.push("CBDT/CBLC PNG and bounded bitmap strikes".to_string());
     }
@@ -688,7 +695,10 @@ fn unsupported_color_glyph_tables(
     let has_colr = tables.iter().any(|table| table == "COLR");
     let has_cpal = tables.iter().any(|table| table == "CPAL");
     if has_colr && has_cpal && summary.colr_version.is_some_and(|version| version > 0) {
-        unsupported.push("COLR/CPAL v1 paint graph beyond solid-layer subset".to_string());
+        unsupported.push(
+            "COLR/CPAL v1 unsupported operators: PaintLinearGradient, PaintRadialGradient, PaintSweepGradient, PaintClip, PaintClipBox, non-SourceOver PaintComposite"
+                .to_string(),
+        );
     } else if has_colr && !summary.supports_colr_cpal_v0() {
         unsupported.push("COLR/CPAL malformed or unsupported palette pairing".to_string());
     }
@@ -893,6 +903,17 @@ fn font_diagnostics(input: FontDiagnosticInput<'_>) -> Vec<FontDiagnostic> {
         if input
             .color_glyph_supported_tables
             .iter()
+            .any(|table| table.contains("COLR/CPAL v1"))
+        {
+            diagnostics.push(FontDiagnostic {
+                severity: "info",
+                code: "font.color_glyphs.colr_cpal_v1_subset.supported",
+                message: "COLR/CPAL v1 PaintSolid/PaintColrGlyph transform and SourceOver graphs render through the bounded pure-rust outline painter".to_string(),
+            });
+        }
+        if input
+            .color_glyph_supported_tables
+            .iter()
             .any(|table| table.contains("CBDT/CBLC"))
         {
             diagnostics.push(FontDiagnostic {
@@ -920,7 +941,7 @@ fn font_diagnostics(input: FontDiagnosticInput<'_>) -> Vec<FontDiagnostic> {
             diagnostics.push(FontDiagnostic {
                 severity: "warning",
                 code: "font.color_glyphs.colr_cpal.unsupported_exotic",
-                message: "COLR/CPAL tables outside the v0 solid-layer subset are reported as unsupported instead of silently flattened"
+                message: "COLR/CPAL v1 gradients, clip operators, and non-SourceOver composites are reported at operator level instead of silently flattened"
                     .to_string(),
             });
         }
@@ -956,7 +977,7 @@ fn font_diagnostics(input: FontDiagnosticInput<'_>) -> Vec<FontDiagnostic> {
             diagnostics.push(FontDiagnostic {
                 severity: "warning",
                 code: "font.color_glyphs.svg_unsupported_security",
-                message: "SVG-in-OpenType glyph documents are not executed or dereferenced; renderer uses monochrome outlines for this security boundary"
+                message: "SVG-in-OpenType glyph documents are classified by the static-subset policy; active, external, or dynamic SVG remains blocked and is never executed or dereferenced"
                     .to_string(),
             });
         }

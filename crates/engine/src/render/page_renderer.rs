@@ -2641,33 +2641,46 @@ impl<'a> RenderState<'a> {
         fill_color: PixelColor,
         glyph_pixel_size: f64,
     ) -> bool {
-        if let Some(layers) = crate::render::color_glyph::colr_cpal_layers(
+        match crate::render::color_glyph::colr_cpal_layers(
             request.font_bytes,
             glyph_id,
             fill_color,
             fill_color[3],
             request.variation,
         ) {
-            let mut painted = false;
-            for layer in layers {
-                if let Some(path) = crate::render::color_glyph::outline_gid_path(
-                    request.font_bytes,
-                    layer.glyph_id,
-                    request.variation,
-                ) {
-                    PathPainter::fill_glyph(
-                        &mut self.buf,
-                        &path,
-                        glyph_ctm,
-                        &self.viewport,
-                        layer.color,
-                        FillRule::NonZero,
-                        glyph_hinting,
-                    );
-                    painted = true;
+            Ok(Some(layers)) => {
+                let mut painted = false;
+                for layer in layers {
+                    if let Some(path) = crate::render::color_glyph::outline_gid_path(
+                        request.font_bytes,
+                        layer.glyph_id,
+                        request.variation,
+                    ) {
+                        let layer_ctm = layer.transform.concat(glyph_ctm);
+                        PathPainter::fill_glyph(
+                            &mut self.buf,
+                            &path,
+                            &layer_ctm,
+                            &self.viewport,
+                            layer.color,
+                            FillRule::NonZero,
+                            glyph_hinting,
+                        );
+                        painted = true;
+                    }
+                }
+                if painted {
+                    return true;
                 }
             }
-            if painted {
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: COLR/CPAL glyph paint failed for font='{}' glyph={} error={}",
+                    request.font_name,
+                    glyph_id.0,
+                    err
+                );
                 return true;
             }
         }
@@ -2687,7 +2700,7 @@ impl<'a> RenderState<'a> {
                     glyph_id.0,
                     err
                 );
-                return false;
+                return true;
             }
         };
         let units_per_pixel = request.upem / f64::from(raster.pixels_per_em);

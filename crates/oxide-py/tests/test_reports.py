@@ -151,6 +151,11 @@ def test_module_level_reports():
     assert prompt10b["color_glyph_rendering"]["colr_cpal"]["status"] == "implemented_and_proven"
     assert prompt10b["multi_reference_audit"]["oxide_outlier_failures"] == 0
     assert prompt10b["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10b"
+    prompt10c = feature["prompt10c_color_glyph_hinting_cff_closure"]
+    assert prompt10c["status"] == "complete"
+    assert prompt10c["colrv1"]["status"] == "implemented_with_operator_level_limits"
+    assert prompt10c["multi_reference_audit"]["oxide_outlier_failures"] == 0
+    assert prompt10c["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10c"
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

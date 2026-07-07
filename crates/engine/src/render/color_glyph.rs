@@ -6,11 +6,14 @@ use crate::images::decoder::RawImage;
 use crate::render::buffer::{rgba, PixelColor};
 use crate::render::font_rasterizer::GlyphToPath;
 use crate::render::path::Path;
+use crate::render::transform::Transform2D;
 use ttf_parser::colr::{CompositeMode, Paint, Painter};
 use ttf_parser::{GlyphId, RasterGlyphImage, RasterImageFormat, RgbaColor, Tag, Transform};
 
 const MAX_COLOR_GLYPH_PIXELS: u32 = 4096 * 4096;
 const MAX_COLOR_GLYPH_BYTES: usize = 64 * 1024 * 1024;
+const MAX_COLR_TRANSFORM_DEPTH: usize = 32;
+const MAX_COLR_PAINT_LAYERS: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ColorGlyphKind {
@@ -18,6 +21,7 @@ pub(crate) enum ColorGlyphKind {
     ColrCpal,
     RasterBitmap,
     SvgBlocked,
+    UnsupportedBitmapPayload,
 }
 
 impl ColorGlyphKind {
@@ -27,6 +31,7 @@ impl ColorGlyphKind {
             Self::ColrCpal => 1,
             Self::RasterBitmap => 2,
             Self::SvgBlocked => 3,
+            Self::UnsupportedBitmapPayload => 4,
         }
     }
 }
@@ -35,6 +40,7 @@ impl ColorGlyphKind {
 pub(crate) struct ColrLayer {
     pub glyph_id: u16,
     pub color: PixelColor,
+    pub transform: Transform2D,
 }
 
 pub(crate) fn resolve_request_glyph_id(
@@ -64,6 +70,9 @@ pub(crate) fn color_glyph_kind(font_bytes: &[u8], glyph_id: GlyphId) -> ColorGly
     if face.glyph_raster_image(glyph_id, ppem).is_some() {
         return ColorGlyphKind::RasterBitmap;
     }
+    if sbix_payload_kind(font_bytes, glyph_id).is_some() {
+        return ColorGlyphKind::UnsupportedBitmapPayload;
+    }
     if face.glyph_svg_image(glyph_id).is_some() {
         return ColorGlyphKind::SvgBlocked;
     }
@@ -76,20 +85,33 @@ pub(crate) fn colr_cpal_layers(
     foreground: PixelColor,
     graphics_alpha: u8,
     variation: &VariationRequest,
-) -> Option<Vec<ColrLayer>> {
-    let mut face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
+) -> Result<Option<Vec<ColrLayer>>> {
+    let mut face = ttf_parser::Face::parse(font_bytes, 0)
+        .map_err(|_| OxideError::UnsupportedFeature("malformed COLR/CPAL font".to_string()))?;
     variations::apply_request(&mut face, variation);
     if !face.is_color_glyph(glyph_id) {
-        return None;
+        return Ok(None);
     }
 
     let mut collector = SolidLayerCollector::new(graphics_alpha);
     let foreground = RgbaColor::new(foreground[0], foreground[1], foreground[2], foreground[3]);
-    face.paint_color_glyph(glyph_id, 0, foreground, &mut collector)?;
-    if collector.unsupported || collector.layers.is_empty() {
-        return None;
+    if face
+        .paint_color_glyph(glyph_id, 0, foreground, &mut collector)
+        .is_none()
+    {
+        return Ok(None);
     }
-    Some(collector.layers)
+    if collector.unsupported {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "COLR/CPAL paint graph contains unsupported operators for glyph {}: {}",
+            glyph_id.0,
+            collector.unsupported_ops.join(", ")
+        )));
+    }
+    if collector.layers.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(collector.layers))
 }
 
 pub(crate) fn decode_raster_glyph_image(
@@ -102,6 +124,13 @@ pub(crate) fn decode_raster_glyph_image(
         Err(_) => return Ok(None),
     };
     let Some(image) = face.glyph_raster_image(glyph_id, target_ppem.max(1)) else {
+        if let Some(kind) = sbix_payload_kind(font_bytes, glyph_id) {
+            return Err(OxideError::UnsupportedFeature(format!(
+                "sbix color glyph payload is not enabled for rendering: glyph={} payload={}",
+                glyph_id.0,
+                kind.label()
+            )));
+        }
         return Ok(None);
     };
     if u32::from(image.width).saturating_mul(u32::from(image.height)) > MAX_COLOR_GLYPH_PIXELS {
@@ -116,6 +145,127 @@ pub(crate) fn decode_raster_glyph_image(
         pixels_per_em: image.pixels_per_em.max(1),
         image: decode_raster_image_payload(image)?,
     }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ColorBitmapPayloadKind {
+    Png,
+    Jpeg,
+    Tiff,
+    Pdf,
+    Mask,
+    Dupe,
+    Other(String),
+}
+
+impl ColorBitmapPayloadKind {
+    pub(crate) fn label(&self) -> &str {
+        match self {
+            Self::Png => "sbix PNG",
+            Self::Jpeg => "sbix JPEG",
+            Self::Tiff => "sbix TIFF",
+            Self::Pdf => "sbix PDF",
+            Self::Mask => "sbix mask",
+            Self::Dupe => "sbix duplicate glyph reference",
+            Self::Other(tag) => tag.as_str(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SvgGlyphPolicy {
+    StaticSubsetCandidate,
+    UnsupportedStaticFeature(&'static str),
+    BlockedSecurity(&'static str),
+    PathLimitExceeded,
+}
+
+impl SvgGlyphPolicy {
+    pub(crate) fn status(&self) -> &'static str {
+        match self {
+            Self::StaticSubsetCandidate => "static_subset_candidate",
+            Self::UnsupportedStaticFeature(_) => "unsupported_static_feature",
+            Self::BlockedSecurity(_) => "blocked_security_policy",
+            Self::PathLimitExceeded => "blocked_path_limit",
+        }
+    }
+
+    pub(crate) fn reason(&self) -> &'static str {
+        match self {
+            Self::StaticSubsetCandidate => "safe static SVG subset candidate",
+            Self::UnsupportedStaticFeature(reason) | Self::BlockedSecurity(reason) => reason,
+            Self::PathLimitExceeded => "path/depth limit exceeded",
+        }
+    }
+}
+
+pub(crate) fn classify_svg_glyph_document(svg: &str) -> SvgGlyphPolicy {
+    const MAX_SVG_BYTES: usize = 256 * 1024;
+    const MAX_PATH_COMMANDS: usize = 4096;
+    const MAX_GROUP_DEPTH: isize = 64;
+    if svg.len() > MAX_SVG_BYTES {
+        return SvgGlyphPolicy::PathLimitExceeded;
+    }
+    let lower = svg.to_ascii_lowercase();
+    let blocked_security = [
+        ("<script", "script elements are blocked"),
+        ("<foreignobject", "foreignObject is blocked"),
+        ("<animate", "animation elements are blocked"),
+        ("<animatetransform", "animation elements are blocked"),
+        ("<set", "animation elements are blocked"),
+        (" onload=", "event handler attributes are blocked"),
+        (" onclick=", "event handler attributes are blocked"),
+        (" onmouseover=", "event handler attributes are blocked"),
+        ("javascript:", "javascript URLs are blocked"),
+        ("file:", "file URLs are blocked"),
+        ("http://", "network URLs are blocked"),
+        ("https://", "network URLs are blocked"),
+        ("@import", "CSS imports are blocked"),
+        ("<font", "remote or embedded SVG fonts are blocked"),
+        ("<image", "external image resources are blocked"),
+        ("<filter", "SVG filters are blocked"),
+        ("<mask", "SVG masks are blocked"),
+    ];
+    for (needle, reason) in blocked_security {
+        if lower.contains(needle) {
+            return SvgGlyphPolicy::BlockedSecurity(reason);
+        }
+    }
+    let unsupported_static = [
+        ("<text", "text elements require font/layout execution"),
+        ("<use", "recursive references are unsupported"),
+        ("url(", "paint server URL references are unsupported"),
+        ("<pattern", "SVG pattern paint servers are unsupported"),
+    ];
+    for (needle, reason) in unsupported_static {
+        if lower.contains(needle) {
+            return SvgGlyphPolicy::UnsupportedStaticFeature(reason);
+        }
+    }
+    let mut depth = 0isize;
+    for token in lower.match_indices('<').map(|(idx, _)| &lower[idx..]) {
+        if token.starts_with("<g") || token.starts_with("<svg") {
+            depth += 1;
+        } else if token.starts_with("</g") || token.starts_with("</svg") {
+            depth -= 1;
+        }
+        if !(-1..=MAX_GROUP_DEPTH).contains(&depth) {
+            return SvgGlyphPolicy::PathLimitExceeded;
+        }
+    }
+    let path_commands = lower
+        .bytes()
+        .filter(|byte| {
+            matches!(
+                *byte,
+                b'm' | b'l' | b'h' | b'v' | b'c' | b's' | b'q' | b't' | b'a' | b'z'
+            )
+        })
+        .count();
+    if path_commands > MAX_PATH_COMMANDS {
+        return SvgGlyphPolicy::PathLimitExceeded;
+    }
+    SvgGlyphPolicy::StaticSubsetCandidate
 }
 
 pub(crate) fn color_font_table_summary(font_bytes: &[u8]) -> ColorFontTableSummary {
@@ -150,6 +300,20 @@ impl ColorFontTableSummary {
     pub(crate) fn supports_colr_cpal_v0(&self) -> bool {
         self.colr_version == Some(0) && self.has_cpal
     }
+
+    pub(crate) fn supports_colr_cpal_v1_subset(&self) -> bool {
+        self.colr_version.is_some_and(|version| version > 0) && self.has_cpal
+    }
+}
+
+pub(crate) fn sbix_payload_kind(
+    font_bytes: &[u8],
+    glyph_id: GlyphId,
+) -> Option<ColorBitmapPayloadKind> {
+    let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
+    let raw = face.raw_face();
+    let sbix = raw.table(Tag::from_bytes(b"sbix"))?;
+    sbix_payload_kind_inner(sbix, face.number_of_glyphs(), glyph_id, 0)
 }
 
 #[derive(Debug, Clone)]
@@ -162,19 +326,43 @@ pub(crate) struct DecodedRasterGlyph {
 
 struct SolidLayerCollector {
     current_glyph: Option<u16>,
+    current_transform: Transform2D,
+    transform_stack: Vec<Transform2D>,
+    layer_depth: usize,
     layers: Vec<ColrLayer>,
     graphics_alpha: u8,
     unsupported: bool,
+    unsupported_ops: Vec<&'static str>,
 }
 
 impl SolidLayerCollector {
     fn new(graphics_alpha: u8) -> Self {
         Self {
             current_glyph: None,
+            current_transform: Transform2D::identity(),
+            transform_stack: Vec::new(),
+            layer_depth: 0,
             layers: Vec::new(),
             graphics_alpha,
             unsupported: false,
+            unsupported_ops: Vec::new(),
         }
+    }
+
+    fn mark_unsupported(&mut self, op: &'static str) {
+        self.unsupported = true;
+        if !self.unsupported_ops.contains(&op) {
+            self.unsupported_ops.push(op);
+        }
+    }
+
+    fn push_transform2d(&mut self, op: &'static str, transform: Transform2D) {
+        if self.transform_stack.len() >= MAX_COLR_TRANSFORM_DEPTH || !finite_transform(transform) {
+            self.mark_unsupported(op);
+            return;
+        }
+        self.transform_stack.push(self.current_transform);
+        self.current_transform = self.current_transform.concat(&transform);
     }
 }
 
@@ -195,52 +383,103 @@ impl<'a> Painter<'a> for SolidLayerCollector {
                             color.blue,
                             multiply_alpha(color.alpha, self.graphics_alpha),
                         ),
+                        transform: self.current_transform,
                     });
+                    if self.layers.len() > MAX_COLR_PAINT_LAYERS {
+                        self.mark_unsupported("Paint layer count cap exceeded");
+                    }
                 }
             }
-            Paint::LinearGradient(_) | Paint::RadialGradient(_) | Paint::SweepGradient(_) => {
-                self.unsupported = true;
-            }
+            Paint::LinearGradient(_) => self.mark_unsupported("PaintLinearGradient"),
+            Paint::RadialGradient(_) => self.mark_unsupported("PaintRadialGradient"),
+            Paint::SweepGradient(_) => self.mark_unsupported("PaintSweepGradient"),
         }
     }
 
     fn push_clip(&mut self) {
-        self.unsupported = true;
+        self.mark_unsupported("PaintClip");
     }
 
     fn push_clip_box(&mut self, _clipbox: ttf_parser::colr::ClipBox) {
-        self.unsupported = true;
+        self.mark_unsupported("PaintClipBox");
     }
 
     fn pop_clip(&mut self) {}
 
-    fn push_layer(&mut self, _mode: CompositeMode) {
-        self.unsupported = true;
+    fn push_layer(&mut self, mode: CompositeMode) {
+        if mode != CompositeMode::SourceOver {
+            self.mark_unsupported("PaintComposite");
+            return;
+        }
+        self.layer_depth = self.layer_depth.saturating_add(1);
+        if self.layer_depth > MAX_COLR_TRANSFORM_DEPTH {
+            self.mark_unsupported("PaintComposite depth cap");
+        }
     }
 
-    fn pop_layer(&mut self) {}
+    fn pop_layer(&mut self) {
+        self.layer_depth = self.layer_depth.saturating_sub(1);
+    }
 
     fn push_translate(&mut self, _tx: f32, _ty: f32) {
-        self.unsupported = true;
+        self.push_transform2d(
+            "PaintTranslate",
+            Transform2D::translation(f64::from(_tx), f64::from(_ty)),
+        );
     }
 
     fn push_scale(&mut self, _sx: f32, _sy: f32) {
-        self.unsupported = true;
+        self.push_transform2d(
+            "PaintScale",
+            Transform2D::scale(f64::from(_sx), f64::from(_sy)),
+        );
     }
 
     fn push_rotate(&mut self, _angle: f32) {
-        self.unsupported = true;
+        self.push_transform2d(
+            "PaintRotate",
+            Transform2D::rotation(f64::from(_angle) * std::f64::consts::PI),
+        );
     }
 
     fn push_skew(&mut self, _skew_x: f32, _skew_y: f32) {
-        self.unsupported = true;
+        self.push_transform2d(
+            "PaintSkew",
+            Transform2D::shear(
+                (f64::from(-_skew_x) * std::f64::consts::PI).tan(),
+                (f64::from(_skew_y) * std::f64::consts::PI).tan(),
+            ),
+        );
     }
 
     fn push_transform(&mut self, _transform: Transform) {
-        self.unsupported = true;
+        self.push_transform2d(
+            "PaintTransform",
+            Transform2D::new(
+                f64::from(_transform.a),
+                f64::from(_transform.b),
+                f64::from(_transform.c),
+                f64::from(_transform.d),
+                f64::from(_transform.e),
+                f64::from(_transform.f),
+            ),
+        );
     }
 
-    fn pop_transform(&mut self) {}
+    fn pop_transform(&mut self) {
+        if let Some(transform) = self.transform_stack.pop() {
+            self.current_transform = transform;
+        }
+    }
+}
+
+fn finite_transform(transform: Transform2D) -> bool {
+    transform.a.is_finite()
+        && transform.b.is_finite()
+        && transform.c.is_finite()
+        && transform.d.is_finite()
+        && transform.e.is_finite()
+        && transform.f.is_finite()
 }
 
 pub(crate) fn outline_gid_path(
@@ -253,6 +492,65 @@ pub(crate) fn outline_gid_path(
     let mut builder = GlyphToPath::new();
     face.outline_glyph(GlyphId(glyph_id), &mut builder)?;
     Some(builder.into_path())
+}
+
+fn sbix_payload_kind_inner(
+    sbix: &[u8],
+    glyph_count: u16,
+    glyph_id: GlyphId,
+    depth: u8,
+) -> Option<ColorBitmapPayloadKind> {
+    if depth >= 10 || glyph_id.0 >= glyph_count {
+        return None;
+    }
+    let strike_count = read_u32(sbix, 4)? as usize;
+    let strike_offsets_start = 8usize;
+    for strike_index in 0..strike_count {
+        let strike_offset = read_u32(sbix, strike_offsets_start + strike_index * 4)? as usize;
+        let offsets_start = strike_offset.checked_add(4)?;
+        let glyph_offset_index = offsets_start.checked_add(usize::from(glyph_id.0) * 4)?;
+        let start = read_u32(sbix, glyph_offset_index)? as usize;
+        let end = read_u32(sbix, glyph_offset_index.checked_add(4)?)? as usize;
+        if start == end {
+            continue;
+        }
+        if end <= start || end.checked_sub(start)? < 8 {
+            return Some(ColorBitmapPayloadKind::Other(
+                "sbix malformed strike record".to_string(),
+            ));
+        }
+        let record_start = strike_offset.checked_add(start)?;
+        let tag_bytes = sbix.get(record_start.checked_add(4)?..record_start.checked_add(8)?)?;
+        match tag_bytes {
+            b"png " => return Some(ColorBitmapPayloadKind::Png),
+            b"jpg " | b"jpeg" => return Some(ColorBitmapPayloadKind::Jpeg),
+            b"tiff" | b"tif " => return Some(ColorBitmapPayloadKind::Tiff),
+            b"pdf " => return Some(ColorBitmapPayloadKind::Pdf),
+            b"mask" => return Some(ColorBitmapPayloadKind::Mask),
+            b"dupe" => {
+                let payload_start = record_start.checked_add(8)?;
+                let dupe_gid = read_u16(sbix, payload_start)?;
+                return sbix_payload_kind_inner(sbix, glyph_count, GlyphId(dupe_gid), depth + 1)
+                    .or(Some(ColorBitmapPayloadKind::Dupe));
+            }
+            other => {
+                return Some(ColorBitmapPayloadKind::Other(
+                    String::from_utf8_lossy(other).trim().to_string(),
+                ));
+            }
+        }
+    }
+    None
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
+    let bytes = data.get(offset..offset.checked_add(2)?)?;
+    Some(u16::from_be_bytes([bytes[0], bytes[1]]))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Option<u32> {
+    let bytes = data.get(offset..offset.checked_add(4)?)?;
+    Some(u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 fn decode_raster_image_payload(image: RasterGlyphImage<'_>) -> Result<RawImage> {

@@ -1,47 +1,57 @@
 # Prompt 10 Color Glyph Rendering
 
-Prompt 10B changes the color glyph posture from detection-only to bounded
-rendering for safe OpenType color glyph formats.
+Prompt 10C closes the remaining color-glyph work with bounded rendering for the
+safe cases and exact operator or payload diagnostics for the rest.
 
-## Implemented
+## Implemented Rendering
 
-COLR/CPAL v0 solid layered glyphs are rendered through the existing vector glyph
-path. The renderer uses the font palette, preserves layer order, paints each
-layer outline with its solid color, applies graphics-state alpha, and honors the
-text matrix, CTM, rise, scaling, and clipping state.
+COLR/CPAL v0 solid layered glyphs render through the vector glyph path. The
+renderer preserves palette color, layer order, glyph transform, text matrix,
+CTM, rise, scaling, graphics-state alpha, and clipping state.
 
-Embedded bitmap color glyphs are supported through the shared raster color glyph
-path. The renderer can use bounded PNG payloads, bounded premultiplied BGRA
-payloads, and bounded grayscale/mono bitmap payloads exposed by the font parser.
-The glyph image transform preserves strike ppem, origin offsets, baseline
-placement, text transform, clipping, and graphics alpha.
+COLR/CPAL v1 now supports the bounded solid/vector subset:
 
-sbix PNG glyphs are implemented and covered by the Prompt 10B synthetic sbix
-fixture. The fixture includes a PNG strike, scaling, offset handling, and a
-clipping interaction.
+- `PaintSolid`
+- `PaintColrGlyph`
+- `PaintTransform`
+- `PaintTranslate`
+- `PaintScale`
+- `PaintRotate`
+- `PaintSkew`
+- `PaintComposite` with `SourceOver`
 
-## Unsupported With Narrow Policy
+Embedded bitmap color glyphs use the shared safe raster branch. PNG
+`RasterGlyphImage` payloads and bounded bitmap strikes exposed by the font
+parser are rendered with origin offsets, baseline placement, CTM/text transform,
+graphics alpha, and clipping. `sbix` PNG strikes are implemented and covered by
+the Prompt 10B and 10C synthetic sbix fixtures.
 
-COLR/CPAL v1 remains an exotic unsupported case unless the paint graph is
-equivalent to the supported solid-layer COLRv0 path. Gradients, nested paint
-graphs, transforms, and compositing are not silently approximated.
+## Exact Unsupported Rows
 
-SVG-in-OpenType is security-blocked. SVG glyph documents are not executed, and
-scripts, event handlers, external references, network fetches, foreignObject,
-animation, and remote resources remain blocked. Future support must be a static
-no-network subset.
+Unsupported COLRv1 operators are reported by operator name:
+`PaintLinearGradient`, `PaintRadialGradient`, `PaintSweepGradient`, `PaintClip`,
+`PaintClipBox`, and non-`SourceOver` `PaintComposite`.
 
-Malformed, oversized, unsupported-image, or incomplete bitmap color glyph
-payloads fail closed with diagnostics rather than falling back silently to a
-monochrome approximation.
+SVG-in-OpenType is classified by the static-subset policy. Safe static
+candidates are identified, but active or dynamic SVG remains blocked. Scripts,
+event handlers, network/file/javascript URLs, `foreignObject`, animation, CSS
+imports, remote fonts, external images, filters, masks, path bombs, and
+recursive references are never executed or dereferenced.
+
+Non-PNG or ambiguous color bitmap payloads are exact unsupported format rows:
+CBDT/CBLC ambiguous compressed payloads and malformed strike tables, plus sbix
+JPEG/TIFF/PDF/mask and unknown `graphicType` payloads. Known unsupported color
+payloads fail closed instead of silently falling back to monochrome outlines.
 
 ## Cache And Reports
 
 Glyph cache keys include a color-glyph mode so monochrome outlines, COLR/CPAL
-layers, raster color strikes, and security-blocked SVG posture cannot alias.
+layers, raster color strikes, security-blocked SVG posture, and unsupported
+bitmap payloads cannot alias.
 
-Public feature reports expose the additive section:
+Public feature reports expose the additive sections:
 
 ```text
 prompt10b_color_glyph_cjk_rtl_fidelity_closure
+prompt10c_color_glyph_hinting_cff_closure
 ```
