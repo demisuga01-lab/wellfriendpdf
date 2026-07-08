@@ -8,6 +8,13 @@ Report suspected vulnerabilities through the project maintainer's private securi
 
 The engine crate uses `#![forbid(unsafe_code)]`. Native dependencies must be optional, isolated, documented, and kept out of default/WASM builds unless a later policy explicitly changes that posture.
 
+Prompt 11 applies this rule to native color management. LittleCMS/lcms2 is not
+linked or vendored in the default engine, and the future `native-cmm-lcms2`
+feature name remains reserved until a separate audited native boundary,
+packaging policy, and fuzz posture exist. The current CMM report must identify
+qcms/default preview transforms as bounded preview behavior rather than full
+prepress parity.
+
 ## Dependency Updates
 
 Security-sensitive dependencies for crypto, parsing, image decoding, compression, and XML/OOXML handling should be updated promptly after advisories and verified through the standard gates.

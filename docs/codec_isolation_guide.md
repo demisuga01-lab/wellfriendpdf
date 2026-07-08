@@ -8,6 +8,9 @@ Oxide's codec isolation posture is layered:
 - Prompt 03 subprocess isolation remains the practical OS boundary for worker-backed codec paths.
 - Prompt 04's native codec registry denies unsafe native backends by default.
 - RLBox/WASM native-codec sandboxing remains documented as hard-blocked for this repository state.
+- Prompt 11 applies the same boundary discipline to native CMM: LittleCMS/lcms2
+  is not linked in the default engine, the future `native-cmm-lcms2` flag is
+  reserved only, and qcms remains the report-visible safe default preview path.
 
 Prompt 05 public artifacts:
 
@@ -21,3 +24,6 @@ malformed worker output, scheduler budget denial, malformed filters, and
 unsupported native backends must return structured errors/reports rather than
 silent fallback.
 
+Native CMM backends follow the same rule. A future LittleCMS backend must be
+optional, feature-gated, package-documented, report-visible, WASM-disabled, and
+covered by fuzzing before it can be considered supported.

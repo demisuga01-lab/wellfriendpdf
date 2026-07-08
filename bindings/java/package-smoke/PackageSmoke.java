@@ -101,5 +101,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"additive_feature_report_prompt10f\"")) {
             throw new AssertionError("feature report missing Prompt 10F Porter-Duff radial closure posture");
         }
+        if (!feature.contains("\"prompt11_renderer_fuzz_cmm_closeout\"")
+                || !feature.contains("\"hard_blocked_precise_no_default_native_dependency\"")
+                || !feature.contains("\"additive_feature_report_prompt11\"")) {
+            throw new AssertionError("feature report missing Prompt 11 renderer fuzz CMM closeout posture");
+        }
     }
 }

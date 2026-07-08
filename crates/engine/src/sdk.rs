@@ -1283,6 +1283,121 @@ fn prompt10f_closure_report_value() -> serde_json::Value {
     })
 }
 
+fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
+    json!({
+        "status": "complete_with_native_cmm_hard_blocked_precise",
+        "artifact_root": "target/prompt11-renderer-cmm-closeout",
+        "audit_doc": "docs/prompt11_renderer_cmm_audit.md",
+        "fuzz_doc": "docs/prompt11_renderer_fuzz_metamorphic_campaign.md",
+        "closeout_doc": "docs/prompt11_renderer_parity_closeout.md",
+        "native_cmm_audit_doc": "docs/prompt11_native_cmm_feasibility_safety_audit.md",
+        "native_cmm_backend_doc": "docs/prompt11_native_cmm_backend.md",
+        "audit_script": "scripts/prompt11_renderer_fuzz_cmm_closeout.py",
+        "renderer_fuzz": {
+            "status": "implemented_with_short_smoke_and_release_duration_deferred",
+            "fuzz_target_count": 25,
+            "new_target": "renderer_prompt11",
+            "target_inventory": "target/prompt11-renderer-cmm-closeout/renderer-fuzz-target-inventory-prompt11.json",
+            "seed_corpus_manifest": "target/prompt11-renderer-cmm-closeout/renderer-seed-corpus-manifest-prompt11.json",
+            "structure_aware_mutator": "target/prompt11-renderer-cmm-closeout/renderer-mutator-report-prompt11.json",
+            "smoke_status": "fuzz_bin_compile_plus_mutator_corpus_runner",
+            "smoke_report": "target/prompt11-renderer-cmm-closeout/renderer-fuzz-smoke-report-prompt11.json",
+            "release_duration_fuzzing": "deferred_release_duration",
+            "crash_minimization_workflow": "target/prompt11-renderer-cmm-closeout/renderer-crash-minimization-workflow-prompt11.md",
+            "unclassified_crashes_hangs_ooms": 0
+        },
+        "metamorphic_testing": {
+            "status": "implemented",
+            "test_file": "crates/engine/tests/prompt11_renderer_metamorphic.rs",
+            "comparison": "byte_exact_rgba",
+            "threshold": 0,
+            "full_tile_band": "target/prompt11-renderer-cmm-closeout/full-tile-band-equivalence-prompt11.json",
+            "cache_no_cache": "target/prompt11-renderer-cmm-closeout/cache-no-cache-equivalence-prompt11.json",
+            "progressive_resume": "target/prompt11-renderer-cmm-closeout/progressive-equivalence-prompt11.json",
+            "ocg_cache_separation": "target/prompt11-renderer-cmm-closeout/ocg-cache-separation-prompt11.json",
+            "unclassified_failures": 0,
+            "stale_cache_failures": 0,
+            "progressive_mismatch_failures": 0
+        },
+        "renderer_closeout": {
+            "status": "implemented",
+            "reference_engines": ["Poppler", "PDFium", "MuPDF", "Oxide"],
+            "corpus_manifest": "target/prompt11-renderer-cmm-closeout/renderer-closeout-corpus-manifest-prompt11.json",
+            "render_results": "target/prompt11-renderer-cmm-closeout/renderer-closeout-render-results-prompt11.json",
+            "diff_metrics": "target/prompt11-renderer-cmm-closeout/renderer-closeout-diff-metrics-prompt11.json",
+            "reference_disagreements": "target/prompt11-renderer-cmm-closeout/renderer-closeout-reference-disagreements-prompt11.json",
+            "fallback_taxonomy": "target/prompt11-renderer-cmm-closeout/renderer-closeout-fallback-taxonomy-prompt11.json",
+            "performance_memory": "target/prompt11-renderer-cmm-closeout/renderer-closeout-performance-memory-prompt11.json",
+            "html_report": "target/prompt11-renderer-cmm-closeout/renderer-closeout-html-report/index.html",
+            "visual_threshold": "mean_abs_channel_difference <= 2.0 OR changed_pixel_threshold8_percentage <= 0.02",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0,
+            "verdict": "advanced CMM/prepress may begin with exact CMM limits carried forward"
+        },
+        "native_cmm_audit": {
+            "decision": "littlecms_native_backend_hard_blocked_pending_audited_native_boundary",
+            "backend_candidate": "LittleCMS lcms2",
+            "license_posture": "generally compatible but not vendored_or_linked_in_prompt11",
+            "security_posture": "no unsafe/native boundary inside oxide-engine default build",
+            "dependency_policy": "no silent native dependency",
+            "feature_flag": "reserved_native-cmm-lcms2_not_compiled",
+            "default_build_posture": "no_native_cmm_dependency",
+            "wasm_posture": "native_cmm_disabled_qcms_default_path_only",
+            "package_impact": "target/prompt11-renderer-cmm-closeout/native-cmm-package-impact-prompt11.json",
+            "audit_artifact": "target/prompt11-renderer-cmm-closeout/native-cmm-feasibility-prompt11.json"
+        },
+        "native_cmm_backend": {
+            "status": "hard_blocked_precise_no_default_native_dependency",
+            "backend_used_in_current_build": "safe-rust-plus-qcms",
+            "native_backend_used_in_current_build": false,
+            "feature_flag_status": "reserved_not_available",
+            "implemented_default_transforms": [
+                "ICCBased profile-to-sRGB preview through qcms",
+                "DeviceCMYK deterministic process-ink preview",
+                "CalRGB/CalGray/Lab to sRGB fallback",
+                "rendering intent carried into qcms transform options"
+            ],
+            "output_intent_behavior": "reported; destination-output proofing transform remains later owner",
+            "image_integration": "ICCBased image source to sRGB preview where qcms accepts the profile",
+            "shading_integration": "current Device/Cal/Lab color model only",
+            "pattern_integration": "current Device/Cal/Lab color model only",
+            "transparency_group_integration": "RGB framebuffer preview only",
+            "transform_tests": "qcms_identity_vectors_no_native_claim",
+            "cache_memory": "target/prompt11-renderer-cmm-closeout/native-cmm-cache-memory-prompt11.json",
+            "backend_matrix": "target/prompt11-renderer-cmm-closeout/native-cmm-backend-matrix-prompt11.json",
+            "not_claimed": [
+                "LittleCMS native transforms",
+                "device-link ICC",
+                "multicolor ICC",
+                "true black-point compensation",
+                "separation/DeviceN plate framebuffer",
+                "overprint proofing"
+            ]
+        },
+        "public_report_parity": {
+            "schema_change": "additive_section_only",
+            "report_envelope_version": REPORT_ENVELOPE_VERSION,
+            "bindings": ["Rust SDK", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"],
+            "artifact": "target/prompt11-renderer-cmm-closeout/public-feature-report-prompt11.json"
+        },
+        "closure_gates": {
+            "memory_cap_mb": 4096,
+            "public_report_schema": "additive_feature_report_prompt11",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0,
+            "native_cmm_backend_status": "hard_blocked_precise",
+            "default_build_native_dependency": false,
+            "wasm_native_dependency": false
+        },
+        "remaining_bounded_limits": [
+            "release-duration coverage-guided renderer fuzzing remains a release-hardening run over the Prompt 11 targets and promoted corpus",
+            "LittleCMS/native CMM is not linked until a separate audited native boundary and package policy are accepted",
+            "output-intent destination proofing, device-link ICC, multicolor ICC, true BPC, spot/DeviceN plates, separation framebuffers, and overprint proofing remain later CMM/prepress owners",
+            "qcms/default ICCBased transforms are sRGB preview transforms, not full prepress parity"
+        ]
+    })
+}
+
 pub fn feature_report_json() -> Result<String> {
     let codec_isolation = codec_isolation_availability_report();
     let native_codec_boundary = codec_isolation["native_codec_boundary"].clone();
@@ -1777,6 +1892,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt10d_full_colrv1_svg_color_glyph_closure": prompt10d_closure_report_value(),
         "prompt10e_colrv1_gradient_clip_composite_closure": prompt10e_closure_report_value(),
         "prompt10f_colrv1_porterduff_radial_closure": prompt10f_closure_report_value(),
+        "prompt11_renderer_fuzz_cmm_closeout": prompt11_renderer_fuzz_cmm_closeout_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2321,6 +2437,30 @@ mod tests {
             v["report"]["prompt10f_colrv1_porterduff_radial_closure"]["closure_gates"]
                 ["public_report_schema"],
             "additive_feature_report_prompt10f"
+        );
+        assert_eq!(
+            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["status"],
+            "complete_with_native_cmm_hard_blocked_precise"
+        );
+        assert_eq!(
+            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_fuzz"]
+                ["fuzz_target_count"],
+            25
+        );
+        assert_eq!(
+            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_closeout"]
+                ["oxide_outlier_failures"],
+            0
+        );
+        assert_eq!(
+            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["native_cmm_backend"]
+                ["backend_used_in_current_build"],
+            "safe-rust-plus-qcms"
+        );
+        assert_eq!(
+            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["closure_gates"]
+                ["public_report_schema"],
+            "additive_feature_report_prompt11"
         );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),

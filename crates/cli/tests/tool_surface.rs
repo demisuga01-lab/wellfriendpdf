@@ -841,6 +841,30 @@ fn prompt07_report_commands_emit_json() {
             ["public_report_schema"],
         "additive_feature_report_prompt10f"
     );
+    assert_eq!(
+        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["status"],
+        "complete_with_native_cmm_hard_blocked_precise"
+    );
+    assert_eq!(
+        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_fuzz"]
+            ["fuzz_target_count"],
+        25
+    );
+    assert_eq!(
+        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_closeout"]
+            ["oxide_outlier_failures"],
+        0
+    );
+    assert_eq!(
+        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["native_cmm_backend"]
+            ["backend_used_in_current_build"],
+        "safe-rust-plus-qcms"
+    );
+    assert_eq!(
+        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["closure_gates"]
+            ["public_report_schema"],
+        "additive_feature_report_prompt11"
+    );
 
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),

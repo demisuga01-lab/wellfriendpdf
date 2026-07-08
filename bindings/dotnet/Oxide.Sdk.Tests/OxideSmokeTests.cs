@@ -128,6 +128,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"DestinationAtop\"", feature);
         Assert.Contains("\"implemented_with_reference_equivalence\"", feature);
         Assert.Contains("\"additive_feature_report_prompt10f\"", feature);
+        Assert.Contains("\"prompt11_renderer_fuzz_cmm_closeout\"", feature);
+        Assert.Contains("\"hard_blocked_precise_no_default_native_dependency\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt11\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

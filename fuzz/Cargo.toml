@@ -195,3 +195,10 @@ path = "fuzz_targets/decode_scanner.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "renderer_prompt11"
+path = "fuzz_targets/renderer_prompt11.rs"
+test = false
+doc = false
+bench = false

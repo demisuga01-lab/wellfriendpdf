@@ -181,6 +181,12 @@ def test_module_level_reports():
     assert prompt10f["exact_moving_center_radial"]["status"] == "implemented_with_reference_equivalence"
     assert prompt10f["multi_reference_audit"]["oxide_outlier_failures"] == 0
     assert prompt10f["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10f"
+    prompt11 = feature["prompt11_renderer_fuzz_cmm_closeout"]
+    assert prompt11["status"] == "complete_with_native_cmm_hard_blocked_precise"
+    assert prompt11["renderer_fuzz"]["fuzz_target_count"] == 25
+    assert prompt11["renderer_closeout"]["oxide_outlier_failures"] == 0
+    assert prompt11["native_cmm_backend"]["backend_used_in_current_build"] == "safe-rust-plus-qcms"
+    assert prompt11["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt11"
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

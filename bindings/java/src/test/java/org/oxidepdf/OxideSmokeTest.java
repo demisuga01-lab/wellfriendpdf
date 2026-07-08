@@ -153,6 +153,15 @@ public final class OxideSmokeTest {
         assertTrue(
             feature.contains("\"additive_feature_report_prompt10f\""),
             "prompt10f additive schema status");
+        assertTrue(
+            feature.contains("\"prompt11_renderer_fuzz_cmm_closeout\""),
+            "prompt11 feature posture");
+        assertTrue(
+            feature.contains("\"hard_blocked_precise_no_default_native_dependency\""),
+            "prompt11 native CMM posture");
+        assertTrue(
+            feature.contains("\"additive_feature_report_prompt11\""),
+            "prompt11 additive schema status");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),
