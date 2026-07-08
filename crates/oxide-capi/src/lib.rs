@@ -2593,6 +2593,13 @@ mod tests {
                 ["public_report_schema"],
             "additive_feature_report_prompt11"
         );
+        let prompt11b = &value["report"]["prompt11b_native_littlecms_cmm_backend_closure"];
+        assert_eq!(prompt11b["status"], "complete");
+        assert_eq!(prompt11b["feature_flag"]["name"], "native-cmm-lcms2");
+        assert_eq!(
+            prompt11b["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt11b"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

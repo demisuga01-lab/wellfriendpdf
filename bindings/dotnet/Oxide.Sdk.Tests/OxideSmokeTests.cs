@@ -131,6 +131,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt11_renderer_fuzz_cmm_closeout\"", feature);
         Assert.Contains("\"hard_blocked_precise_no_default_native_dependency\"", feature);
         Assert.Contains("\"additive_feature_report_prompt11\"", feature);
+        Assert.Contains("\"prompt11b_native_littlecms_cmm_backend_closure\"", feature);
+        Assert.Contains("\"native-cmm-lcms2\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt11b\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

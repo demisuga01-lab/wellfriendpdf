@@ -28,6 +28,7 @@ log = "0.4"
 md-5 = "0.10"
 png = "0.17"
 qcms = { version = "0.3", default-features = true }
+lcms2 = { version = "6.1.1", optional = true, default-features = true }
 rayon = "1"
 rustybuzz = "0.20"
 serde = { version = "1", features = ["derive"] }
@@ -62,6 +63,10 @@ ocr = []
 # itself; it only allows future explicitly-registered native backend metadata to
 # report as compiled. Defaults remain pure Rust.
 native-codecs = []
+# Prompt 11B native CMM boundary. Off by default: when enabled, ICCBased
+# Gray/RGB/CMYK preview transforms can use the safe Rust `lcms2` wrapper around
+# LittleCMS/lcms2. Default, WASM, and package builds keep the qcms fallback path.
+native-cmm-lcms2 = ["dep:lcms2"]
 # Exposes internal parse/decode entry points (stream filters, etc.) as a
 # stable `pub` surface for the out-of-tree `fuzz/` workspace member. Off by
 # default so the normal build keeps these implementation details private;

@@ -187,6 +187,10 @@ def test_module_level_reports():
     assert prompt11["renderer_closeout"]["oxide_outlier_failures"] == 0
     assert prompt11["native_cmm_backend"]["backend_used_in_current_build"] == "safe-rust-plus-qcms"
     assert prompt11["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt11"
+    prompt11b = feature["prompt11b_native_littlecms_cmm_backend_closure"]
+    assert prompt11b["status"] == "complete"
+    assert prompt11b["feature_flag"]["name"] == "native-cmm-lcms2"
+    assert prompt11b["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt11b"
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

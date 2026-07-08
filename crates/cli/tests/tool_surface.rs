@@ -865,6 +865,13 @@ fn prompt07_report_commands_emit_json() {
             ["public_report_schema"],
         "additive_feature_report_prompt11"
     );
+    let prompt11b = &feature["report"]["prompt11b_native_littlecms_cmm_backend_closure"];
+    assert_eq!(prompt11b["status"], "complete");
+    assert_eq!(prompt11b["feature_flag"]["name"], "native-cmm-lcms2");
+    assert_eq!(
+        prompt11b["closure_gates"]["public_report_schema"],
+        "additive_feature_report_prompt11b"
+    );
 
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),

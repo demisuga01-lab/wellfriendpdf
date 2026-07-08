@@ -29,3 +29,4 @@ full = ["ocr"]
 # no linked C). Off by default so the standard CLI builds pure-Rust with no OCR
 # dependency; `--ocr` errors with an actionable message unless this is enabled.
 ocr = ["dep:oxide-ocr-tesseract"]
+native-cmm-lcms2 = ["oxide-engine/native-cmm-lcms2"]

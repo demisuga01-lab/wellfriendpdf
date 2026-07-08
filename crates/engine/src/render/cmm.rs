@@ -1,8 +1,10 @@
 //! Small, deterministic color-management helpers for PDF render output.
 //!
-//! Embedded ICC profiles are handled with `qcms` when available. Device spaces
-//! still need local fallbacks because PDF DeviceCMYK/Cal/Lab often appear
-//! without an ICC profile.
+//! Embedded ICC profiles are handled with the portable `qcms` fallback in
+//! default builds. When the explicit `native-cmm-lcms2` feature is enabled,
+//! ICCBased preview transforms use the safe `lcms2` wrapper around
+//! LittleCMS/lcms2. Device spaces still need local fallbacks because PDF
+//! DeviceCMYK/Cal/Lab often appear without an ICC profile.
 
 use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
@@ -14,6 +16,9 @@ use std::hash::{Hash, Hasher};
 const D50: [f32; 3] = [0.96422, 1.0, 0.82521];
 pub(crate) const DEFAULT_MAX_ICC_PROFILE_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const DEFAULT_TRANSFORM_CACHE_ENTRIES: usize = 16;
+pub(crate) const NATIVE_CMM_FEATURE_FLAG: &str = "native-cmm-lcms2";
+pub(crate) const LCMS2_CRATE_VERSION: &str = "6.1.1";
+pub(crate) const LCMS2_SYS_CRATE_VERSION: &str = "4.0.7";
 
 thread_local! {
     static ICC_TRANSFORM_CACHE: RefCell<IccTransformCache> =
@@ -47,6 +52,16 @@ impl ColorIntent {
             Self::AbsoluteColorimetric => qcms::Intent::AbsoluteColorimetric,
         }
     }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    fn to_lcms2(self) -> lcms2::Intent {
+        match self {
+            Self::Perceptual => lcms2::Intent::Perceptual,
+            Self::RelativeColorimetric => lcms2::Intent::RelativeColorimetric,
+            Self::Saturation => lcms2::Intent::Saturation,
+            Self::AbsoluteColorimetric => lcms2::Intent::AbsoluteColorimetric,
+        }
+    }
 }
 
 pub(crate) const SUPPORTED_QCMS_INTENTS: [ColorIntent; 4] = [
@@ -55,6 +70,8 @@ pub(crate) const SUPPORTED_QCMS_INTENTS: [ColorIntent; 4] = [
     ColorIntent::Saturation,
     ColorIntent::AbsoluteColorimetric,
 ];
+
+pub(crate) const SUPPORTED_NATIVE_LCMS2_INTENTS: [ColorIntent; 4] = SUPPORTED_QCMS_INTENTS;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub(crate) struct ColorTransformOptions {
@@ -71,6 +88,88 @@ pub(crate) struct IccTransformCacheMetrics {
     pub max_entries: usize,
     pub invalid_profiles: usize,
     pub unsupported_profiles: usize,
+    pub native_lcms2_transforms: usize,
+    pub native_lcms2_failures: usize,
+    pub fallback_qcms_transforms: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NativeCmmStatus {
+    pub feature_flag: &'static str,
+    pub compiled: bool,
+    pub available: bool,
+    pub backend_name: &'static str,
+    pub selected_backend: &'static str,
+    pub native_version: Option<String>,
+    pub default_build_native_dependency: bool,
+    pub wasm_native_unavailable: bool,
+    pub unsafe_boundary: &'static str,
+    pub linking_posture: &'static str,
+}
+
+pub(crate) fn native_cmm_status() -> NativeCmmStatus {
+    let compiled = cfg!(feature = "native-cmm-lcms2");
+    let available = compiled && !cfg!(target_arch = "wasm32");
+    NativeCmmStatus {
+        feature_flag: NATIVE_CMM_FEATURE_FLAG,
+        compiled,
+        available,
+        backend_name: if available { "lcms2" } else { "qcms-fallback" },
+        selected_backend: if available { "lcms2" } else { "fallback/qcms" },
+        native_version: lcms2_version_string(),
+        default_build_native_dependency: false,
+        wasm_native_unavailable: cfg!(target_arch = "wasm32") || !compiled,
+        unsafe_boundary: if compiled {
+            "oxide-engine remains forbid(unsafe_code); unsafe/native FFI is isolated in lcms2/lcms2-sys dependencies"
+        } else {
+            "no native CMM dependency compiled"
+        },
+        linking_posture: if compiled {
+            "lcms2-sys dynamic discovery with static-fallback vendored LittleCMS when system lcms2 is unavailable"
+        } else {
+            "no lcms2 link in default build"
+        },
+    }
+}
+
+fn lcms2_version_string() -> Option<String> {
+    #[cfg(feature = "native-cmm-lcms2")]
+    {
+        Some(format!(
+            "lcms2 crate {LCMS2_CRATE_VERSION}; lcms2-sys {LCMS2_SYS_CRATE_VERSION}; encoded LittleCMS {}",
+            lcms2::version()
+        ))
+    }
+    #[cfg(not(feature = "native-cmm-lcms2"))]
+    {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum IccBackend {
+    FallbackQcms,
+    #[cfg(feature = "native-cmm-lcms2")]
+    NativeLcms2,
+}
+
+impl IccBackend {
+    fn preferred() -> Self {
+        #[cfg(all(feature = "native-cmm-lcms2", not(target_arch = "wasm32")))]
+        {
+            return Self::NativeLcms2;
+        }
+        #[allow(unreachable_code)]
+        Self::FallbackQcms
+    }
+
+    fn tag(self) -> u8 {
+        match self {
+            Self::FallbackQcms => 0,
+            #[cfg(feature = "native-cmm-lcms2")]
+            Self::NativeLcms2 => 1,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +185,7 @@ pub(crate) struct IccFidelityProbe {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct IccTransformKey {
+    backend: u8,
     profile_hash: u64,
     profile_len: usize,
     components: u8,
@@ -95,9 +195,25 @@ struct IccTransformKey {
     black_point_compensation: bool,
 }
 
+enum CachedIccTransform {
+    Qcms(qcms::Transform),
+    #[cfg(feature = "native-cmm-lcms2")]
+    Lcms2(lcms2::Transform<u8, u8>),
+}
+
+impl CachedIccTransform {
+    fn convert(&self, src: &[u8], dst: &mut [u8]) {
+        match self {
+            Self::Qcms(transform) => transform.convert(src, dst),
+            #[cfg(feature = "native-cmm-lcms2")]
+            Self::Lcms2(transform) => transform.transform_pixels(src, dst),
+        }
+    }
+}
+
 pub(crate) struct IccTransformCache {
     max_entries: usize,
-    entries: Vec<(IccTransformKey, qcms::Transform)>,
+    entries: Vec<(IccTransformKey, CachedIccTransform)>,
     metrics: IccTransformCacheMetrics,
 }
 
@@ -129,20 +245,40 @@ impl IccTransformCache {
         pixels: &[u8],
         options: ColorTransformOptions,
     ) -> Option<(Vec<u8>, u8)> {
+        self.transform_profile_to_srgb_with_backend(
+            IccBackend::preferred(),
+            profile_bytes,
+            components,
+            pixels,
+            options,
+        )
+    }
+
+    fn transform_profile_to_srgb_with_backend(
+        &mut self,
+        backend: IccBackend,
+        profile_bytes: &[u8],
+        components: u8,
+        pixels: &[u8],
+        options: ColorTransformOptions,
+    ) -> Option<(Vec<u8>, u8)> {
         if profile_bytes.len() > DEFAULT_MAX_ICC_PROFILE_BYTES {
             self.metrics.unsupported_profiles += 1;
             return None;
         }
-        let src_type = data_type_for_components(components)?;
-        if !pixels.len().is_multiple_of(src_type.bytes_per_pixel()) {
+        let bytes_per_pixel = usize::from(components);
+        if bytes_per_pixel == 0 || !pixels.len().is_multiple_of(bytes_per_pixel) {
             return None;
         }
         let key = IccTransformKey {
+            backend: backend.tag(),
             profile_hash: stable_hash(profile_bytes),
             profile_len: profile_bytes.len(),
             components,
-            src_type: data_type_tag(src_type),
-            dst_type: data_type_tag(qcms::DataType::RGB8),
+            src_type: qcms_data_type_for_components(components)
+                .map(qcms_data_type_tag)
+                .or_else(|| native_data_type_tag(components))?,
+            dst_type: qcms_data_type_tag(qcms::DataType::RGB8),
             intent: options.intent,
             black_point_compensation: options.black_point_compensation,
         };
@@ -157,22 +293,15 @@ impl IccTransformCache {
             }
             None => {
                 self.metrics.misses += 1;
-                let input = match qcms::Profile::new_from_slice(profile_bytes, false) {
-                    Some(profile) => profile,
-                    None => {
-                        self.metrics.invalid_profiles += 1;
-                        return None;
+                let transform = match backend {
+                    IccBackend::FallbackQcms => {
+                        self.create_qcms_transform(profile_bytes, components, options)?
+                    }
+                    #[cfg(feature = "native-cmm-lcms2")]
+                    IccBackend::NativeLcms2 => {
+                        self.create_lcms2_transform(profile_bytes, components, options)?
                     }
                 };
-                let mut output = qcms::Profile::new_sRGB();
-                output.precache_output_transform();
-                let transform = qcms::Transform::new_to(
-                    &input,
-                    &output,
-                    src_type,
-                    qcms::DataType::RGB8,
-                    options.intent.to_qcms(),
-                )?;
                 if self.entries.len() >= self.max_entries {
                     self.entries.remove(0);
                     self.metrics.evictions += 1;
@@ -181,10 +310,100 @@ impl IccTransformCache {
                 self.entries.len() - 1
             }
         };
-        let pixel_count = pixels.len() / src_type.bytes_per_pixel();
+        let pixel_count = pixels.len() / bytes_per_pixel;
         let mut rgb = vec![0u8; pixel_count * 3];
         self.entries[idx].1.convert(pixels, &mut rgb);
+        match backend {
+            IccBackend::FallbackQcms => self.metrics.fallback_qcms_transforms += 1,
+            #[cfg(feature = "native-cmm-lcms2")]
+            IccBackend::NativeLcms2 => self.metrics.native_lcms2_transforms += 1,
+        }
         Some((rgb, 3))
+    }
+
+    fn create_qcms_transform(
+        &mut self,
+        profile_bytes: &[u8],
+        components: u8,
+        options: ColorTransformOptions,
+    ) -> Option<CachedIccTransform> {
+        let src_type = qcms_data_type_for_components(components)?;
+        let input = match qcms::Profile::new_from_slice(profile_bytes, false) {
+            Some(profile) => profile,
+            None => {
+                self.metrics.invalid_profiles += 1;
+                return None;
+            }
+        };
+        let mut output = qcms::Profile::new_sRGB();
+        output.precache_output_transform();
+        let transform = qcms::Transform::new_to(
+            &input,
+            &output,
+            src_type,
+            qcms::DataType::RGB8,
+            options.intent.to_qcms(),
+        )?;
+        Some(CachedIccTransform::Qcms(transform))
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    fn create_lcms2_transform(
+        &mut self,
+        profile_bytes: &[u8],
+        components: u8,
+        options: ColorTransformOptions,
+    ) -> Option<CachedIccTransform> {
+        let input_format = lcms2_pixel_format_for_components(components)?;
+        let input = match lcms2::Profile::new_icc(profile_bytes) {
+            Ok(profile) => profile,
+            Err(_) => {
+                self.metrics.invalid_profiles += 1;
+                self.metrics.native_lcms2_failures += 1;
+                return None;
+            }
+        };
+        if !lcms2_profile_components_match(&input, components) {
+            self.metrics.unsupported_profiles += 1;
+            self.metrics.native_lcms2_failures += 1;
+            return None;
+        }
+        let output = lcms2::Profile::new_srgb();
+        let flags = if options.black_point_compensation {
+            lcms2::Flags::BLACKPOINT_COMPENSATION
+        } else {
+            lcms2::Flags::default()
+        };
+        let transform = match lcms2::Transform::new_flags(
+            &input,
+            input_format,
+            &output,
+            lcms2::PixelFormat::RGB_8,
+            options.intent.to_lcms2(),
+            flags,
+        ) {
+            Ok(transform) => transform,
+            Err(_) if input.device_class() == lcms2::ProfileClassSignature::LinkClass => {
+                match lcms2::Transform::new_multiprofile(
+                    &[&input, &output],
+                    input_format,
+                    lcms2::PixelFormat::RGB_8,
+                    options.intent.to_lcms2(),
+                    flags,
+                ) {
+                    Ok(transform) => transform,
+                    Err(_) => {
+                        self.metrics.native_lcms2_failures += 1;
+                        return None;
+                    }
+                }
+            }
+            Err(_) => {
+                self.metrics.native_lcms2_failures += 1;
+                return None;
+            }
+        };
+        Some(CachedIccTransform::Lcms2(transform))
     }
 
     pub(crate) fn transform_builtin_srgb_to_srgb_for_proof(
@@ -195,12 +414,14 @@ impl IccTransformCache {
         if !pixels.len().is_multiple_of(3) {
             return None;
         }
+        let backend = IccBackend::preferred();
         let key = IccTransformKey {
+            backend: backend.tag(),
             profile_hash: 0x5352_4742_5f42_5549,
             profile_len: 0,
             components: 3,
-            src_type: data_type_tag(qcms::DataType::RGB8),
-            dst_type: data_type_tag(qcms::DataType::RGB8),
+            src_type: qcms_data_type_tag(qcms::DataType::RGB8),
+            dst_type: qcms_data_type_tag(qcms::DataType::RGB8),
             intent: options.intent,
             black_point_compensation: options.black_point_compensation,
         };
@@ -215,16 +436,11 @@ impl IccTransformCache {
             }
             None => {
                 self.metrics.misses += 1;
-                let input = qcms::Profile::new_sRGB();
-                let mut output = qcms::Profile::new_sRGB();
-                output.precache_output_transform();
-                let transform = qcms::Transform::new_to(
-                    &input,
-                    &output,
-                    qcms::DataType::RGB8,
-                    qcms::DataType::RGB8,
-                    options.intent.to_qcms(),
-                )?;
+                let transform = match backend {
+                    IccBackend::FallbackQcms => self.create_builtin_srgb_qcms_transform(options)?,
+                    #[cfg(feature = "native-cmm-lcms2")]
+                    IccBackend::NativeLcms2 => self.create_builtin_srgb_lcms2_transform(options)?,
+                };
                 if self.entries.len() >= self.max_entries {
                     self.entries.remove(0);
                     self.metrics.evictions += 1;
@@ -235,12 +451,130 @@ impl IccTransformCache {
         };
         let mut out = vec![0u8; pixels.len()];
         self.entries[idx].1.convert(pixels, &mut out);
+        match backend {
+            IccBackend::FallbackQcms => self.metrics.fallback_qcms_transforms += 1,
+            #[cfg(feature = "native-cmm-lcms2")]
+            IccBackend::NativeLcms2 => self.metrics.native_lcms2_transforms += 1,
+        }
         Some(out)
+    }
+
+    fn create_builtin_srgb_qcms_transform(
+        &mut self,
+        options: ColorTransformOptions,
+    ) -> Option<CachedIccTransform> {
+        let input = qcms::Profile::new_sRGB();
+        let mut output = qcms::Profile::new_sRGB();
+        output.precache_output_transform();
+        let transform = qcms::Transform::new_to(
+            &input,
+            &output,
+            qcms::DataType::RGB8,
+            qcms::DataType::RGB8,
+            options.intent.to_qcms(),
+        )?;
+        Some(CachedIccTransform::Qcms(transform))
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    fn create_builtin_srgb_lcms2_transform(
+        &mut self,
+        options: ColorTransformOptions,
+    ) -> Option<CachedIccTransform> {
+        let input = lcms2::Profile::new_srgb();
+        let output = lcms2::Profile::new_srgb();
+        let flags = if options.black_point_compensation {
+            lcms2::Flags::BLACKPOINT_COMPENSATION
+        } else {
+            lcms2::Flags::default()
+        };
+        let transform = match lcms2::Transform::new_flags(
+            &input,
+            lcms2::PixelFormat::RGB_8,
+            &output,
+            lcms2::PixelFormat::RGB_8,
+            options.intent.to_lcms2(),
+            flags,
+        ) {
+            Ok(transform) => transform,
+            Err(_) => {
+                self.metrics.native_lcms2_failures += 1;
+                return None;
+            }
+        };
+        Some(CachedIccTransform::Lcms2(transform))
     }
 }
 
 pub(crate) fn icc_transform_cache_metrics() -> IccTransformCacheMetrics {
     ICC_TRANSFORM_CACHE.with(|cache| cache.borrow().metrics())
+}
+
+pub(crate) fn native_lcms2_profile_valid_for_components(
+    profile_bytes: &[u8],
+    components: Option<u8>,
+) -> Option<bool> {
+    #[cfg(feature = "native-cmm-lcms2")]
+    {
+        if profile_bytes.len() > DEFAULT_MAX_ICC_PROFILE_BYTES {
+            return Some(false);
+        }
+        let profile = match lcms2::Profile::new_icc(profile_bytes) {
+            Ok(profile) => profile,
+            Err(_) => return Some(false),
+        };
+        Some(
+            components
+                .map(|n| lcms2_profile_components_match(&profile, n))
+                .unwrap_or(true),
+        )
+    }
+    #[cfg(not(feature = "native-cmm-lcms2"))]
+    {
+        let _ = (profile_bytes, components);
+        None
+    }
+}
+
+pub(crate) fn proof_srgb_via_output_intent(
+    output_intent_profile: &[u8],
+    pixels: &[u8],
+    options: ColorTransformOptions,
+) -> Option<Vec<u8>> {
+    #[cfg(feature = "native-cmm-lcms2")]
+    {
+        if output_intent_profile.len() > DEFAULT_MAX_ICC_PROFILE_BYTES
+            || !pixels.len().is_multiple_of(3)
+        {
+            return None;
+        }
+        let proofing_profile = lcms2::Profile::new_icc(output_intent_profile).ok()?;
+        let input = lcms2::Profile::new_srgb();
+        let output = lcms2::Profile::new_srgb();
+        let mut flags = lcms2::Flags::SOFT_PROOFING;
+        if options.black_point_compensation {
+            flags = flags | lcms2::Flags::BLACKPOINT_COMPENSATION;
+        }
+        let transform = lcms2::Transform::new_proofing(
+            &input,
+            lcms2::PixelFormat::RGB_8,
+            &output,
+            lcms2::PixelFormat::RGB_8,
+            &proofing_profile,
+            options.intent.to_lcms2(),
+            options.intent.to_lcms2(),
+            flags,
+        )
+        .ok()?;
+        let mut out = vec![0u8; pixels.len()];
+        transform.transform_pixels(pixels, &mut out);
+        Some(out)
+    }
+    #[cfg(not(feature = "native-cmm-lcms2"))]
+    {
+        let _ = (output_intent_profile, pixels, options);
+        None
+    }
 }
 
 pub(crate) fn srgb_identity_fidelity_probes() -> Vec<IccFidelityProbe> {
@@ -551,7 +885,7 @@ pub(crate) fn icc_components_to_srgb(
     ])
 }
 
-fn data_type_for_components(components: u8) -> Option<qcms::DataType> {
+fn qcms_data_type_for_components(components: u8) -> Option<qcms::DataType> {
     match components {
         1 => Some(qcms::DataType::Gray8),
         3 => Some(qcms::DataType::RGB8),
@@ -560,7 +894,7 @@ fn data_type_for_components(components: u8) -> Option<qcms::DataType> {
     }
 }
 
-fn data_type_tag(data_type: qcms::DataType) -> u8 {
+fn qcms_data_type_tag(data_type: qcms::DataType) -> u8 {
     match data_type {
         qcms::DataType::RGB8 => 0,
         qcms::DataType::RGBA8 => 1,
@@ -569,6 +903,35 @@ fn data_type_tag(data_type: qcms::DataType) -> u8 {
         qcms::DataType::GrayA8 => 4,
         qcms::DataType::CMYK => 5,
     }
+}
+
+fn native_data_type_tag(components: u8) -> Option<u8> {
+    match components {
+        1 => Some(10),
+        3 => Some(11),
+        4 => Some(12),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "native-cmm-lcms2")]
+fn lcms2_pixel_format_for_components(components: u8) -> Option<lcms2::PixelFormat> {
+    match components {
+        1 => Some(lcms2::PixelFormat::GRAY_8),
+        3 => Some(lcms2::PixelFormat::RGB_8),
+        4 => Some(lcms2::PixelFormat::CMYK_8),
+        _ => None,
+    }
+}
+
+#[cfg(feature = "native-cmm-lcms2")]
+fn lcms2_profile_components_match(profile: &lcms2::Profile, components: u8) -> bool {
+    matches!(
+        (profile.color_space(), components),
+        (lcms2::ColorSpaceSignature::GrayData, 1)
+            | (lcms2::ColorSpaceSignature::RgbData, 3)
+            | (lcms2::ColorSpaceSignature::CmykData, 4)
+    )
 }
 
 fn stable_hash(bytes: &[u8]) -> u64 {
@@ -1042,5 +1405,119 @@ mod tests {
         assert!(SUPPORTED_QCMS_INTENTS
             .iter()
             .any(|intent| intent.as_str() == "absolute_colorimetric"));
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    fn lcms2_srgb_profile_bytes() -> Vec<u8> {
+        lcms2::Profile::new_srgb().icc().unwrap()
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    fn lcms2_gray_profile_bytes() -> Vec<u8> {
+        let white = lcms2::CIExyY {
+            x: 0.3457,
+            y: 0.3585,
+            Y: 1.0,
+        };
+        let curve = lcms2::ToneCurve::new(2.2);
+        lcms2::Profile::new_gray(&white, &curve)
+            .unwrap()
+            .icc()
+            .unwrap()
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    fn lcms2_cmyk_profile_bytes() -> Vec<u8> {
+        include_bytes!("../../../../tests/fixtures/icc/PRMG_v2.0.1_MR.icc").to_vec()
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    #[test]
+    fn native_lcms2_rgb_gray_and_cmyk_transforms_are_real() {
+        let mut cache = IccTransformCache::new(8);
+        let options = ColorTransformOptions {
+            intent: ColorIntent::RelativeColorimetric,
+            black_point_compensation: true,
+        };
+
+        let rgb_profile = lcms2_srgb_profile_bytes();
+        let rgb_pixels = [0u8, 64, 128, 255, 128, 0];
+        let (rgb, channels) = cache
+            .transform_profile_to_srgb(&rgb_profile, 3, &rgb_pixels, options)
+            .unwrap();
+        assert_eq!(channels, 3);
+        assert_eq!(rgb.len(), rgb_pixels.len());
+        assert!(rgb.iter().zip(rgb_pixels).all(|(a, b)| a.abs_diff(b) <= 1));
+
+        let gray_profile = lcms2_gray_profile_bytes();
+        let (gray, channels) = cache
+            .transform_profile_to_srgb(&gray_profile, 1, &[0, 128, 255], options)
+            .unwrap();
+        assert_eq!(channels, 3);
+        assert_eq!(gray.len(), 9);
+        assert!(gray[0] <= 1 && gray[1] <= 1 && gray[2] <= 1, "{gray:?}");
+        assert!(
+            gray[6] >= 250 && gray[7] >= 250 && gray[8] >= 250,
+            "{gray:?}"
+        );
+
+        let cmyk_profile = lcms2_cmyk_profile_bytes();
+        let (cmyk, channels) = cache
+            .transform_profile_to_srgb(&cmyk_profile, 4, &[0, 0, 0, 0, 255, 0, 0, 0], options)
+            .unwrap();
+        assert_eq!(channels, 3);
+        assert_eq!(cmyk.len(), 6);
+
+        let metrics = cache.metrics();
+        assert!(metrics.native_lcms2_transforms >= 3, "{metrics:?}");
+        assert_eq!(metrics.fallback_qcms_transforms, 0);
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    #[test]
+    fn native_lcms2_malformed_and_mismatched_profiles_fail_closed() {
+        let mut cache = IccTransformCache::new(4);
+        assert!(cache
+            .transform_profile_to_srgb(
+                b"not an icc profile",
+                3,
+                &[0, 0, 0],
+                ColorTransformOptions::default(),
+            )
+            .is_none());
+        let gray_profile = lcms2_gray_profile_bytes();
+        assert!(cache
+            .transform_profile_to_srgb(
+                &gray_profile,
+                3,
+                &[0, 0, 0],
+                ColorTransformOptions::default(),
+            )
+            .is_none());
+        let metrics = cache.metrics();
+        assert!(metrics.invalid_profiles >= 1, "{metrics:?}");
+        assert!(metrics.unsupported_profiles >= 1, "{metrics:?}");
+        assert!(metrics.native_lcms2_failures >= 2, "{metrics:?}");
+    }
+
+    #[cfg(feature = "native-cmm-lcms2")]
+    #[test]
+    fn native_lcms2_output_intent_soft_proofing_is_available() {
+        let profile = lcms2_srgb_profile_bytes();
+        assert_eq!(
+            native_lcms2_profile_valid_for_components(&profile, Some(3)),
+            Some(true)
+        );
+        let pixels = [12u8, 40, 80, 200, 220, 240];
+        let proofed = proof_srgb_via_output_intent(
+            &profile,
+            &pixels,
+            ColorTransformOptions {
+                intent: ColorIntent::AbsoluteColorimetric,
+                black_point_compensation: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(proofed.len(), pixels.len());
     }
 }

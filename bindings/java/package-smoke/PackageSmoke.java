@@ -106,5 +106,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"additive_feature_report_prompt11\"")) {
             throw new AssertionError("feature report missing Prompt 11 renderer fuzz CMM closeout posture");
         }
+        if (!feature.contains("\"prompt11b_native_littlecms_cmm_backend_closure\"")
+                || !feature.contains("\"native-cmm-lcms2\"")
+                || !feature.contains("\"additive_feature_report_prompt11b\"")) {
+            throw new AssertionError("feature report missing Prompt 11B native LittleCMS CMM posture");
+        }
     }
 }

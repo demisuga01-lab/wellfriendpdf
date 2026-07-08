@@ -21,6 +21,10 @@
 - Standards-profile rule reports.
 - Fuzz, structure-aware mutation, metamorphic checks, and differential smokes.
 - Deterministic canonical output for auditability.
+- Prompt 11B native CMM keeps LittleCMS/lcms2 behind the explicit
+  `native-cmm-lcms2` feature, preserves `oxide-engine` `forbid(unsafe_code)`,
+  applies ICC size/channel validation, and reports fallback/native backend state
+  across bindings.
 
 ## Non-Goals
 
@@ -28,6 +32,8 @@
 - Full malware scanning of embedded payloads.
 - Full legal PDF/A/UA/X certification.
 - Full PKI, TSA, OCSP, CRL, and PAdES policy validation.
+- Certification-grade PDF/X proofing, device-link ICC, multicolor ICC,
+  separation framebuffers, spot/DeviceN plates, and full overprint simulation.
 # Prompt 04 Codec Boundary Note
 
 Combined Prompt 04 keeps the engine's codec default pure Rust and adds a central native codec registry/allowlist policy. Native/C codec dependencies remain denied by default, native in-process decode is forbidden by default, and future native backends must be feature-gated, worker-required, allowlisted, and report-visible.

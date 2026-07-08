@@ -68,35 +68,63 @@ pub struct ColorBackendDecision {
     pub outcome: String,
     pub default_backend: String,
     pub native_littlecms_integrated: bool,
+    pub native_littlecms_compiled: bool,
+    pub native_littlecms_available: bool,
+    pub native_littlecms_version: Option<String>,
+    pub feature_flag: String,
+    pub backend_selected: String,
     pub default_build_unsafe_ffi: bool,
     pub icc_backend: String,
     pub supported_rendering_intents: Vec<String>,
     pub device_cmyk_preview: String,
     pub bpc_support: String,
     pub native_littlecms_decision: String,
+    pub native_boundary: String,
+    pub linking_posture: String,
 }
 
 impl Default for ColorBackendDecision {
     fn default() -> Self {
+        let native = cmm::native_cmm_status();
         Self {
-            outcome: "B: safe Rust/qcms accurate-enough preview backend".to_string(),
-            default_backend: "safe-rust-plus-qcms".to_string(),
-            native_littlecms_integrated: false,
+            outcome: if native.available {
+                "Prompt 11B: feature-gated LittleCMS/lcms2 native CMM backend active"
+                    .to_string()
+            } else {
+                "B: safe Rust/qcms accurate-enough preview backend".to_string()
+            },
+            default_backend: "portable-qcms-fallback".to_string(),
+            native_littlecms_integrated: native.compiled,
+            native_littlecms_compiled: native.compiled,
+            native_littlecms_available: native.available,
+            native_littlecms_version: native.native_version,
+            feature_flag: native.feature_flag.to_string(),
+            backend_selected: native.selected_backend.to_string(),
             default_build_unsafe_ffi: false,
-            icc_backend: "qcms for ICCBased profile-to-sRGB preview transforms".to_string(),
-            supported_rendering_intents: cmm::SUPPORTED_QCMS_INTENTS
+            icc_backend: if native.available {
+                "lcms2 for ICCBased Gray/RGB/CMYK profile-to-sRGB preview transforms; qcms remains the default portable fallback".to_string()
+            } else {
+                "qcms for ICCBased profile-to-sRGB preview transforms".to_string()
+            },
+            supported_rendering_intents: cmm::SUPPORTED_NATIVE_LCMS2_INTENTS
                 .iter()
                 .map(|intent| intent.as_str().to_string())
                 .collect(),
             device_cmyk_preview:
                 "deterministic Poppler/Splash-like process-ink interpolation; CMYK fill overprint preview preserves zero-ink channels in the RGB framebuffer approximation"
                     .to_string(),
-            bpc_support:
-                "reported and carried in options; qcms/default fallback does not implement black-point compensation"
-                    .to_string(),
-            native_littlecms_decision:
-                "not integrated in oxide-engine because the crate forbids unsafe code and default/WASM builds must stay portable; a future native CMM belongs behind a separate optional boundary"
-                    .to_string(),
+            bpc_support: if native.available {
+                "implemented for LittleCMS transforms through cmsFLAGS_BLACKPOINTCOMPENSATION when requested; default qcms fallback reports BPC unsupported".to_string()
+            } else {
+                "reported and carried in options; qcms/default fallback does not implement black-point compensation".to_string()
+            },
+            native_littlecms_decision: if native.available {
+                "implemented behind native-cmm-lcms2; default/WASM builds remain portable and do not link lcms2".to_string()
+            } else {
+                "available only when the explicit native-cmm-lcms2 feature is compiled on a native target; default/WASM builds use qcms fallback".to_string()
+            },
+            native_boundary: native.unsafe_boundary.to_string(),
+            linking_posture: native.linking_posture.to_string(),
         }
     }
 }
@@ -117,6 +145,11 @@ pub struct OutputIntentInfo {
     pub dest_output_profile_n: Option<i64>,
     pub dest_output_profile_bytes: Option<usize>,
     pub dest_output_profile_valid_icc: Option<bool>,
+    pub dest_output_profile_valid_native_lcms2: Option<bool>,
+    pub proofing_backend: String,
+    pub proofing_status: String,
+    pub proofing_rendering_intent: String,
+    pub proofing_black_point_compensation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -149,6 +182,9 @@ pub struct IccTransformCacheReport {
     pub max_entries: usize,
     pub invalid_profiles: usize,
     pub unsupported_profiles: usize,
+    pub native_lcms2_transforms: usize,
+    pub native_lcms2_failures: usize,
+    pub fallback_qcms_transforms: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +216,9 @@ fn cache_report(metrics: cmm::IccTransformCacheMetrics) -> IccTransformCacheRepo
         max_entries: metrics.max_entries,
         invalid_profiles: metrics.invalid_profiles,
         unsupported_profiles: metrics.unsupported_profiles,
+        native_lcms2_transforms: metrics.native_lcms2_transforms,
+        native_lcms2_failures: metrics.native_lcms2_failures,
+        fallback_qcms_transforms: metrics.fallback_qcms_transforms,
     }
 }
 
@@ -375,6 +414,7 @@ fn parse_output_intents(
     intents
         .iter()
         .filter_map(|intent| {
+            let native = cmm::native_cmm_status();
             let dict = resolve_to_dict(intent, reader)?;
             let mut info = OutputIntentInfo {
                 s: dict.get_name("S").map(str::to_string),
@@ -387,6 +427,18 @@ fn parse_output_intents(
                 dest_output_profile_n: None,
                 dest_output_profile_bytes: None,
                 dest_output_profile_valid_icc: None,
+                dest_output_profile_valid_native_lcms2: None,
+                proofing_backend: native.selected_backend.to_string(),
+                proofing_status: if native.available {
+                    "pending_profile_validation".to_string()
+                } else {
+                    "native_lcms2_unavailable_fallback_report_only".to_string()
+                },
+                proofing_rendering_intent: cmm::ColorTransformOptions::default()
+                    .intent
+                    .as_str()
+                    .to_string(),
+                proofing_black_point_compensation: false,
             };
             if let Some(profile_obj) = dict.get("DestOutputProfile") {
                 if let Some((profile_dict, stream)) = resolve_stream(profile_obj, reader) {
@@ -410,6 +462,37 @@ fn parse_output_intents(
                                 info.dest_output_profile_valid_icc = Some(
                                     qcms::Profile::new_from_slice(&decoded.data, false).is_some(),
                                 );
+                                info.dest_output_profile_valid_native_lcms2 =
+                                    cmm::native_lcms2_profile_valid_for_components(
+                                        &decoded.data,
+                                        info.dest_output_profile_n
+                                            .and_then(|n| u8::try_from(n).ok()),
+                                    );
+                                info.proofing_status =
+                                    match info.dest_output_profile_valid_native_lcms2 {
+                                        Some(true) => {
+                                            let probe = [16, 32, 64, 96, 128, 160, 224, 240, 250];
+                                            if cmm::proof_srgb_via_output_intent(
+                                                &decoded.data,
+                                                &probe,
+                                                cmm::ColorTransformOptions::default(),
+                                            )
+                                            .is_some()
+                                            {
+                                                "native_lcms2_soft_proofing_available".to_string()
+                                            } else {
+                                                "native_lcms2_profile_valid_transform_unavailable"
+                                                    .to_string()
+                                            }
+                                        }
+                                        Some(false) => {
+                                            "native_lcms2_invalid_or_channel_mismatch".to_string()
+                                        }
+                                        None => {
+                                            "native_lcms2_unavailable_fallback_report_only"
+                                                .to_string()
+                                        }
+                                    };
                                 if info.dest_output_profile_valid_icc == Some(false) {
                                     builder.diagnostic(
                                         "color.icc.invalid_profile",

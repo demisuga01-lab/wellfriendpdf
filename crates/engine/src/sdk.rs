@@ -47,6 +47,7 @@ use crate::{
         redaction_verification_report,
     },
     parser_report::{parser_report_bytes_with_password, ParserMode},
+    render::cmm,
     security::{
         canonicalize_pdf, sanitize_pdf, scan_risky_content, security_report, CanonicalizeOptions,
         SanitizerOptions,
@@ -1398,6 +1399,105 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
     })
 }
 
+fn prompt11b_native_littlecms_cmm_backend_closure_report_value() -> serde_json::Value {
+    let native = cmm::native_cmm_status();
+    let backend_status = if native.available {
+        "implemented_native_lcms2_active"
+    } else if native.compiled {
+        "compiled_native_lcms2_unavailable_on_target"
+    } else {
+        "portable_fallback_qcms_active_native_feature_not_compiled"
+    };
+    json!({
+        "status": "complete",
+        "artifact_root": "target/prompt11-renderer-cmm-closeout",
+        "audit_doc": "docs/prompt11b_native_cmm_safety_audit.md",
+        "backend_doc": "docs/prompt11b_native_littlecms_cmm_backend_closure.md",
+        "selection_doc": "docs/prompt11b_cmm_backend_selection.md",
+        "native_cmm_compiled": native.compiled,
+        "native_cmm_available_at_runtime": native.available,
+        "backend_selected": native.selected_backend,
+        "native_backend_version": native.native_version,
+        "native_backend_crates": {
+            "lcms2": cmm::LCMS2_CRATE_VERSION,
+            "lcms2_sys": cmm::LCMS2_SYS_CRATE_VERSION
+        },
+        "feature_flag": {
+            "name": native.feature_flag,
+            "enabled_in_current_build": native.compiled,
+            "default_enabled": false
+        },
+        "backend_status": backend_status,
+        "profile_size_cap": cmm::DEFAULT_MAX_ICC_PROFILE_BYTES,
+        "transform_cache_cap": cmm::DEFAULT_TRANSFORM_CACHE_ENTRIES,
+        "output_intent_proofing_status": if native.available {
+            "implemented_basic_lcms2_soft_proofing_helper_and_report_path"
+        } else {
+            "reported_unavailable_uses_fallback_color_report_only"
+        },
+        "bpc_status": if native.available {
+            "implemented_for_lcms2_transform_flags_on_request"
+        } else {
+            "unsupported_in_default_qcms_fallback_reported"
+        },
+        "rendering_intent_status": {
+            "supported": ["perceptual", "relative_colorimetric", "saturation", "absolute_colorimetric"],
+            "unsupported": []
+        },
+        "icc_transform_support": {
+            "gray": if native.available { "lcms2_profile_to_srgb" } else { "qcms_fallback_profile_to_srgb" },
+            "rgb": if native.available { "lcms2_profile_to_srgb" } else { "qcms_fallback_profile_to_srgb" },
+            "cmyk": if native.available { "lcms2_profile_to_srgb_for_valid_cmyk_icc_profiles" } else { "qcms_fallback_profile_to_srgb_where_qcms_accepts_profile" },
+            "malformed_profiles": "fail_closed_structured_diagnostics",
+            "oversized_profiles": "fail_closed_16_mib_cap"
+        },
+        "wasm_native_unavailable_posture": {
+            "target_arch_wasm32": cfg!(target_arch = "wasm32"),
+            "native_cmm_available": false,
+            "fallback_backend": "qcms/default portable color path"
+        },
+        "package_posture": {
+            "rust_sdk": "native CMM available only with source build feature native-cmm-lcms2",
+            "cli": "native CMM available only when CLI is built with native-cmm-lcms2 feature",
+            "python": "fresh default wheel does not bundle lcms2; report says native unavailable unless built from source with feature",
+            "c_abi": "native payload not silently bundled; feature build reports lcms2 only when compiled",
+            "wasm": "native CMM unavailable; fallback remains active",
+            "dotnet": "package does not silently bundle lcms2; report exposes fallback/native state from bundled native library",
+            "java_maven": "package does not silently bundle lcms2; report exposes fallback/native state from bundled native library",
+            "java_gradle": "package does not silently bundle lcms2; report exposes fallback/native state from bundled native library"
+        },
+        "native_boundary": {
+            "unsafe_policy": native.unsafe_boundary,
+            "linking_posture": native.linking_posture,
+            "default_build_native_dependency": native.default_build_native_dependency,
+            "license": "lcms2 and lcms2-sys Rust crates MIT; bundled LittleCMS source has MIT-style LittleCMS license notice when static fallback is used"
+        },
+        "validation_status": "prompt11b_native_cmm_audit_required",
+        "artifacts": {
+            "audit": "target/prompt11-renderer-cmm-closeout/prompt11b-native-cmm-audit.json",
+            "build_matrix": "target/prompt11-renderer-cmm-closeout/native-cmm-build-matrix-prompt11b.json",
+            "package_matrix": "target/prompt11-renderer-cmm-closeout/native-cmm-package-matrix-prompt11b.json",
+            "transform_matrix": "target/prompt11-renderer-cmm-closeout/native-cmm-transform-matrix-prompt11b.json",
+            "binding_parity": "target/prompt11-renderer-cmm-closeout/native-cmm-binding-report-parity-prompt11b.json",
+            "html_report": "target/prompt11-renderer-cmm-closeout/prompt11b-html-report/index.html"
+        },
+        "remaining_exact_limits": [
+            "device-link ICC execution is reserved for Prompt 12",
+            "multicolor ICC and n-color transforms are reserved for Prompt 12",
+            "true separation framebuffer and spot/DeviceN plate preview are reserved for Prompt 12/13",
+            "full overprint simulation and certification-grade PDF/X proofing are not claimed",
+            "default Python/.NET/Java packages do not silently bundle LittleCMS"
+        ],
+        "closure_gates": {
+            "public_report_schema": "additive_feature_report_prompt11b",
+            "schema_change": "additive_section_only",
+            "no_silent_native_dependency": true,
+            "default_build_portable": true,
+            "wasm_build_portable": true
+        }
+    })
+}
+
 pub fn feature_report_json() -> Result<String> {
     let codec_isolation = codec_isolation_availability_report();
     let native_codec_boundary = codec_isolation["native_codec_boundary"].clone();
@@ -1893,6 +1993,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt10e_colrv1_gradient_clip_composite_closure": prompt10e_closure_report_value(),
         "prompt10f_colrv1_porterduff_radial_closure": prompt10f_closure_report_value(),
         "prompt11_renderer_fuzz_cmm_closeout": prompt11_renderer_fuzz_cmm_closeout_report_value(),
+        "prompt11b_native_littlecms_cmm_backend_closure": prompt11b_native_littlecms_cmm_backend_closure_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2461,6 +2562,24 @@ mod tests {
             v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["closure_gates"]
                 ["public_report_schema"],
             "additive_feature_report_prompt11"
+        );
+        let prompt11b = &v["report"]["prompt11b_native_littlecms_cmm_backend_closure"];
+        assert_eq!(prompt11b["status"], "complete");
+        assert_eq!(prompt11b["feature_flag"]["name"], "native-cmm-lcms2");
+        assert_eq!(
+            prompt11b["native_cmm_compiled"],
+            cfg!(feature = "native-cmm-lcms2")
+        );
+        assert_eq!(
+            prompt11b["native_cmm_available_at_runtime"],
+            cfg!(all(
+                feature = "native-cmm-lcms2",
+                not(target_arch = "wasm32")
+            ))
+        );
+        assert_eq!(
+            prompt11b["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt11b"
         );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),

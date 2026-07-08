@@ -16,5 +16,9 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 oxide-engine = { version = "0.1.0", path = "../engine" }
 serde_json = "1"
 
+[features]
+default = []
+native-cmm-lcms2 = ["oxide-engine/native-cmm-lcms2"]
+
 [dev-dependencies]
 libc = "0.2"
