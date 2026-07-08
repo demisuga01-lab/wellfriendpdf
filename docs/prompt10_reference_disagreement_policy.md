@@ -1,6 +1,6 @@
 # Prompt 10 Reference Disagreement Policy
 
-Prompt 10C keeps the multi-reference rule from Prompt 10: a single-reference
+Prompt 10D keeps the multi-reference rule from Prompt 10: a single-reference
 visual pass is not enough. Supported rendered fixtures are compared across
 Oxide, Poppler, PDFium, and MuPDF, with per-page pairwise metrics and explicit
 classification. Policy-only rows are allowed only when they are exact
@@ -20,7 +20,7 @@ operator/payload/security diagnostics and not visual claims.
   payload or paint operator.
 - `implemented_with_limits`: the safe subset is implemented or classified and
   every remaining limit is exact.
-- `blocked`: not acceptable for Prompt 10C closure.
+- `blocked`: not acceptable for Prompt 10D closure.
 
 ## Prompt 10B Outcome
 
@@ -56,3 +56,19 @@ Evidence:
 - `multi-reference-diff-metrics-prompt10c.json`
 - `reference-disagreement-summary-prompt10c.json`
 - `prompt10c-html-report/index.html`
+
+## Prompt 10D Outcome
+
+The current summary is:
+
+- rendered pages: 4
+- policy-only rows: 15
+- Oxide outlier failures: 0
+- unclassified failures: 0
+
+Evidence:
+
+- `multi-reference-render-results-prompt10d.json`
+- `multi-reference-diff-metrics-prompt10d.json`
+- `reference-disagreement-summary-prompt10d.json`
+- `prompt10d-html-report/index.html`

@@ -315,6 +315,13 @@ pub fn prompt10c_closure_report_json() -> Result<String> {
     )
 }
 
+pub fn prompt10d_closure_report_json() -> Result<String> {
+    envelope(
+        "prompt10d_closure_report",
+        &prompt10d_closure_report_value(),
+    )
+}
+
 fn prompt09_renderer_report_value() -> serde_json::Value {
     json!({
         "status": "implemented_with_bounded_unsupported_reports",
@@ -836,6 +843,184 @@ fn prompt10c_closure_report_value() -> serde_json::Value {
     })
 }
 
+fn prompt10d_svg_policy_samples() -> serde_json::Value {
+    let samples = [
+        (
+            "safe_static_path",
+            r##"<svg viewBox="0 0 1000 1000"><path d="M100 100 L900 100 L900 900 Z" fill="#ffcc00"/></svg>"##,
+        ),
+        (
+            "safe_static_shape_opacity",
+            r##"<svg viewBox="0 0 1000 1000"><g opacity="0.75"><circle cx="500" cy="500" r="300" fill="red"/></g></svg>"##,
+        ),
+        (
+            "blocked_script",
+            r#"<svg><script>alert(1)</script><path d="M0 0 L1 1"/></svg>"#,
+        ),
+        (
+            "blocked_event",
+            r#"<svg><path onload="alert(1)" d="M0 0 L1 1"/></svg>"#,
+        ),
+        (
+            "blocked_external_reference",
+            r#"<svg><image href="https://example.invalid/a.png"/></svg>"#,
+        ),
+        (
+            "blocked_foreign_object",
+            r#"<svg><foreignObject><body>blocked</body></foreignObject></svg>"#,
+        ),
+    ];
+    let rows: Vec<_> = samples
+        .iter()
+        .map(|(id, svg)| {
+            let policy = crate::render::color_glyph::classify_svg_glyph_document(svg);
+            json!({
+                "id": id,
+                "status": policy.status(),
+                "reason": policy.reason()
+            })
+        })
+        .collect();
+    json!(rows)
+}
+
+fn prompt10d_closure_report_value() -> serde_json::Value {
+    json!({
+        "status": "complete",
+        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/prompt10d_colrv1_svg_bitmap_closure_audit.md",
+        "overview_doc": "docs/prompt10d_full_colrv1_svg_color_glyph_closure.md",
+        "audit_script": "scripts/prompt10d_full_colrv1_svg_color_glyph_closure.py",
+        "closure_audit": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10d-closure-audit.json",
+        "colrv1_gradients": {
+            "status": "unsupported_reported_exotic_operator",
+            "implemented_operators": [],
+            "unsupported_operators": [
+                "PaintLinearGradient",
+                "PaintRadialGradient",
+                "PaintSweepGradient"
+            ],
+            "reason": "ttf-parser Painter callbacks expose gradient operators but not a bounded renderer paint tree/offscreen surface mapping; Prompt 10D keeps operator-level fail-closed diagnostics instead of monochrome fallback",
+            "artifacts": {
+                "linear": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-linear-gradient-matrix-prompt10d.json",
+                "radial": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-radial-gradient-matrix-prompt10d.json",
+                "sweep": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-sweep-gradient-matrix-prompt10d.json",
+                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-gradient-reference-results-prompt10d.json"
+            }
+        },
+        "colrv1_clip": {
+            "status": "unsupported_reported_exotic_operator",
+            "unsupported_operators": ["PaintClip", "PaintClipBox"],
+            "reason": "COLRv1 clip graphs need nested glyph-path clip stack execution; current safe collector reports exact operators and fails closed",
+            "artifacts": {
+                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-matrix-prompt10d.json",
+                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-reference-results-prompt10d.json"
+            }
+        },
+        "colrv1_composite": {
+            "status": "source_over_preserved_non_source_over_reported",
+            "implemented_modes": ["SourceOver"],
+            "unsupported_modes": [
+                "Clear", "Source", "Destination", "DestinationOver", "SourceIn", "DestinationIn",
+                "SourceOut", "DestinationOut", "SourceAtop", "DestinationAtop", "Xor", "Plus",
+                "Screen", "Overlay", "Darken", "Lighten", "ColorDodge", "ColorBurn",
+                "HardLight", "SoftLight", "Difference", "Exclusion", "Multiply", "Hue",
+                "Saturation", "Color", "Luminosity"
+            ],
+            "reason": "non-SourceOver COLRv1 composites require isolated bounded paint surfaces in glyph space; existing Prompt 07 blend modes are not invoked without that safe surface model",
+            "artifacts": {
+                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-matrix-prompt10d.json",
+                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-reference-results-prompt10d.json"
+            }
+        },
+        "svg_in_opentype": {
+            "status": "safe_static_subset_rendered_active_constructs_blocked",
+            "safe_static_subset": [
+                "svg root with viewBox metadata",
+                "g grouping with inherited style/transform",
+                "path M/L/H/V/C/Q/Z subset",
+                "rect",
+                "circle",
+                "ellipse",
+                "line",
+                "polyline",
+                "polygon",
+                "quoted fill/stroke/stroke-width",
+                "opacity/fill-opacity/stroke-opacity",
+                "matrix/translate/scale/rotate/skew transforms with finite checks"
+            ],
+            "blocked_active_features": [
+                "script",
+                "event attributes",
+                "animation",
+                "foreignObject",
+                "external images",
+                "network/file/javascript URLs",
+                "CSS style blocks and imports",
+                "remote or embedded SVG fonts",
+                "filters",
+                "masks",
+                "recursive use",
+                "URL paint-server references",
+                "path/depth bombs"
+            ],
+            "classifier_samples": prompt10d_svg_policy_samples(),
+            "artifacts": {
+                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/svg-opentype-static-rendering-matrix-prompt10d.json",
+                "security_policy": "target/prompt10-cjk-rtl-color-glyph-reference/svg-opentype-security-policy-prompt10d.json",
+                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/svg-opentype-reference-results-prompt10d.json"
+            }
+        },
+        "bitmap_color_glyphs": {
+            "cbdt_cblc": {
+                "status": "png_raw_gray_color_strikes_preserved_exact_unsupported_for_ambiguous_payloads",
+                "supported": ["PNG RasterGlyphImage payloads", "BitmapPremulBgra32", "BitmapGray8/4/2", "BitmapMono and packed variants when metadata is sufficient"],
+                "unsupported_payloads": ["ambiguous compressed payloads not exposed as safe RasterGlyphImage metadata", "malformed strike tables", "oversized dimensions", "invalid offsets or lengths"]
+            },
+            "sbix": {
+                "status": "png_and_jpeg_rendered_tiff_other_precisely_reported",
+                "supported": ["sbix PNG", "sbix JPEG through bounded DCT decoder", "dupe references resolving to supported payloads"],
+                "unsupported_payloads": ["sbix TIFF when no existing safe TIFF decoder is available", "sbix PDF", "sbix mask", "unknown graphicType tags"]
+            },
+            "malformed_behavior": "fail_closed_without_monochrome_fallback_for_known_color_payloads",
+            "artifacts": {
+                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/bitmap-color-glyph-nonpng-matrix-prompt10d.json",
+                "cbdt_cblc_results": "target/prompt10-cjk-rtl-color-glyph-reference/cbdt-cblc-nonpng-results-prompt10d.json",
+                "sbix_results": "target/prompt10-cjk-rtl-color-glyph-reference/sbix-nonpng-results-prompt10d.json"
+            }
+        },
+        "multi_reference_audit": {
+            "status": "prompt10d_corpus_classified",
+            "reference_engines": ["Poppler", "PDFium", "MuPDF"],
+            "fixture_count": 19,
+            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-render-results-prompt10d.json",
+            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10d.json",
+            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10d.json",
+            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10d-html-report/index.html",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
+        },
+        "public_report_parity": {
+            "schema_change": "additive_section_only",
+            "report_envelope_version": REPORT_ENVELOPE_VERSION,
+            "bindings": ["Rust SDK", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
+        },
+        "closure_gates": {
+            "memory_cap_mb": 4096,
+            "public_report_schema": "additive_feature_report_prompt10d",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
+        },
+        "remaining_bounded_limits": [
+            "COLRv1 gradients remain exact operator-level unsupported rows until a bounded COLRv1 gradient rasterizer maps paint-space coordinates onto renderer shading primitives",
+            "COLRv1 PaintClip/PaintClipBox remain exact operator-level unsupported rows until glyph-space nested clip stacks can be executed without bbox substitution",
+            "COLRv1 non-SourceOver composites remain exact mode-level unsupported rows until an isolated glyph paint surface scheduler exists",
+            "SVG gradients, clipPath, filters, masks, use references, CSS blocks, external resources, and active constructs remain blocked or exact unsupported rows",
+            "sbix TIFF/PDF/mask and unknown graphicType payloads remain exact unsupported rows when no existing safe decoder is available"
+        ]
+    })
+}
+
 pub fn feature_report_json() -> Result<String> {
     let codec_isolation = codec_isolation_availability_report();
     let native_codec_boundary = codec_isolation["native_codec_boundary"].clone();
@@ -1327,6 +1512,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt10_cjk_rtl_color_glyph_reference_harness": prompt10_renderer_report_value(),
         "prompt10b_color_glyph_cjk_rtl_fidelity_closure": prompt10b_closure_report_value(),
         "prompt10c_color_glyph_hinting_cff_closure": prompt10c_closure_report_value(),
+        "prompt10d_full_colrv1_svg_color_glyph_closure": prompt10d_closure_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -1807,6 +1993,25 @@ mod tests {
                 ["public_report_schema"],
             "additive_feature_report_prompt10c"
         );
+        assert_eq!(
+            v["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["status"],
+            "complete"
+        );
+        assert_eq!(
+            v["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["svg_in_opentype"]
+                ["status"],
+            "safe_static_subset_rendered_active_constructs_blocked"
+        );
+        assert_eq!(
+            v["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["bitmap_color_glyphs"]
+                ["sbix"]["status"],
+            "png_and_jpeg_rendered_tiff_other_precisely_reported"
+        );
+        assert_eq!(
+            v["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["closure_gates"]
+                ["public_report_schema"],
+            "additive_feature_report_prompt10d"
+        );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),
             "prompt09_renderer_report",
@@ -1826,6 +2031,10 @@ mod tests {
         assert_envelope(
             &prompt10c_closure_report_json().unwrap(),
             "prompt10c_closure_report",
+        );
+        assert_envelope(
+            &prompt10d_closure_report_json().unwrap(),
+            "prompt10d_closure_report",
         );
         assert_eq!(
             v["report"]["progress"]["status"],

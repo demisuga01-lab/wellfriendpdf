@@ -1,12 +1,13 @@
-use std::io::Cursor;
+use std::io::{Cursor, Read};
 
 use crate::error::{OxideError, Result};
 use crate::fonts::variations::{self, VariationRequest};
-use crate::images::decoder::RawImage;
+use crate::images::decoder::{ColorSpaceConverter, ImageDecoder, RawImage};
 use crate::render::buffer::{rgba, PixelColor};
 use crate::render::font_rasterizer::GlyphToPath;
 use crate::render::path::Path;
 use crate::render::transform::Transform2D;
+use flate2::read::GzDecoder;
 use ttf_parser::colr::{CompositeMode, Paint, Painter};
 use ttf_parser::{GlyphId, RasterGlyphImage, RasterImageFormat, RgbaColor, Tag, Transform};
 
@@ -14,6 +15,10 @@ const MAX_COLOR_GLYPH_PIXELS: u32 = 4096 * 4096;
 const MAX_COLOR_GLYPH_BYTES: usize = 64 * 1024 * 1024;
 const MAX_COLR_TRANSFORM_DEPTH: usize = 32;
 const MAX_COLR_PAINT_LAYERS: usize = 256;
+const MAX_SVG_BYTES: usize = 256 * 1024;
+const MAX_SVG_PAINT_PATHS: usize = 512;
+const MAX_SVG_PATH_COMMANDS: usize = 4096;
+const MAX_SVG_GROUP_DEPTH: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ColorGlyphKind {
@@ -40,6 +45,15 @@ impl ColorGlyphKind {
 pub(crate) struct ColrLayer {
     pub glyph_id: u16,
     pub color: PixelColor,
+    pub transform: Transform2D,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SvgPaintPath {
+    pub path: Path,
+    pub fill: Option<PixelColor>,
+    pub stroke: Option<PixelColor>,
+    pub stroke_width: f64,
     pub transform: Transform2D,
 }
 
@@ -124,12 +138,14 @@ pub(crate) fn decode_raster_glyph_image(
         Err(_) => return Ok(None),
     };
     let Some(image) = face.glyph_raster_image(glyph_id, target_ppem.max(1)) else {
-        if let Some(kind) = sbix_payload_kind(font_bytes, glyph_id) {
-            return Err(OxideError::UnsupportedFeature(format!(
-                "sbix color glyph payload is not enabled for rendering: glyph={} payload={}",
-                glyph_id.0,
-                kind.label()
-            )));
+        if let Some(payload) = sbix_payload(font_bytes, glyph_id, target_ppem.max(1)) {
+            let image = decode_sbix_payload(&payload)?;
+            return Ok(Some(DecodedRasterGlyph {
+                x: payload.x,
+                y: payload.y,
+                pixels_per_em: payload.pixels_per_em.max(1),
+                image,
+            }));
         }
         return Ok(None);
     };
@@ -200,9 +216,6 @@ impl SvgGlyphPolicy {
 }
 
 pub(crate) fn classify_svg_glyph_document(svg: &str) -> SvgGlyphPolicy {
-    const MAX_SVG_BYTES: usize = 256 * 1024;
-    const MAX_PATH_COMMANDS: usize = 4096;
-    const MAX_GROUP_DEPTH: isize = 64;
     if svg.len() > MAX_SVG_BYTES {
         return SvgGlyphPolicy::PathLimitExceeded;
     }
@@ -225,6 +238,7 @@ pub(crate) fn classify_svg_glyph_document(svg: &str) -> SvgGlyphPolicy {
         ("<image", "external image resources are blocked"),
         ("<filter", "SVG filters are blocked"),
         ("<mask", "SVG masks are blocked"),
+        ("<style", "CSS style blocks are blocked"),
     ];
     for (needle, reason) in blocked_security {
         if lower.contains(needle) {
@@ -236,6 +250,18 @@ pub(crate) fn classify_svg_glyph_document(svg: &str) -> SvgGlyphPolicy {
         ("<use", "recursive references are unsupported"),
         ("url(", "paint server URL references are unsupported"),
         ("<pattern", "SVG pattern paint servers are unsupported"),
+        (
+            "<clippath",
+            "SVG clipPath requires paint-server references and is unsupported",
+        ),
+        (
+            "<lineargradient",
+            "SVG gradient paint servers are unsupported in the static subset",
+        ),
+        (
+            "<radialgradient",
+            "SVG gradient paint servers are unsupported in the static subset",
+        ),
     ];
     for (needle, reason) in unsupported_static {
         if lower.contains(needle) {
@@ -249,7 +275,7 @@ pub(crate) fn classify_svg_glyph_document(svg: &str) -> SvgGlyphPolicy {
         } else if token.starts_with("</g") || token.starts_with("</svg") {
             depth -= 1;
         }
-        if !(-1..=MAX_GROUP_DEPTH).contains(&depth) {
+        if !(-1..=MAX_SVG_GROUP_DEPTH as isize).contains(&depth) {
             return SvgGlyphPolicy::PathLimitExceeded;
         }
     }
@@ -262,10 +288,43 @@ pub(crate) fn classify_svg_glyph_document(svg: &str) -> SvgGlyphPolicy {
             )
         })
         .count();
-    if path_commands > MAX_PATH_COMMANDS {
+    if path_commands > MAX_SVG_PATH_COMMANDS {
         return SvgGlyphPolicy::PathLimitExceeded;
     }
     SvgGlyphPolicy::StaticSubsetCandidate
+}
+
+pub(crate) fn svg_static_glyph_paints(
+    font_bytes: &[u8],
+    glyph_id: GlyphId,
+    foreground: PixelColor,
+    graphics_alpha: u8,
+) -> Result<Option<Vec<SvgPaintPath>>> {
+    let face = match ttf_parser::Face::parse(font_bytes, 0) {
+        Ok(face) => face,
+        Err(_) => return Ok(None),
+    };
+    let Some(document) = face.glyph_svg_image(glyph_id) else {
+        return Ok(None);
+    };
+    let svg = decode_svg_document(document.data)?;
+    let policy = classify_svg_glyph_document(&svg);
+    if policy != SvgGlyphPolicy::StaticSubsetCandidate {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "SVG-in-OpenType color glyph blocked: glyph={} status={} reason={}",
+            glyph_id.0,
+            policy.status(),
+            policy.reason()
+        )));
+    }
+    let paths = parse_static_svg_paint_paths(&svg, foreground, graphics_alpha)?;
+    if paths.is_empty() {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "SVG-in-OpenType color glyph produced no supported static paint paths: glyph={}",
+            glyph_id.0
+        )));
+    }
+    Ok(Some(paths))
 }
 
 pub(crate) fn color_font_table_summary(font_bytes: &[u8]) -> ColorFontTableSummary {
@@ -313,7 +372,7 @@ pub(crate) fn sbix_payload_kind(
     let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
     let raw = face.raw_face();
     let sbix = raw.table(Tag::from_bytes(b"sbix"))?;
-    sbix_payload_kind_inner(sbix, face.number_of_glyphs(), glyph_id, 0)
+    sbix_payload_inner(sbix, face.number_of_glyphs(), glyph_id, 0, 0).map(|payload| payload.kind)
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +381,15 @@ pub(crate) struct DecodedRasterGlyph {
     pub y: i16,
     pub pixels_per_em: u16,
     pub image: RawImage,
+}
+
+#[derive(Debug, Clone)]
+struct SbixPayload<'a> {
+    kind: ColorBitmapPayloadKind,
+    data: &'a [u8],
+    x: i16,
+    y: i16,
+    pixels_per_em: u16,
 }
 
 struct SolidLayerCollector {
@@ -494,19 +562,820 @@ pub(crate) fn outline_gid_path(
     Some(builder.into_path())
 }
 
-fn sbix_payload_kind_inner(
-    sbix: &[u8],
+#[derive(Clone, Debug)]
+struct SvgState {
+    fill: Option<PixelColor>,
+    stroke: Option<PixelColor>,
+    stroke_width: f64,
+    opacity: f64,
+    fill_opacity: f64,
+    stroke_opacity: f64,
+    transform: Transform2D,
+}
+
+impl SvgState {
+    fn root(foreground: PixelColor) -> Self {
+        Self {
+            fill: Some(foreground),
+            stroke: None,
+            stroke_width: 1.0,
+            opacity: 1.0,
+            fill_opacity: 1.0,
+            stroke_opacity: 1.0,
+            transform: Transform2D::identity(),
+        }
+    }
+
+    fn fill_color(&self, graphics_alpha: u8) -> Option<PixelColor> {
+        self.fill
+            .map(|color| color_with_alpha(color, self.opacity * self.fill_opacity, graphics_alpha))
+    }
+
+    fn stroke_color(&self, graphics_alpha: u8) -> Option<PixelColor> {
+        self.stroke.map(|color| {
+            color_with_alpha(color, self.opacity * self.stroke_opacity, graphics_alpha)
+        })
+    }
+}
+
+fn color_with_alpha(mut color: PixelColor, opacity: f64, graphics_alpha: u8) -> PixelColor {
+    let opacity = opacity.clamp(0.0, 1.0);
+    let alpha = f64::from(color[3]) * opacity * (f64::from(graphics_alpha) / 255.0);
+    color[3] = alpha.round().clamp(0.0, 255.0) as u8;
+    color
+}
+
+fn decode_svg_document(data: &[u8]) -> Result<String> {
+    if data.len() > MAX_SVG_BYTES {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "SVG-in-OpenType glyph document too large: {} bytes",
+            data.len()
+        )));
+    }
+    let mut bytes = Vec::new();
+    if data.starts_with(&[0x1f, 0x8b]) {
+        let decoder = GzDecoder::new(Cursor::new(data));
+        decoder
+            .take((MAX_SVG_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| {
+                OxideError::MalformedPdf(format!("SVG-in-OpenType gzip decode failed: {e}"))
+            })?;
+        if bytes.len() > MAX_SVG_BYTES {
+            return Err(OxideError::UnsupportedFeature(
+                "SVG-in-OpenType decompressed document exceeds static subset cap".to_string(),
+            ));
+        }
+    } else {
+        bytes.extend_from_slice(data);
+    }
+    String::from_utf8(bytes).map_err(|e| {
+        OxideError::MalformedPdf(format!("SVG-in-OpenType document is not UTF-8: {e}"))
+    })
+}
+
+fn parse_static_svg_paint_paths(
+    svg: &str,
+    foreground: PixelColor,
+    graphics_alpha: u8,
+) -> Result<Vec<SvgPaintPath>> {
+    let mut states = vec![SvgState::root(foreground)];
+    let mut paths = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel_start) = svg[cursor..].find('<') {
+        let start = cursor + rel_start;
+        let Some(rel_end) = svg[start..].find('>') else {
+            return Err(OxideError::MalformedPdf(
+                "SVG-in-OpenType static subset tag is unterminated".to_string(),
+            ));
+        };
+        let end = start + rel_end;
+        let raw_tag = svg[start + 1..end].trim();
+        cursor = end + 1;
+        if raw_tag.is_empty()
+            || raw_tag.starts_with('!')
+            || raw_tag.starts_with('?')
+            || raw_tag.starts_with("!--")
+        {
+            continue;
+        }
+        if let Some(stripped) = raw_tag.strip_prefix('/') {
+            let name = svg_tag_name(stripped);
+            if matches!(name, "svg" | "g") && states.len() > 1 {
+                states.pop();
+            }
+            continue;
+        }
+
+        let self_closing = raw_tag.ends_with('/');
+        let tag_body = raw_tag.trim_end_matches('/').trim();
+        let name = svg_tag_name(tag_body);
+        let attrs = parse_svg_attrs(tag_body.get(name.len()..).unwrap_or_default())?;
+        let state = apply_svg_attrs(states.last().expect("root state"), &attrs, foreground)?;
+
+        match name {
+            "svg" | "g" => {
+                if !self_closing {
+                    if states.len() >= MAX_SVG_GROUP_DEPTH {
+                        return Err(OxideError::UnsupportedFeature(
+                            "SVG-in-OpenType group depth cap exceeded".to_string(),
+                        ));
+                    }
+                    states.push(state);
+                }
+            }
+            "path" => {
+                let d = attr(&attrs, "d").ok_or_else(|| {
+                    OxideError::MalformedPdf("SVG path element missing d attribute".to_string())
+                })?;
+                let path = parse_svg_path_data(d)?;
+                push_svg_paint_path(&mut paths, path, &state, graphics_alpha)?;
+            }
+            "rect" => {
+                let x = parse_attr_number(&attrs, "x").unwrap_or(0.0);
+                let y = parse_attr_number(&attrs, "y").unwrap_or(0.0);
+                let w = parse_attr_number(&attrs, "width").ok_or_else(|| {
+                    OxideError::MalformedPdf("SVG rect missing width".to_string())
+                })?;
+                let h = parse_attr_number(&attrs, "height").ok_or_else(|| {
+                    OxideError::MalformedPdf("SVG rect missing height".to_string())
+                })?;
+                if !(w.is_finite() && h.is_finite()) || w < 0.0 || h < 0.0 {
+                    return Err(OxideError::MalformedPdf(
+                        "SVG rect has invalid dimensions".to_string(),
+                    ));
+                }
+                let mut path = Path::new();
+                path.rect(x, y, w, h);
+                push_svg_paint_path(&mut paths, path, &state, graphics_alpha)?;
+            }
+            "circle" => {
+                let cx = parse_attr_number(&attrs, "cx").unwrap_or(0.0);
+                let cy = parse_attr_number(&attrs, "cy").unwrap_or(0.0);
+                let r = parse_attr_number(&attrs, "r")
+                    .ok_or_else(|| OxideError::MalformedPdf("SVG circle missing r".to_string()))?;
+                push_svg_paint_path(
+                    &mut paths,
+                    ellipse_path(cx, cy, r, r)?,
+                    &state,
+                    graphics_alpha,
+                )?;
+            }
+            "ellipse" => {
+                let cx = parse_attr_number(&attrs, "cx").unwrap_or(0.0);
+                let cy = parse_attr_number(&attrs, "cy").unwrap_or(0.0);
+                let rx = parse_attr_number(&attrs, "rx").ok_or_else(|| {
+                    OxideError::MalformedPdf("SVG ellipse missing rx".to_string())
+                })?;
+                let ry = parse_attr_number(&attrs, "ry").ok_or_else(|| {
+                    OxideError::MalformedPdf("SVG ellipse missing ry".to_string())
+                })?;
+                push_svg_paint_path(
+                    &mut paths,
+                    ellipse_path(cx, cy, rx, ry)?,
+                    &state,
+                    graphics_alpha,
+                )?;
+            }
+            "line" => {
+                let x1 = parse_attr_number(&attrs, "x1").unwrap_or(0.0);
+                let y1 = parse_attr_number(&attrs, "y1").unwrap_or(0.0);
+                let x2 = parse_attr_number(&attrs, "x2").unwrap_or(0.0);
+                let y2 = parse_attr_number(&attrs, "y2").unwrap_or(0.0);
+                let mut path = Path::new();
+                path.move_to(x1, y1);
+                path.line_to(x2, y2);
+                push_svg_paint_path(&mut paths, path, &state, graphics_alpha)?;
+            }
+            "polyline" | "polygon" => {
+                let points = attr(&attrs, "points").ok_or_else(|| {
+                    OxideError::MalformedPdf("SVG polyline/polygon missing points".to_string())
+                })?;
+                let mut path = points_path(points)?;
+                if name == "polygon" {
+                    path.close();
+                }
+                push_svg_paint_path(&mut paths, path, &state, graphics_alpha)?;
+            }
+            other => {
+                return Err(OxideError::UnsupportedFeature(format!(
+                    "SVG-in-OpenType static subset element unsupported: <{other}>"
+                )));
+            }
+        }
+        if paths.len() > MAX_SVG_PAINT_PATHS {
+            return Err(OxideError::UnsupportedFeature(
+                "SVG-in-OpenType paint path cap exceeded".to_string(),
+            ));
+        }
+    }
+    Ok(paths)
+}
+
+fn push_svg_paint_path(
+    paths: &mut Vec<SvgPaintPath>,
+    path: Path,
+    state: &SvgState,
+    graphics_alpha: u8,
+) -> Result<()> {
+    if path.is_empty() {
+        return Ok(());
+    }
+    if !finite_transform(state.transform) || !state.stroke_width.is_finite() {
+        return Err(OxideError::UnsupportedFeature(
+            "SVG-in-OpenType static subset contains non-finite transform or stroke width"
+                .to_string(),
+        ));
+    }
+    let fill = state.fill_color(graphics_alpha);
+    let stroke = state.stroke_color(graphics_alpha);
+    if fill.is_none() && stroke.is_none() {
+        return Ok(());
+    }
+    paths.push(SvgPaintPath {
+        path,
+        fill,
+        stroke,
+        stroke_width: state.stroke_width.max(0.0),
+        transform: state.transform,
+    });
+    Ok(())
+}
+
+fn svg_tag_name(tag_body: &str) -> &str {
+    tag_body
+        .split(|ch: char| ch.is_ascii_whitespace() || ch == '/')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches('/')
+}
+
+fn parse_svg_attrs(data: &str) -> Result<Vec<(String, String)>> {
+    let bytes = data.as_bytes();
+    let mut idx = 0usize;
+    let mut attrs = Vec::new();
+    while idx < bytes.len() {
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            break;
+        }
+        let key_start = idx;
+        while idx < bytes.len()
+            && !bytes[idx].is_ascii_whitespace()
+            && bytes[idx] != b'='
+            && bytes[idx] != b'/'
+        {
+            idx += 1;
+        }
+        if key_start == idx {
+            idx += 1;
+            continue;
+        }
+        let key = data[key_start..idx].to_ascii_lowercase();
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() || bytes[idx] != b'=' {
+            return Err(OxideError::UnsupportedFeature(format!(
+                "SVG-in-OpenType static subset requires quoted attributes: {key}"
+            )));
+        }
+        idx += 1;
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() || (bytes[idx] != b'"' && bytes[idx] != b'\'') {
+            return Err(OxideError::UnsupportedFeature(format!(
+                "SVG-in-OpenType static subset requires quoted attribute values: {key}"
+            )));
+        }
+        let quote = bytes[idx];
+        idx += 1;
+        let value_start = idx;
+        while idx < bytes.len() && bytes[idx] != quote {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            return Err(OxideError::MalformedPdf(format!(
+                "SVG-in-OpenType attribute is unterminated: {key}"
+            )));
+        }
+        attrs.push((key, decode_xml_entities(&data[value_start..idx])));
+        idx += 1;
+    }
+    Ok(attrs)
+}
+
+fn decode_xml_entities(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+}
+
+fn apply_svg_attrs(
+    base: &SvgState,
+    attrs: &[(String, String)],
+    foreground: PixelColor,
+) -> Result<SvgState> {
+    let mut state = base.clone();
+    if let Some(style) = attr(attrs, "style") {
+        for item in style.split(';') {
+            let Some((key, value)) = item.split_once(':') else {
+                continue;
+            };
+            apply_svg_paint_attr(&mut state, key.trim(), value.trim(), foreground)?;
+        }
+    }
+    for (key, value) in attrs {
+        apply_svg_paint_attr(&mut state, key, value, foreground)?;
+    }
+    if let Some(transform) = attr(attrs, "transform") {
+        let local = parse_svg_transform(transform)?;
+        state.transform = local.concat(&base.transform);
+    }
+    Ok(state)
+}
+
+fn apply_svg_paint_attr(
+    state: &mut SvgState,
+    key: &str,
+    value: &str,
+    foreground: PixelColor,
+) -> Result<()> {
+    match key {
+        "fill" => state.fill = parse_svg_color(value, foreground)?,
+        "stroke" => state.stroke = parse_svg_color(value, foreground)?,
+        "stroke-width" => state.stroke_width = parse_svg_number(value)?.max(0.0),
+        "opacity" => state.opacity = parse_unit_interval(value)?,
+        "fill-opacity" => state.fill_opacity = parse_unit_interval(value)?,
+        "stroke-opacity" => state.stroke_opacity = parse_unit_interval(value)?,
+        "transform" | "d" | "x" | "y" | "width" | "height" | "cx" | "cy" | "r" | "rx" | "ry"
+        | "x1" | "y1" | "x2" | "y2" | "points" | "viewbox" | "version" | "xmlns" | "style" => {}
+        "stroke-linecap" | "stroke-linejoin" | "stroke-miterlimit" => {}
+        other if other.starts_with("on") => {
+            return Err(OxideError::UnsupportedFeature(format!(
+                "SVG-in-OpenType event attribute blocked: {other}"
+            )));
+        }
+        other => {
+            return Err(OxideError::UnsupportedFeature(format!(
+                "SVG-in-OpenType static subset attribute unsupported: {other}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn attr<'a>(attrs: &'a [(String, String)], name: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.as_str())
+}
+
+fn parse_attr_number(attrs: &[(String, String)], name: &str) -> Option<f64> {
+    attr(attrs, name).and_then(|value| parse_svg_number(value).ok())
+}
+
+fn parse_svg_color(value: &str, foreground: PixelColor) -> Result<Option<PixelColor>> {
+    let value = value.trim();
+    if value.eq_ignore_ascii_case("none") {
+        return Ok(None);
+    }
+    if value.eq_ignore_ascii_case("currentcolor") || value.eq_ignore_ascii_case("context-fill") {
+        return Ok(Some(foreground));
+    }
+    if let Some(hex) = value.strip_prefix('#') {
+        return parse_hex_color(hex).map(Some);
+    }
+    let lower = value.to_ascii_lowercase();
+    let named = match lower.as_str() {
+        "black" => Some(rgba(0, 0, 0, 255)),
+        "white" => Some(rgba(255, 255, 255, 255)),
+        "red" => Some(rgba(255, 0, 0, 255)),
+        "green" => Some(rgba(0, 128, 0, 255)),
+        "blue" => Some(rgba(0, 0, 255, 255)),
+        "yellow" => Some(rgba(255, 255, 0, 255)),
+        "cyan" => Some(rgba(0, 255, 255, 255)),
+        "magenta" => Some(rgba(255, 0, 255, 255)),
+        "orange" => Some(rgba(255, 165, 0, 255)),
+        "purple" => Some(rgba(128, 0, 128, 255)),
+        _ => None,
+    };
+    if named.is_some() {
+        return Ok(named);
+    }
+    if lower.starts_with("rgb(") && lower.ends_with(')') {
+        let body = &lower[4..lower.len() - 1];
+        let parts: Vec<_> = body
+            .split([',', ' '])
+            .filter(|part| !part.trim().is_empty())
+            .collect();
+        if parts.len() == 3 {
+            let r = parse_color_component(parts[0])?;
+            let g = parse_color_component(parts[1])?;
+            let b = parse_color_component(parts[2])?;
+            return Ok(Some(rgba(r, g, b, 255)));
+        }
+    }
+    Err(OxideError::UnsupportedFeature(format!(
+        "SVG-in-OpenType static subset color unsupported: {value}"
+    )))
+}
+
+fn parse_hex_color(hex: &str) -> Result<PixelColor> {
+    match hex.len() {
+        3 => {
+            let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).map_err(svg_color_err)?;
+            let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).map_err(svg_color_err)?;
+            let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).map_err(svg_color_err)?;
+            Ok(rgba(r, g, b, 255))
+        }
+        6 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).map_err(svg_color_err)?;
+            let g = u8::from_str_radix(&hex[2..4], 16).map_err(svg_color_err)?;
+            let b = u8::from_str_radix(&hex[4..6], 16).map_err(svg_color_err)?;
+            Ok(rgba(r, g, b, 255))
+        }
+        _ => Err(OxideError::UnsupportedFeature(format!(
+            "SVG-in-OpenType static subset hex color unsupported: #{hex}"
+        ))),
+    }
+}
+
+fn svg_color_err(err: std::num::ParseIntError) -> OxideError {
+    OxideError::MalformedPdf(format!("SVG-in-OpenType color parse failed: {err}"))
+}
+
+fn parse_color_component(value: &str) -> Result<u8> {
+    let value = value.trim();
+    if let Some(percent) = value.strip_suffix('%') {
+        let pct = parse_svg_number(percent)?;
+        Ok(((pct.clamp(0.0, 100.0) / 100.0) * 255.0).round() as u8)
+    } else {
+        Ok(parse_svg_number(value)?.round().clamp(0.0, 255.0) as u8)
+    }
+}
+
+fn parse_unit_interval(value: &str) -> Result<f64> {
+    Ok(parse_svg_number(value)?.clamp(0.0, 1.0))
+}
+
+fn parse_svg_number(value: &str) -> Result<f64> {
+    let value = value
+        .trim()
+        .trim_end_matches("px")
+        .trim_end_matches("pt")
+        .trim_end_matches("em");
+    let parsed = value.parse::<f64>().map_err(|e| {
+        OxideError::MalformedPdf(format!("SVG-in-OpenType number parse failed: {e}"))
+    })?;
+    if parsed.is_finite() {
+        Ok(parsed)
+    } else {
+        Err(OxideError::UnsupportedFeature(
+            "SVG-in-OpenType non-finite number blocked".to_string(),
+        ))
+    }
+}
+
+fn parse_svg_transform(value: &str) -> Result<Transform2D> {
+    let mut current = Transform2D::identity();
+    let mut rest = value.trim();
+    while !rest.is_empty() {
+        let Some(open) = rest.find('(') else {
+            return Err(OxideError::MalformedPdf(format!(
+                "SVG transform missing '(': {rest}"
+            )));
+        };
+        let name = rest[..open].trim().to_ascii_lowercase();
+        let Some(close_rel) = rest[open + 1..].find(')') else {
+            return Err(OxideError::MalformedPdf(format!(
+                "SVG transform missing ')': {rest}"
+            )));
+        };
+        let close = open + 1 + close_rel;
+        let args = parse_number_list(&rest[open + 1..close])?;
+        let next = match name.as_str() {
+            "matrix" if args.len() == 6 => {
+                Transform2D::new(args[0], args[1], args[2], args[3], args[4], args[5])
+            }
+            "translate" if !args.is_empty() && args.len() <= 2 => {
+                Transform2D::translation(args[0], args.get(1).copied().unwrap_or(0.0))
+            }
+            "scale" if !args.is_empty() && args.len() <= 2 => {
+                Transform2D::scale(args[0], args.get(1).copied().unwrap_or(args[0]))
+            }
+            "rotate" if !args.is_empty() && args.len() <= 3 => {
+                let rotate = Transform2D::rotation(args[0].to_radians());
+                if args.len() == 3 {
+                    Transform2D::translation(args[1], args[2])
+                        .concat(&rotate)
+                        .concat(&Transform2D::translation(-args[1], -args[2]))
+                } else {
+                    rotate
+                }
+            }
+            "skewx" if args.len() == 1 => Transform2D::shear(args[0].to_radians().tan(), 0.0),
+            "skewy" if args.len() == 1 => Transform2D::shear(0.0, args[0].to_radians().tan()),
+            _ => {
+                return Err(OxideError::UnsupportedFeature(format!(
+                    "SVG-in-OpenType transform unsupported or malformed: {name}"
+                )))
+            }
+        };
+        if !finite_transform(next) {
+            return Err(OxideError::UnsupportedFeature(
+                "SVG-in-OpenType non-finite transform blocked".to_string(),
+            ));
+        }
+        current = next.concat(&current);
+        rest =
+            rest[close + 1..].trim_start_matches(|ch: char| ch.is_ascii_whitespace() || ch == ',');
+    }
+    Ok(current)
+}
+
+fn parse_number_list(value: &str) -> Result<Vec<f64>> {
+    value
+        .split([',', ' ', '\t', '\r', '\n'])
+        .filter(|part| !part.trim().is_empty())
+        .map(parse_svg_number)
+        .collect()
+}
+
+fn ellipse_path(cx: f64, cy: f64, rx: f64, ry: f64) -> Result<Path> {
+    if !(cx.is_finite() && cy.is_finite() && rx.is_finite() && ry.is_finite())
+        || rx < 0.0
+        || ry < 0.0
+    {
+        return Err(OxideError::MalformedPdf(
+            "SVG ellipse has invalid geometry".to_string(),
+        ));
+    }
+    let k = 0.552_284_749_830_793_6;
+    let mut path = Path::new();
+    path.move_to(cx + rx, cy);
+    path.curve_to(cx + rx, cy + k * ry, cx + k * rx, cy + ry, cx, cy + ry);
+    path.curve_to(cx - k * rx, cy + ry, cx - rx, cy + k * ry, cx - rx, cy);
+    path.curve_to(cx - rx, cy - k * ry, cx - k * rx, cy - ry, cx, cy - ry);
+    path.curve_to(cx + k * rx, cy - ry, cx + rx, cy - k * ry, cx + rx, cy);
+    path.close();
+    Ok(path)
+}
+
+fn points_path(points: &str) -> Result<Path> {
+    let numbers = parse_number_list(points)?;
+    if numbers.len() < 4 || numbers.len() % 2 != 0 {
+        return Err(OxideError::MalformedPdf(
+            "SVG points list must contain x/y pairs".to_string(),
+        ));
+    }
+    let mut path = Path::new();
+    path.move_to(numbers[0], numbers[1]);
+    for pair in numbers[2..].chunks_exact(2) {
+        path.line_to(pair[0], pair[1]);
+    }
+    Ok(path)
+}
+
+#[derive(Clone, Debug)]
+struct SvgPathParser<'a> {
+    data: &'a [u8],
+    idx: usize,
+}
+
+impl<'a> SvgPathParser<'a> {
+    fn new(data: &'a str) -> Self {
+        Self {
+            data: data.as_bytes(),
+            idx: 0,
+        }
+    }
+
+    fn eof(&self) -> bool {
+        self.idx >= self.data.len()
+    }
+
+    fn skip_sep(&mut self) {
+        while !self.eof()
+            && (self.data[self.idx].is_ascii_whitespace() || self.data[self.idx] == b',')
+        {
+            self.idx += 1;
+        }
+    }
+
+    fn next_command(&mut self) -> Option<char> {
+        self.skip_sep();
+        if self.eof() {
+            return None;
+        }
+        let byte = self.data[self.idx];
+        if byte.is_ascii_alphabetic() {
+            self.idx += 1;
+            Some(byte as char)
+        } else {
+            None
+        }
+    }
+
+    fn has_number(&mut self) -> bool {
+        self.skip_sep();
+        !self.eof() && matches!(self.data[self.idx], b'+' | b'-' | b'.' | b'0'..=b'9')
+    }
+
+    fn number(&mut self) -> Result<f64> {
+        self.skip_sep();
+        let start = self.idx;
+        if !self.eof() && matches!(self.data[self.idx], b'+' | b'-') {
+            self.idx += 1;
+        }
+        while !self.eof() && self.data[self.idx].is_ascii_digit() {
+            self.idx += 1;
+        }
+        if !self.eof() && self.data[self.idx] == b'.' {
+            self.idx += 1;
+            while !self.eof() && self.data[self.idx].is_ascii_digit() {
+                self.idx += 1;
+            }
+        }
+        if !self.eof() && matches!(self.data[self.idx], b'e' | b'E') {
+            self.idx += 1;
+            if !self.eof() && matches!(self.data[self.idx], b'+' | b'-') {
+                self.idx += 1;
+            }
+            while !self.eof() && self.data[self.idx].is_ascii_digit() {
+                self.idx += 1;
+            }
+        }
+        if start == self.idx {
+            return Err(OxideError::MalformedPdf(
+                "SVG path expected number".to_string(),
+            ));
+        }
+        let s = std::str::from_utf8(&self.data[start..self.idx])
+            .map_err(|e| OxideError::MalformedPdf(format!("SVG path number is not UTF-8: {e}")))?;
+        parse_svg_number(s)
+    }
+}
+
+fn parse_svg_path_data(data: &str) -> Result<Path> {
+    let mut parser = SvgPathParser::new(data);
+    let mut path = Path::new();
+    let mut command = ' ';
+    let mut current = (0.0, 0.0);
+    let mut subpath_start = (0.0, 0.0);
+    let mut commands = 0usize;
+
+    while !parser.eof() {
+        if let Some(next) = parser.next_command() {
+            command = next;
+        } else if command == ' ' {
+            return Err(OxideError::MalformedPdf(
+                "SVG path data starts without command".to_string(),
+            ));
+        }
+        commands += 1;
+        if commands > MAX_SVG_PATH_COMMANDS {
+            return Err(OxideError::UnsupportedFeature(
+                "SVG-in-OpenType path command cap exceeded".to_string(),
+            ));
+        }
+
+        let relative = command.is_ascii_lowercase();
+        match command.to_ascii_uppercase() {
+            'M' => {
+                let mut first = true;
+                while parser.has_number() {
+                    let (x, y) = svg_point(&mut parser, current, relative)?;
+                    if first {
+                        path.move_to(x, y);
+                        subpath_start = (x, y);
+                        first = false;
+                    } else {
+                        path.line_to(x, y);
+                    }
+                    current = (x, y);
+                }
+                command = if relative { 'l' } else { 'L' };
+            }
+            'L' => {
+                while parser.has_number() {
+                    let (x, y) = svg_point(&mut parser, current, relative)?;
+                    path.line_to(x, y);
+                    current = (x, y);
+                }
+            }
+            'H' => {
+                while parser.has_number() {
+                    let mut x = parser.number()?;
+                    if relative {
+                        x += current.0;
+                    }
+                    path.line_to(x, current.1);
+                    current.0 = x;
+                }
+            }
+            'V' => {
+                while parser.has_number() {
+                    let mut y = parser.number()?;
+                    if relative {
+                        y += current.1;
+                    }
+                    path.line_to(current.0, y);
+                    current.1 = y;
+                }
+            }
+            'C' => {
+                while parser.has_number() {
+                    let (x1, y1) = svg_point(&mut parser, current, relative)?;
+                    let (x2, y2) = svg_point(&mut parser, current, relative)?;
+                    let (x, y) = svg_point(&mut parser, current, relative)?;
+                    path.curve_to(x1, y1, x2, y2, x, y);
+                    current = (x, y);
+                }
+            }
+            'Q' => {
+                while parser.has_number() {
+                    let (qx, qy) = svg_point(&mut parser, current, relative)?;
+                    let (x, y) = svg_point(&mut parser, current, relative)?;
+                    let c1 = (
+                        current.0 + (2.0 / 3.0) * (qx - current.0),
+                        current.1 + (2.0 / 3.0) * (qy - current.1),
+                    );
+                    let c2 = (x + (2.0 / 3.0) * (qx - x), y + (2.0 / 3.0) * (qy - y));
+                    path.curve_to(c1.0, c1.1, c2.0, c2.1, x, y);
+                    current = (x, y);
+                }
+            }
+            'Z' => {
+                path.close();
+                current = subpath_start;
+            }
+            other => {
+                return Err(OxideError::UnsupportedFeature(format!(
+                    "SVG-in-OpenType path command unsupported: {other}"
+                )));
+            }
+        }
+    }
+    Ok(path)
+}
+
+fn svg_point(
+    parser: &mut SvgPathParser<'_>,
+    current: (f64, f64),
+    relative: bool,
+) -> Result<(f64, f64)> {
+    let mut x = parser.number()?;
+    let mut y = parser.number()?;
+    if relative {
+        x += current.0;
+        y += current.1;
+    }
+    if x.is_finite() && y.is_finite() {
+        Ok((x, y))
+    } else {
+        Err(OxideError::UnsupportedFeature(
+            "SVG-in-OpenType non-finite path coordinate blocked".to_string(),
+        ))
+    }
+}
+
+fn sbix_payload<'a>(
+    font_bytes: &'a [u8],
+    glyph_id: GlyphId,
+    target_ppem: u16,
+) -> Option<SbixPayload<'a>> {
+    let face = ttf_parser::Face::parse(font_bytes, 0).ok()?;
+    let raw = face.raw_face();
+    let sbix = raw.table(Tag::from_bytes(b"sbix"))?;
+    sbix_payload_inner(sbix, face.number_of_glyphs(), glyph_id, target_ppem, 0)
+}
+
+fn sbix_payload_inner<'a>(
+    sbix: &'a [u8],
     glyph_count: u16,
     glyph_id: GlyphId,
+    target_ppem: u16,
     depth: u8,
-) -> Option<ColorBitmapPayloadKind> {
+) -> Option<SbixPayload<'a>> {
     if depth >= 10 || glyph_id.0 >= glyph_count {
         return None;
     }
     let strike_count = read_u32(sbix, 4)? as usize;
     let strike_offsets_start = 8usize;
+    let mut best: Option<SbixPayload<'a>> = None;
+    let mut best_distance = u16::MAX;
     for strike_index in 0..strike_count {
         let strike_offset = read_u32(sbix, strike_offsets_start + strike_index * 4)? as usize;
+        let pixels_per_em = read_u16(sbix, strike_offset).unwrap_or(0).max(1);
         let offsets_start = strike_offset.checked_add(4)?;
         let glyph_offset_index = offsets_start.checked_add(usize::from(glyph_id.0) * 4)?;
         let start = read_u32(sbix, glyph_offset_index)? as usize;
@@ -515,32 +1384,109 @@ fn sbix_payload_kind_inner(
             continue;
         }
         if end <= start || end.checked_sub(start)? < 8 {
-            return Some(ColorBitmapPayloadKind::Other(
-                "sbix malformed strike record".to_string(),
-            ));
+            return Some(SbixPayload {
+                kind: ColorBitmapPayloadKind::Other("sbix malformed strike record".to_string()),
+                data: &[],
+                x: 0,
+                y: 0,
+                pixels_per_em,
+            });
         }
         let record_start = strike_offset.checked_add(start)?;
+        let record_end = strike_offset.checked_add(end)?;
+        let x = read_i16(sbix, record_start).unwrap_or(0);
+        let y = read_i16(sbix, record_start.checked_add(2)?).unwrap_or(0);
         let tag_bytes = sbix.get(record_start.checked_add(4)?..record_start.checked_add(8)?)?;
-        match tag_bytes {
-            b"png " => return Some(ColorBitmapPayloadKind::Png),
-            b"jpg " | b"jpeg" => return Some(ColorBitmapPayloadKind::Jpeg),
-            b"tiff" | b"tif " => return Some(ColorBitmapPayloadKind::Tiff),
-            b"pdf " => return Some(ColorBitmapPayloadKind::Pdf),
-            b"mask" => return Some(ColorBitmapPayloadKind::Mask),
+        let payload_start = record_start.checked_add(8)?;
+        let data = sbix.get(payload_start..record_end)?;
+        let kind = match tag_bytes {
+            b"png " => ColorBitmapPayloadKind::Png,
+            b"jpg " | b"jpeg" => ColorBitmapPayloadKind::Jpeg,
+            b"tiff" | b"tif " => ColorBitmapPayloadKind::Tiff,
+            b"pdf " => ColorBitmapPayloadKind::Pdf,
+            b"mask" => ColorBitmapPayloadKind::Mask,
             b"dupe" => {
-                let payload_start = record_start.checked_add(8)?;
                 let dupe_gid = read_u16(sbix, payload_start)?;
-                return sbix_payload_kind_inner(sbix, glyph_count, GlyphId(dupe_gid), depth + 1)
-                    .or(Some(ColorBitmapPayloadKind::Dupe));
+                return sbix_payload_inner(
+                    sbix,
+                    glyph_count,
+                    GlyphId(dupe_gid),
+                    target_ppem,
+                    depth + 1,
+                )
+                .or(Some(SbixPayload {
+                    kind: ColorBitmapPayloadKind::Dupe,
+                    data,
+                    x,
+                    y,
+                    pixels_per_em,
+                }));
             }
             other => {
-                return Some(ColorBitmapPayloadKind::Other(
-                    String::from_utf8_lossy(other).trim().to_string(),
-                ));
+                ColorBitmapPayloadKind::Other(String::from_utf8_lossy(other).trim().to_string())
             }
+        };
+        let distance = pixels_per_em.abs_diff(target_ppem.max(1));
+        if best.is_none() || distance < best_distance {
+            best_distance = distance;
+            best = Some(SbixPayload {
+                kind,
+                data,
+                x,
+                y,
+                pixels_per_em,
+            });
         }
     }
-    None
+    best
+}
+
+fn decode_sbix_payload(payload: &SbixPayload<'_>) -> Result<RawImage> {
+    match payload.kind {
+        ColorBitmapPayloadKind::Png => decode_png(payload.data),
+        ColorBitmapPayloadKind::Jpeg => decode_jpeg(payload.data),
+        ColorBitmapPayloadKind::Tiff
+        | ColorBitmapPayloadKind::Pdf
+        | ColorBitmapPayloadKind::Mask
+        | ColorBitmapPayloadKind::Dupe
+        | ColorBitmapPayloadKind::Other(_) => Err(OxideError::UnsupportedFeature(format!(
+            "sbix color glyph payload unsupported by safe decoder: payload={}",
+            payload.kind.label()
+        ))),
+    }
+}
+
+fn decode_jpeg(data: &[u8]) -> Result<RawImage> {
+    if data.len() > MAX_COLOR_GLYPH_BYTES {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "color glyph JPEG payload too large: {} bytes",
+            data.len()
+        )));
+    }
+    let (mut pixels, width, height, channels) = ImageDecoder::decode_jpeg_with_info(data)?;
+    if width.saturating_mul(height) > MAX_COLOR_GLYPH_PIXELS {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "color glyph JPEG decoded dimensions too large: {width}x{height}"
+        )));
+    }
+    let channels = if channels == 4 {
+        pixels = ColorSpaceConverter::cmyk_to_rgb(&pixels);
+        3
+    } else {
+        channels
+    };
+    Ok(RawImage {
+        width,
+        height,
+        channels,
+        bits_per_sample: 8,
+        pixels,
+    })
+}
+
+fn read_i16(data: &[u8], offset: usize) -> Option<i16> {
+    let bytes = data.get(offset..offset.checked_add(2)?)?;
+    Some(i16::from_be_bytes([bytes[0], bytes[1]]))
 }
 
 fn read_u16(data: &[u8], offset: usize) -> Option<u16> {
@@ -761,4 +1707,42 @@ fn unpremultiply(value: u8, alpha: u8) -> u8 {
 
 fn multiply_alpha(a: u8, b: u8) -> u8 {
     ((u16::from(a) * u16::from(b) + 127) / 255) as u8
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn svg_static_subset_parses_path_shape_transform_and_opacity() {
+        let svg = r##"
+            <svg viewBox="0 0 1000 1000">
+              <g transform="translate(10 20) scale(2)" opacity="0.5">
+                <path d="M10 10 L40 10 L40 40 Z" fill="#336699"/>
+                <rect x="100" y="100" width="50" height="40" fill="none" stroke="red" stroke-width="3"/>
+              </g>
+            </svg>
+        "##;
+        let paths = parse_static_svg_paint_paths(svg, rgba(0, 0, 0, 255), 255).unwrap();
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].fill.unwrap()[3], 128);
+        assert!(paths[1].fill.is_none());
+        assert!(paths[1].stroke.is_some());
+        assert_eq!(paths[1].stroke_width, 3.0);
+        assert!(!paths[0].transform.is_identity());
+    }
+
+    #[test]
+    fn svg_security_classifier_blocks_active_content() {
+        let policy =
+            classify_svg_glyph_document(r#"<svg><path onclick="alert(1)" d="M0 0 L1 1"/></svg>"#);
+        assert_eq!(policy.status(), "blocked_security_policy");
+        assert!(policy.reason().contains("event"));
+    }
+
+    #[test]
+    fn svg_path_parser_rejects_arc_commands_precisely() {
+        let err = parse_svg_path_data("M0 0 A10 10 0 0 1 20 20").unwrap_err();
+        assert!(err.to_string().contains("path command unsupported: A"));
+    }
 }

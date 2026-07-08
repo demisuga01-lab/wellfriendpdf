@@ -2685,6 +2685,57 @@ impl<'a> RenderState<'a> {
             }
         }
 
+        match crate::render::color_glyph::svg_static_glyph_paints(
+            request.font_bytes,
+            glyph_id,
+            fill_color,
+            fill_color[3],
+        ) {
+            Ok(Some(paths)) => {
+                let mut painted = false;
+                for svg_path in paths {
+                    let path_ctm = svg_path.transform.concat(glyph_ctm);
+                    if let Some(color) = svg_path.fill {
+                        PathPainter::fill_glyph(
+                            &mut self.buf,
+                            &svg_path.path,
+                            &path_ctm,
+                            &self.viewport,
+                            color,
+                            FillRule::NonZero,
+                            GlyphHinting::disabled(),
+                        );
+                        painted = true;
+                    }
+                    if let Some(color) = svg_path.stroke {
+                        PathPainter::stroke(
+                            &mut self.buf,
+                            &svg_path.path,
+                            &path_ctm,
+                            &self.viewport,
+                            color,
+                            svg_path.stroke_width,
+                            &DashState::solid(),
+                        );
+                        painted = true;
+                    }
+                }
+                if painted {
+                    return true;
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: SVG-in-OpenType glyph paint failed for font='{}' glyph={} error={}",
+                    request.font_name,
+                    glyph_id.0,
+                    err
+                );
+                return true;
+            }
+        }
+
         let target_ppem = glyph_pixel_size.round().clamp(1.0, f64::from(u16::MAX)) as u16;
         let raster = match crate::render::color_glyph::decode_raster_glyph_image(
             request.font_bytes,

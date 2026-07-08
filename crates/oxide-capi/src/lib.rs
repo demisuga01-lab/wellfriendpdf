@@ -2524,6 +2524,20 @@ mod tests {
                 ["oxide_outlier_failures"],
             0
         );
+        assert_eq!(
+            value["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["status"],
+            "complete"
+        );
+        assert_eq!(
+            value["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["svg_in_opentype"]
+                ["status"],
+            "safe_static_subset_rendered_active_constructs_blocked"
+        );
+        assert_eq!(
+            value["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["closure_gates"]
+                ["public_report_schema"],
+            "additive_feature_report_prompt10d"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

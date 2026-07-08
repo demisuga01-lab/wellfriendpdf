@@ -1,19 +1,23 @@
 # Prompt 10 SVG Color Glyph Security
 
-SVG-in-OpenType remains a security-sensitive color glyph format. Prompt 10C
-adds a static-subset classifier but does not execute a general SVG engine.
+SVG-in-OpenType remains a security-sensitive color glyph format. Prompt 10D
+renders a narrow static subset inside Oxide's path renderer and continues to
+block active or dynamic SVG behavior.
 
-## Static Candidates
+## Rendered Static Subset
 
-The classifier admits no-execution static candidates such as:
+The renderer admits:
 
-- `<svg>` root with bounded document size.
+- `<svg>` root metadata with bounded document size.
 - `<g>` grouping with bounded depth.
-- `<path>` data within the path command cap.
-- simple shape and finite transform candidates for future primitive mapping.
+- `<path>` commands `M`, `L`, `H`, `V`, `C`, `Q`, and `Z`.
+- `<rect>`, `<circle>`, `<ellipse>`, `<line>`, `<polyline>`, and `<polygon>`.
+- quoted fill/stroke/stroke-width and opacity attributes.
+- finite `matrix`, `translate`, `scale`, `rotate`, `skewX`, and `skewY`
+  transforms.
 
-These rows are classified as static subset candidates, not rendered by a general
-SVG interpreter.
+These rows are parsed without scripts, CSS execution, external fetches, or a
+general SVG interpreter.
 
 ## Blocked Features
 
@@ -27,8 +31,10 @@ The renderer blocks:
 - CSS imports
 - remote or embedded SVG fonts
 - external images
+- CSS style blocks
 - filters
 - masks
+- URL paint-server references
 - path/depth bombs
 - recursive references
 
@@ -40,3 +46,6 @@ Evidence:
 - `color-glyph-svg-static-subset-matrix-prompt10c.json`
 - `color-glyph-svg-security-policy-prompt10c.json`
 - `color-glyph-svg-reference-results-prompt10c.json`
+- `svg-opentype-static-rendering-matrix-prompt10d.json`
+- `svg-opentype-security-policy-prompt10d.json`
+- `svg-opentype-reference-results-prompt10d.json`

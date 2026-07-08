@@ -1,7 +1,7 @@
 # Prompt 10 Bitmap Color Glyphs
 
-Prompt 10C preserves Prompt 10B bitmap color glyph rendering and narrows
-non-PNG payload behavior to exact policy rows.
+Prompt 10D preserves Prompt 10B/10C bitmap color glyph rendering and implements
+the safe non-PNG path where the existing decoder stack already supports it.
 
 ## CBDT/CBLC
 
@@ -24,12 +24,12 @@ Unsupported:
 Supported:
 
 - PNG strikes
-- duplicate-glyph references that resolve to a PNG strike
+- JPEG strikes through the existing bounded DCT decoder
+- duplicate-glyph references that resolve to a supported strike
 
 Unsupported:
 
-- JPEG
-- TIFF
+- TIFF when no existing safe TIFF decoder is available
 - PDF
 - mask payloads
 - unknown `graphicType` tags
@@ -43,3 +43,6 @@ Evidence:
 - `color-glyph-bitmap-payload-matrix-prompt10c.json`
 - `color-glyph-cbdt-cblc-results-prompt10c.json`
 - `color-glyph-sbix-results-prompt10c.json`
+- `bitmap-color-glyph-nonpng-matrix-prompt10d.json`
+- `cbdt-cblc-nonpng-results-prompt10d.json`
+- `sbix-nonpng-results-prompt10d.json`

@@ -786,6 +786,25 @@ fn prompt07_report_commands_emit_json() {
             ["oxide_outlier_failures"],
         0
     );
+    assert_eq!(
+        feature["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["status"],
+        "complete"
+    );
+    assert_eq!(
+        feature["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["svg_in_opentype"]
+            ["status"],
+        "safe_static_subset_rendered_active_constructs_blocked"
+    );
+    assert_eq!(
+        feature["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["closure_gates"]
+            ["public_report_schema"],
+        "additive_feature_report_prompt10d"
+    );
+    assert_eq!(
+        feature["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["multi_reference_audit"]
+            ["oxide_outlier_failures"],
+        0
+    );
 
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),
