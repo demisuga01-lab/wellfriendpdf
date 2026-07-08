@@ -4,10 +4,10 @@
   "engine_version": "0.1.0",
   "abi_version": 1,
   "reports": {
-    "feature": {"sha256": "ee03a19e09a884d75243e3f3f5a7b67866bcb18b9bbe5839ccd680d18b352979", "bytes": 80756},
+    "feature": {"sha256": "74c24a3ff2ec75af11b380041fc8f97e3e2c7dc5a1cc3bcd809e54833af1636a", "bytes": 84248},
     "security": {"sha256": "a9a1e700acc839a2b224c48cc9edc2ea1e7a7ea2faa8ccbf5d1e9eb6b90ae899", "bytes": 714},
     "parser": {"sha256": "0ceed52840510991c9c57f90088d1f4d83ef71c7b6045c9b0d3a494b6d304934", "bytes": 19172},
-    "color": {"sha256": "bf8a8e54f1b5e17026df0600763fed7cd4d419a40b4fb44789bd786243a0221f", "bytes": 124365},
+    "color": {"sha256": "1c349d456e1b1718b7e39ed7d118f46b576ddba4d34d959812e1a334c827a54c", "bytes": 127826},
     "validate_security": {"sha256": "b8c7cd063bd8654f8e1e2ef61fcccf58feef6529e3911c8d9e0ff58ae8886dee", "bytes": 852},
     "forms": {"sha256": "c657ca9d7e88b253083c15404c05b8245c9aa4b4e41fe7ca666605ed7cd8a4a2", "bytes": 245},
     "annotations": {"sha256": "ac1c91acf43f7cffba9bea61e28ae8e7d2212dc7104c7bbb0fd97aaa7c135232", "bytes": 127},

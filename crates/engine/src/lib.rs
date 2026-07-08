@@ -284,10 +284,11 @@ pub use parser_report::{
     RevisionSection,
 };
 pub use prepress::{
-    classify_icc_profile, IccProfileClass, IccProfileInfo, PlateContribution, PlateKind,
-    PlatePreviewHash, PlatePreviewReport, PlateSummary, Prompt12PrepressReport,
-    RenderingIntentBpcReport, SeparationFramebuffer, SeparationFramebufferReport,
-    DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES, MAX_PREPRESS_PLATES,
+    classify_icc_profile, IccProfileClass, IccProfileInfo, NChannelPixelFormatReport,
+    NChannelSample, PlateContribution, PlateKind, PlatePreviewHash, PlatePreviewReport,
+    PlateSummary, Prompt12BPrepressReport, Prompt12PrepressReport, RenderingIntentBpcReport,
+    SeparationFramebuffer, SeparationFramebufferReport,
+    DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES, MAX_NCHANNEL_OUTPUT_CHANNELS, MAX_PREPRESS_PLATES,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{

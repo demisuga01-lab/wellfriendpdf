@@ -15,8 +15,10 @@ than four channels, including `2CLR` through `FCLR`. The report preserves:
 
 Native behavior is conservative. Gray, RGB, and CMYK transforms continue to use
 the Prompt 11B CMM paths when legal. Higher-channel multicolor ICC profiles are
-not coerced into RGB or CMYK. They are inventory-only or fail closed until the
-renderer has a safe n-channel pixel format and destination contract.
+not coerced into RGB or CMYK. Prompt 12B adds a bounded n-channel intermediate
+pixel representation for 1 through 15 channels, so supported native contexts can
+carry high-channel output without dropping labels or process/named component
+identity.
 
 DeviceN relationship:
 
@@ -30,3 +32,9 @@ DeviceN relationship:
 Fallback behavior is explicit: default and WASM builds report multicolor ICC as
 unsupported for proofing and may use alternate preview only when the PDF
 provides a safe alternate color space.
+
+Remaining native limit:
+
+- if a real multicolor profile requires a pixel format that the safe LittleCMS
+  wrapper does not expose, Oxide reports the profile, channel count, profile
+  class, PCS, hash, and reason, and does not transform it.

@@ -10,7 +10,9 @@
 use crate::content::ContentParser;
 use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
-use crate::prepress::{self, IccProfileClass, Prompt12PrepressReport, SeparationFramebuffer};
+use crate::prepress::{
+    self, IccProfileClass, Prompt12BPrepressReport, Prompt12PrepressReport, SeparationFramebuffer,
+};
 use crate::reader::PdfReader;
 use crate::render::{cmm, colorspace, function};
 use serde::{Deserialize, Serialize};
@@ -249,6 +251,7 @@ pub struct ColorReport {
     pub rendering_intents: Vec<ColorSpaceUsage>,
     pub overprint: OverprintReport,
     pub prompt12_prepress_cmm_device_link_separation_plates: Prompt12PrepressReport,
+    pub prompt12b_nchannel_plate_reference_closure: Prompt12BPrepressReport,
     pub standards: StandardsColorReport,
     pub diagnostics: Vec<ColorDiagnostic>,
 }
@@ -283,6 +286,10 @@ impl ColorReport {
             rendering_intents: Vec::new(),
             overprint: OverprintReport::default(),
             prompt12_prepress_cmm_device_link_separation_plates: Prompt12PrepressReport::default(),
+            prompt12b_nchannel_plate_reference_closure: Prompt12BPrepressReport::from_parts(
+                &[],
+                &SeparationFramebuffer::default().report(),
+            ),
             standards: StandardsColorReport {
                 scope: "color-only OutputIntent/ICC/device-color/prepress checks; full PDF/A/PDF/X validation remains the compliance module/Prompt 09 scope".to_string(),
                 output_intent_checked: false,
@@ -333,7 +340,12 @@ impl ColorReportBuilder {
         report.overprint.true_separation_framebuffer =
             prompt12_framebuffer.true_separation_framebuffer;
         report.prompt12_prepress_cmm_device_link_separation_plates =
-            Prompt12PrepressReport::from_parts(prompt12_profiles, prompt12_framebuffer);
+            Prompt12PrepressReport::from_parts(
+                prompt12_profiles.clone(),
+                prompt12_framebuffer.clone(),
+            );
+        report.prompt12b_nchannel_plate_reference_closure =
+            Prompt12BPrepressReport::from_parts(&prompt12_profiles, &prompt12_framebuffer);
         report.diagnostics.extend(self.diagnostics);
         if matches!(report.validation_profile, ColorValidationProfile::PdfX) && device_rgb_used {
             report.diagnostics.push(ColorDiagnostic {

@@ -882,6 +882,16 @@ fn prompt07_report_commands_emit_json() {
         prompt12["separation_framebuffer"]["cache_key_includes_plate_state"],
         true
     );
+    let prompt12b = &feature["report"]["prompt12b_nchannel_plate_reference_closure"];
+    assert_eq!(prompt12b["status"], "complete");
+    assert_eq!(
+        prompt12b["closure_gates"]["public_report_schema"],
+        "additive_feature_report_prompt12b"
+    );
+    assert_eq!(
+        prompt12b["reference_audit"]["mupdf"],
+        "required_and_run_by_prompt12b_audit"
+    );
 
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),

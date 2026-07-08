@@ -116,5 +116,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"cache_key_includes_plate_state\":true")) {
             throw new AssertionError("feature report missing Prompt 12 prepress CMM plate posture");
         }
+        if (!feature.contains("\"prompt12b_nchannel_plate_reference_closure\"")
+                || !feature.contains("\"additive_feature_report_prompt12b\"")
+                || !feature.contains("\"required_and_run_by_prompt12b_audit\"")) {
+            throw new AssertionError("feature report missing Prompt 12B n-channel plate closure posture");
+        }
     }
 }

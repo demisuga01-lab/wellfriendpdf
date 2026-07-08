@@ -1,6 +1,7 @@
 # Prompt 12 Separation Framebuffer
 
-Prompt 12 introduces a sparse separation framebuffer side-channel. It is kept
+Prompt 12 introduced a sparse separation framebuffer side-channel. Prompt 12B
+extends it into a sampled n-channel plate contribution surface. It remains
 separate from the RGB preview framebuffer so spot and DeviceN state can survive
 without claiming full press simulation.
 
@@ -17,13 +18,19 @@ The model records:
 - enabled/disabled plate state
 - deterministic plane order
 - memory accounting
+- per-sample n-channel plate contributions
+- operation-kind inventory
+- cache fingerprint fields for backend, profile, intent, BPC, output intent,
+  and plate state
 
-Storage is sparse. The implementation records observed plate contributions
-rather than allocating a full-page N-plane buffer for every possible colorant.
-The default plate cap is 32 and the default accounting budget is 64 MiB.
-Excessive colorant or memory cases degrade to report-only or fail closed with a
-diagnostic.
+Storage is still bounded. The implementation records observed plate
+contributions as tile-local sparse planes plus sampled n-channel contribution
+records rather than allocating an unbounded full-page N-plane buffer for every
+possible colorant. The default plate cap is 32, the n-channel cap is 15, and the
+default accounting budget is 64 MiB. Excessive colorant, channel, or memory
+cases degrade to report-only or fail closed with a diagnostic.
 
-Prompt 12 integrates fill and stroke paths for Separation and DeviceN resources.
-Transparency groups and soft masks preserve child plate state into the parent
-report, but full overprint blending remains Prompt 13.
+Prompt 12B integrates text, vector, stencil image, shading, and pattern plate
+sampling for supported Separation and DeviceN paths. Transparency groups and
+soft masks preserve child plate state into the parent report, but full overprint
+blending remains Prompt 13.

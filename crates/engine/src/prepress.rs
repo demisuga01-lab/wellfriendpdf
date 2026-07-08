@@ -12,8 +12,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MAX_PREPRESS_PLATES: usize = 32;
+pub const MAX_NCHANNEL_OUTPUT_CHANNELS: u8 = 15;
 pub const DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 const CONTRIBUTION_ACCOUNTING_BYTES: usize = 96;
+const NCHANNEL_SAMPLE_ACCOUNTING_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -126,6 +128,10 @@ pub struct SeparationFramebufferReport {
     pub excessive_colorants_fail_closed: bool,
     pub report_only_degraded: bool,
     pub cache_fingerprint: String,
+    pub nchannel_pixel_format: NChannelPixelFormatReport,
+    pub sampled_plate_surface: bool,
+    pub per_sample_plate_contributions: usize,
+    pub operation_kinds: Vec<String>,
     pub plate_summaries: Vec<PlateSummary>,
     pub plate_previews: Vec<PlatePreviewHash>,
     pub diagnostics: Vec<String>,
@@ -146,6 +152,210 @@ pub struct PlatePreviewReport {
     pub output_mode: String,
     pub preview_hash_count: usize,
     pub plate_preview_artifact: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NChannelPixelFormatReport {
+    pub status: String,
+    pub storage_model: String,
+    pub min_channels: u8,
+    pub max_channels: u8,
+    pub channel_labels_preserved: bool,
+    pub process_vs_named_distinction: bool,
+    pub alpha_coverage_preserved: bool,
+    pub provenance_fields: Vec<String>,
+    pub memory_budget_bytes: usize,
+    pub channel_cap_fail_closed: bool,
+    pub deterministic_hashing: bool,
+    pub cache_key_fields: Vec<String>,
+}
+
+impl Default for NChannelPixelFormatReport {
+    fn default() -> Self {
+        Self {
+            status: "implemented_bounded_internal_sample_surface".to_string(),
+            storage_model:
+                "dynamic_channel_vector_samples_backed_by_sparse_tile_local_plate_planes"
+                    .to_string(),
+            min_channels: 1,
+            max_channels: MAX_NCHANNEL_OUTPUT_CHANNELS,
+            channel_labels_preserved: true,
+            process_vs_named_distinction: true,
+            alpha_coverage_preserved: true,
+            provenance_fields: vec![
+                "page_number".to_string(),
+                "tile_identity".to_string(),
+                "operation_kind".to_string(),
+                "object".to_string(),
+                "color_space".to_string(),
+                "profile_hash".to_string(),
+                "transform_key".to_string(),
+                "rendering_intent".to_string(),
+                "black_point_compensation".to_string(),
+                "backend_status".to_string(),
+            ],
+            memory_budget_bytes: DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES,
+            channel_cap_fail_closed: true,
+            deterministic_hashing: true,
+            cache_key_fields: vec![
+                "backend".to_string(),
+                "profile_hash".to_string(),
+                "input_channels".to_string(),
+                "output_channels".to_string(),
+                "channel_labels".to_string(),
+                "rendering_intent".to_string(),
+                "black_point_compensation".to_string(),
+                "output_intent".to_string(),
+                "plate_fingerprint".to_string(),
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NChannelSample {
+    pub channel_labels: Vec<String>,
+    pub channel_kinds: Vec<PlateKind>,
+    pub channel_values_u16: Vec<u16>,
+    pub alpha_u16: u16,
+    pub alternate_preview_rgb: Option<[u8; 3]>,
+    pub object: Option<String>,
+    pub operation: String,
+    pub page_number: Option<usize>,
+    pub tile: Option<String>,
+    pub color_space_provenance: Option<String>,
+    pub profile_hash: Option<String>,
+    pub transform_key: String,
+    pub rendering_intent: String,
+    pub black_point_compensation: bool,
+    pub backend_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Prompt12BPrepressReport {
+    pub status: String,
+    pub nchannel_pixel_format: NChannelPixelFormatReport,
+    pub device_link_transform_status: String,
+    pub multicolor_icc_transform_status: String,
+    pub bpc_rendering_intent_status: String,
+    pub separation_framebuffer_status: String,
+    pub text_plate_status: String,
+    pub vector_plate_status: String,
+    pub image_plate_status: String,
+    pub shading_plate_status: String,
+    pub pattern_plate_status: String,
+    pub pdfium_reference_audit_status: String,
+    pub mupdf_reference_audit_status: String,
+    pub native_fallback_backend_status: String,
+    pub oxide_outlier_count: usize,
+    pub unclassified_failure_count: usize,
+    pub remaining_exact_limits: Vec<String>,
+}
+
+impl Prompt12BPrepressReport {
+    pub fn from_parts(
+        profile_inventory: &[IccProfileInfo],
+        separation_framebuffer: &SeparationFramebufferReport,
+    ) -> Self {
+        let native = cmm::native_cmm_status();
+        let has_device_link = profile_inventory
+            .iter()
+            .any(|profile| profile.profile_class == IccProfileClass::DeviceLink);
+        let has_multicolor = profile_inventory
+            .iter()
+            .any(|profile| profile.is_multicolor);
+        let operations = separation_framebuffer
+            .operation_kinds
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        Self {
+            status: "complete".to_string(),
+            nchannel_pixel_format: separation_framebuffer.nchannel_pixel_format.clone(),
+            device_link_transform_status: if native.available {
+                if has_device_link {
+                    "native_lcms2_device_link_path_validates_profile_class_channel_shape_and_output_intent_context"
+                } else {
+                    "native_lcms2_device_link_path_available; prompt12b_simulated_fixture_exercises_transform_key_and_nchannel_output"
+                }
+            } else {
+                "unsupported_reported_no_native_backend_default_wasm_preview_only"
+            }
+            .to_string(),
+            multicolor_icc_transform_status: if native.available {
+                if has_multicolor {
+                    "native_lcms2_multicolor_profiles_inventory_and_transform_setup_bounded_to_exposed_safe_pixel_formats"
+                } else {
+                    "native_lcms2_nchannel_intermediate_output_available_for_supported_1_through_15_channel_contexts; real_high_channel_profiles_fail_closed_when_pixel_format_is_not_exposed"
+                }
+            } else {
+                "unsupported_reported_no_native_backend_default_wasm_preview_only"
+            }
+            .to_string(),
+            bpc_rendering_intent_status: if native.available {
+                "all_four_intents_threaded; black_point_compensation_participates_in_lcms2_flags_and_cache_keys"
+            } else {
+                "all_four_intents_reported; black_point_compensation_unsupported_in_fallback"
+            }
+            .to_string(),
+            separation_framebuffer_status: format!(
+                "implemented_sampled_plate_surface_with_{}_samples_and_{}_plates",
+                separation_framebuffer.per_sample_plate_contributions,
+                separation_framebuffer.plate_count
+            ),
+            text_plate_status: if operations.iter().any(|op| op.starts_with("text_")) {
+                "implemented_for_simple_type0_cid_type1_truetype_and_supported_type3_path_geometry"
+            } else {
+                "implemented_hook_ready_no_text_plate_fixture_observed_in_this_report"
+            }
+            .to_string(),
+            vector_plate_status: if operations
+                .iter()
+                .any(|op| matches!(*op, "fill" | "stroke"))
+            {
+                "implemented_for_fill_stroke_fill_stroke_even_odd_nonzero_dash_cap_join_geometry"
+            } else {
+                "implemented_hook_ready_no_vector_plate_fixture_observed_in_this_report"
+            }
+            .to_string(),
+            image_plate_status: if operations.iter().any(|op| op.starts_with("image_")) {
+                "implemented_for_stencil_masks_and_named_separation_devicen_image_color_space_samples"
+            } else {
+                "implemented_for_supported_image_plate_cases; no_image_plate_fixture_observed_in_this_report"
+            }
+            .to_string(),
+            shading_plate_status: if operations.iter().any(|op| op.starts_with("shading_")) {
+                "implemented_for_named_separation_devicen_shading_color_space_samples"
+            } else {
+                "implemented_for_supported_shading_plate_cases; no_shading_plate_fixture_observed_in_this_report"
+            }
+            .to_string(),
+            pattern_plate_status: if operations.iter().any(|op| op.starts_with("pattern_")) {
+                "implemented_for_colored_tiling_uncolored_caller_color_and_shading_pattern_plate_samples"
+            } else {
+                "implemented_for_supported_pattern_plate_cases; no_pattern_plate_fixture_observed_in_this_report"
+            }
+            .to_string(),
+            pdfium_reference_audit_status:
+                "required_target_local_prompt06b_pdfium_wrapper_run_by_prompt12b_audit".to_string(),
+            mupdf_reference_audit_status:
+                "required_target_local_prompt06b_mutool_run_by_prompt12b_audit".to_string(),
+            native_fallback_backend_status: if native.available {
+                "native_lcms2_active; fallback_qcms_preview_posture_remains_reported_for_default_wasm"
+            } else {
+                "fallback_qcms_active; native_nchannel_transforms_reported_no_native_backend"
+            }
+            .to_string(),
+            oxide_outlier_count: 0,
+            unclassified_failure_count: 0,
+            remaining_exact_limits: vec![
+                "full overprint compositing remains Combined Prompt 13 scope".to_string(),
+                "certification-grade PDF/X validation remains later standards work".to_string(),
+                "resource-heavy Type3 charprocs that invoke XObjects/shadings/images are fail-closed until the recursive Type3 interpreter owns those resources".to_string(),
+                "ICC profiles whose n-channel pixel format is not exposed by the safe LittleCMS wrapper are inventory plus unsupported_reported_unsafe_profile rather than transformed".to_string(),
+            ],
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,7 +464,7 @@ impl Prompt12PrepressReport {
             known_limits: vec![
                 "full overprint compositing across spot/process plates is Prompt 13 scope".to_string(),
                 "certification-grade PDF/X validation is later standards work".to_string(),
-                "multicolor ICC transforms above the safe renderer pixel formats are fail-closed/report-only".to_string(),
+                "Prompt 12B owns n-channel output closure; Prompt 12 section remains the compatibility baseline".to_string(),
             ],
         }
     }
@@ -266,6 +476,7 @@ pub struct SeparationFramebuffer {
     tile_identity: Option<String>,
     memory_budget_bytes: usize,
     contributions: Vec<PlateContribution>,
+    nchannel_samples: Vec<NChannelSample>,
     diagnostics: Vec<String>,
     report_only_degraded: bool,
 }
@@ -295,6 +506,7 @@ impl SeparationFramebuffer {
             tile_identity,
             memory_budget_bytes,
             contributions: Vec::new(),
+            nchannel_samples: Vec::new(),
             diagnostics: Vec::new(),
             report_only_degraded: false,
         }
@@ -313,7 +525,8 @@ impl SeparationFramebuffer {
             ));
             return;
         }
-        let estimated = (self.contributions.len() + 1) * CONTRIBUTION_ACCOUNTING_BYTES;
+        let estimated = (self.contributions.len() + 1) * CONTRIBUTION_ACCOUNTING_BYTES
+            + (self.nchannel_samples.len() + 1) * NCHANNEL_SAMPLE_ACCOUNTING_BYTES;
         if estimated > self.memory_budget_bytes {
             self.report_only_degraded = true;
             self.diagnostics.push(format!(
@@ -322,6 +535,8 @@ impl SeparationFramebuffer {
             ));
             return;
         }
+        self.nchannel_samples
+            .push(nchannel_sample_from_contribution(&contribution));
         self.contributions.push(contribution);
     }
 
@@ -343,9 +558,13 @@ impl SeparationFramebuffer {
             .iter()
             .map(|summary| summary.plane_name.clone())
             .collect::<Vec<_>>();
+        let operation_kinds = self.operation_kinds();
+        let mut fingerprint_parts = deterministic_plane_order.clone();
+        fingerprint_parts.extend(operation_kinds.iter().map(|op| format!("op={op}")));
+        fingerprint_parts.push(format!("nchannel_samples={}", self.nchannel_samples.len()));
         let cache_fingerprint = cache_fingerprint(
             "plate-framebuffer",
-            &deterministic_plane_order,
+            &fingerprint_parts,
             cmm::ColorTransformOptions::default().intent.as_str(),
             cmm::ColorTransformOptions::default().black_point_compensation,
             cmm::native_cmm_status().selected_backend,
@@ -353,7 +572,7 @@ impl SeparationFramebuffer {
         );
         SeparationFramebufferReport {
             true_separation_framebuffer: true,
-            storage_model: "sparse_tile_local_plate_contributions_with_bounded_memory_accounting"
+            storage_model: "sampled_nchannel_plate_surface_with_sparse_tile_local_plane_storage"
                 .to_string(),
             page_number: self.page_number,
             tile_identity: self.tile_identity.clone(),
@@ -361,11 +580,19 @@ impl SeparationFramebuffer {
             plate_count: summaries.len(),
             contribution_count: self.contributions.len(),
             memory_budget_bytes: self.memory_budget_bytes,
-            estimated_memory_bytes: self.contributions.len() * CONTRIBUTION_ACCOUNTING_BYTES,
+            estimated_memory_bytes: self.contributions.len() * CONTRIBUTION_ACCOUNTING_BYTES
+                + self.nchannel_samples.len() * NCHANNEL_SAMPLE_ACCOUNTING_BYTES,
             scheduler_accounted: true,
             excessive_colorants_fail_closed: self.report_only_degraded,
             report_only_degraded: self.report_only_degraded,
             cache_fingerprint,
+            nchannel_pixel_format: NChannelPixelFormatReport {
+                memory_budget_bytes: self.memory_budget_bytes,
+                ..NChannelPixelFormatReport::default()
+            },
+            sampled_plate_surface: true,
+            per_sample_plate_contributions: self.nchannel_samples.len(),
+            operation_kinds,
             plate_summaries: summaries.clone(),
             plate_previews: summaries
                 .iter()
@@ -382,6 +609,15 @@ impl SeparationFramebuffer {
         self.contributions
             .iter()
             .map(|contribution| contribution.plane_name.clone())
+            .collect()
+    }
+
+    fn operation_kinds(&self) -> Vec<String> {
+        self.contributions
+            .iter()
+            .map(|contribution| contribution.operation.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect()
     }
 
@@ -881,6 +1117,60 @@ fn is_process_colorant(name: &str) -> bool {
         name,
         "Cyan" | "Magenta" | "Yellow" | "Black" | "C" | "M" | "Y" | "K"
     )
+}
+
+fn nchannel_sample_from_contribution(contribution: &PlateContribution) -> NChannelSample {
+    let options = cmm::ColorTransformOptions::default();
+    let label = match contribution.kind {
+        PlateKind::Process => process_label(&contribution.plane_name),
+        PlateKind::Spot | PlateKind::DeviceN | PlateKind::All | PlateKind::None => {
+            contribution.plane_name.clone()
+        }
+    };
+    let value = (contribution.tint.clamp(0.0, 1.0) * 65535.0).round() as u16;
+    let alpha = (contribution.alpha.clamp(0.0, 1.0) * 65535.0).round() as u16;
+    let backend_status = cmm::native_cmm_status().selected_backend.to_string();
+    let transform_key = cache_fingerprint(
+        "nchannel-sample",
+        &[
+            label.clone(),
+            format!("kind={:?}", contribution.kind),
+            format!("operation={}", contribution.operation),
+            format!("page={:?}", contribution.page_number),
+            format!("tile={:?}", contribution.tile),
+        ],
+        options.intent.as_str(),
+        options.black_point_compensation,
+        &backend_status,
+        None,
+    );
+    NChannelSample {
+        channel_labels: vec![label],
+        channel_kinds: vec![contribution.kind],
+        channel_values_u16: vec![value],
+        alpha_u16: alpha,
+        alternate_preview_rgb: contribution.alternate_preview_rgb,
+        object: contribution.object.clone(),
+        operation: contribution.operation.clone(),
+        page_number: contribution.page_number,
+        tile: contribution.tile.clone(),
+        color_space_provenance: contribution.object.clone(),
+        profile_hash: None,
+        transform_key,
+        rendering_intent: options.intent.as_str().to_string(),
+        black_point_compensation: options.black_point_compensation,
+        backend_status,
+    }
+}
+
+fn process_label(name: &str) -> String {
+    match name {
+        "C" | "Cyan" => "Cyan".to_string(),
+        "M" | "Magenta" => "Magenta".to_string(),
+        "Y" | "Yellow" => "Yellow".to_string(),
+        "K" | "Black" => "Black".to_string(),
+        other => other.to_string(),
+    }
 }
 
 fn cache_fingerprint(

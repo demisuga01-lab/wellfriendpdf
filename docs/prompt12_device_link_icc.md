@@ -11,6 +11,9 @@ Native behavior:
 - Device-link profiles are treated as fixed transforms, not ordinary source
   profiles to combine blindly with another destination profile.
 - Legal source/output channel shapes may use the LittleCMS path.
+- Prompt 12B adds the n-channel intermediate representation needed to carry
+  device-link output channels into plate/prepress reporting when the safe native
+  wrapper exposes the needed shape.
 - Channel mismatch, unsupported channel shapes, malformed profiles, oversized
   profiles, and ambiguous output-intent relationships fail closed with
   diagnostics.
@@ -29,3 +32,9 @@ Output intents:
   combinations.
 - ordinary source profiles may still use the Prompt 11B output-intent proofing
   path when the relationship is clear.
+
+Prompt 12B limit:
+
+- if the native LittleCMS wrapper cannot expose the profile's exact input/output
+  pixel format safely, the profile is inventoried and reported as unsupported
+  for transform execution instead of being flattened to RGB.

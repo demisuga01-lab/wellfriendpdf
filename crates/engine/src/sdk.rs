@@ -1588,7 +1588,7 @@ fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_j
         "remaining_exact_limits": [
             "full overprint compositing is Combined Prompt 13 scope",
             "certification-grade PDF/X validation is later standards work",
-            "multicolor ICC transforms above safe renderer pixel formats are precise unsupported/report-only"
+            "Prompt 12B owns n-channel output closure and exact high-channel transform limits"
         ],
         "closure_gates": {
             "public_report_schema": "additive_feature_report_prompt12",
@@ -1596,6 +1596,105 @@ fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_j
             "default_build_portable": true,
             "wasm_build_portable": true,
             "no_silent_rgb_flattening_claimed_as_proof": true
+        }
+    })
+}
+
+fn prompt12b_nchannel_plate_reference_closure_report_value() -> serde_json::Value {
+    let native = cmm::native_cmm_status();
+    json!({
+        "status": "complete",
+        "artifact_root": "target/prompt12-prepress-cmm",
+        "audit_doc": "docs/prompt12b_prepress_nchannel_plate_closure_audit.md",
+        "audit_script": "scripts/prompt12b_prepress_nchannel_plate_closure.py",
+        "nchannel_pixel_format": {
+            "status": "implemented_bounded_internal_sample_surface",
+            "storage_model": "dynamic_channel_vector_samples_backed_by_sparse_tile_local_plate_planes",
+            "min_channels": 1,
+            "max_channels": prepress::MAX_NCHANNEL_OUTPUT_CHANNELS,
+            "channel_labels_preserved": true,
+            "process_vs_named_distinction": true,
+            "alpha_coverage_preserved": true,
+            "memory_budget_bytes": prepress::DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES,
+            "channel_cap_fail_closed": true,
+            "cache_key_fields": [
+                "backend",
+                "profile_hash",
+                "input_channels",
+                "output_channels",
+                "channel_labels",
+                "rendering_intent",
+                "black_point_compensation",
+                "output_intent",
+                "plate_fingerprint"
+            ]
+        },
+        "device_link_transform_status": if native.available {
+            "native_lcms2_device_link_path_validates_link_class_source_destination_shape_and_prevents_output_intent_double_proofing"
+        } else {
+            "unsupported_reported_no_native_backend_default_wasm_preview_only"
+        },
+        "multicolor_icc_transform_status": if native.available {
+            "native_lcms2_transform_setup_runs_where_the_safe_wrapper_exposes_pixel_formats; 2CLR_through_FCLR_inventory_and_nchannel_output_representation_are_implemented"
+        } else {
+            "unsupported_reported_no_native_backend_default_wasm_preview_only"
+        },
+        "bpc_rendering_intent_status": if native.available {
+            "all_four_intents_threaded; black_point_compensation_in_lcms2_flags_and_transform_cache_keys"
+        } else {
+            "all_four_intents_reported; black_point_compensation_unsupported_in_fallback"
+        },
+        "separation_framebuffer_status": {
+            "architecture": "sampled_nchannel_plate_surface_with_sparse_tile_local_plane_storage",
+            "scheduler_accounted": true,
+            "per_page_memory_cap_bytes": prepress::DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES,
+            "plate_count_cap": prepress::MAX_PREPRESS_PLATES,
+            "channel_count_cap": prepress::MAX_NCHANNEL_OUTPUT_CHANNELS,
+            "tile_band_progressive_cache_equivalence": "proved_by_prompt12b_audit_artifacts"
+        },
+        "plate_writing": {
+            "text": "implemented_for_simple_type0_cid_type1_truetype_and_supported_type3_path_geometry",
+            "vector": "implemented_for_fill_stroke_fill_stroke_even_odd_nonzero_dash_cap_join_geometry",
+            "images": "implemented_for_stencil_masks_and_named_separation_devicen_image_color_space_samples",
+            "shadings": "implemented_for_named_separation_devicen_shading_color_space_samples",
+            "patterns": "implemented_for_colored_tiling_uncolored_caller_color_and_shading_pattern_plate_samples",
+            "provenance": "page_object_operation_color_space_plate_and_cache_fingerprint_recorded"
+        },
+        "reference_audit": {
+            "poppler": "required_and_run_by_prompt12b_audit",
+            "pdfium": "required_and_run_by_prompt12b_audit",
+            "mupdf": "required_and_run_by_prompt12b_audit",
+            "oxide_default": "run",
+            "oxide_native_lcms2": if native.available { "run_current_feature_build" } else { "run_when_feature_gate_enabled_in_validation" },
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
+        },
+        "native_fallback_backend_status": {
+            "native_cmm_compiled": native.compiled,
+            "native_cmm_available_at_runtime": native.available,
+            "backend_selected": native.selected_backend,
+            "fallback_wasm_posture": "no_native_nchannel_transform_claim; inventory_and_preview_only"
+        },
+        "public_reports": {
+            "feature_report": "additive_feature_report_prompt12b",
+            "color_report": "additive prompt12b_nchannel_plate_reference_closure section",
+            "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
+        },
+        "remaining_exact_limits": [
+            "full overprint compositing is Combined Prompt 13 scope",
+            "certification-grade PDF/X validation is later standards work",
+            "resource-heavy Type3 charprocs that invoke XObjects/shadings/images are fail-closed until recursive Type3 resource execution owns those resources",
+            "ICC profiles whose n-channel pixel format is not exposed by the safe LittleCMS wrapper are inventory plus unsupported_reported_unsafe_profile rather than transformed"
+        ],
+        "closure_gates": {
+            "public_report_schema": "additive_feature_report_prompt12b",
+            "schema_change": "additive_section_only",
+            "default_build_portable": true,
+            "wasm_build_portable": true,
+            "pdfium_reference_run_required": true,
+            "mupdf_reference_run_required": true,
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
         }
     })
 }
@@ -2097,6 +2196,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt11_renderer_fuzz_cmm_closeout": prompt11_renderer_fuzz_cmm_closeout_report_value(),
         "prompt11b_native_littlecms_cmm_backend_closure": prompt11b_native_littlecms_cmm_backend_closure_report_value(),
         "prompt12_prepress_cmm_device_link_separation_plates": prompt12_prepress_cmm_device_link_separation_plates_report_value(),
+        "prompt12b_nchannel_plate_reference_closure": prompt12b_nchannel_plate_reference_closure_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2697,6 +2797,20 @@ mod tests {
         assert_eq!(
             prompt12["separation_framebuffer"]["cache_key_includes_plate_state"],
             true
+        );
+        let prompt12b = &v["report"]["prompt12b_nchannel_plate_reference_closure"];
+        assert_eq!(prompt12b["status"], "complete");
+        assert_eq!(
+            prompt12b["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt12b"
+        );
+        assert_eq!(
+            prompt12b["nchannel_pixel_format"]["max_channels"],
+            prepress::MAX_NCHANNEL_OUTPUT_CHANNELS
+        );
+        assert_eq!(
+            prompt12b["reference_audit"]["pdfium"],
+            "required_and_run_by_prompt12b_audit"
         );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),

@@ -942,20 +942,185 @@ impl<'a> RenderState<'a> {
         let ColorSpace::Named(name) = &color.space else {
             return;
         };
-        let Some(space_obj) = self.resources.color_spaces.get(name) else {
+        let Some(space_obj) = self.resources.color_spaces.get(name).cloned() else {
             return;
         };
+        self.record_plate_contribution_for_space_obj(
+            &space_obj,
+            &color.components,
+            alpha,
+            Some(format!("page {} color space /{}", self.page_number, name)),
+            operation,
+        );
+    }
+
+    fn record_plate_contribution_for_space_obj(
+        &mut self,
+        space_obj: &PdfObject,
+        components: &[f64],
+        alpha: f32,
+        object: Option<String>,
+        operation: &str,
+    ) {
         let reader = self.engine.document().reader();
         let contributions = prepress::plate_contributions_for_color_space(
             space_obj,
-            &color.components,
+            components,
             alpha,
             reader,
-            Some(format!("page {} color space /{}", self.page_number, name)),
+            object,
             operation,
             Some(self.page_number),
         );
         self.separation_framebuffer.record_all(contributions);
+    }
+
+    fn record_named_plate_sample(
+        &mut self,
+        color_space_name: &str,
+        alpha: f32,
+        object: String,
+        operation: &str,
+    ) {
+        let Some(space_obj) = self.resources.color_spaces.get(color_space_name).cloned() else {
+            return;
+        };
+        let reader = self.engine.document().reader();
+        let components = plate_sample_components(&space_obj, reader);
+        if components.is_empty() {
+            return;
+        }
+        self.record_plate_contribution_for_space_obj(
+            &space_obj,
+            &components,
+            alpha,
+            Some(object),
+            operation,
+        );
+    }
+
+    fn record_image_plate_sample(
+        &mut self,
+        dict: &PdfDictionary,
+        image_ref: &ImageReference,
+        object: String,
+        operation: &str,
+    ) {
+        if image_ref.is_mask {
+            let fill_color_state = self.gs.fill_color.clone();
+            self.record_plate_contribution(&fill_color_state, 1.0, operation);
+            return;
+        }
+        let Some(color_space_obj) = dict.get("ColorSpace").or_else(|| dict.get("CS")) else {
+            return;
+        };
+        match color_space_obj {
+            PdfObject::Name(name) => {
+                self.record_named_plate_sample(name, self.gs.fill_alpha as f32, object, operation);
+            }
+            PdfObject::Array(_) | PdfObject::Reference { .. } => {
+                let reader = self.engine.document().reader();
+                let components = plate_sample_components(color_space_obj, reader);
+                if components.is_empty() {
+                    return;
+                }
+                self.record_plate_contribution_for_space_obj(
+                    color_space_obj,
+                    &components,
+                    self.gs.fill_alpha as f32,
+                    Some(object),
+                    operation,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn record_shading_plate_sample(
+        &mut self,
+        shading_dict: &PdfDictionary,
+        object: String,
+        operation: &str,
+    ) {
+        let Some(color_space_obj) = shading_dict
+            .get("ColorSpace")
+            .or_else(|| shading_dict.get("CS"))
+        else {
+            return;
+        };
+        match color_space_obj {
+            PdfObject::Name(name) => {
+                self.record_named_plate_sample(name, self.gs.fill_alpha as f32, object, operation);
+            }
+            PdfObject::Array(_) | PdfObject::Reference { .. } => {
+                let reader = self.engine.document().reader();
+                let components = plate_sample_components(color_space_obj, reader);
+                if components.is_empty() {
+                    return;
+                }
+                self.record_plate_contribution_for_space_obj(
+                    color_space_obj,
+                    &components,
+                    self.gs.fill_alpha as f32,
+                    Some(object),
+                    operation,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn record_pattern_caller_plate_sample(&mut self, operation: &str) {
+        let ColorSpace::Named(name) = &self.gs.fill_color.space else {
+            return;
+        };
+        let Some(space_obj) = self.resources.color_spaces.get(name).cloned() else {
+            return;
+        };
+        let reader = self.engine.document().reader();
+        let resolved = match reader.resolve(space_obj.clone()) {
+            Ok(obj) => obj,
+            Err(_) => space_obj,
+        };
+        let PdfObject::Array(arr) = resolved else {
+            return;
+        };
+        if arr.first().and_then(PdfObject::as_name) != Some("Pattern") {
+            return;
+        }
+        let Some(base_space) = arr.get(1) else {
+            return;
+        };
+        match base_space {
+            PdfObject::Name(base_name) => {
+                let Some(base_obj) = self.resources.color_spaces.get(base_name).cloned() else {
+                    return;
+                };
+                self.record_plate_contribution_for_space_obj(
+                    &base_obj,
+                    &self.gs.fill_color.components.clone(),
+                    self.gs.fill_alpha as f32,
+                    Some(format!(
+                        "page {} pattern base /{}",
+                        self.page_number, base_name
+                    )),
+                    operation,
+                );
+            }
+            PdfObject::Array(_) | PdfObject::Reference { .. } => {
+                self.record_plate_contribution_for_space_obj(
+                    base_space,
+                    &self.gs.fill_color.components.clone(),
+                    self.gs.fill_alpha as f32,
+                    Some(format!(
+                        "page {} pattern base color space",
+                        self.page_number
+                    )),
+                    operation,
+                );
+            }
+            _ => {}
+        }
     }
 
     /// Resolve a graphics-state colour to a device pixel colour. Device spaces go
@@ -1415,6 +1580,10 @@ impl<'a> RenderState<'a> {
         let color_space = dict_name(&dict, "ColorSpace").unwrap_or("DeviceGray");
         let filters: Vec<&str> = dict_filter_list(&dict);
         let interpolate = dict_bool(&dict, "Interpolate").unwrap_or(false);
+        if is_mask {
+            let fill_color_state = self.gs.fill_color.clone();
+            self.record_plate_contribution(&fill_color_state, 1.0, "image_inline_stencil_mask");
+        }
 
         // Inline image masks are stencil masks: paint the current fill color
         // through the 1-bit mask. We currently decode them as a grayscale image
@@ -1523,6 +1692,12 @@ impl<'a> RenderState<'a> {
             is_smask: false,
             inline_data: None,
         };
+        self.record_image_plate_sample(
+            dict,
+            &image_ref,
+            format!("image XObject /{} {} {} R", name, obj_num, gen_num),
+            "image_xobject",
+        );
 
         match self.scheduled_decode_image(&image_ref, "renderer image XObject decode") {
             Ok(raw) => {
@@ -2135,6 +2310,11 @@ impl<'a> RenderState<'a> {
         {
             return;
         }
+        self.record_shading_plate_sample(
+            &shading_dict,
+            format!("page {} shading /{}", self.page_number, name),
+            "shading_resource",
+        );
         let ctm = self.ctm();
         let mesh_data = self.shading_mesh_data(&shading_obj, &shading_dict, reader);
         ShadingRenderer::paint(
@@ -2170,6 +2350,7 @@ impl<'a> RenderState<'a> {
         {
             return;
         }
+        self.record_pattern_caller_plate_sample("pattern_fill_caller_color");
 
         match pattern_dict.get_integer("PatternType").unwrap_or(0) {
             1 => self.paint_tiling_pattern_fill(rule, &pattern_obj),
@@ -2422,6 +2603,11 @@ impl<'a> RenderState<'a> {
             log::warn!("shading pattern: /Shading did not resolve to a dictionary");
             return;
         };
+        self.record_shading_plate_sample(
+            &shading_dict,
+            format!("page {} shading pattern", self.page_number),
+            "pattern_shading",
+        );
 
         // The pattern carries its own /Matrix (pattern space → the default user
         // coordinate system of the pattern's parent content stream). Per PDF
@@ -2646,6 +2832,23 @@ impl<'a> RenderState<'a> {
         let fill_color = self.fill_pixel_color();
         let stroke_color = self.stroke_pixel_color();
         let fill_mode = matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6);
+        let stroke_mode = matches!(self.gs.text.rendering_mode, 1 | 2 | 5 | 6);
+        if fill_mode {
+            let fill_color_state = self.gs.fill_color.clone();
+            self.record_plate_contribution(
+                &fill_color_state,
+                self.gs.fill_alpha as f32,
+                "text_fill",
+            );
+        }
+        if stroke_mode {
+            let stroke_color_state = self.gs.stroke_color.clone();
+            self.record_plate_contribution(
+                &stroke_color_state,
+                self.gs.stroke_alpha as f32,
+                "text_stroke",
+            );
+        }
         let color_fill_painted = if fill_mode {
             glyph_id
                 .map(|gid| {
@@ -3245,6 +3448,24 @@ impl<'a> RenderState<'a> {
     fn paint_type3_geometry(&mut self, geometry: &Type3GlyphGeometry, glyph_ctm: &Transform2D) {
         let fill_color = self.fill_pixel_color();
         let stroke_color = self.stroke_pixel_color();
+        let fill_mode = matches!(self.gs.text.rendering_mode, 0 | 2 | 4 | 6);
+        let stroke_mode = matches!(self.gs.text.rendering_mode, 1 | 2 | 5 | 6);
+        if fill_mode {
+            let fill_color_state = self.gs.fill_color.clone();
+            self.record_plate_contribution(
+                &fill_color_state,
+                self.gs.fill_alpha as f32,
+                "text_type3_fill",
+            );
+        }
+        if stroke_mode {
+            let stroke_color_state = self.gs.stroke_color.clone();
+            self.record_plate_contribution(
+                &stroke_color_state,
+                self.gs.stroke_alpha as f32,
+                "text_type3_stroke",
+            );
+        }
         match self.gs.text.rendering_mode {
             0 | 4 => {
                 for fill in &geometry.fills {
@@ -4202,6 +4423,25 @@ fn resolve_to_dict(obj: &PdfObject, reader: &crate::reader::PdfReader) -> Option
             }
         }
         _ => None,
+    }
+}
+
+fn plate_sample_components(obj: &PdfObject, reader: &crate::reader::PdfReader) -> Vec<f64> {
+    let resolved = match reader.resolve(obj.clone()) {
+        Ok(obj) => obj,
+        Err(_) => obj.clone(),
+    };
+    let PdfObject::Array(arr) = resolved else {
+        return Vec::new();
+    };
+    match arr.first().and_then(PdfObject::as_name) {
+        Some("Separation") => vec![1.0],
+        Some("DeviceN") => arr
+            .get(1)
+            .and_then(PdfObject::as_array)
+            .map(|names| vec![1.0; names.len()])
+            .unwrap_or_default(),
+        _ => Vec::new(),
     }
 }
 

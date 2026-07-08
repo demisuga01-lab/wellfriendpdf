@@ -180,6 +180,15 @@ public final class OxideSmokeTest {
         assertTrue(
             feature.contains("\"cache_key_includes_plate_state\":true"),
             "prompt12 plate cache key status");
+        assertTrue(
+            feature.contains("\"prompt12b_nchannel_plate_reference_closure\""),
+            "prompt12B n-channel plate reference closure");
+        assertTrue(
+            feature.contains("\"additive_feature_report_prompt12b\""),
+            "prompt12B additive schema status");
+        assertTrue(
+            feature.contains("\"required_and_run_by_prompt12b_audit\""),
+            "prompt12B reference audit status");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),

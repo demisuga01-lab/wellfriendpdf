@@ -195,6 +195,13 @@ def test_module_level_reports():
     assert prompt12["status"] == "complete"
     assert prompt12["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt12"
     assert prompt12["separation_framebuffer"]["cache_key_includes_plate_state"] is True
+    prompt12b = feature["prompt12b_nchannel_plate_reference_closure"]
+    assert prompt12b["status"] == "complete"
+    assert (
+        prompt12b["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_prompt12b"
+    )
+    assert prompt12b["reference_audit"]["pdfium"] == "required_and_run_by_prompt12b_audit"
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

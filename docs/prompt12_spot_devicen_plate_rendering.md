@@ -27,6 +27,17 @@ Supported Prompt 12 write paths:
 - fill-then-stroke
 - child group plate absorption for report continuity
 
-Images, shadings, patterns, and full text outline plate emission remain
-report-visible limits when the renderer cannot safely write true plate
-contributions yet.
+Prompt 12B extends supported write paths:
+
+- text fill and stroke modes that paint, including supported Type0/CID and
+  Type3 path geometry
+- stencil images using the current Separation/DeviceN color
+- named Separation/DeviceN image color-space samples where resolvable
+- axial/radial/mesh shading plate samples where the shading color space is
+  resolvable
+- colored tiling patterns and uncolored caller-color pattern samples
+- shading pattern samples
+
+Exact remaining limits are narrow: resource-heavy Type3 charprocs with nested
+XObjects/shadings/images and unsafe high-channel packed image layouts are
+report-visible or fail closed. Full overprint compositing remains Prompt 13.
