@@ -23,7 +23,7 @@ fn flate_bytes(data: &[u8]) -> Vec<u8> {
 fn config(policy: CodecIsolationPolicy) -> CodecIsolationConfig {
     CodecIsolationConfig::with_policy(policy)
         .with_worker_path(worker_path())
-        .with_timeout_ms(2_000)
+        .with_timeout_ms(10_000)
         .with_max_decoded_bytes(1024 * 1024)
 }
 

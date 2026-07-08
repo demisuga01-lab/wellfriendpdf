@@ -1,15 +1,19 @@
 # Prompt 10 Known Limits
 
-Prompt 10D narrows the remaining Prompt 10 limits to exact COLRv1 paint
-operators, SVG security/static-subset boundaries, bitmap decoder availability,
-or missing safe geometry exposure.
+Prompt 10E narrows the remaining Prompt 10 limits to exact COLRv1 composite
+modes, SVG security/static-subset boundaries, bitmap decoder availability, or
+missing safe geometry exposure.
 
 ## Remaining Limits
 
-- COLRv1 gradients and clip operators are not approximated:
-  `PaintLinearGradient`, `PaintRadialGradient`, `PaintSweepGradient`,
-  `PaintClip`, `PaintClipBox`, and non-`SourceOver` composites are exact
-  unsupported operator rows.
+- COLRv1 Porter-Duff and additive composite modes remain exact unsupported rows:
+  `Clear`, `Source`, `Destination`, `DestinationOver`, `SourceIn`,
+  `DestinationIn`, `SourceOut`, `DestinationOut`, `SourceAtop`,
+  `DestinationAtop`, `Xor`, and `Plus`.
+- Moving-center COLRv1 radial gradients use a bounded deterministic
+  approximation until a full two-circle solver is added.
+- COLRv1 glyph paint surfaces are scheduler-bounded full render buffers.
+  Cropped glyph-space allocation remains an optimization.
 - SVG-in-OpenType active or dynamic content is blocked. Scripts, event handlers,
   network/file/javascript URLs, `foreignObject`, animation, CSS imports, remote
   fonts, external images, filters, masks, path bombs, and recursive references
@@ -30,8 +34,9 @@ or missing safe geometry exposure.
 ## Not Limits
 
 - COLR/CPAL v0 solid layered glyph rendering is implemented.
-- COLRv1 `PaintSolid`, `PaintColrGlyph`, transform operators, and `SourceOver`
-  composition are implemented with depth and layer caps.
+- COLRv1 `PaintSolid`, `PaintColrGlyph`, transform operators, gradients,
+  `PaintClip`, `PaintClipBox`, and supported blend composites are implemented
+  with depth, layer, stop-count, and scheduler caps.
 - sbix PNG color glyph rendering is implemented.
 - sbix JPEG color glyph rendering is implemented through the existing bounded
   DCT decoder.
@@ -39,5 +44,5 @@ or missing safe geometry exposure.
 - The shared bounded embedded-bitmap glyph path supports safe bitmap payloads
   exposed by the font parser.
 - Korean and Hebrew rendered-page fixture gaps are closed.
-- Prompt 10B, Prompt 10C, and Prompt 10D multi-reference audits have zero Oxide outlier
-  failures and zero unclassified failures.
+- Prompt 10B, Prompt 10C, Prompt 10D, and Prompt 10E multi-reference audits
+  have zero Oxide outlier failures and zero unclassified failures.

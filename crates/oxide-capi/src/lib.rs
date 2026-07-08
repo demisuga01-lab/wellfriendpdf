@@ -2538,6 +2538,20 @@ mod tests {
                 ["public_report_schema"],
             "additive_feature_report_prompt10d"
         );
+        assert_eq!(
+            value["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["status"],
+            "complete"
+        );
+        assert_eq!(
+            value["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]
+                ["colrv1_clip_stack"]["status"],
+            "implemented"
+        );
+        assert_eq!(
+            value["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["closure_gates"]
+                ["public_report_schema"],
+            "additive_feature_report_prompt10e"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

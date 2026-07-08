@@ -1,8 +1,8 @@
 # Prompt 10 Color Glyph Rendering
 
-Prompt 10D closes the remaining safe color-glyph work with bounded rendering for
-the implementable cases and exact operator, payload, or security diagnostics for
-the rest.
+Prompt 10E closes the remaining safe COLRv1 color-glyph work with bounded
+gradient, clip, and composite rendering plus exact mode, payload, or security
+diagnostics for the rest.
 
 ## Implemented Rendering
 
@@ -10,7 +10,7 @@ COLR/CPAL v0 solid layered glyphs render through the vector glyph path. The
 renderer preserves palette color, layer order, glyph transform, text matrix,
 CTM, rise, scaling, graphics-state alpha, and clipping state.
 
-COLR/CPAL v1 now supports the bounded solid/vector subset:
+COLR/CPAL v1 now supports the bounded vector paint subset:
 
 - `PaintSolid`
 - `PaintColrGlyph`
@@ -19,7 +19,13 @@ COLR/CPAL v1 now supports the bounded solid/vector subset:
 - `PaintScale`
 - `PaintRotate`
 - `PaintSkew`
-- `PaintComposite` with `SourceOver`
+- `PaintLinearGradient`
+- `PaintRadialGradient`
+- `PaintSweepGradient`
+- `PaintClip`
+- `PaintClipBox`
+- `PaintComposite` with `SourceOver` and the PDF blend modes already supported
+  by Prompt 07/07B
 
 Embedded bitmap color glyphs use the shared safe raster branch. PNG
 `RasterGlyphImage` payloads and bounded bitmap strikes exposed by the font
@@ -38,9 +44,11 @@ active SVG content.
 
 ## Exact Unsupported Rows
 
-Unsupported COLRv1 operators are reported by operator name:
-`PaintLinearGradient`, `PaintRadialGradient`, `PaintSweepGradient`, `PaintClip`,
-`PaintClipBox`, and non-`SourceOver` `PaintComposite`.
+Unsupported COLRv1 composites are reported by mode name: `Clear`, `Source`,
+`Destination`, `DestinationOver`, `SourceIn`, `DestinationIn`, `SourceOut`,
+`DestinationOut`, `SourceAtop`, `DestinationAtop`, `Xor`, and `Plus`.
+Moving-center radial gradients are implemented with a bounded deterministic
+approximation until a full two-circle solver is added.
 
 SVG-in-OpenType active or dynamic content remains blocked. Scripts, event
 handlers, network/file/javascript URLs, `foreignObject`, animation, CSS imports,
@@ -64,4 +72,5 @@ Public feature reports expose the additive sections:
 prompt10b_color_glyph_cjk_rtl_fidelity_closure
 prompt10c_color_glyph_hinting_cff_closure
 prompt10d_full_colrv1_svg_color_glyph_closure
+prompt10e_colrv1_gradient_clip_composite_closure
 ```

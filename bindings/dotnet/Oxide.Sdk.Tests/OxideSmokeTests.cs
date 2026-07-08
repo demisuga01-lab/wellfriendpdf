@@ -121,6 +121,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt10d_full_colrv1_svg_color_glyph_closure\"", feature);
         Assert.Contains("\"safe_static_subset_rendered_active_constructs_blocked\"", feature);
         Assert.Contains("\"additive_feature_report_prompt10d\"", feature);
+        Assert.Contains("\"prompt10e_colrv1_gradient_clip_composite_closure\"", feature);
+        Assert.Contains("\"implemented_with_exact_mode_limits\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt10e\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

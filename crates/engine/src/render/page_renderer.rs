@@ -2649,40 +2649,44 @@ impl<'a> RenderState<'a> {
             request.variation,
         ) {
             Ok(Some(layers)) => {
-                let mut painted = false;
-                for layer in layers {
-                    if let Some(path) = crate::render::color_glyph::outline_gid_path(
-                        request.font_bytes,
-                        layer.glyph_id,
-                        request.variation,
-                    ) {
-                        let layer_ctm = layer.transform.concat(glyph_ctm);
-                        PathPainter::fill_glyph(
-                            &mut self.buf,
-                            &path,
-                            &layer_ctm,
-                            &self.viewport,
-                            layer.color,
-                            FillRule::NonZero,
-                            glyph_hinting,
-                        );
-                        painted = true;
-                    }
-                }
-                if painted {
+                let ops: Vec<_> = layers
+                    .into_iter()
+                    .map(|layer| crate::render::color_glyph::ColrPaintOp {
+                        glyph_id: layer.glyph_id,
+                        transform: layer.transform,
+                        paint: crate::render::color_glyph::ColrPaint::Solid(layer.color),
+                        clips: Vec::new(),
+                        blend_mode: crate::render::color_glyph::ColrBlendMode::Normal,
+                    })
+                    .collect();
+                if self.paint_colr_paint_ops(request, &ops, glyph_ctm, glyph_hinting) {
                     return true;
                 }
             }
             Ok(None) => {}
-            Err(err) => {
-                log::warn!(
-                    "PageRenderer: COLR/CPAL glyph paint failed for font='{}' glyph={} error={}",
-                    request.font_name,
-                    glyph_id.0,
-                    err
-                );
-                return true;
-            }
+            Err(_compat_err) => match crate::render::color_glyph::colr_cpal_paint_ops(
+                request.font_bytes,
+                glyph_id,
+                fill_color,
+                fill_color[3],
+                request.variation,
+            ) {
+                Ok(Some(ops)) => {
+                    if self.paint_colr_paint_ops(request, &ops, glyph_ctm, glyph_hinting) {
+                        return true;
+                    }
+                }
+                Ok(None) => {}
+                Err(err) => {
+                    log::warn!(
+                        "PageRenderer: COLR/CPAL glyph paint failed for font='{}' glyph={} error={}",
+                        request.font_name,
+                        glyph_id.0,
+                        err
+                    );
+                    return true;
+                }
+            },
         }
 
         match crate::render::color_glyph::svg_static_glyph_paints(
@@ -2772,6 +2776,188 @@ impl<'a> RenderState<'a> {
             f32::from(fill_color[3]) / 255.0,
         );
         true
+    }
+
+    fn paint_colr_paint_ops(
+        &mut self,
+        request: &GlyphRenderRequest<'_>,
+        ops: &[crate::render::color_glyph::ColrPaintOp],
+        glyph_ctm: &Transform2D,
+        glyph_hinting: GlyphHinting,
+    ) -> bool {
+        if ops.is_empty() {
+            return false;
+        }
+        let token = match self.reserve_offscreen_surface(
+            self.buf.width,
+            self.buf.height,
+            "COLRv1 glyph paint surface",
+        ) {
+            Ok(token) => token,
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: COLRv1 glyph paint surface denied for font='{}' error={}",
+                    request.font_name,
+                    err
+                );
+                return true;
+            }
+        };
+        let mut surface = PixelBuffer::new_transparent_with_mode(
+            self.buf.width,
+            self.buf.height,
+            self.buf.render_mode(),
+        );
+        let mut painted = false;
+        for op in ops {
+            painted |=
+                self.paint_colr_op_to_buffer(&mut surface, request, op, glyph_ctm, glyph_hinting);
+        }
+        drop(token);
+        if painted {
+            let smask = self.buf.smask_mask().cloned();
+            self.buf
+                .composite_from(&surface, 1.0, BlendMode::Normal, smask.as_ref());
+        }
+        painted
+    }
+
+    fn paint_colr_op_to_buffer(
+        &self,
+        buf: &mut PixelBuffer,
+        request: &GlyphRenderRequest<'_>,
+        op: &crate::render::color_glyph::ColrPaintOp,
+        glyph_ctm: &Transform2D,
+        glyph_hinting: GlyphHinting,
+    ) -> bool {
+        let Some(path) = crate::render::color_glyph::outline_gid_path(
+            request.font_bytes,
+            op.glyph_id,
+            request.variation,
+        ) else {
+            log::warn!(
+                "PageRenderer: COLRv1 paint op missing glyph outline: font='{}' glyph={}",
+                request.font_name,
+                op.glyph_id
+            );
+            return false;
+        };
+        let saved_clip = buf.clip_mask().cloned();
+        if !self.install_colr_clips(buf, request, &op.clips, glyph_ctm) {
+            buf.restore_clip(saved_clip);
+            return false;
+        }
+        let saved_blend = buf.blend_mode;
+        buf.blend_mode = colr_blend_to_pdf(op.blend_mode);
+        let op_ctm = op.transform.concat(glyph_ctm);
+        match &op.paint {
+            crate::render::color_glyph::ColrPaint::Solid(color) => {
+                PathPainter::fill_glyph(
+                    buf,
+                    &path,
+                    &op_ctm,
+                    &self.viewport,
+                    *color,
+                    FillRule::NonZero,
+                    glyph_hinting,
+                );
+            }
+            crate::render::color_glyph::ColrPaint::LinearGradient { .. }
+            | crate::render::color_glyph::ColrPaint::RadialGradient { .. }
+            | crate::render::color_glyph::ColrPaint::SweepGradient { .. } => {
+                self.fill_colr_gradient_glyph(buf, &path, &op_ctm, glyph_hinting, &op.paint);
+            }
+        }
+        buf.blend_mode = saved_blend;
+        buf.restore_clip(saved_clip);
+        true
+    }
+
+    fn install_colr_clips(
+        &self,
+        buf: &mut PixelBuffer,
+        request: &GlyphRenderRequest<'_>,
+        clips: &[crate::render::color_glyph::ColrClip],
+        glyph_ctm: &Transform2D,
+    ) -> bool {
+        for clip in clips {
+            let (path, clip_t) = match clip {
+                crate::render::color_glyph::ColrClip::Glyph {
+                    glyph_id,
+                    transform,
+                } => {
+                    let Some(path) = crate::render::color_glyph::outline_gid_path(
+                        request.font_bytes,
+                        *glyph_id,
+                        request.variation,
+                    ) else {
+                        log::warn!(
+                            "PageRenderer: COLRv1 clip missing glyph outline: font='{}' glyph={}",
+                            request.font_name,
+                            glyph_id
+                        );
+                        return false;
+                    };
+                    (path, transform.concat(glyph_ctm))
+                }
+                crate::render::color_glyph::ColrClip::Box {
+                    x_min,
+                    y_min,
+                    x_max,
+                    y_max,
+                    transform,
+                } => {
+                    let mut path = Path::new();
+                    path.rect(*x_min, *y_min, x_max - x_min, y_max - y_min);
+                    (path, transform.concat(glyph_ctm))
+                }
+            };
+            let flat = flatten_path(&path, &clip_t, &self.viewport, 0.2);
+            let mask = ClipMask::from_path(&flat, buf.width, buf.height, FillRule::NonZero);
+            buf.set_clip(mask);
+        }
+        true
+    }
+
+    fn fill_colr_gradient_glyph(
+        &self,
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        glyph_hinting: GlyphHinting,
+        paint: &crate::render::color_glyph::ColrPaint,
+    ) {
+        let device_t = ctm.concat(&self.viewport.to_transform());
+        let Some(inverse_device_t) = device_t.inverse() else {
+            return;
+        };
+        let flat = flatten_path(path, ctm, &self.viewport, 0.2);
+        let (x0, y0, x1, y1) = path_device_bounds(&flat, buf.width, buf.height);
+        if x1 < x0 || y1 < y0 {
+            return;
+        }
+        let mut mask =
+            PixelBuffer::new_transparent_with_mode(buf.width, buf.height, buf.render_mode());
+        PathPainter::fill_glyph(
+            &mut mask,
+            path,
+            ctm,
+            &self.viewport,
+            [255, 255, 255, 255],
+            FillRule::NonZero,
+            glyph_hinting,
+        );
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                let coverage = f32::from(mask.get_pixel(x, y)[3]) / 255.0;
+                if coverage <= 0.0 {
+                    continue;
+                }
+                let (gx, gy) = inverse_device_t.transform_point(x as f64 + 0.5, y as f64 + 0.5);
+                let color = sample_colr_gradient(paint, gx, gy);
+                buf.blend_pixel(x, y, color, coverage);
+            }
+        }
     }
 
     fn render_type3_glyph(
@@ -3982,6 +4168,172 @@ fn stitch_vertical_bands(bands: &[PixelBuffer], width: u32, height: u32) -> Pixe
         y_offset += band.height as i32;
     }
     out
+}
+
+fn colr_blend_to_pdf(mode: crate::render::color_glyph::ColrBlendMode) -> BlendMode {
+    match mode {
+        crate::render::color_glyph::ColrBlendMode::Normal => BlendMode::Normal,
+        crate::render::color_glyph::ColrBlendMode::Multiply => BlendMode::Multiply,
+        crate::render::color_glyph::ColrBlendMode::Screen => BlendMode::Screen,
+        crate::render::color_glyph::ColrBlendMode::Overlay => BlendMode::Overlay,
+        crate::render::color_glyph::ColrBlendMode::Darken => BlendMode::Darken,
+        crate::render::color_glyph::ColrBlendMode::Lighten => BlendMode::Lighten,
+        crate::render::color_glyph::ColrBlendMode::ColorDodge => BlendMode::ColorDodge,
+        crate::render::color_glyph::ColrBlendMode::ColorBurn => BlendMode::ColorBurn,
+        crate::render::color_glyph::ColrBlendMode::HardLight => BlendMode::HardLight,
+        crate::render::color_glyph::ColrBlendMode::SoftLight => BlendMode::SoftLight,
+        crate::render::color_glyph::ColrBlendMode::Difference => BlendMode::Difference,
+        crate::render::color_glyph::ColrBlendMode::Exclusion => BlendMode::Exclusion,
+        crate::render::color_glyph::ColrBlendMode::Hue => BlendMode::Hue,
+        crate::render::color_glyph::ColrBlendMode::Saturation => BlendMode::Saturation,
+        crate::render::color_glyph::ColrBlendMode::Color => BlendMode::Color,
+        crate::render::color_glyph::ColrBlendMode::Luminosity => BlendMode::Luminosity,
+    }
+}
+
+fn sample_colr_gradient(
+    paint: &crate::render::color_glyph::ColrPaint,
+    gx: f64,
+    gy: f64,
+) -> PixelColor {
+    match paint {
+        crate::render::color_glyph::ColrPaint::LinearGradient {
+            x0,
+            y0,
+            x1,
+            y1,
+            x2,
+            y2,
+            extend,
+            stops,
+        } => {
+            let _p2_finite = x2.is_finite() && y2.is_finite();
+            let dx = x1 - x0;
+            let dy = y1 - y0;
+            let denom = dx * dx + dy * dy;
+            let t = if denom <= 1e-9 {
+                0.0
+            } else {
+                ((gx - x0) * dx + (gy - y0) * dy) / denom
+            };
+            sample_colr_stops(stops, normalize_colr_gradient_t(t, *extend))
+        }
+        crate::render::color_glyph::ColrPaint::RadialGradient {
+            x0,
+            y0,
+            r0,
+            x1,
+            y1,
+            r1,
+            extend,
+            stops,
+        } => {
+            let center_dx = x1 - x0;
+            let center_dy = y1 - y0;
+            let center_motion = center_dx.hypot(center_dy);
+            let dist = if center_motion <= 1e-9 {
+                (gx - x0).hypot(gy - y0)
+            } else {
+                let ux = center_dx / center_motion;
+                let uy = center_dy / center_motion;
+                (gx - x0) * ux + (gy - y0) * uy
+            };
+            let denom = r1 - r0;
+            let t = if denom.abs() <= 1e-9 {
+                0.0
+            } else {
+                (dist - r0) / denom
+            };
+            sample_colr_stops(stops, normalize_colr_gradient_t(t, *extend))
+        }
+        crate::render::color_glyph::ColrPaint::SweepGradient {
+            center_x,
+            center_y,
+            start_angle,
+            end_angle,
+            extend,
+            stops,
+        } => {
+            let mut angle = (gy - center_y).atan2(gx - center_x).to_degrees();
+            if angle < 0.0 {
+                angle += 360.0;
+            }
+            let mut start = *start_angle;
+            let mut end = *end_angle;
+            if start < 0.0 {
+                start %= 360.0;
+            }
+            if end <= start {
+                end += 360.0;
+            }
+            if angle < start {
+                angle += 360.0;
+            }
+            let denom = end - start;
+            let t = if denom.abs() <= 1e-9 {
+                0.0
+            } else {
+                (angle - start) / denom
+            };
+            sample_colr_stops(stops, normalize_colr_gradient_t(t, *extend))
+        }
+        crate::render::color_glyph::ColrPaint::Solid(color) => *color,
+    }
+}
+
+fn normalize_colr_gradient_t(
+    t: f64,
+    extend: crate::render::color_glyph::ColrGradientExtend,
+) -> f64 {
+    if !t.is_finite() {
+        return 0.0;
+    }
+    match extend {
+        crate::render::color_glyph::ColrGradientExtend::Pad => t.clamp(0.0, 1.0),
+        crate::render::color_glyph::ColrGradientExtend::Repeat => t - t.floor(),
+        crate::render::color_glyph::ColrGradientExtend::Reflect => {
+            let whole = t.floor();
+            let frac = t - whole;
+            if (whole as i64).rem_euclid(2) == 0 {
+                frac
+            } else {
+                1.0 - frac
+            }
+        }
+    }
+}
+
+fn sample_colr_stops(stops: &[crate::render::color_glyph::ColrColorStop], t: f64) -> PixelColor {
+    let Some(first) = stops.first() else {
+        return [0, 0, 0, 0];
+    };
+    if t <= first.offset {
+        return first.color;
+    }
+    for pair in stops.windows(2) {
+        let a = pair[0];
+        let b = pair[1];
+        if t <= b.offset {
+            let span = (b.offset - a.offset).max(1e-9);
+            let local = ((t - a.offset) / span).clamp(0.0, 1.0);
+            return lerp_colr_color(a.color, b.color, local);
+        }
+    }
+    stops.last().map(|stop| stop.color).unwrap_or(first.color)
+}
+
+fn lerp_colr_color(a: PixelColor, b: PixelColor, t: f64) -> PixelColor {
+    let lerp = |ca: u8, cb: u8| -> u8 {
+        (f64::from(ca) + (f64::from(cb) - f64::from(ca)) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    [
+        lerp(a[0], b[0]),
+        lerp(a[1], b[1]),
+        lerp(a[2], b[2]),
+        lerp(a[3], b[3]),
+    ]
 }
 
 /// Resolve a pattern/function object to its (dictionary, raw stream bytes).

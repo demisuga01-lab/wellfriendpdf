@@ -91,5 +91,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"additive_feature_report_prompt10d\"")) {
             throw new AssertionError("feature report missing Prompt 10D full color glyph closure posture");
         }
+        if (!feature.contains("\"prompt10e_colrv1_gradient_clip_composite_closure\"")
+                || !feature.contains("\"implemented_with_exact_mode_limits\"")
+                || !feature.contains("\"additive_feature_report_prompt10e\"")) {
+            throw new AssertionError("feature report missing Prompt 10E COLRv1 gradient clip composite posture");
+        }
     }
 }

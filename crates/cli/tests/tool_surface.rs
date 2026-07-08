@@ -805,6 +805,25 @@ fn prompt07_report_commands_emit_json() {
             ["oxide_outlier_failures"],
         0
     );
+    assert_eq!(
+        feature["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["status"],
+        "complete"
+    );
+    assert_eq!(
+        feature["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["colrv1_clip_stack"]
+            ["status"],
+        "implemented"
+    );
+    assert_eq!(
+        feature["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["closure_gates"]
+            ["public_report_schema"],
+        "additive_feature_report_prompt10e"
+    );
+    assert_eq!(
+        feature["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]
+            ["multi_reference_audit"]["oxide_outlier_failures"],
+        0
+    );
 
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),

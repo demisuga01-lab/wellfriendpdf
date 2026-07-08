@@ -675,8 +675,10 @@ fn supported_color_glyph_tables(
         && tables.iter().any(|table| table == "COLR")
         && tables.iter().any(|table| table == "CPAL")
     {
-        supported
-            .push("COLR/CPAL v1 PaintSolid/PaintColrGlyph/transform/SourceOver subset".to_string());
+        supported.push(
+            "COLR/CPAL v1 PaintSolid/PaintColrGlyph/transforms/gradients/clips/PDF blend composites"
+                .to_string(),
+        );
     }
     if summary.has_cbdt && summary.has_cblc {
         supported.push("CBDT/CBLC PNG and bounded bitmap strikes".to_string());
@@ -696,7 +698,7 @@ fn unsupported_color_glyph_tables(
     let has_cpal = tables.iter().any(|table| table == "CPAL");
     if has_colr && has_cpal && summary.colr_version.is_some_and(|version| version > 0) {
         unsupported.push(
-            "COLR/CPAL v1 unsupported operators: PaintLinearGradient, PaintRadialGradient, PaintSweepGradient, PaintClip, PaintClipBox, non-SourceOver PaintComposite"
+            "COLR/CPAL v1 unsupported composite modes: Clear, Source, Destination, DestinationOver, SourceIn, DestinationIn, SourceOut, DestinationOut, SourceAtop, DestinationAtop, Xor, Plus"
                 .to_string(),
         );
     } else if has_colr && !summary.supports_colr_cpal_v0() {

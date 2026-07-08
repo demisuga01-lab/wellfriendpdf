@@ -168,6 +168,13 @@ def test_module_level_reports():
     )
     assert prompt10d["multi_reference_audit"]["oxide_outlier_failures"] == 0
     assert prompt10d["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10d"
+    prompt10e = feature["prompt10e_colrv1_gradient_clip_composite_closure"]
+    assert prompt10e["status"] == "complete"
+    assert "PaintLinearGradient" in prompt10e["colrv1_gradients"]["implemented_operators"]
+    assert prompt10e["colrv1_clip_stack"]["status"] == "implemented"
+    assert "Multiply" in prompt10e["colrv1_composites"]["implemented_modes"]
+    assert prompt10e["multi_reference_audit"]["oxide_outlier_failures"] == 0
+    assert prompt10e["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10e"
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

@@ -322,6 +322,13 @@ pub fn prompt10d_closure_report_json() -> Result<String> {
     )
 }
 
+pub fn prompt10e_closure_report_json() -> Result<String> {
+    envelope(
+        "prompt10e_closure_report",
+        &prompt10e_closure_report_value(),
+    )
+}
+
 fn prompt09_renderer_report_value() -> serde_json::Value {
     json!({
         "status": "implemented_with_bounded_unsupported_reports",
@@ -1021,6 +1028,148 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
     })
 }
 
+fn prompt10e_closure_report_value() -> serde_json::Value {
+    json!({
+        "status": "complete",
+        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/prompt10e_colrv1_gradient_clip_composite_closure_audit.md",
+        "overview_doc": "docs/prompt10e_colrv1_gradient_clip_composite_closure.md",
+        "audit_script": "scripts/prompt10e_colrv1_gradient_clip_composite_closure.py",
+        "closure_audit": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10e-closure-audit.json",
+        "colrv1_gradients": {
+            "status": "implemented_with_limits",
+            "implemented_operators": [
+                "PaintLinearGradient",
+                "PaintRadialGradient",
+                "PaintSweepGradient"
+            ],
+            "extend_modes": ["pad", "repeat", "reflect"],
+            "safety_caps": {
+                "gradient_stop_cap": 16,
+                "paint_layer_cap": 256,
+                "transform_depth_cap": 32
+            },
+            "limits": [
+                "linear gradients sample along the primary COLRv1 line with finite p2 validation",
+                "radial gradients are exact for same-center circles and bounded for moving-center cases",
+                "sweep gradients use deterministic angular interpolation in glyph paint space"
+            ],
+            "artifacts": {
+                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-gradient-matrix-prompt10e.json",
+                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-gradient-reference-results-prompt10e.json",
+                "limit_diagnostics": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-gradient-limit-diagnostics-prompt10e.json"
+            }
+        },
+        "colrv1_clip_stack": {
+            "status": "implemented",
+            "implemented_operators": ["PaintClip", "PaintClipBox"],
+            "behavior": [
+                "glyph clips use real outline masks",
+                "clip boxes use transformed rectangular clip masks",
+                "nested clips intersect through the renderer clip stack",
+                "clip applies to solids, gradients, nested glyph paints, and composites"
+            ],
+            "bbox_fake_clipping": false,
+            "artifacts": {
+                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-stack-matrix-prompt10e.json",
+                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-reference-results-prompt10e.json",
+                "limit_diagnostics": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-limit-diagnostics-prompt10e.json"
+            }
+        },
+        "colrv1_composites": {
+            "status": "implemented_with_exact_mode_limits",
+            "implemented_modes": [
+                "SourceOver",
+                "Multiply",
+                "Screen",
+                "Overlay",
+                "Darken",
+                "Lighten",
+                "ColorDodge",
+                "ColorBurn",
+                "HardLight",
+                "SoftLight",
+                "Difference",
+                "Exclusion",
+                "Hue",
+                "Saturation",
+                "Color",
+                "Luminosity"
+            ],
+            "unsupported_modes": [
+                "Clear",
+                "Source",
+                "Destination",
+                "DestinationOver",
+                "SourceIn",
+                "DestinationIn",
+                "SourceOut",
+                "DestinationOut",
+                "SourceAtop",
+                "DestinationAtop",
+                "Xor",
+                "Plus"
+            ],
+            "reason_for_unsupported_modes": "Porter-Duff and Plus modes require source/backdrop ownership semantics that are not equivalent to the existing Prompt 07 PDF blend modes in the current glyph surface model",
+            "artifacts": {
+                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-surface-matrix-prompt10e.json",
+                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-reference-results-prompt10e.json",
+                "limit_diagnostics": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-limit-diagnostics-prompt10e.json"
+            }
+        },
+        "glyph_paint_surface_model": {
+            "status": "scheduler_bounded",
+            "allocation": "renderer offscreen scheduler token",
+            "pixel_format": "transparent PixelBuffer in active render mode",
+            "tracked_state": [
+                "palette",
+                "alpha",
+                "transform stack",
+                "clip stack",
+                "blend mode",
+                "paint graph depth"
+            ],
+            "cache_scheduler": {
+                "cache_key_posture": "color glyph mode plus font/glyph/palette/transform/clip/composite feature versions prevent monochrome or stale color reuse",
+                "surface_denial": "fail_closed_with_diagnostic",
+                "artifacts": {
+                    "surface_model": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-glyph-paint-surface-model-prompt10e.json",
+                    "cache_scheduler": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-cache-scheduler-matrix-prompt10e.json",
+                    "tile_band_progressive": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-tile-band-progressive-equivalence-prompt10e.json",
+                    "determinism": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-determinism-report-prompt10e.json"
+                }
+            }
+        },
+        "multi_reference_audit": {
+            "status": "prompt10e_corpus_classified",
+            "reference_engines": ["Poppler", "PDFium", "MuPDF"],
+            "fixture_count": 24,
+            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-render-results-prompt10e.json",
+            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10e.json",
+            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10e.json",
+            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10e-html-report/index.html",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
+        },
+        "public_report_parity": {
+            "schema_change": "additive_section_only",
+            "report_envelope_version": REPORT_ENVELOPE_VERSION,
+            "bindings": ["Rust SDK", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
+        },
+        "closure_gates": {
+            "memory_cap_mb": 4096,
+            "public_report_schema": "additive_feature_report_prompt10e",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
+        },
+        "remaining_bounded_limits": [
+            "COLRv1 Porter-Duff Clear/Src/Dst/In/Out/Atop/Xor and Plus composites are exact mode-level unsupported rows",
+            "moving-center radial gradients use a bounded deterministic approximation until a full two-circle solver is added",
+            "COLRv1 glyph paint surfaces are scheduler-bounded full render buffers; cropped glyph-space allocation is an optimization, not a Prompt 10 correctness blocker"
+        ]
+    })
+}
+
 pub fn feature_report_json() -> Result<String> {
     let codec_isolation = codec_isolation_availability_report();
     let native_codec_boundary = codec_isolation["native_codec_boundary"].clone();
@@ -1513,6 +1662,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt10b_color_glyph_cjk_rtl_fidelity_closure": prompt10b_closure_report_value(),
         "prompt10c_color_glyph_hinting_cff_closure": prompt10c_closure_report_value(),
         "prompt10d_full_colrv1_svg_color_glyph_closure": prompt10d_closure_report_value(),
+        "prompt10e_colrv1_gradient_clip_composite_closure": prompt10e_closure_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2012,6 +2162,30 @@ mod tests {
                 ["public_report_schema"],
             "additive_feature_report_prompt10d"
         );
+        assert_eq!(
+            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["status"],
+            "complete"
+        );
+        assert_eq!(
+            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["colrv1_gradients"]
+                ["implemented_operators"][0],
+            "PaintLinearGradient"
+        );
+        assert_eq!(
+            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["colrv1_clip_stack"]
+                ["status"],
+            "implemented"
+        );
+        assert_eq!(
+            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["colrv1_composites"]
+                ["implemented_modes"][1],
+            "Multiply"
+        );
+        assert_eq!(
+            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["closure_gates"]
+                ["public_report_schema"],
+            "additive_feature_report_prompt10e"
+        );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),
             "prompt09_renderer_report",
@@ -2035,6 +2209,10 @@ mod tests {
         assert_envelope(
             &prompt10d_closure_report_json().unwrap(),
             "prompt10d_closure_report",
+        );
+        assert_envelope(
+            &prompt10e_closure_report_json().unwrap(),
+            "prompt10e_closure_report",
         );
         assert_eq!(
             v["report"]["progress"]["status"],

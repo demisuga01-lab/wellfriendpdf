@@ -8,13 +8,14 @@ use crate::render::font_rasterizer::GlyphToPath;
 use crate::render::path::Path;
 use crate::render::transform::Transform2D;
 use flate2::read::GzDecoder;
-use ttf_parser::colr::{CompositeMode, Paint, Painter};
+use ttf_parser::colr::{CompositeMode, GradientExtend, Paint, Painter};
 use ttf_parser::{GlyphId, RasterGlyphImage, RasterImageFormat, RgbaColor, Tag, Transform};
 
 const MAX_COLOR_GLYPH_PIXELS: u32 = 4096 * 4096;
 const MAX_COLOR_GLYPH_BYTES: usize = 64 * 1024 * 1024;
 const MAX_COLR_TRANSFORM_DEPTH: usize = 32;
 const MAX_COLR_PAINT_LAYERS: usize = 256;
+pub(crate) const MAX_COLR_GRADIENT_STOPS: usize = 16;
 const MAX_SVG_BYTES: usize = 256 * 1024;
 const MAX_SVG_PAINT_PATHS: usize = 512;
 const MAX_SVG_PATH_COMMANDS: usize = 4096;
@@ -46,6 +47,96 @@ pub(crate) struct ColrLayer {
     pub glyph_id: u16,
     pub color: PixelColor,
     pub transform: Transform2D,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColrBlendMode {
+    Normal,
+    Multiply,
+    Screen,
+    Overlay,
+    Darken,
+    Lighten,
+    ColorDodge,
+    ColorBurn,
+    HardLight,
+    SoftLight,
+    Difference,
+    Exclusion,
+    Hue,
+    Saturation,
+    Color,
+    Luminosity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ColrGradientExtend {
+    Pad,
+    Repeat,
+    Reflect,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ColrColorStop {
+    pub offset: f64,
+    pub color: PixelColor,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ColrPaint {
+    Solid(PixelColor),
+    LinearGradient {
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+        x2: f64,
+        y2: f64,
+        extend: ColrGradientExtend,
+        stops: Vec<ColrColorStop>,
+    },
+    RadialGradient {
+        x0: f64,
+        y0: f64,
+        r0: f64,
+        x1: f64,
+        y1: f64,
+        r1: f64,
+        extend: ColrGradientExtend,
+        stops: Vec<ColrColorStop>,
+    },
+    SweepGradient {
+        center_x: f64,
+        center_y: f64,
+        start_angle: f64,
+        end_angle: f64,
+        extend: ColrGradientExtend,
+        stops: Vec<ColrColorStop>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ColrClip {
+    Glyph {
+        glyph_id: u16,
+        transform: Transform2D,
+    },
+    Box {
+        x_min: f64,
+        y_min: f64,
+        x_max: f64,
+        y_max: f64,
+        transform: Transform2D,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ColrPaintOp {
+    pub glyph_id: u16,
+    pub transform: Transform2D,
+    pub paint: ColrPaint,
+    pub clips: Vec<ColrClip>,
+    pub blend_mode: ColrBlendMode,
 }
 
 #[derive(Debug, Clone)]
@@ -100,6 +191,46 @@ pub(crate) fn colr_cpal_layers(
     graphics_alpha: u8,
     variation: &VariationRequest,
 ) -> Result<Option<Vec<ColrLayer>>> {
+    let Some(ops) =
+        colr_cpal_paint_ops(font_bytes, glyph_id, foreground, graphics_alpha, variation)?
+    else {
+        return Ok(None);
+    };
+    let mut layers = Vec::new();
+    for op in ops {
+        if !op.clips.is_empty() || op.blend_mode != ColrBlendMode::Normal {
+            return Err(OxideError::UnsupportedFeature(format!(
+                "COLR/CPAL solid layer compatibility path cannot represent glyph {} clips/composites",
+                glyph_id.0
+            )));
+        }
+        match op.paint {
+            ColrPaint::Solid(color) => layers.push(ColrLayer {
+                glyph_id: op.glyph_id,
+                color,
+                transform: op.transform,
+            }),
+            _ => {
+                return Err(OxideError::UnsupportedFeature(format!(
+                    "COLR/CPAL solid layer compatibility path cannot represent gradient paint for glyph {}",
+                    glyph_id.0
+                )));
+            }
+        }
+    }
+    if layers.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(layers))
+}
+
+pub(crate) fn colr_cpal_paint_ops(
+    font_bytes: &[u8],
+    glyph_id: GlyphId,
+    foreground: PixelColor,
+    graphics_alpha: u8,
+    variation: &VariationRequest,
+) -> Result<Option<Vec<ColrPaintOp>>> {
     let mut face = ttf_parser::Face::parse(font_bytes, 0)
         .map_err(|_| OxideError::UnsupportedFeature("malformed COLR/CPAL font".to_string()))?;
     variations::apply_request(&mut face, variation);
@@ -107,7 +238,7 @@ pub(crate) fn colr_cpal_layers(
         return Ok(None);
     }
 
-    let mut collector = SolidLayerCollector::new(graphics_alpha);
+    let mut collector = ColrPaintCollector::new(graphics_alpha);
     let foreground = RgbaColor::new(foreground[0], foreground[1], foreground[2], foreground[3]);
     if face
         .paint_color_glyph(glyph_id, 0, foreground, &mut collector)
@@ -122,10 +253,10 @@ pub(crate) fn colr_cpal_layers(
             collector.unsupported_ops.join(", ")
         )));
     }
-    if collector.layers.is_empty() {
+    if collector.ops.is_empty() {
         return Ok(None);
     }
-    Ok(Some(collector.layers))
+    Ok(Some(collector.ops))
 }
 
 pub(crate) fn decode_raster_glyph_image(
@@ -392,33 +523,38 @@ struct SbixPayload<'a> {
     pixels_per_em: u16,
 }
 
-struct SolidLayerCollector {
+struct ColrPaintCollector {
     current_glyph: Option<u16>,
     current_transform: Transform2D,
     transform_stack: Vec<Transform2D>,
     layer_depth: usize,
-    layers: Vec<ColrLayer>,
+    ops: Vec<ColrPaintOp>,
+    clip_stack: Vec<ColrClip>,
+    blend_stack: Vec<ColrBlendMode>,
     graphics_alpha: u8,
     unsupported: bool,
-    unsupported_ops: Vec<&'static str>,
+    unsupported_ops: Vec<String>,
 }
 
-impl SolidLayerCollector {
+impl ColrPaintCollector {
     fn new(graphics_alpha: u8) -> Self {
         Self {
             current_glyph: None,
             current_transform: Transform2D::identity(),
             transform_stack: Vec::new(),
             layer_depth: 0,
-            layers: Vec::new(),
+            ops: Vec::new(),
+            clip_stack: Vec::new(),
+            blend_stack: Vec::new(),
             graphics_alpha,
             unsupported: false,
             unsupported_ops: Vec::new(),
         }
     }
 
-    fn mark_unsupported(&mut self, op: &'static str) {
+    fn mark_unsupported(&mut self, op: impl Into<String>) {
         self.unsupported = true;
+        let op = op.into();
         if !self.unsupported_ops.contains(&op) {
             self.unsupported_ops.push(op);
         }
@@ -432,9 +568,65 @@ impl SolidLayerCollector {
         self.transform_stack.push(self.current_transform);
         self.current_transform = self.current_transform.concat(&transform);
     }
+
+    fn current_blend_mode(&self) -> ColrBlendMode {
+        self.blend_stack
+            .last()
+            .copied()
+            .unwrap_or(ColrBlendMode::Normal)
+    }
+
+    fn push_paint(&mut self, paint: ColrPaint) {
+        let Some(glyph_id) = self.current_glyph else {
+            self.mark_unsupported("Paint without current glyph outline");
+            return;
+        };
+        self.ops.push(ColrPaintOp {
+            glyph_id,
+            transform: self.current_transform,
+            paint,
+            clips: self.clip_stack.clone(),
+            blend_mode: self.current_blend_mode(),
+        });
+        if self.ops.len() > MAX_COLR_PAINT_LAYERS {
+            self.mark_unsupported("Paint layer count cap exceeded");
+        }
+    }
+
+    fn collect_stops<'a>(
+        &mut self,
+        stops: impl Iterator<Item = ttf_parser::colr::ColorStop> + 'a,
+    ) -> Option<Vec<ColrColorStop>> {
+        let mut out = Vec::new();
+        for stop in stops {
+            if out.len() >= MAX_COLR_GRADIENT_STOPS {
+                self.mark_unsupported("COLRv1 gradient stop count cap exceeded");
+                return None;
+            }
+            if !stop.stop_offset.is_finite() {
+                self.mark_unsupported("COLRv1 gradient stop offset is not finite");
+                return None;
+            }
+            out.push(ColrColorStop {
+                offset: f64::from(stop.stop_offset),
+                color: rgba(
+                    stop.color.red,
+                    stop.color.green,
+                    stop.color.blue,
+                    multiply_alpha(stop.color.alpha, self.graphics_alpha),
+                ),
+            });
+        }
+        if out.len() < 2 {
+            self.mark_unsupported("COLRv1 gradient requires at least two stops");
+            return None;
+        }
+        out.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+        Some(out)
+    }
 }
 
-impl<'a> Painter<'a> for SolidLayerCollector {
+impl<'a> Painter<'a> for ColrPaintCollector {
     fn outline_glyph(&mut self, glyph_id: GlyphId) {
         self.current_glyph = Some(glyph_id.0);
     }
@@ -442,51 +634,153 @@ impl<'a> Painter<'a> for SolidLayerCollector {
     fn paint(&mut self, paint: Paint<'a>) {
         match paint {
             Paint::Solid(color) => {
-                if let Some(glyph_id) = self.current_glyph {
-                    self.layers.push(ColrLayer {
-                        glyph_id,
-                        color: rgba(
-                            color.red,
-                            color.green,
-                            color.blue,
-                            multiply_alpha(color.alpha, self.graphics_alpha),
-                        ),
-                        transform: self.current_transform,
-                    });
-                    if self.layers.len() > MAX_COLR_PAINT_LAYERS {
-                        self.mark_unsupported("Paint layer count cap exceeded");
-                    }
-                }
+                self.push_paint(ColrPaint::Solid(rgba(
+                    color.red,
+                    color.green,
+                    color.blue,
+                    multiply_alpha(color.alpha, self.graphics_alpha),
+                )));
             }
-            Paint::LinearGradient(_) => self.mark_unsupported("PaintLinearGradient"),
-            Paint::RadialGradient(_) => self.mark_unsupported("PaintRadialGradient"),
-            Paint::SweepGradient(_) => self.mark_unsupported("PaintSweepGradient"),
+            Paint::LinearGradient(gradient) => {
+                if !gradient_coordinate_finite(&[
+                    gradient.x0,
+                    gradient.y0,
+                    gradient.x1,
+                    gradient.y1,
+                    gradient.x2,
+                    gradient.y2,
+                ]) {
+                    self.mark_unsupported("PaintLinearGradient non-finite coordinates");
+                    return;
+                }
+                let Some(stops) = self.collect_stops(gradient.stops(0, &[])) else {
+                    return;
+                };
+                self.push_paint(ColrPaint::LinearGradient {
+                    x0: f64::from(gradient.x0),
+                    y0: f64::from(gradient.y0),
+                    x1: f64::from(gradient.x1),
+                    y1: f64::from(gradient.y1),
+                    x2: f64::from(gradient.x2),
+                    y2: f64::from(gradient.y2),
+                    extend: map_gradient_extend(gradient.extend),
+                    stops,
+                });
+            }
+            Paint::RadialGradient(gradient) => {
+                if !gradient_coordinate_finite(&[
+                    gradient.x0,
+                    gradient.y0,
+                    gradient.r0,
+                    gradient.x1,
+                    gradient.y1,
+                    gradient.r1,
+                ]) || gradient.r0 < 0.0
+                    || gradient.r1 <= 0.0
+                {
+                    self.mark_unsupported("PaintRadialGradient invalid or non-finite geometry");
+                    return;
+                }
+                let Some(stops) = self.collect_stops(gradient.stops(0, &[])) else {
+                    return;
+                };
+                self.push_paint(ColrPaint::RadialGradient {
+                    x0: f64::from(gradient.x0),
+                    y0: f64::from(gradient.y0),
+                    r0: f64::from(gradient.r0),
+                    x1: f64::from(gradient.x1),
+                    y1: f64::from(gradient.y1),
+                    r1: f64::from(gradient.r1),
+                    extend: map_gradient_extend(gradient.extend),
+                    stops,
+                });
+            }
+            Paint::SweepGradient(gradient) => {
+                if !gradient_coordinate_finite(&[
+                    gradient.center_x,
+                    gradient.center_y,
+                    gradient.start_angle,
+                    gradient.end_angle,
+                ]) || (gradient.end_angle - gradient.start_angle).abs() < f32::EPSILON
+                {
+                    self.mark_unsupported("PaintSweepGradient invalid or non-finite geometry");
+                    return;
+                }
+                let Some(stops) = self.collect_stops(gradient.stops(0, &[])) else {
+                    return;
+                };
+                self.push_paint(ColrPaint::SweepGradient {
+                    center_x: f64::from(gradient.center_x),
+                    center_y: f64::from(gradient.center_y),
+                    start_angle: f64::from(gradient.start_angle),
+                    end_angle: f64::from(gradient.end_angle),
+                    extend: map_gradient_extend(gradient.extend),
+                    stops,
+                });
+            }
         }
     }
 
     fn push_clip(&mut self) {
-        self.mark_unsupported("PaintClip");
-    }
-
-    fn push_clip_box(&mut self, _clipbox: ttf_parser::colr::ClipBox) {
-        self.mark_unsupported("PaintClipBox");
-    }
-
-    fn pop_clip(&mut self) {}
-
-    fn push_layer(&mut self, mode: CompositeMode) {
-        if mode != CompositeMode::SourceOver {
-            self.mark_unsupported("PaintComposite");
+        let Some(glyph_id) = self.current_glyph else {
+            self.mark_unsupported("PaintClip without current glyph outline");
+            return;
+        };
+        if self.clip_stack.len() >= MAX_COLR_TRANSFORM_DEPTH {
+            self.mark_unsupported("PaintClip depth cap exceeded");
             return;
         }
+        self.clip_stack.push(ColrClip::Glyph {
+            glyph_id,
+            transform: self.current_transform,
+        });
+    }
+
+    fn push_clip_box(&mut self, clipbox: ttf_parser::colr::ClipBox) {
+        if self.clip_stack.len() >= MAX_COLR_TRANSFORM_DEPTH
+            || !gradient_coordinate_finite(&[
+                clipbox.x_min,
+                clipbox.y_min,
+                clipbox.x_max,
+                clipbox.y_max,
+            ])
+            || clipbox.x_max <= clipbox.x_min
+            || clipbox.y_max <= clipbox.y_min
+        {
+            self.mark_unsupported("PaintClipBox invalid bounds");
+            return;
+        }
+        self.clip_stack.push(ColrClip::Box {
+            x_min: f64::from(clipbox.x_min),
+            y_min: f64::from(clipbox.y_min),
+            x_max: f64::from(clipbox.x_max),
+            y_max: f64::from(clipbox.y_max),
+            transform: self.current_transform,
+        });
+    }
+
+    fn pop_clip(&mut self) {
+        self.clip_stack.pop();
+    }
+
+    fn push_layer(&mut self, mode: CompositeMode) {
         self.layer_depth = self.layer_depth.saturating_add(1);
         if self.layer_depth > MAX_COLR_TRANSFORM_DEPTH {
             self.mark_unsupported("PaintComposite depth cap");
+            return;
+        }
+        match map_composite_mode(mode) {
+            Some(blend) => self.blend_stack.push(blend),
+            None => {
+                self.mark_unsupported(format!("PaintComposite {mode:?}"));
+                self.blend_stack.push(ColrBlendMode::Normal);
+            }
         }
     }
 
     fn pop_layer(&mut self) {
         self.layer_depth = self.layer_depth.saturating_sub(1);
+        self.blend_stack.pop();
     }
 
     fn push_translate(&mut self, _tx: f32, _ty: f32) {
@@ -548,6 +842,51 @@ fn finite_transform(transform: Transform2D) -> bool {
         && transform.d.is_finite()
         && transform.e.is_finite()
         && transform.f.is_finite()
+}
+
+fn gradient_coordinate_finite(values: &[f32]) -> bool {
+    values.iter().all(|value| value.is_finite())
+}
+
+fn map_gradient_extend(extend: GradientExtend) -> ColrGradientExtend {
+    match extend {
+        GradientExtend::Pad => ColrGradientExtend::Pad,
+        GradientExtend::Repeat => ColrGradientExtend::Repeat,
+        GradientExtend::Reflect => ColrGradientExtend::Reflect,
+    }
+}
+
+fn map_composite_mode(mode: CompositeMode) -> Option<ColrBlendMode> {
+    match mode {
+        CompositeMode::SourceOver => Some(ColrBlendMode::Normal),
+        CompositeMode::Multiply => Some(ColrBlendMode::Multiply),
+        CompositeMode::Screen => Some(ColrBlendMode::Screen),
+        CompositeMode::Overlay => Some(ColrBlendMode::Overlay),
+        CompositeMode::Darken => Some(ColrBlendMode::Darken),
+        CompositeMode::Lighten => Some(ColrBlendMode::Lighten),
+        CompositeMode::ColorDodge => Some(ColrBlendMode::ColorDodge),
+        CompositeMode::ColorBurn => Some(ColrBlendMode::ColorBurn),
+        CompositeMode::HardLight => Some(ColrBlendMode::HardLight),
+        CompositeMode::SoftLight => Some(ColrBlendMode::SoftLight),
+        CompositeMode::Difference => Some(ColrBlendMode::Difference),
+        CompositeMode::Exclusion => Some(ColrBlendMode::Exclusion),
+        CompositeMode::Hue => Some(ColrBlendMode::Hue),
+        CompositeMode::Saturation => Some(ColrBlendMode::Saturation),
+        CompositeMode::Color => Some(ColrBlendMode::Color),
+        CompositeMode::Luminosity => Some(ColrBlendMode::Luminosity),
+        CompositeMode::Clear
+        | CompositeMode::Source
+        | CompositeMode::Destination
+        | CompositeMode::DestinationOver
+        | CompositeMode::SourceIn
+        | CompositeMode::DestinationIn
+        | CompositeMode::SourceOut
+        | CompositeMode::DestinationOut
+        | CompositeMode::SourceAtop
+        | CompositeMode::DestinationAtop
+        | CompositeMode::Xor
+        | CompositeMode::Plus => None,
+    }
 }
 
 pub(crate) fn outline_gid_path(
