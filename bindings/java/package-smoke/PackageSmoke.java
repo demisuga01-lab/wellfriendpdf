@@ -111,5 +111,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"additive_feature_report_prompt11b\"")) {
             throw new AssertionError("feature report missing Prompt 11B native LittleCMS CMM posture");
         }
+        if (!feature.contains("\"prompt12_prepress_cmm_device_link_separation_plates\"")
+                || !feature.contains("\"additive_feature_report_prompt12\"")
+                || !feature.contains("\"cache_key_includes_plate_state\":true")) {
+            throw new AssertionError("feature report missing Prompt 12 prepress CMM plate posture");
+        }
     }
 }

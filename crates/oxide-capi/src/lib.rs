@@ -2600,6 +2600,16 @@ mod tests {
             prompt11b["closure_gates"]["public_report_schema"],
             "additive_feature_report_prompt11b"
         );
+        let prompt12 = &value["report"]["prompt12_prepress_cmm_device_link_separation_plates"];
+        assert_eq!(prompt12["status"], "complete");
+        assert_eq!(
+            prompt12["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt12"
+        );
+        assert_eq!(
+            prompt12["separation_framebuffer"]["cache_key_includes_plate_state"],
+            true
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

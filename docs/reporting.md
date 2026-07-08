@@ -135,3 +135,15 @@ drawn are reported.)
 - Server endpoints (`POST /api/v1/info`, `/api/v1/fonts`) — deferred this round;
   the CLI is complete. These are lightweight (no large output) so they need no
   async-job machinery.
+
+## Prompt 12 Prepress Reports
+
+`feature-report` and color/prepress reports include the additive section
+`prompt12_prepress_cmm_device_link_separation_plates`. It exposes device-link
+and multicolor ICC inventory, native/fallback CMM posture, BPC/rendering-intent
+cache posture, sparse separation framebuffer state, spot/DeviceN plate
+summaries, and plate preview hashes.
+
+The section is report-visible across Rust SDK, CLI, Python, C ABI, WASM, .NET,
+and Java bindings. Default and WASM builds report fallback preview behavior and
+do not claim native LittleCMS.

@@ -10,6 +10,7 @@
 use crate::content::ContentParser;
 use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
+use crate::prepress::{self, IccProfileClass, Prompt12PrepressReport, SeparationFramebuffer};
 use crate::reader::PdfReader;
 use crate::render::{cmm, colorspace, function};
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,8 @@ pub struct ColorLimits {
     pub max_type4_tokens: usize,
     pub max_type4_stack: usize,
     pub max_devicen_components: usize,
+    pub max_prepress_plates: usize,
+    pub separation_framebuffer_memory_budget_bytes: usize,
     pub max_content_stream_color_scan_bytes: usize,
 }
 
@@ -58,6 +61,9 @@ impl Default for ColorLimits {
             max_type4_tokens: function::MAX_TYPE4_TOKENS,
             max_type4_stack: function::MAX_TYPE4_STACK,
             max_devicen_components: colorspace::MAX_DEVICEN_COMPONENTS,
+            max_prepress_plates: prepress::MAX_PREPRESS_PLATES,
+            separation_framebuffer_memory_budget_bytes:
+                prepress::DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES,
             max_content_stream_color_scan_bytes: 4 * 1024 * 1024,
         }
     }
@@ -144,6 +150,12 @@ pub struct OutputIntentInfo {
     pub dest_output_profile_present: bool,
     pub dest_output_profile_n: Option<i64>,
     pub dest_output_profile_bytes: Option<usize>,
+    pub dest_output_profile_hash: Option<String>,
+    pub dest_output_profile_class: Option<IccProfileClass>,
+    pub dest_output_profile_color_space: Option<String>,
+    pub dest_output_profile_pcs: Option<String>,
+    pub dest_output_profile_input_channels: Option<u8>,
+    pub dest_output_profile_output_channels: Option<u8>,
     pub dest_output_profile_valid_icc: Option<bool>,
     pub dest_output_profile_valid_native_lcms2: Option<bool>,
     pub proofing_backend: String,
@@ -236,6 +248,7 @@ pub struct ColorReport {
     pub output_intents: Vec<OutputIntentInfo>,
     pub rendering_intents: Vec<ColorSpaceUsage>,
     pub overprint: OverprintReport,
+    pub prompt12_prepress_cmm_device_link_separation_plates: Prompt12PrepressReport,
     pub standards: StandardsColorReport,
     pub diagnostics: Vec<ColorDiagnostic>,
 }
@@ -263,12 +276,13 @@ impl ColorReport {
             spot_colorants: Vec::new(),
             devicen_components: Vec::new(),
             spot_preview: SpotPreviewReport {
-                preview_model: "PDF tint transform to alternate color space; true spot plates are reported, not emitted by the RGB framebuffer".to_string(),
+                preview_model: "PDF tint transform to alternate color space plus Prompt 12 sparse plate framebuffer; RGB output remains preview, not press proof".to_string(),
                 ..SpotPreviewReport::default()
             },
             output_intents: Vec::new(),
             rendering_intents: Vec::new(),
             overprint: OverprintReport::default(),
+            prompt12_prepress_cmm_device_link_separation_plates: Prompt12PrepressReport::default(),
             standards: StandardsColorReport {
                 scope: "color-only OutputIntent/ICC/device-color/prepress checks; full PDF/A/PDF/X validation remains the compliance module/Prompt 09 scope".to_string(),
                 output_intent_checked: false,
@@ -290,10 +304,14 @@ struct ColorReportBuilder {
     diagnostics: Vec<ColorDiagnostic>,
     overprint: OverprintReport,
     spot_preview: SpotPreviewReport,
+    icc_profiles: Vec<prepress::IccProfileInfo>,
+    separation_framebuffer: SeparationFramebuffer,
 }
 
 impl ColorReportBuilder {
     fn finish(self, mut report: ColorReport) -> ColorReport {
+        let prompt12_profiles = self.icc_profiles.clone();
+        let prompt12_framebuffer = self.separation_framebuffer.report();
         let device_rgb_used = self.color_spaces.contains_key("DeviceRGB");
         report.color_spaces = self
             .color_spaces
@@ -312,6 +330,10 @@ impl ColorReportBuilder {
             ..self.spot_preview
         };
         report.overprint = self.overprint;
+        report.overprint.true_separation_framebuffer =
+            prompt12_framebuffer.true_separation_framebuffer;
+        report.prompt12_prepress_cmm_device_link_separation_plates =
+            Prompt12PrepressReport::from_parts(prompt12_profiles, prompt12_framebuffer);
         report.diagnostics.extend(self.diagnostics);
         if matches!(report.validation_profile, ColorValidationProfile::PdfX) && device_rgb_used {
             report.diagnostics.push(ColorDiagnostic {
@@ -426,6 +448,12 @@ fn parse_output_intents(
                 dest_output_profile_present: false,
                 dest_output_profile_n: None,
                 dest_output_profile_bytes: None,
+                dest_output_profile_hash: None,
+                dest_output_profile_class: None,
+                dest_output_profile_color_space: None,
+                dest_output_profile_pcs: None,
+                dest_output_profile_input_channels: None,
+                dest_output_profile_output_channels: None,
                 dest_output_profile_valid_icc: None,
                 dest_output_profile_valid_native_lcms2: None,
                 proofing_backend: native.selected_backend.to_string(),
@@ -459,6 +487,25 @@ fn parse_output_intents(
                                     None,
                                 );
                             } else {
+                                let profile_info = prepress::classify_icc_profile(
+                                    &decoded.data,
+                                    info.dest_output_profile_n
+                                        .and_then(|n| u8::try_from(n).ok()),
+                                    Some("Catalog/OutputIntents/DestOutputProfile".to_string()),
+                                );
+                                info.dest_output_profile_hash =
+                                    Some(profile_info.profile_hash.clone());
+                                info.dest_output_profile_class =
+                                    Some(profile_info.profile_class);
+                                info.dest_output_profile_color_space =
+                                    profile_info.profile_color_space.clone();
+                                info.dest_output_profile_pcs = profile_info.pcs.clone();
+                                info.dest_output_profile_input_channels =
+                                    profile_info.input_channels;
+                                info.dest_output_profile_output_channels =
+                                    profile_info.output_channels;
+                                push_profile_diagnostics(builder, &profile_info);
+                                builder.icc_profiles.push(profile_info);
                                 info.dest_output_profile_valid_icc = Some(
                                     qcms::Profile::new_from_slice(&decoded.data, false).is_some(),
                                 );
@@ -734,6 +781,60 @@ fn scan_ext_g_state(
     }
 }
 
+fn push_profile_diagnostics(builder: &mut ColorReportBuilder, profile: &prepress::IccProfileInfo) {
+    if profile.profile_class == IccProfileClass::Malformed {
+        builder.diagnostic(
+            "color.icc.malformed_profile_fail_closed",
+            ColorSeverity::Warning,
+            format!(
+                "ICC profile {} is malformed and cannot be used for proofing",
+                profile.profile_hash
+            ),
+            profile.object.clone(),
+        );
+    }
+    if profile.profile_class == IccProfileClass::DeviceLink {
+        let severity = if cmm::native_cmm_status().available {
+            ColorSeverity::Info
+        } else {
+            ColorSeverity::Warning
+        };
+        builder.diagnostic(
+            "color.icc.device_link.reported",
+            severity,
+            format!(
+                "device-link ICC profile {} detected; native status: {}; fallback status: {}",
+                profile.profile_hash,
+                profile.native_transform_status,
+                profile.fallback_transform_status
+            ),
+            profile.object.clone(),
+        );
+    }
+    if profile.is_multicolor {
+        builder.diagnostic(
+            "color.icc.multicolor.reported",
+            ColorSeverity::Warning,
+            format!(
+                "multicolor ICC profile {} has input channels {:?} and output channels {:?}; unsupported shapes are inventory-only",
+                profile.profile_hash, profile.input_channels, profile.output_channels
+            ),
+            profile.object.clone(),
+        );
+    }
+    if profile.channel_mismatch {
+        builder.diagnostic(
+            "color.icc.channel_mismatch_fail_closed",
+            ColorSeverity::Warning,
+            profile
+                .reason
+                .clone()
+                .unwrap_or_else(|| "ICC channel mismatch".to_string()),
+            profile.object.clone(),
+        );
+    }
+}
+
 fn classify_color_space(
     space: &PdfObject,
     reader: &PdfReader,
@@ -816,13 +917,22 @@ fn inspect_icc_space(
                     ),
                     object_label,
                 );
-            } else if qcms::Profile::new_from_slice(&decoded.data, false).is_none() {
-                builder.diagnostic(
-                    "color.icc.invalid_profile",
-                    ColorSeverity::Warning,
-                    "ICCBased profile could not be parsed by qcms; alternate/fallback path will be used",
-                    object_label,
+            } else {
+                let profile_info = prepress::classify_icc_profile(
+                    &decoded.data,
+                    dict.get_integer("N").and_then(|n| u8::try_from(n).ok()),
+                    object_label.clone(),
                 );
+                push_profile_diagnostics(builder, &profile_info);
+                builder.icc_profiles.push(profile_info);
+                if qcms::Profile::new_from_slice(&decoded.data, false).is_none() {
+                    builder.diagnostic(
+                        "color.icc.invalid_profile",
+                        ColorSeverity::Warning,
+                        "ICCBased profile could not be parsed by qcms; alternate/fallback path will be used",
+                        object_label,
+                    );
+                }
             }
         }
         _ => builder.diagnostic(
@@ -888,6 +998,17 @@ fn inspect_separation_space(
     object_label: Option<String>,
 ) {
     builder.spot_preview.separation_spaces += 1;
+    let space_obj = PdfObject::Array(arr.to_vec());
+    let contributions = prepress::plate_contributions_for_color_space(
+        &space_obj,
+        &[1.0],
+        1.0,
+        reader,
+        object_label.clone(),
+        "color_space_inventory",
+        None,
+    );
+    builder.separation_framebuffer.record_all(contributions);
     if let Some(name) = arr.get(1).and_then(PdfObject::as_name) {
         builder.spot_colorants.insert(name.to_string());
     }
@@ -940,6 +1061,18 @@ fn inspect_devicen_space(
             object_label.clone(),
         );
     }
+    let default_tints = vec![1.0; names.len().max(1)];
+    let space_obj = PdfObject::Array(arr.to_vec());
+    let contributions = prepress::plate_contributions_for_color_space(
+        &space_obj,
+        &default_tints,
+        1.0,
+        reader,
+        object_label.clone(),
+        "color_space_inventory",
+        None,
+    );
+    builder.separation_framebuffer.record_all(contributions);
     if let Some(alt) = arr.get(2) {
         classify_color_space(alt, reader, builder, object_label.clone());
     }
@@ -1083,7 +1216,20 @@ mod tests {
         assert!(report.overprint.fill_overprint_used);
         assert!(report.overprint.overprint_mode_one_used);
         assert!(report.overprint.cmyk_fill_preview_supported);
+        assert!(report.overprint.true_separation_framebuffer);
         assert!(report.overprint.approximation_diagnostics >= 1);
+        assert_eq!(
+            report
+                .prompt12_prepress_cmm_device_link_separation_plates
+                .separation_framebuffer
+                .plate_count,
+            3
+        );
+        assert!(report
+            .prompt12_prepress_cmm_device_link_separation_plates
+            .spot_plates
+            .iter()
+            .any(|plate| plate.plane_name == "SpotBlue"));
         assert!(report
             .rendering_intents
             .iter()

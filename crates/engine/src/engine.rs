@@ -1383,6 +1383,16 @@ impl ContentEngine {
         PageRenderer::render_page_bands_with_mode(self, page_number, dpi, band_height, render_mode)
     }
 
+    /// Return the sparse Prompt 12 Separation/DeviceN plate report produced by
+    /// the render interpreter for fill/stroke paths.
+    pub fn prepress_plate_report(
+        &self,
+        page_number: usize,
+        dpi: u32,
+    ) -> Result<crate::prepress::SeparationFramebufferReport> {
+        PageRenderer::prepress_plate_report(self, page_number, dpi)
+    }
+
     /// Create an in-process progressive render job that can checkpoint at tile
     /// boundaries and resume without re-rendering completed tiles.
     pub fn progressive_render_job_with_mode(

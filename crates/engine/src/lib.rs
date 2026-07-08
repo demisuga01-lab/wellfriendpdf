@@ -110,6 +110,7 @@ pub mod optional_content;
 pub mod parse;
 pub mod parser;
 pub mod parser_report;
+pub mod prepress;
 pub mod reader;
 pub mod render;
 pub mod sdk;
@@ -281,6 +282,12 @@ pub use parser_report::{
     LinearizationInfo, ParserCategory, ParserDiagnostic, ParserMode, ParserReport,
     ParserReportOptions, ParserSeverity, ParserSourceMetrics, RepairSummary, RevisionHistory,
     RevisionSection,
+};
+pub use prepress::{
+    classify_icc_profile, IccProfileClass, IccProfileInfo, PlateContribution, PlateKind,
+    PlatePreviewHash, PlatePreviewReport, PlateSummary, Prompt12PrepressReport,
+    RenderingIntentBpcReport, SeparationFramebuffer, SeparationFramebufferReport,
+    DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES, MAX_PREPRESS_PLATES,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{

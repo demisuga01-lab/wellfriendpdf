@@ -43,6 +43,13 @@ is acceptable for preview but is not a claim of true spot-plate output. Prompt
 space counts, tint-transform counts, missing-transform counts, and the preview
 model string.
 
+Prompt 12 adds a sparse separation framebuffer side-channel. Separation and
+DeviceN colorant names, tint values, alternate preview RGB, alpha, and
+provenance are preserved in
+`prompt12_prepress_cmm_device_link_separation_plates`. RGB page output remains a
+visual preview. The plate report is the source of truth for Prompt 12
+separation evidence.
+
 ## Overprint
 
 Prompt 05 parses and preserves:
@@ -69,6 +76,12 @@ and reported; qcms-supported intent names are exposed. Black-point compensation
 is still reported as unavailable in the default backend rather than silently
 pretended.
 
+Prompt 12 extends ICC inventory with profile class detection for input,
+display, output, device-link, color-space conversion, abstract, named-color,
+malformed, and unsupported profiles. Device-link and multicolor transforms that
+cannot be executed safely are reported as unsupported rather than flattened into
+RGB proofing.
+
 ## Standards Boundary
 
 Color validation now catches missing/malformed output intents, ICC profile
@@ -78,3 +91,7 @@ output-intent checks above. It does not yet validate every PDF/A or PDF/X
 requirement: metadata schemas, annotation constraints, font embedding,
 transparency rules, image compression requirements, and full prepress
 separations remain in their own standards phases.
+
+Prompt 12 does not change that standards boundary. It improves prepress
+structure preservation and reporting, but it is not certification-grade PDF/X
+validation and it is not full overprint simulation.

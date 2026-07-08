@@ -64,6 +64,11 @@ plus an envelope whose `kind` ends in `_report`.
 - Inner report structs bump their own `schema_version` for breaking payload
   changes, independent of the envelope.
 
+Prompt 12 adds
+`report.prompt12_prepress_cmm_device_link_separation_plates` to
+`feature_report` and corresponding additive fields to color/prepress reporting.
+This is an additive payload change and does not bump `REPORT_ENVELOPE_VERSION`.
+
 ## Determinism & parity
 
 - The same document produces byte-identical `report` payloads across Rust,

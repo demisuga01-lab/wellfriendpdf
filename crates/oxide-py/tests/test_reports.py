@@ -191,6 +191,10 @@ def test_module_level_reports():
     assert prompt11b["status"] == "complete"
     assert prompt11b["feature_flag"]["name"] == "native-cmm-lcms2"
     assert prompt11b["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt11b"
+    prompt12 = feature["prompt12_prepress_cmm_device_link_separation_plates"]
+    assert prompt12["status"] == "complete"
+    assert prompt12["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt12"
+    assert prompt12["separation_framebuffer"]["cache_key_includes_plate_state"] is True
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

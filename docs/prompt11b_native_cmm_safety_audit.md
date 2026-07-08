@@ -28,5 +28,8 @@ Security controls:
 - Transform cache is bounded to 16 entries by default.
 - Native backend unavailability is reported, not panicked.
 
-Prompt 12 remains responsible for device-link ICC, multicolor ICC, separations,
-spot plates, and full overprint simulation.
+Prompt 12 adds device-link and multicolor inventory, sparse separation
+framebuffer reporting, and spot/DeviceN plate preservation on top of this
+boundary. It keeps the same native dependency rule: default and WASM builds do
+not link LittleCMS, and native behavior remains behind `native-cmm-lcms2`.
+Prompt 13 remains responsible for full overprint simulation.

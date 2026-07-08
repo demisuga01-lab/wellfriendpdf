@@ -249,6 +249,7 @@ pub struct RenderCacheKey {
     pub render_mode: &'static str,
     pub tile: RenderTile,
     pub visibility_fingerprint: String,
+    pub prepress_fingerprint: String,
 }
 
 impl RenderCacheKey {
@@ -263,12 +264,31 @@ impl RenderCacheKey {
         tile: RenderTile,
         visibility_fingerprint: impl Into<String>,
     ) -> Self {
+        Self::new_with_visibility_and_prepress(
+            page_number,
+            dpi,
+            render_mode,
+            tile,
+            visibility_fingerprint,
+            "prepress:none",
+        )
+    }
+
+    pub fn new_with_visibility_and_prepress(
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+        tile: RenderTile,
+        visibility_fingerprint: impl Into<String>,
+        prepress_fingerprint: impl Into<String>,
+    ) -> Self {
         Self {
             page_number,
             dpi,
             render_mode: render_mode.as_str(),
             tile,
             visibility_fingerprint: visibility_fingerprint.into(),
+            prepress_fingerprint: prepress_fingerprint.into(),
         }
     }
 }

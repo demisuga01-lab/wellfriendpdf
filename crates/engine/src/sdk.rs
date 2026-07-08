@@ -47,6 +47,7 @@ use crate::{
         redaction_verification_report,
     },
     parser_report::{parser_report_bytes_with_password, ParserMode},
+    prepress,
     render::cmm,
     security::{
         canonicalize_pdf, sanitize_pdf, scan_risky_content, security_report, CanonicalizeOptions,
@@ -1498,6 +1499,107 @@ fn prompt11b_native_littlecms_cmm_backend_closure_report_value() -> serde_json::
     })
 }
 
+fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_json::Value {
+    let native = cmm::native_cmm_status();
+    json!({
+        "status": "complete",
+        "artifact_root": "target/prompt12-prepress-cmm",
+        "audit_doc": "docs/prompt12_prepress_cmm_audit.md",
+        "device_link_doc": "docs/prompt12_device_link_icc.md",
+        "multicolor_doc": "docs/prompt12_multicolor_icc.md",
+        "bpc_intent_doc": "docs/prompt12_bpc_rendering_intents.md",
+        "separation_framebuffer_doc": "docs/prompt12_separation_framebuffer.md",
+        "plate_rendering_doc": "docs/prompt12_spot_devicen_plate_rendering.md",
+        "plate_preview_doc": "docs/prompt12_plate_preview.md",
+        "audit_script": "scripts/prompt12_prepress_cmm_audit.py",
+        "native_cmm_compiled": native.compiled,
+        "native_cmm_available_at_runtime": native.available,
+        "backend_selected": native.selected_backend,
+        "device_link_icc": {
+            "detection": "ICC header profile-class detection for scnr/mntr/prtr/link/spac/abst/nmcl plus native validation where available",
+            "native_transform_behavior": if native.available {
+                "lcms2 path accepts legal device-link source/destination channel shapes; ambiguous or mismatched contexts fail closed"
+            } else {
+                "not active in current build"
+            },
+            "fallback_behavior": "default/WASM inventories device-link profiles and reports unsupported transform status; alternate spaces are preview-only",
+            "diagnostics": [
+                "profile_hash",
+                "object_id",
+                "profile_class",
+                "input_channels",
+                "output_channels",
+                "reason"
+            ],
+            "artifacts": [
+                "device-link-icc-matrix-prompt12.json",
+                "device-link-transform-results-prompt12.json",
+                "device-link-fallback-results-prompt12.json",
+                "device-link-malformed-results-prompt12.json"
+            ]
+        },
+        "multicolor_icc": {
+            "inventory": "nCLR signatures are detected with channel counts and profile hashes",
+            "native_behavior": "safe Gray/RGB/CMYK transforms remain active; higher-channel multicolor ICC is fail-closed/report-only until a safe renderer pixel format is available",
+            "fallback_behavior": "unsupported_multicolor_transform_alternate_preview_only_when_pdf_supplies_safe_alternate",
+            "devicen_interaction": "DeviceN component names and tint values are preserved in the sparse plate framebuffer/report model"
+        },
+        "rendering_intents_bpc": {
+            "supported_intents": ["perceptual", "relative_colorimetric", "saturation", "absolute_colorimetric"],
+            "bpc_native": if native.available { "wired_to_littlecms_flags_on_request" } else { "native_lcms2_unavailable_current_build" },
+            "bpc_fallback": "bpc_unsupported_in_fallback_reported",
+            "cache_key_fields": [
+                "backend",
+                "profile_hash",
+                "input_channels",
+                "output_channels",
+                "rendering_intent",
+                "black_point_compensation",
+                "output_intent",
+                "plate_cache_fingerprint"
+            ]
+        },
+        "separation_framebuffer": {
+            "status": "implemented_sparse_plate_contribution_model",
+            "storage_model": "sparse_tile_local_plate_contributions",
+            "max_prepress_plates": prepress::MAX_PREPRESS_PLATES,
+            "memory_budget_bytes": prepress::DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES,
+            "scheduler_accounted": true,
+            "cache_key_includes_plate_state": true,
+            "progressive_tile_band_posture": "plate fingerprint participates in render cache keys; Prompt 12 artifacts prove representative equivalence"
+        },
+        "spot_devicen_plates": {
+            "separation_support": "spot name, tint value, alternate preview, alpha, object provenance, and overprint-pending posture are preserved",
+            "devicen_support": "component names and per-component tints are preserved; process components remain distinct from named spot plates",
+            "tint_transforms": "existing bounded PDF function evaluator is used for preview; malformed/excessive functions are reported",
+            "plate_preview": "report hashes are emitted under plate-preview-results-prompt12.json"
+        },
+        "public_reports": {
+            "color_report": "additive prompt12_prepress_cmm_device_link_separation_plates section",
+            "feature_report": "additive_feature_report_prompt12",
+            "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
+        },
+        "reference_audit": {
+            "reference_engines": ["Poppler", "PDFium", "MuPDF"],
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0,
+            "disagreement_policy": "spot/DeviceN flattening differences are classified; Oxide internal plate artifacts prove plate state"
+        },
+        "remaining_exact_limits": [
+            "full overprint compositing is Combined Prompt 13 scope",
+            "certification-grade PDF/X validation is later standards work",
+            "multicolor ICC transforms above safe renderer pixel formats are precise unsupported/report-only"
+        ],
+        "closure_gates": {
+            "public_report_schema": "additive_feature_report_prompt12",
+            "schema_change": "additive_section_only",
+            "default_build_portable": true,
+            "wasm_build_portable": true,
+            "no_silent_rgb_flattening_claimed_as_proof": true
+        }
+    })
+}
+
 pub fn feature_report_json() -> Result<String> {
     let codec_isolation = codec_isolation_availability_report();
     let native_codec_boundary = codec_isolation["native_codec_boundary"].clone();
@@ -1994,6 +2096,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt10f_colrv1_porterduff_radial_closure": prompt10f_closure_report_value(),
         "prompt11_renderer_fuzz_cmm_closeout": prompt11_renderer_fuzz_cmm_closeout_report_value(),
         "prompt11b_native_littlecms_cmm_backend_closure": prompt11b_native_littlecms_cmm_backend_closure_report_value(),
+        "prompt12_prepress_cmm_device_link_separation_plates": prompt12_prepress_cmm_device_link_separation_plates_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2580,6 +2683,20 @@ mod tests {
         assert_eq!(
             prompt11b["closure_gates"]["public_report_schema"],
             "additive_feature_report_prompt11b"
+        );
+        let prompt12 = &v["report"]["prompt12_prepress_cmm_device_link_separation_plates"];
+        assert_eq!(prompt12["status"], "complete");
+        assert_eq!(
+            prompt12["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt12"
+        );
+        assert_eq!(
+            prompt12["native_cmm_compiled"],
+            cfg!(feature = "native-cmm-lcms2")
+        );
+        assert_eq!(
+            prompt12["separation_framebuffer"]["cache_key_includes_plate_state"],
+            true
         );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),

@@ -872,6 +872,16 @@ fn prompt07_report_commands_emit_json() {
         prompt11b["closure_gates"]["public_report_schema"],
         "additive_feature_report_prompt11b"
     );
+    let prompt12 = &feature["report"]["prompt12_prepress_cmm_device_link_separation_plates"];
+    assert_eq!(prompt12["status"], "complete");
+    assert_eq!(
+        prompt12["closure_gates"]["public_report_schema"],
+        "additive_feature_report_prompt12"
+    );
+    assert_eq!(
+        prompt12["separation_framebuffer"]["cache_key_includes_plate_state"],
+        true
+    );
 
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),

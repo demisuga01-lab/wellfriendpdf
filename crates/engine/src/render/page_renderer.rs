@@ -13,6 +13,7 @@ use crate::images::SmaskLoader;
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::optional_content::OptionalContentContext;
+use crate::prepress::{self, SeparationFramebuffer, SeparationFramebufferReport};
 use crate::render::buffer::{AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, WHITE};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::display_list::{
@@ -197,12 +198,16 @@ impl PageRenderer {
         let ocg_fingerprint = OptionalContentContext::from_document(engine.document())
             .visibility_fingerprint()
             .to_string();
-        let key = RenderCacheKey::new_with_visibility(
+        let resources = engine.get_page_resources(page_number)?;
+        let plate_fingerprint =
+            prepress::cache_fingerprint_for_color_spaces(resources.color_spaces.values());
+        let key = RenderCacheKey::new_with_visibility_and_prepress(
             page_number,
             dpi,
             render_mode,
             tile,
             ocg_fingerprint,
+            plate_fingerprint,
         );
         if let Some(cache) = cache {
             if let Some(hit) = cache.get(&key) {
@@ -259,6 +264,25 @@ impl PageRenderer {
             y += height;
         }
         Ok(bands)
+    }
+
+    /// Render-interpreter pass that returns sparse Prompt 12 plate state.
+    ///
+    /// This follows the same content dispatch path as RGB rendering for page
+    /// fill/stroke operations, but only exposes plate/tint side-channel data.
+    /// It does not claim Prompt 13 overprint compositing.
+    pub fn prepress_plate_report(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+    ) -> Result<SeparationFramebufferReport> {
+        let ops = engine.get_page_content(page_number)?;
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let resources = engine.get_page_resources(page_number)?;
+        let buf = Self::initial_page_buffer(&viewport, false, RenderMode::Compat);
+        let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
+        state.dispatch_all(&ops);
+        Ok(state.into_separation_framebuffer().report())
     }
 
     fn render_page_display_list_or_immediate_with_mode(
@@ -344,6 +368,10 @@ struct RenderState<'a> {
     /// Visibility stack for nested BMC/BDC/EMC marked-content sections.
     oc_visibility_stack: Vec<bool>,
     oc_current_visible: bool,
+    /// Sparse Prompt 12 plate framebuffer side-channel. It records Separation
+    /// and DeviceN tint identity for report/proofing without changing RGB
+    /// preview compositing semantics.
+    separation_framebuffer: SeparationFramebuffer,
 }
 
 #[derive(Clone, Debug)]
@@ -475,6 +503,8 @@ impl<'a> RenderState<'a> {
         engine: &'a ContentEngine,
         page_number: usize,
     ) -> Self {
+        let viewport_width = viewport.width_px;
+        let viewport_height = viewport.height_px;
         Self {
             engine,
             page_number,
@@ -496,11 +526,20 @@ impl<'a> RenderState<'a> {
             optional_content: OptionalContentContext::from_document(engine.document()),
             oc_visibility_stack: Vec::new(),
             oc_current_visible: true,
+            separation_framebuffer: SeparationFramebuffer::for_page(
+                page_number,
+                viewport_width,
+                viewport_height,
+            ),
         }
     }
 
     fn into_buffer(self) -> PixelBuffer {
         self.buf
+    }
+
+    fn into_separation_framebuffer(self) -> SeparationFramebuffer {
+        self.separation_framebuffer
     }
 
     fn dispatch_all(&mut self, ops: &[ContentOperation]) {
@@ -894,6 +933,31 @@ impl<'a> RenderState<'a> {
         self.resolve_paint_color(&self.gs.stroke_color, self.gs.stroke_alpha as f32)
     }
 
+    fn record_plate_contribution(
+        &mut self,
+        color: &crate::content::state::Color,
+        alpha: f32,
+        operation: &str,
+    ) {
+        let ColorSpace::Named(name) = &color.space else {
+            return;
+        };
+        let Some(space_obj) = self.resources.color_spaces.get(name) else {
+            return;
+        };
+        let reader = self.engine.document().reader();
+        let contributions = prepress::plate_contributions_for_color_space(
+            space_obj,
+            &color.components,
+            alpha,
+            reader,
+            Some(format!("page {} color space /{}", self.page_number, name)),
+            operation,
+            Some(self.page_number),
+        );
+        self.separation_framebuffer.record_all(contributions);
+    }
+
     /// Resolve a graphics-state colour to a device pixel colour. Device spaces go
     /// straight through [`ColorSpaceHandler`]; a `Named` space is looked up in the
     /// page resources and, if it is a `/Separation` or `/DeviceN` space, its tint
@@ -971,6 +1035,8 @@ impl<'a> RenderState<'a> {
     fn stroke_and_clear(&mut self) {
         self.apply_pending_clip();
         let ctm = self.ctm();
+        let stroke_color_state = self.gs.stroke_color.clone();
+        self.record_plate_contribution(&stroke_color_state, self.gs.stroke_alpha as f32, "stroke");
         let color = self.stroke_pixel_color();
         let width = self.gs.line_width;
         let dash = self.dash_state();
@@ -1001,6 +1067,8 @@ impl<'a> RenderState<'a> {
             return;
         }
         let ctm = self.ctm();
+        let fill_color_state = self.gs.fill_color.clone();
+        self.record_plate_contribution(&fill_color_state, self.gs.fill_alpha as f32, "fill");
         if self.gs.fill_overprint {
             if let Some(cmyk) = device_cmyk_components(&self.gs.fill_color) {
                 PathPainter::fill_device_cmyk_overprint_preview(
@@ -1025,6 +1093,9 @@ impl<'a> RenderState<'a> {
     fn fill_stroke_and_clear(&mut self, rule: FillRule) {
         self.apply_pending_clip();
         let ctm = self.ctm();
+        let fill_color_state = self.gs.fill_color.clone();
+        let stroke_color_state = self.gs.stroke_color.clone();
+        self.record_plate_contribution(&fill_color_state, self.gs.fill_alpha as f32, "fill");
         if self.is_pattern_fill() {
             if let Some(pattern_name) = self.gs.fill_pattern_name.clone() {
                 self.paint_pattern_fill(rule, &pattern_name);
@@ -1033,6 +1104,7 @@ impl<'a> RenderState<'a> {
             let fill = self.fill_pixel_color();
             PathPainter::fill(&mut self.buf, &self.path, &ctm, &self.viewport, fill, rule);
         }
+        self.record_plate_contribution(&stroke_color_state, self.gs.stroke_alpha as f32, "stroke");
         let stroke = self.stroke_pixel_color();
         let width = self.gs.line_width;
         let dash = self.dash_state();
@@ -1254,6 +1326,11 @@ impl<'a> RenderState<'a> {
             optional_content: self.optional_content.clone(),
             oc_visibility_stack: self.oc_visibility_stack.clone(),
             oc_current_visible: self.oc_current_visible,
+            separation_framebuffer: SeparationFramebuffer::for_page(
+                self.page_number,
+                self.viewport.width_px,
+                self.viewport.height_px,
+            ),
         };
 
         if let Some(bbox) = extract_bbox(&g_dict) {
@@ -1268,6 +1345,8 @@ impl<'a> RenderState<'a> {
             }
         };
         mask_state.dispatch_all(&ops);
+        self.separation_framebuffer
+            .absorb(mask_state.separation_framebuffer.clone());
         let mask_buf = mask_state.into_buffer();
 
         let mut mask = if is_alpha {
@@ -1750,6 +1829,11 @@ impl<'a> RenderState<'a> {
             optional_content: self.optional_content.clone(),
             oc_visibility_stack: self.oc_visibility_stack.clone(),
             oc_current_visible: self.oc_current_visible,
+            separation_framebuffer: SeparationFramebuffer::for_page(
+                self.page_number,
+                self.viewport.width_px,
+                self.viewport.height_px,
+            ),
         };
 
         // Carry the parent clip into the group so content is bounded the same
@@ -1777,6 +1861,8 @@ impl<'a> RenderState<'a> {
             }
         };
         group_state.dispatch_all(&ops);
+        self.separation_framebuffer
+            .absorb(group_state.separation_framebuffer.clone());
         let mut group_buf = group_state.into_buffer();
         group_buf.clear_knockout_backdrop();
         group_buf.clear_clip();
@@ -5908,6 +5994,48 @@ mod tests {
         out
     }
 
+    fn simple_prepress_plate_pdf() -> Vec<u8> {
+        let content = "/CS1 cs 0.25 scn 10 10 20 20 re f\n/CS1 CS 0.75 SCN 40 10 m 80 10 l S\n/CS2 cs 0.20 0.80 scn 10 40 20 20 re f\n";
+        let type4 = "{ 0 }";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /ColorSpace << /CS1 [/Separation /SpotOrange /DeviceRGB 5 0 R] /CS2 [/DeviceN [/Cyan /SpotGreen] /DeviceRGB 6 0 R] >> >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+            b"<< /FunctionType 2 /Domain [0 1] /Range [0 1 0 1 0 1] /C0 [1 1 1] /C1 [1 0.5 0] /N 1 >>".to_vec(),
+            format!(
+                "<< /FunctionType 4 /Domain [0 1 0 1] /Range [0 1 0 1 0 1] /Length {} >>\nstream\n{}\nendstream",
+                type4.len(),
+                type4
+            )
+            .into_bytes(),
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
     fn simple_ocg_pdf() -> Vec<u8> {
         let content = "/OC /L1 BDC 1 0 0 rg 10 10 80 80 re f EMC\n0 0 1 rg 0 0 10 10 re f\n";
         let objects = [
@@ -5976,6 +6104,31 @@ mod tests {
             .expect("vector page should be display-list compatible");
         assert_eq!(via_list.get_pixel(20, 70), RED);
         assert_ne!(via_list.get_pixel(50, 50), WHITE);
+    }
+
+    #[test]
+    fn prepress_plate_report_records_separation_and_devicen_fill_stroke_tints() {
+        let engine = ContentEngine::open_bytes(simple_prepress_plate_pdf())
+            .expect("open prepress plate PDF");
+        let report = engine
+            .prepress_plate_report(1, 72)
+            .expect("prepress plate report");
+        assert_eq!(
+            report.deterministic_plane_order,
+            vec![
+                "Cyan".to_string(),
+                "SpotGreen".to_string(),
+                "SpotOrange".to_string()
+            ]
+        );
+        assert_eq!(report.plate_count, 3);
+        assert_eq!(report.contribution_count, 4);
+        assert!(report.scheduler_accounted);
+        assert!(!report.cache_fingerprint.is_empty());
+        assert!(report
+            .plate_previews
+            .iter()
+            .any(|preview| preview.plane_name == "SpotOrange"));
     }
 
     #[test]
