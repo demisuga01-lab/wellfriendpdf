@@ -824,6 +824,23 @@ fn prompt07_report_commands_emit_json() {
             ["multi_reference_audit"]["oxide_outlier_failures"],
         0
     );
+    assert_eq!(
+        feature["report"]["prompt10f_colrv1_porterduff_radial_closure"]["status"],
+        "complete"
+    );
+    assert_eq!(
+        feature["report"]["prompt10f_colrv1_porterduff_radial_closure"]
+            ["porter_duff_plus_composites"]["implemented_modes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        12
+    );
+    assert_eq!(
+        feature["report"]["prompt10f_colrv1_porterduff_radial_closure"]["closure_gates"]
+            ["public_report_schema"],
+        "additive_feature_report_prompt10f"
+    );
 
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),

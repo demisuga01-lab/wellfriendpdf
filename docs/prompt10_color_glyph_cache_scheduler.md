@@ -11,15 +11,16 @@ font table on each glyph invocation rather than cached as stale painted bitmaps,
 so palette, gradient, clip, and composite changes are carried by the font bytes
 and paint graph traversal.
 
-Prompt 10E records this in
-`colrv1-cache-scheduler-matrix-prompt10e.json`.
+Prompt 10F records the final cache-key closure in
+`colrv1-cache-key-prompt10f.json`.
 
 ## Scheduler Posture
 
 COLRv1 paint graphs that need gradients, clips, or composites allocate a
 transparent glyph paint surface through the renderer offscreen-surface scheduler
-token path. Scheduler denial fails closed with a diagnostic before the surface
-is used.
+token path. Porter-Duff/Plus source paints also allocate scheduler-reserved
+transparent source surfaces before compositing against the glyph-local backdrop.
+Scheduler denial fails closed with a diagnostic before the surface is used.
 
 The current implementation uses a scheduler-bounded render-sized surface and
 clips paint loops to glyph/path bounds. Cropped glyph-space allocation remains a
@@ -31,3 +32,7 @@ Evidence:
 - `colrv1-cache-scheduler-matrix-prompt10e.json`
 - `colrv1-tile-band-progressive-equivalence-prompt10e.json`
 - `colrv1-determinism-report-prompt10e.json`
+- `colrv1-composite-scheduler-cache-prompt10f.json`
+- `colrv1-cache-key-prompt10f.json`
+- `colrv1-scheduler-memory-prompt10f.json`
+- `colrv1-determinism-prompt10f.json`

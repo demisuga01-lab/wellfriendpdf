@@ -3,12 +3,17 @@
 Prompt 10E closes the remaining Prompt 10 color-glyph renderer blockers for
 COLRv1 gradient, clip, and blend/composite behavior.
 
+Current status note: Prompt 10F supersedes the Prompt 10E remaining limits by
+adding Porter-Duff/Plus composite rendering and exact moving-center radial
+gradient solving.
+
 ## Implemented
 
 - `PaintLinearGradient` with bounded stop count, palette colors, alpha stops,
   finite coordinate checks, and pad/repeat/reflect handling.
 - `PaintRadialGradient` with same-center circle handling and a bounded
-  deterministic moving-center approximation.
+  deterministic moving-center fallback that Prompt 10F replaces with the exact
+  two-circle solver.
 - `PaintSweepGradient` with deterministic angular interpolation.
 - `PaintClip` through real glyph-outline clip masks.
 - `PaintClipBox` through transformed COLR ClipList boxes.
@@ -42,14 +47,14 @@ Primary artifacts:
 Prompt 10E rendered 17 pages, classified 24 rendered/policy fixture rows, and
 recorded 0 Oxide outlier failures and 0 unclassified failures.
 
-## Exact Remaining Limits
+## Superseded Prompt 10E Limits
 
 - Porter-Duff `Clear`, `Source`, `Destination`, `DestinationOver`, `SourceIn`,
   `DestinationIn`, `SourceOut`, `DestinationOut`, `SourceAtop`,
-  `DestinationAtop`, `Xor`, and `Plus` are exact unsupported composite-mode
-  rows.
-- Moving-center radial gradients use a bounded deterministic approximation
-  until a full COLRv1 two-circle solver is added.
+  `DestinationAtop`, `Xor`, and `Plus` were Prompt 10E exact mode rows and are
+  implemented by Prompt 10F.
+- Moving-center radial gradients used a bounded deterministic Prompt 10E
+  fallback and are implemented by the Prompt 10F two-circle solver.
 - COLRv1 glyph paint surfaces are scheduler-bounded full render buffers. Cropped
   glyph-space allocation remains an optimization, not a Prompt 10 correctness
   blocker.

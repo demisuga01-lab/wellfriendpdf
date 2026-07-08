@@ -1,17 +1,11 @@
 # Prompt 10 Known Limits
 
-Prompt 10E narrows the remaining Prompt 10 limits to exact COLRv1 composite
-modes, SVG security/static-subset boundaries, bitmap decoder availability, or
-missing safe geometry exposure.
+Prompt 10F closes the remaining Prompt 10 COLRv1 composite and moving-center
+radial gradient blockers. Remaining limits are exact security, decoder,
+geometry-exposure, or performance boundaries.
 
 ## Remaining Limits
 
-- COLRv1 Porter-Duff and additive composite modes remain exact unsupported rows:
-  `Clear`, `Source`, `Destination`, `DestinationOver`, `SourceIn`,
-  `DestinationIn`, `SourceOut`, `DestinationOut`, `SourceAtop`,
-  `DestinationAtop`, `Xor`, and `Plus`.
-- Moving-center COLRv1 radial gradients use a bounded deterministic
-  approximation until a full two-circle solver is added.
 - COLRv1 glyph paint surfaces are scheduler-bounded full render buffers.
   Cropped glyph-space allocation remains an optimization.
 - SVG-in-OpenType active or dynamic content is blocked. Scripts, event handlers,
@@ -35,8 +29,8 @@ missing safe geometry exposure.
 
 - COLR/CPAL v0 solid layered glyph rendering is implemented.
 - COLRv1 `PaintSolid`, `PaintColrGlyph`, transform operators, gradients,
-  `PaintClip`, `PaintClipBox`, and supported blend composites are implemented
-  with depth, layer, stop-count, and scheduler caps.
+  `PaintClip`, `PaintClipBox`, Porter-Duff/Plus composites, and PDF blend
+  composites are implemented with depth, layer, stop-count, and scheduler caps.
 - sbix PNG color glyph rendering is implemented.
 - sbix JPEG color glyph rendering is implemented through the existing bounded
   DCT decoder.
@@ -44,5 +38,5 @@ missing safe geometry exposure.
 - The shared bounded embedded-bitmap glyph path supports safe bitmap payloads
   exposed by the font parser.
 - Korean and Hebrew rendered-page fixture gaps are closed.
-- Prompt 10B, Prompt 10C, Prompt 10D, and Prompt 10E multi-reference audits
+- Prompt 10B, Prompt 10C, Prompt 10D, Prompt 10E, and Prompt 10F multi-reference audits
   have zero Oxide outlier failures and zero unclassified failures.

@@ -124,6 +124,10 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt10e_colrv1_gradient_clip_composite_closure\"", feature);
         Assert.Contains("\"implemented_with_exact_mode_limits\"", feature);
         Assert.Contains("\"additive_feature_report_prompt10e\"", feature);
+        Assert.Contains("\"prompt10f_colrv1_porterduff_radial_closure\"", feature);
+        Assert.Contains("\"DestinationAtop\"", feature);
+        Assert.Contains("\"implemented_with_reference_equivalence\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt10f\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

@@ -96,5 +96,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"additive_feature_report_prompt10e\"")) {
             throw new AssertionError("feature report missing Prompt 10E COLRv1 gradient clip composite posture");
         }
+        if (!feature.contains("\"prompt10f_colrv1_porterduff_radial_closure\"")
+                || !feature.contains("\"DestinationAtop\"")
+                || !feature.contains("\"additive_feature_report_prompt10f\"")) {
+            throw new AssertionError("feature report missing Prompt 10F Porter-Duff radial closure posture");
+        }
     }
 }

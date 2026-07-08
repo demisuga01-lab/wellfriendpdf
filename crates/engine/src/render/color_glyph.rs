@@ -52,6 +52,18 @@ pub(crate) struct ColrLayer {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ColrBlendMode {
     Normal,
+    Clear,
+    Source,
+    Destination,
+    DestinationOver,
+    SourceIn,
+    DestinationIn,
+    SourceOut,
+    DestinationOut,
+    SourceAtop,
+    DestinationAtop,
+    Xor,
+    Plus,
     Multiply,
     Screen,
     Overlay,
@@ -859,6 +871,18 @@ fn map_gradient_extend(extend: GradientExtend) -> ColrGradientExtend {
 fn map_composite_mode(mode: CompositeMode) -> Option<ColrBlendMode> {
     match mode {
         CompositeMode::SourceOver => Some(ColrBlendMode::Normal),
+        CompositeMode::Clear => Some(ColrBlendMode::Clear),
+        CompositeMode::Source => Some(ColrBlendMode::Source),
+        CompositeMode::Destination => Some(ColrBlendMode::Destination),
+        CompositeMode::DestinationOver => Some(ColrBlendMode::DestinationOver),
+        CompositeMode::SourceIn => Some(ColrBlendMode::SourceIn),
+        CompositeMode::DestinationIn => Some(ColrBlendMode::DestinationIn),
+        CompositeMode::SourceOut => Some(ColrBlendMode::SourceOut),
+        CompositeMode::DestinationOut => Some(ColrBlendMode::DestinationOut),
+        CompositeMode::SourceAtop => Some(ColrBlendMode::SourceAtop),
+        CompositeMode::DestinationAtop => Some(ColrBlendMode::DestinationAtop),
+        CompositeMode::Xor => Some(ColrBlendMode::Xor),
+        CompositeMode::Plus => Some(ColrBlendMode::Plus),
         CompositeMode::Multiply => Some(ColrBlendMode::Multiply),
         CompositeMode::Screen => Some(ColrBlendMode::Screen),
         CompositeMode::Overlay => Some(ColrBlendMode::Overlay),
@@ -874,18 +898,6 @@ fn map_composite_mode(mode: CompositeMode) -> Option<ColrBlendMode> {
         CompositeMode::Saturation => Some(ColrBlendMode::Saturation),
         CompositeMode::Color => Some(ColrBlendMode::Color),
         CompositeMode::Luminosity => Some(ColrBlendMode::Luminosity),
-        CompositeMode::Clear
-        | CompositeMode::Source
-        | CompositeMode::Destination
-        | CompositeMode::DestinationOver
-        | CompositeMode::SourceIn
-        | CompositeMode::DestinationIn
-        | CompositeMode::SourceOut
-        | CompositeMode::DestinationOut
-        | CompositeMode::SourceAtop
-        | CompositeMode::DestinationAtop
-        | CompositeMode::Xor
-        | CompositeMode::Plus => None,
     }
 }
 

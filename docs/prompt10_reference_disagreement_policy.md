@@ -89,3 +89,20 @@ Evidence:
 - `multi-reference-diff-metrics-prompt10e.json`
 - `reference-disagreement-summary-prompt10e.json`
 - `prompt10e-html-report/index.html`
+
+## Prompt 10F Outcome
+
+Prompt 10F closes the final COLRv1 Porter-Duff/Plus and moving-center radial
+gradient rows. The required audit posture remains unchanged:
+
+- Oxide outlier failures: 0
+- unclassified failures: 0
+- every reference disagreement classified
+- no broad unsupported COLRv1 composite rows remain
+
+Evidence:
+
+- `multi-reference-render-results-prompt10f.json`
+- `multi-reference-diff-metrics-prompt10f.json`
+- `reference-disagreement-summary-prompt10f.json`
+- `prompt10f-html-report/index.html`

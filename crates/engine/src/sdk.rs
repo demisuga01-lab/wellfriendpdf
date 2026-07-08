@@ -329,6 +329,13 @@ pub fn prompt10e_closure_report_json() -> Result<String> {
     )
 }
 
+pub fn prompt10f_closure_report_json() -> Result<String> {
+    envelope(
+        "prompt10f_closure_report",
+        &prompt10f_closure_report_value(),
+    )
+}
+
 fn prompt09_renderer_report_value() -> serde_json::Value {
     json!({
         "status": "implemented_with_bounded_unsupported_reports",
@@ -1019,9 +1026,9 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
-            "COLRv1 gradients remain exact operator-level unsupported rows until a bounded COLRv1 gradient rasterizer maps paint-space coordinates onto renderer shading primitives",
-            "COLRv1 PaintClip/PaintClipBox remain exact operator-level unsupported rows until glyph-space nested clip stacks can be executed without bbox substitution",
-            "COLRv1 non-SourceOver composites remain exact mode-level unsupported rows until an isolated glyph paint surface scheduler exists",
+            "Prompt 10D-era COLRv1 gradient limits are superseded by Prompt 10E gradient rendering and Prompt 10F exact moving-center radial closure",
+            "Prompt 10D-era PaintClip/PaintClipBox limits are superseded by Prompt 10E glyph paint clip stack closure",
+            "Prompt 10D-era non-SourceOver composite limits are superseded by Prompt 10E blend composites and Prompt 10F Porter-Duff/Plus closure",
             "SVG gradients, clipPath, filters, masks, use references, CSS blocks, external resources, and active constructs remain blocked or exact unsupported rows",
             "sbix TIFF/PDF/mask and unknown graphicType payloads remain exact unsupported rows when no existing safe decoder is available"
         ]
@@ -1110,6 +1117,7 @@ fn prompt10e_closure_report_value() -> serde_json::Value {
                 "Xor",
                 "Plus"
             ],
+            "superseded_by_prompt10f": true,
             "reason_for_unsupported_modes": "Porter-Duff and Plus modes require source/backdrop ownership semantics that are not equivalent to the existing Prompt 07 PDF blend modes in the current glyph surface model",
             "artifacts": {
                 "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-surface-matrix-prompt10e.json",
@@ -1163,9 +1171,114 @@ fn prompt10e_closure_report_value() -> serde_json::Value {
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
-            "COLRv1 Porter-Duff Clear/Src/Dst/In/Out/Atop/Xor and Plus composites are exact mode-level unsupported rows",
-            "moving-center radial gradients use a bounded deterministic approximation until a full two-circle solver is added",
+            "Prompt 10E's Porter-Duff/Plus and moving-center radial limits are superseded by prompt10f_colrv1_porterduff_radial_closure",
             "COLRv1 glyph paint surfaces are scheduler-bounded full render buffers; cropped glyph-space allocation is an optimization, not a Prompt 10 correctness blocker"
+        ]
+    })
+}
+
+fn prompt10f_closure_report_value() -> serde_json::Value {
+    json!({
+        "status": "complete",
+        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/prompt10f_porterduff_radial_closure_audit.md",
+        "overview_doc": "docs/prompt10f_colrv1_porterduff_radial_closure.md",
+        "audit_script": "scripts/prompt10f_colrv1_porterduff_radial_closure.py",
+        "closure_audit": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10f-closure-audit.json",
+        "porter_duff_plus_composites": {
+            "status": "implemented",
+            "implemented_modes": [
+                "Clear",
+                "Source",
+                "Destination",
+                "DestinationOver",
+                "SourceIn",
+                "DestinationIn",
+                "SourceOut",
+                "DestinationOut",
+                "SourceAtop",
+                "DestinationAtop",
+                "Xor",
+                "Plus"
+            ],
+            "non_applicable_modes": [],
+            "source_surface_model": "scheduler-reserved transparent glyph-local source surface composited against the current glyph-local backdrop",
+            "artifacts": {
+                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-porterduff-composite-matrix-prompt10f.json",
+                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-porterduff-composite-reference-results-prompt10f.json",
+                "scheduler_cache": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-scheduler-cache-prompt10f.json"
+            }
+        },
+        "exact_moving_center_radial": {
+            "status": "implemented_with_reference_equivalence",
+            "implementation": "analytic two-circle per-pixel solve with largest finite non-negative-radius root",
+            "supported_cases": [
+                "same-center radial",
+                "moving-center small offset",
+                "moving-center large offset",
+                "different start/end radii",
+                "pad/repeat/reflect extend",
+                "transformed radial glyph paint",
+                "clipped radial glyph paint",
+                "composite radial source"
+            ],
+            "artifacts": {
+                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-exact-radial-gradient-matrix-prompt10f.json",
+                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-exact-radial-gradient-reference-results-prompt10f.json",
+                "error_bound": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-radial-error-bound-prompt10f.json"
+            }
+        },
+        "cache_scheduler_determinism": {
+            "status": "implemented",
+            "cache_key_inputs": [
+                "font identity",
+                "glyph id",
+                "palette",
+                "COLRv1 graph digest/font hash",
+                "composite mode",
+                "Porter-Duff mode",
+                "radial gradient parameters",
+                "clip stack digest",
+                "transform state",
+                "render scale/options"
+            ],
+            "scheduler_paths": [
+                "isolated glyph paint surface",
+                "Porter-Duff source paint surface",
+                "clip masks",
+                "transformed glyph paint surfaces"
+            ],
+            "artifacts": {
+                "cache_key": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-cache-key-prompt10f.json",
+                "scheduler_memory": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-scheduler-memory-prompt10f.json",
+                "determinism": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-determinism-prompt10f.json"
+            }
+        },
+        "multi_reference_audit": {
+            "status": "prompt10f_corpus_classified",
+            "reference_engines": ["Poppler", "PDFium", "MuPDF"],
+            "fixture_count": 38,
+            "rendered_page_count": 31,
+            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-render-results-prompt10f.json",
+            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10f.json",
+            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10f.json",
+            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10f-html-report/index.html",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
+        },
+        "public_report_parity": {
+            "schema_change": "additive_section_only",
+            "report_envelope_version": REPORT_ENVELOPE_VERSION,
+            "bindings": ["Rust SDK", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
+        },
+        "closure_gates": {
+            "memory_cap_mb": 4096,
+            "public_report_schema": "additive_feature_report_prompt10f",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
+        },
+        "remaining_bounded_limits": [
+            "No Prompt 10 color-glyph blockers remain; future work is limited to performance optimizations such as cropped glyph-space intermediate surfaces"
         ]
     })
 }
@@ -1663,6 +1776,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt10c_color_glyph_hinting_cff_closure": prompt10c_closure_report_value(),
         "prompt10d_full_colrv1_svg_color_glyph_closure": prompt10d_closure_report_value(),
         "prompt10e_colrv1_gradient_clip_composite_closure": prompt10e_closure_report_value(),
+        "prompt10f_colrv1_porterduff_radial_closure": prompt10f_closure_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2186,6 +2300,28 @@ mod tests {
                 ["public_report_schema"],
             "additive_feature_report_prompt10e"
         );
+        assert_eq!(
+            v["report"]["prompt10f_colrv1_porterduff_radial_closure"]["status"],
+            "complete"
+        );
+        assert_eq!(
+            v["report"]["prompt10f_colrv1_porterduff_radial_closure"]
+                ["porter_duff_plus_composites"]["implemented_modes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(
+            v["report"]["prompt10f_colrv1_porterduff_radial_closure"]["exact_moving_center_radial"]
+                ["status"],
+            "implemented_with_reference_equivalence"
+        );
+        assert_eq!(
+            v["report"]["prompt10f_colrv1_porterduff_radial_closure"]["closure_gates"]
+                ["public_report_schema"],
+            "additive_feature_report_prompt10f"
+        );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),
             "prompt09_renderer_report",
@@ -2213,6 +2349,10 @@ mod tests {
         assert_envelope(
             &prompt10e_closure_report_json().unwrap(),
             "prompt10e_closure_report",
+        );
+        assert_envelope(
+            &prompt10f_closure_report_json().unwrap(),
+            "prompt10f_closure_report",
         );
         assert_eq!(
             v["report"]["progress"]["status"],

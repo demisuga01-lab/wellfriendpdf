@@ -1,8 +1,8 @@
 # Prompt 10 Color Glyph Rendering
 
-Prompt 10E closes the remaining safe COLRv1 color-glyph work with bounded
-gradient, clip, and composite rendering plus exact mode, payload, or security
-diagnostics for the rest.
+Prompt 10F closes the remaining safe COLRv1 color-glyph work with gradients,
+clip stacks, Porter-Duff/Plus composites, static SVG color glyphs, safe bitmap
+payloads, and exact payload or security diagnostics for the rest.
 
 ## Implemented Rendering
 
@@ -24,8 +24,8 @@ COLR/CPAL v1 now supports the bounded vector paint subset:
 - `PaintSweepGradient`
 - `PaintClip`
 - `PaintClipBox`
-- `PaintComposite` with `SourceOver` and the PDF blend modes already supported
-  by Prompt 07/07B
+- `PaintComposite` with `SourceOver`, Porter-Duff modes, `Plus`, and the PDF
+  blend modes already supported by Prompt 07/07B
 
 Embedded bitmap color glyphs use the shared safe raster branch. PNG
 `RasterGlyphImage` payloads and bounded bitmap strikes exposed by the font
@@ -44,11 +44,9 @@ active SVG content.
 
 ## Exact Unsupported Rows
 
-Unsupported COLRv1 composites are reported by mode name: `Clear`, `Source`,
-`Destination`, `DestinationOver`, `SourceIn`, `DestinationIn`, `SourceOut`,
-`DestinationOut`, `SourceAtop`, `DestinationAtop`, `Xor`, and `Plus`.
-Moving-center radial gradients are implemented with a bounded deterministic
-approximation until a full two-circle solver is added.
+No Prompt 10 COLRv1 composite operator remains broadly unsupported. Malformed
+paint graphs, excessive depth, excessive gradient stops, non-finite transforms,
+or invalid radial geometry fail closed with precise diagnostics.
 
 SVG-in-OpenType active or dynamic content remains blocked. Scripts, event
 handlers, network/file/javascript URLs, `foreignObject`, animation, CSS imports,
@@ -73,4 +71,5 @@ prompt10b_color_glyph_cjk_rtl_fidelity_closure
 prompt10c_color_glyph_hinting_cff_closure
 prompt10d_full_colrv1_svg_color_glyph_closure
 prompt10e_colrv1_gradient_clip_composite_closure
+prompt10f_colrv1_porterduff_radial_closure
 ```

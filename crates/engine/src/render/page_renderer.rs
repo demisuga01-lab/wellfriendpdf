@@ -2830,6 +2830,15 @@ impl<'a> RenderState<'a> {
         glyph_ctm: &Transform2D,
         glyph_hinting: GlyphHinting,
     ) -> bool {
+        if colr_is_porter_duff(op.blend_mode) {
+            return self.paint_colr_porter_duff_op_to_buffer(
+                buf,
+                request,
+                op,
+                glyph_ctm,
+                glyph_hinting,
+            );
+        }
         let Some(path) = crate::render::color_glyph::outline_gid_path(
             request.font_bytes,
             op.glyph_id,
@@ -2850,12 +2859,77 @@ impl<'a> RenderState<'a> {
         let saved_blend = buf.blend_mode;
         buf.blend_mode = colr_blend_to_pdf(op.blend_mode);
         let op_ctm = op.transform.concat(glyph_ctm);
-        match &op.paint {
+        self.paint_colr_paint_to_buffer(buf, &path, &op_ctm, glyph_hinting, &op.paint);
+        buf.blend_mode = saved_blend;
+        buf.restore_clip(saved_clip);
+        true
+    }
+
+    fn paint_colr_porter_duff_op_to_buffer(
+        &self,
+        buf: &mut PixelBuffer,
+        request: &GlyphRenderRequest<'_>,
+        op: &crate::render::color_glyph::ColrPaintOp,
+        glyph_ctm: &Transform2D,
+        glyph_hinting: GlyphHinting,
+    ) -> bool {
+        let Some(path) = crate::render::color_glyph::outline_gid_path(
+            request.font_bytes,
+            op.glyph_id,
+            request.variation,
+        ) else {
+            log::warn!(
+                "PageRenderer: COLRv1 Porter-Duff paint op missing glyph outline: font='{}' glyph={}",
+                request.font_name,
+                op.glyph_id
+            );
+            return false;
+        };
+        let token = match self.reserve_offscreen_surface(
+            buf.width,
+            buf.height,
+            "COLRv1 Porter-Duff source surface",
+        ) {
+            Ok(token) => token,
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: COLRv1 Porter-Duff source surface denied for font='{}' error={}",
+                    request.font_name,
+                    err
+                );
+                return true;
+            }
+        };
+        let mut source =
+            PixelBuffer::new_transparent_with_mode(buf.width, buf.height, buf.render_mode());
+        let saved_clip = source.clip_mask().cloned();
+        if !self.install_colr_clips(&mut source, request, &op.clips, glyph_ctm) {
+            source.restore_clip(saved_clip);
+            drop(token);
+            return false;
+        }
+        let op_ctm = op.transform.concat(glyph_ctm);
+        self.paint_colr_paint_to_buffer(&mut source, &path, &op_ctm, glyph_hinting, &op.paint);
+        source.restore_clip(saved_clip);
+        drop(token);
+        composite_colr_porter_duff(buf, &source, op.blend_mode);
+        true
+    }
+
+    fn paint_colr_paint_to_buffer(
+        &self,
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        glyph_hinting: GlyphHinting,
+        paint: &crate::render::color_glyph::ColrPaint,
+    ) {
+        match paint {
             crate::render::color_glyph::ColrPaint::Solid(color) => {
                 PathPainter::fill_glyph(
                     buf,
-                    &path,
-                    &op_ctm,
+                    path,
+                    ctm,
                     &self.viewport,
                     *color,
                     FillRule::NonZero,
@@ -2865,12 +2939,9 @@ impl<'a> RenderState<'a> {
             crate::render::color_glyph::ColrPaint::LinearGradient { .. }
             | crate::render::color_glyph::ColrPaint::RadialGradient { .. }
             | crate::render::color_glyph::ColrPaint::SweepGradient { .. } => {
-                self.fill_colr_gradient_glyph(buf, &path, &op_ctm, glyph_hinting, &op.paint);
+                self.fill_colr_gradient_glyph(buf, path, ctm, glyph_hinting, paint);
             }
         }
-        buf.blend_mode = saved_blend;
-        buf.restore_clip(saved_clip);
-        true
     }
 
     fn install_colr_clips(
@@ -4173,6 +4244,18 @@ fn stitch_vertical_bands(bands: &[PixelBuffer], width: u32, height: u32) -> Pixe
 fn colr_blend_to_pdf(mode: crate::render::color_glyph::ColrBlendMode) -> BlendMode {
     match mode {
         crate::render::color_glyph::ColrBlendMode::Normal => BlendMode::Normal,
+        crate::render::color_glyph::ColrBlendMode::Clear
+        | crate::render::color_glyph::ColrBlendMode::Source
+        | crate::render::color_glyph::ColrBlendMode::Destination
+        | crate::render::color_glyph::ColrBlendMode::DestinationOver
+        | crate::render::color_glyph::ColrBlendMode::SourceIn
+        | crate::render::color_glyph::ColrBlendMode::DestinationIn
+        | crate::render::color_glyph::ColrBlendMode::SourceOut
+        | crate::render::color_glyph::ColrBlendMode::DestinationOut
+        | crate::render::color_glyph::ColrBlendMode::SourceAtop
+        | crate::render::color_glyph::ColrBlendMode::DestinationAtop
+        | crate::render::color_glyph::ColrBlendMode::Xor
+        | crate::render::color_glyph::ColrBlendMode::Plus => BlendMode::Normal,
         crate::render::color_glyph::ColrBlendMode::Multiply => BlendMode::Multiply,
         crate::render::color_glyph::ColrBlendMode::Screen => BlendMode::Screen,
         crate::render::color_glyph::ColrBlendMode::Overlay => BlendMode::Overlay,
@@ -4189,6 +4272,111 @@ fn colr_blend_to_pdf(mode: crate::render::color_glyph::ColrBlendMode) -> BlendMo
         crate::render::color_glyph::ColrBlendMode::Color => BlendMode::Color,
         crate::render::color_glyph::ColrBlendMode::Luminosity => BlendMode::Luminosity,
     }
+}
+
+fn colr_is_porter_duff(mode: crate::render::color_glyph::ColrBlendMode) -> bool {
+    matches!(
+        mode,
+        crate::render::color_glyph::ColrBlendMode::Clear
+            | crate::render::color_glyph::ColrBlendMode::Source
+            | crate::render::color_glyph::ColrBlendMode::Destination
+            | crate::render::color_glyph::ColrBlendMode::DestinationOver
+            | crate::render::color_glyph::ColrBlendMode::SourceIn
+            | crate::render::color_glyph::ColrBlendMode::DestinationIn
+            | crate::render::color_glyph::ColrBlendMode::SourceOut
+            | crate::render::color_glyph::ColrBlendMode::DestinationOut
+            | crate::render::color_glyph::ColrBlendMode::SourceAtop
+            | crate::render::color_glyph::ColrBlendMode::DestinationAtop
+            | crate::render::color_glyph::ColrBlendMode::Xor
+            | crate::render::color_glyph::ColrBlendMode::Plus
+    )
+}
+
+fn composite_colr_porter_duff(
+    dst: &mut PixelBuffer,
+    src: &PixelBuffer,
+    mode: crate::render::color_glyph::ColrBlendMode,
+) {
+    let w = dst.width.min(src.width) as i32;
+    let h = dst.height.min(src.height) as i32;
+    for y in 0..h {
+        for x in 0..w {
+            let src_pixel = src.get_pixel(x, y);
+            if src_pixel[3] == 0 {
+                continue;
+            }
+            let dst_pixel = dst.get_pixel(x, y);
+            dst.set_pixel(
+                x,
+                y,
+                composite_colr_porter_duff_pixel(src_pixel, dst_pixel, mode),
+            );
+        }
+    }
+}
+
+fn composite_colr_porter_duff_pixel(
+    src: PixelColor,
+    dst: PixelColor,
+    mode: crate::render::color_glyph::ColrBlendMode,
+) -> PixelColor {
+    let sa = f32::from(src[3]) / 255.0;
+    let da = f32::from(dst[3]) / 255.0;
+    let sc = [
+        f32::from(src[0]) / 255.0,
+        f32::from(src[1]) / 255.0,
+        f32::from(src[2]) / 255.0,
+    ];
+    let dc = [
+        f32::from(dst[0]) / 255.0,
+        f32::from(dst[1]) / 255.0,
+        f32::from(dst[2]) / 255.0,
+    ];
+    if mode == crate::render::color_glyph::ColrBlendMode::Plus {
+        let out_a = (sa + da).min(1.0);
+        let out_premul = [
+            (sc[0] * sa + dc[0] * da).min(1.0),
+            (sc[1] * sa + dc[1] * da).min(1.0),
+            (sc[2] * sa + dc[2] * da).min(1.0),
+        ];
+        return colr_unpremultiply_to_pixel(out_premul, out_a);
+    }
+
+    let (src_factor, dst_factor) = match mode {
+        crate::render::color_glyph::ColrBlendMode::Clear => (0.0, 0.0),
+        crate::render::color_glyph::ColrBlendMode::Source => (1.0, 0.0),
+        crate::render::color_glyph::ColrBlendMode::Destination => (0.0, 1.0),
+        crate::render::color_glyph::ColrBlendMode::DestinationOver => (1.0 - da, 1.0),
+        crate::render::color_glyph::ColrBlendMode::SourceIn => (da, 0.0),
+        crate::render::color_glyph::ColrBlendMode::DestinationIn => (0.0, sa),
+        crate::render::color_glyph::ColrBlendMode::SourceOut => (1.0 - da, 0.0),
+        crate::render::color_glyph::ColrBlendMode::DestinationOut => (0.0, 1.0 - sa),
+        crate::render::color_glyph::ColrBlendMode::SourceAtop => (da, 1.0 - sa),
+        crate::render::color_glyph::ColrBlendMode::DestinationAtop => (1.0 - da, sa),
+        crate::render::color_glyph::ColrBlendMode::Xor => (1.0 - da, 1.0 - sa),
+        _ => (1.0, 1.0 - sa),
+    };
+    let out_a = sa * src_factor + da * dst_factor;
+    let out_premul = [
+        sc[0] * sa * src_factor + dc[0] * da * dst_factor,
+        sc[1] * sa * src_factor + dc[1] * da * dst_factor,
+        sc[2] * sa * src_factor + dc[2] * da * dst_factor,
+    ];
+    colr_unpremultiply_to_pixel(out_premul, out_a)
+}
+
+fn colr_unpremultiply_to_pixel(rgb_premul: [f32; 3], alpha: f32) -> PixelColor {
+    let alpha = alpha.clamp(0.0, 1.0);
+    if alpha <= 1e-6 {
+        return [0, 0, 0, 0];
+    }
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    [
+        to_byte((rgb_premul[0] / alpha).clamp(0.0, 1.0)),
+        to_byte((rgb_premul[1] / alpha).clamp(0.0, 1.0)),
+        to_byte((rgb_premul[2] / alpha).clamp(0.0, 1.0)),
+        to_byte(alpha),
+    ]
 }
 
 fn sample_colr_gradient(
@@ -4228,22 +4416,18 @@ fn sample_colr_gradient(
             extend,
             stops,
         } => {
-            let center_dx = x1 - x0;
-            let center_dy = y1 - y0;
-            let center_motion = center_dx.hypot(center_dy);
-            let dist = if center_motion <= 1e-9 {
-                (gx - x0).hypot(gy - y0)
-            } else {
-                let ux = center_dx / center_motion;
-                let uy = center_dy / center_motion;
-                (gx - x0) * ux + (gy - y0) * uy
-            };
-            let denom = r1 - r0;
-            let t = if denom.abs() <= 1e-9 {
-                0.0
-            } else {
-                (dist - r0) / denom
-            };
+            let t = solve_colr_radial_t(
+                ColrPoint { x: gx, y: gy },
+                ColrCircle {
+                    center: ColrPoint { x: *x0, y: *y0 },
+                    radius: *r0,
+                },
+                ColrCircle {
+                    center: ColrPoint { x: *x1, y: *y1 },
+                    radius: *r1,
+                },
+            )
+            .unwrap_or(0.0);
             sample_colr_stops(stops, normalize_colr_gradient_t(t, *extend))
         }
         crate::render::color_glyph::ColrPaint::SweepGradient {
@@ -4278,6 +4462,58 @@ fn sample_colr_gradient(
             sample_colr_stops(stops, normalize_colr_gradient_t(t, *extend))
         }
         crate::render::color_glyph::ColrPaint::Solid(color) => *color,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ColrPoint {
+    x: f64,
+    y: f64,
+}
+
+#[derive(Clone, Copy)]
+struct ColrCircle {
+    center: ColrPoint,
+    radius: f64,
+}
+
+fn solve_colr_radial_t(point: ColrPoint, start: ColrCircle, end: ColrCircle) -> Option<f64> {
+    let ax = end.center.x - start.center.x;
+    let ay = end.center.y - start.center.y;
+    let ar = end.radius - start.radius;
+    let dx = point.x - start.center.x;
+    let dy = point.y - start.center.y;
+    let aa = ax * ax + ay * ay - ar * ar;
+    let bb = 2.0 * (dx * ax + dy * ay + start.radius * ar);
+    let cc = dx * dx + dy * dy - start.radius * start.radius;
+    if aa.abs() < 1e-10 {
+        if bb.abs() < 1e-10 {
+            return None;
+        }
+        return accept_colr_radial_t(cc / bb, ar, start.radius);
+    }
+    let disc = bb * bb - 4.0 * aa * cc;
+    if disc < 0.0 {
+        return None;
+    }
+    let sq = disc.sqrt();
+    let t_pos = (bb + sq) / (2.0 * aa);
+    let t_neg = (bb - sq) / (2.0 * aa);
+    accept_colr_radial_t(t_pos, ar, start.radius)
+        .into_iter()
+        .chain(accept_colr_radial_t(t_neg, ar, start.radius))
+        .reduce(f64::max)
+}
+
+fn accept_colr_radial_t(t: f64, radius_delta: f64, start_radius: f64) -> Option<f64> {
+    if !t.is_finite() {
+        return None;
+    }
+    let radius = start_radius + t * radius_delta;
+    if radius >= -1e-9 {
+        Some(t)
+    } else {
+        None
     }
 }
 
@@ -6898,6 +7134,62 @@ mod tests {
         assert!((pixel[0] as i32 - 191).abs() <= 3, "R={}", pixel[0]);
         assert!((pixel[1] as i32 - 127).abs() <= 3, "G={}", pixel[1]);
         assert!((pixel[2] as i32 - 127).abs() <= 3, "B={}", pixel[2]);
+    }
+
+    #[test]
+    fn colrv1_porter_duff_pixel_modes_cover_prompt10f_set() {
+        use crate::render::color_glyph::ColrBlendMode;
+
+        let src = [200, 20, 20, 128];
+        let dst = [20, 80, 200, 192];
+        assert_eq!(
+            composite_colr_porter_duff_pixel(src, dst, ColrBlendMode::Clear),
+            [0, 0, 0, 0]
+        );
+        assert_eq!(
+            composite_colr_porter_duff_pixel(src, dst, ColrBlendMode::Source),
+            src
+        );
+        assert_eq!(
+            composite_colr_porter_duff_pixel(src, dst, ColrBlendMode::Destination),
+            dst
+        );
+        let plus = composite_colr_porter_duff_pixel(src, dst, ColrBlendMode::Plus);
+        assert!(plus[3] >= 250, "Plus alpha should saturate: {plus:?}");
+        let xor = composite_colr_porter_duff_pixel(src, dst, ColrBlendMode::Xor);
+        assert!(xor[3] < plus[3], "Xor should reduce overlap alpha: {xor:?}");
+    }
+
+    #[test]
+    fn colrv1_radial_solver_handles_moving_centers_exactly() {
+        let t = solve_colr_radial_t(
+            ColrPoint { x: 710.0, y: 500.0 },
+            ColrCircle {
+                center: ColrPoint { x: 400.0, y: 500.0 },
+                radius: 10.0,
+            },
+            ColrCircle {
+                center: ColrPoint { x: 700.0, y: 500.0 },
+                radius: 310.0,
+            },
+        )
+        .expect("moving-center radial root");
+        assert!((t - 0.5).abs() < 1e-9, "t={t}");
+
+        let off_axis = solve_colr_radial_t(
+            ColrPoint { x: 500.0, y: 650.0 },
+            ColrCircle {
+                center: ColrPoint { x: 380.0, y: 430.0 },
+                radius: 20.0,
+            },
+            ColrCircle {
+                center: ColrPoint { x: 700.0, y: 620.0 },
+                radius: 520.0,
+            },
+        )
+        .expect("off-axis moving-center radial root");
+        assert!(off_axis.is_finite());
+        assert!(off_axis > 0.0);
     }
 
     #[test]

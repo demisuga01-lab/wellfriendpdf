@@ -175,6 +175,12 @@ def test_module_level_reports():
     assert "Multiply" in prompt10e["colrv1_composites"]["implemented_modes"]
     assert prompt10e["multi_reference_audit"]["oxide_outlier_failures"] == 0
     assert prompt10e["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10e"
+    prompt10f = feature["prompt10f_colrv1_porterduff_radial_closure"]
+    assert prompt10f["status"] == "complete"
+    assert len(prompt10f["porter_duff_plus_composites"]["implemented_modes"]) == 12
+    assert prompt10f["exact_moving_center_radial"]["status"] == "implemented_with_reference_equivalence"
+    assert prompt10f["multi_reference_audit"]["oxide_outlier_failures"] == 0
+    assert prompt10f["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10f"
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

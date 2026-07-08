@@ -684,7 +684,7 @@ fn supported_color_glyph_tables(
         supported.push("CBDT/CBLC PNG and bounded bitmap strikes".to_string());
     }
     if summary.has_sbix {
-        supported.push("sbix PNG strikes".to_string());
+        supported.push("sbix PNG/JPEG strikes".to_string());
     }
     supported
 }
@@ -696,12 +696,7 @@ fn unsupported_color_glyph_tables(
     let mut unsupported = Vec::new();
     let has_colr = tables.iter().any(|table| table == "COLR");
     let has_cpal = tables.iter().any(|table| table == "CPAL");
-    if has_colr && has_cpal && summary.colr_version.is_some_and(|version| version > 0) {
-        unsupported.push(
-            "COLR/CPAL v1 unsupported composite modes: Clear, Source, Destination, DestinationOver, SourceIn, DestinationIn, SourceOut, DestinationOut, SourceAtop, DestinationAtop, Xor, Plus"
-                .to_string(),
-        );
-    } else if has_colr && !summary.supports_colr_cpal_v0() {
+    if has_colr && (!has_cpal || summary.colr_version.is_none()) {
         unsupported.push("COLR/CPAL malformed or unsupported palette pairing".to_string());
     }
     if summary.has_cbdt && summary.has_cblc {
@@ -710,7 +705,7 @@ fn unsupported_color_glyph_tables(
         unsupported.push("CBDT/CBLC incomplete table pair".to_string());
     }
     if summary.has_sbix {
-        unsupported.push("sbix JPEG/TIFF/PDF/mask payloads".to_string());
+        unsupported.push("sbix TIFF/PDF/mask or unknown graphicType payloads".to_string());
     }
     if summary.has_svg || tables.iter().any(|table| table == "SVG") {
         unsupported.push("SVG-in-OpenType blocked by security policy".to_string());
@@ -967,7 +962,7 @@ fn font_diagnostics(input: FontDiagnosticInput<'_>) -> Vec<FontDiagnostic> {
             diagnostics.push(FontDiagnostic {
                 severity: "warning",
                 code: "font.color_glyphs.sbix.unsupported_payload",
-                message: "sbix PNG strikes are supported; JPEG, TIFF, PDF, mask, malformed, or oversized payloads remain unsupported"
+                message: "sbix PNG/JPEG strikes are supported; TIFF, PDF, mask, unknown, malformed, or oversized payloads fail closed"
                     .to_string(),
             });
         }
@@ -1196,13 +1191,13 @@ mod tests {
             .any(|table| table == "CBDT/CBLC PNG and bounded bitmap strikes"));
         assert!(supported_tables
             .iter()
-            .any(|table| table == "sbix PNG strikes"));
+            .any(|table| table == "sbix PNG/JPEG strikes"));
         assert!(unsupported_tables
             .iter()
             .any(|table| table == "SVG-in-OpenType blocked by security policy"));
         assert!(unsupported_tables
             .iter()
-            .any(|table| table == "sbix JPEG/TIFF/PDF/mask payloads"));
+            .any(|table| table == "sbix TIFF/PDF/mask or unknown graphicType payloads"));
     }
 
     #[test]

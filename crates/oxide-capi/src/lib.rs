@@ -2552,6 +2552,23 @@ mod tests {
                 ["public_report_schema"],
             "additive_feature_report_prompt10e"
         );
+        assert_eq!(
+            value["report"]["prompt10f_colrv1_porterduff_radial_closure"]["status"],
+            "complete"
+        );
+        assert_eq!(
+            value["report"]["prompt10f_colrv1_porterduff_radial_closure"]
+                ["porter_duff_plus_composites"]["implemented_modes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            12
+        );
+        assert_eq!(
+            value["report"]["prompt10f_colrv1_porterduff_radial_closure"]["closure_gates"]
+                ["public_report_schema"],
+            "additive_feature_report_prompt10f"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();
