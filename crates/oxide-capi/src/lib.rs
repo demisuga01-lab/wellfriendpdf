@@ -2635,6 +2635,20 @@ mod tests {
             "additive_feature_report_prompt14"
         );
         assert_eq!(prompt14["privacy_defaults"]["cloud_upload_default"], false);
+        let prompt14b = &value["report"]["prompt14b_cjk_dictionary_layout_backend_closure"];
+        assert_eq!(prompt14b["status"], "complete");
+        assert_eq!(
+            prompt14b["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt14b"
+        );
+        assert_eq!(
+            prompt14b["dictionary_provider"]["external_pack_support"],
+            "implemented"
+        );
+        assert_eq!(
+            prompt14b["layout_backend"]["local_backend_status"],
+            "unsupported_reported_no_runtime"
+        );
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

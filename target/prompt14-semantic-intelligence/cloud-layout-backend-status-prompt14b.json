@@ -1,0 +1,8 @@
+{
+  "network_in_tests": false,
+  "requires_explicit_endpoint": true,
+  "requires_privacy_ack": true,
+  "secret_logging": false,
+  "status": "disabled_by_default",
+  "template": "MockCloudLayoutBackend"
+}

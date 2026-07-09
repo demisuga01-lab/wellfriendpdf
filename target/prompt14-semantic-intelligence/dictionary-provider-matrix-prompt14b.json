@@ -1,0 +1,83 @@
+{
+  "artifact_root": "target/prompt14-semantic-intelligence",
+  "blocked_count": 0,
+  "category": "prompt14b_cjk_dictionary_layout_backend_closure",
+  "rows": [
+    {
+      "item": "built-in fixture dictionary",
+      "status": "implemented"
+    },
+    {
+      "item": "production dictionary loading",
+      "status": "implemented"
+    },
+    {
+      "item": "external dictionary pack manifest",
+      "status": "implemented"
+    },
+    {
+      "item": "dictionary license/hash/version metadata",
+      "status": "implemented"
+    },
+    {
+      "item": "zh segmentation",
+      "status": "implemented"
+    },
+    {
+      "item": "ja segmentation",
+      "status": "implemented"
+    },
+    {
+      "item": "ko segmentation",
+      "status": "implemented"
+    },
+    {
+      "item": "mixed Latin/CJK segmentation",
+      "status": "implemented"
+    },
+    {
+      "item": "punctuation/number handling",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "unknown fallback",
+      "status": "implemented"
+    },
+    {
+      "item": "memory/indexing limits",
+      "status": "implemented"
+    },
+    {
+      "item": "dictionary update/version strategy",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "search integration",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "RAG chunk integration",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "binding/report parity",
+      "status": "implemented"
+    },
+    {
+      "item": "real local ML backend feasibility",
+      "status": "unsupported_reported_no_runtime"
+    },
+    {
+      "item": "cloud provider integration feasibility",
+      "status": "not_in_prompt14b_scope"
+    },
+    {
+      "item": "privacy policy",
+      "status": "implemented"
+    },
+    {
+      "item": "validation gates",
+      "status": "implemented"
+    }
+  ]
+}

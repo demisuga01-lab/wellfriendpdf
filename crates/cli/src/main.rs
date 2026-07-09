@@ -577,8 +577,8 @@ struct ExtractTextArgs {
     #[arg(long)]
     include_provenance: bool,
     /// CJK tokenization for model-json: char, simple, or dictionary. Dictionary
-    /// mode uses the Prompt 14 deterministic built-in fixture dictionary and
-    /// preserves raw extracted text.
+    /// mode uses the provider-backed built-in fixture by default and preserves
+    /// raw extracted text.
     #[arg(long, default_value = "char")]
     cjk_segmentation: String,
     /// Include invisible/hidden text in model-json output.

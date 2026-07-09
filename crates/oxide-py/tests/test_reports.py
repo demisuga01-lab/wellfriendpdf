@@ -217,6 +217,17 @@ def test_module_level_reports():
         == "additive_feature_report_prompt14"
     )
     assert prompt14["privacy_defaults"]["cloud_upload_default"] is False
+    prompt14b = feature["prompt14b_cjk_dictionary_layout_backend_closure"]
+    assert prompt14b["status"] == "complete"
+    assert (
+        prompt14b["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_prompt14b"
+    )
+    assert prompt14b["dictionary_provider"]["external_pack_support"] == "implemented"
+    assert (
+        prompt14b["layout_backend"]["local_backend_status"]
+        == "unsupported_reported_no_runtime"
+    )
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

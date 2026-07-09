@@ -337,10 +337,14 @@ pub use structural::{
     Rotation,
 };
 pub use text::{
-    bounded_text_parallel_window, builtin_cjk_dictionary_metadata, segment_cjk_dictionary_text,
-    CjkDictionaryMetadata, CjkDictionaryToken, CjkSegmentationMode, LineEnding, MarkedTextChunk,
-    ReadingOrderReconstructor, SemanticTextDirection, TextChunk, TextCollector, TextDiagnostic,
-    TextExtractOptions, TextExtractionCounters, TextExtractionMode, TextExtractor,
+    bounded_text_parallel_window, builtin_cjk_dictionary_metadata, cjk_dictionary_entries_sha256,
+    cjk_dictionary_rag_token_chunks, cjk_dictionary_token_search, segment_cjk_dictionary_text,
+    segment_cjk_dictionary_text_with_provider, CjkDictionaryLoadDiagnostic,
+    CjkDictionaryLoadReport, CjkDictionaryMetadata, CjkDictionaryPackManifest,
+    CjkDictionaryPackStatus, CjkDictionaryProvider, CjkDictionaryProviderLimits,
+    CjkDictionaryToken, CjkRagTokenChunk, CjkSegmentationMode, CjkTokenSearchMatch, LineEnding,
+    MarkedTextChunk, ReadingOrderReconstructor, SemanticTextDirection, TextChunk, TextCollector,
+    TextDiagnostic, TextExtractOptions, TextExtractionCounters, TextExtractionMode, TextExtractor,
     TextFormatOptions, TextFormatter, TextLayoutStrategy, TextLine, TextMappingSource,
     TextProvenanceFlag, TextProvenanceSummary, TextQuad, TextRole, TextRoleSource, TextSearchMatch,
     TextSearchOptions, TextSemanticBlock, TextSemanticChar, TextSemanticDocument, TextSemanticLine,

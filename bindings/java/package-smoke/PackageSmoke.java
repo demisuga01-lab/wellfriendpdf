@@ -131,5 +131,11 @@ public final class PackageSmoke {
                 || !feature.contains("\"cloud_upload_default\":false")) {
             throw new AssertionError("feature report missing Prompt 14 semantic intelligence posture");
         }
+        if (!feature.contains("\"prompt14b_cjk_dictionary_layout_backend_closure\"")
+                || !feature.contains("\"additive_feature_report_prompt14b\"")
+                || !feature.contains("\"external_pack_support\":\"implemented\"")
+                || !feature.contains("\"local_backend_status\":\"unsupported_reported_no_runtime\"")) {
+            throw new AssertionError("feature report missing Prompt 14B dictionary provider closure posture");
+        }
     }
 }

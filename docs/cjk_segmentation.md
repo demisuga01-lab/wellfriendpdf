@@ -10,13 +10,20 @@ segmentation while preserving the original behavior and raw extracted text.
 - `simple`: groups contiguous Han, Hiragana, Katakana, or Hangul runs; splits on
   punctuation, script changes, Latin/numeric boundaries, whitespace, and the
   configured max run length.
-- `dictionary`: uses the Prompt 14 built-in synthetic fixture dictionary with
-  deterministic longest-match segmentation, stable tie-breaking, mixed
-  Latin/CJK boundaries, punctuation handling, and unknown-character fallback.
+- `dictionary`: uses deterministic longest-match segmentation, stable
+  tie-breaking, mixed Latin/CJK boundaries, punctuation handling, and
+  unknown-character fallback. The default extraction path uses the small
+  built-in fixture provider; Prompt 14B exposes user-supplied production
+  dictionary packs through the provider API.
 
 ## API
 
 Rust callers set `TextSemanticOptions::cjk_segmentation`.
+
+Rust callers that need production dictionary terms load a manifest+TSV pack with
+`CjkDictionaryProvider::from_manifest_paths` and pass that provider to
+`segment_cjk_dictionary_text_with_provider`, `cjk_dictionary_token_search`, or
+`cjk_dictionary_rag_token_chunks`.
 
 CLI model-json callers can pass:
 
@@ -34,6 +41,7 @@ oxide extract-text --structured --format model-json --cjk-segmentation dictionar
 
 ## Limits
 
-No ML or large bundled dictionary is included. The Prompt 14 built-in dictionary
-is a small CC0 synthetic fixture dictionary; production dictionaries should be
-user supplied or feature-gated external assets with explicit license metadata.
+No ML or large bundled dictionary is included. The built-in dictionary is a
+small CC0 synthetic fixture dictionary. Production dictionaries are
+user-supplied manifest+TSV packs, or future feature-gated external assets with
+explicit license metadata.

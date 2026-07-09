@@ -1,8 +1,12 @@
 use oxide_engine::{
-    merge_layout_proposals_deterministic, CloudLayoutBackendConfig, ContentEngine,
-    LayoutBackendInput, LayoutCloudPayloadPolicy, LayoutLocalBackendConfig, LayoutMergePolicy,
-    LayoutProposalSet, MockCloudLayoutBackend, MockLocalLayoutBackend, ParentTreeRecoveryStatus,
+    cjk_dictionary_entries_sha256, cjk_dictionary_rag_token_chunks, cjk_dictionary_token_search,
+    merge_layout_proposals_deterministic, segment_cjk_dictionary_text_with_provider,
+    CjkDictionaryPackManifest, CjkDictionaryProvider, CjkDictionaryProviderLimits,
+    CloudLayoutBackendConfig, ContentEngine, LayoutBackendInput, LayoutCloudPayloadPolicy,
+    LayoutLocalBackendConfig, LayoutMergePolicy, LayoutProposalSet, MockCloudLayoutBackend,
+    MockLocalLayoutBackend, ParentTreeRecoveryStatus,
 };
+use std::fs;
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,
@@ -163,4 +167,170 @@ fn malformed_layout_proposal_schema_is_rejected() {
     });
     assert_eq!(report.rejected_count, 1);
     assert_eq!(report.conflict_count, 1);
+}
+
+#[test]
+fn prompt14b_external_dictionary_pack_loads_segments_and_reports_metadata() {
+    let dir =
+        std::env::temp_dir().join(format!("oxide-prompt14b-dictionary-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let entries = concat!(
+        "\u{673A}\u{5668}\tzh\t1\tprompt14b-test\t0.70\n",
+        "\u{673A}\u{5668}\u{5B66}\u{4E60}\tzh\t10\tprompt14b-test\t0.97\n",
+        "\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}\tja\t9\tprompt14b-test\t0.96\n",
+        "\u{D55C}\u{AD6D}\u{C5B4}\tko\t8\tprompt14b-test\t0.95\n",
+        "\u{B370}\u{C774}\u{D130}\u{BCA0}\u{C774}\u{C2A4}\tko\t6\tprompt14b-test\t0.94\n"
+    );
+    let entries_path = dir.join("entries.tsv");
+    fs::write(&entries_path, entries).unwrap();
+    let manifest = CjkDictionaryPackManifest {
+        pack_id: "prompt14b-permissive-test-pack".to_string(),
+        languages: vec!["zh".to_string(), "ja".to_string(), "ko".to_string()],
+        scripts: vec!["Han".to_string(), "Kana".to_string(), "Hangul".to_string()],
+        source: "generated prompt14b fixture".to_string(),
+        license: "CC0-1.0 synthetic fixture terms".to_string(),
+        version: "2026-07-09".to_string(),
+        date: "2026-07-09".to_string(),
+        hash: cjk_dictionary_entries_sha256(entries.as_bytes()),
+        entries_path: "entries.tsv".to_string(),
+        entry_count: 5,
+        generation_command: "cargo test prompt14b_external_dictionary_pack".to_string(),
+        normalization_form: "trim_no_unicode_rewrite".to_string(),
+        redistribution_allowed: true,
+        expected_memory_footprint_bytes: entries.len(),
+    };
+    let manifest_path = dir.join("manifest.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let provider = CjkDictionaryProvider::from_manifest_paths(
+        std::slice::from_ref(&manifest_path),
+        CjkDictionaryProviderLimits::default(),
+    )
+    .unwrap();
+    assert_eq!(provider.entry_count(), 5);
+    assert_eq!(provider.report().provider_status, "loaded_external_packs");
+    assert_eq!(
+        provider.report().packs[0].metadata.license,
+        manifest.license
+    );
+    assert_eq!(provider.report().packs[0].metadata.hash, manifest.hash);
+
+    let text = "\u{673A}\u{5668}\u{5B66}\u{4E60}5G\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}\u{D55C}\u{AD6D}\u{C5B4}";
+    let tokens = segment_cjk_dictionary_text_with_provider(text, &provider);
+    let token_text = tokens
+        .iter()
+        .map(|token| token.text.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        token_text,
+        vec![
+            "\u{673A}\u{5668}\u{5B66}\u{4E60}",
+            "5G",
+            "\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}",
+            "\u{D55C}\u{AD6D}\u{C5B4}"
+        ]
+    );
+    assert_eq!(tokens[0].char_range, [0, 4]);
+    assert_eq!(tokens[0].confidence, 0.97);
+
+    let matches = cjk_dictionary_token_search(
+        text,
+        "\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}",
+        &provider,
+    );
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].provenance, "dictionary_token_layer");
+
+    let chunks = cjk_dictionary_rag_token_chunks(text, &provider, 2);
+    assert_eq!(chunks.len(), 2);
+    assert_eq!(chunks[0].token_count, 2);
+    assert_eq!(
+        chunks[0].provenance,
+        "dictionary_token_layer_preserves_source_offsets"
+    );
+}
+
+#[test]
+fn prompt14b_dictionary_pack_hash_mismatch_fails_closed() {
+    let dir = std::env::temp_dir().join(format!(
+        "oxide-prompt14b-dictionary-bad-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("entries.tsv"), "\u{673A}\u{5668}\tzh\n").unwrap();
+    let manifest = CjkDictionaryPackManifest {
+        pack_id: "bad-hash".to_string(),
+        languages: vec!["zh".to_string()],
+        scripts: vec!["Han".to_string()],
+        source: "generated prompt14b malformed fixture".to_string(),
+        license: "CC0-1.0 synthetic fixture terms".to_string(),
+        version: "2026-07-09".to_string(),
+        date: "2026-07-09".to_string(),
+        hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+        entries_path: "entries.tsv".to_string(),
+        entry_count: 1,
+        generation_command: "cargo test prompt14b_hash_mismatch".to_string(),
+        normalization_form: "trim_no_unicode_rewrite".to_string(),
+        redistribution_allowed: true,
+        expected_memory_footprint_bytes: 16,
+    };
+    let manifest_path = dir.join("manifest.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let err = CjkDictionaryProvider::from_manifest_paths(
+        &[manifest_path],
+        CjkDictionaryProviderLimits::default(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("hash mismatch"));
+}
+
+#[test]
+fn prompt14b_dictionary_pack_malformed_tsv_fails_closed() {
+    let dir = std::env::temp_dir().join(format!(
+        "oxide-prompt14b-dictionary-malformed-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).unwrap();
+    let entries = "\u{673A}\u{5668}\tzh\nmalformed-only-one-field\n";
+    let entries_path = dir.join("entries.tsv");
+    fs::write(&entries_path, entries).unwrap();
+    let manifest = CjkDictionaryPackManifest {
+        pack_id: "malformed-pack".to_string(),
+        languages: vec!["zh".to_string()],
+        scripts: vec!["Han".to_string()],
+        source: "generated prompt14b malformed fixture".to_string(),
+        license: "CC0-1.0 synthetic fixture terms".to_string(),
+        version: "2026-07-09".to_string(),
+        date: "2026-07-09".to_string(),
+        hash: cjk_dictionary_entries_sha256(entries.as_bytes()),
+        entries_path: "entries.tsv".to_string(),
+        entry_count: 1,
+        generation_command: "cargo test prompt14b_malformed_tsv".to_string(),
+        normalization_form: "trim_no_unicode_rewrite".to_string(),
+        redistribution_allowed: true,
+        expected_memory_footprint_bytes: 16,
+    };
+    let manifest_path = dir.join("manifest.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec_pretty(&manifest).unwrap(),
+    )
+    .unwrap();
+    let err = CjkDictionaryProvider::from_manifest_paths(
+        std::slice::from_ref(&manifest_path),
+        CjkDictionaryProviderLimits::default(),
+    )
+    .unwrap_err();
+    assert!(err.to_string().contains("malformed TSV entries"));
 }

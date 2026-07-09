@@ -207,6 +207,18 @@ public final class OxideSmokeTest {
         assertTrue(
             feature.contains("\"cloud_upload_default\":false"),
             "prompt14 cloud disabled by default");
+        assertTrue(
+            feature.contains("\"prompt14b_cjk_dictionary_layout_backend_closure\""),
+            "prompt14B dictionary provider closure");
+        assertTrue(
+            feature.contains("\"additive_feature_report_prompt14b\""),
+            "prompt14B additive schema status");
+        assertTrue(
+            feature.contains("\"external_pack_support\":\"implemented\""),
+            "prompt14B external dictionary pack support");
+        assertTrue(
+            feature.contains("\"local_backend_status\":\"unsupported_reported_no_runtime\""),
+            "prompt14B local runtime policy");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),

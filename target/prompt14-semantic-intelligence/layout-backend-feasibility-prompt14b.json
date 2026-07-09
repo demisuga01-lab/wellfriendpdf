@@ -1,0 +1,5 @@
+{
+  "outcome": "unsupported_reported_no_runtime",
+  "reason": "No ONNX/Torch/LayoutParser runtime or DocLayNet model weights are bundled without heavyweight dependency and model license/redistribution proof.",
+  "safe_path": "Prompt 14 LayoutProposalSet schema plus local/cloud templates remain the integration layer for application-supplied runtimes."
+}

@@ -146,6 +146,10 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt14_semantic_intelligence_parenttree_cjk_ml_layout\"", feature);
         Assert.Contains("\"additive_feature_report_prompt14\"", feature);
         Assert.Contains("\"cloud_upload_default\":false", feature);
+        Assert.Contains("\"prompt14b_cjk_dictionary_layout_backend_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt14b\"", feature);
+        Assert.Contains("\"external_pack_support\":\"implemented\"", feature);
+        Assert.Contains("\"local_backend_status\":\"unsupported_reported_no_runtime\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

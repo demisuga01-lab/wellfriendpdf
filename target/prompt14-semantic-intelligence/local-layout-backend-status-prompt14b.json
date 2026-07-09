@@ -1,0 +1,12 @@
+{
+  "future_adapter_shape": [
+    "ONNX Runtime feature flag",
+    "user model path",
+    "schema conversion",
+    "timeout/memory caps"
+  ],
+  "model_weights_bundled": false,
+  "network": false,
+  "status": "unsupported_reported_no_runtime",
+  "template": "MockLocalLayoutBackend"
+}

@@ -1,11 +1,16 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::analysis::layout::{analyze_page, BBox, LayoutConfig, PageLayout};
+use crate::error::{OxideError, Result};
 use crate::fonts::FontDecodeSource;
 use crate::text::{MarkedTextChunk, ReadingOrderReconstructor, TextChunk};
 
+const PROMPT14B_CJK_PROVIDER_SCHEMA_VERSION: &str = "prompt14b.cjk_dictionary_provider.v1";
 const DEFAULT_MAX_CHUNKS_PER_PAGE: usize = 250_000;
 const DEFAULT_MAX_CHARS_PER_PAGE: usize = 2_000_000;
 const DEFAULT_MAX_STRUCTURE_NODES: usize = 250_000;
@@ -131,7 +136,7 @@ pub enum CjkSegmentationMode {
     Dictionary,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CjkDictionaryMetadata {
     pub name: String,
     pub version: String,
@@ -154,10 +159,124 @@ pub struct CjkDictionaryToken {
     pub source: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CjkDictionaryPackManifest {
+    pub pack_id: String,
+    pub languages: Vec<String>,
+    pub scripts: Vec<String>,
+    pub source: String,
+    pub license: String,
+    pub version: String,
+    pub date: String,
+    pub hash: String,
+    pub entries_path: String,
+    pub entry_count: usize,
+    pub generation_command: String,
+    pub normalization_form: String,
+    pub redistribution_allowed: bool,
+    pub expected_memory_footprint_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CjkDictionaryProviderLimits {
+    pub max_entries: usize,
+    pub memory_cap_bytes: usize,
+    pub max_token_chars: usize,
+}
+
+impl Default for CjkDictionaryProviderLimits {
+    fn default() -> Self {
+        Self {
+            max_entries: 500_000,
+            memory_cap_bytes: 64 * 1024 * 1024,
+            max_token_chars: 64,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CjkDictionaryLoadDiagnostic {
+    pub code: String,
+    pub severity: String,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CjkDictionaryPackStatus {
+    pub pack_id: String,
+    pub load_status: String,
+    pub manifest_path: String,
+    pub entries_path: String,
+    pub manifest: CjkDictionaryPackManifest,
+    pub metadata: CjkDictionaryMetadata,
+    pub duplicate_entries: usize,
+    pub malformed_entries: usize,
+    pub diagnostics: Vec<CjkDictionaryLoadDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CjkDictionaryLoadReport {
+    pub schema_version: String,
+    pub provider_status: String,
+    pub limits: CjkDictionaryProviderLimits,
+    pub packs: Vec<CjkDictionaryPackStatus>,
+    pub total_entries: usize,
+    pub duplicate_entries: usize,
+    pub memory_footprint_bytes: usize,
+    pub max_token_chars: usize,
+    pub languages: Vec<String>,
+    pub diagnostics: Vec<CjkDictionaryLoadDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CjkTokenSearchMatch {
+    pub query: String,
+    pub matched_text: String,
+    pub token_index: usize,
+    pub char_range: [usize; 2],
+    pub byte_range: [usize; 2],
+    pub language: String,
+    pub confidence: f32,
+    pub provenance: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CjkRagTokenChunk {
+    pub chunk_index: usize,
+    pub text: String,
+    pub token_count: usize,
+    pub char_range: [usize; 2],
+    pub byte_range: [usize; 2],
+    pub languages: Vec<String>,
+    pub confidence: f32,
+    pub provenance: String,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct CjkDictionaryEntry {
     term: &'static str,
     language: &'static str,
+}
+
+#[derive(Debug, Clone)]
+struct IndexedCjkDictionaryEntry {
+    term: String,
+    chars: Vec<char>,
+    language: String,
+    priority: i32,
+    source: String,
+    confidence: f32,
+    ordinal: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct CjkDictionaryProvider {
+    entries: Vec<IndexedCjkDictionaryEntry>,
+    metadata: Vec<CjkDictionaryMetadata>,
+    report: CjkDictionaryLoadReport,
+    max_token_chars: usize,
 }
 
 const BUILTIN_CJK_DICTIONARY_NAME: &str = "oxide-prompt14-synthetic-cjk-test-dictionary";
@@ -207,6 +326,264 @@ const BUILTIN_CJK_DICTIONARY: &[CjkDictionaryEntry] = &[
     },
 ];
 
+impl CjkDictionaryProvider {
+    pub fn builtin_fixture() -> Self {
+        let limits = CjkDictionaryProviderLimits::default();
+        let entries = BUILTIN_CJK_DICTIONARY
+            .iter()
+            .enumerate()
+            .map(|(ordinal, entry)| IndexedCjkDictionaryEntry {
+                term: entry.term.to_string(),
+                chars: entry.term.chars().collect(),
+                language: entry.language.to_string(),
+                priority: 0,
+                source: "builtin_fixture".to_string(),
+                confidence: 0.96,
+                ordinal,
+            })
+            .collect::<Vec<_>>();
+        let metadata = builtin_cjk_dictionary_metadata();
+        let memory_footprint_bytes = metadata.memory_footprint_bytes;
+        let report = CjkDictionaryLoadReport {
+            schema_version: PROMPT14B_CJK_PROVIDER_SCHEMA_VERSION.to_string(),
+            provider_status: "loaded_builtin_fixture".to_string(),
+            limits,
+            packs: vec![CjkDictionaryPackStatus {
+                pack_id: metadata.name.clone(),
+                load_status: metadata.load_status.clone(),
+                manifest_path: "builtin".to_string(),
+                entries_path: "builtin".to_string(),
+                manifest: CjkDictionaryPackManifest {
+                    pack_id: metadata.name.clone(),
+                    languages: metadata.languages.clone(),
+                    scripts: vec!["Han".to_string(), "Kana".to_string(), "Hangul".to_string()],
+                    source: metadata.source.clone(),
+                    license: metadata.license.clone(),
+                    version: metadata.version.clone(),
+                    date: metadata.version.clone(),
+                    hash: metadata.hash.clone(),
+                    entries_path: "builtin".to_string(),
+                    entry_count: metadata.entry_count,
+                    generation_command: "compiled synthetic fixture".to_string(),
+                    normalization_form: "trim_no_unicode_rewrite".to_string(),
+                    redistribution_allowed: true,
+                    expected_memory_footprint_bytes: metadata.memory_footprint_bytes,
+                },
+                metadata: metadata.clone(),
+                duplicate_entries: 0,
+                malformed_entries: 0,
+                diagnostics: Vec::new(),
+            }],
+            total_entries: entries.len(),
+            duplicate_entries: 0,
+            memory_footprint_bytes,
+            max_token_chars: limits.max_token_chars,
+            languages: metadata.languages.clone(),
+            diagnostics: Vec::new(),
+        };
+        Self {
+            entries,
+            metadata: vec![metadata],
+            report,
+            max_token_chars: limits.max_token_chars,
+        }
+    }
+
+    pub fn from_manifest_paths(
+        manifest_paths: &[PathBuf],
+        limits: CjkDictionaryProviderLimits,
+    ) -> Result<Self> {
+        if manifest_paths.is_empty() {
+            return Err(OxideError::invalid_input(
+                "at least one CJK dictionary manifest path is required",
+            ));
+        }
+
+        let mut raw_entries = Vec::new();
+        let mut packs = Vec::new();
+        let mut diagnostics = Vec::new();
+        let mut memory_footprint_bytes = 0usize;
+
+        for manifest_path in manifest_paths {
+            let manifest_bytes = fs::read(manifest_path)?;
+            let manifest: CjkDictionaryPackManifest = serde_json::from_slice(&manifest_bytes)
+                .map_err(|err| {
+                    OxideError::invalid_input(format!(
+                        "invalid CJK dictionary manifest {}: {err}",
+                        manifest_path.display()
+                    ))
+                })?;
+            if manifest.entry_count > limits.max_entries {
+                return Err(OxideError::ResourceLimit(format!(
+                    "CJK dictionary pack {} declares {} entries above cap {}",
+                    manifest.pack_id, manifest.entry_count, limits.max_entries
+                )));
+            }
+            if manifest.expected_memory_footprint_bytes > limits.memory_cap_bytes {
+                return Err(OxideError::ResourceLimit(format!(
+                    "CJK dictionary pack {} declares {} bytes above cap {}",
+                    manifest.pack_id,
+                    manifest.expected_memory_footprint_bytes,
+                    limits.memory_cap_bytes
+                )));
+            }
+
+            let entries_path = resolve_manifest_entries_path(manifest_path, &manifest.entries_path);
+            let entries_bytes = fs::read(&entries_path)?;
+            let actual_hash = sha256_digest(&entries_bytes);
+            if !manifest.hash.is_empty() && manifest.hash != actual_hash {
+                return Err(OxideError::invalid_input(format!(
+                    "CJK dictionary pack {} hash mismatch: expected {}, got {}",
+                    manifest.pack_id, manifest.hash, actual_hash
+                )));
+            }
+
+            let mut pack_malformed = 0usize;
+            let mut pack_entries = parse_dictionary_tsv_entries(
+                &manifest,
+                &entries_bytes,
+                limits.max_token_chars,
+                &mut pack_malformed,
+            )?;
+            if pack_malformed > 0 {
+                return Err(OxideError::invalid_input(format!(
+                    "CJK dictionary pack {} contains {} malformed TSV entries",
+                    manifest.pack_id, pack_malformed
+                )));
+            }
+            memory_footprint_bytes += pack_entries
+                .iter()
+                .map(|entry| entry.term.len() + entry.language.len() + entry.source.len() + 16)
+                .sum::<usize>();
+            if memory_footprint_bytes > limits.memory_cap_bytes {
+                return Err(OxideError::ResourceLimit(format!(
+                    "CJK dictionary memory estimate {} exceeded cap {}",
+                    memory_footprint_bytes, limits.memory_cap_bytes
+                )));
+            }
+            raw_entries.append(&mut pack_entries);
+            let metadata = CjkDictionaryMetadata {
+                name: manifest.pack_id.clone(),
+                version: manifest.version.clone(),
+                hash: actual_hash,
+                license: manifest.license.clone(),
+                source: manifest.source.clone(),
+                entry_count: manifest.entry_count,
+                languages: manifest.languages.clone(),
+                load_status: "loaded_external_pack".to_string(),
+                memory_footprint_bytes: manifest.expected_memory_footprint_bytes,
+            };
+            packs.push(CjkDictionaryPackStatus {
+                pack_id: manifest.pack_id.clone(),
+                load_status: "loaded_external_pack".to_string(),
+                manifest_path: manifest_path.display().to_string(),
+                entries_path: entries_path.display().to_string(),
+                manifest,
+                metadata,
+                duplicate_entries: 0,
+                malformed_entries: pack_malformed,
+                diagnostics: Vec::new(),
+            });
+        }
+
+        if raw_entries.len() > limits.max_entries {
+            return Err(OxideError::ResourceLimit(format!(
+                "CJK dictionary loaded {} entries above cap {}",
+                raw_entries.len(),
+                limits.max_entries
+            )));
+        }
+
+        let (entries, duplicate_entries) = dedupe_and_order_dictionary_entries(raw_entries);
+        if entries.is_empty() {
+            return Err(OxideError::invalid_input(
+                "CJK dictionary provider loaded no valid entries",
+            ));
+        }
+        if duplicate_entries > 0 {
+            diagnostics.push(CjkDictionaryLoadDiagnostic {
+                code: "dictionary_provider.duplicate_entries_deduped".to_string(),
+                severity: "info".to_string(),
+                message: format!(
+                    "{duplicate_entries} duplicate entries were deterministically deduplicated"
+                ),
+                path: None,
+            });
+        }
+        for pack in &mut packs {
+            pack.duplicate_entries = duplicate_entries;
+        }
+
+        let languages = entries
+            .iter()
+            .map(|entry| entry.language.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let metadata = packs
+            .iter()
+            .map(|pack| pack.metadata.clone())
+            .collect::<Vec<_>>();
+        let report = CjkDictionaryLoadReport {
+            schema_version: PROMPT14B_CJK_PROVIDER_SCHEMA_VERSION.to_string(),
+            provider_status: "loaded_external_packs".to_string(),
+            limits,
+            packs,
+            total_entries: entries.len(),
+            duplicate_entries,
+            memory_footprint_bytes,
+            max_token_chars: limits.max_token_chars,
+            languages,
+            diagnostics,
+        };
+        Ok(Self {
+            entries,
+            metadata,
+            report,
+            max_token_chars: limits.max_token_chars,
+        })
+    }
+
+    pub fn report(&self) -> &CjkDictionaryLoadReport {
+        &self.report
+    }
+
+    pub fn metadata(&self) -> &[CjkDictionaryMetadata] {
+        &self.metadata
+    }
+
+    pub fn entry_count(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn best_match(&self, chars: &[char], start: usize) -> Option<&IndexedCjkDictionaryEntry> {
+        let mut best: Option<&IndexedCjkDictionaryEntry> = None;
+        for entry in &self.entries {
+            let len = entry.chars.len();
+            if len == 0
+                || len > self.max_token_chars
+                || start + len > chars.len()
+                || !chars[start..start + len]
+                    .iter()
+                    .copied()
+                    .eq(entry.chars.iter().copied())
+            {
+                continue;
+            }
+            if best.is_none_or(|active| {
+                len > active.chars.len()
+                    || (len == active.chars.len()
+                        && (entry.priority > active.priority
+                            || (entry.priority == active.priority
+                                && entry.ordinal < active.ordinal)))
+            }) {
+                best = Some(entry);
+            }
+        }
+        best
+    }
+}
+
 pub fn builtin_cjk_dictionary_metadata() -> CjkDictionaryMetadata {
     let memory_footprint_bytes = BUILTIN_CJK_DICTIONARY
         .iter()
@@ -226,7 +603,16 @@ pub fn builtin_cjk_dictionary_metadata() -> CjkDictionaryMetadata {
 }
 
 pub fn segment_cjk_dictionary_text(text: &str) -> Vec<CjkDictionaryToken> {
+    let provider = CjkDictionaryProvider::builtin_fixture();
+    segment_cjk_dictionary_text_with_provider(text, &provider)
+}
+
+pub fn segment_cjk_dictionary_text_with_provider(
+    text: &str,
+    provider: &CjkDictionaryProvider,
+) -> Vec<CjkDictionaryToken> {
     let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let cjk_chars = chars.iter().map(|(_, c)| *c).collect::<Vec<_>>();
     let mut out = Vec::new();
     let mut index = 0;
     while index < chars.len() {
@@ -261,9 +647,14 @@ pub fn segment_cjk_dictionary_text(text: &str) -> Vec<CjkDictionaryToken> {
         }
         let start_index = index;
         let start_byte = chars[index].0;
-        let best = best_builtin_dictionary_match(&chars, index);
-        let (len, language, confidence, source) = if let Some((len, language)) = best {
-            (len, language, 0.96, "builtin_dictionary")
+        let best = provider.best_match(&cjk_chars, index);
+        let (len, language, confidence, source) = if let Some(entry) = best {
+            (
+                entry.chars.len(),
+                entry.language.as_str(),
+                entry.confidence,
+                entry.source.as_str(),
+            )
         } else {
             (1, language_for_cjk_char(c), 0.42, "unknown_cjk_fallback")
         };
@@ -282,6 +673,95 @@ pub fn segment_cjk_dictionary_text(text: &str) -> Vec<CjkDictionaryToken> {
         });
     }
     out
+}
+
+pub fn cjk_dictionary_token_search(
+    text: &str,
+    query: &str,
+    provider: &CjkDictionaryProvider,
+) -> Vec<CjkTokenSearchMatch> {
+    let tokens = segment_cjk_dictionary_text_with_provider(text, provider);
+    let query_tokens = segment_cjk_dictionary_text_with_provider(query, provider);
+    if query_tokens.is_empty() {
+        return Vec::new();
+    }
+    let query_texts = query_tokens
+        .iter()
+        .map(|token| token.text.as_str())
+        .collect::<Vec<_>>();
+    let mut matches = Vec::new();
+    for start in 0..tokens.len() {
+        if start + query_texts.len() > tokens.len() {
+            break;
+        }
+        if tokens[start..start + query_texts.len()]
+            .iter()
+            .map(|token| token.text.as_str())
+            .eq(query_texts.iter().copied())
+        {
+            let end = start + query_texts.len() - 1;
+            let confidence = tokens[start..=end]
+                .iter()
+                .map(|token| token.confidence)
+                .fold(1.0f32, f32::min);
+            matches.push(CjkTokenSearchMatch {
+                query: query.to_string(),
+                matched_text: tokens[start..=end]
+                    .iter()
+                    .map(|token| token.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join(""),
+                token_index: start,
+                char_range: [tokens[start].char_range[0], tokens[end].char_range[1]],
+                byte_range: [tokens[start].byte_range[0], tokens[end].byte_range[1]],
+                language: tokens[start].language.clone(),
+                confidence,
+                provenance: "dictionary_token_layer".to_string(),
+            });
+        }
+    }
+    matches
+}
+
+pub fn cjk_dictionary_rag_token_chunks(
+    text: &str,
+    provider: &CjkDictionaryProvider,
+    max_tokens_per_chunk: usize,
+) -> Vec<CjkRagTokenChunk> {
+    let tokens = segment_cjk_dictionary_text_with_provider(text, provider);
+    let chunk_size = max_tokens_per_chunk.max(1);
+    let mut chunks = Vec::new();
+    for slice in tokens.chunks(chunk_size) {
+        let Some(first) = slice.first() else {
+            continue;
+        };
+        let last = slice.last().unwrap_or(first);
+        let languages = slice
+            .iter()
+            .map(|token| token.language.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let confidence = slice
+            .iter()
+            .map(|token| token.confidence)
+            .fold(1.0f32, f32::min);
+        chunks.push(CjkRagTokenChunk {
+            chunk_index: chunks.len(),
+            text: slice
+                .iter()
+                .map(|token| token.text.as_str())
+                .collect::<Vec<_>>()
+                .join(""),
+            token_count: slice.len(),
+            char_range: [first.char_range[0], last.char_range[1]],
+            byte_range: [first.byte_range[0], last.byte_range[1]],
+            languages,
+            confidence,
+            provenance: "dictionary_token_layer_preserves_source_offsets".to_string(),
+        });
+    }
+    chunks
 }
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
@@ -1646,6 +2126,7 @@ fn tokenize_words_from_chars_dictionary(
     let mut latin_start = None;
     let mut cjk_run: Vec<&TextSemanticChar> = Vec::new();
     let mut cjk_run_script: Option<CjkScript> = None;
+    let provider = CjkDictionaryProvider::builtin_fixture();
 
     for ch in chars {
         let Some(c) = ch.text.chars().next() else {
@@ -1653,7 +2134,7 @@ fn tokenize_words_from_chars_dictionary(
         };
         if c.is_whitespace() {
             flush_token(&mut tokens, &mut latin, &mut latin_start, ch.char_index);
-            flush_dictionary_cjk_run(&mut tokens, &mut cjk_run);
+            flush_dictionary_cjk_run(&mut tokens, &mut cjk_run, &provider);
             cjk_run_script = None;
             continue;
         }
@@ -1664,13 +2145,13 @@ fn tokenize_words_from_chars_dictionary(
             if cjk_run_script.is_some_and(|active| !dictionary_scripts_compatible(active, script))
                 || over_cap
             {
-                flush_dictionary_cjk_run(&mut tokens, &mut cjk_run);
+                flush_dictionary_cjk_run(&mut tokens, &mut cjk_run, &provider);
             }
             cjk_run_script = Some(script);
             cjk_run.push(ch);
             continue;
         }
-        flush_dictionary_cjk_run(&mut tokens, &mut cjk_run);
+        flush_dictionary_cjk_run(&mut tokens, &mut cjk_run, &provider);
         cjk_run_script = None;
         if is_cjk_punctuation(c) {
             flush_token(&mut tokens, &mut latin, &mut latin_start, ch.char_index);
@@ -1684,13 +2165,14 @@ fn tokenize_words_from_chars_dictionary(
     }
     let end = chars.last().map(|ch| ch.char_index + 1).unwrap_or(0);
     flush_token(&mut tokens, &mut latin, &mut latin_start, end);
-    flush_dictionary_cjk_run(&mut tokens, &mut cjk_run);
+    flush_dictionary_cjk_run(&mut tokens, &mut cjk_run, &provider);
     tokens
 }
 
 fn flush_dictionary_cjk_run(
     tokens: &mut Vec<(String, usize, usize)>,
     run: &mut Vec<&TextSemanticChar>,
+    provider: &CjkDictionaryProvider,
 ) {
     if run.is_empty() {
         return;
@@ -1698,7 +2180,10 @@ fn flush_dictionary_cjk_run(
     let chars: Vec<char> = run.iter().filter_map(|ch| ch.text.chars().next()).collect();
     let mut index = 0;
     while index < chars.len() {
-        let len = best_builtin_dictionary_match_for_chars(&chars, index).unwrap_or(1);
+        let len = provider
+            .best_match(&chars, index)
+            .map(|entry| entry.chars.len())
+            .unwrap_or(1);
         let start = run[index].char_index;
         let end = run[index + len - 1].char_index + 1;
         let text: String = chars[index..index + len].iter().collect();
@@ -1706,6 +2191,138 @@ fn flush_dictionary_cjk_run(
         index += len;
     }
     run.clear();
+}
+
+fn resolve_manifest_entries_path(manifest_path: &std::path::Path, entries_path: &str) -> PathBuf {
+    let candidate = PathBuf::from(entries_path);
+    if candidate.is_absolute() {
+        candidate
+    } else {
+        manifest_path
+            .parent()
+            .map(|parent| parent.join(candidate.clone()))
+            .unwrap_or(candidate)
+    }
+}
+
+fn parse_dictionary_tsv_entries(
+    manifest: &CjkDictionaryPackManifest,
+    entries_bytes: &[u8],
+    max_token_chars: usize,
+    malformed: &mut usize,
+) -> Result<Vec<IndexedCjkDictionaryEntry>> {
+    let text = std::str::from_utf8(entries_bytes).map_err(|err| {
+        OxideError::invalid_input(format!(
+            "CJK dictionary pack {} entries are not UTF-8: {err}",
+            manifest.pack_id
+        ))
+    })?;
+    let mut entries = Vec::new();
+    for (line_index, raw_line) in text.lines().enumerate() {
+        let line = raw_line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let columns = line.split('\t').map(str::trim).collect::<Vec<_>>();
+        if columns.len() < 2 {
+            *malformed += 1;
+            continue;
+        }
+        let term = normalize_dictionary_term(columns[0]);
+        let language = columns[1].to_ascii_lowercase();
+        if term.is_empty()
+            || term.chars().count() > max_token_chars
+            || !is_supported_dictionary_language(&language)
+        {
+            *malformed += 1;
+            continue;
+        }
+        let priority = columns
+            .get(2)
+            .and_then(|value| value.parse::<i32>().ok())
+            .unwrap_or(0);
+        let source = columns
+            .get(3)
+            .filter(|value| !value.is_empty())
+            .map(|value| (*value).to_string())
+            .unwrap_or_else(|| manifest.pack_id.clone());
+        let confidence = columns
+            .get(4)
+            .and_then(|value| value.parse::<f32>().ok())
+            .unwrap_or(0.91)
+            .clamp(0.0, 1.0);
+        entries.push(IndexedCjkDictionaryEntry {
+            chars: term.chars().collect(),
+            term,
+            language,
+            priority,
+            source,
+            confidence,
+            ordinal: line_index,
+        });
+    }
+    let parsed_count = entries.len();
+    if parsed_count != manifest.entry_count {
+        return Err(OxideError::invalid_input(format!(
+            "CJK dictionary pack {} manifest entry_count {} does not match parsed valid entry count {}",
+            manifest.pack_id, manifest.entry_count, parsed_count
+        )));
+    }
+    Ok(entries)
+}
+
+fn dedupe_and_order_dictionary_entries(
+    mut entries: Vec<IndexedCjkDictionaryEntry>,
+) -> (Vec<IndexedCjkDictionaryEntry>, usize) {
+    entries.sort_by(|left, right| {
+        left.language
+            .cmp(&right.language)
+            .then_with(|| left.term.cmp(&right.term))
+            .then_with(|| right.priority.cmp(&left.priority))
+            .then_with(|| left.source.cmp(&right.source))
+            .then_with(|| left.ordinal.cmp(&right.ordinal))
+    });
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    let mut duplicate_count = 0usize;
+    for entry in entries {
+        let key = (entry.term.clone(), entry.language.clone());
+        if seen.insert(key) {
+            out.push(entry);
+        } else {
+            duplicate_count += 1;
+        }
+    }
+    for (ordinal, entry) in out.iter_mut().enumerate() {
+        entry.ordinal = ordinal;
+    }
+    (out, duplicate_count)
+}
+
+fn normalize_dictionary_term(term: &str) -> String {
+    term.trim().to_string()
+}
+
+fn is_supported_dictionary_language(language: &str) -> bool {
+    matches!(
+        language,
+        "zh" | "ja" | "ko" | "mixed" | "mixed_latin" | "und"
+    )
+}
+
+pub fn cjk_dictionary_entries_sha256(entries_bytes: &[u8]) -> String {
+    sha256_digest(entries_bytes)
+}
+
+fn sha256_digest(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(71);
+    out.push_str("sha256:");
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(&mut out, "{byte:02x}");
+    }
+    out
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1748,47 +2365,6 @@ fn dictionary_scripts_compatible(left: CjkScript, right: CjkScript) -> bool {
                 | (CjkScript::Hiragana, CjkScript::Katakana)
                 | (CjkScript::Katakana, CjkScript::Hiragana)
         )
-}
-
-fn best_builtin_dictionary_match(
-    chars: &[(usize, char)],
-    start: usize,
-) -> Option<(usize, &'static str)> {
-    let mut best: Option<(usize, &'static str)> = None;
-    for entry in BUILTIN_CJK_DICTIONARY {
-        let term_chars: Vec<char> = entry.term.chars().collect();
-        if start + term_chars.len() > chars.len() {
-            continue;
-        }
-        if chars[start..start + term_chars.len()]
-            .iter()
-            .map(|(_, c)| *c)
-            .eq(term_chars.iter().copied())
-            && best.is_none_or(|(len, _)| term_chars.len() > len)
-        {
-            best = Some((term_chars.len(), entry.language));
-        }
-    }
-    best
-}
-
-fn best_builtin_dictionary_match_for_chars(chars: &[char], start: usize) -> Option<usize> {
-    let mut best = None;
-    for entry in BUILTIN_CJK_DICTIONARY {
-        let term_chars: Vec<char> = entry.term.chars().collect();
-        if start + term_chars.len() > chars.len() {
-            continue;
-        }
-        if chars[start..start + term_chars.len()]
-            .iter()
-            .copied()
-            .eq(term_chars.iter().copied())
-            && best.is_none_or(|len| term_chars.len() > len)
-        {
-            best = Some(term_chars.len());
-        }
-    }
-    best
 }
 
 fn builtin_cjk_dictionary_hash() -> String {
@@ -2327,6 +2903,7 @@ fn merge_counters(into: &mut TextExtractionCounters, other: &TextExtractionCount
     into.mcids_unmapped += other.mcids_unmapped;
     into.cjk_tokens += other.cjk_tokens;
     into.cjk_simple_tokens += other.cjk_simple_tokens;
+    into.cjk_dictionary_tokens += other.cjk_dictionary_tokens;
 }
 
 fn search_semantic_document(

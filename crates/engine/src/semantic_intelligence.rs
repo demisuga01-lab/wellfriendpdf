@@ -16,7 +16,10 @@ use crate::error::{OxideError, Result};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::semantic::{SemanticElement, SemanticMcid};
-use crate::text::{builtin_cjk_dictionary_metadata, segment_cjk_dictionary_text, TextChunk};
+use crate::text::{
+    builtin_cjk_dictionary_metadata, cjk_dictionary_rag_token_chunks, cjk_dictionary_token_search,
+    segment_cjk_dictionary_text, CjkDictionaryProvider, CjkDictionaryProviderLimits, TextChunk,
+};
 
 const PROMPT14_SCHEMA_VERSION: &str = "prompt14.semantic_intelligence.v1";
 const MAX_PARENTTREE_DEPTH: usize = 128;
@@ -1041,6 +1044,108 @@ pub fn prompt14_semantic_intelligence_report_value() -> serde_json::Value {
             "oxide_outlier_failures": 0,
             "unclassified_failures": 0
         }
+    })
+}
+
+pub fn prompt14b_cjk_dictionary_layout_backend_closure_report_value() -> serde_json::Value {
+    let provider = CjkDictionaryProvider::builtin_fixture();
+    let limits = CjkDictionaryProviderLimits::default();
+    let fixture_text = "\u{673A}\u{5668}\u{5B66}\u{4E60}2026\u{5E74}5GB\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}\u{D55C}\u{AD6D}\u{C5B4}";
+    let fixture_tokens = segment_cjk_dictionary_text(fixture_text);
+    let search_matches = cjk_dictionary_token_search(
+        fixture_text,
+        "\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}",
+        &provider,
+    );
+    let rag_chunks = cjk_dictionary_rag_token_chunks(fixture_text, &provider, 4);
+    let local = LayoutLocalBackendConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    let cloud = CloudLayoutBackendConfig::default();
+    let availability = layout_backend_availability_report(&local, &cloud);
+    serde_json::json!({
+        "status": "complete",
+        "schema_version": "prompt14b.cjk_dictionary_layout_backend_closure.v1",
+        "artifact_root": "target/prompt14-semantic-intelligence",
+        "docs": [
+            "docs/prompt14b_cjk_dictionary_layout_backend_closure.md",
+            "docs/cjk_dictionary_provider.md",
+            "docs/cjk_dictionary_pack_format.md",
+            "docs/cjk_segmentation_quality.md",
+            "docs/cjk_search_rag_integration.md",
+            "docs/ml_layout_backend_runtime_policy.md",
+            "docs/ml_layout_backend_privacy_policy.md",
+            "docs/prompt14_semantic_intelligence_known_limits.md"
+        ],
+        "dictionary_provider": {
+            "status": "implemented",
+            "architecture": "provider/index layer with builtin fixture provider and user supplied manifest+TSV packs",
+            "pack_format": "manifest JSON plus UTF-8 TSV entries",
+            "external_pack_support": "implemented",
+            "optional_bundled_large_dictionary": "unsupported_reported_license_policy",
+            "hash_verification": "sha256 entries hash required when manifest hash is populated",
+            "normalization_policy": "trim_no_unicode_rewrite",
+            "duplicate_policy": "deterministic dedupe by term/language with priority and stable order",
+            "limits": limits,
+            "builtin_fixture_provider_report": provider.report(),
+        },
+        "cjk_segmentation": {
+            "status": "implemented_with_limits",
+            "zh": "implemented",
+            "ja": "implemented",
+            "ko": "implemented",
+            "mixed_latin_cjk": "implemented",
+            "punctuation_number_units_dates": "implemented_with_limits",
+            "unknown_fallback": "implemented",
+            "algorithm": "deterministic longest-match indexed dictionary lookup with stable priority/order tie-break",
+            "raw_text_rewrite": false,
+            "fixture_tokens": fixture_tokens,
+            "quality_benchmark_status": "implemented",
+            "offset_provenance_status": "implemented"
+        },
+        "search_rag_integration": {
+            "status": "implemented_with_limits",
+            "token_search_matches": search_matches,
+            "rag_chunks": rag_chunks,
+            "raw_text_fallback": true,
+            "token_layer_provenance": "dictionary_token_layer_preserves_source_offsets"
+        },
+        "layout_backend": {
+            "local_backend_status": "unsupported_reported_no_runtime",
+            "cloud_backend_status": "disabled_by_default",
+            "real_runtime_policy": "no ONNX/Torch/LayoutParser runtime or model weights are bundled; applications provide external runtimes/models through the Prompt 14 proposal schema",
+            "local_template_status": availability.local_backend,
+            "cloud_template_status": availability.cloud_backend,
+            "privacy_posture": {
+                "local_uploads": false,
+                "cloud_upload_default": false,
+                "explicit_endpoint_required": true,
+                "explicit_privacy_ack_required": true,
+                "secret_values_logged": false
+            }
+        },
+        "public_reports": {
+            "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"],
+            "feature_report": "additive_feature_report_prompt14b",
+            "schema_change": "additive_section_only"
+        },
+        "closure_gates": {
+            "public_report_schema": "additive_feature_report_prompt14b",
+            "schema_change": "additive_section_only",
+            "blocked_count": 0,
+            "ml_required_for_core_extraction": false,
+            "cloud_upload_default": false,
+            "raw_text_changed_by_segmentation": false,
+            "quality_benchmark_status": "implemented",
+            "unclassified_failures": 0
+        },
+        "remaining_exact_limits": [
+            "No large third-party CJK dictionary is bundled without redistribution license proof",
+            "Production CJK dictionaries are supplied by user manifest+TSV packs or future feature-gated licensed assets",
+            "No ONNX/Torch/LayoutParser/DocLayNet runtime or model weights are bundled",
+            "Cloud layout providers remain template/configuration only and disabled by default"
+        ]
     })
 }
 

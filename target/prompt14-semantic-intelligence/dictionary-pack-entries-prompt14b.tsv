@@ -1,0 +1,10 @@
+机器	zh	1	prompt14b-fixture	0.70
+机器学习	zh	10	prompt14b-fixture	0.97
+人工智能	zh	8	prompt14b-fixture	0.96
+数据库	zh	6	prompt14b-fixture	0.95
+検索エンジン	ja	9	prompt14b-fixture	0.96
+形態素解析	ja	8	prompt14b-fixture	0.95
+東京大学	ja	7	prompt14b-fixture	0.94
+한국어	ko	8	prompt14b-fixture	0.95
+자연어처리	ko	7	prompt14b-fixture	0.94
+데이터베이스	ko	6	prompt14b-fixture	0.93

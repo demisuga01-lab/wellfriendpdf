@@ -4,7 +4,7 @@
   "engine_version": "0.1.0",
   "abi_version": 1,
   "reports": {
-    "feature": {"sha256": "597bab87a90719b4c78634bc7881cf7155db84a2c4cd33029338039f8de08647", "bytes": 95433},
+    "feature": {"sha256": "c2ae650aff1431bd927034361d4ca2a3a82f51c88b671cbd9262065a0efe2c10", "bytes": 101988},
     "security": {"sha256": "a9a1e700acc839a2b224c48cc9edc2ea1e7a7ea2faa8ccbf5d1e9eb6b90ae899", "bytes": 714},
     "parser": {"sha256": "0ceed52840510991c9c57f90088d1f4d83ef71c7b6045c9b0d3a494b6d304934", "bytes": 19172},
     "color": {"sha256": "981b412a269c5a44a8389bc92ee8c93bec6711bdf5fcc2ea2175afd911d2fce1", "bytes": 131528},

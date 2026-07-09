@@ -1,0 +1,6 @@
+{
+  "provenance": "page/object/MCID available when source semantic chars carry it",
+  "rag": "token chunks preserve phrase boundaries and source offsets",
+  "search": "token-aware exact match helper plus raw-text fallback",
+  "status": "implemented_with_limits"
+}
