@@ -11,7 +11,8 @@ use crate::content::ContentParser;
 use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::prepress::{
-    self, IccProfileClass, Prompt12BPrepressReport, Prompt12PrepressReport, SeparationFramebuffer,
+    self, IccProfileClass, Prompt12BPrepressReport, Prompt12PrepressReport,
+    Prompt13PrepressCloseoutReport, SeparationFramebuffer,
 };
 use crate::reader::PdfReader;
 use crate::render::{cmm, colorspace, function};
@@ -252,6 +253,7 @@ pub struct ColorReport {
     pub overprint: OverprintReport,
     pub prompt12_prepress_cmm_device_link_separation_plates: Prompt12PrepressReport,
     pub prompt12b_nchannel_plate_reference_closure: Prompt12BPrepressReport,
+    pub prompt13_full_overprint_prepress_closeout: Prompt13PrepressCloseoutReport,
     pub standards: StandardsColorReport,
     pub diagnostics: Vec<ColorDiagnostic>,
 }
@@ -288,6 +290,9 @@ impl ColorReport {
             prompt12_prepress_cmm_device_link_separation_plates: Prompt12PrepressReport::default(),
             prompt12b_nchannel_plate_reference_closure: Prompt12BPrepressReport::from_parts(
                 &[],
+                &SeparationFramebuffer::default().report(),
+            ),
+            prompt13_full_overprint_prepress_closeout: Prompt13PrepressCloseoutReport::from_parts(
                 &SeparationFramebuffer::default().report(),
             ),
             standards: StandardsColorReport {
@@ -346,6 +351,8 @@ impl ColorReportBuilder {
             );
         report.prompt12b_nchannel_plate_reference_closure =
             Prompt12BPrepressReport::from_parts(&prompt12_profiles, &prompt12_framebuffer);
+        report.prompt13_full_overprint_prepress_closeout =
+            Prompt13PrepressCloseoutReport::from_parts(&prompt12_framebuffer);
         report.diagnostics.extend(self.diagnostics);
         if matches!(report.validation_profile, ColorValidationProfile::PdfX) && device_rgb_used {
             report.diagnostics.push(ColorDiagnostic {

@@ -32,4 +32,5 @@ Prompt 12 adds device-link and multicolor inventory, sparse separation
 framebuffer reporting, and spot/DeviceN plate preservation on top of this
 boundary. It keeps the same native dependency rule: default and WASM builds do
 not link LittleCMS, and native behavior remains behind `native-cmm-lcms2`.
-Prompt 13 remains responsible for full overprint simulation.
+Prompt 13 closes bounded overprint/prepress simulation. Certification-grade
+PDF/X validation remains later standards work.

@@ -892,6 +892,14 @@ fn prompt07_report_commands_emit_json() {
         prompt12b["reference_audit"]["mupdf"],
         "required_and_run_by_prompt12b_audit"
     );
+    let prompt13 = &feature["report"]["prompt13_full_overprint_prepress_closeout"];
+    assert_eq!(prompt13["status"], "complete");
+    assert_eq!(
+        prompt13["closure_gates"]["public_report_schema"],
+        "additive_feature_report_prompt13"
+    );
+    assert_eq!(prompt13["reference_audit"]["oxide_outlier_failures"], 0);
+    assert_eq!(prompt13["reference_audit"]["unclassified_failures"], 0);
 
     let forms = assert_json(
         &run(&["forms-report", fx("form_160f.pdf").to_str().unwrap()]),

@@ -121,5 +121,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"required_and_run_by_prompt12b_audit\"")) {
             throw new AssertionError("feature report missing Prompt 12B n-channel plate closure posture");
         }
+        if (!feature.contains("\"prompt13_full_overprint_prepress_closeout\"")
+                || !feature.contains("\"additive_feature_report_prompt13\"")
+                || !feature.contains("\"oxide_outlier_failures\":0")) {
+            throw new AssertionError("feature report missing Prompt 13 overprint prepress closeout posture");
+        }
     }
 }

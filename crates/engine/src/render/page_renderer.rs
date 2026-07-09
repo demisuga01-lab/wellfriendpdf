@@ -199,8 +199,10 @@ impl PageRenderer {
             .visibility_fingerprint()
             .to_string();
         let resources = engine.get_page_resources(page_number)?;
-        let plate_fingerprint =
-            prepress::cache_fingerprint_for_color_spaces(resources.color_spaces.values());
+        let plate_fingerprint = prepress::cache_fingerprint_for_prepress_resources(
+            resources.color_spaces.values(),
+            resources.ext_g_states.values(),
+        );
         let key = RenderCacheKey::new_with_visibility_and_prepress(
             page_number,
             dpi,
@@ -266,11 +268,11 @@ impl PageRenderer {
         Ok(bands)
     }
 
-    /// Render-interpreter pass that returns sparse Prompt 12 plate state.
+    /// Render-interpreter pass that returns sparse Prompt 12/13 plate state.
     ///
     /// This follows the same content dispatch path as RGB rendering for page
-    /// fill/stroke operations, but only exposes plate/tint side-channel data.
-    /// It does not claim Prompt 13 overprint compositing.
+    /// fill/stroke operations, and exposes plate/tint/OP/op/OPM side-channel
+    /// data for supported Prompt 13 prepress close-out cases.
     pub fn prepress_plate_report(
         engine: &ContentEngine,
         page_number: usize,
@@ -963,7 +965,17 @@ impl<'a> RenderState<'a> {
         operation: &str,
     ) {
         let reader = self.engine.document().reader();
-        let contributions = prepress::plate_contributions_for_color_space(
+        let overprint = prepress::OverprintStateModel::for_paint(
+            self.gs.fill_overprint,
+            self.gs.stroke_overprint,
+            self.gs.overprint_mode,
+            operation,
+            prepress::color_space_label(space_obj, reader),
+            components,
+            alpha,
+            object.clone(),
+        );
+        let contributions = prepress::plate_contributions_for_color_space_with_overprint(
             space_obj,
             components,
             alpha,
@@ -971,6 +983,7 @@ impl<'a> RenderState<'a> {
             object,
             operation,
             Some(self.page_number),
+            &overprint,
         );
         self.separation_framebuffer.record_all(contributions);
     }
@@ -1205,6 +1218,26 @@ impl<'a> RenderState<'a> {
         let color = self.stroke_pixel_color();
         let width = self.gs.line_width;
         let dash = self.dash_state();
+        if self.gs.stroke_overprint {
+            if let Some(cmyk) = device_cmyk_components(&self.gs.stroke_color) {
+                PathPainter::stroke_device_cmyk_overprint_preview(
+                    &mut self.buf,
+                    &self.path,
+                    &ctm,
+                    &self.viewport,
+                    cmyk,
+                    self.gs.stroke_alpha as f32,
+                    self.gs.overprint_mode,
+                    width,
+                    &dash,
+                    &self.gs.line_cap,
+                    &self.gs.line_join,
+                    self.gs.miter_limit,
+                );
+                self.path.clear();
+                return;
+            }
+        }
         PathPainter::stroke_with_style(
             &mut self.buf,
             &self.path,
@@ -1266,13 +1299,51 @@ impl<'a> RenderState<'a> {
                 self.paint_pattern_fill(rule, &pattern_name);
             }
         } else {
-            let fill = self.fill_pixel_color();
-            PathPainter::fill(&mut self.buf, &self.path, &ctm, &self.viewport, fill, rule);
+            if self.gs.fill_overprint {
+                if let Some(cmyk) = device_cmyk_components(&self.gs.fill_color) {
+                    PathPainter::fill_device_cmyk_overprint_preview(
+                        &mut self.buf,
+                        &self.path,
+                        &ctm,
+                        &self.viewport,
+                        cmyk,
+                        self.gs.fill_alpha as f32,
+                        self.gs.overprint_mode,
+                        rule,
+                    );
+                } else {
+                    let fill = self.fill_pixel_color();
+                    PathPainter::fill(&mut self.buf, &self.path, &ctm, &self.viewport, fill, rule);
+                }
+            } else {
+                let fill = self.fill_pixel_color();
+                PathPainter::fill(&mut self.buf, &self.path, &ctm, &self.viewport, fill, rule);
+            }
         }
         self.record_plate_contribution(&stroke_color_state, self.gs.stroke_alpha as f32, "stroke");
         let stroke = self.stroke_pixel_color();
         let width = self.gs.line_width;
         let dash = self.dash_state();
+        if self.gs.stroke_overprint {
+            if let Some(cmyk) = device_cmyk_components(&self.gs.stroke_color) {
+                PathPainter::stroke_device_cmyk_overprint_preview(
+                    &mut self.buf,
+                    &self.path,
+                    &ctm,
+                    &self.viewport,
+                    cmyk,
+                    self.gs.stroke_alpha as f32,
+                    self.gs.overprint_mode,
+                    width,
+                    &dash,
+                    &self.gs.line_cap,
+                    &self.gs.line_join,
+                    self.gs.miter_limit,
+                );
+                self.path.clear();
+                return;
+            }
+        }
         PathPainter::stroke_with_style(
             &mut self.buf,
             &self.path,

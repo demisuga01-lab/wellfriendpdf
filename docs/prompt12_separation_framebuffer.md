@@ -32,5 +32,5 @@ cases degrade to report-only or fail closed with a diagnostic.
 
 Prompt 12B integrates text, vector, stencil image, shading, and pattern plate
 sampling for supported Separation and DeviceN paths. Transparency groups and
-soft masks preserve child plate state into the parent report, but full overprint
-blending remains Prompt 13.
+soft masks preserve child plate state into the parent report. Prompt 13 adds
+bounded overprint/prepress close-out on top of this Prompt 12B baseline.

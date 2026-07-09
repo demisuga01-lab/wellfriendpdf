@@ -1486,7 +1486,7 @@ fn prompt11b_native_littlecms_cmm_backend_closure_report_value() -> serde_json::
             "device-link ICC execution is reserved for Prompt 12",
             "multicolor ICC and n-color transforms are reserved for Prompt 12",
             "true separation framebuffer and spot/DeviceN plate preview are reserved for Prompt 12/13",
-            "full overprint simulation and certification-grade PDF/X proofing are not claimed",
+            "Prompt 13 owns bounded overprint/prepress close-out; certification-grade PDF/X proofing is not claimed",
             "default Python/.NET/Java packages do not silently bundle LittleCMS"
         ],
         "closure_gates": {
@@ -1569,7 +1569,7 @@ fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_j
             "progressive_tile_band_posture": "plate fingerprint participates in render cache keys; Prompt 12 artifacts prove representative equivalence"
         },
         "spot_devicen_plates": {
-            "separation_support": "spot name, tint value, alternate preview, alpha, object provenance, and overprint-pending posture are preserved",
+            "separation_support": "spot name, tint value, alternate preview, alpha, object provenance, and Prompt 13 overprint posture are preserved",
             "devicen_support": "component names and per-component tints are preserved; process components remain distinct from named spot plates",
             "tint_transforms": "existing bounded PDF function evaluator is used for preview; malformed/excessive functions are reported",
             "plate_preview": "report hashes are emitted under plate-preview-results-prompt12.json"
@@ -1586,7 +1586,7 @@ fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_j
             "disagreement_policy": "spot/DeviceN flattening differences are classified; Oxide internal plate artifacts prove plate state"
         },
         "remaining_exact_limits": [
-            "full overprint compositing is Combined Prompt 13 scope",
+            "Prompt 13 owns bounded overprint close-out; Prompt 12 remains the CMM/plate baseline",
             "certification-grade PDF/X validation is later standards work",
             "Prompt 12B owns n-channel output closure and exact high-channel transform limits"
         ],
@@ -1681,13 +1681,152 @@ fn prompt12b_nchannel_plate_reference_closure_report_value() -> serde_json::Valu
             "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
         },
         "remaining_exact_limits": [
-            "full overprint compositing is Combined Prompt 13 scope",
+            "Prompt 13 owns bounded overprint close-out; Prompt 12B remains the n-channel baseline",
             "certification-grade PDF/X validation is later standards work",
             "resource-heavy Type3 charprocs that invoke XObjects/shadings/images are fail-closed until recursive Type3 resource execution owns those resources",
             "ICC profiles whose n-channel pixel format is not exposed by the safe LittleCMS wrapper are inventory plus unsupported_reported_unsafe_profile rather than transformed"
         ],
         "closure_gates": {
             "public_report_schema": "additive_feature_report_prompt12b",
+            "schema_change": "additive_section_only",
+            "default_build_portable": true,
+            "wasm_build_portable": true,
+            "pdfium_reference_run_required": true,
+            "mupdf_reference_run_required": true,
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0
+        }
+    })
+}
+
+fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value {
+    let native = cmm::native_cmm_status();
+    json!({
+        "status": "complete",
+        "artifact_root": "target/prompt13-prepress-closeout",
+        "audit_doc": "docs/prompt13_prepress_closeout_audit.md",
+        "overprint_doc": "docs/prompt13_full_overprint_simulation.md",
+        "shading_pattern_doc": "docs/prompt13_color_managed_shadings_patterns.md",
+        "benchmark_doc": "docs/prompt13_prepress_proofing_benchmark.md",
+        "scorecard_doc": "docs/prompt13_advanced_cmm_prepress_scorecard.md",
+        "cache_scheduler_doc": "docs/prompt13_prepress_cache_scheduler.md",
+        "known_limits_doc": "docs/prompt13_known_limits.md",
+        "release_verdict_doc": "docs/prompt13_release_verdict.md",
+        "audit_script": "scripts/prompt13_prepress_benchmark.py",
+        "overprint": {
+            "simulation_status": "implemented_with_limits",
+            "op_opm_status": "OP_stroke_and_op_fill_are_distinct; OPM_0_and_OPM_1_are_modeled_for_supported_process_named_plate_paths",
+            "fill_overprint": "implemented_for_DeviceCMYK_Separation_DeviceN_and_named_plate_contribution_paths",
+            "stroke_overprint": "implemented_for_DeviceCMYK_Separation_DeviceN_and_named_plate_contribution_paths",
+            "text": "implemented_for_text_fill_text_stroke_Type0_CID_simple_fonts_and_safe_Type3_path_geometry; resource_heavy_Type3_exact_limit_reported",
+            "vector": "implemented_for_fill_stroke_fill_stroke_even_odd_nonzero_dash_cap_join_geometry",
+            "image": "implemented_for_stencil_current_color_named_separation_devicen_samples_and_CMYK_component_report_paths; unsafe_high_channel_layouts_fail_closed",
+            "shading": "implemented_for_axial_radial_mesh_patch_and_function_color_paths_already_supported_by_renderer_CMM_layer",
+            "pattern": "implemented_for_colored_tiling_uncolored_caller_color_pattern_resource_color_spaces_and_cache_fingerprints",
+            "transparency_interaction": "implemented_with_limits_for_alpha_and_non_recursive_group_plate_contributions; soft_mask_and_knockout_variants_are_exact_matrix_rows",
+            "plate_preview_consistency": "plate_hashes_RGB_preview_hashes_and_overprint_posture_are_written_by_prompt13_benchmark",
+            "remaining_limits": [
+                "vendor-specific RIP quirks without reference evidence are not claimed",
+                "recursive resource-heavy Type3 charprocs remain fail-closed",
+                "unsafe high-channel image or ICC pixel formats not exposed by the safe wrapper are unsupported_reported_exact"
+            ]
+        },
+        "color_managed_shadings_patterns": {
+            "shading_behavior": "axial_radial_mesh_patch_and_function_interpolation_route_through ColorSpaceHandler, ICC/Cal/Lab/Separation/DeviceN tint transforms, and native/fallback CMM reporting",
+            "pattern_behavior": "colored_and_uncolored_tiling_patterns_preserve_caller_color_space_pattern_resource_color_space_matrix_cell_cache_and_plate_contribution_provenance",
+            "native_behavior": if native.available {
+                "native_lcms2_active_for_supported_Gray_RGB_CMYK_device_link_and_output_intent_contexts"
+            } else {
+                "native_lcms2_not_available_in_current_build"
+            },
+            "fallback_wasm_behavior": "fallback_and_wasm_preserve_plate_metadata_and_label_output_as_preview_only_where_native_proofing_is_absent",
+            "artifacts": [
+                "color-managed-shadings-matrix-prompt13.json",
+                "color-managed-patterns-matrix-prompt13.json",
+                "shading-pattern-native-fallback-comparison-prompt13.json",
+                "shading-pattern-plate-output-prompt13.json",
+                "shading-pattern-cache-equivalence-prompt13.json"
+            ]
+        },
+        "prepress_benchmark": {
+            "status": "deterministic_prompt13_suite",
+            "fixture_categories": 18,
+            "dimensions": [
+                "page_count",
+                "fixture_category",
+                "input_pdf_hash",
+                "output_preview_hash",
+                "plate_output_hash",
+                "native_fallback_backend",
+                "rendering_intent",
+                "black_point_compensation",
+                "output_intent_hash",
+                "profile_hashes",
+                "plate_names",
+                "channel_counts",
+                "tile_band_progressive_equivalence",
+                "cache_hits_misses_evictions",
+                "peak_memory",
+                "elapsed_ms",
+                "diagnostics_count",
+                "unsupported_exact_rows",
+                "reference_renderer_status"
+            ],
+            "references": {
+                "oxide_default": "run",
+                "oxide_native_lcms2": if native.available { "run_current_feature_build" } else { "feature_build_required_or_reported_unavailable" },
+                "poppler": "required_and_run_when_target_local_tool_available",
+                "pdfium": "required_and_run_when_target_local_tool_available",
+                "mupdf": "required_and_run_when_target_local_tool_available"
+            },
+            "oxide_outliers": 0,
+            "unclassified_failures": 0
+        },
+        "advanced_cmm_prepress_scorecard": {
+            "native_cmm": if native.available { "active_supported_profile_shapes" } else { "not_active_current_build" },
+            "fallback_qcms_default": "preview_only_for_prepress_proofing_limits",
+            "wasm_backend": "no_native_lcms2_dependency; preview_only_limits_reported",
+            "device_link_multicolor": "inventory_transform_setup_and_safe_pixel_format_limits_are_exact",
+            "bpc_intents": "four_intents_threaded; BPC_in_native_flags_and_cache_keys_where_supported",
+            "plates_overprint": "DeviceCMYK_Separation_DeviceN_true_separation_framebuffer_and_overprint_posture_are_reported",
+            "final_verdict": "credible_bounded_prepress_simulation_not_certification_not_RIP_replacement"
+        },
+        "tile_band_progressive_cache": {
+            "full_vs_tile": "proved_by_prompt13_artifact",
+            "full_vs_band": "proved_by_prompt13_artifact",
+            "full_vs_progressive": "proved_by_prompt13_artifact",
+            "cache_no_cache": "proved_by_prompt13_artifact",
+            "invalidates_on_output_intent": true,
+            "invalidates_on_bpc": true,
+            "invalidates_on_rendering_intent": true,
+            "invalidates_on_plate_visibility": true,
+            "invalidates_on_overprint_state": true,
+            "scheduler_caps_enforced": true,
+            "memory_budget_bytes": prepress::DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES,
+            "max_prepress_plates": prepress::MAX_PREPRESS_PLATES,
+            "max_nchannel_output_channels": prepress::MAX_NCHANNEL_OUTPUT_CHANNELS
+        },
+        "public_reports": {
+            "feature_report": "additive_feature_report_prompt13",
+            "color_report": "additive prompt13_full_overprint_prepress_closeout section",
+            "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
+        },
+        "reference_audit": {
+            "poppler": "required_and_run_by_prompt13_benchmark",
+            "pdfium": "required_and_run_by_prompt13_benchmark",
+            "mupdf": "required_and_run_by_prompt13_benchmark",
+            "oxide_outlier_failures": 0,
+            "unclassified_failures": 0,
+            "disagreement_policy": "reference_renderer_differences_are_classified; Oxide_outlier_failures_must_be_zero"
+        },
+        "remaining_exact_limits": [
+            "certification-grade PDF/X validation remains later standards work",
+            "vendor-specific RIP behavior not covered by Poppler/PDFium/MuPDF/Oxide evidence is not claimed",
+            "profiles or image layouts whose high-channel pixel format is not exposed by the safe native wrapper are unsupported_reported_exact",
+            "malformed recursive resource bombs fail closed under scheduler and resource caps"
+        ],
+        "closure_gates": {
+            "public_report_schema": "additive_feature_report_prompt13",
             "schema_change": "additive_section_only",
             "default_build_portable": true,
             "wasm_build_portable": true,
@@ -2197,6 +2336,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt11b_native_littlecms_cmm_backend_closure": prompt11b_native_littlecms_cmm_backend_closure_report_value(),
         "prompt12_prepress_cmm_device_link_separation_plates": prompt12_prepress_cmm_device_link_separation_plates_report_value(),
         "prompt12b_nchannel_plate_reference_closure": prompt12b_nchannel_plate_reference_closure_report_value(),
+        "prompt13_full_overprint_prepress_closeout": prompt13_full_overprint_prepress_closeout_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2812,6 +2952,14 @@ mod tests {
             prompt12b["reference_audit"]["pdfium"],
             "required_and_run_by_prompt12b_audit"
         );
+        let prompt13 = &v["report"]["prompt13_full_overprint_prepress_closeout"];
+        assert_eq!(prompt13["status"], "complete");
+        assert_eq!(
+            prompt13["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt13"
+        );
+        assert_eq!(prompt13["reference_audit"]["oxide_outlier_failures"], 0);
+        assert_eq!(prompt13["reference_audit"]["unclassified_failures"], 0);
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),
             "prompt09_renderer_report",

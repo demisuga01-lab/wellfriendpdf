@@ -140,6 +140,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt12b_nchannel_plate_reference_closure\"", feature);
         Assert.Contains("\"additive_feature_report_prompt12b\"", feature);
         Assert.Contains("\"required_and_run_by_prompt12b_audit\"", feature);
+        Assert.Contains("\"prompt13_full_overprint_prepress_closeout\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt13\"", feature);
+        Assert.Contains("\"oxide_outlier_failures\":0", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

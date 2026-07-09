@@ -202,6 +202,14 @@ def test_module_level_reports():
         == "additive_feature_report_prompt12b"
     )
     assert prompt12b["reference_audit"]["pdfium"] == "required_and_run_by_prompt12b_audit"
+    prompt13 = feature["prompt13_full_overprint_prepress_closeout"]
+    assert prompt13["status"] == "complete"
+    assert (
+        prompt13["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_prompt13"
+    )
+    assert prompt13["reference_audit"]["oxide_outlier_failures"] == 0
+    assert prompt13["reference_audit"]["unclassified_failures"] == 0
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

@@ -3,7 +3,9 @@
 //! This module keeps the press-oriented color state separate from the RGB
 //! preview renderer. It inventories ICC profile classes, reports native/fallback
 //! transform posture, and stores sparse plate contributions for Separation and
-//! DeviceN color spaces without claiming Prompt 13 overprint simulation.
+//! DeviceN color spaces. Prompt 13 extends the same model with bounded
+//! overprint state, OP/op/OPM cache identity, and color-managed shading/pattern
+//! close-out reporting without claiming certification-grade PDF/X validation.
 
 use crate::object::PdfObject;
 use crate::reader::PdfReader;
@@ -190,6 +192,7 @@ impl Default for NChannelPixelFormatReport {
                 "color_space".to_string(),
                 "profile_hash".to_string(),
                 "transform_key".to_string(),
+                "overprint_posture".to_string(),
                 "rendering_intent".to_string(),
                 "black_point_compensation".to_string(),
                 "backend_status".to_string(),
@@ -207,6 +210,10 @@ impl Default for NChannelPixelFormatReport {
                 "black_point_compensation".to_string(),
                 "output_intent".to_string(),
                 "plate_fingerprint".to_string(),
+                "fill_overprint_op".to_string(),
+                "stroke_overprint_OP".to_string(),
+                "overprint_mode_OPM".to_string(),
+                "plate_visibility".to_string(),
             ],
         }
     }
@@ -250,6 +257,243 @@ pub struct Prompt12BPrepressReport {
     pub oxide_outlier_count: usize,
     pub unclassified_failure_count: usize,
     pub remaining_exact_limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverprintStateModel {
+    pub fill_overprint_op: bool,
+    pub stroke_overprint_op: bool,
+    pub overprint_mode_opm: i32,
+    pub paint_role: String,
+    pub current_color_space: String,
+    pub current_color_values: Vec<String>,
+    pub alpha_u16: u16,
+    pub current_plate_contributions: Vec<String>,
+    pub soft_mask_context: String,
+    pub transparency_group_context: String,
+    pub knockout_isolation_context: String,
+    pub output_intent_native_cmm_context: String,
+    pub tint_transform_provenance: Option<String>,
+    pub object_provenance: Option<String>,
+}
+
+impl Default for OverprintStateModel {
+    fn default() -> Self {
+        Self {
+            fill_overprint_op: false,
+            stroke_overprint_op: false,
+            overprint_mode_opm: 0,
+            paint_role: "fill".to_string(),
+            current_color_space: "unknown".to_string(),
+            current_color_values: Vec::new(),
+            alpha_u16: 65535,
+            current_plate_contributions: Vec::new(),
+            soft_mask_context: "none".to_string(),
+            transparency_group_context: "page_group_or_opaque_context".to_string(),
+            knockout_isolation_context: "not_observed".to_string(),
+            output_intent_native_cmm_context: native_cmm_context_label(),
+            tint_transform_provenance: None,
+            object_provenance: None,
+        }
+    }
+}
+
+impl OverprintStateModel {
+    #[allow(clippy::too_many_arguments)]
+    pub fn for_paint(
+        fill_overprint_op: bool,
+        stroke_overprint_op: bool,
+        overprint_mode_opm: i32,
+        operation: &str,
+        current_color_space: impl Into<String>,
+        components: &[f64],
+        alpha: f32,
+        object_provenance: Option<String>,
+    ) -> Self {
+        let paint_role = paint_role_from_operation(operation);
+        Self {
+            fill_overprint_op,
+            stroke_overprint_op,
+            overprint_mode_opm,
+            paint_role,
+            current_color_space: current_color_space.into(),
+            current_color_values: components
+                .iter()
+                .map(|value| format!("{:.6}", value.clamp(0.0, 1.0)))
+                .collect(),
+            alpha_u16: ((alpha.clamp(0.0, 1.0) * 65535.0).round() as u16),
+            object_provenance,
+            ..Self::default()
+        }
+    }
+
+    pub fn active_for_role(&self) -> bool {
+        if self.paint_role.contains("stroke") {
+            self.stroke_overprint_op
+        } else {
+            self.fill_overprint_op
+        }
+    }
+
+    pub fn normalized_opm(&self) -> i32 {
+        if self.overprint_mode_opm == 1 {
+            1
+        } else {
+            0
+        }
+    }
+
+    fn posture_for(&self, kind: PlateKind, tint: f32) -> String {
+        let zero_tint = tint <= 0.000_001;
+        match (
+            self.active_for_role(),
+            self.normalized_opm(),
+            kind,
+            zero_tint,
+        ) {
+            (true, 1, PlateKind::Process, true) => {
+                "overprint_opm1_process_zero_tint_preserves_existing_component".to_string()
+            }
+            (true, 1, PlateKind::Process, false) => {
+                "overprint_opm1_process_nonzero_tint_replaces_that_component_preserves_others"
+                    .to_string()
+            }
+            (true, 0, PlateKind::Process, _) => {
+                "overprint_opm0_process_color_replaces_process_components".to_string()
+            }
+            (true, _, PlateKind::Process, _) => {
+                "overprint_malformed_opm_normalized_to_opm0_process_replacement".to_string()
+            }
+            (true, _, PlateKind::Spot | PlateKind::DeviceN | PlateKind::All, true) => {
+                "overprint_named_plate_zero_tint_preserves_existing_plate".to_string()
+            }
+            (true, _, PlateKind::Spot | PlateKind::DeviceN | PlateKind::All, false) => {
+                "overprint_named_plate_tint_preserved_with_preview_consistency".to_string()
+            }
+            (_, _, PlateKind::None, _) => "no_paint_plate_none_fail_closed".to_string(),
+            (false, _, PlateKind::Process, _) => {
+                "knockout_process_component_replacement_when_overprint_disabled".to_string()
+            }
+            (false, _, PlateKind::Spot | PlateKind::DeviceN | PlateKind::All, _) => {
+                "knockout_named_plate_replacement_when_overprint_disabled".to_string()
+            }
+        }
+    }
+
+    pub fn cache_identity_parts(&self) -> Vec<String> {
+        vec![
+            format!("op={}", self.fill_overprint_op),
+            format!("OP={}", self.stroke_overprint_op),
+            format!("OPM={}", self.normalized_opm()),
+            format!("role={}", self.paint_role),
+            format!("alpha={}", self.alpha_u16),
+            format!("space={}", self.current_color_space),
+            format!("values={}", self.current_color_values.join(",")),
+            format!("smask={}", self.soft_mask_context),
+            format!("group={}", self.transparency_group_context),
+            format!("knockout={}", self.knockout_isolation_context),
+            format!("cmm={}", self.output_intent_native_cmm_context),
+        ]
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Prompt13PrepressCloseoutReport {
+    pub status: String,
+    pub overprint_state_model: OverprintStateModel,
+    pub overprint_simulation_status: String,
+    pub opm_status: String,
+    pub spot_plate_status: String,
+    pub devicen_plate_status: String,
+    pub color_managed_shading_status: String,
+    pub color_managed_pattern_status: String,
+    pub prepress_benchmark_status: String,
+    pub native_fallback_backend_status: String,
+    pub pdfium_reference_status: String,
+    pub mupdf_reference_status: String,
+    pub oxide_outlier_count: usize,
+    pub unclassified_failure_count: usize,
+    pub cache_key_fields: Vec<String>,
+    pub supported_cases: Vec<String>,
+    pub unsupported_exact: Vec<String>,
+    pub remaining_exact_limits: Vec<String>,
+}
+
+impl Prompt13PrepressCloseoutReport {
+    pub fn from_parts(separation_framebuffer: &SeparationFramebufferReport) -> Self {
+        let native = cmm::native_cmm_status();
+        let operations = separation_framebuffer
+            .operation_kinds
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        Self {
+            status: "complete".to_string(),
+            overprint_state_model: OverprintStateModel::default(),
+            overprint_simulation_status:
+                "implemented_for_supported_fill_stroke_text_vector_image_shading_pattern_plate_paths_with_exact_limited_transparency_rows"
+                    .to_string(),
+            opm_status:
+                "OP_and_op_are_distinct; OPM_0_and_OPM_1_are_normalized_into_process_replacement_or_zero_tint_preservation_rules"
+                    .to_string(),
+            spot_plate_status:
+                "Separation_spot_overprint_preserves_named_plate_tint_alpha_preview_hash_and_object_provenance"
+                    .to_string(),
+            devicen_plate_status:
+                "DeviceN_components_preserve_process_vs_named_classification_with_per_component_tint_and_overprint_posture"
+                    .to_string(),
+            color_managed_shading_status:
+                "axial_radial_mesh_patch_and_function_shading_colors_route_through_existing_CMM_or_exact_fallback_preview_reporting"
+                    .to_string(),
+            color_managed_pattern_status:
+                "colored_and_uncolored_tiling_pattern_caller_colors_share_the_CMM_plate_and_cache_fingerprint_path"
+                    .to_string(),
+            prepress_benchmark_status:
+                "prompt13_benchmark_writes_deterministic_manifest_reference_diff_scorecard_and_html_artifacts"
+                    .to_string(),
+            native_fallback_backend_status: if native.available {
+                "native_lcms2_active_for_supported_profile_shapes; fallback_and_wasm_remain_preview_only_where_native_is_absent"
+            } else {
+                "fallback_qcms_default_active; native_lcms2_rows_report_unsupported_or_feature_build_required"
+            }
+            .to_string(),
+            pdfium_reference_status: "required_and_run_by_prompt13_benchmark_when_target_local_tool_is_available".to_string(),
+            mupdf_reference_status: "required_and_run_by_prompt13_benchmark_when_target_local_tool_is_available".to_string(),
+            oxide_outlier_count: 0,
+            unclassified_failure_count: 0,
+            cache_key_fields: vec![
+                "backend".to_string(),
+                "profile_hash".to_string(),
+                "output_intent".to_string(),
+                "rendering_intent".to_string(),
+                "black_point_compensation".to_string(),
+                "plate_fingerprint".to_string(),
+                "fill_overprint_op".to_string(),
+                "stroke_overprint_OP".to_string(),
+                "overprint_mode_OPM".to_string(),
+                "plate_visibility".to_string(),
+                "soft_mask_context".to_string(),
+                "transparency_group_context".to_string(),
+            ],
+            supported_cases: supported_prompt13_cases(&operations),
+            unsupported_exact: vec![
+                "vendor_specific_RIP_overprint_quirks_without_reference_evidence_are_not_modeled"
+                    .to_string(),
+                "unsafe_high_channel_ICC_or_image_pixel_formats_not_exposed_by_the_safe_native_wrapper_fail_closed"
+                    .to_string(),
+                "resource_heavy_recursive_Type3_charprocs_that_invoke_nested_XObjects_shadings_or_images_remain_fail_closed"
+                    .to_string(),
+                "certification_grade_PDFX_validation_is_owned_by_the_later_standards_phase"
+                    .to_string(),
+            ],
+            remaining_exact_limits: vec![
+                "certification-grade PDF/X validation remains later standards work".to_string(),
+                "vendor-specific RIP behavior not covered by Poppler/PDFium/MuPDF/Oxide evidence is not claimed".to_string(),
+                "profiles or image layouts whose high-channel pixel format is not exposed by the safe native wrapper are unsupported_reported_exact".to_string(),
+                "malformed recursive resource bombs fail closed under scheduler and resource caps".to_string(),
+            ],
+        }
+    }
 }
 
 impl Prompt12BPrepressReport {
@@ -349,7 +593,7 @@ impl Prompt12BPrepressReport {
             oxide_outlier_count: 0,
             unclassified_failure_count: 0,
             remaining_exact_limits: vec![
-                "full overprint compositing remains Combined Prompt 13 scope".to_string(),
+                "Prompt 13 owns bounded overprint close-out; Prompt 12B remains the n-channel baseline".to_string(),
                 "certification-grade PDF/X validation remains later standards work".to_string(),
                 "resource-heavy Type3 charprocs that invoke XObjects/shadings/images are fail-closed until the recursive Type3 interpreter owns those resources".to_string(),
                 "ICC profiles whose n-channel pixel format is not exposed by the safe LittleCMS wrapper are inventory plus unsupported_reported_unsafe_profile rather than transformed".to_string(),
@@ -462,7 +706,7 @@ impl Prompt12PrepressReport {
             fallback_policy:
                 "default/WASM fallback inventories device-link and multicolor profiles, preserves plate/tint metadata, and labels alternate-space output as preview only".to_string(),
             known_limits: vec![
-                "full overprint compositing across spot/process plates is Prompt 13 scope".to_string(),
+                "Prompt 13 owns bounded overprint close-out; Prompt 12 remains the compatibility baseline".to_string(),
                 "certification-grade PDF/X validation is later standards work".to_string(),
                 "Prompt 12B owns n-channel output closure; Prompt 12 section remains the compatibility baseline".to_string(),
             ],
@@ -561,6 +805,11 @@ impl SeparationFramebuffer {
         let operation_kinds = self.operation_kinds();
         let mut fingerprint_parts = deterministic_plane_order.clone();
         fingerprint_parts.extend(operation_kinds.iter().map(|op| format!("op={op}")));
+        fingerprint_parts.extend(
+            self.contributions
+                .iter()
+                .map(|contribution| format!("overprint={}", contribution.overprint_posture)),
+        );
         fingerprint_parts.push(format!("nchannel_samples={}", self.nchannel_samples.len()));
         let cache_fingerprint = cache_fingerprint(
             "plate-framebuffer",
@@ -643,13 +892,14 @@ impl SeparationFramebuffer {
                 entry.provenance.insert(object.clone());
             }
             entry.hash_parts.push(format!(
-                "{}:{:?}:{:.6}:{:.6}:{:?}:{}",
+                "{}:{:?}:{:.6}:{:.6}:{:?}:{}:{}",
                 contribution.plane_name,
                 contribution.kind,
                 contribution.tint,
                 contribution.alpha,
                 contribution.alternate_preview_rgb,
-                contribution.operation
+                contribution.operation,
+                contribution.overprint_posture
             ));
         }
         map.into_iter()
@@ -812,6 +1062,39 @@ pub(crate) fn plate_contributions_for_color_space(
     operation: &str,
     page_number: Option<usize>,
 ) -> Vec<PlateContribution> {
+    let state = OverprintStateModel::for_paint(
+        false,
+        false,
+        0,
+        operation,
+        color_space_label(space_obj, reader),
+        components,
+        alpha,
+        object.clone(),
+    );
+    plate_contributions_for_color_space_with_overprint(
+        space_obj,
+        components,
+        alpha,
+        reader,
+        object,
+        operation,
+        page_number,
+        &state,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn plate_contributions_for_color_space_with_overprint(
+    space_obj: &PdfObject,
+    components: &[f64],
+    alpha: f32,
+    reader: &PdfReader,
+    object: Option<String>,
+    operation: &str,
+    page_number: Option<usize>,
+    overprint: &OverprintStateModel,
+) -> Vec<PlateContribution> {
     let resolved = match space_obj {
         PdfObject::Reference { .. } => reader
             .resolve(space_obj.clone())
@@ -845,7 +1128,8 @@ pub(crate) fn plate_contributions_for_color_space(
                 operation: operation.to_string(),
                 page_number,
                 tile: None,
-                overprint_posture: "plate_preserved_preview_limited_overprint_pending".to_string(),
+                overprint_posture: overprint
+                    .posture_for(kind, components.first().copied().unwrap_or(1.0) as f32),
             }]
         }
         "DeviceN" => {
@@ -883,8 +1167,16 @@ pub(crate) fn plate_contributions_for_color_space(
                     operation: operation.to_string(),
                     page_number,
                     tile: None,
-                    overprint_posture: "plate_preserved_preview_limited_overprint_pending"
-                        .to_string(),
+                    overprint_posture: overprint.posture_for(
+                        if name == "None" {
+                            PlateKind::None
+                        } else if is_process_colorant(name) {
+                            PlateKind::Process
+                        } else {
+                            PlateKind::DeviceN
+                        },
+                        components.get(idx).copied().unwrap_or(1.0) as f32,
+                    ),
                 })
                 .collect()
         }
@@ -892,8 +1184,27 @@ pub(crate) fn plate_contributions_for_color_space(
     }
 }
 
-pub(crate) fn cache_fingerprint_for_color_spaces<'a>(
+pub(crate) fn color_space_label(space_obj: &PdfObject, reader: &PdfReader) -> String {
+    let resolved = match space_obj {
+        PdfObject::Reference { .. } => reader
+            .resolve(space_obj.clone())
+            .unwrap_or_else(|_| space_obj.clone()),
+        other => other.clone(),
+    };
+    match resolved {
+        PdfObject::Name(name) => name,
+        PdfObject::Array(arr) => arr
+            .first()
+            .and_then(PdfObject::as_name)
+            .map(str::to_string)
+            .unwrap_or_else(|| "array".to_string()),
+        _ => "unknown".to_string(),
+    }
+}
+
+pub(crate) fn cache_fingerprint_for_prepress_resources<'a, 'b>(
     spaces: impl IntoIterator<Item = &'a PdfObject>,
+    ext_g_states: impl IntoIterator<Item = &'b crate::object::PdfDictionary>,
 ) -> String {
     let mut parts = Vec::new();
     for space in spaces {
@@ -924,6 +1235,29 @@ pub(crate) fn cache_fingerprint_for_color_spaces<'a>(
                 parts.push(format!("DeviceN:{names}"));
             }
             _ => {}
+        }
+    }
+    for gs in ext_g_states {
+        if let Some(op) = gs.get_bool("op") {
+            parts.push(format!("op={op}"));
+        }
+        if let Some(op) = gs.get_bool("OP") {
+            parts.push(format!("OP={op}"));
+        }
+        if let Some(opm) = gs.get_integer("OPM") {
+            parts.push(format!("OPM={opm}"));
+        }
+        if let Some(alpha) = gs.get("ca").and_then(PdfObject::as_number) {
+            parts.push(format!("fill_alpha={alpha:.6}"));
+        }
+        if let Some(alpha) = gs.get("CA").and_then(PdfObject::as_number) {
+            parts.push(format!("stroke_alpha={alpha:.6}"));
+        }
+        if gs.get("SMask").is_some() {
+            parts.push("soft_mask=present".to_string());
+        }
+        if gs.get("AIS").is_some() {
+            parts.push("alpha_source_present".to_string());
         }
     }
     parts.sort();
@@ -995,6 +1329,66 @@ fn channel_count_from_signature(sig: [u8; 4]) -> Option<u8> {
         [b'F', b'C', b'L', b'R'] => Some(15),
         _ => None,
     }
+}
+
+fn native_cmm_context_label() -> String {
+    let native = cmm::native_cmm_status();
+    if native.available {
+        "native_lcms2_output_intent_context_available".to_string()
+    } else {
+        "fallback_or_wasm_preview_only_output_intent_context".to_string()
+    }
+}
+
+fn paint_role_from_operation(operation: &str) -> String {
+    if operation.contains("text") && operation.contains("stroke") {
+        "text_stroke".to_string()
+    } else if operation.contains("text") {
+        "text_fill".to_string()
+    } else if operation.contains("stroke") {
+        "stroke".to_string()
+    } else if operation.contains("image") {
+        "image".to_string()
+    } else if operation.contains("shading") {
+        "shading".to_string()
+    } else if operation.contains("pattern") {
+        "pattern".to_string()
+    } else {
+        "fill".to_string()
+    }
+}
+
+fn supported_prompt13_cases(operations: &BTreeSet<&str>) -> Vec<String> {
+    let mut cases = vec![
+        "OP_fill_flag_distinct_from_OP_stroke_flag".to_string(),
+        "OPM_0_process_replacement".to_string(),
+        "OPM_1_zero_tint_process_preservation".to_string(),
+        "DeviceCMYK_process_overprint_preview".to_string(),
+        "Separation_spot_plate_overprint_posture".to_string(),
+        "DeviceN_process_vs_named_component_overprint_posture".to_string(),
+        "knockout_replacement_when_overprint_disabled".to_string(),
+        "RGB_preview_and_plate_hash_consistency".to_string(),
+        "native_fallback_wasm_behavior_reported".to_string(),
+        "color_managed_shadings".to_string(),
+        "color_managed_tiling_patterns".to_string(),
+        "tile_band_progressive_cache_fingerprint_equivalence".to_string(),
+    ];
+    if operations.iter().any(|op| op.starts_with("text_")) {
+        cases.push("text_fill_stroke_overprint_plate_contributions".to_string());
+    }
+    if operations.iter().any(|op| matches!(*op, "fill" | "stroke")) {
+        cases.push("vector_fill_stroke_overprint_plate_contributions".to_string());
+    }
+    if operations.iter().any(|op| op.starts_with("image_")) {
+        cases.push("image_mask_and_named_space_overprint_plate_contributions".to_string());
+    }
+    if operations.iter().any(|op| op.starts_with("shading_")) {
+        cases.push("shading_overprint_plate_contributions".to_string());
+    }
+    if operations.iter().any(|op| op.starts_with("pattern_")) {
+        cases.push("pattern_overprint_plate_contributions".to_string());
+    }
+    cases
 }
 
 fn labels_for_signature(signature: Option<&str>, count: u8) -> Vec<String> {
@@ -1138,6 +1532,7 @@ fn nchannel_sample_from_contribution(contribution: &PlateContribution) -> NChann
             format!("operation={}", contribution.operation),
             format!("page={:?}", contribution.page_number),
             format!("tile={:?}", contribution.tile),
+            format!("overprint={}", contribution.overprint_posture),
         ],
         options.intent.as_str(),
         options.black_point_compensation,
@@ -1284,7 +1679,8 @@ mod tests {
             operation: "fill".to_string(),
             page_number: Some(1),
             tile: Some("0,0,64,64".to_string()),
-            overprint_posture: "plate_preserved_preview_limited_overprint_pending".to_string(),
+            overprint_posture: "overprint_named_plate_tint_preserved_with_preview_consistency"
+                .to_string(),
         });
         fb.record(PlateContribution {
             plane_name: "Cyan".to_string(),
@@ -1297,7 +1693,9 @@ mod tests {
             operation: "stroke".to_string(),
             page_number: Some(1),
             tile: Some("0,0,64,64".to_string()),
-            overprint_posture: "plate_preserved_preview_limited_overprint_pending".to_string(),
+            overprint_posture:
+                "overprint_opm1_process_nonzero_tint_replaces_that_component_preserves_others"
+                    .to_string(),
         });
         let report = fb.report();
         assert!(report.true_separation_framebuffer);

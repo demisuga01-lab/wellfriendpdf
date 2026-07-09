@@ -94,4 +94,5 @@ separations remain in their own standards phases.
 
 Prompt 12 does not change that standards boundary. It improves prepress
 structure preservation and reporting, but it is not certification-grade PDF/X
-validation and it is not full overprint simulation.
+validation. Prompt 13 reports bounded overprint simulation, but it still does
+not claim certification-grade PDF/X validation.

@@ -27,7 +27,7 @@ Not claimed:
 - Certification-grade PDF/X proofing.
 - Device-link ICC execution as a general render feature.
 - Multicolor ICC and n-color output.
-- True separation framebuffers, spot/DeviceN plate preview, and full overprint
-  simulation.
+- True separation framebuffers and spot/DeviceN plate preview are Prompt 12/12B
+  owners. Bounded overprint/prepress simulation is closed by Prompt 13.
 
 Those are Prompt 12/13 CMM and prepress owners.

@@ -189,6 +189,15 @@ public final class OxideSmokeTest {
         assertTrue(
             feature.contains("\"required_and_run_by_prompt12b_audit\""),
             "prompt12B reference audit status");
+        assertTrue(
+            feature.contains("\"prompt13_full_overprint_prepress_closeout\""),
+            "prompt13 full overprint prepress closeout");
+        assertTrue(
+            feature.contains("\"additive_feature_report_prompt13\""),
+            "prompt13 additive schema status");
+        assertTrue(
+            feature.contains("\"oxide_outlier_failures\":0"),
+            "prompt13 zero Oxide outliers");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),

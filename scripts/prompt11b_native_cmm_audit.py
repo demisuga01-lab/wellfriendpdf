@@ -153,7 +153,7 @@ def main() -> int:
             "multicolor ICC",
             "true separation framebuffer",
             "spot/DeviceN plate preview",
-            "full overprint simulation",
+            "bounded overprint close-out",
             "certification-grade PDF/X proofing",
         ],
         "fixture": {
@@ -302,7 +302,7 @@ def main() -> int:
         ("Default/WASM posture", "portable qcms fallback; no silent lcms2 dependency"),
         ("RGB/Gray/CMYK", "native transform tests pass with generated RGB/Gray and ICC PRMG CMYK fixture"),
         ("Output intent", "basic lcms2 soft-proofing helper and color-report fields"),
-        ("Known limits", "device-link, multicolor ICC, separations, spot plates, full overprint/PDF-X certification later"),
+        ("Known limits", "device-link, multicolor ICC, separations, and spot plates are Prompt 12/12B owners; bounded overprint is Prompt 13; PDF/X certification later"),
     ]
     rows = "\n".join(
         f"<tr><th>{html.escape(k)}</th><td>{html.escape(v)}</td></tr>" for k, v in html_rows

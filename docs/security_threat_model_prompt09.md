@@ -33,7 +33,8 @@
 - Full legal PDF/A/UA/X certification.
 - Full PKI, TSA, OCSP, CRL, and PAdES policy validation.
 - Certification-grade PDF/X proofing, device-link ICC, multicolor ICC,
-  separation framebuffers, spot/DeviceN plates, and full overprint simulation.
+  separation framebuffers, spot/DeviceN plates, and bounded Prompt 13 overprint
+  simulation.
 # Prompt 04 Codec Boundary Note
 
 Combined Prompt 04 keeps the engine's codec default pure Rust and adds a central native codec registry/allowlist policy. Native/C codec dependencies remain denied by default, native in-process decode is forbidden by default, and future native backends must be feature-gated, worker-required, allowlisted, and report-visible.

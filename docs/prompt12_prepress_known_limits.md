@@ -3,7 +3,6 @@
 Prompt 12 intentionally does not claim:
 
 - certification-grade PDF/X validation
-- full overprint simulation
 - press-calibrated per-plate image export
 
 Implemented with bounded limits:
@@ -15,8 +14,9 @@ Implemented with bounded limits:
   precise fail-closed cases.
 - fallback and WASM builds are preview/report-only for device-link and
   multicolor proofing.
-- plate identity survives in the sampled n-channel separation framebuffer, but
-  overprint compositing correctness is Prompt 13.
+- plate identity survives in the sampled n-channel separation framebuffer;
+  Prompt 13 adds the bounded overprint/prepress close-out on top of this
+  baseline.
 - text/vector/stencil-image/shading/pattern plate samples are implemented for
   supported named Separation/DeviceN paths; nested Type3 resource programs and
   unsafe high-channel packed images remain exact limits.

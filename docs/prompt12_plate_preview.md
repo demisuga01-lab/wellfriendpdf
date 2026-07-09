@@ -16,7 +16,7 @@ The plate preview report includes:
 - preview hash count
 - per-plane preview hashes
 - provenance fields
-- overprint-pending posture
+- Prompt 13 overprint posture
 
 Full per-plate image export can build on this report model later. Prompt 12's
 acceptance target is preservation and visibility of plate state, not a

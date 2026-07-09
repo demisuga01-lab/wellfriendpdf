@@ -1,10 +1,14 @@
 # Prompt 12 Known Limits
 
-Prompt 12 and Prompt 12B intentionally do not claim:
+Prompt 12 and Prompt 12B intentionally did not claim full overprint
+compositing. Combined Prompt 13 now owns the bounded overprint/prepress
+close-out. Prompt 12 remains the device-link, multicolor ICC, BPC/intent, and
+sampled separation framebuffer baseline.
 
-- full overprint compositing or press simulation; Combined Prompt 13 owns that
-- certification-grade PDF/X validation; a later standards phase owns that
-- press-calibrated per-plate raster export for every production workflow
+Prompt 12 and Prompt 12B still do not claim:
+
+- certification-grade PDF/X validation; a later standards phase owns that.
+- press-calibrated per-plate raster export for every production workflow.
 
 Exact remaining limits after Prompt 12B:
 
@@ -18,6 +22,8 @@ Exact remaining limits after Prompt 12B:
   n-channel proofing; they report inventory/preview-only behavior.
 - unsafe packed image layouts with excessive channel counts fail closed or
   degrade to report-only plate diagnostics.
+- vendor-specific RIP overprint behavior not evidenced by Prompt 13 references
+  is not claimed.
 
 Unsupported paths must not be silent. Unsupported profile classes, malformed
 profiles, channel mismatches, excessive colorants, missing alternates, recursive

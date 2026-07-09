@@ -437,8 +437,8 @@ def build_scope_matrix() -> list[dict[str, Any]]:
         row("Separation plate rendering", IMPLEMENTED_PUBLIC, ["spot plate report rows and preview hashes"]),
         row("DeviceN plate rendering", IMPLEMENTED_PUBLIC, ["multi-plate DeviceN report rows"]),
         row("images/shadings/patterns plate audit", UNSUPPORTED_REPORTED, ["report-only limitation until specific safe paths are added"]),
-        row("transparency/soft-mask plate posture", IMPLEMENTED_INTERNAL, ["child framebuffer absorb plus overprint-pending posture"]),
-        row("full overprint simulation", NOT_IN_SCOPE, ["explicit Prompt 13 owner"], "Prompt 13"),
+        row("transparency/soft-mask plate posture", IMPLEMENTED_INTERNAL, ["child framebuffer absorb plus Prompt 13 overprint posture"]),
+        row("bounded overprint close-out", NOT_IN_SCOPE, ["closed by Prompt 13"], "Prompt 13"),
         row("certification-grade PDF/X validation", NOT_IN_SCOPE, ["later standards/prepress phase"], "later standards work"),
     ]
 
@@ -525,7 +525,7 @@ def main() -> int:
         "public_report_schema": "additive prompt12_prepress_cmm_device_link_separation_plates section across feature/color reports and bindings",
         "prompt11b_known_limits_carried_forward": [
             "certification-grade PDF/X proofing not claimed",
-            "full overprint simulation remains Prompt 13",
+            "bounded overprint close-out is owned by Prompt 13",
             "default/WASM native CMM unavailable by design",
         ],
         "scope_classifications": scope_matrix,
@@ -693,13 +693,13 @@ def main() -> int:
 Oxide keeps the RGB preview renderer separate from a sparse prepress plate
 side-channel. The Prompt 12 framebuffer records plate contributions by plane
 name, tint, alpha, operation, page/tile identity, alternate preview RGB,
-provenance, and overprint-pending posture.
+provenance, and Prompt 13 overprint posture.
 
 The storage is sparse and bounded. It records only observed contributions,
 enforces a deterministic plane order, caps colorants, accounts estimated memory
 against a scheduler-visible budget, and degrades excessive cases to report-only
-with diagnostics. It is a real plate-preservation model, not a full press
-overprint simulator. Full overprint compositing is Prompt 13.
+with diagnostics. It is a real plate-preservation model. Prompt 13 adds bounded
+overprint/prepress close-out on top of this baseline.
 """
     write_text(OUT_DIR / "separation-framebuffer-design-prompt12.md", design_doc)
     framebuffer_report = {
@@ -774,7 +774,7 @@ overprint simulator. Full overprint compositing is Prompt 13.
         {
             "kind": "plate_provenance_results_prompt12",
             "provenance_fields": ["page_number", "object", "operation", "tile", "alpha", "overprint_posture"],
-            "overprint_posture": "plate_preserved_preview_limited_overprint_pending",
+            "overprint_posture": "Prompt13_bounded_overprint_posture",
         },
     )
 

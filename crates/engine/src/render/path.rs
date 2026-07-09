@@ -382,6 +382,46 @@ impl PathPainter {
         fill_flat_cmyk_overprint_preview(buf, &flat, cmyk, alpha, overprint_mode, rule);
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stroke_device_cmyk_overprint_preview(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        cmyk: [f32; 4],
+        alpha: f32,
+        overprint_mode: i32,
+        stroke_width: f64,
+        dash: &DashState,
+        cap: &LineCap,
+        join: &LineJoin,
+        miter_limit: f64,
+    ) {
+        if path.is_empty() || buf.width == 0 || buf.height == 0 {
+            return;
+        }
+        let flat = flatten_path(path, ctm, viewport, 0.2);
+        let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
+        let outline = stroke_flat_path(
+            &flat,
+            width_px,
+            dash,
+            cap.clone(),
+            join.clone(),
+            miter_limit,
+        );
+        if !outline.subpaths.is_empty() {
+            fill_flat_cmyk_overprint_preview(
+                buf,
+                &outline,
+                cmyk,
+                alpha,
+                overprint_mode,
+                FillRule::NonZero,
+            );
+        }
+    }
+
     /// Fill a glyph outline using the shared analytic coverage rasterizer.
     ///
     /// Glyph curves use a tighter 0.2px flattening tolerance than general PDF

@@ -8,7 +8,7 @@ Separation color spaces now produce plate records that preserve:
 - alpha
 - page/object provenance where available
 - operation type
-- overprint-pending posture
+- Prompt 13 overprint posture
 
 DeviceN color spaces produce one contribution per component. Process colorants
 are marked as process plates; non-process named components are marked as
