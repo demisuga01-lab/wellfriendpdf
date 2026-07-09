@@ -1,0 +1,8 @@
+{
+  "broken_tag_fixture_recovered_nodes": 1,
+  "conflicts_hidden": false,
+  "cross_page_impossible_loop_created": false,
+  "good_tag_fixture_corruption_detected": false,
+  "infinite_recursion_detected": false,
+  "schema_version": "prompt14.parenttree.quality.v1"
+}

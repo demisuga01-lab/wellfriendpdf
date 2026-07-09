@@ -1,0 +1,47 @@
+{
+  "blocked_count": 0,
+  "category": "parenttree",
+  "rows": [
+    {
+      "item": "ParentTree arrays",
+      "status": "implemented"
+    },
+    {
+      "item": "ParentTree number-tree entries",
+      "status": "implemented"
+    },
+    {
+      "item": "malformed number-tree limits",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "missing structure node refs",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "duplicate ParentTree keys",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "orphan MCIDs",
+      "status": "implemented"
+    },
+    {
+      "item": "role-map gaps",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "page-level StructParents mapping",
+      "status": "implemented"
+    },
+    {
+      "item": "cross-page impossible loops",
+      "status": "unsupported_reported_exact"
+    },
+    {
+      "item": "resource-heavy recursive malformed bombs",
+      "status": "unsupported_reported_exact"
+    }
+  ],
+  "schema_version": "prompt14.semantic_intelligence.v1"
+}

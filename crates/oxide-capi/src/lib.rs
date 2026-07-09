@@ -2628,6 +2628,13 @@ mod tests {
         );
         assert_eq!(prompt13["reference_audit"]["oxide_outlier_failures"], 0);
         assert_eq!(prompt13["reference_audit"]["unclassified_failures"], 0);
+        let prompt14 = &value["report"]["prompt14_semantic_intelligence_parenttree_cjk_ml_layout"];
+        assert_eq!(prompt14["status"], "complete");
+        assert_eq!(
+            prompt14["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt14"
+        );
+        assert_eq!(prompt14["privacy_defaults"]["cloud_upload_default"], false);
         unsafe { oxide_string_free(json) };
 
         let version = oxide_version();

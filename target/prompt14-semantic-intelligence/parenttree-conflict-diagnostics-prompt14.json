@@ -1,0 +1,12 @@
+{
+  "conflicts_hidden": false,
+  "duplicate_mcid_entries_reported": true,
+  "malformed_limits_reported": true,
+  "missing_refs_reported": true,
+  "sample_diagnostics": [
+    "parenttree.malformed_limits",
+    "parenttree.role_map_gap",
+    "parenttree.orphan_mcid"
+  ],
+  "schema_version": "prompt14.parenttree.conflicts.v1"
+}

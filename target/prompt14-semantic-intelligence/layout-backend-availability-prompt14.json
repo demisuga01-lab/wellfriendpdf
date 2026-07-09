@@ -1,0 +1,16 @@
+{
+  "schema_version": "prompt14.backend.availability.v1",
+  "states": [
+    "disabled_by_default",
+    "available",
+    "missing_model_file",
+    "missing_runtime_dependency",
+    "configured",
+    "disabled",
+    "blocked_by_privacy_policy",
+    "invalid_schema",
+    "timed_out",
+    "result_merged",
+    "result_rejected"
+  ]
+}

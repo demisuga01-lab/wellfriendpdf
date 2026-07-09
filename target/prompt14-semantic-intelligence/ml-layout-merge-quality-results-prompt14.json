@@ -1,0 +1,7 @@
+{
+  "cloud_mock_privacy_blocks_unsafe_defaults": true,
+  "conflicts_reported": true,
+  "low_confidence_suggestions_not_forced": true,
+  "mock_proposals_merge_deterministically": true,
+  "schema_version": "prompt14.ml_layout.quality.v1"
+}

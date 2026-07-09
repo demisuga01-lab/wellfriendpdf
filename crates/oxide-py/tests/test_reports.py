@@ -210,6 +210,13 @@ def test_module_level_reports():
     )
     assert prompt13["reference_audit"]["oxide_outlier_failures"] == 0
     assert prompt13["reference_audit"]["unclassified_failures"] == 0
+    prompt14 = feature["prompt14_semantic_intelligence_parenttree_cjk_ml_layout"]
+    assert prompt14["status"] == "complete"
+    assert (
+        prompt14["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_prompt14"
+    )
+    assert prompt14["privacy_defaults"]["cloud_upload_default"] is False
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

@@ -1,0 +1,39 @@
+{
+  "blocked_count": 0,
+  "category": "cjk",
+  "rows": [
+    {
+      "item": "Chinese dictionary",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "Japanese dictionary",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "Korean dictionary",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "mixed Latin CJK",
+      "status": "implemented"
+    },
+    {
+      "item": "numbers and punctuation",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "unknown words",
+      "status": "implemented"
+    },
+    {
+      "item": "user dictionary metadata",
+      "status": "implemented_with_limits"
+    },
+    {
+      "item": "large dictionary bundling",
+      "status": "unsupported_reported_exact"
+    }
+  ],
+  "schema_version": "prompt14.semantic_intelligence.v1"
+}

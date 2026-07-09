@@ -1,0 +1,7 @@
+{
+  "cloud_mock": "works_without_real_network_when_explicitly_configured",
+  "default_cloud": "blocked_no_payload_sent",
+  "local_mock": "works_without_external_model",
+  "schema_version": "prompt14.backend.mock_results.v1",
+  "secrets_logged": false
+}

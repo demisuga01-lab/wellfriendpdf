@@ -116,6 +116,7 @@ pub mod render;
 pub mod sdk;
 pub mod security;
 pub mod semantic;
+pub mod semantic_intelligence;
 pub mod signature;
 pub mod standards;
 pub mod structural;
@@ -309,6 +310,18 @@ pub use security::{
     SecurityFinding, SecurityReport, SecuritySeverity,
 };
 pub use semantic::{SemanticDocument, SemanticElement, SemanticMcid, SemanticSource};
+pub use semantic_intelligence::{
+    merge_layout_proposals_deterministic, recover_parenttree_semantics,
+    semantic_elements_from_parenttree_recovery, validate_layout_proposal_set,
+    CloudLayoutBackendConfig, LayoutAvailabilityReport, LayoutBackendDescriptor,
+    LayoutBackendInput, LayoutBackendKind, LayoutBackendStatus, LayoutCloudPayloadPolicy,
+    LayoutDiagnostic, LayoutInputPayloadKind, LayoutLocalBackendConfig, LayoutMergeOutcome,
+    LayoutMergePolicy, LayoutMergeReport, LayoutPrivacyMode, LayoutProposalRegion,
+    LayoutProposalSet, LayoutRegionGeometry, LayoutRegionLabel, MockCloudLayoutBackend,
+    MockLocalLayoutBackend, ParentTreeDiagnostic, ParentTreePageSummary, ParentTreeRecoveredNode,
+    ParentTreeRecoveryReport, ParentTreeRecoveryStatus, Prompt14SemanticIntelligenceReport,
+    SemanticEvidenceKind,
+};
 pub use signature::{
     add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options, CertInfo,
     Coverage, LtvMaterial, LtvReport, PadesLevel, PdfSigner, RevocationStatus,
@@ -324,7 +337,8 @@ pub use structural::{
     Rotation,
 };
 pub use text::{
-    bounded_text_parallel_window, CjkSegmentationMode, LineEnding, MarkedTextChunk,
+    bounded_text_parallel_window, builtin_cjk_dictionary_metadata, segment_cjk_dictionary_text,
+    CjkDictionaryMetadata, CjkDictionaryToken, CjkSegmentationMode, LineEnding, MarkedTextChunk,
     ReadingOrderReconstructor, SemanticTextDirection, TextChunk, TextCollector, TextDiagnostic,
     TextExtractOptions, TextExtractionCounters, TextExtractionMode, TextExtractor,
     TextFormatOptions, TextFormatter, TextLayoutStrategy, TextLine, TextMappingSource,

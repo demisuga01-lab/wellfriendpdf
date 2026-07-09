@@ -158,6 +158,21 @@ pub fn extract_semantic_document(
         .into_iter()
         .filter_map(|el| prune_for_pages(el, &selected))
         .collect();
+    if elements.is_empty() {
+        let recovery =
+            crate::semantic_intelligence::recover_parenttree_semantics(engine, &page_list)?;
+        let recovered =
+            crate::semantic_intelligence::semantic_elements_from_parenttree_recovery(&recovery);
+        if !recovered.is_empty() {
+            let tables = collect_semantic_tables(&recovered);
+            return Ok(SemanticDocument {
+                tagged: true,
+                source: SemanticSource::TaggedPdf,
+                elements: recovered,
+                tables,
+            });
+        }
+    }
 
     let tables = collect_semantic_tables(&elements);
     Ok(SemanticDocument {

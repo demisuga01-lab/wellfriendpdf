@@ -1,0 +1,11 @@
+{
+  "field_f1_regressed": false,
+  "plain_text_changed_by_segmentation": false,
+  "rag_chunks_retain_provenance": true,
+  "reading_order_regressed": false,
+  "schema_version": "prompt14.semantic_regression.v1",
+  "search_stable_or_improved_with_dictionary": true,
+  "table_cell_teds_regressed": false,
+  "text_char_sim_regressed": false,
+  "word_f1_unexpected_regression": false
+}

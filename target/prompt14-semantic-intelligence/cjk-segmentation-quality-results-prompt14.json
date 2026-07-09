@@ -1,0 +1,8 @@
+{
+  "baseline_char_mode_available": true,
+  "dictionary_mode_improves_fixture": true,
+  "memory_bounded": true,
+  "offsets_preserved": true,
+  "schema_version": "prompt14.cjk.quality.v1",
+  "unknown_tokens_deterministic": true
+}

@@ -126,5 +126,10 @@ public final class PackageSmoke {
                 || !feature.contains("\"oxide_outlier_failures\":0")) {
             throw new AssertionError("feature report missing Prompt 13 overprint prepress closeout posture");
         }
+        if (!feature.contains("\"prompt14_semantic_intelligence_parenttree_cjk_ml_layout\"")
+                || !feature.contains("\"additive_feature_report_prompt14\"")
+                || !feature.contains("\"cloud_upload_default\":false")) {
+            throw new AssertionError("feature report missing Prompt 14 semantic intelligence posture");
+        }
     }
 }

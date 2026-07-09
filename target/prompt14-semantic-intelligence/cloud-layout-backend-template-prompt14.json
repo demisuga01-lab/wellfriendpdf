@@ -1,0 +1,11 @@
+{
+  "api_key_env_only": true,
+  "backend_registration": "MockCloudLayoutBackend",
+  "disabled_by_default": true,
+  "endpoint_required": true,
+  "malformed_response_fails_closed": true,
+  "mock_http_without_network": true,
+  "payload_policy_required": true,
+  "schema_version": "prompt14.cloud_backend.template.v1",
+  "secret_logging": false
+}

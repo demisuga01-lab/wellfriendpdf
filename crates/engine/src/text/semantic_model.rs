@@ -131,6 +131,159 @@ pub enum CjkSegmentationMode {
     Dictionary,
 }
 
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CjkDictionaryMetadata {
+    pub name: String,
+    pub version: String,
+    pub hash: String,
+    pub license: String,
+    pub source: String,
+    pub entry_count: usize,
+    pub languages: Vec<String>,
+    pub load_status: String,
+    pub memory_footprint_bytes: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct CjkDictionaryToken {
+    pub text: String,
+    pub char_range: [usize; 2],
+    pub byte_range: [usize; 2],
+    pub language: String,
+    pub confidence: f32,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CjkDictionaryEntry {
+    term: &'static str,
+    language: &'static str,
+}
+
+const BUILTIN_CJK_DICTIONARY_NAME: &str = "oxide-prompt14-synthetic-cjk-test-dictionary";
+const BUILTIN_CJK_DICTIONARY_VERSION: &str = "2026-07-09";
+const BUILTIN_CJK_DICTIONARY_LICENSE: &str = "CC0-1.0 synthetic fixture terms";
+
+const BUILTIN_CJK_DICTIONARY: &[CjkDictionaryEntry] = &[
+    CjkDictionaryEntry {
+        term: "\u{4EBA}\u{5DE5}\u{667A}\u{80FD}",
+        language: "zh",
+    },
+    CjkDictionaryEntry {
+        term: "\u{673A}\u{5668}\u{5B66}\u{4E60}",
+        language: "zh",
+    },
+    CjkDictionaryEntry {
+        term: "\u{6570}\u{636E}\u{5E93}",
+        language: "zh",
+    },
+    CjkDictionaryEntry {
+        term: "\u{5317}\u{4EAC}\u{5927}\u{5B66}",
+        language: "zh",
+    },
+    CjkDictionaryEntry {
+        term: "\u{4E1C}\u{4EAC}\u{5927}\u{5B66}",
+        language: "ja",
+    },
+    CjkDictionaryEntry {
+        term: "\u{5F62}\u{614B}\u{7D20}\u{89E3}\u{6790}",
+        language: "ja",
+    },
+    CjkDictionaryEntry {
+        term: "\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}",
+        language: "ja",
+    },
+    CjkDictionaryEntry {
+        term: "\u{D55C}\u{AD6D}\u{C5B4}",
+        language: "ko",
+    },
+    CjkDictionaryEntry {
+        term: "\u{C790}\u{C5F0}\u{C5B4}\u{CC98}\u{B9AC}",
+        language: "ko",
+    },
+    CjkDictionaryEntry {
+        term: "\u{AC80}\u{C0C9}\u{C5D4}\u{C9C4}",
+        language: "ko",
+    },
+];
+
+pub fn builtin_cjk_dictionary_metadata() -> CjkDictionaryMetadata {
+    let memory_footprint_bytes = BUILTIN_CJK_DICTIONARY
+        .iter()
+        .map(|entry| entry.term.len() + entry.language.len())
+        .sum();
+    CjkDictionaryMetadata {
+        name: BUILTIN_CJK_DICTIONARY_NAME.to_string(),
+        version: BUILTIN_CJK_DICTIONARY_VERSION.to_string(),
+        hash: builtin_cjk_dictionary_hash(),
+        license: BUILTIN_CJK_DICTIONARY_LICENSE.to_string(),
+        source: "compiled_synthetic_test_fixture".to_string(),
+        entry_count: BUILTIN_CJK_DICTIONARY.len(),
+        languages: vec!["zh".to_string(), "ja".to_string(), "ko".to_string()],
+        load_status: "loaded_builtin".to_string(),
+        memory_footprint_bytes,
+    }
+}
+
+pub fn segment_cjk_dictionary_text(text: &str) -> Vec<CjkDictionaryToken> {
+    let chars: Vec<(usize, char)> = text.char_indices().collect();
+    let mut out = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        let (_, c) = chars[index];
+        if c.is_whitespace() {
+            index += 1;
+            continue;
+        }
+        if !is_cjk_char(c) {
+            let start_index = index;
+            let start_byte = chars[index].0;
+            while index < chars.len() {
+                let (_, active) = chars[index];
+                if active.is_whitespace() || is_cjk_char(active) || is_cjk_punctuation(active) {
+                    break;
+                }
+                index += 1;
+            }
+            let end_byte = chars
+                .get(index)
+                .map(|(byte, _)| *byte)
+                .unwrap_or_else(|| text.len());
+            out.push(CjkDictionaryToken {
+                text: text[start_byte..end_byte].to_string(),
+                char_range: [start_index, index],
+                byte_range: [start_byte, end_byte],
+                language: "mixed_latin".to_string(),
+                confidence: 0.74,
+                source: "script_boundary".to_string(),
+            });
+            continue;
+        }
+        let start_index = index;
+        let start_byte = chars[index].0;
+        let best = best_builtin_dictionary_match(&chars, index);
+        let (len, language, confidence, source) = if let Some((len, language)) = best {
+            (len, language, 0.96, "builtin_dictionary")
+        } else {
+            (1, language_for_cjk_char(c), 0.42, "unknown_cjk_fallback")
+        };
+        index += len;
+        let end_byte = chars
+            .get(index)
+            .map(|(byte, _)| *byte)
+            .unwrap_or_else(|| text.len());
+        out.push(CjkDictionaryToken {
+            text: text[start_byte..end_byte].to_string(),
+            char_range: [start_index, index],
+            byte_range: [start_byte, end_byte],
+            language: language.to_string(),
+            confidence,
+            source: source.to_string(),
+        });
+    }
+    out
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum TextMappingSource {
@@ -174,6 +327,7 @@ pub enum TextProvenanceFlag {
     Deduplicated,
     HiddenOrInvisible,
     ArtifactHeaderFooterCandidate,
+    DictionarySegmented,
     UnknownUnmapped,
 }
 
@@ -451,6 +605,7 @@ pub struct TextExtractionCounters {
     pub mcids_unmapped: usize,
     pub cjk_tokens: usize,
     pub cjk_simple_tokens: usize,
+    pub cjk_dictionary_tokens: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -695,8 +850,10 @@ pub fn build_text_semantic_page_from_marked_chunks(
                 .filter(|word| word.text.chars().any(is_cjk_char))
                 .count();
             counters.cjk_tokens += cjk_tokens;
-            if !matches!(options.cjk_segmentation, CjkSegmentationMode::Char) {
-                counters.cjk_simple_tokens += cjk_tokens;
+            match options.cjk_segmentation {
+                CjkSegmentationMode::Char => {}
+                CjkSegmentationMode::Simple => counters.cjk_simple_tokens += cjk_tokens,
+                CjkSegmentationMode::Dictionary => counters.cjk_dictionary_tokens += cjk_tokens,
             }
             counters.words += built.words.len();
             counters.chars += built.chars.len();
@@ -1311,18 +1468,25 @@ fn build_line_from_chunks(
             .collect();
         let quad = TextQuad::union(&word_chars)
             .unwrap_or_else(|| TextQuad::from_bbox([bbox.x0, bbox.y0, bbox.x1, bbox.y1]));
+        let mut provenance = flags_union(
+            &word_semantic_chars
+                .iter()
+                .flat_map(|ch| ch.provenance.iter().copied())
+                .collect::<Vec<_>>(),
+        );
+        if matches!(options.cjk_segmentation, CjkSegmentationMode::Dictionary)
+            && word_text.chars().any(is_cjk_char)
+            && !provenance.contains(&TextProvenanceFlag::DictionarySegmented)
+        {
+            provenance.push(TextProvenanceFlag::DictionarySegmented);
+        }
         words.push(TextSemanticWord {
             text: word_text,
             word_index: *global_word_index,
             char_range: [start, end],
             quad,
             confidence: 0.84,
-            provenance: flags_union(
-                &word_semantic_chars
-                    .iter()
-                    .flat_map(|ch| ch.provenance.iter().copied())
-                    .collect::<Vec<_>>(),
-            ),
+            provenance,
             provenance_summary: provenance_summary_for_char_refs(&word_semantic_chars),
             mcids: mcids_for_char_refs(&word_semantic_chars),
         });
@@ -1416,6 +1580,10 @@ fn tokenize_words_from_chars(
     chars: &[TextSemanticChar],
     options: &TextSemanticOptions,
 ) -> Vec<(String, usize, usize)> {
+    if matches!(options.cjk_segmentation, CjkSegmentationMode::Dictionary) {
+        return tokenize_words_from_chars_dictionary(chars, options);
+    }
+
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut start = None;
@@ -1469,6 +1637,77 @@ fn tokenize_words_from_chars(
     tokens
 }
 
+fn tokenize_words_from_chars_dictionary(
+    chars: &[TextSemanticChar],
+    options: &TextSemanticOptions,
+) -> Vec<(String, usize, usize)> {
+    let mut tokens = Vec::new();
+    let mut latin = String::new();
+    let mut latin_start = None;
+    let mut cjk_run: Vec<&TextSemanticChar> = Vec::new();
+    let mut cjk_run_script: Option<CjkScript> = None;
+
+    for ch in chars {
+        let Some(c) = ch.text.chars().next() else {
+            continue;
+        };
+        if c.is_whitespace() {
+            flush_token(&mut tokens, &mut latin, &mut latin_start, ch.char_index);
+            flush_dictionary_cjk_run(&mut tokens, &mut cjk_run);
+            cjk_run_script = None;
+            continue;
+        }
+        if is_cjk_char(c) {
+            flush_token(&mut tokens, &mut latin, &mut latin_start, ch.char_index);
+            let script = cjk_script(c);
+            let over_cap = cjk_run.len() >= options.max_cjk_run_chars.max(1);
+            if cjk_run_script.is_some_and(|active| !dictionary_scripts_compatible(active, script))
+                || over_cap
+            {
+                flush_dictionary_cjk_run(&mut tokens, &mut cjk_run);
+            }
+            cjk_run_script = Some(script);
+            cjk_run.push(ch);
+            continue;
+        }
+        flush_dictionary_cjk_run(&mut tokens, &mut cjk_run);
+        cjk_run_script = None;
+        if is_cjk_punctuation(c) {
+            flush_token(&mut tokens, &mut latin, &mut latin_start, ch.char_index);
+            tokens.push((c.to_string(), ch.char_index, ch.char_index + 1));
+            continue;
+        }
+        if latin_start.is_none() {
+            latin_start = Some(ch.char_index);
+        }
+        latin.push(c);
+    }
+    let end = chars.last().map(|ch| ch.char_index + 1).unwrap_or(0);
+    flush_token(&mut tokens, &mut latin, &mut latin_start, end);
+    flush_dictionary_cjk_run(&mut tokens, &mut cjk_run);
+    tokens
+}
+
+fn flush_dictionary_cjk_run(
+    tokens: &mut Vec<(String, usize, usize)>,
+    run: &mut Vec<&TextSemanticChar>,
+) {
+    if run.is_empty() {
+        return;
+    }
+    let chars: Vec<char> = run.iter().filter_map(|ch| ch.text.chars().next()).collect();
+    let mut index = 0;
+    while index < chars.len() {
+        let len = best_builtin_dictionary_match_for_chars(&chars, index).unwrap_or(1);
+        let start = run[index].char_index;
+        let end = run[index + len - 1].char_index + 1;
+        let text: String = chars[index..index + len].iter().collect();
+        tokens.push((text, start, end));
+        index += len;
+    }
+    run.clear();
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CjkScript {
     Han,
@@ -1487,6 +1726,85 @@ fn cjk_script(c: char) -> CjkScript {
         0xAC00..=0xD7AF => CjkScript::Hangul,
         _ => CjkScript::Other,
     }
+}
+
+fn language_for_cjk_char(c: char) -> &'static str {
+    match cjk_script(c) {
+        CjkScript::Han => "zh",
+        CjkScript::Hiragana | CjkScript::Katakana => "ja",
+        CjkScript::Hangul => "ko",
+        CjkScript::Other => "und",
+    }
+}
+
+fn dictionary_scripts_compatible(left: CjkScript, right: CjkScript) -> bool {
+    left == right
+        || matches!(
+            (left, right),
+            (CjkScript::Han, CjkScript::Hiragana)
+                | (CjkScript::Hiragana, CjkScript::Han)
+                | (CjkScript::Han, CjkScript::Katakana)
+                | (CjkScript::Katakana, CjkScript::Han)
+                | (CjkScript::Hiragana, CjkScript::Katakana)
+                | (CjkScript::Katakana, CjkScript::Hiragana)
+        )
+}
+
+fn best_builtin_dictionary_match(
+    chars: &[(usize, char)],
+    start: usize,
+) -> Option<(usize, &'static str)> {
+    let mut best: Option<(usize, &'static str)> = None;
+    for entry in BUILTIN_CJK_DICTIONARY {
+        let term_chars: Vec<char> = entry.term.chars().collect();
+        if start + term_chars.len() > chars.len() {
+            continue;
+        }
+        if chars[start..start + term_chars.len()]
+            .iter()
+            .map(|(_, c)| *c)
+            .eq(term_chars.iter().copied())
+            && best.is_none_or(|(len, _)| term_chars.len() > len)
+        {
+            best = Some((term_chars.len(), entry.language));
+        }
+    }
+    best
+}
+
+fn best_builtin_dictionary_match_for_chars(chars: &[char], start: usize) -> Option<usize> {
+    let mut best = None;
+    for entry in BUILTIN_CJK_DICTIONARY {
+        let term_chars: Vec<char> = entry.term.chars().collect();
+        if start + term_chars.len() > chars.len() {
+            continue;
+        }
+        if chars[start..start + term_chars.len()]
+            .iter()
+            .copied()
+            .eq(term_chars.iter().copied())
+            && best.is_none_or(|len| term_chars.len() > len)
+        {
+            best = Some(term_chars.len());
+        }
+    }
+    best
+}
+
+fn builtin_cjk_dictionary_hash() -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for entry in BUILTIN_CJK_DICTIONARY {
+        for b in entry
+            .term
+            .as_bytes()
+            .iter()
+            .chain(entry.language.as_bytes())
+        {
+            hash ^= u64::from(*b);
+            hash = hash.wrapping_mul(0x100000001b3);
+        }
+    }
+    format!("fnv1a64:{hash:016x}")
 }
 
 fn is_cjk_punctuation(c: char) -> bool {
@@ -2332,5 +2650,47 @@ mod tests {
         assert_eq!(words.len(), 2);
         assert_eq!(words[0].text, "\u{4F60}");
         assert_eq!(words[1].text, "\u{597D}");
+    }
+
+    #[test]
+    fn cjk_dictionary_mode_uses_longest_match_without_rewriting_raw_text() {
+        let mut options = TextSemanticOptions {
+            cjk_segmentation: CjkSegmentationMode::Dictionary,
+            ..TextSemanticOptions::default()
+        };
+        options.max_cjk_run_chars = 32;
+        let page = build_text_semantic_page(
+            1,
+            [0.0, 0.0, 200.0, 200.0],
+            vec![chunk(
+                "\u{673A}\u{5668}\u{5B66}\u{4E60}5G\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}",
+                10.0,
+                100.0,
+                80.0,
+            )],
+            &options,
+        );
+
+        let line = &page.blocks[0].lines[0];
+        assert_eq!(
+            line.text,
+            "\u{673A}\u{5668}\u{5B66}\u{4E60}5G\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}"
+        );
+        let words: Vec<&str> = line.words.iter().map(|word| word.text.as_str()).collect();
+        assert_eq!(
+            words,
+            vec![
+                "\u{673A}\u{5668}\u{5B66}\u{4E60}",
+                "5G",
+                "\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}"
+            ]
+        );
+        assert_eq!(page.counters.cjk_dictionary_tokens, 2);
+        assert!(line.words[0]
+            .provenance
+            .contains(&TextProvenanceFlag::DictionarySegmented));
+        let metadata = builtin_cjk_dictionary_metadata();
+        assert_eq!(metadata.license, "CC0-1.0 synthetic fixture terms");
+        assert!(metadata.entry_count >= 3);
     }
 }

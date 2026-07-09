@@ -1,0 +1,7 @@
+{
+  "api_key_material_in_audit_log": false,
+  "cloud_upload_requires_user_acknowledgement": true,
+  "payload_content_in_audit_log": false,
+  "schema_version": "prompt14.backend.privacy_audit.v1",
+  "silent_document_upload_possible": false
+}

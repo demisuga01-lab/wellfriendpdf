@@ -1,0 +1,27 @@
+{
+  "proposal_schema": "LayoutProposalSet",
+  "region_fields": [
+    "id",
+    "page",
+    "label",
+    "confidence",
+    "geometry",
+    "reading_order",
+    "provenance"
+  ],
+  "required_fields": [
+    "schema_version",
+    "backend_id",
+    "backend_type",
+    "model_name",
+    "model_version",
+    "model_hash",
+    "input_page_ids",
+    "input_payload_type",
+    "proposed_regions",
+    "diagnostics",
+    "privacy_flags",
+    "deterministic_merge_outcome"
+  ],
+  "schema_version": "prompt14.ml_layout.schema.v1"
+}

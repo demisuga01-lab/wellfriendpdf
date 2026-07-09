@@ -732,6 +732,29 @@ impl ContentEngine {
         crate::semantic::extract_semantic_document(self, pages)
     }
 
+    /// Recover a conservative semantic graph from `/ParentTree` and page MCIDs
+    /// when tagged PDFs have incomplete or broken `/StructTreeRoot` hierarchy.
+    ///
+    /// The report distinguishes spec-derived, repaired, inferred, orphan, and
+    /// conflicting content. It never rewrites raw text and is safe to call when
+    /// no ParentTree exists; the returned status reports the exact fallback.
+    pub fn recover_parenttree_semantics(
+        &self,
+        pages: &[usize],
+    ) -> Result<crate::semantic_intelligence::ParentTreeRecoveryReport> {
+        crate::semantic_intelligence::recover_parenttree_semantics(self, pages)
+    }
+
+    /// Report optional Prompt 14 local/cloud layout backend template
+    /// availability. No model is loaded and no cloud call is made.
+    pub fn layout_backend_availability_report(
+        &self,
+        local: &crate::semantic_intelligence::LayoutLocalBackendConfig,
+        cloud: &crate::semantic_intelligence::CloudLayoutBackendConfig,
+    ) -> crate::semantic_intelligence::LayoutAvailabilityReport {
+        crate::semantic_intelligence::layout_backend_availability_report(local, cloud)
+    }
+
     /// Readable text view of [`extract_semantic_document`](Self::extract_semantic_document).
     pub fn extract_semantic_text(&self, pages: &[usize]) -> Result<String> {
         Ok(self.extract_semantic_document(pages)?.to_text())

@@ -1,0 +1,11 @@
+{
+  "backend_registration": "MockLocalLayoutBackend",
+  "batch_page_limit": 4,
+  "memory_limit_bytes": 268435456,
+  "model_path_config": true,
+  "response_schema_validation": true,
+  "runtime_dependency_required_for_mock": false,
+  "schema_version": "prompt14.local_backend.template.v1",
+  "timeout_ms": 5000,
+  "unavailable_dependency_diagnostics": true
+}

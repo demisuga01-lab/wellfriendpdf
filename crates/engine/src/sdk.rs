@@ -2337,6 +2337,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt12_prepress_cmm_device_link_separation_plates": prompt12_prepress_cmm_device_link_separation_plates_report_value(),
         "prompt12b_nchannel_plate_reference_closure": prompt12b_nchannel_plate_reference_closure_report_value(),
         "prompt13_full_overprint_prepress_closeout": prompt13_full_overprint_prepress_closeout_report_value(),
+        "prompt14_semantic_intelligence_parenttree_cjk_ml_layout": crate::semantic_intelligence::prompt14_semantic_intelligence_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2960,6 +2961,17 @@ mod tests {
         );
         assert_eq!(prompt13["reference_audit"]["oxide_outlier_failures"], 0);
         assert_eq!(prompt13["reference_audit"]["unclassified_failures"], 0);
+        let prompt14 = &v["report"]["prompt14_semantic_intelligence_parenttree_cjk_ml_layout"];
+        assert_eq!(prompt14["status"], "complete");
+        assert_eq!(
+            prompt14["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt14"
+        );
+        assert_eq!(prompt14["privacy_defaults"]["cloud_upload_default"], false);
+        assert_eq!(
+            prompt14["ml_layout_hook"]["can_delete_deterministic_text"],
+            false
+        );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),
             "prompt09_renderer_report",

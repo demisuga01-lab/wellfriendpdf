@@ -1,0 +1,15 @@
+{
+  "fixtures": [
+    {
+      "dictionary_tokens": [
+        "\u673a\u5668\u5b66\u4e60",
+        "5G",
+        "\u691c\u7d22\u30a8\u30f3\u30b8\u30f3"
+      ],
+      "input": "\u673a\u5668\u5b66\u4e605G\u691c\u7d22\u30a8\u30f3\u30b8\u30f3",
+      "unknown_fallback": "single_cjk_char"
+    }
+  ],
+  "raw_text_unchanged": true,
+  "schema_version": "prompt14.cjk.fixtures.v1"
+}

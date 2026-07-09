@@ -198,6 +198,15 @@ public final class OxideSmokeTest {
         assertTrue(
             feature.contains("\"oxide_outlier_failures\":0"),
             "prompt13 zero Oxide outliers");
+        assertTrue(
+            feature.contains("\"prompt14_semantic_intelligence_parenttree_cjk_ml_layout\""),
+            "prompt14 semantic intelligence foundation");
+        assertTrue(
+            feature.contains("\"additive_feature_report_prompt14\""),
+            "prompt14 additive schema status");
+        assertTrue(
+            feature.contains("\"cloud_upload_default\":false"),
+            "prompt14 cloud disabled by default");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),
