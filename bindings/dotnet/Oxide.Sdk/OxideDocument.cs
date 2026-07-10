@@ -184,6 +184,50 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string XfaReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_xfa_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string XfaExtractJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_xfa_extract_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string XfaScriptReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_xfa_script_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string XfaSecurityReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_xfa_security_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string XfaRuntimeReportJson(string scriptPolicy = "disabled", bool executeEvents = false)
+    {
+        ThrowIfDisposed();
+        var policyPtr = NativeMethods.StringToNativeOrNull(scriptPolicy);
+        try
+        {
+            var status = NativeMethods.oxide_document_xfa_runtime_report_json(
+                _handle, policyPtr, executeEvents ? 1 : 0, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (policyPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(policyPtr);
+        }
+    }
+
     public string AnnotationsReportJson()
     {
         ThrowIfDisposed();
@@ -231,6 +275,38 @@ public sealed class OxideDocument : IDisposable
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(query);
         return ReportWithString(query, NativeMethods.oxide_document_semantic_search_json);
+    }
+
+    public OxideBinaryResult XfaRender(
+        string scriptPolicy = "disabled",
+        bool executeEvents = false,
+        uint dpi = 72)
+    {
+        ThrowIfDisposed();
+        var policyPtr = NativeMethods.StringToNativeOrNull(scriptPolicy);
+        try
+        {
+            var status = NativeMethods.oxide_document_xfa_render_json(
+                _handle, policyPtr, executeEvents ? 1 : 0, dpi,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (policyPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(policyPtr);
+        }
+    }
+
+    public OxideBinaryResult XfaFlatten(string mode = "flatten_supported_static")
+    {
+        ThrowIfDisposed();
+        return XfaModeOutput(mode, NativeMethods.oxide_document_xfa_flatten_json);
+    }
+
+    public OxideBinaryResult XfaSanitize(string mode = "remove_scripts_events_connections")
+    {
+        ThrowIfDisposed();
+        return XfaModeOutput(mode, NativeMethods.oxide_document_xfa_sanitize_json);
     }
 
     public OxideBinaryResult Sanitize(string policy = "balanced")
@@ -359,6 +435,27 @@ public sealed class OxideDocument : IDisposable
         IntPtr arg,
         out IntPtr json,
         out IntPtr error);
+
+    private delegate int StringOutputCall(
+        NativeMethods.DocumentHandle document,
+        IntPtr arg,
+        out NativeMethods.OxideBuffer buffer,
+        out IntPtr json,
+        out IntPtr error);
+
+    private OxideBinaryResult XfaModeOutput(string mode, StringOutputCall call)
+    {
+        var modePtr = NativeMethods.StringToNativeOrNull(mode);
+        try
+        {
+            var status = call(_handle, modePtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (modePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(modePtr);
+        }
+    }
 
     private string ReportWithString(string? arg, StringReportCall call)
     {

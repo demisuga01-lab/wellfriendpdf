@@ -23,6 +23,11 @@ public sealed class OxideSmokeTests
             ["color"] = doc.ColorReportJson(),
             ["validate_security"] = doc.ValidateJson("security"),
             ["forms"] = doc.FormsReportJson(),
+            ["xfa"] = doc.XfaReportJson(),
+            ["xfa_extract"] = doc.XfaExtractJson(),
+            ["xfa_script"] = doc.XfaScriptReportJson(),
+            ["xfa_security"] = doc.XfaSecurityReportJson(),
+            ["xfa_runtime"] = doc.XfaRuntimeReportJson(),
             ["annotations"] = doc.AnnotationsReportJson(),
             ["pages"] = doc.PagesReportJson(),
             ["interactive"] = doc.InteractiveReportJson(),
@@ -157,6 +162,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"additive_feature_report_prompt15\"", feature);
         Assert.Contains("\"model_can_rewrite_deterministic_text\":false", feature);
         Assert.Contains("\"blocked\":0", feature);
+        Assert.Contains("\"prompt16_xfa_runtime_sandbox_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt16\"", feature);
+        Assert.Contains("\"scripts_disabled_events_not_executed\"", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

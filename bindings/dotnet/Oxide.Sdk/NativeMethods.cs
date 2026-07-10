@@ -237,6 +237,30 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_xfa_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_xfa_extract_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_xfa_script_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_xfa_security_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_xfa_runtime_report_json(
+        DocumentHandle document,
+        IntPtr scriptPolicy,
+        int executeEvents,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_annotations_report_json(
         DocumentHandle document,
         out IntPtr json,
@@ -276,6 +300,32 @@ internal static partial class NativeMethods
     internal static extern int oxide_document_semantic_search_json(
         DocumentHandle document,
         IntPtr query,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_xfa_render_json(
+        DocumentHandle document,
+        IntPtr scriptPolicy,
+        int executeEvents,
+        uint dpi,
+        out OxideBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_xfa_flatten_json(
+        DocumentHandle document,
+        IntPtr mode,
+        out OxideBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_xfa_sanitize_json(
+        DocumentHandle document,
+        IntPtr mode,
+        out OxideBuffer buffer,
         out IntPtr json,
         out IntPtr errorOut);
 

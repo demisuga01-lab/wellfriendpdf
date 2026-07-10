@@ -199,6 +199,31 @@ public final class Oxide {
             return Native.documentReport(handle, Native.FORMS_REPORT, "forms_report");
         }
 
+        public String xfaReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.XFA_REPORT, "xfa_report");
+        }
+
+        public String xfaExtractJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.XFA_EXTRACT, "xfa_extract");
+        }
+
+        public String xfaScriptReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.XFA_SCRIPT_REPORT, "xfa_script_report");
+        }
+
+        public String xfaSecurityReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.XFA_SECURITY_REPORT, "xfa_security_report");
+        }
+
+        public String xfaRuntimeReportJson(String scriptPolicy, boolean executeEvents) {
+            ensureOpen();
+            return Native.xfaRuntimeReport(handle, scriptPolicy, executeEvents);
+        }
+
         public String annotationsReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.ANNOTATIONS_REPORT, "annotations_report");
@@ -236,6 +261,21 @@ public final class Oxide {
                 throw new IllegalArgumentException("query must not be blank");
             }
             return Native.documentStringReport(handle, Native.SEMANTIC_SEARCH, query, "semantic_search");
+        }
+
+        public BinaryResult xfaRender(String scriptPolicy, boolean executeEvents, int dpi) {
+            ensureOpen();
+            return Native.xfaRender(handle, scriptPolicy, executeEvents, dpi);
+        }
+
+        public BinaryResult xfaFlatten(String mode) {
+            ensureOpen();
+            return Native.documentStringOutput(handle, Native.XFA_FLATTEN, mode, "xfa_flatten");
+        }
+
+        public BinaryResult xfaSanitize(String mode) {
+            ensureOpen();
+            return Native.documentStringOutput(handle, Native.XFA_SANITIZE, mode, "xfa_sanitize");
         }
 
         public BinaryResult sanitize(String policy) {
@@ -400,6 +440,14 @@ public final class Oxide {
         private static final MethodHandle COLOR_REPORT = documentStringReport("oxide_document_color_report_json");
         private static final MethodHandle VALIDATE = documentStringReport("oxide_document_validate_json");
         private static final MethodHandle FORMS_REPORT = documentReport("oxide_document_forms_report_json");
+        private static final MethodHandle XFA_REPORT = documentReport("oxide_document_xfa_report_json");
+        private static final MethodHandle XFA_EXTRACT = documentReport("oxide_document_xfa_extract_json");
+        private static final MethodHandle XFA_SCRIPT_REPORT = documentReport("oxide_document_xfa_script_report_json");
+        private static final MethodHandle XFA_SECURITY_REPORT = documentReport("oxide_document_xfa_security_report_json");
+        private static final MethodHandle XFA_RUNTIME_REPORT = downcall(
+            "oxide_document_xfa_runtime_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle ANNOTATIONS_REPORT = documentReport("oxide_document_annotations_report_json");
         private static final MethodHandle PAGES_REPORT = documentReport("oxide_document_pages_report_json");
         private static final MethodHandle INTERACTIVE_REPORT = documentReport("oxide_document_interactive_report_json");
@@ -407,6 +455,18 @@ public final class Oxide {
         private static final MethodHandle ADVANCED_CHUNKS = documentReport("oxide_document_advanced_chunks_json");
         private static final MethodHandle SEMANTIC_BUNDLE = documentReport("oxide_document_semantic_bundle_json");
         private static final MethodHandle SEMANTIC_SEARCH = documentStringReport("oxide_document_semantic_search_json");
+        private static final MethodHandle XFA_RENDER = downcall(
+            "oxide_document_xfa_render_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle XFA_FLATTEN = downcall(
+            "oxide_document_xfa_flatten_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle XFA_SANITIZE = downcall(
+            "oxide_document_xfa_sanitize_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle SANITIZE = downcall(
             "oxide_document_sanitize_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
@@ -618,6 +678,49 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static String xfaRuntimeReport(MemorySegment handle, String scriptPolicy, boolean executeEvents) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment policy = scriptPolicy == null || scriptPolicy.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(scriptPolicy);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) XFA_RUNTIME_REPORT.invokeExact(
+                    handle, policy, executeEvents ? 1 : 0, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide xfa_runtime_report failed", ex);
+            }
+        }
+
+        private static BinaryResult xfaRender(
+            MemorySegment handle,
+            String scriptPolicy,
+            boolean executeEvents,
+            int dpi
+        ) {
+            if (dpi <= 0) {
+                throw new IllegalArgumentException("dpi must be positive");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment policy = scriptPolicy == null || scriptPolicy.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(scriptPolicy);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) XFA_RENDER.invokeExact(
+                    handle, policy, executeEvents ? 1 : 0, dpi, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide xfa_render failed", ex);
             }
         }
 

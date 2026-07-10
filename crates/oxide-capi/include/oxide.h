@@ -364,6 +364,22 @@ OXIDE_API int oxide_document_forms_report_json(
     char **out_json,
     char **error_out);
 
+/* Prompt 16 bounded XFA packet/static/script/security reports. */
+OXIDE_API int oxide_document_xfa_report_json(
+    const OxideDocument *document, char **out_json, char **error_out);
+OXIDE_API int oxide_document_xfa_extract_json(
+    const OxideDocument *document, char **out_json, char **error_out);
+OXIDE_API int oxide_document_xfa_script_report_json(
+    const OxideDocument *document, char **out_json, char **error_out);
+OXIDE_API int oxide_document_xfa_security_report_json(
+    const OxideDocument *document, char **out_json, char **error_out);
+OXIDE_API int oxide_document_xfa_runtime_report_json(
+    const OxideDocument *document,
+    const char *script_policy,
+    int execute_events,
+    char **out_json,
+    char **error_out);
+
 /* Annotation inventory. */
 OXIDE_API int oxide_document_annotations_report_json(
     const OxideDocument *document,
@@ -404,6 +420,29 @@ OXIDE_API int oxide_document_semantic_bundle_json(
 OXIDE_API int oxide_document_semantic_search_json(
     const OxideDocument *document,
     const char *query,
+    char **out_json,
+    char **error_out);
+
+/* Prompt 16 output operations. Returned buffers and JSON strings are owned by
+ * the caller and must be freed with oxide_buffer_free/oxide_string_free. */
+OXIDE_API int oxide_document_xfa_render_json(
+    const OxideDocument *document,
+    const char *script_policy,
+    int execute_events,
+    uint32_t dpi,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_xfa_flatten_json(
+    const OxideDocument *document,
+    const char *mode,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_xfa_sanitize_json(
+    const OxideDocument *document,
+    const char *mode,
+    OxideBuffer *out_buffer,
     char **out_json,
     char **error_out);
 

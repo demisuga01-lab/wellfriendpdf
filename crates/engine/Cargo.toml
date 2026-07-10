@@ -47,6 +47,9 @@ subtle = "2"
 zeroize = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "0.3"
+
 [features]
 default = ["parse", "render", "structural"]
 full = ["parse", "extract", "render", "create", "edit", "structural", "sign", "pdfa", "ocr"]

@@ -80,6 +80,7 @@ pub struct SecurityReport {
     pub permissions_note: String,
     pub signatures: Vec<SignatureReport>,
     pub risky_content: RiskyContentReport,
+    pub xfa: crate::xfa::XfaSecurityReport,
     pub findings: Vec<SecurityFinding>,
 }
 
@@ -199,8 +200,33 @@ pub fn security_report(engine: &ContentEngine) -> Result<SecurityReport> {
     let public_key_security_handler_detected = public_key_security_handler_detected(reader);
     let aes_gcm_detected = aes_gcm_detected(reader);
     let signatures = engine.verify_signatures()?;
-    let risky_content = scan_risky_content(doc)?;
+    let mut risky_content = scan_risky_content(doc)?;
+    let xfa = crate::xfa::xfa_security_report(engine, &crate::xfa::XfaLimits::default())?;
+    risky_content.xfa_packets = xfa.packet_count;
     let mut findings = risky_content.findings.clone();
+
+    if xfa.script_count > 0 {
+        findings.push(SecurityFinding {
+            code: "xfa.scripts.disabled_by_default".to_string(),
+            severity: SecuritySeverity::Warning,
+            location: "/AcroForm/XFA".to_string(),
+            message: format!(
+                "{} XFA script(s) were inventoried; no XFA script executes under the default policy.",
+                xfa.script_count
+            ),
+        });
+    }
+    if xfa.external_connection_count > 0 {
+        findings.push(SecurityFinding {
+            code: "xfa.external_connections.blocked".to_string(),
+            severity: SecuritySeverity::Error,
+            location: "/AcroForm/XFA".to_string(),
+            message: format!(
+                "{} XFA external connection/resource reference(s) were inventoried and blocked.",
+                xfa.external_connection_count
+            ),
+        });
+    }
 
     if public_key_security_handler_detected {
         findings.push(SecurityFinding {
@@ -229,6 +255,7 @@ pub fn security_report(engine: &ContentEngine) -> Result<SecurityReport> {
         permissions_note: "Owner-password permissions are viewer-enforced policy after a document is opened; they are not cryptographic secrecy against a processor that has the opening key.".to_string(),
         signatures,
         risky_content,
+        xfa,
         findings,
     })
 }

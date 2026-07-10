@@ -184,6 +184,71 @@ pub fn forms_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String
     envelope("forms_report", &forms_report(&engine)?)
 }
 
+/// Prompt 16 XFA packet inventory with bounded XML parse diagnostics.
+pub fn xfa_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "xfa_report",
+        &crate::xfa::xfa_inventory(&engine, &crate::xfa::XfaLimits::default())?,
+    )
+}
+
+/// Prompt 16 static XFA template/dataset extraction and semantic mapping.
+pub fn xfa_extract_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "xfa_extract_report",
+        &crate::xfa::extract_xfa(&engine, &crate::xfa::XfaLimits::default())?,
+    )
+}
+
+/// Prompt 16 bounded dynamic runtime report. `script_policy` is `disabled` or
+/// `formcalc-safe-subset`; supported events execute only when `execute_events`
+/// is true.
+pub fn xfa_runtime_report_json(
+    bytes: &[u8],
+    script_policy: Option<&str>,
+    execute_events: bool,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let options = crate::xfa::XfaRuntimeOptions {
+        script_policy: parse_xfa_script_policy(script_policy)?,
+        execute_supported_events: execute_events,
+        ..crate::xfa::XfaRuntimeOptions::default()
+    };
+    envelope(
+        "xfa_runtime_report",
+        &crate::xfa::xfa_runtime_report(&engine, &options)?,
+    )
+}
+
+/// Prompt 16 script/event inventory and default/sandbox policy report.
+pub fn xfa_script_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let extraction = crate::xfa::extract_xfa(&engine, &crate::xfa::XfaLimits::default())?;
+    let runtime =
+        crate::xfa::xfa_runtime_report(&engine, &crate::xfa::XfaRuntimeOptions::default())?;
+    envelope(
+        "xfa_script_report",
+        &json!({
+            "schema_version": crate::xfa::XFA_SCHEMA_VERSION,
+            "scripts": extraction.scripts,
+            "events": extraction.events,
+            "sandbox": runtime.sandbox,
+        }),
+    )
+}
+
+/// Prompt 16 XFA-specific security, signature, sanitizer, and redaction posture.
+pub fn xfa_security_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "xfa_security_report",
+        &crate::xfa::xfa_security_report(&engine, &crate::xfa::XfaLimits::default())?,
+    )
+}
+
 /// Annotation inventory: kinds, QuadPoints, appearance status, unsafe actions.
 pub fn annotation_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
@@ -2393,6 +2458,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt14_semantic_intelligence_parenttree_cjk_ml_layout": crate::semantic_intelligence::prompt14_semantic_intelligence_report_value(),
         "prompt14b_cjk_dictionary_layout_backend_closure": crate::semantic_intelligence::prompt14b_cjk_dictionary_layout_backend_closure_report_value(),
         "prompt15_semantic_binding_rag_benchmark_closeout": crate::semantic_intelligence::prompt15_semantic_binding_rag_benchmark_closeout_report_value(),
+        "prompt16_xfa_runtime_sandbox_closure": crate::xfa::prompt16_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2402,6 +2468,9 @@ pub fn feature_report_json() -> Result<String> {
             "signature_report", "font_report", "decode_budget_report",
             "resource_dedup_report", "redaction", "semantic_binding_report",
             "advanced_rag_chunk_set", "semantic_search_report", "table_proposal_status",
+            "xfa_report", "xfa_extract_report", "xfa_runtime_report",
+            "xfa_script_report", "xfa_security_report", "xfa_render_preview",
+            "xfa_flatten", "xfa_sanitize",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
@@ -2433,6 +2502,64 @@ pub fn feature_report_json() -> Result<String> {
 }
 
 // ── Output-producing operations (bytes + report) ─────────────────────────────
+
+/// Build a PDF overlay preview of supported XFA layout and return the PDF bytes
+/// plus the stable Prompt 16 flatten/render report envelope.
+pub fn xfa_render_preview_json(
+    bytes: &[u8],
+    script_policy: Option<&str>,
+    execute_events: bool,
+    dpi: u32,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let runtime = crate::xfa::XfaRuntimeOptions {
+        script_policy: parse_xfa_script_policy(script_policy)?,
+        execute_supported_events: execute_events,
+        ..crate::xfa::XfaRuntimeOptions::default()
+    };
+    let (out, report) = crate::xfa::xfa_render_preview_pdf(&input, &runtime, dpi.max(1))?;
+    Ok((out, envelope("xfa_render_report", &report)?))
+}
+
+/// Flatten the supported static XFA subset using an explicit Prompt 16 mode.
+pub fn xfa_flatten_json(
+    bytes: &[u8],
+    mode: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options = crate::xfa::XfaFlattenOptions {
+        mode: parse_xfa_flatten_mode(mode)?,
+        ..crate::xfa::XfaFlattenOptions::default()
+    };
+    let (out, report) = crate::xfa::xfa_flatten_pdf(&input, &options)?;
+    Ok((out, envelope("xfa_flatten_report", &report)?))
+}
+
+/// Apply the dedicated XFA sanitizer policy and return the produced PDF plus a
+/// stable report envelope.
+pub fn xfa_sanitize_json(
+    bytes: &[u8],
+    mode: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options = crate::xfa::XfaSanitizerOptions {
+        mode: parse_xfa_sanitizer_mode(mode)?,
+        ..crate::xfa::XfaSanitizerOptions::default()
+    };
+    let (out, report) = crate::xfa::sanitize_xfa_pdf(&input, &options)?;
+    Ok((out, envelope("xfa_sanitize_report", &report)?))
+}
+
+fn mutation_input(bytes: &[u8], password: Option<&[u8]>) -> Result<Vec<u8>> {
+    if password.is_none_or(|password| password.is_empty()) {
+        return Ok(bytes.to_vec());
+    }
+    let engine = open(bytes, password)?;
+    canonicalize_pdf(&engine, &CanonicalizeOptions::default()).map(|(out, _)| out)
+}
 
 /// Sanitize the document: remove active/risky content per policy and re-scan the
 /// output. `policy` is one of `strict` | `balanced` | `preserve-visual`
@@ -2539,6 +2666,60 @@ pub fn redact_terms_json(
 }
 
 // ── Enum parse helpers (string → engine enum, with honest defaults) ──────────
+
+fn parse_xfa_script_policy(value: Option<&str>) -> Result<crate::xfa::XfaScriptPolicy> {
+    match value.map(str::to_ascii_lowercase).as_deref() {
+        None | Some("disabled" | "off" | "none") => Ok(crate::xfa::XfaScriptPolicy::Disabled),
+        Some("formcalc-safe-subset" | "formcalc_safe_subset" | "formcalc") => {
+            Ok(crate::xfa::XfaScriptPolicy::FormCalcSafeSubset)
+        }
+        Some(other) => Err(crate::OxideError::invalid_input(format!(
+            "unknown XFA script policy '{other}'; use disabled or formcalc-safe-subset"
+        ))),
+    }
+}
+
+fn parse_xfa_flatten_mode(value: Option<&str>) -> Result<crate::xfa::XfaFlattenMode> {
+    match value.map(str::to_ascii_lowercase).as_deref() {
+        None | Some("extract-only" | "extract_only") => Ok(crate::xfa::XfaFlattenMode::ExtractOnly),
+        Some("render-preview" | "render_preview") => Ok(crate::xfa::XfaFlattenMode::RenderPreview),
+        Some("flatten-supported-static" | "flatten_supported_static") => {
+            Ok(crate::xfa::XfaFlattenMode::FlattenSupportedStatic)
+        }
+        Some("flatten-and-remove-xfa" | "flatten_and_remove_xfa") => {
+            Ok(crate::xfa::XfaFlattenMode::FlattenAndRemoveXfa)
+        }
+        Some("preserve-unsupported-xfa-report-only" | "preserve_unsupported_xfa_report_only") => {
+            Ok(crate::xfa::XfaFlattenMode::PreserveUnsupportedXfaReportOnly)
+        }
+        Some("fail-on-unsupported" | "fail_on_unsupported") => {
+            Ok(crate::xfa::XfaFlattenMode::FailOnUnsupported)
+        }
+        Some(other) => Err(crate::OxideError::invalid_input(format!(
+            "unknown XFA flatten mode '{other}'"
+        ))),
+    }
+}
+
+fn parse_xfa_sanitizer_mode(value: Option<&str>) -> Result<crate::xfa::XfaSanitizerMode> {
+    match value.map(str::to_ascii_lowercase).as_deref() {
+        None | Some("remove-scripts-events-connections" | "remove_scripts_events_connections") => {
+            Ok(crate::xfa::XfaSanitizerMode::RemoveScriptsEventsConnections)
+        }
+        Some("remove-all-xfa" | "remove_all_xfa" | "strict") => {
+            Ok(crate::xfa::XfaSanitizerMode::RemoveAllXfa)
+        }
+        Some("preserve-static-data" | "preserve_static_data") => {
+            Ok(crate::xfa::XfaSanitizerMode::PreserveStaticData)
+        }
+        Some("flatten-then-remove" | "flatten_then_remove") => {
+            Ok(crate::xfa::XfaSanitizerMode::FlattenThenRemove)
+        }
+        Some(other) => Err(crate::OxideError::invalid_input(format!(
+            "unknown XFA sanitizer mode '{other}'"
+        ))),
+    }
+}
 
 fn parse_parser_mode(value: Option<&str>) -> ParserMode {
     match value.map(str::to_ascii_lowercase).as_deref() {

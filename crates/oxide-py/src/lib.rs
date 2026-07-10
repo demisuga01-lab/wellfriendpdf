@@ -317,6 +317,40 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::forms_report_json(bytes, None))
     }
 
+    /// Prompt 16 bounded XFA packet inventory and XML-safety report.
+    fn xfa_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::xfa_report_json(bytes, None))
+    }
+
+    /// Prompt 16 static XFA fields/datasets/layout/provenance extraction.
+    fn xfa_extract<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::xfa_extract_json(bytes, None))
+    }
+
+    /// Prompt 16 script/event inventory and fail-closed default policy.
+    fn xfa_script_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::xfa_script_report_json(bytes, None))
+    }
+
+    /// Prompt 16 XFA-specific security/signature/redaction posture.
+    fn xfa_security_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::xfa_security_report_json(bytes, None))
+    }
+
+    /// Bounded minimal dynamic XFA runtime report.
+    #[pyo3(signature = (script_policy="disabled", execute_events=false))]
+    fn xfa_runtime_report<'py>(
+        &self,
+        py: Python<'py>,
+        script_policy: &str,
+        execute_events: bool,
+    ) -> PyResult<Py<PyAny>> {
+        let script_policy = script_policy.to_string();
+        self.report_json(py, |bytes| {
+            sdk::xfa_runtime_report_json(bytes, Some(&script_policy), execute_events, None)
+        })
+    }
+
     /// Annotation inventory (kinds, quads, appearance status, unsafe actions).
     fn annotations_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::annotation_report_json(bytes, None))
@@ -415,6 +449,62 @@ impl PyDocument {
     }
 
     // ── Output-producing operations (return (bytes, report) tuples) ──────────
+
+    /// Render a supported XFA preview as PDF overlay bytes plus a versioned
+    /// report. The result can be written to `output`.
+    #[pyo3(signature = (script_policy="disabled", execute_events=false, dpi=72, output=None))]
+    fn xfa_render<'py>(
+        &self,
+        py: Python<'py>,
+        script_policy: &str,
+        execute_events: bool,
+        dpi: u32,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| {
+            sdk::xfa_render_preview_json(&bytes, Some(script_policy), execute_events, dpi, None)
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Flatten the supported static XFA subset under an explicit Prompt 16 mode.
+    #[pyo3(signature = (mode="flatten_supported_static", output=None))]
+    fn xfa_flatten<'py>(
+        &self,
+        py: Python<'py>,
+        mode: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::xfa_flatten_json(&bytes, Some(mode), None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Remove or neutralize XFA active content under an explicit policy.
+    #[pyo3(signature = (mode="remove_scripts_events_connections", output=None))]
+    fn xfa_sanitize<'py>(
+        &self,
+        py: Python<'py>,
+        mode: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::xfa_sanitize_json(&bytes, Some(mode), None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
 
     /// Sanitize: remove active/risky content and re-scan. `policy` is one of
     /// "strict" | "balanced" | "preserve-visual". Returns `(bytes, report)` and

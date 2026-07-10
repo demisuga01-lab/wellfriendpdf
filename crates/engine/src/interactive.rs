@@ -82,6 +82,7 @@ pub struct FormReport {
     pub calculation_order_len: usize,
     pub fields: Vec<FormFieldReport>,
     pub xfa: XfaReport,
+    pub xfa_fields: Vec<crate::xfa::XfaFieldRecord>,
     pub diagnostics: Vec<InteractiveDiagnostic>,
 }
 
@@ -91,6 +92,14 @@ pub struct XfaReport {
     pub packet_count: usize,
     pub dynamic: Option<bool>,
     pub supported: bool,
+    pub classification: String,
+    pub packet_order: Vec<String>,
+    pub static_parsed: bool,
+    pub dataset_binding_supported: bool,
+    pub script_count: usize,
+    pub event_count: usize,
+    pub default_script_policy: String,
+    pub unsupported_constructs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -185,6 +194,7 @@ pub struct RedactionVerificationReport {
     pub extractable_hits: Vec<RedactionHit>,
     pub raw_byte_hits: Vec<String>,
     pub verified_absent: bool,
+    pub xfa_posture: crate::xfa::XfaRedactionPosture,
     pub diagnostics: Vec<InteractiveDiagnostic>,
 }
 
@@ -239,7 +249,45 @@ pub fn interactive_report(engine: &ContentEngine) -> Result<InteractiveReport> {
 }
 
 pub fn forms_report(engine: &ContentEngine) -> Result<FormReport> {
-    forms_report_document(engine.document())
+    let mut report = forms_report_document(engine.document())?;
+    let limits = crate::xfa::XfaLimits::default();
+    match crate::xfa::extract_xfa(engine, &limits) {
+        Ok(extraction) => {
+            report.xfa = XfaReport {
+                present: extraction.inventory.present,
+                packet_count: extraction.inventory.packets.len(),
+                dynamic: extraction
+                    .inventory
+                    .present
+                    .then_some(extraction.inventory.classification.dynamic_xfa),
+                supported: extraction.template_parsed,
+                classification: extraction.inventory.classification.kind.clone(),
+                packet_order: extraction.inventory.packet_order.clone(),
+                static_parsed: extraction.template_parsed
+                    && extraction.inventory.classification.static_xfa,
+                dataset_binding_supported: extraction.datasets_parsed,
+                script_count: extraction.scripts.len(),
+                event_count: extraction.events.len(),
+                default_script_policy: "disabled".to_string(),
+                unsupported_constructs: extraction.unsupported_constructs.clone(),
+            };
+            report.xfa_fields = extraction.fields;
+            if report.xfa.present {
+                report
+                    .diagnostics
+                    .retain(|diagnostic| diagnostic.code != "form.xfa.detected");
+                report.diagnostics.push(InteractiveDiagnostic::info(
+                    "form.xfa.prompt16_bounded_subsystem",
+                    "XFA packet inventory and supported static/dynamic subsets are exposed; scripts remain disabled by default",
+                ));
+            }
+        }
+        Err(err) => report.diagnostics.push(InteractiveDiagnostic::warning(
+            "form.xfa.fail_closed",
+            format!("XFA processing failed closed: {err}"),
+        )),
+    }
+    Ok(report)
 }
 
 pub fn annotation_report(engine: &ContentEngine) -> Result<AnnotationReport> {
@@ -287,6 +335,17 @@ pub fn redaction_verification_report(
         .cloned()
         .collect();
     let verified_absent = extractable_hits.is_empty() && raw_byte_hits.is_empty();
+    let xfa_posture = crate::xfa::xfa_security_report(&engine, &crate::xfa::XfaLimits::default())
+        .map(|report| report.redaction_posture)
+        .unwrap_or(crate::xfa::XfaRedactionPosture {
+            xfa_present: true,
+            supported_text_visible_to_planner: false,
+            secure_redaction_proven_without_flattening: false,
+            unsupported_dynamic_content_can_regenerate_text: true,
+            required_action:
+                "XFA inspection failed; flatten/remove XFA before claiming secure redaction"
+                    .to_string(),
+        });
     let mut diagnostics = Vec::new();
     if !verified_absent {
         diagnostics.push(InteractiveDiagnostic::warning(
@@ -298,7 +357,8 @@ pub fn redaction_verification_report(
         terms: terms.to_vec(),
         extractable_hits,
         raw_byte_hits,
-        verified_absent,
+        verified_absent: verified_absent && xfa_posture.secure_redaction_proven_without_flattening,
+        xfa_posture,
         diagnostics,
     })
 }
@@ -320,7 +380,16 @@ fn forms_report_document(document: &PdfDocument) -> Result<FormReport> {
                 packet_count: 0,
                 dynamic: None,
                 supported: false,
+                classification: "none".to_string(),
+                packet_order: Vec::new(),
+                static_parsed: false,
+                dataset_binding_supported: false,
+                script_count: 0,
+                event_count: 0,
+                default_script_policy: "disabled".to_string(),
+                unsupported_constructs: Vec::new(),
             },
+            xfa_fields: Vec::new(),
             diagnostics,
         });
     };
@@ -341,7 +410,16 @@ fn forms_report_document(document: &PdfDocument) -> Result<FormReport> {
                 packet_count: 0,
                 dynamic: None,
                 supported: false,
+                classification: "none".to_string(),
+                packet_order: Vec::new(),
+                static_parsed: false,
+                dataset_binding_supported: false,
+                script_count: 0,
+                event_count: 0,
+                default_script_policy: "disabled".to_string(),
+                unsupported_constructs: Vec::new(),
             },
+            xfa_fields: Vec::new(),
             diagnostics,
         });
     };
@@ -393,6 +471,7 @@ fn forms_report_document(document: &PdfDocument) -> Result<FormReport> {
             .unwrap_or(0),
         fields,
         xfa,
+        xfa_fields: Vec::new(),
         diagnostics,
     })
 }
@@ -651,6 +730,14 @@ fn xfa_report(acroform: &PdfDictionary, reader: &PdfReader) -> XfaReport {
             packet_count: 0,
             dynamic: None,
             supported: false,
+            classification: "none".to_string(),
+            packet_order: Vec::new(),
+            static_parsed: false,
+            dataset_binding_supported: false,
+            script_count: 0,
+            event_count: 0,
+            default_script_policy: "disabled".to_string(),
+            unsupported_constructs: Vec::new(),
         };
     };
     let resolved = reader.resolve(xfa_obj.clone()).unwrap_or(PdfObject::Null);
@@ -664,6 +751,14 @@ fn xfa_report(acroform: &PdfDictionary, reader: &PdfReader) -> XfaReport {
         packet_count,
         dynamic: None,
         supported: false,
+        classification: "detected_not_yet_enriched".to_string(),
+        packet_order: Vec::new(),
+        static_parsed: false,
+        dataset_binding_supported: false,
+        script_count: 0,
+        event_count: 0,
+        default_script_policy: "disabled".to_string(),
+        unsupported_constructs: Vec::new(),
     }
 }
 

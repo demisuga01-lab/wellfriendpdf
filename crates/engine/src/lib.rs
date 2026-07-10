@@ -127,6 +127,7 @@ pub mod text;
 pub mod utilities;
 pub mod versioning;
 pub mod writer;
+pub mod xfa;
 
 /// Semantic version of the oxide-engine crate.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -391,6 +392,19 @@ pub use writer::{
     build_merged, build_subset, rewrite_document, rewrite_document_objects,
     rewrite_document_with_mode, rewrite_references, serialize_object, write_document_linearized,
     write_document_roundtrip, OutputObject, PdfWriter, WriterMode,
+};
+pub use xfa::{
+    extract_xfa, sanitize_xfa_pdf, xfa_flatten_pdf, xfa_inventory, xfa_inventory_cancellable,
+    xfa_render_preview_pdf, xfa_runtime_report, xfa_runtime_report_cancellable,
+    xfa_security_report, XfaBindingRecord, XfaClassification, XfaDataNode, XfaDiagnostic,
+    XfaDrawRecord, XfaEventRecord, XfaExtractionReport, XfaFieldRecord, XfaFlattenMode,
+    XfaFlattenOptions, XfaFlattenReport, XfaGeometry, XfaInventoryReport, XfaLayoutItem,
+    XfaLayoutRect, XfaLimits, XfaOccur, XfaPacketRecord, XfaProvenance, XfaRagChunk,
+    XfaRedactionPosture, XfaReopenVerification, XfaRuntimeMetrics, XfaRuntimeOptions,
+    XfaRuntimeReport, XfaSandboxAuditEntry, XfaSandboxReport, XfaSanitizerMode,
+    XfaSanitizerOptions, XfaSanitizerReport, XfaScriptPolicy, XfaScriptRecord, XfaSecurityReport,
+    XfaSemanticIntegrationReport, XfaSignatureImpact, XfaSubformRecord, XfaSupportStatus,
+    XfaXmlMetrics, XfaXmlSafetyReport, XFA_SCHEMA_VERSION,
 };
 
 /// The curated high-level embedding surface.

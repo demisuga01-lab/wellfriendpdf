@@ -48,6 +48,27 @@ try {
   result.security_kind = security.kind;
   result.apis_tested.push("securityReportJson");
 
+  const xfa = JSON.parse(pdf.xfaReportJson());
+  const xfaExtract = JSON.parse(pdf.xfaExtractJson());
+  const xfaScripts = JSON.parse(pdf.xfaScriptReportJson());
+  const xfaSecurity = JSON.parse(pdf.xfaSecurityReportJson());
+  const xfaRuntime = JSON.parse(pdf.xfaRuntimeReportJson("disabled", false));
+  result.xfa_kinds = [
+    xfa.kind,
+    xfaExtract.kind,
+    xfaScripts.kind,
+    xfaSecurity.kind,
+    xfaRuntime.kind,
+  ];
+  result.xfa_schema = xfa.report?.schema_version;
+  result.apis_tested.push(
+    "xfaReportJson",
+    "xfaExtractJson",
+    "xfaScriptReportJson",
+    "xfaSecurityReportJson",
+    "xfaRuntimeReportJson",
+  );
+
   const advancedChunks = JSON.parse(pdf.advancedChunksJson());
   result.advanced_chunks_kind = advancedChunks.kind;
   result.apis_tested.push("advancedChunksJson");
@@ -89,6 +110,14 @@ try {
     result.table_status_kind === "table_proposal_status",
     result.page_count >= 1,
     result.security_kind === "security_report",
+    result.xfa_schema === "prompt16.xfa.v1",
+    JSON.stringify(result.xfa_kinds) === JSON.stringify([
+      "xfa_report",
+      "xfa_extract_report",
+      "xfa_script_report",
+      "xfa_security_report",
+      "xfa_runtime_report",
+    ]),
     result.advanced_chunks_kind === "advanced_rag_chunk_set",
     result.semantic_bundle_kind === "semantic_binding_report",
     result.semantic_search_kind === "semantic_search_report",

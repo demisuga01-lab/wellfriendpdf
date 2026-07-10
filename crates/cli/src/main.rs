@@ -178,6 +178,22 @@ enum Commands {
     ExtractFields(ExtractFieldsArgs),
     /// Report AcroForm field trees, inheritance, widgets, XFA, and form diagnostics
     FormsReport(FormsReportArgs),
+    /// Inventory XFA packets, ordering, XML safety, classification, and limits
+    XfaReport(XfaReportArgs),
+    /// Extract supported static XFA fields, datasets, layout, scripts, and provenance
+    XfaExtract(XfaReportArgs),
+    /// Build a PDF overlay preview through the existing page renderer/writer path
+    XfaRender(XfaRenderArgs),
+    /// Flatten the supported static XFA subset with an explicit preservation mode
+    XfaFlatten(XfaFlattenArgs),
+    /// Apply the dedicated XFA active-content sanitizer policy
+    XfaSanitize(XfaSanitizeArgs),
+    /// Inventory XFA scripts/events and the default sandbox policy
+    XfaScriptReport(XfaReportArgs),
+    /// Report XFA security, sanitizer, signature, and redaction posture
+    XfaSecurityReport(XfaReportArgs),
+    /// Run/report the bounded minimal dynamic XFA runtime
+    XfaRuntimeReport(XfaRuntimeReportArgs),
     /// Export AcroForm field values as JSON, FDF, or XFDF
     FormsExport(FormsExportArgs),
     /// Import AcroForm field values from JSON, FDF, or XFDF
@@ -794,6 +810,108 @@ struct FormsReportArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+}
+
+#[derive(Parser)]
+struct XfaReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output JSON report file; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct XfaRuntimeReportArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Output JSON report file; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Script policy: disabled or formcalc-safe-subset
+    #[arg(long, default_value = "disabled")]
+    script_policy: String,
+    /// Execute the supported calculate/validate event subset
+    #[arg(long)]
+    execute_events: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct XfaRenderArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output PDF containing the XFA preview overlays
+    #[arg(short, long, default_value = "xfa-preview.pdf")]
+    output: PathBuf,
+    /// Optional JSON report output; defaults to stderr summary
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// DPI used for reopen/render hash verification
+    #[arg(long, default_value = "72")]
+    dpi: u32,
+    /// Script policy: disabled or formcalc-safe-subset
+    #[arg(long, default_value = "disabled")]
+    script_policy: String,
+    /// Execute the supported calculate/validate event subset
+    #[arg(long)]
+    execute_events: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Print the JSON report to stdout
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct XfaFlattenArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output PDF
+    #[arg(short, long, default_value = "xfa-flattened.pdf")]
+    output: PathBuf,
+    /// Mode: extract_only, render_preview, flatten_supported_static,
+    /// flatten_and_remove_xfa, preserve_unsupported_xfa_report_only, or
+    /// fail_on_unsupported
+    #[arg(long, default_value = "flatten_supported_static")]
+    mode: String,
+    /// Optional JSON report output
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Print the JSON report to stdout
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Parser)]
+struct XfaSanitizeArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output sanitized PDF
+    #[arg(short, long, default_value = "xfa-sanitized.pdf")]
+    output: PathBuf,
+    /// Mode: remove_all_xfa, remove_scripts_events_connections,
+    /// preserve_static_data, or flatten_then_remove
+    #[arg(long, default_value = "remove_scripts_events_connections")]
+    mode: String,
+    /// Optional JSON report output
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+    /// Print the JSON report to stdout
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -1807,6 +1925,14 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::DocumentModel(args) => run_document_model(args),
         Commands::ExtractFields(args) => run_extract_fields(args),
         Commands::FormsReport(args) => run_forms_report(args),
+        Commands::XfaReport(args) => run_xfa_report(args),
+        Commands::XfaExtract(args) => run_xfa_extract(args),
+        Commands::XfaRender(args) => run_xfa_render(args),
+        Commands::XfaFlatten(args) => run_xfa_flatten(args),
+        Commands::XfaSanitize(args) => run_xfa_sanitize(args),
+        Commands::XfaScriptReport(args) => run_xfa_script_report(args),
+        Commands::XfaSecurityReport(args) => run_xfa_security_report(args),
+        Commands::XfaRuntimeReport(args) => run_xfa_runtime_report(args),
         Commands::FormsExport(args) => run_forms_export(args),
         Commands::FormsImport(args) => run_forms_import(args),
         Commands::AnnotationsReport(args) => run_annotations_report(args),
@@ -2518,6 +2644,124 @@ fn run_forms_report(args: FormsReportArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let output = serde_json::to_string_pretty(&oxide_engine::forms_report(&engine)?)?;
     write_output_optional(&args.output, &output)?;
+    Ok(())
+}
+
+fn run_xfa_report(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let output =
+        oxide_engine::sdk::xfa_report_json(&bytes, args.password.as_deref().map(str::as_bytes))?;
+    write_output_optional(&args.output, &pretty_json(&output)?)?;
+    Ok(())
+}
+
+fn run_xfa_extract(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let output =
+        oxide_engine::sdk::xfa_extract_json(&bytes, args.password.as_deref().map(str::as_bytes))?;
+    write_output_optional(&args.output, &pretty_json(&output)?)?;
+    Ok(())
+}
+
+fn run_xfa_script_report(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let output = oxide_engine::sdk::xfa_script_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&output)?)?;
+    Ok(())
+}
+
+fn run_xfa_security_report(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let output = oxide_engine::sdk::xfa_security_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&output)?)?;
+    Ok(())
+}
+
+fn run_xfa_runtime_report(args: XfaRuntimeReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let output = oxide_engine::sdk::xfa_runtime_report_json(
+        &bytes,
+        Some(&args.script_policy),
+        args.execute_events,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&output)?)?;
+    Ok(())
+}
+
+fn run_xfa_render(args: XfaRenderArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (output, report) = oxide_engine::sdk::xfa_render_preview_json(
+        &bytes,
+        Some(&args.script_policy),
+        args.execute_events,
+        args.dpi,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, &output)?;
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json {
+        eprintln!("Rendered XFA preview -> {}", args.output.display());
+    }
+    Ok(())
+}
+
+fn run_xfa_flatten(args: XfaFlattenArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (output, report) = oxide_engine::sdk::xfa_flatten_json(
+        &bytes,
+        Some(&args.mode),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, &output)?;
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json {
+        eprintln!(
+            "Flattened supported XFA subset -> {}",
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_xfa_sanitize(args: XfaSanitizeArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (output, report) = oxide_engine::sdk::xfa_sanitize_json(
+        &bytes,
+        Some(&args.mode),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, &output)?;
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json {
+        eprintln!("Sanitized XFA -> {}", args.output.display());
+    }
+    Ok(())
+}
+
+fn pretty_json(json: &str) -> Result<String, Box<dyn Error>> {
+    let value: serde_json::Value = serde_json::from_str(json)?;
+    Ok(serde_json::to_string_pretty(&value)?)
+}
+
+fn write_xfa_operation_report(
+    report: &str,
+    output: Option<&PathBuf>,
+    print_json: bool,
+) -> Result<(), Box<dyn Error>> {
+    let pretty = pretty_json(report)?;
+    if let Some(path) = output {
+        std::fs::write(path, &pretty)?;
+    }
+    if print_json {
+        println!("{pretty}");
+    }
     Ok(())
 }
 

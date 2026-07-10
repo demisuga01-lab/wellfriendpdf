@@ -107,7 +107,9 @@ fn forms_report_merges_field_tree_inheritance_widgets_and_xfa() {
     assert_eq!(report.sig_flags, Some(3));
     assert_eq!(report.calculation_order_len, 1);
     assert!(report.xfa.present);
-    assert!(!report.xfa.supported);
+    assert!(report.xfa.supported);
+    assert!(report.xfa.static_parsed);
+    assert_eq!(report.xfa.default_script_policy, "disabled");
 
     let field = report
         .fields
@@ -127,7 +129,7 @@ fn forms_report_merges_field_tree_inheritance_widgets_and_xfa() {
     assert!(report
         .diagnostics
         .iter()
-        .any(|diag| diag.code == "form.xfa.detected"));
+        .any(|diag| diag.code == "form.xfa.prompt16_bounded_subsystem"));
 }
 
 #[test]

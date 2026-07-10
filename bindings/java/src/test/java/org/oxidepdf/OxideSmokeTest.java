@@ -23,6 +23,11 @@ public final class OxideSmokeTest {
             reports.put("color", doc.colorReportJson("generic"));
             reports.put("validate_security", doc.validateJson("security"));
             reports.put("forms", doc.formsReportJson());
+            reports.put("xfa", doc.xfaReportJson());
+            reports.put("xfa_extract", doc.xfaExtractJson());
+            reports.put("xfa_script", doc.xfaScriptReportJson());
+            reports.put("xfa_security", doc.xfaSecurityReportJson());
+            reports.put("xfa_runtime", doc.xfaRuntimeReportJson("disabled", false));
             reports.put("annotations", doc.annotationsReportJson());
             reports.put("pages", doc.pagesReportJson());
             reports.put("interactive", doc.interactiveReportJson());
@@ -235,6 +240,15 @@ public final class OxideSmokeTest {
             feature.contains("\"model_can_rewrite_deterministic_text\":false"),
             "prompt15 deterministic text preservation");
         assertTrue(feature.contains("\"blocked\":0"), "prompt15 blocked count");
+        assertTrue(
+            feature.contains("\"prompt16_xfa_runtime_sandbox_closure\""),
+            "prompt16 XFA runtime sandbox closure");
+        assertTrue(
+            feature.contains("\"additive_feature_report_prompt16\""),
+            "prompt16 additive schema status");
+        assertTrue(
+            feature.contains("\"scripts_disabled_events_not_executed\""),
+            "prompt16 default script policy");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),

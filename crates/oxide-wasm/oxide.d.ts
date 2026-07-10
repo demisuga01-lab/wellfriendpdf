@@ -40,6 +40,11 @@ export class OxidePdf {
   validatePdfaJson(profile?: string): ReportJson;
   validatePdfuaJson(): ReportJson;
   formsReportJson(): ReportJson;
+  xfaReportJson(): ReportJson;
+  xfaExtractJson(): ReportJson;
+  xfaScriptReportJson(): ReportJson;
+  xfaSecurityReportJson(): ReportJson;
+  xfaRuntimeReportJson(scriptPolicy?: string, executeEvents?: boolean): ReportJson;
   annotationsReportJson(): ReportJson;
   pagesReportJson(): ReportJson;
   interactiveReportJson(): ReportJson;
@@ -52,6 +57,9 @@ export class OxidePdf {
   semanticBundleJson(): ReportJson;
   semanticSearchJson(query: string): ReportJson;
 
+  xfaRender(scriptPolicy?: string, executeEvents?: boolean, dpi?: number): OxideOutput;
+  xfaFlatten(mode?: string): OxideOutput;
+  xfaSanitize(mode?: string): OxideOutput;
   sanitize(policy?: string): OxideOutput;
   canonicalize(dateEpoch?: bigint | number): OxideOutput;
   redactTermsJson(termsJson: string, strict: boolean): OxideOutput;

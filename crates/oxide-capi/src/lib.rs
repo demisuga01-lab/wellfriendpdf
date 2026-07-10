@@ -1345,6 +1345,61 @@ pub unsafe extern "C" fn oxide_document_forms_report_json(
     }
 }
 
+macro_rules! xfa_document_report {
+    ($name:ident, $sdk_fn:ident) => {
+        /// Returns an owned Prompt 16 XFA JSON report.
+        ///
+        /// # Safety
+        /// `document` must be a live Oxide handle. `out_json` and `error_out`
+        /// must follow `oxide_document_security_report_json` ownership rules.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(
+            document: *const OxideDocument,
+            out_json: *mut *mut c_char,
+            error_out: *mut *mut c_char,
+        ) -> c_int {
+            unsafe {
+                report_json_impl(document, out_json, error_out, |bytes| {
+                    sdk::$sdk_fn(bytes, None)
+                })
+            }
+        }
+    };
+}
+
+xfa_document_report!(oxide_document_xfa_report_json, xfa_report_json);
+xfa_document_report!(oxide_document_xfa_extract_json, xfa_extract_json);
+xfa_document_report!(
+    oxide_document_xfa_script_report_json,
+    xfa_script_report_json
+);
+xfa_document_report!(
+    oxide_document_xfa_security_report_json,
+    xfa_security_report_json
+);
+
+/// Bounded Prompt 16 XFA runtime report.
+///
+/// # Safety
+/// `script_policy` may be NULL or a NUL-terminated UTF-8 policy string. Other
+/// pointers follow `oxide_document_security_report_json` ownership rules.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_xfa_runtime_report_json(
+    document: *const OxideDocument,
+    script_policy: *const c_char,
+    execute_events: c_int,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let policy = unsafe { optional_c_string(script_policy) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            let policy = policy.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::xfa_runtime_report_json(bytes, policy.as_deref(), execute_events != 0, None)
+        })
+    }
+}
+
 /// Annotation-inventory report JSON.
 ///
 /// # Safety
@@ -1464,6 +1519,71 @@ pub unsafe extern "C" fn oxide_document_semantic_search_json(
         report_json_impl(document, out_json, error_out, |b| {
             let query = query.map_err(oxide_engine::OxideError::invalid_input)?;
             sdk::semantic_search_report_json(b, &[], &query, None)
+        })
+    }
+}
+
+/// Produce Prompt 16 XFA preview PDF bytes and a versioned report.
+///
+/// # Safety
+/// Output ownership matches `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_xfa_render_json(
+    document: *const OxideDocument,
+    script_policy: *const c_char,
+    execute_events: c_int,
+    dpi: u32,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let policy = unsafe { optional_c_string(script_policy) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let policy = policy.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::xfa_render_preview_json(bytes, policy.as_deref(), execute_events != 0, dpi, None)
+        })
+    }
+}
+
+/// Flatten supported static XFA under an explicit mode.
+///
+/// # Safety
+/// Output ownership matches `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_xfa_flatten_json(
+    document: *const OxideDocument,
+    mode: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let mode = unsafe { optional_c_string(mode) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let mode = mode.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::xfa_flatten_json(bytes, mode.as_deref(), None)
+        })
+    }
+}
+
+/// Sanitize XFA packets/scripts/events/connections under an explicit mode.
+///
+/// # Safety
+/// Output ownership matches `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_xfa_sanitize_json(
+    document: *const OxideDocument,
+    mode: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let mode = unsafe { optional_c_string(mode) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let mode = mode.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::xfa_sanitize_json(bytes, mode.as_deref(), None)
         })
     }
 }
@@ -2307,6 +2427,14 @@ mod tests {
     fn capi_read_only_report_envelopes() {
         report_envelope(oxide_document_security_report_json, "security_report");
         report_envelope(oxide_document_forms_report_json, "forms_report");
+        let xfa = report_envelope(oxide_document_xfa_report_json, "xfa_report");
+        assert_eq!(xfa["report"]["schema_version"], "prompt16.xfa.v1");
+        report_envelope(oxide_document_xfa_extract_json, "xfa_extract_report");
+        report_envelope(oxide_document_xfa_script_report_json, "xfa_script_report");
+        report_envelope(
+            oxide_document_xfa_security_report_json,
+            "xfa_security_report",
+        );
         report_envelope(oxide_document_annotations_report_json, "annotation_report");
         report_envelope(oxide_document_pages_report_json, "page_operations_report");
         report_envelope(oxide_document_interactive_report_json, "interactive_report");
@@ -2774,6 +2902,13 @@ mod tests {
         assert_eq!(
             prompt15["tableformer_table_transformer_hook"]["model_can_rewrite_deterministic_text"],
             false
+        );
+        let prompt16 = &value["report"]["prompt16_xfa_runtime_sandbox_closure"];
+        assert_eq!(prompt16["status"], "complete_bounded_foundation");
+        assert_eq!(prompt16["closure_counts"]["blocked"], 0);
+        assert_eq!(
+            prompt16["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt16"
         );
         unsafe { oxide_string_free(json) };
 

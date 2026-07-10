@@ -35,6 +35,12 @@ def test_read_only_report_envelopes():
     _envelope(doc.color_report(), "color_report")
     _envelope(doc.color_report(profile="pdfa"), "color_report")
     _envelope(doc.forms_report(), "forms_report")
+    xfa = _envelope(doc.xfa_report(), "xfa_report")
+    assert xfa["schema_version"] == "prompt16.xfa.v1"
+    _envelope(doc.xfa_extract(), "xfa_extract_report")
+    _envelope(doc.xfa_script_report(), "xfa_script_report")
+    _envelope(doc.xfa_security_report(), "xfa_security_report")
+    _envelope(doc.xfa_runtime_report(), "xfa_runtime_report")
     _envelope(doc.annotations_report(), "annotation_report")
     _envelope(doc.pages_report(), "page_operations_report")
     _envelope(doc.interactive_report(), "interactive_report")
@@ -247,6 +253,13 @@ def test_module_level_reports():
         ["model_can_rewrite_deterministic_text"]
         is False
     )
+    prompt16 = feature["prompt16_xfa_runtime_sandbox_closure"]
+    assert prompt16["status"] == "complete_bounded_foundation"
+    assert prompt16["closure_counts"]["blocked"] == 0
+    assert (
+        prompt16["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_prompt16"
+    )
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )
@@ -265,6 +278,19 @@ def test_sanitize_produces_bytes_and_report(tmp_path):
     assert out.read_bytes() == data
     r = _envelope(report, "sanitize_report")
     assert r["output_bytes"] > 0
+
+
+def test_xfa_owned_output_surfaces_on_non_xfa_pdf(tmp_path):
+    doc = oxide.open(FIXTURE)
+    preview, preview_report = doc.xfa_render(output=tmp_path / "xfa-preview.pdf")
+    assert preview[:5] == b"%PDF-"
+    assert _envelope(preview_report, "xfa_render_report")["schema_version"] == "prompt16.xfa.v1"
+    flattened, flatten_report = doc.xfa_flatten(mode="extract_only")
+    assert flattened[:5] == b"%PDF-"
+    assert _envelope(flatten_report, "xfa_flatten_report")["schema_version"] == "prompt16.xfa.v1"
+    sanitized, sanitize_report = doc.xfa_sanitize(mode="remove_all_xfa")
+    assert sanitized[:5] == b"%PDF-"
+    assert _envelope(sanitize_report, "xfa_sanitize_report")["schema_version"] == "prompt16.xfa.v1"
 
 
 def test_canonicalize_is_deterministic():

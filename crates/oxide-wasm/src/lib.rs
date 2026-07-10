@@ -245,6 +245,37 @@ mod wasm_api {
             self.report(|b| sdk::forms_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = xfaReportJson)]
+        pub fn xfa_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::xfa_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = xfaExtractJson)]
+        pub fn xfa_extract_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::xfa_extract_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = xfaScriptReportJson)]
+        pub fn xfa_script_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::xfa_script_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = xfaSecurityReportJson)]
+        pub fn xfa_security_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::xfa_security_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = xfaRuntimeReportJson)]
+        pub fn xfa_runtime_report_json(
+            &self,
+            script_policy: Option<String>,
+            execute_events: bool,
+        ) -> Result<String, JsValue> {
+            self.report(|b| {
+                sdk::xfa_runtime_report_json(b, script_policy.as_deref(), execute_events, None)
+            })
+        }
+
         #[wasm_bindgen(js_name = annotationsReportJson)]
         pub fn annotations_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::annotation_report_json(b, None))
@@ -304,6 +335,28 @@ mod wasm_api {
         pub fn table_proposal_status_json() -> Result<String, JsValue> {
             install_panic_hook();
             sdk::table_proposal_status_json().map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = xfaRender)]
+        pub fn xfa_render(
+            &self,
+            script_policy: Option<String>,
+            execute_events: bool,
+            dpi: u32,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::xfa_render_preview_json(b, script_policy.as_deref(), execute_events, dpi, None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = xfaFlatten)]
+        pub fn xfa_flatten(&self, mode: Option<String>) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::xfa_flatten_json(b, mode.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = xfaSanitize)]
+        pub fn xfa_sanitize(&self, mode: Option<String>) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::xfa_sanitize_json(b, mode.as_deref(), None))
         }
 
         #[wasm_bindgen(js_name = sanitize)]
