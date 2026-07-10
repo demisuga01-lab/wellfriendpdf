@@ -43,6 +43,10 @@ def main() -> int:
         "pdfua": doc.validate_pdfua(),
         "chunk": doc.chunks(),
         "text_semantic": doc.text_semantic(),
+        "prompt15_semantic": doc.semantic_bundle(),
+        "prompt15_chunks": doc.advanced_chunks(),
+        "prompt15_search": doc.semantic_search("document"),
+        "prompt15_table_status": doc.table_proposal_status(),
         "decode_budget": oxide.decode_budget_report("DCTDecode", 4096, 4096, 3),
     }
 

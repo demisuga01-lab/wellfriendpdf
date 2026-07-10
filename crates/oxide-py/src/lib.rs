@@ -355,6 +355,54 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::chunk_report_json(bytes, None))
     }
 
+    /// Prompt 15 provenance-aware RAG chunks with stable hashes, table/cell,
+    /// CJK dictionary, structure/MCID, ParentTree, and security metadata.
+    #[pyo3(signature = (pages=None))]
+    fn advanced_chunks<'py>(
+        &self,
+        py: Python<'py>,
+        pages: Option<Vec<usize>>,
+    ) -> PyResult<Py<PyAny>> {
+        let pages = pages.unwrap_or_default();
+        self.report_json(py, |bytes| {
+            sdk::advanced_chunk_report_json(bytes, &pages, None)
+        })
+    }
+
+    /// Full Prompt 15 semantic binding bundle as a versioned Python dictionary.
+    #[pyo3(signature = (pages=None))]
+    fn semantic_bundle<'py>(
+        &self,
+        py: Python<'py>,
+        pages: Option<Vec<usize>>,
+    ) -> PyResult<Py<PyAny>> {
+        let pages = pages.unwrap_or_default();
+        self.report_json(py, |bytes| {
+            sdk::semantic_binding_report_json(bytes, &pages, None)
+        })
+    }
+
+    /// Semantic text and CJK dictionary-token search with source provenance.
+    #[pyo3(signature = (query, pages=None))]
+    fn semantic_search<'py>(
+        &self,
+        py: Python<'py>,
+        query: &str,
+        pages: Option<Vec<usize>>,
+    ) -> PyResult<Py<PyAny>> {
+        let pages = pages.unwrap_or_default();
+        let query = query.to_string();
+        self.report_json(py, |bytes| {
+            sdk::semantic_search_report_json(bytes, &pages, &query, None)
+        })
+    }
+
+    /// TableFormer/Table Transformer hook and backend availability status.
+    fn table_proposal_status<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        let json = run_oxide(sdk::table_proposal_status_json)?;
+        parse_json_str(py, &json)
+    }
+
     /// Tagged-structure semantic document (structure tree / MCID model).
     #[pyo3(signature = (pages=None))]
     fn semantic_document<'py>(

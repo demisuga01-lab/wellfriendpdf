@@ -621,6 +621,24 @@ pub fn segment_cjk_dictionary_text_with_provider(
             index += 1;
             continue;
         }
+        if is_cjk_punctuation(c) {
+            let start_index = index;
+            let start_byte = chars[index].0;
+            index += 1;
+            let end_byte = chars
+                .get(index)
+                .map(|(byte, _)| *byte)
+                .unwrap_or_else(|| text.len());
+            out.push(CjkDictionaryToken {
+                text: text[start_byte..end_byte].to_string(),
+                char_range: [start_index, index],
+                byte_range: [start_byte, end_byte],
+                language: "punctuation".to_string(),
+                confidence: 1.0,
+                source: "script_boundary".to_string(),
+            });
+            continue;
+        }
         if !is_cjk_char(c) {
             let start_index = index;
             let start_byte = chars[index].0;
@@ -2915,18 +2933,26 @@ fn search_semantic_document(
     if query_norm.is_empty() {
         return Vec::new();
     }
+    let query_chars = query_norm.chars().collect::<Vec<_>>();
 
     let mut matches = Vec::new();
     for page in &document.pages {
         let stream = searchable_stream(page, options);
-        let haystack: String = stream.iter().map(|item| item.ch).collect();
         let mut start = 0usize;
         while matches.len() < options.max_matches {
-            let Some(pos) = haystack[start..].find(&query_norm) else {
+            let Some(pos) = stream[start..]
+                .windows(query_chars.len())
+                .position(|window| {
+                    window
+                        .iter()
+                        .map(|item| item.ch)
+                        .eq(query_chars.iter().copied())
+                })
+            else {
                 break;
             };
             let from = start + pos;
-            let to = from + query_norm.len();
+            let to = from + query_chars.len();
             let char_refs: Vec<&TextSemanticChar> = stream[from..to]
                 .iter()
                 .filter_map(|item| item.char_ref)

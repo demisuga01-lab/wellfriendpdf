@@ -45,6 +45,15 @@ def test_read_only_report_envelopes():
     _envelope(doc.validate_pdfa(), "pdfa_validation")
     _envelope(doc.validate_pdfua(), "pdfua_validation")
     _envelope(doc.chunks(), "chunk_set")
+    advanced = _envelope(doc.advanced_chunks(), "advanced_rag_chunk_set")
+    assert advanced["schema_version"] == "prompt15.rag_chunk.v1"
+    semantic = _envelope(doc.semantic_bundle(), "semantic_binding_report")
+    assert semantic["schema_version"] == "prompt15.semantic_binding.v1"
+    search = _envelope(doc.semantic_search("Hello"), "semantic_search_report")
+    assert search["query"] == "Hello"
+    assert search["provenance_preserved"] is True
+    table_status = _envelope(doc.table_proposal_status(), "table_proposal_status")
+    assert table_status["model_weights_bundled"] is False
     _envelope(doc.text_semantic(), "text_semantic")
     _envelope(doc.semantic_document(), "semantic_document")
 
@@ -227,6 +236,16 @@ def test_module_level_reports():
     assert (
         prompt14b["layout_backend"]["local_backend_status"]
         == "unsupported_reported_no_runtime"
+    )
+    prompt15 = feature["prompt15_semantic_binding_rag_benchmark_closeout"]
+    assert prompt15["status"] == "complete"
+    assert prompt15["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt15"
+    assert prompt15["closure_counts"]["blocked"] == 0
+    assert prompt15["privacy"]["cloud_upload_default"] is False
+    assert (
+        prompt15["tableformer_table_transformer_hook"]
+        ["model_can_rewrite_deterministic_text"]
+        is False
     )
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"

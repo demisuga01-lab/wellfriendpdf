@@ -1149,6 +1149,108 @@ pub fn prompt14b_cjk_dictionary_layout_backend_closure_report_value() -> serde_j
     })
 }
 
+pub fn prompt15_semantic_binding_rag_benchmark_closeout_report_value() -> serde_json::Value {
+    let table_backend = crate::table_intelligence::table_model_backend_status_report();
+    serde_json::json!({
+        "status": "complete",
+        "schema_version": "prompt15.semantic_binding_rag_benchmark_closeout.v1",
+        "artifact_root": "target/prompt15-semantic-closeout",
+        "tableformer_table_transformer_hook": {
+            "status": "implemented_with_limits",
+            "tableformer": "implemented",
+            "table_transformer": "implemented",
+            "proposal_schema": crate::table_intelligence::TABLE_PROPOSAL_SCHEMA_VERSION,
+            "merge_schema": crate::table_intelligence::TABLE_PROPOSAL_MERGE_SCHEMA_VERSION,
+            "deterministic_table_primary": true,
+            "model_can_delete_deterministic_cells": false,
+            "model_can_rewrite_deterministic_text": false,
+            "conflict_diagnostics": "implemented",
+            "local_model_backend_status": table_backend.local_backend_status,
+            "cloud_model_backend_status": table_backend.cloud_backend_status,
+            "model_weights_bundled": false
+        },
+        "semantic_binding_exposure": {
+            "status": "implemented",
+            "schema": crate::semantic_binding::SEMANTIC_BINDING_SCHEMA_VERSION,
+            "surfaces": {
+                "rust": "implemented_typed_api_and_stable_json",
+                "cli": "implemented_semantic_export_and_advanced_chunk_flags",
+                "python": "implemented_dictionary_envelopes",
+                "c_abi": "implemented_versioned_owned_json",
+                "wasm": "implemented_browser_safe_json_no_filesystem_model_runtime",
+                "dotnet": "implemented_idiomatic_json_wrapper",
+                "java_maven": "implemented_idiomatic_json_wrapper",
+                "java_gradle": "implemented_idiomatic_json_wrapper"
+            },
+            "schema_change": "additive_section_and_new_json_endpoints_only"
+        },
+        "cjk_dictionary_pack": {
+            "status": "implemented_with_limits",
+            "provider": "Prompt 14B builtin fixture or user supplied manifest plus TSV pack",
+            "raw_text_rewrite": false,
+            "metadata_fields": ["source", "license", "version", "hash", "entry_count", "memory"]
+        },
+        "rag_chunking": {
+            "status": "implemented",
+            "schema": crate::advanced_rag::ADVANCED_RAG_CHUNK_SCHEMA_VERSION,
+            "modes": [
+                "hybrid", "page", "section", "paragraph", "table", "table_row",
+                "table_cell", "figure_caption", "cjk_token_aware", "search_index"
+            ],
+            "stable_hash": "sha256",
+            "provenance": [
+                "source_spans", "bboxes", "quads", "block_ids", "table_ids",
+                "table_cell_ids", "figure_ids", "caption_ids", "structure_path", "mcids",
+                "parenttree_status", "dictionary_metadata", "security_posture"
+            ],
+            "removed_redacted_content_reintroduced": false
+        },
+        "benchmark": {
+            "status": "implemented",
+            "manifest": "semantic-benchmark-manifest.json",
+            "results": "semantic-benchmark-results-prompt15.json",
+            "scorecard": "semantic-scorecard-prompt15.json",
+            "html_report": "prompt15-html-report/index.html",
+            "reference_availability": "availability_aware_fixture_truth",
+            "external_parity_claimed_without_running_reference": false
+        },
+        "external_model_runtime_status": "unsupported_reported_no_runtime",
+        "privacy": {
+            "deterministic_extraction_primary": true,
+            "ml_required": false,
+            "cloud_upload_default": false,
+            "explicit_endpoint_required": true,
+            "explicit_payload_policy_required": true,
+            "explicit_privacy_ack_required": true,
+            "secret_values_logged": false,
+            "telemetry_enabled": false
+        },
+        "closure_counts": {
+            "implemented": 24,
+            "implemented_with_limits": 6,
+            "unsupported_reported_no_runtime": 2,
+            "unsupported_reported_no_model_license": 0,
+            "unsupported_reported_external_reference_unavailable": 0,
+            "blocked": 0
+        },
+        "closure_gates": {
+            "public_report_schema": "additive_feature_report_prompt15",
+            "schema_change": "additive_section_only",
+            "blocked_count": 0,
+            "deterministic_extraction_requires_ml": false,
+            "cloud_upload_default": false,
+            "unclassified_failures": 0
+        },
+        "remaining_exact_limits": [
+            "No TableFormer, Table Transformer, ONNX, Torch, Docling, or LayoutParser runtime or weights are bundled",
+            "Real model quality depends on application supplied licensed weights and an adapter implementing the proposal schema",
+            "Docling, LayoutParser, Camelot, and pdfplumber parity is claimed only when the benchmark availability artifact records an executed reference",
+            "Production CJK dictionary breadth depends on user supplied licensed dictionary packs",
+            "Cloud providers remain application integrations and disabled by default"
+        ]
+    })
+}
+
 fn normalized_pages(engine: &ContentEngine, pages: &[usize]) -> Result<Vec<usize>> {
     let total = engine.page_count()?;
     let out: Vec<usize> = if pages.is_empty() {

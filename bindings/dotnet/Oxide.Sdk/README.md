@@ -11,6 +11,9 @@ using var doc = OxideDocument.Open("report.pdf", password: null);
 Console.WriteLine(doc.PageCount);
 Console.WriteLine(doc.GetPage(1).Text);
 Console.WriteLine(doc.SecurityReportJson());
+Console.WriteLine(doc.SemanticBundleJson());
+Console.WriteLine(doc.AdvancedChunksJson());
+Console.WriteLine(doc.SemanticSearchJson("invoice"));
 Console.WriteLine(OxideDocument.CodecIsolationReportJson(
     "FlateDecode",
     Convert.FromHexString("789ccb48cdc9c957c8afc84c49050019dd044e"),
@@ -44,7 +47,8 @@ before methods return.
 ## Prompt 02 Surface
 
 Reports: feature, engine/ABI version, security, parser, color, validation,
-forms, annotations, page operations, interactive content, and chunks.
+forms, annotations, page operations, interactive content, legacy chunks,
+Prompt 15 semantic bundles, advanced chunks, and provenance-aware search.
 
 Outputs: sanitize, canonicalize, redact terms, DOCX, XLSX, PPTX, and Office to
 PDF conversion helpers.

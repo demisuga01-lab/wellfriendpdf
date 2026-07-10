@@ -9,6 +9,9 @@ try (var doc = Oxide.Document.open(Path.of("report.pdf"), null)) {
     System.out.println(doc.pageCount());
     System.out.println(doc.page(1).text());
     System.out.println(doc.securityReportJson());
+    System.out.println(doc.semanticBundleJson());
+    System.out.println(doc.advancedChunksJson());
+    System.out.println(doc.semanticSearchJson("invoice"));
     System.out.println(Oxide.codecIsolationReportJson(
         "FlateDecode",
         new byte[] {(byte) 0x78, (byte) 0x9c, (byte) 0xcb},
@@ -43,7 +46,8 @@ java --enable-preview --enable-native-access=ALL-UNNAMED `
 ## Prompt 02 Surface
 
 Reports: feature, engine/ABI version, security, parser, color, validation,
-forms, annotations, page operations, interactive content, and chunks.
+forms, annotations, page operations, interactive content, legacy chunks,
+Prompt 15 semantic bundles, advanced chunks, and provenance-aware search.
 
 Outputs: sanitize, canonicalize, redact terms, DOCX, XLSX, PPTX, and Office to
 PDF conversion helpers.

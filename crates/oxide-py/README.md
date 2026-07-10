@@ -45,6 +45,10 @@ doc.signature_report()         # validity, trust, coverage, LTV
 doc.font_report()              # fonts, embedding, subsetting
 doc.validate_pdfa(); doc.validate_pdfua(); doc.validate(profile="all")
 doc.text_semantic(); doc.chunks(); doc.semantic_document()
+doc.semantic_bundle()          # full Prompt 15 semantic report
+doc.advanced_chunks()          # provenance/table/CJK/security-aware chunks
+doc.semantic_search("invoice") # semantic + dictionary-token provenance
+doc.table_proposal_status()    # hook/runtime/privacy status, no model load
 
 # Output-producing (return (bytes, report)):
 data, rep = doc.sanitize(policy="balanced", output="clean.pdf")

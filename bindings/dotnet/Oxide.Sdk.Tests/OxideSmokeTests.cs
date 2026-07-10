@@ -27,6 +27,9 @@ public sealed class OxideSmokeTests
             ["pages"] = doc.PagesReportJson(),
             ["interactive"] = doc.InteractiveReportJson(),
             ["chunks"] = doc.ChunksJson(),
+            ["advanced_chunks"] = doc.AdvancedChunksJson(),
+            ["semantic_bundle"] = doc.SemanticBundleJson(),
+            ["semantic_search"] = doc.SemanticSearchJson("the"),
         };
         Assert.Contains("feature_report", reports["feature"]);
         Assert.False(string.IsNullOrWhiteSpace(OxideDocument.EngineVersion()));
@@ -150,6 +153,10 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"additive_feature_report_prompt14b\"", feature);
         Assert.Contains("\"external_pack_support\":\"implemented\"", feature);
         Assert.Contains("\"local_backend_status\":\"unsupported_reported_no_runtime\"", feature);
+        Assert.Contains("\"prompt15_semantic_binding_rag_benchmark_closeout\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt15\"", feature);
+        Assert.Contains("\"model_can_rewrite_deterministic_text\":false", feature);
+        Assert.Contains("\"blocked\":0", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

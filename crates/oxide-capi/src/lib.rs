@@ -1413,6 +1413,61 @@ pub unsafe extern "C" fn oxide_document_chunks_json(
     }
 }
 
+/// Prompt 15 provenance-aware RAG chunk-set JSON.
+///
+/// # Safety
+/// See `oxide_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_advanced_chunks_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::advanced_chunk_report_json(b, &[], None)
+        })
+    }
+}
+
+/// Full Prompt 15 semantic binding bundle as versioned owned JSON.
+///
+/// # Safety
+/// See `oxide_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_semantic_bundle_json(
+    document: *const OxideDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            sdk::semantic_binding_report_json(b, &[], None)
+        })
+    }
+}
+
+/// Prompt 15 semantic and dictionary-token search as versioned owned JSON.
+///
+/// # Safety
+/// `query` must be a non-null NUL-terminated UTF-8 string. See
+/// `oxide_document_security_report_json` for output ownership.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_semantic_search_json(
+    document: *const OxideDocument,
+    query: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let query = unsafe { required_c_string(query, "query") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            let query = query.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::semantic_search_report_json(b, &[], &query, None)
+        })
+    }
+}
+
 /// Sanitize the document. `policy` is `strict`|`balanced`|`preserve-visual`
 /// (NULL → `balanced`). Writes the sanitized PDF to `out_buffer` and the JSON
 /// report to `out_json`.
@@ -2256,6 +2311,65 @@ mod tests {
         report_envelope(oxide_document_pages_report_json, "page_operations_report");
         report_envelope(oxide_document_interactive_report_json, "interactive_report");
         report_envelope(oxide_document_chunks_json, "chunk_set");
+        let advanced = report_envelope(
+            oxide_document_advanced_chunks_json,
+            "advanced_rag_chunk_set",
+        );
+        assert_eq!(
+            advanced["report"]["schema_version"],
+            "prompt15.rag_chunk.v1"
+        );
+        let semantic = report_envelope(
+            oxide_document_semantic_bundle_json,
+            "semantic_binding_report",
+        );
+        assert_eq!(
+            semantic["report"]["schema_version"],
+            "prompt15.semantic_binding.v1"
+        );
+        assert_eq!(semantic["report"]["privacy"]["cloud_upload_default"], false);
+    }
+
+    #[test]
+    fn capi_prompt15_semantic_search_and_null_handling() {
+        let (doc, _pdf) = open_sample();
+        let query = CString::new("Hello").unwrap();
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_semantic_search_json(doc, query.as_ptr(), &mut json, &mut error)
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "semantic_search_report");
+        assert_eq!(value["report"]["query"], "Hello");
+        assert_eq!(value["report"]["provenance_preserved"], true);
+        assert!(!value["report"]["semantic_matches"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        unsafe { oxide_string_free(json) };
+
+        let mut null_json = std::ptr::null_mut();
+        let mut null_error = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_semantic_search_json(
+                doc,
+                std::ptr::null(),
+                &mut null_json,
+                &mut null_error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_ERROR);
+        assert!(null_json.is_null());
+        assert!(!null_error.is_null());
+        unsafe {
+            oxide_error_free(null_error);
+            oxide_document_free(doc);
+        }
     }
 
     #[test]
@@ -2648,6 +2762,18 @@ mod tests {
         assert_eq!(
             prompt14b["layout_backend"]["local_backend_status"],
             "unsupported_reported_no_runtime"
+        );
+        let prompt15 = &value["report"]["prompt15_semantic_binding_rag_benchmark_closeout"];
+        assert_eq!(prompt15["status"], "complete");
+        assert_eq!(
+            prompt15["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt15"
+        );
+        assert_eq!(prompt15["closure_counts"]["blocked"], 0);
+        assert_eq!(prompt15["privacy"]["cloud_upload_default"], false);
+        assert_eq!(
+            prompt15["tableformer_table_transformer_hook"]["model_can_rewrite_deterministic_text"],
+            false
         );
         unsafe { oxide_string_free(json) };
 

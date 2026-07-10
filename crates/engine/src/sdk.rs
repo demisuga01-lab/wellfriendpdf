@@ -266,6 +266,59 @@ pub fn chunk_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String
     envelope("chunk_set", &set)
 }
 
+/// Prompt 15 provenance-aware RAG chunks. This is additive to `chunk_set` and
+/// includes stable hashes, source spans, table/cell ids, CJK token metadata,
+/// ParentTree status, and security posture.
+pub fn advanced_chunk_report_json(
+    bytes: &[u8],
+    pages: &[usize],
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let report = engine.semantic_binding_report(&crate::SemanticBindingOptions {
+        pages: pages.to_vec(),
+        ..crate::SemanticBindingOptions::default()
+    })?;
+    envelope("advanced_rag_chunk_set", &report.rag_chunks)
+}
+
+/// Prompt 15 full semantic binding bundle. All bindings consume this same
+/// versioned JSON shape instead of duplicating deep object ownership graphs.
+pub fn semantic_binding_report_json(
+    bytes: &[u8],
+    pages: &[usize],
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let report = engine.semantic_binding_report(&crate::SemanticBindingOptions {
+        pages: pages.to_vec(),
+        ..crate::SemanticBindingOptions::default()
+    })?;
+    envelope("semantic_binding_report", &report)
+}
+
+/// Provenance-aware semantic + dictionary-token search. Raw semantic text
+/// search remains the fallback when a dictionary has no matching token.
+pub fn semantic_search_report_json(
+    bytes: &[u8],
+    pages: &[usize],
+    query: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let report = engine.semantic_search_report(pages, query, None)?;
+    envelope("semantic_search_report", &report)
+}
+
+/// TableFormer/Table Transformer hook and backend availability status. This
+/// call loads no model and performs no network request.
+pub fn table_proposal_status_json() -> Result<String> {
+    envelope(
+        "table_proposal_status",
+        &crate::table_model_backend_status_report(),
+    )
+}
+
 /// Tagged-structure semantic document (structure tree / MCID model, if present).
 pub fn semantic_document_json(
     bytes: &[u8],
@@ -2339,6 +2392,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt13_full_overprint_prepress_closeout": prompt13_full_overprint_prepress_closeout_report_value(),
         "prompt14_semantic_intelligence_parenttree_cjk_ml_layout": crate::semantic_intelligence::prompt14_semantic_intelligence_report_value(),
         "prompt14b_cjk_dictionary_layout_backend_closure": crate::semantic_intelligence::prompt14b_cjk_dictionary_layout_backend_closure_report_value(),
+        "prompt15_semantic_binding_rag_benchmark_closeout": crate::semantic_intelligence::prompt15_semantic_binding_rag_benchmark_closeout_report_value(),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2346,7 +2400,8 @@ pub fn feature_report_json() -> Result<String> {
             "color_report", "standards_profile", "interactive_report",
             "forms_report", "annotation_report", "page_operations_report",
             "signature_report", "font_report", "decode_budget_report",
-            "resource_dedup_report", "redaction",
+            "resource_dedup_report", "redaction", "semantic_binding_report",
+            "advanced_rag_chunk_set", "semantic_search_report", "table_proposal_status",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
@@ -2989,6 +3044,18 @@ mod tests {
         );
         assert_eq!(
             prompt14b["layout_backend"]["privacy_posture"]["cloud_upload_default"],
+            false
+        );
+        let prompt15 = &v["report"]["prompt15_semantic_binding_rag_benchmark_closeout"];
+        assert_eq!(prompt15["status"], "complete");
+        assert_eq!(
+            prompt15["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prompt15"
+        );
+        assert_eq!(prompt15["closure_gates"]["blocked_count"], 0);
+        assert_eq!(prompt15["privacy"]["cloud_upload_default"], false);
+        assert_eq!(
+            prompt15["tableformer_table_transformer_hook"]["model_can_rewrite_deterministic_text"],
             false
         );
         assert_envelope(

@@ -388,6 +388,25 @@ OXIDE_API int oxide_document_chunks_json(
     char **out_json,
     char **error_out);
 
+/* Prompt 15 provenance-aware RAG chunks. */
+OXIDE_API int oxide_document_advanced_chunks_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* Prompt 15 semantic model, tables, tokens, search metadata, and RAG chunks. */
+OXIDE_API int oxide_document_semantic_bundle_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* Prompt 15 provenance-aware semantic and dictionary-token search. */
+OXIDE_API int oxide_document_semantic_search_json(
+    const OxideDocument *document,
+    const char *query,
+    char **out_json,
+    char **error_out);
+
 /* Sanitize. `policy` is "strict"|"balanced"|"preserve-visual" (NULL =>
  * "balanced"). Writes the sanitized PDF to `out_buffer` and a JSON report to
  * `out_json`. Free both. */

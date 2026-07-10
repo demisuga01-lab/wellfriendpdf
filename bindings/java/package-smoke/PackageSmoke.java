@@ -38,6 +38,11 @@ public final class PackageSmoke {
             if (!parser.contains("\"schema_version\"")) {
                 throw new AssertionError("parser report missing schema_version");
             }
+            if (!doc.advancedChunksJson().contains("advanced_rag_chunk_set")
+                    || !doc.semanticBundleJson().contains("semantic_binding_report")
+                    || !doc.semanticSearchJson("the").contains("semantic_search_report")) {
+                throw new AssertionError("Prompt 15 semantic report surface missing");
+            }
             Oxide.BinaryResult sanitized = doc.sanitize("balanced");
             if (sanitized.bytes().length == 0 || !sanitized.reportJson().contains("sanitize_report")) {
                 throw new AssertionError("sanitize output/report missing");
@@ -136,6 +141,12 @@ public final class PackageSmoke {
                 || !feature.contains("\"external_pack_support\":\"implemented\"")
                 || !feature.contains("\"local_backend_status\":\"unsupported_reported_no_runtime\"")) {
             throw new AssertionError("feature report missing Prompt 14B dictionary provider closure posture");
+        }
+        if (!feature.contains("\"prompt15_semantic_binding_rag_benchmark_closeout\"")
+                || !feature.contains("\"additive_feature_report_prompt15\"")
+                || !feature.contains("\"model_can_rewrite_deterministic_text\":false")
+                || !feature.contains("\"blocked\":0")) {
+            throw new AssertionError("feature report missing Prompt 15 semantic closeout posture");
         }
     }
 }

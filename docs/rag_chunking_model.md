@@ -44,3 +44,11 @@ low-confidence, hidden/OCR, or unknown provenance to callers.
 - The chunker is not switched to the Prompt 06 text model by default.
 - Table chunking remains tied to the existing table/document model.
 - OCR chunking still depends on the existing OCR seam and policy.
+
+## Prompt 15 Advanced Path
+
+`crate::advanced_rag` is now the additive provenance-aware path. Use
+`oxide chunk --advanced` or `oxide semantic-export --view chunks` when chunks
+need source spans, bboxes/quads, MCIDs, ParentTree status, CJK dictionary
+metadata, stable hashes, table/cell IDs, and explicit security posture. The
+legacy chunk schema remains available and unchanged.

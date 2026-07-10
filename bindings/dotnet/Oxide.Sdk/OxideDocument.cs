@@ -212,6 +212,27 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string AdvancedChunksJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_advanced_chunks_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string SemanticBundleJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_semantic_bundle_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string SemanticSearchJson(string query)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(query);
+        return ReportWithString(query, NativeMethods.oxide_document_semantic_search_json);
+    }
+
     public OxideBinaryResult Sanitize(string policy = "balanced")
     {
         ThrowIfDisposed();

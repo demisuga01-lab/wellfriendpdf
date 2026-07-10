@@ -11,6 +11,7 @@ import java.util.Map;
 public final class OxideSmokeTest {
     public static void main(String[] args) throws Exception {
         Path fixture = fixturePath();
+        Path prompt15Fixture = locateFixture("multi_stream.pdf");
         try (Oxide.Document doc = Oxide.Document.open(fixture)) {
             assertTrue(doc.pageCount() >= 1, "page count");
             assertTrue(!doc.page(1).text().isBlank(), "text extraction");
@@ -26,6 +27,11 @@ public final class OxideSmokeTest {
             reports.put("pages", doc.pagesReportJson());
             reports.put("interactive", doc.interactiveReportJson());
             reports.put("chunks", doc.chunksJson());
+            try (Oxide.Document prompt15 = Oxide.Document.open(prompt15Fixture)) {
+                reports.put("advanced_chunks", prompt15.advancedChunksJson());
+                reports.put("semantic_bundle", prompt15.semanticBundleJson());
+                reports.put("semantic_search", prompt15.semanticSearchJson("Hello"));
+            }
             assertTrue(reports.get("feature").contains("feature_report"), "feature report");
             assertTrue(!Oxide.engineVersion().isBlank(), "engine version");
             assertTrue(Oxide.abiVersion() >= 1, "abi version");
@@ -50,7 +56,7 @@ public final class OxideSmokeTest {
             assertPrefix(Oxide.Office.docxToPdf(docx), "%PDF-", "docx pdf");
             assertPrefix(Oxide.Office.xlsxToPdf(xlsx), "%PDF-", "xlsx pdf");
             assertPrefix(Oxide.Office.pptxToPdf(pptx), "%PDF-", "pptx pdf");
-            writePrompt02Artifact(fixture, reports, sanitized, canonicalized);
+            writePrompt02Artifact(fixture, prompt15Fixture, reports, sanitized, canonicalized);
         }
 
         try (Oxide.Document emptyPassword = Oxide.Document.open(fixture, "")) {
@@ -219,6 +225,16 @@ public final class OxideSmokeTest {
         assertTrue(
             feature.contains("\"local_backend_status\":\"unsupported_reported_no_runtime\""),
             "prompt14B local runtime policy");
+        assertTrue(
+            feature.contains("\"prompt15_semantic_binding_rag_benchmark_closeout\""),
+            "prompt15 semantic binding and RAG closeout");
+        assertTrue(
+            feature.contains("\"additive_feature_report_prompt15\""),
+            "prompt15 additive schema status");
+        assertTrue(
+            feature.contains("\"model_can_rewrite_deterministic_text\":false"),
+            "prompt15 deterministic text preservation");
+        assertTrue(feature.contains("\"blocked\":0"), "prompt15 blocked count");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),
@@ -261,6 +277,7 @@ public final class OxideSmokeTest {
 
     private static void writePrompt02Artifact(
             Path fixture,
+            Path prompt15Fixture,
             Map<String, String> reports,
             Oxide.BinaryResult sanitized,
             Oxide.BinaryResult canonicalized) throws Exception {
@@ -275,6 +292,7 @@ public final class OxideSmokeTest {
         json.append("{\n");
         json.append("  \"surface\": \"java\",\n");
         json.append("  \"fixture\": \"").append(escape(fixture.toString())).append("\",\n");
+        json.append("  \"prompt15_fixture\": \"").append(escape(prompt15Fixture.toString())).append("\",\n");
         json.append("  \"engine_version\": \"").append(escape(Oxide.engineVersion())).append("\",\n");
         json.append("  \"abi_version\": ").append(Oxide.abiVersion()).append(",\n");
         json.append("  \"reports\": {\n");
@@ -318,14 +336,18 @@ public final class OxideSmokeTest {
         if (env != null && !env.isBlank() && Files.exists(Path.of(env))) {
             return Path.of(env);
         }
+        return locateFixture("tracemonkey.pdf");
+    }
+
+    private static Path locateFixture(String name) {
         Path dir = Path.of("").toAbsolutePath();
         while (dir != null) {
-            Path candidate = dir.resolve("crates/engine/tests/fixtures/tracemonkey.pdf");
+            Path candidate = dir.resolve("crates/engine/tests/fixtures").resolve(name);
             if (Files.exists(candidate)) {
                 return candidate;
             }
             dir = dir.getParent();
         }
-        throw new IllegalStateException("Could not locate tracemonkey.pdf fixture");
+        throw new IllegalStateException("Could not locate fixture " + name);
     }
 }

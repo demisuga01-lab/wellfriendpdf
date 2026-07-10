@@ -69,6 +69,7 @@
 //! but less stable while the crate remains pre-1.0. See `docs/api_overview.md`
 //! and `docs/stability.md` in the repository for the full policy.
 
+pub mod advanced_rag;
 pub mod analysis;
 pub mod analyzer;
 pub mod arlington;
@@ -116,10 +117,12 @@ pub mod render;
 pub mod sdk;
 pub mod security;
 pub mod semantic;
+pub mod semantic_binding;
 pub mod semantic_intelligence;
 pub mod signature;
 pub mod standards;
 pub mod structural;
+pub mod table_intelligence;
 pub mod text;
 pub mod utilities;
 pub mod versioning;
@@ -128,6 +131,11 @@ pub mod writer;
 /// Semantic version of the oxide-engine crate.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub use advanced_rag::{
+    advanced_chunk_document, AdvancedChunkContext, AdvancedChunkMode, AdvancedChunkOptions,
+    AdvancedRagChunk, AdvancedRagChunkSet, ChunkSecurityPosture, RagCitation, RagCjkToken,
+    RagSourceSpan, RagTableFragment, TableChunkSerialization, ADVANCED_RAG_CHUNK_SCHEMA_VERSION,
+};
 pub use analysis::graphics::{
     collect_graphics, collect_graphics_with_images, DrawnGraphics, ImagePlacement, Rect, Segment,
 };
@@ -310,6 +318,11 @@ pub use security::{
     SecurityFinding, SecurityReport, SecuritySeverity,
 };
 pub use semantic::{SemanticDocument, SemanticElement, SemanticMcid, SemanticSource};
+pub use semantic_binding::{
+    build_semantic_binding_report, semantic_search_report, SemanticBindingOptions,
+    SemanticBindingReport, SemanticBindingSummary, SemanticCjkTokenPage, SemanticPageTables,
+    SemanticPrivacyStatus, SemanticSearchReport, SEMANTIC_BINDING_SCHEMA_VERSION,
+};
 pub use semantic_intelligence::{
     merge_layout_proposals_deterministic, recover_parenttree_semantics,
     semantic_elements_from_parenttree_recovery, validate_layout_proposal_set,
@@ -335,6 +348,16 @@ pub use standards::{
 pub use structural::{
     crop_pages, encrypt, linearize::linearize, optimize, repair, rotate_pages, OptimizeReport,
     Rotation,
+};
+pub use table_intelligence::{
+    merge_table_proposals_deterministic, mock_tableformer_proposal_set,
+    table_model_backend_status_report, validate_table_proposal_set, DeterministicTableEvidence,
+    MergedTableOverlay, TableBoundaryKind, TableBoundaryProposal, TableCellProposal,
+    TableCoordinateTransform, TableModelBackendStatusReport, TableModelMetadata,
+    TablePreprocessingMetadata, TableProposalMergeOutcome, TableProposalMergeOutcomeKind,
+    TableProposalMergePolicy, TableProposalMergeReport, TableProposalProvenance, TableProposalSet,
+    TableProposalValidationReport, TableSectionRole, TableStructureProposal,
+    TABLE_PROPOSAL_MERGE_SCHEMA_VERSION, TABLE_PROPOSAL_SCHEMA_VERSION,
 };
 pub use text::{
     bounded_text_parallel_window, builtin_cjk_dictionary_metadata, cjk_dictionary_entries_sha256,

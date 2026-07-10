@@ -1,5 +1,10 @@
 # Prompt 14 Semantic Intelligence Known Limits
 
+Prompt 15 adds the table-specialized proposal schema, full binding-neutral
+semantic bundle, advanced RAG chunks, and availability-aware benchmark. The
+limits below remain the boundary of the underlying Prompt 14/14B extraction and
+optional-model foundation.
+
 Prompt 14 completes the semantic-intelligence foundation with bounded limits.
 
 Remaining exact limits:

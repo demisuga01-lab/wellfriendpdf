@@ -1,10 +1,11 @@
 {
   "surface": "java",
   "fixture": "E:\\wellpdfsdk\\crates\\engine\\tests\\fixtures\\tracemonkey.pdf",
+  "prompt15_fixture": "E:\\wellpdfsdk\\crates\\engine\\tests\\fixtures\\multi_stream.pdf",
   "engine_version": "0.1.0",
   "abi_version": 1,
   "reports": {
-    "feature": {"sha256": "c2ae650aff1431bd927034361d4ca2a3a82f51c88b671cbd9262065a0efe2c10", "bytes": 101988},
+    "feature": {"sha256": "2e0bca58009dce1599659c6113d71193fe07ba3147c8ae3dbd0369f6361db7f5", "bytes": 105790},
     "security": {"sha256": "a9a1e700acc839a2b224c48cc9edc2ea1e7a7ea2faa8ccbf5d1e9eb6b90ae899", "bytes": 714},
     "parser": {"sha256": "0ceed52840510991c9c57f90088d1f4d83ef71c7b6045c9b0d3a494b6d304934", "bytes": 19172},
     "color": {"sha256": "981b412a269c5a44a8389bc92ee8c93bec6711bdf5fcc2ea2175afd911d2fce1", "bytes": 131528},
@@ -14,6 +15,9 @@
     "pages": {"sha256": "ca83702e8ca26a0226b8dce870141e74b5a4a32be88a2139f803c2f0f0c2350a", "bytes": 2055},
     "interactive": {"sha256": "cc1e1a61e1497b0c518b279a3a7f0b61446abcc1a06ec7e9ea1a0bbea92288a8", "bytes": 2394},
     "chunks": {"sha256": "41bd83b50dfec1dee8eaacaf729d15862415e631fd59062611fb8b02c67e083f", "bytes": 115283},
+    "advanced_chunks": {"sha256": "4da4710951f34723f44d5349f2434d02673082b74aba73d66be2f456ddbc58c2", "bytes": 3573},
+    "semantic_bundle": {"sha256": "ed4563652b60db1f1e40a51f8689c7234fd0b83b1d93c6b9f15873008457e15c", "bytes": 17937},
+    "semantic_search": {"sha256": "dfd0c321a3d06e21866cb8ebeb7ca2689ebff8680badcd5871fdda899d2bbca6", "bytes": 2561},
     "sanitize": {"sha256": "3354f9c8a9bd9936f8304643a6d81923d6363e94974fb2581be1858329ec934d", "bytes": 199},
     "canonicalize": {"sha256": "0f4ccfa362091ce2e59939d5da38277faa0f903a98afed9f910ac2d113dfc741", "bytes": 413}
   },

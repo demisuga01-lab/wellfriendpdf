@@ -30,6 +30,13 @@ try {
   const feature = JSON.parse(oxide.OxidePdf.featureReportJson());
   result.apis_tested.push("OxidePdf.featureReportJson");
   result.feature_has_codec_isolation = JSON.stringify(feature).includes("codec_isolation");
+  result.feature_has_prompt15 = JSON.stringify(feature).includes(
+    "prompt15_semantic_binding_rag_benchmark_closeout",
+  );
+
+  const tableStatus = JSON.parse(oxide.OxidePdf.tableProposalStatusJson());
+  result.table_status_kind = tableStatus.kind;
+  result.apis_tested.push("OxidePdf.tableProposalStatusJson");
 
   const bytes = new Uint8Array(readFileSync(fixture));
   const pdf = new oxide.OxidePdf(bytes);
@@ -40,6 +47,18 @@ try {
   const security = JSON.parse(pdf.securityReportJson());
   result.security_kind = security.kind;
   result.apis_tested.push("securityReportJson");
+
+  const advancedChunks = JSON.parse(pdf.advancedChunksJson());
+  result.advanced_chunks_kind = advancedChunks.kind;
+  result.apis_tested.push("advancedChunksJson");
+
+  const semanticBundle = JSON.parse(pdf.semanticBundleJson());
+  result.semantic_bundle_kind = semanticBundle.kind;
+  result.apis_tested.push("semanticBundleJson");
+
+  const semanticSearch = JSON.parse(pdf.semanticSearchJson("the"));
+  result.semantic_search_kind = semanticSearch.kind;
+  result.apis_tested.push("semanticSearchJson");
 
   const codec = JSON.parse(
     oxide.OxidePdf.codecIsolationReportJson(
@@ -66,8 +85,13 @@ try {
 
   const checks = [
     result.feature_has_codec_isolation === true,
+    result.feature_has_prompt15 === true,
+    result.table_status_kind === "table_proposal_status",
     result.page_count >= 1,
     result.security_kind === "security_report",
+    result.advanced_chunks_kind === "advanced_rag_chunk_set",
+    result.semantic_bundle_kind === "semantic_binding_report",
+    result.semantic_search_kind === "semantic_search_report",
     result.codec_isolation_status === "success",
     typeof result.invalid_input_error === "string" && result.invalid_input_error.length > 0,
   ];

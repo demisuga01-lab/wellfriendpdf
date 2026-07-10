@@ -219,6 +219,25 @@ public final class Oxide {
             return Native.documentReport(handle, Native.CHUNKS, "chunks");
         }
 
+        public String advancedChunksJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.ADVANCED_CHUNKS, "advanced_chunks");
+        }
+
+        public String semanticBundleJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.SEMANTIC_BUNDLE, "semantic_bundle");
+        }
+
+        public String semanticSearchJson(String query) {
+            ensureOpen();
+            Objects.requireNonNull(query, "query");
+            if (query.isBlank()) {
+                throw new IllegalArgumentException("query must not be blank");
+            }
+            return Native.documentStringReport(handle, Native.SEMANTIC_SEARCH, query, "semantic_search");
+        }
+
         public BinaryResult sanitize(String policy) {
             ensureOpen();
             return Native.documentStringOutput(handle, Native.SANITIZE, policy, "sanitize");
@@ -385,6 +404,9 @@ public final class Oxide {
         private static final MethodHandle PAGES_REPORT = documentReport("oxide_document_pages_report_json");
         private static final MethodHandle INTERACTIVE_REPORT = documentReport("oxide_document_interactive_report_json");
         private static final MethodHandle CHUNKS = documentReport("oxide_document_chunks_json");
+        private static final MethodHandle ADVANCED_CHUNKS = documentReport("oxide_document_advanced_chunks_json");
+        private static final MethodHandle SEMANTIC_BUNDLE = documentReport("oxide_document_semantic_bundle_json");
+        private static final MethodHandle SEMANTIC_SEARCH = documentStringReport("oxide_document_semantic_search_json");
         private static final MethodHandle SANITIZE = downcall(
             "oxide_document_sanitize_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)

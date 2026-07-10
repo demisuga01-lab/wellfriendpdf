@@ -14,6 +14,7 @@ export class OxidePdf {
   static sdkVersion(): string;
   static abiVersion(): number;
   static featureReportJson(): ReportJson;
+  static tableProposalStatusJson(): ReportJson;
   static decodeBudgetReportJson(filter: string, width: number, height: number, components: number): ReportJson;
   static codecIsolationReportJson(filter: string, data: Uint8Array | ArrayBuffer | ArrayLike<number>, policy?: string): ReportJson;
 
@@ -47,6 +48,9 @@ export class OxidePdf {
   textSemanticJson(): ReportJson;
   semanticDocumentReportJson(): ReportJson;
   chunksJson(): ReportJson;
+  advancedChunksJson(): ReportJson;
+  semanticBundleJson(): ReportJson;
+  semanticSearchJson(query: string): ReportJson;
 
   sanitize(policy?: string): OxideOutput;
   canonicalize(dateEpoch?: bigint | number): OxideOutput;

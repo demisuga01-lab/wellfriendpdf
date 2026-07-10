@@ -10,6 +10,9 @@ import init, { OxidePdf } from "@oxidepdf/oxide-wasm";
 await init();
 const pdf = new OxidePdf(await file.arrayBuffer());
 const security = JSON.parse(pdf.securityReportJson());
+const semantic = JSON.parse(pdf.semanticBundleJson());
+const chunks = JSON.parse(pdf.advancedChunksJson());
+const search = JSON.parse(pdf.semanticSearchJson("invoice"));
 const sanitized = pdf.sanitize("balanced");
 
 console.log(pdf.pageCount(), security.status);
@@ -43,6 +46,11 @@ signature, font, semantic text, semantic document, chunks, and decode-budget
 reports, plus `OxidePdf.codecIsolationReportJson(filter, bytes, policy)` for
 Prompt 03 codec policy diagnostics. Output-producing methods include
 `sanitize`, `canonicalize`, and `redactTermsJson`.
+
+Prompt 15 adds `semanticBundleJson`, `advancedChunksJson`,
+`semanticSearchJson`, and static `tableProposalStatusJson`. These are local,
+byte-only browser surfaces. They do not assume a filesystem or native ML
+runtime and do not upload input.
 
 Legacy parser and extraction methods remain available: `parseJson`,
 `parseMarkdown`, `chunk`, `extractText`, `extractStructuredText`,

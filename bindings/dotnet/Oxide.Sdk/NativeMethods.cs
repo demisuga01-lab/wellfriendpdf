@@ -261,6 +261,25 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_advanced_chunks_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_semantic_bundle_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_semantic_search_json(
+        DocumentHandle document,
+        IntPtr query,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_sanitize_json(
         DocumentHandle document,
         IntPtr policy,

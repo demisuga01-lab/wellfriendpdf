@@ -19,3 +19,7 @@ Implemented:
 No large third-party dictionary is bundled. Applications provide production
 dictionary packs, or a future feature-gated asset can be added only after
 redistribution and license evidence is explicit.
+
+Prompt 15 consumes this provider directly for semantic binding token pages,
+semantic search, and CJK-aware RAG boundaries. It does not change the Prompt
+14B raw-text, hash, license, entry-count, or memory-cap guarantees.

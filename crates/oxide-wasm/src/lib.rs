@@ -285,6 +285,27 @@ mod wasm_api {
             self.report(|b| sdk::chunk_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = advancedChunksJson)]
+        pub fn advanced_chunks_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::advanced_chunk_report_json(b, &[], None))
+        }
+
+        #[wasm_bindgen(js_name = semanticBundleJson)]
+        pub fn semantic_bundle_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::semantic_binding_report_json(b, &[], None))
+        }
+
+        #[wasm_bindgen(js_name = semanticSearchJson)]
+        pub fn semantic_search_json(&self, query: &str) -> Result<String, JsValue> {
+            self.report(|b| sdk::semantic_search_report_json(b, &[], query, None))
+        }
+
+        #[wasm_bindgen(js_name = tableProposalStatusJson)]
+        pub fn table_proposal_status_json() -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::table_proposal_status_json().map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = sanitize)]
         pub fn sanitize(&self, policy: Option<String>) -> Result<OxideOutput, JsValue> {
             self.output(|b| sdk::sanitize_json(b, policy.as_deref(), None))

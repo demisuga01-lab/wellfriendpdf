@@ -196,6 +196,9 @@ enum Commands {
     /// with overlap + heading context) as a JSON chunks array for embedding
     /// pipelines. Tables/figures stay intact; headings drive boundaries.
     Chunk(ChunkArgs),
+    /// Export the Prompt 15 semantic binding bundle, advanced RAG chunks,
+    /// dictionary tokens, tables, search results, or ML proposal status as JSON.
+    SemanticExport(SemanticExportArgs),
     /// Score an extraction result against ground truth using standard metrics
     /// (CER/WER/reading-order/table cell-F1/TEDS/field-F1/block-type accuracy).
     /// Reads a ScoreInput JSON (file or stdin), writes a ScoreOutput JSON. The
@@ -1018,6 +1021,16 @@ struct ChunkArgs {
     /// Keep page furniture (headers/footers/page numbers) in chunk text.
     #[arg(long)]
     keep_furniture: bool,
+    /// Emit the Prompt 15 provenance-aware chunk schema.
+    #[arg(long)]
+    advanced: bool,
+    /// Advanced chunk mode: hybrid, page, section, paragraph, table,
+    /// table-row, table-cell, figure-caption, cjk, or search-index.
+    #[arg(long, default_value = "hybrid")]
+    mode: String,
+    /// User-supplied CJK dictionary pack manifest(s). Requires --advanced.
+    #[arg(long = "dictionary-pack")]
+    dictionary_packs: Vec<PathBuf>,
     /// Output format (currently json only).
     #[arg(short, long, default_value = "json")]
     format: String,
@@ -1033,6 +1046,42 @@ struct ChunkArgs {
     #[arg(long, default_value = "300")]
     ocr_dpi: u32,
     /// Password for encrypted PDFs (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct SemanticExportArgs {
+    /// Path to the PDF file.
+    pdf: PathBuf,
+    /// Output file, defaults to stdout.
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Page range: all, 1, 2-5, or 1,3,7.
+    #[arg(short, long, default_value = "all")]
+    pages: String,
+    /// View: bundle, summary, semantic, tables, tokens, chunks, search, or status.
+    #[arg(long, default_value = "bundle")]
+    view: String,
+    /// Advanced chunk mode used by bundle/chunks views.
+    #[arg(long, default_value = "hybrid")]
+    chunk_mode: String,
+    /// Target advanced chunk size in estimated tokens.
+    #[arg(long, default_value = "512")]
+    target_tokens: usize,
+    /// Advanced chunk overlap in estimated tokens.
+    #[arg(long, default_value = "64")]
+    overlap: usize,
+    /// User-supplied CJK dictionary pack manifest(s).
+    #[arg(long = "dictionary-pack")]
+    dictionary_packs: Vec<PathBuf>,
+    /// Optional TableFormer/Table Transformer proposal-set JSON to validate and merge.
+    #[arg(long)]
+    table_proposals: Option<PathBuf>,
+    /// Query used by the search view.
+    #[arg(long)]
+    query: Option<String>,
+    /// Password for encrypted PDFs.
     #[arg(long)]
     password: Option<String>,
 }
@@ -1766,6 +1815,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::InteractiveReport(args) => run_interactive_report(args),
         Commands::Redact(args) => run_redact(args),
         Commands::Chunk(args) => run_chunk(args),
+        Commands::SemanticExport(args) => run_semantic_export(args),
         Commands::EvalScore(args) => run_eval_score(args),
         Commands::ExtractImages(args) => run_extract_images(args),
         Commands::Render(args) => run_render(args),
@@ -2670,6 +2720,43 @@ fn run_chunk(args: ChunkArgs) -> Result<(), Box<dyn Error>> {
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
 
+    if !args.dictionary_packs.is_empty() && !args.advanced {
+        return Err("--dictionary-pack requires --advanced".into());
+    }
+    if args.advanced {
+        let mode = oxide_engine::AdvancedChunkMode::parse(&args.mode).ok_or_else(|| {
+            format!(
+                "unknown advanced chunk mode '{}'; use hybrid, page, section, paragraph, table, table-row, table-cell, figure-caption, cjk, or search-index",
+                args.mode
+            )
+        })?;
+        let report = engine.semantic_binding_report(&oxide_engine::SemanticBindingOptions {
+            pages: page_nums,
+            dictionary_manifest_paths: args.dictionary_packs,
+            chunk_options: oxide_engine::AdvancedChunkOptions {
+                mode,
+                target_tokens: args.target_tokens.max(1),
+                overlap_tokens: args.overlap,
+                include_heading_context: !args.no_heading_context,
+                include_furniture: args.keep_furniture,
+                cjk_token_aware: mode == oxide_engine::AdvancedChunkMode::CjkTokenAware,
+                ..oxide_engine::AdvancedChunkOptions::default()
+            },
+            ..oxide_engine::SemanticBindingOptions::default()
+        })?;
+        let output_text = serde_json::to_string_pretty(&report.rag_chunks)?;
+        match &args.output {
+            Some(path) => std::fs::write(path, &output_text)?,
+            None => println!("{output_text}"),
+        }
+        eprintln!(
+            "Advanced semantic chunking produced {} chunk(s) in {:?} mode.",
+            report.rag_chunks.chunks.len(),
+            mode
+        );
+        return Ok(());
+    }
+
     // Parse once into the canonical model (OCR scanned pages when requested);
     // keep furniture in the model so chunking can decide per its own option.
     let mut parse_opts = ParseOptions {
@@ -2723,6 +2810,125 @@ fn run_chunk(args: ChunkArgs) -> Result<(), Box<dyn Error>> {
             String::new()
         },
     );
+    Ok(())
+}
+
+fn run_semantic_export(args: SemanticExportArgs) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let total = engine.page_count()?;
+    let pages = parse_page_range_cli(&args.pages, total)?;
+    let mode = oxide_engine::AdvancedChunkMode::parse(&args.chunk_mode).ok_or_else(|| {
+        format!(
+            "unknown advanced chunk mode '{}'; use hybrid, page, section, paragraph, table, table-row, table-cell, figure-caption, cjk, or search-index",
+            args.chunk_mode
+        )
+    })?;
+    let table_proposals = match args.table_proposals {
+        Some(path) => Some(serde_json::from_slice::<oxide_engine::TableProposalSet>(
+            &std::fs::read(path)?,
+        )?),
+        None => None,
+    };
+    let options = oxide_engine::SemanticBindingOptions {
+        pages,
+        dictionary_manifest_paths: args.dictionary_packs,
+        chunk_options: oxide_engine::AdvancedChunkOptions {
+            mode,
+            target_tokens: args.target_tokens.max(1),
+            overlap_tokens: args.overlap,
+            cjk_token_aware: mode == oxide_engine::AdvancedChunkMode::CjkTokenAware,
+            ..oxide_engine::AdvancedChunkOptions::default()
+        },
+        search_query: args.query.clone(),
+        table_proposals,
+        ..oxide_engine::SemanticBindingOptions::default()
+    };
+    let report = engine.semantic_binding_report(&options)?;
+    let value = match args.view.trim().to_ascii_lowercase().as_str() {
+        "bundle" => serde_json::to_value(&report)?,
+        "summary" => serde_json::json!({
+            "schema_version": report.schema_version,
+            "summary": report.summary,
+            "privacy": report.privacy,
+            "diagnostics": report.diagnostics,
+        }),
+        "semantic" | "semantic-json" => serde_json::json!({
+            "schema_version": report.schema_version,
+            "document": report.document,
+            "text_semantic": report.text_semantic,
+            "semantic_document": report.semantic_document,
+            "parenttree_recovery": report.parenttree_recovery,
+        }),
+        "tables" | "table-json" => serde_json::json!({
+            "schema_version": report.schema_version,
+            "tables": report.tables,
+            "table_model_backend_status": report.table_model_backend_status,
+            "table_proposal_merge": report.table_proposal_merge,
+        }),
+        "tokens" | "cjk" => serde_json::json!({
+            "schema_version": report.schema_version,
+            "dictionary_report": report.dictionary_report,
+            "pages": report.cjk_token_pages,
+        }),
+        "chunks" | "rag" => serde_json::to_value(&report.rag_chunks)?,
+        "search" => {
+            let query = args
+                .query
+                .as_deref()
+                .map(str::trim)
+                .filter(|query| !query.is_empty())
+                .ok_or("--view search requires a non-empty --query")?;
+            let query_folded = query.to_lowercase();
+            let cjk_token_matches = report
+                .cjk_token_pages
+                .iter()
+                .flat_map(|page| {
+                    let query_folded = query_folded.clone();
+                    page.tokens.iter().filter_map(move |token| {
+                        let token_folded = token.text.to_lowercase();
+                        (token_folded == query_folded || token_folded.contains(&query_folded)).then(
+                            || {
+                                serde_json::json!({
+                                    "page": page.page,
+                                    "text": token.text,
+                                    "char_range": token.char_range,
+                                    "byte_range": token.byte_range,
+                                    "language": token.language,
+                                    "confidence": token.confidence,
+                                    "source": token.source,
+                                })
+                            },
+                        )
+                    })
+                })
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "schema_version": "prompt15.semantic_search.v1",
+                "query": query,
+                "semantic_matches": report.search_results,
+                "cjk_token_matches": cjk_token_matches,
+                "dictionary_report": report.dictionary_report,
+                "raw_text_fallback": true,
+                "provenance_preserved": true,
+            })
+        }
+        "status" | "ml-status" => serde_json::json!({
+            "layout_backend_status": report.layout_backend_status,
+            "table_model_backend_status": report.table_model_backend_status,
+            "privacy": report.privacy,
+        }),
+        other => {
+            return Err(format!(
+                "unknown --view '{other}'; use bundle, summary, semantic, tables, tokens, chunks, search, or status"
+            )
+            .into());
+        }
+    };
+    let output = serde_json::to_string_pretty(&value)?;
+    match args.output {
+        Some(path) => std::fs::write(path, &output)?,
+        None => println!("{output}"),
+    }
     Ok(())
 }
 
@@ -5520,8 +5726,9 @@ fn parse_profile_cli(name: &str) -> Result<oxide_engine::ExtractionProfile, Box<
 mod tests {
     use super::{
         expand_split_pattern, parse_page_range_cli, parse_page_selection_ordered,
-        parse_profile_cli, parse_region_cli,
+        parse_profile_cli, parse_region_cli, Cli, Commands,
     };
+    use clap::Parser;
     use std::path::PathBuf;
 
     #[test]
@@ -5594,5 +5801,48 @@ mod tests {
             expand_split_pattern("doc.pdf", 3),
             PathBuf::from("doc-3.pdf")
         );
+    }
+
+    #[test]
+    fn prompt15_cli_surfaces_parse_without_ambiguous_flags() {
+        let semantic = Cli::try_parse_from([
+            "oxide",
+            "semantic-export",
+            "fixture.pdf",
+            "--view",
+            "search",
+            "--query",
+            "invoice",
+            "--chunk-mode",
+            "table-row",
+            "--dictionary-pack",
+            "dictionary.json",
+        ])
+        .unwrap();
+        let Commands::SemanticExport(args) = semantic.command else {
+            panic!("expected semantic-export command");
+        };
+        assert_eq!(args.view, "search");
+        assert_eq!(args.query.as_deref(), Some("invoice"));
+        assert_eq!(args.chunk_mode, "table-row");
+        assert_eq!(args.dictionary_packs.len(), 1);
+
+        let chunk = Cli::try_parse_from([
+            "oxide",
+            "chunk",
+            "fixture.pdf",
+            "--advanced",
+            "--mode",
+            "cjk",
+            "--overlap",
+            "0",
+        ])
+        .unwrap();
+        let Commands::Chunk(args) = chunk.command else {
+            panic!("expected chunk command");
+        };
+        assert!(args.advanced);
+        assert_eq!(args.mode, "cjk");
+        assert_eq!(args.overlap, 0);
     }
 }
