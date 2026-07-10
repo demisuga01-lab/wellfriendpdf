@@ -446,6 +446,69 @@ OXIDE_API int oxide_document_xfa_sanitize_json(
     char **out_json,
     char **error_out);
 
+/* Prompt 17 read-only annotation/media/redaction reports. JSON option strings
+ * are UTF-8 and NUL-terminated; options_json may be NULL only where noted. */
+OXIDE_API int oxide_document_rich_media_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt17_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_annotation_appearance_report_json(
+    const OxideDocument *document,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_nonaxis_redaction_plan_json(
+    const OxideDocument *document,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
+
+/* Prompt 17 output operations. `xfdf` is a byte buffer with an explicit
+ * length; the other string inputs are NUL-terminated UTF-8. On success the
+ * caller owns both `out_buffer` and `out_json` and must release them with
+ * oxide_buffer_free and oxide_string_free. */
+OXIDE_API int oxide_document_annotation_xfdf_export_json(
+    const OxideDocument *document,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_annotation_xfdf_import_json(
+    const OxideDocument *document,
+    const uint8_t *xfdf,
+    size_t xfdf_len,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_annotation_appearance_generate_json(
+    const OxideDocument *document,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_rich_media_sanitize_json(
+    const OxideDocument *document,
+    const char *mode,
+    const char *custom_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_rich_media_flatten_poster_json(
+    const OxideDocument *document,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_nonaxis_redaction_apply_json(
+    const OxideDocument *document,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
 /* Sanitize. `policy` is "strict"|"balanced"|"preserve-visual" (NULL =>
  * "balanced"). Writes the sanitized PDF to `out_buffer` and a JSON report to
  * `out_json`. Free both. */

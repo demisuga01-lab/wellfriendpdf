@@ -235,6 +235,33 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string RichMediaReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_rich_media_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt17ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt17_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string AnnotationAppearanceReportJson(string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        return ReportWithString(optionsJson, NativeMethods.oxide_document_annotation_appearance_report_json);
+    }
+
+    public string NonaxisRedactionPlanJson(string optionsJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(optionsJson);
+        return ReportWithString(optionsJson, NativeMethods.oxide_document_nonaxis_redaction_plan_json);
+    }
+
     public string PagesReportJson()
     {
         ThrowIfDisposed();
@@ -307,6 +334,93 @@ public sealed class OxideDocument : IDisposable
     {
         ThrowIfDisposed();
         return XfaModeOutput(mode, NativeMethods.oxide_document_xfa_sanitize_json);
+    }
+
+    public OxideBinaryResult AnnotationXfdfExport()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_annotation_xfdf_export_json(
+            _handle, out var buffer, out var json, out var error);
+        return NativeMethods.TakeOutput(status, buffer, json, error);
+    }
+
+    public OxideBinaryResult AnnotationXfdfImport(byte[] xfdf, string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(xfdf);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_annotation_xfdf_import_json(
+                _handle, xfdf, (UIntPtr)xfdf.Length, optionsPtr,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public OxideBinaryResult AnnotationAppearanceGenerate(string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_annotation_appearance_generate_json(
+                _handle, optionsPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public OxideBinaryResult RichMediaSanitize(
+        string mode = "remove_active_content",
+        string? customJson = null)
+    {
+        ThrowIfDisposed();
+        var modePtr = NativeMethods.StringToNativeOrNull(mode);
+        var customPtr = NativeMethods.StringToNativeOrNull(customJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_rich_media_sanitize_json(
+                _handle, modePtr, customPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (modePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(modePtr);
+            if (customPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(customPtr);
+        }
+    }
+
+    public OxideBinaryResult RichMediaFlattenPoster()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_rich_media_flatten_poster_json(
+            _handle, out var buffer, out var json, out var error);
+        return NativeMethods.TakeOutput(status, buffer, json, error);
+    }
+
+    public OxideBinaryResult RedactImageNonaxis(string optionsJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(optionsJson);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_nonaxis_redaction_apply_json(
+                _handle, optionsPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
     }
 
     public OxideBinaryResult Sanitize(string policy = "balanced")

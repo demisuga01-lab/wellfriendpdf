@@ -42,6 +42,10 @@ def test_read_only_report_envelopes():
     _envelope(doc.xfa_security_report(), "xfa_security_report")
     _envelope(doc.xfa_runtime_report(), "xfa_runtime_report")
     _envelope(doc.annotations_report(), "annotation_report")
+    media = _envelope(doc.rich_media_report(), "rich_media_report")
+    assert media["schema_version"].startswith("prompt17.")
+    _envelope(doc.annotation_appearance_report(), "annotation_appearance_report")
+    _envelope(doc.prompt17_report(), "prompt17_report")
     _envelope(doc.pages_report(), "page_operations_report")
     _envelope(doc.interactive_report(), "interactive_report")
     _envelope(doc.signature_report(), "signature_report")
@@ -260,6 +264,10 @@ def test_module_level_reports():
         prompt16["closure_gates"]["public_report_schema"]
         == "additive_feature_report_prompt16"
     )
+    prompt17 = feature["prompt17_annotation_xfdf_media_nonaxis_redaction"]
+    assert prompt17["status"] == "complete_bounded_foundation"
+    assert prompt17["failure"]["blocked"] == 0
+    assert prompt17["security"]["overlay_only_redaction_success_claims"] == 0
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )
@@ -291,6 +299,22 @@ def test_xfa_owned_output_surfaces_on_non_xfa_pdf(tmp_path):
     sanitized, sanitize_report = doc.xfa_sanitize(mode="remove_all_xfa")
     assert sanitized[:5] == b"%PDF-"
     assert _envelope(sanitize_report, "xfa_sanitize_report")["schema_version"] == "prompt16.xfa.v1"
+
+
+def test_prompt17_owned_output_surfaces(tmp_path):
+    doc = oxide.open(FIXTURE)
+    xfdf, export_report = doc.annotation_xfdf_export(output=tmp_path / "annotations.xfdf")
+    assert xfdf.startswith(b"<?xml")
+    assert _envelope(export_report, "annotation_xfdf_export_report")["deterministic"] is True
+    imported, import_report = doc.annotation_xfdf_import(xfdf)
+    assert imported.startswith(b"%PDF-")
+    assert _envelope(import_report, "annotation_xfdf_import_report")["deterministic"] is True
+    appearances, appearance_report = doc.annotation_appearance_generate()
+    assert appearances.startswith(b"%PDF-")
+    _envelope(appearance_report, "annotation_appearance_generation_report")
+    sanitized, media_report = doc.rich_media_sanitize(mode="remove_all_media")
+    assert sanitized.startswith(b"%PDF-")
+    assert _envelope(media_report, "rich_media_policy_report")["rescan_passed"] is True
 
 
 def test_canonicalize_is_deterministic():

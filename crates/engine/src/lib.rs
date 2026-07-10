@@ -11,6 +11,7 @@
 //! implemented in Rust. Compression and image support come from crate
 //! dependencies and do not shell out to external PDF tools.
 #![forbid(unsafe_code)]
+#![recursion_limit = "256"]
 //!
 //! # Getting started
 //!
@@ -112,6 +113,7 @@ pub mod parse;
 pub mod parser;
 pub mod parser_report;
 pub mod prepress;
+pub mod prompt17;
 pub mod reader;
 pub mod render;
 pub mod sdk;
@@ -300,6 +302,18 @@ pub use prepress::{
     SeparationFramebuffer, SeparationFramebufferReport,
     DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES, MAX_NCHANNEL_OUTPUT_CHANNELS, MAX_PREPRESS_PLATES,
 };
+pub use prompt17::{
+    apply_nonaxis_image_redaction_pdf, apply_rich_media_policy_pdf, export_annotation_xfdf,
+    generate_annotation_appearances_pdf, import_annotation_xfdf_pdf, parse_annotation_xfdf,
+    plan_nonaxis_image_redaction, rich_media_inventory, AnnotationAppearanceMetadata,
+    AnnotationAppearanceOptions, AnnotationAppearancePolicy, AnnotationAppearanceReport,
+    AnnotationConflictPolicy, AnnotationDeletePolicy, AnnotationXfdfDocument,
+    AnnotationXfdfExportReport, AnnotationXfdfImportOptions, AnnotationXfdfImportReport,
+    AnnotationXfdfRecord, NonAxisRedactionApplyReport, NonAxisRedactionFallbackPolicy,
+    NonAxisRedactionOptions, NonAxisRedactionPlan, NonAxisRedactionRequest,
+    RedactionCoordinateSpace, RichMediaCounts, RichMediaCustomPolicy, RichMediaInventoryReport,
+    RichMediaLimits, RichMediaPolicyMode, RichMediaPolicyReport, PROMPT17_SCHEMA_VERSION,
+};
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
     flatten_cubic, flatten_path, get_fallback_font, rgb, rgba, AlphaMask, CachedGlyph, ClipMask,
@@ -482,6 +496,13 @@ pub mod prelude {
     pub use crate::parse::{
         parse, Block, BlockKind, Document, DocumentMetadata, Page, ParseOptions, SerializeOptions,
         SourceInfo, SCHEMA_VERSION,
+    };
+    pub use crate::prompt17::{
+        apply_nonaxis_image_redaction_pdf, apply_rich_media_policy_pdf, export_annotation_xfdf,
+        generate_annotation_appearances_pdf, import_annotation_xfdf_pdf,
+        plan_nonaxis_image_redaction, rich_media_inventory, AnnotationAppearanceOptions,
+        AnnotationXfdfImportOptions, NonAxisRedactionOptions, NonAxisRedactionRequest,
+        RichMediaPolicyMode,
     };
     pub use crate::signature::{
         add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options,

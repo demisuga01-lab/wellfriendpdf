@@ -1417,6 +1417,54 @@ pub unsafe extern "C" fn oxide_document_annotations_report_json(
     }
 }
 
+xfa_document_report!(
+    oxide_document_rich_media_report_json,
+    rich_media_report_json
+);
+xfa_document_report!(oxide_document_prompt17_report_json, prompt17_report_json);
+
+/// Prompt 17 annotation appearance report using optional JSON options.
+///
+/// # Safety
+/// `options_json` may be NULL or a NUL-terminated UTF-8 JSON string. Output
+/// ownership follows `oxide_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_annotation_appearance_report_json(
+    document: *const OxideDocument,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::annotation_appearance_report_json(bytes, options.as_deref(), None)
+        })
+    }
+}
+
+/// Prompt 17 non-axis redaction plan using a required JSON options document.
+///
+/// # Safety
+/// `options_json` must be a NUL-terminated UTF-8 string. Output ownership
+/// follows `oxide_document_security_report_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_nonaxis_redaction_plan_json(
+    document: *const OxideDocument,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { required_c_string(options_json, "options_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::nonaxis_redaction_plan_json(bytes, &options, None)
+        })
+    }
+}
+
 /// Page-operations report JSON (boxes, labels, destinations, preservation risk).
 ///
 /// # Safety
@@ -1584,6 +1632,143 @@ pub unsafe extern "C" fn oxide_document_xfa_sanitize_json(
         report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
             let mode = mode.map_err(oxide_engine::OxideError::invalid_input)?;
             sdk::xfa_sanitize_json(bytes, mode.as_deref(), None)
+        })
+    }
+}
+
+/// Export Prompt 17 annotation XFDF bytes and a versioned JSON report.
+///
+/// # Safety
+/// Output ownership matches `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_annotation_xfdf_export_json(
+    document: *const OxideDocument,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::annotation_xfdf_export_json(bytes, None)
+        })
+    }
+}
+
+/// Import Prompt 17 annotation XFDF bytes.
+///
+/// # Safety
+/// `xfdf` must point to `xfdf_len` readable bytes. `options_json` may be NULL.
+/// Output ownership matches `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_annotation_xfdf_import_json(
+    document: *const OxideDocument,
+    xfdf: *const u8,
+    xfdf_len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { optional_c_string(options_json) };
+    let xfdf = if xfdf_len == 0 {
+        Ok(Vec::new())
+    } else if xfdf.is_null() {
+        Err("xfdf pointer is null".to_string())
+    } else {
+        Ok(unsafe { slice::from_raw_parts(xfdf, xfdf_len) }.to_vec())
+    };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+            let xfdf = xfdf.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::annotation_xfdf_import_json(bytes, &xfdf, options.as_deref(), None)
+        })
+    }
+}
+
+/// Generate Prompt 17 annotation appearance streams.
+///
+/// # Safety
+/// `options_json` may be NULL. Output ownership matches
+/// `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_annotation_appearance_generate_json(
+    document: *const OxideDocument,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::annotation_appearance_generate_json(bytes, options.as_deref(), None)
+        })
+    }
+}
+
+/// Apply a Prompt 17 rich-media policy.
+///
+/// # Safety
+/// `mode` and `custom_json` may be NULL. Output ownership matches
+/// `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_rich_media_sanitize_json(
+    document: *const OxideDocument,
+    mode: *const c_char,
+    custom_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let mode = unsafe { optional_c_string(mode) };
+    let custom = unsafe { optional_c_string(custom_json) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let mode = mode.map_err(oxide_engine::OxideError::invalid_input)?;
+            let custom = custom.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::rich_media_sanitize_json(bytes, mode.as_deref(), custom.as_deref(), None)
+        })
+    }
+}
+
+/// Flatten static Prompt 17 media posters without media decode or execution.
+///
+/// # Safety
+/// Output ownership matches `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_rich_media_flatten_poster_json(
+    document: *const OxideDocument,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::rich_media_flatten_poster_json(bytes, None)
+        })
+    }
+}
+
+/// Apply Prompt 17 non-axis polygon image redaction.
+///
+/// # Safety
+/// `options_json` must be a NUL-terminated UTF-8 string. Output ownership
+/// matches `oxide_document_sanitize_json`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_nonaxis_redaction_apply_json(
+    document: *const OxideDocument,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { required_c_string(options_json, "options_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::nonaxis_redaction_apply_json(bytes, &options, None)
         })
     }
 }
@@ -2436,6 +2621,12 @@ mod tests {
             "xfa_security_report",
         );
         report_envelope(oxide_document_annotations_report_json, "annotation_report");
+        let media = report_envelope(oxide_document_rich_media_report_json, "rich_media_report");
+        assert_eq!(
+            media["report"]["schema_version"],
+            "prompt17.annotation-xfdf-media-redaction.v1"
+        );
+        report_envelope(oxide_document_prompt17_report_json, "prompt17_report");
         report_envelope(oxide_document_pages_report_json, "page_operations_report");
         report_envelope(oxide_document_interactive_report_json, "interactive_report");
         report_envelope(oxide_document_chunks_json, "chunk_set");
@@ -2456,6 +2647,27 @@ mod tests {
             "prompt15.semantic_binding.v1"
         );
         assert_eq!(semantic["report"]["privacy"]["cloud_upload_default"], false);
+    }
+
+    #[test]
+    fn capi_prompt17_xfdf_export_returns_owned_artifact_and_report() {
+        let (doc, _pdf) = open_sample();
+        let mut output = OxideBuffer::empty();
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_annotation_xfdf_export_json(doc, &mut output, &mut json, &mut error)
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let bytes = unsafe { std::slice::from_raw_parts(output.data, output.len) };
+        assert!(bytes.starts_with(b"<?xml"));
+        let report = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(report.contains("annotation_xfdf_export_report"));
+        unsafe {
+            oxide_buffer_free(output);
+            oxide_string_free(json);
+            oxide_document_free(doc);
+        }
     }
 
     #[test]

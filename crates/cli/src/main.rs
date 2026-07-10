@@ -200,6 +200,24 @@ enum Commands {
     FormsImport(FormsImportArgs),
     /// Report annotations, QuadPoints, appearances, and unsafe actions
     AnnotationsReport(AnnotationsReportArgs),
+    /// Export deterministic, bounded annotation XFDF
+    AnnotationXfdfExport(AnnotationXfdfExportArgs),
+    /// Create/update/delete annotations from secure XFDF
+    AnnotationXfdfImport(AnnotationXfdfImportArgs),
+    /// Generate deterministic annotation appearance streams
+    AnnotationAppearanceGenerate(AnnotationAppearanceGenerateArgs),
+    /// Report annotation appearance generation decisions
+    AnnotationAppearanceReport(AnnotationAppearanceReportArgs),
+    /// Inventory RichMedia, Sound, Movie, Screen, Rendition, and 3D content
+    RichMediaReport(Prompt17ReportArgs),
+    /// Apply an explicit rich-media sanitizer policy
+    RichMediaSanitize(RichMediaSanitizeArgs),
+    /// Flatten static media posters without decoding or executing media
+    RichMediaFlattenPoster(Prompt17OutputArgs),
+    /// Plan/apply polygonal non-axis image redaction
+    RedactImageNonaxis(NonAxisRedactionArgs),
+    /// Combined Prompt 17 report
+    Prompt17Report(Prompt17ReportArgs),
     /// Flatten common page annotations into page content
     AnnotationsFlatten(AnnotationsFlattenArgs),
     /// Report page boxes, labels/outlines/destinations, and page-op preservation risks
@@ -912,6 +930,173 @@ struct XfaSanitizeArgs {
     /// Print the JSON report to stdout
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Parser)]
+struct Prompt17ReportArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output JSON report; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt17OutputArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output PDF
+    #[arg(short, long, default_value = "prompt17-output.pdf")]
+    output: PathBuf,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print JSON report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Validate and report without writing the output PDF
+    #[arg(long)]
+    dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AnnotationXfdfExportArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output XFDF
+    #[arg(short, long, default_value = "annotations.xfdf")]
+    output: PathBuf,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print JSON report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AnnotationXfdfImportArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Annotation XFDF input
+    xfdf: PathBuf,
+    /// Output PDF
+    #[arg(short, long, default_value = "annotations-imported.pdf")]
+    output: PathBuf,
+    /// Optional JSON import-options file
+    #[arg(long)]
+    options: Option<PathBuf>,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print JSON report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Validate/import in memory without writing the PDF
+    #[arg(long)]
+    dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AnnotationAppearanceGenerateArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output PDF
+    #[arg(short, long, default_value = "annotation-appearances.pdf")]
+    output: PathBuf,
+    /// Optional JSON options file
+    #[arg(long)]
+    options: Option<PathBuf>,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print JSON report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Generate/validate in memory without writing the PDF
+    #[arg(long)]
+    dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AnnotationAppearanceReportArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Optional JSON options file
+    #[arg(long)]
+    options: Option<PathBuf>,
+    /// Output JSON report; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct RichMediaSanitizeArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output PDF
+    #[arg(short, long, default_value = "rich-media-sanitized.pdf")]
+    output: PathBuf,
+    /// Policy: inventory_only, preserve_inert, remove_active_content,
+    /// remove_all_media, flatten_static_poster, or custom
+    #[arg(long, default_value = "remove_active_content")]
+    policy: String,
+    /// Custom policy JSON (required only for --policy custom)
+    #[arg(long)]
+    custom: Option<PathBuf>,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print JSON report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Run and report without writing the output PDF
+    #[arg(long)]
+    dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct NonAxisRedactionArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// JSON NonAxisRedactionOptions request file
+    plan: PathBuf,
+    /// Output PDF
+    #[arg(short, long, default_value = "nonaxis-redacted.pdf")]
+    output: PathBuf,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print JSON report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Return only the plan report and do not write a PDF
+    #[arg(long)]
+    dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
 }
 
 #[derive(Parser)]
@@ -1936,6 +2121,15 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::FormsExport(args) => run_forms_export(args),
         Commands::FormsImport(args) => run_forms_import(args),
         Commands::AnnotationsReport(args) => run_annotations_report(args),
+        Commands::AnnotationXfdfExport(args) => run_annotation_xfdf_export(args),
+        Commands::AnnotationXfdfImport(args) => run_annotation_xfdf_import(args),
+        Commands::AnnotationAppearanceGenerate(args) => run_annotation_appearance_generate(args),
+        Commands::AnnotationAppearanceReport(args) => run_annotation_appearance_report(args),
+        Commands::RichMediaReport(args) => run_rich_media_report(args),
+        Commands::RichMediaSanitize(args) => run_rich_media_sanitize(args),
+        Commands::RichMediaFlattenPoster(args) => run_rich_media_flatten_poster(args),
+        Commands::RedactImageNonaxis(args) => run_nonaxis_redaction(args),
+        Commands::Prompt17Report(args) => run_prompt17_report(args),
         Commands::AnnotationsFlatten(args) => run_annotations_flatten(args),
         Commands::PagesReport(args) => run_pages_report(args),
         Commands::InteractiveReport(args) => run_interactive_report(args),
@@ -2762,6 +2956,179 @@ fn write_xfa_operation_report(
     if print_json {
         println!("{pretty}");
     }
+    Ok(())
+}
+
+fn run_annotation_xfdf_export(args: AnnotationXfdfExportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (xfdf, report) = oxide_engine::sdk::annotation_xfdf_export_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, xfdf)?;
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json {
+        eprintln!("Exported annotation XFDF -> {}", args.output.display());
+    }
+    Ok(())
+}
+
+fn run_annotation_xfdf_import(args: AnnotationXfdfImportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let xfdf = std::fs::read(&args.xfdf)?;
+    let options = args
+        .options
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let (output, report) = oxide_engine::sdk::annotation_xfdf_import_json(
+        &bytes,
+        &xfdf,
+        options.as_deref(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(&args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json && !args.dry_run {
+        eprintln!("Imported annotation XFDF -> {}", args.output.display());
+    }
+    Ok(())
+}
+
+fn run_annotation_appearance_generate(
+    args: AnnotationAppearanceGenerateArgs,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options = args
+        .options
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let (output, report) = oxide_engine::sdk::annotation_appearance_generate_json(
+        &bytes,
+        options.as_deref(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(&args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json && !args.dry_run {
+        eprintln!(
+            "Generated annotation appearances -> {}",
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_annotation_appearance_report(
+    args: AnnotationAppearanceReportArgs,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options = args
+        .options
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let report = oxide_engine::sdk::annotation_appearance_report_json(
+        &bytes,
+        options.as_deref(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)?;
+    Ok(())
+}
+
+fn run_rich_media_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::rich_media_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)?;
+    Ok(())
+}
+
+fn run_rich_media_sanitize(args: RichMediaSanitizeArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let custom = args
+        .custom
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let (output, report) = oxide_engine::sdk::rich_media_sanitize_json(
+        &bytes,
+        Some(&args.policy),
+        custom.as_deref(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(&args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json && !args.dry_run {
+        eprintln!("Applied rich-media policy -> {}", args.output.display());
+    }
+    Ok(())
+}
+
+fn run_rich_media_flatten_poster(args: Prompt17OutputArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (output, report) = oxide_engine::sdk::rich_media_flatten_poster_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(&args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json && !args.dry_run {
+        eprintln!(
+            "Flattened static media posters -> {}",
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_nonaxis_redaction(args: NonAxisRedactionArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options = std::fs::read_to_string(&args.plan)?;
+    if args.dry_run {
+        let report = oxide_engine::sdk::nonaxis_redaction_plan_json(
+            &bytes,
+            &options,
+            args.password.as_deref().map(str::as_bytes),
+        )?;
+        write_xfa_operation_report(&report, args.report.as_ref(), true)?;
+        return Ok(());
+    }
+    let (output, report) = oxide_engine::sdk::nonaxis_redaction_apply_json(
+        &bytes,
+        &options,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, output)?;
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json {
+        eprintln!(
+            "Applied non-axis image redaction -> {}",
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_prompt17_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt17_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)?;
     Ok(())
 }
 

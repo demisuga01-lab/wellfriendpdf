@@ -768,6 +768,7 @@ pub struct PdfEditor {
     form_fills: BTreeMap<String, FormValue>,
     flatten_forms: bool,
     flatten_annotations: bool,
+    flatten_annotation_subtypes: BTreeSet<String>,
 }
 
 impl PdfEditor {
@@ -780,6 +781,7 @@ impl PdfEditor {
             form_fills: BTreeMap::new(),
             flatten_forms: false,
             flatten_annotations: false,
+            flatten_annotation_subtypes: BTreeSet::new(),
         })
     }
 
@@ -956,7 +958,56 @@ impl PdfEditor {
         self.redactions
             .entry(page_number)
             .or_default()
-            .push(RedactionEdit { rect, options });
+            .push(RedactionEdit {
+                rect,
+                polygon: vec![
+                    (rect.x, rect.y),
+                    (rect.x + rect.width, rect.y),
+                    (rect.x + rect.width, rect.y + rect.height),
+                    (rect.x, rect.y + rect.height),
+                ],
+                options,
+            });
+        Ok(self)
+    }
+
+    /// Redact a page-space polygon. Text and vector removal remains
+    /// conservative at the polygon bounding box, while image samples are
+    /// rewritten against the actual polygon after inverse affine mapping.
+    pub fn redact_polygon(
+        &mut self,
+        page_number: usize,
+        polygon: Vec<(f64, f64)>,
+        options: RedactionOptions,
+    ) -> Result<&mut Self> {
+        self.validate_page(page_number)?;
+        if polygon.len() < 3 || polygon.len() > 16_384 {
+            return Err(OxideError::ResourceLimit(
+                "redaction polygon must contain between 3 and 16384 points".to_string(),
+            ));
+        }
+        if polygon
+            .iter()
+            .any(|(x, y)| !x.is_finite() || !y.is_finite())
+        {
+            return Err(OxideError::MalformedPdf(
+                "redaction polygon contains a non-finite coordinate".to_string(),
+            ));
+        }
+        let rect = rect_from_points(&polygon);
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return Err(OxideError::MalformedPdf(
+                "redaction polygon has an empty bounding box".to_string(),
+            ));
+        }
+        self.redactions
+            .entry(page_number)
+            .or_default()
+            .push(RedactionEdit {
+                rect,
+                polygon,
+                options,
+            });
         Ok(self)
     }
 
@@ -1108,6 +1159,19 @@ impl PdfEditor {
         self
     }
 
+    /// Flatten only the named annotation subtypes. This keeps field/widget
+    /// semantics and unrelated annotations intact, and is used by the Prompt
+    /// 17 static-poster media policy.
+    pub fn flatten_annotation_subtypes<I, S>(&mut self, subtypes: I) -> &mut Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.flatten_annotation_subtypes
+            .extend(subtypes.into_iter().map(Into::into));
+        self
+    }
+
     pub fn save_to_bytes(&self, mode: EditMode) -> Result<Vec<u8>> {
         if mode == EditMode::Incremental && !self.redactions.is_empty() {
             return Err(OxideError::UnsupportedFeature(
@@ -1209,7 +1273,10 @@ impl PdfEditor {
         page_numbers.extend(self.redactions.keys().copied());
         page_numbers.extend(self.annotations.keys().copied());
         page_numbers.extend(flatten_visuals.keys().copied());
-        if self.flatten_annotations || attachment_policy == AttachmentRedactionPolicy::RemoveAll {
+        if self.flatten_annotations
+            || !self.flatten_annotation_subtypes.is_empty()
+            || attachment_policy == AttachmentRedactionPolicy::RemoveAll
+        {
             page_numbers.extend(pages.iter().map(|page| page.page_number));
         }
 
@@ -1269,12 +1336,13 @@ impl PdfEditor {
                     write_annotation_visual_to_content(&mut overlay, &mut resources, spec);
                 }
             }
-            if self.flatten_annotations {
+            if self.flatten_annotations || !self.flatten_annotation_subtypes.is_empty() {
                 write_existing_annotation_visuals(
                     self.document.reader(),
                     &page_dict,
                     &mut overlay,
                     &mut resources,
+                    (!self.flatten_annotations).then_some(&self.flatten_annotation_subtypes),
                 )?;
             }
 
@@ -1324,6 +1392,7 @@ impl PdfEditor {
                 AnnotationApplyOptions {
                     remove_widgets: self.flatten_forms,
                     flatten_annotations: self.flatten_annotations,
+                    flatten_annotation_subtypes: &self.flatten_annotation_subtypes,
                     attachment_policy,
                 },
                 &mut changes,
@@ -1878,6 +1947,7 @@ struct PageEdit {
 #[derive(Debug, Clone)]
 struct RedactionEdit {
     rect: ImageRect,
+    polygon: Vec<(f64, f64)>,
     options: RedactionOptions,
 }
 
@@ -2259,15 +2329,6 @@ impl RedactionState {
         let (x4, y4) = transform_point(&self.ctm, 1.0, 1.0);
         rect_from_points(&[(x1, y1), (x2, y2), (x3, y3), (x4, y4)])
     }
-
-    fn axis_aligned_unit_rect(&self) -> Option<ImageRect> {
-        let [a, b, c, d, e, f] = self.ctm;
-        const EPS: f64 = 0.000_001;
-        if b.abs() > EPS || c.abs() > EPS || a.abs() < EPS || d.abs() < EPS {
-            return None;
-        }
-        Some(rect_from_corners(e, f, e + a, f + d))
-    }
 }
 
 #[derive(Default)]
@@ -2361,6 +2422,7 @@ fn rewrite_page_content_for_redaction(
     let resolvers = build_font_resolvers(resources, reader);
     let mut state = RedactionState::default();
     let mut pending_path = PendingPath::default();
+    let mut retained_xobjects = BTreeSet::new();
     report.scrub_metadata |= redactions
         .iter()
         .any(|redaction| redaction.options.scrub_metadata);
@@ -2369,7 +2431,36 @@ fn rewrite_page_content_for_redaction(
         let object = reader.get_object(*number, *generation)?;
         let decoded = decode_stream_lossless(&object, reader)?;
         let operations = ContentParser::parse(&decoded.data)?;
-        for op in operations {
+        let mut operation_index = 0usize;
+        while operation_index < operations.len() {
+            if operations[operation_index].operator == "BI" {
+                let end = operations[operation_index..]
+                    .iter()
+                    .position(|operation| operation.operator == "EI")
+                    .map(|offset| operation_index + offset)
+                    .unwrap_or(operations.len().saturating_sub(1));
+                let image_rect = state.unit_rect();
+                let overlapping: Vec<&RedactionEdit> = redactions
+                    .iter()
+                    .filter(|redaction| rects_intersect(image_rect, redaction.rect))
+                    .collect();
+                if overlapping.is_empty() {
+                    serialize_inline_image_group(&operations[operation_index..=end], &mut out)?;
+                } else if overlapping
+                    .iter()
+                    .any(|redaction| redaction.options.image_policy == ImageRedactionPolicy::Fail)
+                {
+                    return Err(OxideError::UnsupportedFeature(
+                        "inline image intersects redaction; secure partial inline rewrite is unsupported, use remove policy for fail-closed invocation removal"
+                            .to_string(),
+                    ));
+                }
+                // Partial/Remove both omit the complete BI/ID/data/EI group.
+                operation_index = end.saturating_add(1);
+                continue;
+            }
+            let op = operations[operation_index].clone();
+            operation_index += 1;
             if is_path_construction(&op) {
                 pending_path.push(op, &state);
                 continue;
@@ -2418,7 +2509,25 @@ fn rewrite_page_content_for_redaction(
                     state.apply(&op, &resolvers);
                 }
                 "Do" => {
-                    let image_rect = state.unit_rect();
+                    let xobject_name = op.name(0).map(str::to_string);
+                    let xobject = op
+                        .name(0)
+                        .and_then(|name| xobject_reference(resources, reader, name))
+                        .and_then(|(number, generation)| {
+                            reader
+                                .get_object(number, generation)
+                                .ok()
+                                .map(|object| (number, generation, object))
+                        });
+                    let image_rect = xobject
+                        .as_ref()
+                        .and_then(|(_, _, object)| object_dictionary(object))
+                        .and_then(|dict| {
+                            (dict.get_name("Subtype") == Some("Form"))
+                                .then(|| form_invocation_rect(&state.ctm, dict))
+                                .flatten()
+                        })
+                        .unwrap_or_else(|| state.unit_rect());
                     let intersects = redactions
                         .iter()
                         .any(|redaction| rects_intersect(image_rect, redaction.rect));
@@ -2436,49 +2545,52 @@ fn rewrite_page_content_for_redaction(
                                     .find(|policy| *policy == ImageRedactionPolicy::Remove)
                                     .unwrap_or(ImageRedactionPolicy::Partial)
                             });
-                        if let Some(name) = op.name(0) {
-                            if let Some((obj, gen)) = xobject_reference(resources, reader, name) {
-                                let mut handled = false;
-                                if policy != ImageRedactionPolicy::Remove {
-                                    if let Some(axis_rect) = state.axis_aligned_unit_rect() {
-                                        match redacted_image_xobject(
-                                            reader, obj, gen, axis_rect, redactions,
-                                        ) {
-                                            Ok(Some(redacted)) => {
-                                                let new_number = changes.alloc();
-                                                changes.insert_new(new_number, redacted);
-                                                replace_xobject_reference(
-                                                    resources, name, new_number,
-                                                );
-                                                serialize_content_operation(&op, &mut out);
-                                                handled = true;
+                        let mut handled = false;
+                        if policy != ImageRedactionPolicy::Remove {
+                            if let Some((obj, gen, object)) = xobject.as_ref() {
+                                let is_image = object_dictionary(object)
+                                    .is_some_and(|dict| dict.get_name("Subtype") == Some("Image"));
+                                if is_image {
+                                    match redacted_image_xobject(
+                                        reader, *obj, *gen, state.ctm, redactions,
+                                    ) {
+                                        Ok(Some(redacted)) => {
+                                            let new_number = changes.alloc();
+                                            changes.insert_new(new_number, redacted);
+                                            let new_name =
+                                                add_redacted_xobject(resources, new_number);
+                                            let mut rewritten = op.clone();
+                                            if let Some(first) = rewritten.operands.first_mut() {
+                                                *first = Operand::Name(new_name);
                                             }
-                                            Ok(None) => {}
-                                            Err(err) if policy == ImageRedactionPolicy::Fail => {
-                                                return Err(err);
-                                            }
-                                            Err(_) => {}
+                                            serialize_content_operation(&rewritten, &mut out);
+                                            retained_xobjects.insert(
+                                                rewritten.name(0).unwrap_or_default().to_string(),
+                                            );
+                                            handled = true;
                                         }
-                                    } else if policy == ImageRedactionPolicy::Fail {
-                                        return Err(OxideError::UnsupportedFeature(
-                                            "partial image redaction requires an axis-aligned image transform"
-                                                .to_string(),
-                                        ));
+                                        Ok(None) => {}
+                                        Err(err) if policy == ImageRedactionPolicy::Fail => {
+                                            return Err(err);
+                                        }
+                                        Err(_) => {}
                                     }
-                                }
-                                if !handled {
-                                    if policy == ImageRedactionPolicy::Fail {
-                                        return Err(OxideError::UnsupportedFeature(
-                                            "partial image redaction could not rewrite the image pixels"
-                                                .to_string(),
-                                        ));
-                                    }
-                                    changes.insert_existing(obj, gen, blank_image_xobject());
                                 }
                             }
                         }
+                        if !handled && policy == ImageRedactionPolicy::Fail {
+                            return Err(OxideError::UnsupportedFeature(
+                                "partial image redaction could not prove a secure sample-space rewrite; use remove policy for conservative invocation removal"
+                                    .to_string(),
+                            ));
+                        }
+                        // Secure fallback: omit only this invocation. The original
+                        // shared resource remains available to unaffected uses.
                     } else {
                         serialize_content_operation(&op, &mut out);
+                        if let Some(name) = xobject_name {
+                            retained_xobjects.insert(name);
+                        }
                     }
                     state.apply(&op, &resolvers);
                 }
@@ -2490,6 +2602,23 @@ fn rewrite_page_content_for_redaction(
         }
         if !pending_path.is_empty() {
             pending_path.flush_to(&mut out);
+        }
+        let xobjects = resources
+            .get("XObject")
+            .and_then(|object| reader.resolve(object.clone()).ok())
+            .and_then(|object| object.as_dict().cloned())
+            .unwrap_or_else(PdfDictionary::empty);
+        let xobjects = PdfDictionary::new(
+            xobjects
+                .entries()
+                .filter(|(name, _)| retained_xobjects.contains(*name))
+                .map(|(name, object)| (name.clone(), object.clone()))
+                .collect(),
+        );
+        if xobjects.is_empty() {
+            resources.remove("XObject");
+        } else {
+            resources.insert("XObject", PdfObject::Dictionary(xobjects));
         }
         out.push(b'\n');
     }
@@ -2772,13 +2901,16 @@ fn is_path_paint(op: &ContentOperation) -> bool {
 }
 
 fn write_redaction_mark(out: &mut Vec<u8>, redaction: &RedactionEdit) {
-    let style = EditRectStyle {
-        stroke: None,
-        fill: Some(redaction.options.fill.clone()),
-        line_width: 0.0,
-        opacity: 1.0,
+    let Some(first) = redaction.polygon.first() else {
+        return;
     };
-    write_rect(out, None, redaction.rect, &style);
+    out.extend_from_slice(b"q\n");
+    write_fill_color(out, &redaction.options.fill);
+    out.extend_from_slice(format!("{} {} m\n", fmt_num(first.0), fmt_num(first.1)).as_bytes());
+    for point in redaction.polygon.iter().skip(1) {
+        out.extend_from_slice(format!("{} {} l\n", fmt_num(point.0), fmt_num(point.1)).as_bytes());
+    }
+    out.extend_from_slice(b"h f\nQ\n");
 }
 
 fn write_form_flatten_visual(
@@ -2837,6 +2969,34 @@ fn serialize_content_operation(op: &ContentOperation, out: &mut Vec<u8>) {
     out.push(b'\n');
 }
 
+fn serialize_inline_image_group(operations: &[ContentOperation], out: &mut Vec<u8>) -> Result<()> {
+    let id = operations
+        .iter()
+        .find(|operation| operation.operator == "ID")
+        .ok_or_else(|| OxideError::MalformedPdf("inline image has no ID operator".to_string()))?;
+    let data = operations
+        .iter()
+        .find(|operation| operation.operator == "inline_image_data")
+        .and_then(|operation| operation.string_bytes(0))
+        .ok_or_else(|| OxideError::MalformedPdf("inline image has no captured data".to_string()))?;
+    out.extend_from_slice(b"BI\n");
+    for pair in id.operands.chunks(2) {
+        if pair.len() != 2 {
+            return Err(OxideError::MalformedPdf(
+                "inline image parameter list is not key/value paired".to_string(),
+            ));
+        }
+        serialize_content_operand(&pair[0], out);
+        out.push(b' ');
+        serialize_content_operand(&pair[1], out);
+        out.push(b'\n');
+    }
+    out.extend_from_slice(b"ID\n");
+    out.extend_from_slice(data);
+    out.extend_from_slice(b"\nEI\n");
+    Ok(())
+}
+
 fn serialize_content_operand(operand: &Operand, out: &mut Vec<u8>) {
     match operand {
         Operand::Integer(value) => out.extend_from_slice(value.to_string().as_bytes()),
@@ -2877,17 +3037,54 @@ fn xobject_reference(
     dict.get(name).and_then(PdfObject::as_reference)
 }
 
-fn replace_xobject_reference(resources: &mut PdfDictionary, name: &str, number: u32) {
+fn object_dictionary(object: &PdfObject) -> Option<&PdfDictionary> {
+    match object {
+        PdfObject::Dictionary(dict) | PdfObject::Stream { dict, .. } => Some(dict),
+        _ => None,
+    }
+}
+
+fn add_redacted_xobject(resources: &mut PdfDictionary, number: u32) -> String {
     let mut xobjects = dict_resource(resources, "XObject");
-    xobjects.insert(name, reference(number, 0));
+    let name = next_resource_name(&xobjects, "OxP17RedactIm");
+    xobjects.insert(&name, reference(number, 0));
     resources.insert("XObject", PdfObject::Dictionary(xobjects));
+    name
+}
+
+fn form_invocation_rect(ctm: &Matrix, dict: &PdfDictionary) -> Option<ImageRect> {
+    let bbox = dict.get("BBox")?.as_array()?;
+    let values: Vec<f64> = bbox.iter().filter_map(PdfObject::as_number).collect();
+    if values.len() != 4 {
+        return None;
+    }
+    let form_matrix = dict
+        .get("Matrix")
+        .and_then(PdfObject::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(PdfObject::as_number)
+                .collect::<Vec<_>>()
+        })
+        .filter(|items| items.len() == 6)
+        .map(|items| [items[0], items[1], items[2], items[3], items[4], items[5]])
+        .unwrap_or(IDENTITY_MATRIX);
+    let matrix = concat_matrix(&form_matrix, ctm);
+    let points = [
+        transform_point(&matrix, values[0], values[1]),
+        transform_point(&matrix, values[2], values[1]),
+        transform_point(&matrix, values[2], values[3]),
+        transform_point(&matrix, values[0], values[3]),
+    ];
+    Some(rect_from_points(&points))
 }
 
 fn redacted_image_xobject(
     reader: &PdfReader,
     number: u32,
     generation: u16,
-    image_rect: ImageRect,
+    image_ctm: Matrix,
     redactions: &[RedactionEdit],
 ) -> Result<Option<PdfObject>> {
     let obj = reader.get_object(number, generation)?;
@@ -2910,9 +3107,14 @@ fn redacted_image_xobject(
         .or_else(|| image_dict.get_integer("H"))
         .unwrap_or(0)
         .max(0) as u32;
-    if width == 0 || height == 0 || image_rect.width <= 0.0 || image_rect.height <= 0.0 {
+    if width == 0 || height == 0 {
         return Ok(None);
     }
+    let inverse = invert_affine(&image_ctm).ok_or_else(|| {
+        OxideError::UnsupportedFeature(
+            "partial image redaction rejected a singular or non-finite image transform".to_string(),
+        )
+    })?;
     let bpc = image_dict
         .get_integer("BitsPerComponent")
         .or_else(|| image_dict.get_integer("BPC"))
@@ -2948,37 +3150,52 @@ fn redacted_image_xobject(
         is_smask: false,
         inline_data: None,
     };
-    let mut raw = ImageDecoder::decode(&reference, reader)?;
-    if raw.bits_per_sample != 8 || !matches!(raw.channels, 1 | 3) {
+    if bpc != 8 || reference.is_mask {
+        // Sub-byte/stencil data is intentionally not sent through the generic
+        // sample rewriter. The caller securely removes this invocation (or
+        // fails under strict policy), avoiding ambiguous packed-row handling.
         return Ok(None);
     }
-    let fill = redactions
-        .iter()
-        .find(|redaction| rects_intersect(image_rect, redaction.rect))
-        .map(|redaction| fill_for_channels(&redaction.options.fill, raw.channels))
-        .unwrap_or_else(|| fill_for_channels(&Color::black(), raw.channels));
+    let mut raw = ImageDecoder::decode(&reference, reader)?;
+    if raw.bits_per_sample != 8 || !matches!(raw.channels, 1 | 3 | 4) {
+        return Ok(None);
+    }
     let channels = raw.channels as usize;
     let mut changed = false;
     for redaction in redactions {
-        let Some(intersection) = rect_intersection(image_rect, redaction.rect) else {
+        let image_rect = transformed_unit_rect(&image_ctm);
+        if !rects_intersect(image_rect, redaction.rect) {
             continue;
-        };
-        let x0 = (((intersection.x - image_rect.x) / image_rect.width) * raw.width as f64)
-            .floor()
-            .clamp(0.0, raw.width as f64) as usize;
-        let x1 = ((((intersection.x + intersection.width - image_rect.x) / image_rect.width)
-            * raw.width as f64)
-            .ceil())
-        .clamp(0.0, raw.width as f64) as usize;
-        let y0 = (((intersection.y - image_rect.y) / image_rect.height) * raw.height as f64)
-            .floor()
-            .clamp(0.0, raw.height as f64) as usize;
-        let y1 = ((((intersection.y + intersection.height - image_rect.y) / image_rect.height)
-            * raw.height as f64)
-            .ceil())
-        .clamp(0.0, raw.height as f64) as usize;
-        for y in y0.min(y1)..y0.max(y1) {
-            for x in x0.min(x1)..x0.max(x1) {
+        }
+        let sample_polygon: Vec<(f64, f64)> = redaction
+            .polygon
+            .iter()
+            .map(|(x, y)| transform_point(&inverse, *x, *y))
+            .map(|(u, v)| (u * raw.width as f64, (1.0 - v) * raw.height as f64))
+            .collect();
+        if sample_polygon
+            .iter()
+            .any(|(x, y)| !x.is_finite() || !y.is_finite())
+        {
+            return Err(OxideError::UnsupportedFeature(
+                "partial image redaction produced non-finite sample coordinates".to_string(),
+            ));
+        }
+        let sample_bounds = rect_from_points(&sample_polygon);
+        let x0 = sample_bounds.x.floor().max(0.0) as usize;
+        let y0 = sample_bounds.y.floor().max(0.0) as usize;
+        let x1 = (sample_bounds.x + sample_bounds.width)
+            .ceil()
+            .min(raw.width as f64) as usize;
+        let y1 = (sample_bounds.y + sample_bounds.height)
+            .ceil()
+            .min(raw.height as f64) as usize;
+        let fill = fill_for_channels(&redaction.options.fill, raw.channels);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if !polygon_intersects_pixel(&sample_polygon, x as f64, y as f64) {
+                    continue;
+                }
                 let offset = (y * raw.width as usize + x) * channels;
                 raw.pixels[offset..offset + channels].copy_from_slice(&fill[..channels]);
                 changed = true;
@@ -2991,6 +3208,7 @@ fn redacted_image_xobject(
     let color_space = match raw.channels {
         1 => "DeviceGray",
         3 => "DeviceRGB",
+        4 => "DeviceCMYK",
         _ => return Ok(None),
     };
     Ok(Some(PdfObject::Stream {
@@ -3007,7 +3225,7 @@ fn redacted_image_xobject(
     }))
 }
 
-fn fill_for_channels(color: &Color, channels: u8) -> [u8; 3] {
+fn fill_for_channels(color: &Color, channels: u8) -> [u8; 4] {
     let c = |idx: usize| -> u8 {
         (color
             .components
@@ -3019,29 +3237,133 @@ fn fill_for_channels(color: &Color, channels: u8) -> [u8; 3] {
             .round() as u8
     };
     match channels {
-        1 => [c(0), 0, 0],
+        1 => [c(0), 0, 0, 0],
+        4 => match color.space {
+            ColorSpace::DeviceCMYK => [c(0), c(1), c(2), c(3)],
+            ColorSpace::DeviceGray => {
+                let k = 255u8.saturating_sub(c(0));
+                [0, 0, 0, k]
+            }
+            _ => {
+                let r = c(0) as f64 / 255.0;
+                let g = c(1) as f64 / 255.0;
+                let b = c(2) as f64 / 255.0;
+                let k = 1.0 - r.max(g).max(b);
+                if k >= 1.0 - f64::EPSILON {
+                    [0, 0, 0, 255]
+                } else {
+                    [
+                        (((1.0 - r - k) / (1.0 - k)) * 255.0).round() as u8,
+                        (((1.0 - g - k) / (1.0 - k)) * 255.0).round() as u8,
+                        (((1.0 - b - k) / (1.0 - k)) * 255.0).round() as u8,
+                        (k * 255.0).round() as u8,
+                    ]
+                }
+            }
+        },
         _ => match color.space {
             ColorSpace::DeviceGray => {
                 let g = c(0);
-                [g, g, g]
+                [g, g, g, 0]
             }
-            _ => [c(0), c(1), c(2)],
+            _ => [c(0), c(1), c(2), 0],
         },
     }
 }
 
-fn blank_image_xobject() -> PdfObject {
-    PdfObject::Stream {
-        dict: dict(&[
-            ("Type", PdfObject::Name("XObject".to_string())),
-            ("Subtype", PdfObject::Name("Image".to_string())),
-            ("Width", PdfObject::Integer(1)),
-            ("Height", PdfObject::Integer(1)),
-            ("ColorSpace", PdfObject::Name("DeviceGray".to_string())),
-            ("BitsPerComponent", PdfObject::Integer(8)),
-        ]),
-        raw: vec![0],
+fn invert_affine(matrix: &Matrix) -> Option<Matrix> {
+    if matrix.iter().any(|value| !value.is_finite()) {
+        return None;
     }
+    let [a, b, c, d, e, f] = *matrix;
+    let determinant = a * d - b * c;
+    if !determinant.is_finite() || determinant.abs() <= 1e-12 {
+        return None;
+    }
+    let inverse = [
+        d / determinant,
+        -b / determinant,
+        -c / determinant,
+        a / determinant,
+        (c * f - d * e) / determinant,
+        (b * e - a * f) / determinant,
+    ];
+    inverse
+        .iter()
+        .all(|value| value.is_finite())
+        .then_some(inverse)
+}
+
+fn transformed_unit_rect(matrix: &Matrix) -> ImageRect {
+    let points = [
+        transform_point(matrix, 0.0, 0.0),
+        transform_point(matrix, 1.0, 0.0),
+        transform_point(matrix, 1.0, 1.0),
+        transform_point(matrix, 0.0, 1.0),
+    ];
+    rect_from_points(&points)
+}
+
+fn polygon_intersects_pixel(polygon: &[(f64, f64)], x: f64, y: f64) -> bool {
+    let clipped = clip_polygon_axis(polygon, 0, x, true);
+    let clipped = clip_polygon_axis(&clipped, 0, x + 1.0, false);
+    let clipped = clip_polygon_axis(&clipped, 1, y, true);
+    let clipped = clip_polygon_axis(&clipped, 1, y + 1.0, false);
+    polygon_area(&clipped) > 1.0e-12
+}
+
+fn clip_polygon_axis(
+    polygon: &[(f64, f64)],
+    axis: usize,
+    bound: f64,
+    keep_greater: bool,
+) -> Vec<(f64, f64)> {
+    let Some(mut previous) = polygon.last().copied() else {
+        return Vec::new();
+    };
+    let mut output = Vec::with_capacity(polygon.len() + 4);
+    let coordinate = |point: (f64, f64)| if axis == 0 { point.0 } else { point.1 };
+    let inside = |point: (f64, f64)| {
+        if keep_greater {
+            coordinate(point) >= bound
+        } else {
+            coordinate(point) <= bound
+        }
+    };
+    for &current in polygon {
+        let previous_inside = inside(previous);
+        let current_inside = inside(current);
+        if previous_inside != current_inside {
+            let delta = coordinate(current) - coordinate(previous);
+            if delta.abs() > f64::EPSILON {
+                let t = ((bound - coordinate(previous)) / delta).clamp(0.0, 1.0);
+                output.push((
+                    previous.0 + (current.0 - previous.0) * t,
+                    previous.1 + (current.1 - previous.1) * t,
+                ));
+            }
+        }
+        if current_inside {
+            output.push(current);
+        }
+        previous = current;
+    }
+    output
+}
+
+fn polygon_area(polygon: &[(f64, f64)]) -> f64 {
+    if polygon.len() < 3 {
+        return 0.0;
+    }
+    polygon
+        .iter()
+        .copied()
+        .zip(polygon.iter().copied().cycle().skip(1))
+        .take(polygon.len())
+        .map(|(a, b)| a.0 * b.1 - b.0 * a.1)
+        .sum::<f64>()
+        .abs()
+        * 0.5
 }
 
 fn write_existing_annotation_visuals(
@@ -3049,12 +3371,20 @@ fn write_existing_annotation_visuals(
     page_dict: &PdfDictionary,
     out: &mut Vec<u8>,
     resources: &mut PdfDictionary,
+    subtype_filter: Option<&BTreeSet<String>>,
 ) -> Result<()> {
     for annot_ref in resolve_annotation_refs(reader, page_dict.get("Annots"))? {
         let annot = reader.get_and_resolve(annot_ref.0, annot_ref.1)?;
         let Some(dict) = annot.as_dict() else {
             continue;
         };
+        if subtype_filter.is_some_and(|filter| {
+            !dict
+                .get_name("Subtype")
+                .is_some_and(|subtype| filter.contains(subtype))
+        }) {
+            continue;
+        }
         write_existing_annotation_visual(reader, dict, out, resources);
     }
     Ok(())
@@ -3212,8 +3542,81 @@ fn write_existing_annotation_visual(
                 },
             );
         }
-        _ => {}
+        _ => write_static_annotation_appearance(reader, dict, rect, out, resources),
     }
+}
+
+fn write_static_annotation_appearance(
+    reader: &PdfReader,
+    dict: &PdfDictionary,
+    rect: ImageRect,
+    out: &mut Vec<u8>,
+    resources: &mut PdfDictionary,
+) {
+    let Some((appearance_ref, form)) = selected_normal_appearance_reference(reader, dict) else {
+        return;
+    };
+    let Some(bbox) = form.get("BBox").and_then(PdfObject::as_array) else {
+        return;
+    };
+    let values: Vec<f64> = bbox.iter().filter_map(PdfObject::as_number).collect();
+    if values.len() != 4 {
+        return;
+    }
+    let bw = values[2] - values[0];
+    let bh = values[3] - values[1];
+    if !bw.is_finite()
+        || !bh.is_finite()
+        || bw.abs() <= f64::EPSILON
+        || bh.abs() <= f64::EPSILON
+        || rect.width <= 0.0
+        || rect.height <= 0.0
+    {
+        return;
+    }
+    let name = format!("OxP17Poster{}_{}", appearance_ref.0, appearance_ref.1);
+    let mut xobjects = dict_resource(resources, "XObject");
+    xobjects.insert(&name, reference(appearance_ref.0, appearance_ref.1));
+    resources.insert("XObject", PdfObject::Dictionary(xobjects));
+    let sx = rect.width / bw;
+    let sy = rect.height / bh;
+    let tx = rect.x - values[0] * sx;
+    let ty = rect.y - values[1] * sy;
+    out.extend_from_slice(
+        format!(
+            "q {} 0 0 {} {} {} cm /{} Do Q\n",
+            fmt_num(sx),
+            fmt_num(sy),
+            fmt_num(tx),
+            fmt_num(ty),
+            name
+        )
+        .as_bytes(),
+    );
+}
+
+fn selected_normal_appearance_reference(
+    reader: &PdfReader,
+    dict: &PdfDictionary,
+) -> Option<((u32, u16), PdfDictionary)> {
+    let ap = reader.resolve(dict.get("AP")?.clone()).ok()?;
+    let normal = ap.as_dict()?.get("N")?.clone();
+    if let Some(reference) = normal.as_reference() {
+        let object = reader.get_and_resolve(reference.0, reference.1).ok()?;
+        let form = object_dictionary(&object)?.clone();
+        return (form.get_name("Subtype") == Some("Form")).then_some((reference, form));
+    }
+    let states = reader.resolve(normal).ok()?;
+    let states = states.as_dict()?;
+    let state = dict.get_name("AS").unwrap_or("Off");
+    let selected = states
+        .get(state)
+        .or_else(|| states.get("Off"))
+        .or_else(|| states.entries().next().map(|(_, value)| value))?;
+    let reference = selected.as_reference()?;
+    let object = reader.get_and_resolve(reference.0, reference.1).ok()?;
+    let form = object_dictionary(&object)?.clone();
+    (form.get_name("Subtype") == Some("Form")).then_some((reference, form))
 }
 
 fn color_from_annotation(dict: &PdfDictionary, reader: &PdfReader) -> Color {
@@ -3407,7 +3810,7 @@ fn apply_annotation_edits(
     page_dict: &mut PdfDictionary,
     redactions: &[RedactionEdit],
     edits: &[AnnotationEdit],
-    options: AnnotationApplyOptions,
+    options: AnnotationApplyOptions<'_>,
     changes: &mut ChangeSet,
 ) -> Result<()> {
     let mut annots = resolve_annotation_refs(reader, page_dict.get("Annots"))?;
@@ -3432,8 +3835,10 @@ fn apply_annotation_edits(
                 .unwrap_or(false);
             let remove_widget =
                 options.remove_widgets && dict.get_name("Subtype") == Some("Widget");
-            let remove_flattened =
-                options.flatten_annotations && dict.get_name("Subtype") != Some("Widget");
+            let remove_flattened = dict.get_name("Subtype").is_some_and(|subtype| {
+                (options.flatten_annotations && subtype != "Widget")
+                    || options.flatten_annotation_subtypes.contains(subtype)
+            });
             let remove_attachment = dict.get_name("Subtype") == Some("FileAttachment")
                 && match options.attachment_policy {
                     AttachmentRedactionPolicy::RemoveAll => true,
@@ -3505,9 +3910,10 @@ fn apply_annotation_edits(
 }
 
 #[derive(Debug, Clone, Copy)]
-struct AnnotationApplyOptions {
+struct AnnotationApplyOptions<'a> {
     remove_widgets: bool,
     flatten_annotations: bool,
+    flatten_annotation_subtypes: &'a BTreeSet<String>,
     attachment_policy: AttachmentRedactionPolicy,
 }
 
@@ -4730,17 +5136,6 @@ fn rects_intersect(a: ImageRect, b: ImageRect) -> bool {
     let bx2 = b.x + b.width;
     let by2 = b.y + b.height;
     a.x < bx2 && ax2 > b.x && a.y < by2 && ay2 > b.y
-}
-
-fn rect_intersection(a: ImageRect, b: ImageRect) -> Option<ImageRect> {
-    if !rects_intersect(a, b) {
-        return None;
-    }
-    let x0 = a.x.max(b.x);
-    let y0 = a.y.max(b.y);
-    let x1 = (a.x + a.width).min(b.x + b.width);
-    let y1 = (a.y + a.height).min(b.y + b.height);
-    Some(ImageRect::new(x0, y0, x1 - x0, y1 - y0))
 }
 
 fn rect_from_corners(x1: f64, y1: f64, x2: f64, y2: f64) -> ImageRect {

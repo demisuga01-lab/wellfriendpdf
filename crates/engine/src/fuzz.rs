@@ -514,7 +514,7 @@ fn drive_structured_pdf(bytes: &[u8], data: &[u8]) {
 
     if let Ok(mut editor) = PdfEditor::open_bytes(bytes.to_vec()) {
         let rect = ImageRect::new(
-            bounded_coord(data.get(0).copied().unwrap_or(0), 180.0),
+            bounded_coord(data.first().copied().unwrap_or(0), 180.0),
             bounded_coord(data.get(1).copied().unwrap_or(0), 180.0),
             4.0 + f64::from(data.get(2).copied().unwrap_or(8) % 48),
             4.0 + f64::from(data.get(3).copied().unwrap_or(8) % 48),
@@ -821,7 +821,7 @@ fn adversarial_content_stream(data: &[u8], cursor: &mut usize, stream_index: usi
         out.push_str("Q\n");
         q_depth -= 1;
     }
-    if stream_index % 2 == 0 {
+    if stream_index.is_multiple_of(2) {
         out.push_str("BT /F1 9 Tf 12 12 Td (structured fuzz) Tj ET\n");
     }
     out.into_bytes()

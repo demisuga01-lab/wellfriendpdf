@@ -7,7 +7,7 @@
 //! only; and every recursive or generated structure is capped.
 
 mod script;
-mod xml;
+pub(crate) mod xml;
 
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(not(target_arch = "wasm32"))]

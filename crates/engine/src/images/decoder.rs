@@ -713,7 +713,7 @@ fn unpack_subbyte_rows(raw: &[u8], width: u32, height: u32, channels: u8, bpc: u
     for row in 0..height as usize {
         let row_start = row.saturating_mul(bytes_per_row);
         let row_end = row_start.saturating_add(bytes_per_row).min(raw.len());
-        let row_bytes = &raw[row_start..row_end];
+        let row_bytes = raw.get(row_start..row_end).unwrap_or(&[]);
         for sample in 0..samples_per_row {
             let bit_offset = sample.saturating_mul(bpc as usize);
             let byte = row_bytes.get(bit_offset / 8).copied().unwrap_or(0);
@@ -1277,5 +1277,13 @@ mod tests {
         assert_eq!(img.width, 1000);
         assert_eq!(img.height, 1000);
         assert_eq!(img.pixels.len(), 1000 * 1000);
+    }
+
+    #[test]
+    fn short_subbyte_rows_are_zero_filled_without_panicking() {
+        let unpacked = unpack_subbyte_rows(&[0b1010_0000], 4, 4, 1, 1);
+        assert_eq!(unpacked.len(), 16);
+        assert_eq!(&unpacked[..4], &[255, 0, 255, 0]);
+        assert!(unpacked[4..].iter().all(|sample| *sample == 0));
     }
 }

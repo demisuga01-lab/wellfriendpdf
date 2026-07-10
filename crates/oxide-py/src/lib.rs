@@ -356,6 +356,42 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::annotation_report_json(bytes, None))
     }
 
+    /// Prompt 17 rich-media inventory. No player, network, filesystem, or media
+    /// codec is invoked.
+    fn rich_media_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::rich_media_report_json(bytes, None))
+    }
+
+    /// Prompt 17 annotation appearance generation report.
+    #[pyo3(signature = (options_json=None))]
+    fn annotation_appearance_report<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let options = options_json.map(str::to_string);
+        self.report_json(py, |bytes| {
+            sdk::annotation_appearance_report_json(bytes, options.as_deref(), None)
+        })
+    }
+
+    /// Prompt 17 request-specific non-axis redaction plan.
+    fn nonaxis_redaction_plan<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let options = options_json.to_string();
+        self.report_json(py, |bytes| {
+            sdk::nonaxis_redaction_plan_json(bytes, &options, None)
+        })
+    }
+
+    /// Combined Prompt 17 report.
+    fn prompt17_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt17_report_json(bytes, None))
+    }
+
     /// Page-operations report (boxes, labels, destinations, preservation risk).
     fn pages_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::page_operations_report_json(bytes, None))
@@ -499,6 +535,112 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) = run_oxide(|| sdk::xfa_sanitize_json(&bytes, Some(mode), None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Export annotation XFDF. Returns `(xfdf_bytes, report)`.
+    #[pyo3(signature = (output=None))]
+    fn annotation_xfdf_export<'py>(
+        &self,
+        py: Python<'py>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::annotation_xfdf_export_json(&bytes, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Import annotation XFDF. Returns `(pdf_bytes, report)`.
+    #[pyo3(signature = (xfdf, options_json=None, output=None))]
+    fn annotation_xfdf_import<'py>(
+        &self,
+        py: Python<'py>,
+        xfdf: &[u8],
+        options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::annotation_xfdf_import_json(&bytes, xfdf, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Generate annotation appearance streams. Returns `(pdf_bytes, report)`.
+    #[pyo3(signature = (options_json=None, output=None))]
+    fn annotation_appearance_generate<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::annotation_appearance_generate_json(&bytes, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Apply an explicit rich-media policy. Returns `(pdf_bytes, report)`.
+    #[pyo3(signature = (mode="remove_active_content", custom_json=None, output=None))]
+    fn rich_media_sanitize<'py>(
+        &self,
+        py: Python<'py>,
+        mode: &str,
+        custom_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::rich_media_sanitize_json(&bytes, Some(mode), custom_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Flatten safe static media posters and remove active media/payloads.
+    #[pyo3(signature = (output=None))]
+    fn rich_media_flatten_poster<'py>(
+        &self,
+        py: Python<'py>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::rich_media_flatten_poster_json(&bytes, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    /// Apply polygonal non-axis image redaction. Returns `(pdf_bytes, report)`.
+    #[pyo3(signature = (options_json, output=None))]
+    fn redact_image_nonaxis<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::nonaxis_redaction_apply_json(&bytes, options_json, None))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),

@@ -229,6 +229,27 @@ public final class Oxide {
             return Native.documentReport(handle, Native.ANNOTATIONS_REPORT, "annotations_report");
         }
 
+        public String richMediaReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.RICH_MEDIA_REPORT, "rich_media_report");
+        }
+
+        public String prompt17ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT17_REPORT, "prompt17_report");
+        }
+
+        public String annotationAppearanceReportJson(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringReport(handle, Native.ANNOTATION_APPEARANCE_REPORT, optionsJson, "annotation_appearance_report");
+        }
+
+        public String nonaxisRedactionPlanJson(String optionsJson) {
+            ensureOpen();
+            Objects.requireNonNull(optionsJson, "optionsJson");
+            return Native.documentStringReport(handle, Native.NONAXIS_REDACTION_PLAN, optionsJson, "nonaxis_redaction_plan");
+        }
+
         public String pagesReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.PAGES_REPORT, "pages_report");
@@ -276,6 +297,37 @@ public final class Oxide {
         public BinaryResult xfaSanitize(String mode) {
             ensureOpen();
             return Native.documentStringOutput(handle, Native.XFA_SANITIZE, mode, "xfa_sanitize");
+        }
+
+        public BinaryResult annotationXfdfExport() {
+            ensureOpen();
+            return Native.documentOutput(handle, Native.ANNOTATION_XFDF_EXPORT, "annotation_xfdf_export");
+        }
+
+        public BinaryResult annotationXfdfImport(byte[] xfdf, String optionsJson) {
+            ensureOpen();
+            return Native.annotationXfdfImport(handle, xfdf, optionsJson);
+        }
+
+        public BinaryResult annotationAppearanceGenerate(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringOutput(handle, Native.ANNOTATION_APPEARANCE_GENERATE, optionsJson, "annotation_appearance_generate");
+        }
+
+        public BinaryResult richMediaSanitize(String mode, String customJson) {
+            ensureOpen();
+            return Native.documentTwoStringOutput(handle, Native.RICH_MEDIA_SANITIZE, mode, customJson, "rich_media_sanitize");
+        }
+
+        public BinaryResult richMediaFlattenPoster() {
+            ensureOpen();
+            return Native.documentOutput(handle, Native.RICH_MEDIA_FLATTEN_POSTER, "rich_media_flatten_poster");
+        }
+
+        public BinaryResult redactImageNonaxis(String optionsJson) {
+            ensureOpen();
+            Objects.requireNonNull(optionsJson, "optionsJson");
+            return Native.documentStringOutput(handle, Native.NONAXIS_REDACTION_APPLY, optionsJson, "nonaxis_redaction_apply");
         }
 
         public BinaryResult sanitize(String policy) {
@@ -449,6 +501,10 @@ public final class Oxide {
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle ANNOTATIONS_REPORT = documentReport("oxide_document_annotations_report_json");
+        private static final MethodHandle RICH_MEDIA_REPORT = documentReport("oxide_document_rich_media_report_json");
+        private static final MethodHandle PROMPT17_REPORT = documentReport("oxide_document_prompt17_report_json");
+        private static final MethodHandle ANNOTATION_APPEARANCE_REPORT = documentStringReport("oxide_document_annotation_appearance_report_json");
+        private static final MethodHandle NONAXIS_REDACTION_PLAN = documentStringReport("oxide_document_nonaxis_redaction_plan_json");
         private static final MethodHandle PAGES_REPORT = documentReport("oxide_document_pages_report_json");
         private static final MethodHandle INTERACTIVE_REPORT = documentReport("oxide_document_interactive_report_json");
         private static final MethodHandle CHUNKS = documentReport("oxide_document_chunks_json");
@@ -465,6 +521,30 @@ public final class Oxide {
         );
         private static final MethodHandle XFA_SANITIZE = downcall(
             "oxide_document_xfa_sanitize_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ANNOTATION_XFDF_EXPORT = downcall(
+            "oxide_document_annotation_xfdf_export_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ANNOTATION_XFDF_IMPORT = downcall(
+            "oxide_document_annotation_xfdf_import_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ANNOTATION_APPEARANCE_GENERATE = downcall(
+            "oxide_document_annotation_appearance_generate_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RICH_MEDIA_SANITIZE = downcall(
+            "oxide_document_rich_media_sanitize_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RICH_MEDIA_FLATTEN_POSTER = downcall(
+            "oxide_document_rich_media_flatten_poster_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle NONAXIS_REDACTION_APPLY = downcall(
+            "oxide_document_nonaxis_redaction_apply_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle SANITIZE = downcall(
@@ -737,6 +817,71 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult documentOutput(MemorySegment handle, MethodHandle method, String operation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(handle, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult documentTwoStringOutput(
+            MemorySegment handle,
+            MethodHandle method,
+            String first,
+            String second,
+            String operation
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment firstArg = first == null || first.isBlank() ? MemorySegment.NULL : arena.allocateFrom(first);
+                MemorySegment secondArg = second == null || second.isBlank() ? MemorySegment.NULL : arena.allocateFrom(second);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(handle, firstArg, secondArg, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult annotationXfdfImport(
+            MemorySegment handle,
+            byte[] xfdf,
+            String optionsJson
+        ) {
+            Objects.requireNonNull(xfdf, "xfdf");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = xfdf.length == 0 ? MemorySegment.NULL : arena.allocate(xfdf.length);
+                if (xfdf.length > 0) {
+                    data.copyFrom(MemorySegment.ofArray(xfdf));
+                }
+                MemorySegment options = optionsJson == null || optionsJson.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(optionsJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) ANNOTATION_XFDF_IMPORT.invokeExact(
+                    handle, data, (long) xfdf.length, options, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide annotation_xfdf_import failed", ex);
             }
         }
 

@@ -2196,9 +2196,6 @@ impl<'a> RenderState<'a> {
             {
                 continue;
             }
-            if annot.get_name("Subtype") != Some("Widget") {
-                continue;
-            }
             let Some(rect) = extract_rect(&annot) else {
                 continue;
             };

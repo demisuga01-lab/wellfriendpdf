@@ -29,6 +29,9 @@ public sealed class OxideSmokeTests
             ["xfa_security"] = doc.XfaSecurityReportJson(),
             ["xfa_runtime"] = doc.XfaRuntimeReportJson(),
             ["annotations"] = doc.AnnotationsReportJson(),
+            ["rich_media"] = doc.RichMediaReportJson(),
+            ["annotation_appearance"] = doc.AnnotationAppearanceReportJson(),
+            ["prompt17"] = doc.Prompt17ReportJson(),
             ["pages"] = doc.PagesReportJson(),
             ["interactive"] = doc.InteractiveReportJson(),
             ["chunks"] = doc.ChunksJson(),
@@ -49,8 +52,18 @@ public sealed class OxideSmokeTests
         var pptx = doc.ToPptx();
         var sanitized = doc.Sanitize();
         var canonicalized = doc.Canonicalize(0);
+        var xfdf = doc.AnnotationXfdfExport();
+        var appearances = doc.AnnotationAppearanceGenerate();
+        var mediaSanitized = doc.RichMediaSanitize("remove_all_media");
         reports["sanitize"] = sanitized.ReportJson;
         reports["canonicalize"] = canonicalized.ReportJson;
+        reports["xfdf"] = xfdf.ReportJson;
+        reports["appearances"] = appearances.ReportJson;
+        reports["media_sanitized"] = mediaSanitized.ReportJson;
+
+        Assert.StartsWith("<?xml", Encoding.UTF8.GetString(xfdf.Bytes));
+        Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(appearances.Bytes, 0, 5));
+        Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(mediaSanitized.Bytes, 0, 5));
 
         Assert.StartsWith("PK", Encoding.ASCII.GetString(docx, 0, 2));
         Assert.StartsWith("PK", Encoding.ASCII.GetString(xlsx, 0, 2));
@@ -165,6 +178,9 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt16_xfa_runtime_sandbox_closure\"", feature);
         Assert.Contains("\"additive_feature_report_prompt16\"", feature);
         Assert.Contains("\"scripts_disabled_events_not_executed\"", feature);
+        Assert.Contains("\"prompt17_annotation_xfdf_media_nonaxis_redaction\"", feature);
+        Assert.Contains("\"additive_feature_report_prompt17\"", feature);
+        Assert.Contains("\"overlay_only_redaction_success_claims\":0", feature);
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

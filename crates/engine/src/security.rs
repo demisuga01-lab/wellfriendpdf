@@ -519,7 +519,7 @@ fn scan_dictionary(
     }
     if matches!(
         dict.get_name("Subtype"),
-        Some("RichMedia" | "Movie" | "Sound" | "3D")
+        Some("RichMedia" | "Movie" | "Sound" | "Screen" | "3D")
     ) {
         add_finding(
             report,
@@ -600,6 +600,26 @@ fn sanitize_dictionary(
             options.remove_additional_actions,
             "additional_actions",
         ),
+        (
+            "RichMediaActivation",
+            options.remove_additional_actions,
+            "rich_media_activation",
+        ),
+        (
+            "RichMediaDeactivation",
+            options.remove_additional_actions,
+            "rich_media_deactivation",
+        ),
+        (
+            "Activation",
+            options.remove_additional_actions,
+            "media_activation",
+        ),
+        (
+            "Deactivation",
+            options.remove_additional_actions,
+            "media_deactivation",
+        ),
         ("JS", options.remove_javascript, "javascript"),
         ("JavaScript", options.remove_javascript, "javascript"),
         ("XFA", options.remove_xfa, "xfa"),
@@ -633,6 +653,9 @@ fn null_reason_for_dictionary(
     dict: &PdfDictionary,
     options: &SanitizerOptions,
 ) -> Option<&'static str> {
+    if options.remove_additional_actions && matches!(dict.get_name("S"), Some("MCD" | "MCS")) {
+        return Some("media_clip_action");
+    }
     if let Some(action) = dict.get_name("S") {
         if action_removed_by_policy(action, options) {
             return Some("action_object");
@@ -653,10 +676,21 @@ fn null_reason_for_dictionary(
     if options.remove_rich_media
         && matches!(
             dict.get_name("Subtype"),
-            Some("RichMedia" | "Movie" | "Sound" | "3D")
+            Some("RichMedia" | "Movie" | "Sound" | "Screen" | "3D")
         )
     {
         return Some("rich_media");
+    }
+    if options.remove_rich_media
+        && (matches!(
+            dict.get_name("Type"),
+            Some("RichMediaContent" | "RichMediaSettings" | "3D")
+        ) || dict.contains_key("RichMediaContent")
+            || dict.contains_key("RichMediaSettings")
+            || dict.contains_key("MediaClip")
+            || dict.contains_key("3DD"))
+    {
+        return Some("rich_media_payload");
     }
     if options.scrub_metadata && dict.get_name("Type") == Some("Metadata") {
         return Some("metadata");

@@ -29,6 +29,9 @@ public final class OxideSmokeTest {
             reports.put("xfa_security", doc.xfaSecurityReportJson());
             reports.put("xfa_runtime", doc.xfaRuntimeReportJson("disabled", false));
             reports.put("annotations", doc.annotationsReportJson());
+            reports.put("rich_media", doc.richMediaReportJson());
+            reports.put("annotation_appearance", doc.annotationAppearanceReportJson(null));
+            reports.put("prompt17", doc.prompt17ReportJson());
             reports.put("pages", doc.pagesReportJson());
             reports.put("interactive", doc.interactiveReportJson());
             reports.put("chunks", doc.chunksJson());
@@ -49,13 +52,22 @@ public final class OxideSmokeTest {
             byte[] pptx = doc.toPptx(true);
             Oxide.BinaryResult sanitized = doc.sanitize("balanced");
             Oxide.BinaryResult canonicalized = doc.canonicalize(0L);
+            Oxide.BinaryResult xfdf = doc.annotationXfdfExport();
+            Oxide.BinaryResult appearances = doc.annotationAppearanceGenerate(null);
+            Oxide.BinaryResult mediaSanitized = doc.richMediaSanitize("remove_all_media", null);
             reports.put("sanitize", sanitized.reportJson());
             reports.put("canonicalize", canonicalized.reportJson());
+            reports.put("xfdf", xfdf.reportJson());
+            reports.put("appearances", appearances.reportJson());
+            reports.put("media_sanitized", mediaSanitized.reportJson());
             assertPrefix(docx, "PK", "docx");
             assertPrefix(xlsx, "PK", "xlsx");
             assertPrefix(pptx, "PK", "pptx");
             assertPrefix(sanitized.bytes(), "%PDF-", "sanitized pdf");
             assertPrefix(canonicalized.bytes(), "%PDF-", "canonicalized pdf");
+            assertPrefix(xfdf.bytes(), "<?xml", "annotation xfdf");
+            assertPrefix(appearances.bytes(), "%PDF-", "annotation appearances pdf");
+            assertPrefix(mediaSanitized.bytes(), "%PDF-", "media sanitized pdf");
             assertReport(sanitized.reportJson(), "sanitize report");
             assertReport(canonicalized.reportJson(), "canonicalize report");
             assertPrefix(Oxide.Office.docxToPdf(docx), "%PDF-", "docx pdf");
@@ -249,6 +261,15 @@ public final class OxideSmokeTest {
         assertTrue(
             feature.contains("\"scripts_disabled_events_not_executed\""),
             "prompt16 default script policy");
+        assertTrue(
+            feature.contains("\"prompt17_annotation_xfdf_media_nonaxis_redaction\""),
+            "prompt17 feature closure");
+        assertTrue(
+            feature.contains("\"additive_feature_report_prompt17\""),
+            "prompt17 additive schema status");
+        assertTrue(
+            feature.contains("\"overlay_only_redaction_success_claims\":0"),
+            "prompt17 secure redaction posture");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),

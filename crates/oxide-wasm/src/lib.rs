@@ -281,6 +281,31 @@ mod wasm_api {
             self.report(|b| sdk::annotation_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = richMediaReportJson)]
+        pub fn rich_media_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::rich_media_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = annotationAppearanceReportJson)]
+        pub fn annotation_appearance_report_json(
+            &self,
+            options_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.report(|b| {
+                sdk::annotation_appearance_report_json(b, options_json.as_deref(), None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = nonaxisRedactionPlanJson)]
+        pub fn nonaxis_redaction_plan_json(&self, options_json: &str) -> Result<String, JsValue> {
+            self.report(|b| sdk::nonaxis_redaction_plan_json(b, options_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt17ReportJson)]
+        pub fn prompt17_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt17_report_json(b, None))
+        }
+
         #[wasm_bindgen(js_name = pagesReportJson)]
         pub fn pages_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::page_operations_report_json(b, None))
@@ -357,6 +382,53 @@ mod wasm_api {
         #[wasm_bindgen(js_name = xfaSanitize)]
         pub fn xfa_sanitize(&self, mode: Option<String>) -> Result<OxideOutput, JsValue> {
             self.output(|b| sdk::xfa_sanitize_json(b, mode.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = annotationXfdfExport)]
+        pub fn annotation_xfdf_export(&self) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::annotation_xfdf_export_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = annotationXfdfImport)]
+        pub fn annotation_xfdf_import(
+            &self,
+            xfdf: &[u8],
+            options_json: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::annotation_xfdf_import_json(b, xfdf, options_json.as_deref(), None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = annotationAppearanceGenerate)]
+        pub fn annotation_appearance_generate(
+            &self,
+            options_json: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::annotation_appearance_generate_json(b, options_json.as_deref(), None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = richMediaSanitize)]
+        pub fn rich_media_sanitize(
+            &self,
+            mode: Option<String>,
+            custom_json: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::rich_media_sanitize_json(b, mode.as_deref(), custom_json.as_deref(), None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = richMediaFlattenPoster)]
+        pub fn rich_media_flatten_poster(&self) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::rich_media_flatten_poster_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = redactImageNonaxis)]
+        pub fn redact_image_nonaxis(&self, options_json: &str) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::nonaxis_redaction_apply_json(b, options_json, None))
         }
 
         #[wasm_bindgen(js_name = sanitize)]

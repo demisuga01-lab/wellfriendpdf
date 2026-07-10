@@ -255,6 +255,59 @@ pub fn annotation_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<S
     envelope("annotation_report", &annotation_report(&engine)?)
 }
 
+/// Prompt 17 rich-media inventory. Media payloads are hashed/inventoried but
+/// never decoded or executed.
+pub fn rich_media_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "rich_media_report",
+        &crate::prompt17::rich_media_inventory(
+            &engine,
+            &crate::prompt17::RichMediaLimits::default(),
+        )?,
+    )
+}
+
+/// Prompt 17 non-axis redaction planning from a JSON options document.
+pub fn nonaxis_redaction_plan_json(
+    bytes: &[u8],
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let options: crate::prompt17::NonAxisRedactionOptions =
+        serde_json::from_str(options_json).map_err(json_err)?;
+    envelope(
+        "nonaxis_redaction_plan",
+        &crate::prompt17::plan_nonaxis_image_redaction(&engine, &options)?,
+    )
+}
+
+/// Combined Prompt 17 inventory/report surface.
+pub fn prompt17_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let (_, xfdf) = crate::prompt17::export_annotation_xfdf(&engine)?;
+    let media = crate::prompt17::rich_media_inventory(
+        &engine,
+        &crate::prompt17::RichMediaLimits::default(),
+    )?;
+    envelope(
+        "prompt17_report",
+        &json!({
+            "schema_version": crate::prompt17::PROMPT17_SCHEMA_VERSION,
+            "annotation_xfdf": xfdf,
+            "rich_media": media,
+            "feature": crate::prompt17::prompt17_feature_report_value(REPORT_ENVELOPE_VERSION),
+            "nonaxis_redaction": {
+                "planning": "request_specific",
+                "sample_space_polygon_rewrite": true,
+                "secure_removal_fallback": true,
+                "overlay_only_success_claims": 0
+            }
+        }),
+    )
+}
+
 /// Page-operations report: page boxes, labels/outlines/destinations, and
 /// page-operation preservation risks.
 pub fn page_operations_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
@@ -2459,6 +2512,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt14b_cjk_dictionary_layout_backend_closure": crate::semantic_intelligence::prompt14b_cjk_dictionary_layout_backend_closure_report_value(),
         "prompt15_semantic_binding_rag_benchmark_closeout": crate::semantic_intelligence::prompt15_semantic_binding_rag_benchmark_closeout_report_value(),
         "prompt16_xfa_runtime_sandbox_closure": crate::xfa::prompt16_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt17_annotation_xfdf_media_nonaxis_redaction": crate::prompt17::prompt17_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2471,6 +2525,10 @@ pub fn feature_report_json() -> Result<String> {
             "xfa_report", "xfa_extract_report", "xfa_runtime_report",
             "xfa_script_report", "xfa_security_report", "xfa_render_preview",
             "xfa_flatten", "xfa_sanitize",
+            "annotation_xfdf_export", "annotation_xfdf_import",
+            "annotation_appearance_generate", "annotation_appearance_report",
+            "rich_media_report", "rich_media_sanitize", "rich_media_flatten_poster",
+            "nonaxis_redaction_plan", "nonaxis_redaction_apply", "prompt17_report",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
@@ -2551,6 +2609,115 @@ pub fn xfa_sanitize_json(
     };
     let (out, report) = crate::xfa::sanitize_xfa_pdf(&input, &options)?;
     Ok((out, envelope("xfa_sanitize_report", &report)?))
+}
+
+/// Export annotation XFDF plus a deterministic Prompt 17 report.
+pub fn annotation_xfdf_export_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let engine = open(bytes, password)?;
+    let (xfdf, report) = crate::prompt17::export_annotation_xfdf(&engine)?;
+    Ok((xfdf, envelope("annotation_xfdf_export_report", &report)?))
+}
+
+/// Import annotation XFDF. Options are the serialized
+/// `AnnotationXfdfImportOptions` object shared by every binding.
+pub fn annotation_xfdf_import_json(
+    bytes: &[u8],
+    xfdf: &[u8],
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options = options_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let (output, report) = crate::prompt17::import_annotation_xfdf_pdf(&input, xfdf, &options)?;
+    Ok((output, envelope("annotation_xfdf_import_report", &report)?))
+}
+
+/// Generate deterministic annotation appearances from the canonical PDF
+/// annotation dictionaries.
+pub fn annotation_appearance_generate_json(
+    bytes: &[u8],
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options = options_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let (output, report) = crate::prompt17::generate_annotation_appearances_pdf(&input, &options)?;
+    Ok((
+        output,
+        envelope("annotation_appearance_generation_report", &report)?,
+    ))
+}
+
+/// Inspect appearance generation without returning the generated PDF.
+pub fn annotation_appearance_report_json(
+    bytes: &[u8],
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let options = options_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let (_, report) = crate::prompt17::generate_annotation_appearances_pdf(&input, &options)?;
+    envelope("annotation_appearance_report", &report)
+}
+
+/// Apply one of the explicit Prompt 17 rich-media policies.
+pub fn rich_media_sanitize_json(
+    bytes: &[u8],
+    mode: Option<&str>,
+    custom_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let mode = parse_rich_media_mode(mode)?;
+    let custom = custom_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let (output, report) = crate::prompt17::apply_rich_media_policy_pdf(
+        &input,
+        mode,
+        &custom,
+        &crate::prompt17::RichMediaLimits::default(),
+    )?;
+    Ok((output, envelope("rich_media_policy_report", &report)?))
+}
+
+/// Flatten safe static media posters and remove the active annotations and
+/// payloads. No media codec or player is invoked.
+pub fn rich_media_flatten_poster_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    rich_media_sanitize_json(bytes, Some("flatten_static_poster"), None, password)
+}
+
+/// Apply the Prompt 17 non-axis polygon redaction plan.
+pub fn nonaxis_redaction_apply_json(
+    bytes: &[u8],
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options: crate::prompt17::NonAxisRedactionOptions =
+        serde_json::from_str(options_json).map_err(json_err)?;
+    let (output, report) = crate::prompt17::apply_nonaxis_image_redaction_pdf(&input, &options)?;
+    Ok((output, envelope("nonaxis_redaction_apply_report", &report)?))
 }
 
 fn mutation_input(bytes: &[u8], password: Option<&[u8]>) -> Result<Vec<u8>> {
@@ -2666,6 +2833,27 @@ pub fn redact_terms_json(
 }
 
 // ── Enum parse helpers (string → engine enum, with honest defaults) ──────────
+
+fn parse_rich_media_mode(value: Option<&str>) -> Result<crate::prompt17::RichMediaPolicyMode> {
+    use crate::prompt17::RichMediaPolicyMode;
+    match value.map(str::to_ascii_lowercase).as_deref() {
+        None | Some("remove_active_content" | "remove-active-content") => {
+            Ok(RichMediaPolicyMode::RemoveActiveContent)
+        }
+        Some("inventory_only" | "inventory-only") => Ok(RichMediaPolicyMode::InventoryOnly),
+        Some("preserve_inert" | "preserve-inert") => Ok(RichMediaPolicyMode::PreserveInert),
+        Some("remove_all_media" | "remove-all-media") => {
+            Ok(RichMediaPolicyMode::RemoveAllMedia)
+        }
+        Some("flatten_static_poster" | "flatten-static-poster") => {
+            Ok(RichMediaPolicyMode::FlattenStaticPoster)
+        }
+        Some("custom") => Ok(RichMediaPolicyMode::Custom),
+        Some(other) => Err(crate::OxideError::invalid_input(format!(
+            "unknown rich-media policy '{other}'; use inventory_only, preserve_inert, remove_active_content, remove_all_media, flatten_static_poster, or custom"
+        ))),
+    }
+}
 
 fn parse_xfa_script_policy(value: Option<&str>) -> Result<crate::xfa::XfaScriptPolicy> {
     match value.map(str::to_ascii_lowercase).as_deref() {
