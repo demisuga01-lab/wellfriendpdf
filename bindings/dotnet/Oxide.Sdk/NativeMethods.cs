@@ -183,6 +183,14 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_to_docx_with_layout(
+        DocumentHandle document,
+        int includeImages,
+        IntPtr layout,
+        out OxideBuffer buffer,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_docx_to_pdf(
         byte[] data,
         UIntPtr len,
@@ -281,6 +289,26 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_prompt18b_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_form_js_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_form_action_graph_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_interactive_data_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt19_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_word_pagination_audit_json(
+        DocumentHandle document, IntPtr layout, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_associated_files_report_json(
@@ -459,6 +487,16 @@ internal static partial class NativeMethods
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_associated_files_sanitize_json(
+        DocumentHandle document, IntPtr optionsJson, out OxideBuffer buffer,
+        out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_form_js_sanitize_json(
+        DocumentHandle document, IntPtr optionsJson, out OxideBuffer buffer,
+        out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_form_js_flatten_values_json(
         DocumentHandle document, IntPtr optionsJson, out OxideBuffer buffer,
         out IntPtr json, out IntPtr errorOut);
 

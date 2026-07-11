@@ -875,6 +875,49 @@ pub unsafe extern "C" fn oxide_document_to_docx(
     })
 }
 
+/// Converts a document to DOCX with an explicit Prompt 19 layout mode.
+///
+/// # Safety
+/// `layout` must be a NUL-terminated UTF-8 string. Other pointers follow
+/// `oxide_document_to_docx` ownership rules.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_to_docx_with_layout(
+    document: *const OxideDocument,
+    include_images: c_int,
+    layout: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let layout = unsafe { required_c_string(layout, "layout") };
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let layout = layout
+            .map_err(oxide_engine::OxideError::invalid_input)
+            .and_then(|value| {
+                oxide_engine::DocxLayout::parse(&value).ok_or_else(|| {
+                    oxide_engine::OxideError::invalid_input(
+                        "unknown DOCX layout; use flowing, page-faithful, or hybrid",
+                    )
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        let out = oxide(oxide_engine::pdf_to_docx(
+            &doc.engine,
+            &oxide_engine::DocxOptions {
+                include_images: include_images != 0,
+                layout,
+            },
+        ))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
 /// Converts DOCX bytes to PDF and returns an owned buffer.
 ///
 /// # Safety
@@ -1424,6 +1467,16 @@ xfa_document_report!(
 xfa_document_report!(oxide_document_prompt17_report_json, prompt17_report_json);
 xfa_document_report!(oxide_document_prompt18_report_json, prompt18_report_json);
 xfa_document_report!(oxide_document_prompt18b_report_json, prompt18b_report_json);
+xfa_document_report!(oxide_document_form_js_report_json, form_js_report_json);
+xfa_document_report!(
+    oxide_document_form_action_graph_json,
+    form_action_graph_json
+);
+xfa_document_report!(
+    oxide_document_interactive_data_report_json,
+    interactive_data_closeout_report_json
+);
+xfa_document_report!(oxide_document_prompt19_report_json, prompt19_report_json);
 xfa_document_report!(
     oxide_document_associated_files_report_json,
     associated_files_report_json
@@ -1836,6 +1889,60 @@ prompt18_redaction_output!(
     oxide_document_redact_image_mask_json,
     redact_image_mask_json
 );
+
+macro_rules! prompt19_policy_output {
+    ($name:ident, $sdk_fn:ident) => {
+        /// Apply a Prompt 19 form-action policy and return owned PDF/report buffers.
+        ///
+        /// # Safety
+        /// The document handle must be live. `options_json` may be NULL or a
+        /// NUL-terminated UTF-8 JSON object. Output pointers must be writable
+        /// and are freed with the standard Oxide buffer/string free functions.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(
+            document: *const OxideDocument,
+            options_json: *const c_char,
+            out_buffer: *mut OxideBuffer,
+            out_json: *mut *mut c_char,
+            error_out: *mut *mut c_char,
+        ) -> c_int {
+            let options = unsafe { optional_c_string(options_json) };
+            unsafe {
+                report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+                    let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+                    sdk::$sdk_fn(bytes, options.as_deref(), None)
+                })
+            }
+        }
+    };
+}
+
+prompt19_policy_output!(oxide_document_form_js_sanitize_json, form_js_sanitize_json);
+prompt19_policy_output!(
+    oxide_document_form_js_flatten_values_json,
+    form_js_flatten_values_json
+);
+
+/// Audit one DOCX layout mode and return a versioned report.
+///
+/// # Safety
+/// `layout` must be a NUL-terminated UTF-8 string and other pointers follow
+/// the standard report ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_word_pagination_audit_json(
+    document: *const OxideDocument,
+    layout: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let layout = unsafe { required_c_string(layout, "layout") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            let layout = layout.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::word_pagination_audit_json(bytes, &layout, None)
+        })
+    }
+}
 prompt18_redaction_output!(
     oxide_document_redact_inline_image_json,
     redact_inline_image_json
@@ -2936,6 +3043,17 @@ mod tests {
         assert_eq!(
             prompt18b["report"]["schema_version"],
             "prompt18b.advanced-secure-mutation-closure.v1"
+        );
+        report_envelope(oxide_document_form_js_report_json, "form_js_report");
+        report_envelope(oxide_document_form_action_graph_json, "form_action_graph");
+        report_envelope(
+            oxide_document_interactive_data_report_json,
+            "interactive_data_report",
+        );
+        let prompt19 = report_envelope(oxide_document_prompt19_report_json, "prompt19_report");
+        assert_eq!(
+            prompt19["report"]["schema_version"],
+            "prompt19.form-js-interactive-docx-layout.v1"
         );
         report_envelope(
             oxide_document_associated_files_report_json,

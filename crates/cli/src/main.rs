@@ -242,6 +242,18 @@ enum Commands {
     Prompt18Report(Prompt17ReportArgs),
     /// Combined Prompt 18B closure report
     Prompt18bReport(Prompt17ReportArgs),
+    /// Inventory PDF form JavaScript and action graphs without executing scripts
+    FormJsReport(Prompt17ReportArgs),
+    /// Sanitize PDF actions under an explicit Prompt 19 policy
+    FormJsSanitize(Prompt19SanitizeArgs),
+    /// Evaluate the bounded calculation subset, write values, then remove actions
+    FormJsFlattenValues(Prompt19SanitizeArgs),
+    /// Combined interactive/data consistency close-out report
+    InteractiveDataReport(Prompt17ReportArgs),
+    /// Audit DOCX pagination structure for one layout mode
+    WordPaginationAudit(WordPaginationAuditArgs),
+    /// Combined Prompt 19 form/action/interactive/DOCX report
+    Prompt19Report(Prompt17ReportArgs),
     /// Incrementally edit a form value under signature policy
     EditForm(EditFormArgs),
     /// Incrementally add/update an annotation under signature policy
@@ -990,6 +1002,60 @@ struct Prompt17OutputArgs {
     /// Validate and report without writing the output PDF
     #[arg(long)]
     dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt19SanitizeArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Prompt 19 policy mode
+    #[arg(long, default_value = "remove_javascript_only")]
+    policy: String,
+    /// Optional complete FormJsSanitizerOptions JSON
+    #[arg(long)]
+    options: Option<PathBuf>,
+    /// Permit a Prompt 18B signature-policy override when structurally required
+    #[arg(long)]
+    signature_policy_override: bool,
+    /// Output PDF
+    #[arg(short, long, default_value = "form-js-sanitized.pdf")]
+    output: PathBuf,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print the report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Inventory/validate without writing output bytes
+    #[arg(long)]
+    dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct WordPaginationAuditArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// DOCX layout mode: flowing, page-faithful, or hybrid
+    #[arg(long, default_value = "page-faithful")]
+    layout: String,
+    /// Optional JSON report; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Optional Microsoft Word executable/automation harness path recorded by the report
+    #[arg(long)]
+    word: Option<PathBuf>,
+    /// Optional LibreOffice executable path recorded by the report
+    #[arg(long)]
+    libreoffice: Option<PathBuf>,
+    /// Return a failure when the structural report contains exact unsupported rows
+    #[arg(long)]
+    fail_on_unsupported: bool,
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
@@ -2318,6 +2384,12 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::EditPolicyReport(args) => run_edit_policy_report(args, false),
         Commands::Prompt18Report(args) => run_prompt18_report(args),
         Commands::Prompt18bReport(args) => run_prompt18b_report(args),
+        Commands::FormJsReport(args) => run_form_js_report(args),
+        Commands::FormJsSanitize(args) => run_form_js_sanitize(args, false),
+        Commands::FormJsFlattenValues(args) => run_form_js_sanitize(args, true),
+        Commands::InteractiveDataReport(args) => run_interactive_data_closeout_report(args),
+        Commands::WordPaginationAudit(args) => run_word_pagination_audit(args),
+        Commands::Prompt19Report(args) => run_prompt19_report(args),
         Commands::EditForm(args) => run_edit_form(args),
         Commands::EditAnnotation(args) => run_edit_mutation(args, true),
         Commands::EditPageProperty(args) => run_edit_mutation(args, false),
@@ -3335,6 +3407,122 @@ fn run_prompt18_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
 fn run_prompt18b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = oxide_engine::sdk::prompt18b_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_form_js_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::form_js_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_form_js_sanitize(args: Prompt19SanitizeArgs, flatten: bool) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options = if let Some(path) = &args.options {
+        std::fs::read_to_string(path)?
+    } else {
+        let mode = if flatten {
+            "flatten_calculated_values_then_remove"
+        } else {
+            oxide_engine::FormJsPolicyMode::parse(&args.policy)
+                .ok_or_else(|| usage_error("unknown --policy for form-js-sanitize"))?
+                .as_str()
+        };
+        serde_json::to_string(&serde_json::json!({
+            "mode": mode,
+            "signature_policy_override": args.signature_policy_override,
+            "limits": oxide_engine::FormJsLimits::default()
+        }))?
+    };
+    if args.dry_run {
+        let report = if flatten {
+            oxide_engine::sdk::form_action_graph_json(
+                &bytes,
+                args.password.as_deref().map(str::as_bytes),
+            )?
+        } else {
+            oxide_engine::sdk::form_js_report_json(
+                &bytes,
+                args.password.as_deref().map(str::as_bytes),
+            )?
+        };
+        return write_xfa_operation_report(&report, args.report.as_ref(), true);
+    }
+    let (output, report) = if flatten {
+        oxide_engine::sdk::form_js_flatten_values_json(
+            &bytes,
+            Some(&options),
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    } else {
+        oxide_engine::sdk::form_js_sanitize_json(
+            &bytes,
+            Some(&options),
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    };
+    std::fs::write(&args.output, output)?;
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
+    if !args.json {
+        eprintln!(
+            "Wrote Prompt 19 action-policy output -> {}",
+            args.output.display()
+        );
+    }
+    Ok(())
+}
+
+fn run_interactive_data_closeout_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::interactive_data_closeout_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_word_pagination_audit(args: WordPaginationAuditArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let raw = oxide_engine::sdk::word_pagination_audit_json(
+        &bytes,
+        &args.layout,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    let mut report: serde_json::Value = serde_json::from_str(&raw)?;
+    report["external_harness_request"] = serde_json::json!({
+        "word": args.word.as_ref().map(|path| serde_json::json!({
+            "path": path.display().to_string(),
+            "exists": path.exists(),
+            "status": "configured_for_external_automation; not_inferred_from_ooxml"
+        })).unwrap_or_else(|| serde_json::json!({"status": "not_requested"})),
+        "libreoffice": args.libreoffice.as_ref().map(|path| serde_json::json!({
+            "path": path.display().to_string(),
+            "exists": path.exists(),
+            "status": "configured_for_external_export; prompt19 audit harness owns execution"
+        })).unwrap_or_else(|| serde_json::json!({"status": "not_requested"}))
+    });
+    if args.fail_on_unsupported
+        && report["report"]["unsupported_exact"]
+            .as_array()
+            .is_some_and(|rows| !rows.is_empty())
+    {
+        return Err(usage_error(
+            "word-pagination-audit found exact unsupported rows",
+        ));
+    }
+    let pretty = serde_json::to_string_pretty(&report)?;
+    write_output_optional(&args.output, &pretty)
+}
+
+fn run_prompt19_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt19_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;

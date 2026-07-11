@@ -34,6 +34,11 @@ public sealed class OxideSmokeTests
             ["prompt17"] = doc.Prompt17ReportJson(),
             ["prompt18"] = doc.Prompt18ReportJson(),
             ["prompt18b"] = doc.Prompt18bReportJson(),
+            ["form_js"] = doc.FormJavaScriptReportJson(),
+            ["form_action_graph"] = doc.FormActionGraphJson(),
+            ["interactive_data"] = doc.InteractiveDataReportJson(),
+            ["word_pagination"] = doc.WordPaginationAuditJson(),
+            ["prompt19"] = doc.Prompt19ReportJson(),
             ["associated_files"] = doc.AssociatedFilesReportJson(),
             ["edit_policy"] = doc.EditPolicyReportJson("incremental_save"),
             ["pages"] = doc.PagesReportJson(),
@@ -52,6 +57,7 @@ public sealed class OxideSmokeTests
         }
 
         var docx = doc.ToDocx();
+        var faithfulDocx = doc.ToDocx("page-faithful");
         var xlsx = doc.ToXlsx();
         var pptx = doc.ToPptx();
         var sanitized = doc.Sanitize();
@@ -70,6 +76,7 @@ public sealed class OxideSmokeTests
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(mediaSanitized.Bytes, 0, 5));
 
         Assert.StartsWith("PK", Encoding.ASCII.GetString(docx, 0, 2));
+        Assert.StartsWith("PK", Encoding.ASCII.GetString(faithfulDocx, 0, 2));
         Assert.StartsWith("PK", Encoding.ASCII.GetString(xlsx, 0, 2));
         Assert.StartsWith("PK", Encoding.ASCII.GetString(pptx, 0, 2));
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(sanitized.Bytes, 0, 5));

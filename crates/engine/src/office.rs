@@ -5,7 +5,7 @@
 //! grid projection; PPTX uses the same page/block geometry as positioned slide
 //! shapes.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Cursor, Read, Seek, Write};
 
 use zip::write::SimpleFileOptions;
@@ -21,6 +21,7 @@ use crate::engine::{ContentEngine, ExtractionProfile};
 use crate::error::{OxideError, Result};
 use crate::images::encoder::ImageOutputFormat;
 use crate::parse::{Block, BlockKind, Document, InlineSpan, InlineText, ParseOptions};
+use crate::versioning::resource_digest;
 use crate::PageRegion;
 
 const XLSX_MAIN_NS: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
@@ -401,7 +402,7 @@ fn xlsx_sheets_by_table(document: &Document) -> Vec<XlsxSheet> {
 fn write_xlsx(sheets: Vec<XlsxSheet>) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     let mut zip = ZipWriter::new(&mut cursor);
-    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let opts = deterministic_zip_options();
 
     zip_file(
         &mut zip,
@@ -456,6 +457,12 @@ fn zip_err(err: zip::result::ZipError) -> OxideError {
     OxideError::Io(std::io::Error::other(err.to_string()))
 }
 
+fn deterministic_zip_options() -> SimpleFileOptions {
+    SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Deflated)
+        .last_modified_time(zip::DateTime::default())
+}
+
 #[derive(Debug)]
 struct DocxImagePart {
     page: u32,
@@ -468,6 +475,12 @@ struct DocxImagePart {
     y_emu: i64,
 }
 
+#[derive(Debug, Clone)]
+struct DocxHyperlinkPart {
+    target: String,
+    rel_id: String,
+}
+
 fn write_docx(
     engine: &ContentEngine,
     document: &Document,
@@ -478,10 +491,11 @@ fn write_docx(
     } else {
         Vec::new()
     };
+    let hyperlinks = collect_docx_hyperlinks(document);
 
     let mut cursor = Cursor::new(Vec::new());
     let mut zip = ZipWriter::new(&mut cursor);
-    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let opts = deterministic_zip_options();
 
     zip_file(
         &mut zip,
@@ -494,17 +508,24 @@ fn write_docx(
         &mut zip,
         opts,
         "word/document.xml",
-        &docx_document_xml(document, &images, options.layout),
+        &docx_document_xml(document, &images, &hyperlinks, options.layout),
     )?;
     zip_file(
         &mut zip,
         opts,
         "word/_rels/document.xml.rels",
-        &docx_document_rels(&images),
+        &docx_document_rels(&images, &hyperlinks),
     )?;
     zip_file(&mut zip, opts, "word/styles.xml", DOCX_STYLES)?;
     zip_file(&mut zip, opts, "word/numbering.xml", DOCX_NUMBERING)?;
+    zip_file(&mut zip, opts, "word/settings.xml", DOCX_SETTINGS)?;
+    zip_file(&mut zip, opts, "docProps/core.xml", DOCX_CORE_PROPERTIES)?;
+    zip_file(&mut zip, opts, "docProps/app.xml", DOCX_APP_PROPERTIES)?;
+    let mut written_media = BTreeSet::new();
     for image in &images {
+        if !written_media.insert(image.name.clone()) {
+            continue;
+        }
         zip_bytes(
             &mut zip,
             opts,
@@ -534,15 +555,16 @@ fn collect_docx_images(engine: &ContentEngine, document: &Document) -> Result<Ve
             else {
                 continue;
             };
-            let index = out.len() + 1;
             let width_points = (image.bbox[2] - image.bbox[0]).abs().clamp(72.0, 432.0);
             let height_points = (image.bbox[3] - image.bbox[1]).abs().clamp(72.0, 432.0);
             let x_points = image.bbox[0].max(0.0);
             let y_points = (page.height - image.bbox[3]).max(0.0);
+            let digest = resource_digest(&bytes);
+            let stable_suffix = &digest[..16];
             out.push(DocxImagePart {
                 page: page.number,
-                rel_id: format!("rIdImage{index}"),
-                name: format!("image{index}.png"),
+                rel_id: format!("rIdImage{stable_suffix}"),
+                name: format!("image-{stable_suffix}.png"),
                 bytes,
                 width_emu: points_to_emu(width_points),
                 height_emu: points_to_emu(height_points),
@@ -552,6 +574,32 @@ fn collect_docx_images(engine: &ContentEngine, document: &Document) -> Result<Ve
         }
     }
     Ok(out)
+}
+
+fn collect_docx_hyperlinks(document: &Document) -> Vec<DocxHyperlinkPart> {
+    let mut targets = BTreeSet::new();
+    for block in &document.body {
+        for span in block_inline_spans(block) {
+            if let Some(target) = span.link.as_ref().filter(|value| {
+                let lower = value.to_ascii_lowercase();
+                lower.starts_with("https://")
+                    || lower.starts_with("http://")
+                    || lower.starts_with("mailto:")
+            }) {
+                targets.insert(target.clone());
+            }
+        }
+    }
+    targets
+        .into_iter()
+        .map(|target| {
+            let digest = resource_digest(target.as_bytes());
+            DocxHyperlinkPart {
+                rel_id: format!("rIdLink{}", &digest[..16]),
+                target,
+            }
+        })
+        .collect()
 }
 
 fn docx_content_types<'a>(media: impl IntoIterator<Item = &'a str>) -> String {
@@ -571,6 +619,9 @@ fn docx_content_types<'a>(media: impl IntoIterator<Item = &'a str>) -> String {
         r#"<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>
 <Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>
 <Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>
+<Override PartName="/word/settings.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml"/>
+<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>
+<Override PartName="/docProps/app.xml" ContentType="application/vnd.openxmlformats-officedocument.extended-properties+xml"/>
 </Types>"#,
     );
     out
@@ -579,27 +630,50 @@ fn docx_content_types<'a>(media: impl IntoIterator<Item = &'a str>) -> String {
 const PACKAGE_RELS_DOCX: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
 <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>
+<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>
+<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/extended-properties" Target="docProps/app.xml"/>
 </Relationships>"#;
 
-fn docx_document_rels(images: &[DocxImagePart]) -> String {
+fn docx_document_rels(images: &[DocxImagePart], hyperlinks: &[DocxHyperlinkPart]) -> String {
     let mut out = format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="{PACKAGE_REL_NS}">"#
     );
     out.push_str(r#"<Relationship Id="rIdStyles" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>"#);
     out.push_str(r#"<Relationship Id="rIdNumbering" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>"#);
+    out.push_str(r#"<Relationship Id="rIdSettings" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings" Target="settings.xml"/>"#);
+    let mut media = BTreeSet::new();
     for image in images {
+        if !media.insert((&image.rel_id, &image.name)) {
+            continue;
+        }
         out.push_str(&format!(
             r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/{}"/>"#,
             xml_escape(&image.rel_id),
             xml_escape(&image.name)
         ));
     }
+    for hyperlink in hyperlinks {
+        out.push_str(&format!(
+            r#"<Relationship Id="{}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="{}" TargetMode="External"/>"#,
+            xml_escape(&hyperlink.rel_id),
+            xml_escape(&hyperlink.target)
+        ));
+    }
     out.push_str("</Relationships>");
     out
 }
 
-fn docx_document_xml(document: &Document, images: &[DocxImagePart], layout: DocxLayout) -> String {
+fn docx_document_xml(
+    document: &Document,
+    images: &[DocxImagePart],
+    hyperlinks: &[DocxHyperlinkPart],
+    layout: DocxLayout,
+) -> String {
     let mut body = String::new();
+    let hyperlink_map = hyperlinks
+        .iter()
+        .map(|link| (link.target.as_str(), link.rel_id.as_str()))
+        .collect::<BTreeMap<_, _>>();
     if document.pages.is_empty() && document.body.is_empty() {
         body.push_str(&docx_paragraph_xml(
             &[InlineSpan {
@@ -607,20 +681,26 @@ fn docx_document_xml(document: &Document, images: &[DocxImagePart], layout: Docx
                 ..Default::default()
             }],
             ParagraphRole::Normal,
+            &hyperlink_map,
         ));
     }
     let mut anchor_id = 1usize;
-    for page in &document.pages {
+    for (page_index, page) in document.pages.iter().enumerate() {
         let mut blocks = page_blocks(document, page.number);
         blocks.sort_by_key(|block| block.reading_order);
         for block in blocks {
             match layout {
-                DocxLayout::Flowing => body.push_str(&docx_block_xml(block)),
+                DocxLayout::Flowing => body.push_str(&docx_block_xml(block, &hyperlink_map)),
                 DocxLayout::PageFaithful => {
                     if matches!(block.kind, BlockKind::Table { .. }) {
-                        body.push_str(&docx_block_xml(block));
+                        body.push_str(&docx_block_xml(block, &hyperlink_map));
                     } else {
-                        body.push_str(&docx_positioned_block_xml(block, page, anchor_id));
+                        body.push_str(&docx_positioned_block_xml(
+                            block,
+                            page,
+                            anchor_id,
+                            &hyperlink_map,
+                        ));
                         anchor_id += 1;
                     }
                 }
@@ -633,9 +713,14 @@ fn docx_document_xml(document: &Document, images: &[DocxImagePart], layout: Docx
                             | BlockKind::List { .. }
                     ) && block.confidence >= 0.75
                     {
-                        body.push_str(&docx_block_xml(block));
+                        body.push_str(&docx_block_xml(block, &hyperlink_map));
                     } else {
-                        body.push_str(&docx_positioned_block_xml(block, page, anchor_id));
+                        body.push_str(&docx_positioned_block_xml(
+                            block,
+                            page,
+                            anchor_id,
+                            &hyperlink_map,
+                        ));
                         anchor_id += 1;
                     }
                 }
@@ -650,39 +735,93 @@ fn docx_document_xml(document: &Document, images: &[DocxImagePart], layout: Docx
                 }
             }
         }
+        if page_index + 1 < document.pages.len() {
+            body.push_str(&docx_section_break_xml(page, layout));
+        }
     }
     if body.is_empty() {
         for block in &document.body {
-            body.push_str(&docx_block_xml(block));
+            body.push_str(&docx_block_xml(block, &hyperlink_map));
         }
     }
+    let final_section = document
+        .pages
+        .last()
+        .map(|page| docx_section_properties_xml(page, layout, false))
+        .unwrap_or_else(|| {
+            r#"<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>"#.to_string()
+        });
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:document xmlns:w="{WORD_NS}" xmlns:r="{DOCX_REL_NS}" xmlns:wp="{WP_NS}" xmlns:pic="{PIC_NS}" xmlns:a="{DRAWING_NS}" xmlns:wps="{WPS_NS}"><w:body>{body}<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="720" w:footer="720" w:gutter="0"/></w:sectPr></w:body></w:document>"#
+<w:document xmlns:w="{WORD_NS}" xmlns:r="{DOCX_REL_NS}" xmlns:wp="{WP_NS}" xmlns:pic="{PIC_NS}" xmlns:a="{DRAWING_NS}" xmlns:wps="{WPS_NS}"><w:body>{body}{final_section}</w:body></w:document>"#
     )
 }
 
-fn docx_block_xml(block: &Block) -> String {
+fn docx_section_break_xml(page: &crate::parse::Page, layout: DocxLayout) -> String {
+    format!(
+        "<w:p><w:pPr>{}</w:pPr></w:p>",
+        docx_section_properties_xml(page, layout, true)
+    )
+}
+
+fn docx_section_properties_xml(
+    page: &crate::parse::Page,
+    layout: DocxLayout,
+    next_page: bool,
+) -> String {
+    let width = (page.width.max(1.0) * 20.0).round() as i64;
+    let height = (page.height.max(1.0) * 20.0).round() as i64;
+    let orient = if width > height {
+        r#" w:orient="landscape""#
+    } else {
+        ""
+    };
+    let margin = match layout {
+        DocxLayout::Flowing => 720,
+        DocxLayout::Hybrid => 360,
+        DocxLayout::PageFaithful => 0,
+    };
+    let break_type = if next_page {
+        r#"<w:type w:val="nextPage"/>"#
+    } else {
+        ""
+    };
+    format!(
+        r#"<w:sectPr>{break_type}<w:pgSz w:w="{width}" w:h="{height}"{orient}/><w:pgMar w:top="{margin}" w:right="{margin}" w:bottom="{margin}" w:left="{margin}" w:header="0" w:footer="0" w:gutter="0"/><w:cols w:num="1"/><w:docGrid w:linePitch="360"/></w:sectPr>"#
+    )
+}
+
+fn docx_block_xml(block: &Block, hyperlinks: &BTreeMap<&str, &str>) -> String {
     match &block.kind {
-        BlockKind::Title { text } => docx_paragraph_xml(&text.spans, ParagraphRole::Title),
-        BlockKind::Heading { level, text } => {
-            docx_paragraph_xml(&text.spans, ParagraphRole::Heading((*level).clamp(1, 3)))
+        BlockKind::Title { text } => {
+            docx_paragraph_xml(&text.spans, ParagraphRole::Title, hyperlinks)
         }
+        BlockKind::Heading { level, text } => docx_paragraph_xml(
+            &text.spans,
+            ParagraphRole::Heading((*level).clamp(1, 3)),
+            hyperlinks,
+        ),
         BlockKind::Paragraph { text }
         | BlockKind::Caption { text, .. }
         | BlockKind::Header { text }
         | BlockKind::Footer { text }
         | BlockKind::PageNumber { text }
-        | BlockKind::Text { text } => docx_paragraph_xml(&text.spans, ParagraphRole::Normal),
+        | BlockKind::Text { text } => {
+            docx_paragraph_xml(&text.spans, ParagraphRole::Normal, hyperlinks)
+        }
         BlockKind::List { ordered, items } => {
             let mut out = String::new();
             let num_id = if *ordered { 2 } else { 1 };
             for item in items {
-                out.push_str(&docx_list_paragraph_xml(&item.text.spans, num_id));
+                out.push_str(&docx_list_paragraph_xml(
+                    &item.text.spans,
+                    num_id,
+                    hyperlinks,
+                ));
             }
             out
         }
-        BlockKind::Table { table, .. } => docx_table_xml(table),
+        BlockKind::Table { table, .. } => docx_table_xml(table, hyperlinks),
         BlockKind::Figure { alt, .. } => alt
             .as_ref()
             .filter(|text| !text.trim().is_empty())
@@ -694,38 +833,57 @@ fn docx_block_xml(block: &Block) -> String {
                         ..Default::default()
                     }],
                     ParagraphRole::Normal,
+                    hyperlinks,
                 )
             })
             .unwrap_or_default(),
     }
 }
 
-fn docx_paragraph_xml(spans: &[InlineSpan], role: ParagraphRole) -> String {
+fn docx_paragraph_xml(
+    spans: &[InlineSpan],
+    role: ParagraphRole,
+    hyperlinks: &BTreeMap<&str, &str>,
+) -> String {
     if spans.iter().all(|span| span.text.trim().is_empty()) {
         return String::new();
     }
     let style = match role {
-        ParagraphRole::Normal => String::new(),
-        ParagraphRole::Title => r#"<w:pStyle w:val="Title"/>"#.to_string(),
-        ParagraphRole::Heading(level) => format!(r#"<w:pStyle w:val="Heading{level}"/>"#),
+        ParagraphRole::Normal => r#"<w:widowControl/><w:keepLines/>"#.to_string(),
+        ParagraphRole::Title => {
+            r#"<w:pStyle w:val="Title"/><w:keepNext/><w:keepLines/><w:widowControl/>"#.to_string()
+        }
+        ParagraphRole::Heading(level) => format!(
+            r#"<w:pStyle w:val="Heading{level}"/><w:keepNext/><w:keepLines/><w:widowControl/>"#
+        ),
     };
     format!(
         "<w:p><w:pPr>{style}</w:pPr>{}</w:p>",
-        spans.iter().map(docx_run_xml).collect::<String>()
+        spans
+            .iter()
+            .map(|span| docx_run_xml(span, hyperlinks))
+            .collect::<String>()
     )
 }
 
-fn docx_list_paragraph_xml(spans: &[InlineSpan], num_id: u8) -> String {
+fn docx_list_paragraph_xml(
+    spans: &[InlineSpan],
+    num_id: u8,
+    hyperlinks: &BTreeMap<&str, &str>,
+) -> String {
     if spans.iter().all(|span| span.text.trim().is_empty()) {
         return String::new();
     }
     format!(
         r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{num_id}"/></w:numPr></w:pPr>{}</w:p>"#,
-        spans.iter().map(docx_run_xml).collect::<String>()
+        spans
+            .iter()
+            .map(|span| docx_run_xml(span, hyperlinks))
+            .collect::<String>()
     )
 }
 
-fn docx_run_xml(span: &InlineSpan) -> String {
+fn docx_run_xml(span: &InlineSpan, hyperlinks: &BTreeMap<&str, &str>) -> String {
     if span.text.is_empty() {
         return String::new();
     }
@@ -735,6 +893,9 @@ fn docx_run_xml(span: &InlineSpan) -> String {
     }
     if span.italic {
         props.push_str("<w:i/>");
+    }
+    if span.link.is_some() {
+        props.push_str(r#"<w:color w:val="0563C1"/><w:u w:val="single"/>"#);
     }
     let props = if props.is_empty() {
         String::new()
@@ -746,17 +907,35 @@ fn docx_run_xml(span: &InlineSpan) -> String {
     } else {
         ""
     };
-    format!(
+    let run = format!(
         r#"<w:r>{props}<w:t{preserve}>{}</w:t></w:r>"#,
         xml_escape(&span.text)
-    )
+    );
+    if let Some(rel_id) = span
+        .link
+        .as_deref()
+        .and_then(|target| hyperlinks.get(target).copied())
+    {
+        format!(
+            r#"<w:hyperlink r:id="{}" w:history="1">{run}</w:hyperlink>"#,
+            xml_escape(rel_id)
+        )
+    } else {
+        run
+    }
 }
 
-fn docx_positioned_block_xml(block: &Block, page: &crate::parse::Page, anchor_id: usize) -> String {
-    let Some(text) = block_text(block) else {
+fn docx_positioned_block_xml(
+    block: &Block,
+    page: &crate::parse::Page,
+    anchor_id: usize,
+    hyperlinks: &BTreeMap<&str, &str>,
+) -> String {
+    let spans = block_inline_spans(block);
+    if spans.is_empty() {
         return String::new();
-    };
-    if text.trim().is_empty() {
+    }
+    if spans.iter().all(|span| span.text.trim().is_empty()) {
         return String::new();
     }
     let x = block.bbox[0].max(0.0);
@@ -772,13 +951,7 @@ fn docx_positioned_block_xml(block: &Block, page: &crate::parse::Page, anchor_id
         BlockKind::Heading { level, .. } => ParagraphRole::Heading((*level).clamp(1, 3)),
         _ => ParagraphRole::Normal,
     };
-    let paragraph = docx_paragraph_xml(
-        &[InlineSpan {
-            text,
-            ..Default::default()
-        }],
-        role,
-    );
+    let paragraph = docx_paragraph_xml(&spans, role, hyperlinks);
     docx_textbox_anchor_xml(
         anchor_id,
         points_to_emu(x),
@@ -798,8 +971,36 @@ fn docx_textbox_anchor_xml(
     content_xml: &str,
 ) -> String {
     format!(
-        r#"<w:p><w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="0" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>{x_emu}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>{y_emu}</wp:posOffset></wp:positionV><wp:extent cx="{width_emu}" cy="{height_emu}"/><wp:wrapNone/><wp:docPr id="{anchor_id}" name="OxideBlock{anchor_id}"/><a:graphic><a:graphicData uri="{WPS_NS}"><wps:wsp><wps:txbx><w:txbxContent>{content_xml}</w:txbxContent></wps:txbx><wps:bodyPr/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#
+        r#"<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr><w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="{anchor_id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>{x_emu}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>{y_emu}</wp:posOffset></wp:positionV><wp:extent cx="{width_emu}" cy="{height_emu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="{anchor_id}" name="OxideBlock{anchor_id}" descr="PDF positioned text block"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri="{WPS_NS}"><wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{width_emu}" cy="{height_emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></wps:spPr><wps:txbx><w:txbxContent>{content_xml}</w:txbxContent></wps:txbx><wps:bodyPr lIns="0" tIns="0" rIns="0" bIns="0" wrap="none"/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#
     )
+}
+
+fn block_inline_spans(block: &Block) -> Vec<InlineSpan> {
+    match &block.kind {
+        BlockKind::Title { text }
+        | BlockKind::Heading { text, .. }
+        | BlockKind::Paragraph { text }
+        | BlockKind::Caption { text, .. }
+        | BlockKind::Header { text }
+        | BlockKind::Footer { text }
+        | BlockKind::PageNumber { text }
+        | BlockKind::Text { text } => text.spans.clone(),
+        BlockKind::List { items, .. } => items
+            .iter()
+            .flat_map(|item| item.text.spans.clone())
+            .collect(),
+        BlockKind::Figure { alt, .. } => alt
+            .as_ref()
+            .map(|text| {
+                vec![InlineSpan {
+                    text: text.clone(),
+                    italic: true,
+                    ..Default::default()
+                }]
+            })
+            .unwrap_or_default(),
+        BlockKind::Table { .. } => Vec::new(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -810,7 +1011,7 @@ struct DocxGridCell {
     colspan: usize,
 }
 
-fn docx_table_xml(table: &Table) -> String {
+fn docx_table_xml(table: &Table, hyperlinks: &BTreeMap<&str, &str>) -> String {
     let rows = table.num_rows().max(1);
     let cols = table.num_cols().max(1);
     let mut origins: HashMap<(usize, usize), DocxGridCell> = HashMap::new();
@@ -858,7 +1059,11 @@ fn docx_table_xml(table: &Table) -> String {
     }
     out.push_str("</w:tblGrid>");
     for row in 0..rows {
-        out.push_str("<w:tr>");
+        if row == 0 {
+            out.push_str(r#"<w:tr><w:trPr><w:tblHeader/><w:cantSplit/></w:trPr>"#);
+        } else {
+            out.push_str(r#"<w:tr><w:trPr><w:cantSplit/></w:trPr>"#);
+        }
         let mut col = 0usize;
         while col < cols {
             if let Some(cell) = origins.get(&(row, col)) {
@@ -868,13 +1073,16 @@ fn docx_table_xml(table: &Table) -> String {
                     cell.rowspan,
                     cell.colspan,
                     false,
+                    hyperlinks,
                 ));
                 col += cell.colspan.max(1);
             } else if let Some(colspan) = continuations.get(&(row, col)) {
-                out.push_str(&docx_table_cell_xml("", false, 1, *colspan, true));
+                out.push_str(&docx_table_cell_xml(
+                    "", false, 1, *colspan, true, hyperlinks,
+                ));
                 col += (*colspan).max(1);
             } else {
-                out.push_str(&docx_table_cell_xml("", false, 1, 1, false));
+                out.push_str(&docx_table_cell_xml("", false, 1, 1, false, hyperlinks));
                 col += 1;
             }
         }
@@ -890,6 +1098,7 @@ fn docx_table_cell_xml(
     rowspan: usize,
     colspan: usize,
     vmerge_continue: bool,
+    hyperlinks: &BTreeMap<&str, &str>,
 ) -> String {
     let mut props = String::new();
     if colspan > 1 {
@@ -911,7 +1120,7 @@ fn docx_table_cell_xml(
     }];
     format!(
         "<w:tc><w:tcPr>{props}</w:tcPr>{}</w:tc>",
-        docx_paragraph_xml(&spans, ParagraphRole::Normal)
+        docx_paragraph_xml(&spans, ParagraphRole::Normal, hyperlinks)
     )
 }
 
@@ -962,6 +1171,20 @@ const DOCX_NUMBERING: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone=
 <w:num w:numId="1"><w:abstractNumId w:val="1"/></w:num>
 <w:num w:numId="2"><w:abstractNumId w:val="2"/></w:num>
 </w:numbering>"#;
+
+const DOCX_SETTINGS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:settings xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+<w:zoom w:percent="100"/><w:defaultTabStop w:val="720"/><w:evenAndOddHeaders/>
+<w:compat><w:compatSetting w:name="compatibilityMode" w:uri="http://schemas.microsoft.com/office/word" w:val="15"/></w:compat>
+</w:settings>"#;
+
+const DOCX_CORE_PROPERTIES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<dc:title>Oxide PDF conversion</dc:title><dc:creator>Oxide PDF SDK</dc:creator><cp:lastModifiedBy>Oxide PDF SDK</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">1980-01-01T00:00:00Z</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">1980-01-01T00:00:00Z</dcterms:modified><cp:revision>1</cp:revision>
+</cp:coreProperties>"#;
+
+const DOCX_APP_PROPERTIES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Oxide PDF SDK</Application><AppVersion>1.0</AppVersion></Properties>"#;
 
 fn xlsx_content_types(sheet_count: usize) -> String {
     let mut out = String::from(
@@ -1133,7 +1356,7 @@ fn write_pptx(
 ) -> Result<Vec<u8>> {
     let mut cursor = Cursor::new(Vec::new());
     let mut zip = ZipWriter::new(&mut cursor);
-    let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+    let opts = deterministic_zip_options();
 
     let slide_count = document.pages.len().max(1);
     let (slide_cx, slide_cy) = ppt_slide_size(document, engine)?;

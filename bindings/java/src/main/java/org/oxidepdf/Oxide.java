@@ -249,6 +249,32 @@ public final class Oxide {
             return Native.documentReport(handle, Native.PROMPT18B_REPORT, "prompt18b_report");
         }
 
+        public String formJavaScriptReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.FORM_JS_REPORT, "form_js_report");
+        }
+
+        public String formActionGraphJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.FORM_ACTION_GRAPH, "form_action_graph");
+        }
+
+        public String interactiveDataReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.INTERACTIVE_DATA_REPORT, "interactive_data_report");
+        }
+
+        public String wordPaginationAuditJson(String layout) {
+            ensureOpen();
+            Objects.requireNonNull(layout, "layout");
+            return Native.documentStringReport(handle, Native.WORD_PAGINATION_AUDIT, layout, "word_pagination_audit");
+        }
+
+        public String prompt19ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT19_REPORT, "prompt19_report");
+        }
+
         public String associatedFilesReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.ASSOCIATED_FILES_REPORT, "associated_files_report");
@@ -424,6 +450,16 @@ public final class Oxide {
             return Native.documentStringOutput(handle, Native.ASSOCIATED_FILES_SANITIZE, optionsJson, "associated_files_sanitize");
         }
 
+        public BinaryResult formJavaScriptSanitize(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringOutput(handle, Native.FORM_JS_SANITIZE, optionsJson, "form_js_sanitize");
+        }
+
+        public BinaryResult formJavaScriptFlattenValues(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringOutput(handle, Native.FORM_JS_FLATTEN_VALUES, optionsJson, "form_js_flatten_values");
+        }
+
         public BinaryResult sanitize(String policy) {
             ensureOpen();
             return Native.documentStringOutput(handle, Native.SANITIZE, policy, "sanitize");
@@ -442,6 +478,24 @@ public final class Oxide {
         public byte[] toDocx(boolean includeImages) {
             ensureOpen();
             return Native.documentToBytes(handle, Native.TO_DOCX, includeImages ? 1 : 0);
+        }
+
+        public byte[] toDocx(String layout, boolean includeImages) {
+            ensureOpen();
+            Objects.requireNonNull(layout, "layout");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment layoutPtr = arena.allocateFrom(layout);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.TO_DOCX_WITH_LAYOUT.invokeExact(
+                    handle, includeImages ? 1 : 0, layoutPtr, buffer, err);
+                Native.throwError(status, err);
+                return Native.takeBuffer(buffer);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide to_docx_with_layout failed", ex);
+            }
         }
 
         public byte[] toXlsx(String layout) {
@@ -569,6 +623,10 @@ public final class Oxide {
             "oxide_document_to_docx",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle TO_DOCX_WITH_LAYOUT = downcall(
+            "oxide_document_to_docx_with_layout",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle DOCX_TO_PDF = downcall(
             "oxide_docx_to_pdf",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
@@ -599,6 +657,11 @@ public final class Oxide {
         private static final MethodHandle PROMPT17_REPORT = documentReport("oxide_document_prompt17_report_json");
         private static final MethodHandle PROMPT18_REPORT = documentReport("oxide_document_prompt18_report_json");
         private static final MethodHandle PROMPT18B_REPORT = documentReport("oxide_document_prompt18b_report_json");
+        private static final MethodHandle FORM_JS_REPORT = documentReport("oxide_document_form_js_report_json");
+        private static final MethodHandle FORM_ACTION_GRAPH = documentReport("oxide_document_form_action_graph_json");
+        private static final MethodHandle INTERACTIVE_DATA_REPORT = documentReport("oxide_document_interactive_data_report_json");
+        private static final MethodHandle WORD_PAGINATION_AUDIT = documentStringReport("oxide_document_word_pagination_audit_json");
+        private static final MethodHandle PROMPT19_REPORT = documentReport("oxide_document_prompt19_report_json");
         private static final MethodHandle ASSOCIATED_FILES_REPORT = documentReport("oxide_document_associated_files_report_json");
         private static final MethodHandle EDIT_POLICY_REPORT = documentStringReport("oxide_document_edit_policy_report_json");
         private static final MethodHandle ANNOTATION_APPEARANCE_REPORT = documentStringReport("oxide_document_annotation_appearance_report_json");
@@ -687,6 +750,14 @@ public final class Oxide {
         );
         private static final MethodHandle ASSOCIATED_FILES_SANITIZE = downcall(
             "oxide_document_associated_files_sanitize_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle FORM_JS_SANITIZE = downcall(
+            "oxide_document_form_js_sanitize_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle FORM_JS_FLATTEN_VALUES = downcall(
+            "oxide_document_form_js_flatten_values_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle SANITIZE = downcall(

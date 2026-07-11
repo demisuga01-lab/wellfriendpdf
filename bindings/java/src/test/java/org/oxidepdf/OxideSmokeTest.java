@@ -34,6 +34,11 @@ public final class OxideSmokeTest {
             reports.put("prompt17", doc.prompt17ReportJson());
             reports.put("prompt18", doc.prompt18ReportJson());
             reports.put("prompt18b", doc.prompt18bReportJson());
+            reports.put("form_js", doc.formJavaScriptReportJson());
+            reports.put("form_action_graph", doc.formActionGraphJson());
+            reports.put("interactive_data", doc.interactiveDataReportJson());
+            reports.put("word_pagination", doc.wordPaginationAuditJson("page-faithful"));
+            reports.put("prompt19", doc.prompt19ReportJson());
             reports.put("associated_files", doc.associatedFilesReportJson());
             reports.put("edit_policy", doc.editPolicyReportJson("incremental_save"));
             reports.put("pages", doc.pagesReportJson());
@@ -52,6 +57,7 @@ public final class OxideSmokeTest {
             }
 
             byte[] docx = doc.toDocx(true);
+            byte[] faithfulDocx = doc.toDocx("page-faithful", true);
             byte[] xlsx = doc.toXlsx("pages");
             byte[] pptx = doc.toPptx(true);
             Oxide.BinaryResult sanitized = doc.sanitize("balanced");
@@ -65,6 +71,7 @@ public final class OxideSmokeTest {
             reports.put("appearances", appearances.reportJson());
             reports.put("media_sanitized", mediaSanitized.reportJson());
             assertPrefix(docx, "PK", "docx");
+            assertPrefix(faithfulDocx, "PK", "page-faithful docx");
             assertPrefix(xlsx, "PK", "xlsx");
             assertPrefix(pptx, "PK", "pptx");
             assertPrefix(sanitized.bytes(), "%PDF-", "sanitized pdf");

@@ -316,6 +316,31 @@ mod wasm_api {
             self.report(|b| sdk::prompt18b_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = formJsReportJson)]
+        pub fn form_js_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::form_js_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = formActionGraphJson)]
+        pub fn form_action_graph_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::form_action_graph_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = interactiveDataReportJson)]
+        pub fn interactive_data_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::interactive_data_closeout_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = wordPaginationAuditJson)]
+        pub fn word_pagination_audit_json(&self, layout: &str) -> Result<String, JsValue> {
+            self.report(|b| sdk::word_pagination_audit_json(b, layout, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt19ReportJson)]
+        pub fn prompt19_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt19_report_json(b, None))
+        }
+
         #[wasm_bindgen(js_name = associatedFilesReportJson)]
         pub fn associated_files_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::associated_files_report_json(b, None))
@@ -543,6 +568,22 @@ mod wasm_api {
             options_json: Option<String>,
         ) -> Result<OxideOutput, JsValue> {
             self.output(|b| sdk::associated_files_sanitize_json(b, options_json.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = formJsSanitize)]
+        pub fn form_js_sanitize(
+            &self,
+            options_json: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::form_js_sanitize_json(b, options_json.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = formJsFlattenValues)]
+        pub fn form_js_flatten_values(
+            &self,
+            options_json: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::form_js_flatten_values_json(b, options_json.as_deref(), None))
         }
 
         #[wasm_bindgen(js_name = associatedFilesRemove)]

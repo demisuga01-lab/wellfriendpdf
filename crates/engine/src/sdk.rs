@@ -55,7 +55,8 @@ use crate::{
     },
     standards::{validate_standards_profile, StandardsProfile},
     versioning::resource_dedup_report,
-    ContentEngine, DocumentInfo, Result, TextQuad, TextSearchOptions, TextSemanticOptions,
+    ContentEngine, DocumentInfo, OxideError, Result, TextQuad, TextSearchOptions,
+    TextSemanticOptions,
 };
 
 /// Version of the JSON envelope wrapping every SDK report. Bump only when the
@@ -322,6 +323,104 @@ pub fn prompt18b_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<St
     envelope(
         "prompt18b_report",
         &crate::prompt18::prompt18b_report(&engine)?,
+    )
+}
+
+/// Prompt 19 form JavaScript/action inventory. JavaScript is never executed by
+/// this operation.
+pub fn form_js_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "form_js_report",
+        &crate::prompt19::form_javascript_inventory(
+            &engine,
+            &crate::prompt19::FormJsLimits::default(),
+        )?,
+    )
+}
+
+pub fn form_action_graph_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let inventory = crate::prompt19::form_javascript_inventory(
+        &engine,
+        &crate::prompt19::FormJsLimits::default(),
+    )?;
+    envelope(
+        "form_action_graph",
+        &crate::prompt19::form_action_graph(&engine, &inventory)?,
+    )
+}
+
+pub fn form_js_sanitize_json(
+    bytes: &[u8],
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let engine = open(bytes, password)?;
+    let options = options_json
+        .map(serde_json::from_str::<crate::prompt19::FormJsSanitizerOptions>)
+        .transpose()
+        .map_err(|error| {
+            OxideError::invalid_input(format!("invalid Prompt 19 sanitizer options: {error}"))
+        })?
+        .unwrap_or_default();
+    let (output, report) =
+        crate::prompt19::form_js_sanitize_pdf(engine.document().reader().file_bytes(), &options)?;
+    Ok((output, envelope("form_js_sanitize", &report)?))
+}
+
+pub fn form_js_flatten_values_json(
+    bytes: &[u8],
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let engine = open(bytes, password)?;
+    let mut options = options_json
+        .map(serde_json::from_str::<crate::prompt19::FormJsSanitizerOptions>)
+        .transpose()
+        .map_err(|error| {
+            OxideError::invalid_input(format!("invalid Prompt 19 flatten options: {error}"))
+        })?
+        .unwrap_or_default();
+    options.mode = crate::prompt19::FormJsPolicyMode::FlattenCalculatedValuesThenRemove;
+    let (output, report) = crate::prompt19::flatten_calculated_values_pdf(
+        engine.document().reader().file_bytes(),
+        &options,
+    )?;
+    Ok((output, envelope("form_js_flatten_values", &report)?))
+}
+
+pub fn interactive_data_closeout_report_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "interactive_data_report",
+        &crate::prompt19::interactive_data_closeout_report(&engine)?,
+    )
+}
+
+pub fn word_pagination_audit_json(
+    bytes: &[u8],
+    layout: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let layout = crate::office::DocxLayout::parse(layout).ok_or_else(|| {
+        OxideError::invalid_input("unknown DOCX layout; use flowing, page-faithful, or hybrid")
+    })?;
+    envelope(
+        "word_pagination_audit",
+        &crate::prompt19::word_pagination_audit(&engine, layout)?,
+    )
+}
+
+pub fn prompt19_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt19_report",
+        &crate::prompt19::prompt19_report(&engine)?,
     )
 }
 
@@ -2572,6 +2671,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt17_annotation_xfdf_media_nonaxis_redaction": crate::prompt17::prompt17_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt18_mask_inline_associated_signature_safe_edits": crate::prompt18::prompt18_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt18b_advanced_secure_mutation_closure": crate::prompt18::prompt18b_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt19_form_js_interactive_docx_layout": crate::prompt19::prompt19_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2594,6 +2694,9 @@ pub fn feature_report_json() -> Result<String> {
             "prompt18_report", "prompt18b_report", "associated_files_update_owner",
             "associated_files_remove_owner", "incremental_form_edit",
             "incremental_annotation_edit", "incremental_page_property_edit",
+            "form_js_report", "form_action_graph", "form_js_sanitize",
+            "form_js_flatten_values", "interactive_data_report",
+            "word_pagination_audit", "prompt19_report",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",

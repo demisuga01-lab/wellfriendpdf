@@ -263,6 +263,41 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string FormJavaScriptReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_form_js_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string FormActionGraphJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_form_action_graph_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string InteractiveDataReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_interactive_data_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string WordPaginationAuditJson(string layout = "page-faithful")
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(layout);
+        return ReportWithString(layout, NativeMethods.oxide_document_word_pagination_audit_json);
+    }
+
+    public string Prompt19ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt19_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
     public string AssociatedFilesReportJson()
     {
         ThrowIfDisposed();
@@ -558,6 +593,12 @@ public sealed class OxideDocument : IDisposable
     public OxideBinaryResult AssociatedFilesSanitize(string? optionsJson = null) =>
         Prompt18StringOutput(optionsJson, NativeMethods.oxide_document_associated_files_sanitize_json);
 
+    public OxideBinaryResult FormJavaScriptSanitize(string? optionsJson = null) =>
+        Prompt18StringOutput(optionsJson, NativeMethods.oxide_document_form_js_sanitize_json);
+
+    public OxideBinaryResult FormJavaScriptFlattenValues(string? optionsJson = null) =>
+        Prompt18StringOutput(optionsJson, NativeMethods.oxide_document_form_js_flatten_values_json);
+
     private delegate int Prompt18OutputCall(
         NativeMethods.DocumentHandle document, IntPtr value, out NativeMethods.OxideBuffer buffer,
         out IntPtr json, out IntPtr error);
@@ -681,6 +722,24 @@ public sealed class OxideDocument : IDisposable
         var status = NativeMethods.oxide_document_to_docx(_handle, includeImages ? 1 : 0, out var buffer, out var error);
         NativeMethods.ThrowIfError(status, error);
         return NativeMethods.TakeBuffer(buffer);
+    }
+
+    public byte[] ToDocx(string layout, bool includeImages = true)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(layout);
+        var layoutPtr = NativeMethods.StringToNativeOrNull(layout);
+        try
+        {
+            var status = NativeMethods.oxide_document_to_docx_with_layout(
+                _handle, includeImages ? 1 : 0, layoutPtr, out var buffer, out var error);
+            NativeMethods.ThrowIfError(status, error);
+            return NativeMethods.TakeBuffer(buffer);
+        }
+        finally
+        {
+            if (layoutPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(layoutPtr);
+        }
     }
 
     public void Dispose()

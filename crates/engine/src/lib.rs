@@ -115,6 +115,7 @@ pub mod parser_report;
 pub mod prepress;
 pub mod prompt17;
 pub mod prompt18;
+pub mod prompt19;
 pub mod reader;
 pub mod render;
 pub mod sdk;
@@ -330,6 +331,14 @@ pub use prompt18::{
     IncrementalPagePropertyEdit, MaskInventoryReport, MaskInventoryRow, MaskRedactionStrategy,
     Prompt18SupportStatus, SignatureImpactSummary, StructuralSignaturePolicy,
     PROMPT18B_SCHEMA_VERSION, PROMPT18_SCHEMA_VERSION,
+};
+pub use prompt19::{
+    flatten_calculated_values_pdf, form_action_graph, form_javascript_inventory,
+    form_js_sanitize_pdf, interactive_data_closeout_report, prompt19_policy_matrix,
+    prompt19_report, word_pagination_audit, ActionInventoryEntry, CalculationEdge,
+    CalculationFlattenReport, CalculationResult, CustomActionPolicy, DocxLayoutAuditReport,
+    FormActionGraphReport, FormJsInventoryReport, FormJsLimits, FormJsPolicyMode,
+    FormJsSanitizerOptions, FormJsSanitizerReport, Prompt19SupportStatus, PROMPT19_SCHEMA_VERSION,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{

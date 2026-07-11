@@ -401,6 +401,32 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::prompt18b_report_json(bytes, None))
     }
 
+    fn form_js_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::form_js_report_json(bytes, None))
+    }
+
+    fn form_action_graph<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::form_action_graph_json(bytes, None))
+    }
+
+    fn interactive_data_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::interactive_data_closeout_report_json(bytes, None)
+        })
+    }
+
+    #[pyo3(signature = (layout="page-faithful"))]
+    fn word_pagination_audit<'py>(&self, py: Python<'py>, layout: &str) -> PyResult<Py<PyAny>> {
+        let layout = layout.to_string();
+        self.report_json(py, |bytes| {
+            sdk::word_pagination_audit_json(bytes, &layout, None)
+        })
+    }
+
+    fn prompt19_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt19_report_json(bytes, None))
+    }
+
     fn associated_files_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::associated_files_report_json(bytes, None))
     }
@@ -864,6 +890,39 @@ impl PyDocument {
         ))
     }
 
+    #[pyo3(signature = (options_json=None, output=None))]
+    fn form_js_sanitize<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::form_js_sanitize_json(&bytes, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (options_json=None, output=None))]
+    fn form_js_flatten_values<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::form_js_flatten_values_json(&bytes, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
     #[pyo3(signature = (stable_ids, output=None))]
     fn associated_files_remove<'py>(
         &self,
@@ -1315,20 +1374,24 @@ fn pdf_to_pptx(
 }
 
 #[pyfunction]
-#[pyo3(signature = (pdf, output=None, include_images=true, password=None))]
+#[pyo3(signature = (pdf, output=None, include_images=true, password=None, layout="flowing"))]
 fn pdf_to_docx(
     pdf: PathBuf,
     output: Option<PathBuf>,
     include_images: bool,
     password: Option<&str>,
+    layout: &str,
 ) -> PyResult<Vec<u8>> {
     let engine = open_engine_path(&pdf, password)?;
+    let layout = oxide_engine::DocxLayout::parse(layout).ok_or_else(|| {
+        OxideError::new_err("unknown DOCX layout; use flowing, page-faithful, or hybrid")
+    })?;
     let bytes = run_oxide(|| {
         oxide_engine::pdf_to_docx(
             &engine,
             &oxide_engine::DocxOptions {
                 include_images,
-                layout: oxide_engine::DocxLayout::Flowing,
+                layout,
             },
         )
     })?;
