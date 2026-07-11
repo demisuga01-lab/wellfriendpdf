@@ -47,6 +47,7 @@ def test_read_only_report_envelopes():
     _envelope(doc.annotation_appearance_report(), "annotation_appearance_report")
     _envelope(doc.prompt17_report(), "prompt17_report")
     _envelope(doc.prompt18_report(), "prompt18_report")
+    _envelope(doc.prompt18b_report(), "prompt18b_report")
     _envelope(doc.associated_files_report(), "associated_files_report")
     _envelope(doc.mask_redaction_report(), "mask_redaction_report")
     _envelope(doc.edit_policy_report("incremental_save"), "edit_policy_report")
@@ -275,6 +276,9 @@ def test_module_level_reports():
     prompt18 = feature["prompt18_mask_inline_associated_signature_safe_edits"]
     assert prompt18["failure"]["blocked"] == 0
     assert prompt18["security"]["signature_crypto_overclaim"] == 0
+    prompt18b = feature["prompt18b_advanced_secure_mutation_closure"]
+    assert prompt18b["failure"]["blocked"] == 0
+    assert prompt18b["failure"]["security_proof"] == 0
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

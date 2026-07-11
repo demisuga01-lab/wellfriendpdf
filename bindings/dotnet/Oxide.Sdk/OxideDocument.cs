@@ -256,6 +256,13 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string Prompt18bReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt18b_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
     public string AssociatedFilesReportJson()
     {
         ThrowIfDisposed();
@@ -466,6 +473,79 @@ public sealed class OxideDocument : IDisposable
         finally
         {
             if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public OxideBinaryResult AssociatedFileUpdateOwner(byte[] payload, string optionsJson)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentException.ThrowIfNullOrWhiteSpace(optionsJson);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_associated_files_update_owner_json(
+                _handle, payload, (UIntPtr)payload.Length, optionsPtr,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public OxideBinaryResult AssociatedFileRemoveOwner(string optionsJson) =>
+        Prompt18StringOutput(optionsJson, NativeMethods.oxide_document_associated_files_remove_owner_json);
+
+    public OxideBinaryResult IncrementalFormEdit(
+        string fieldName, string value, bool signaturePolicyOverride = false)
+    {
+        ThrowIfDisposed();
+        var fieldPtr = NativeMethods.StringToNativeOrNull(fieldName);
+        var valuePtr = NativeMethods.StringToNativeOrNull(value);
+        try
+        {
+            var status = NativeMethods.oxide_document_incremental_form_edit_json(
+                _handle, fieldPtr, valuePtr, signaturePolicyOverride,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (fieldPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(fieldPtr);
+            if (valuePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(valuePtr);
+        }
+    }
+
+    public OxideBinaryResult IncrementalAnnotationEdit(
+        string optionsJson, bool signaturePolicyOverride = false) =>
+        Prompt18bPolicyOutput(optionsJson, signaturePolicyOverride,
+            NativeMethods.oxide_document_incremental_annotation_edit_json);
+
+    public OxideBinaryResult IncrementalPagePropertyEdit(
+        string optionsJson, bool signaturePolicyOverride = false) =>
+        Prompt18bPolicyOutput(optionsJson, signaturePolicyOverride,
+            NativeMethods.oxide_document_incremental_page_property_edit_json);
+
+    private delegate int Prompt18bPolicyOutputCall(
+        NativeMethods.DocumentHandle document, IntPtr value, bool signaturePolicyOverride,
+        out NativeMethods.OxideBuffer buffer, out IntPtr json, out IntPtr error);
+
+    private OxideBinaryResult Prompt18bPolicyOutput(
+        string value, bool signaturePolicyOverride, Prompt18bPolicyOutputCall call)
+    {
+        ThrowIfDisposed();
+        var valuePtr = NativeMethods.StringToNativeOrNull(value);
+        try
+        {
+            var status = call(_handle, valuePtr, signaturePolicyOverride,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (valuePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(valuePtr);
         }
     }
 

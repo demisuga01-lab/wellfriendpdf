@@ -460,6 +460,10 @@ OXIDE_API int oxide_document_prompt18_report_json(
     const OxideDocument *document,
     char **out_json,
     char **error_out);
+OXIDE_API int oxide_document_prompt18b_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
 OXIDE_API int oxide_document_associated_files_report_json(
     const OxideDocument *document,
     char **out_json,
@@ -542,6 +546,42 @@ OXIDE_API int oxide_document_associated_files_add_json(
     const uint8_t *payload,
     size_t payload_len,
     const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_associated_files_update_owner_json(
+    const OxideDocument *document,
+    const uint8_t *payload,
+    size_t payload_len,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_associated_files_remove_owner_json(
+    const OxideDocument *document,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_incremental_form_edit_json(
+    const OxideDocument *document,
+    const char *field_name,
+    const char *value,
+    bool signature_policy_override,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_incremental_annotation_edit_json(
+    const OxideDocument *document,
+    const char *options_json,
+    bool signature_policy_override,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_incremental_page_property_edit_json(
+    const OxideDocument *document,
+    const char *options_json,
+    bool signature_policy_override,
     OxideBuffer *out_buffer,
     char **out_json,
     char **error_out);

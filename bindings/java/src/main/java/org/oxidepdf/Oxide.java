@@ -244,6 +244,11 @@ public final class Oxide {
             return Native.documentReport(handle, Native.PROMPT18_REPORT, "prompt18_report");
         }
 
+        public String prompt18bReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT18B_REPORT, "prompt18b_report");
+        }
+
         public String associatedFilesReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.ASSOCIATED_FILES_REPORT, "associated_files_report");
@@ -361,6 +366,45 @@ public final class Oxide {
         public BinaryResult associatedFileAdd(byte[] payload, String optionsJson) {
             ensureOpen();
             return Native.associatedFileAdd(handle, payload, optionsJson);
+        }
+
+        public BinaryResult associatedFileUpdateOwner(byte[] payload, String optionsJson) {
+            ensureOpen();
+            return Native.associatedFilePayloadMutation(
+                handle, Native.ASSOCIATED_FILES_UPDATE_OWNER, payload, optionsJson,
+                "associated_files_update_owner");
+        }
+
+        public BinaryResult associatedFileRemoveOwner(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringOutput(
+                handle, Native.ASSOCIATED_FILES_REMOVE_OWNER, optionsJson,
+                "associated_files_remove_owner");
+        }
+
+        public BinaryResult incrementalFormEdit(
+            String fieldName, String value, boolean signaturePolicyOverride
+        ) {
+            ensureOpen();
+            return Native.incrementalFormEdit(handle, fieldName, value, signaturePolicyOverride);
+        }
+
+        public BinaryResult incrementalAnnotationEdit(
+            String optionsJson, boolean signaturePolicyOverride
+        ) {
+            ensureOpen();
+            return Native.documentPolicyOutput(
+                handle, Native.INCREMENTAL_ANNOTATION_EDIT, optionsJson,
+                signaturePolicyOverride, "incremental_annotation_edit");
+        }
+
+        public BinaryResult incrementalPagePropertyEdit(
+            String optionsJson, boolean signaturePolicyOverride
+        ) {
+            ensureOpen();
+            return Native.documentPolicyOutput(
+                handle, Native.INCREMENTAL_PAGE_PROPERTY_EDIT, optionsJson,
+                signaturePolicyOverride, "incremental_page_property_edit");
         }
 
         public BinaryResult associatedFileExtract(String stableId) {
@@ -554,6 +598,7 @@ public final class Oxide {
         private static final MethodHandle RICH_MEDIA_REPORT = documentReport("oxide_document_rich_media_report_json");
         private static final MethodHandle PROMPT17_REPORT = documentReport("oxide_document_prompt17_report_json");
         private static final MethodHandle PROMPT18_REPORT = documentReport("oxide_document_prompt18_report_json");
+        private static final MethodHandle PROMPT18B_REPORT = documentReport("oxide_document_prompt18b_report_json");
         private static final MethodHandle ASSOCIATED_FILES_REPORT = documentReport("oxide_document_associated_files_report_json");
         private static final MethodHandle EDIT_POLICY_REPORT = documentStringReport("oxide_document_edit_policy_report_json");
         private static final MethodHandle ANNOTATION_APPEARANCE_REPORT = documentStringReport("oxide_document_annotation_appearance_report_json");
@@ -611,6 +656,26 @@ public final class Oxide {
         private static final MethodHandle ASSOCIATED_FILES_ADD = downcall(
             "oxide_document_associated_files_add_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ASSOCIATED_FILES_UPDATE_OWNER = downcall(
+            "oxide_document_associated_files_update_owner_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ASSOCIATED_FILES_REMOVE_OWNER = downcall(
+            "oxide_document_associated_files_remove_owner_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle INCREMENTAL_FORM_EDIT = downcall(
+            "oxide_document_incremental_form_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle INCREMENTAL_ANNOTATION_EDIT = downcall(
+            "oxide_document_incremental_annotation_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle INCREMENTAL_PAGE_PROPERTY_EDIT = downcall(
+            "oxide_document_incremental_page_property_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle ASSOCIATED_FILES_EXTRACT = downcall(
             "oxide_document_associated_files_extract_json",
@@ -967,6 +1032,18 @@ public final class Oxide {
             byte[] payload,
             String optionsJson
         ) {
+            return associatedFilePayloadMutation(
+                handle, ASSOCIATED_FILES_ADD, payload, optionsJson,
+                "associated_files_add");
+        }
+
+        private static BinaryResult associatedFilePayloadMutation(
+            MemorySegment handle,
+            MethodHandle call,
+            byte[] payload,
+            String optionsJson,
+            String operation
+        ) {
             Objects.requireNonNull(payload, "payload");
             Objects.requireNonNull(optionsJson, "optionsJson");
             try (Arena arena = Arena.ofConfined()) {
@@ -978,14 +1055,65 @@ public final class Oxide {
                 MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
                 MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
                 MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
-                int status = (int) ASSOCIATED_FILES_ADD.invokeExact(
+                int status = (int) call.invokeExact(
                     handle, data, (long) payload.length, options, buffer, jsonOut, err);
                 throwError(status, err);
                 return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
             } catch (OxideException ex) {
                 throw ex;
             } catch (Throwable ex) {
-                throw new IllegalStateException("Oxide associated_files_add failed", ex);
+                throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult documentPolicyOutput(
+            MemorySegment handle,
+            MethodHandle call,
+            String optionsJson,
+            boolean signaturePolicyOverride,
+            String operation
+        ) {
+            Objects.requireNonNull(optionsJson, "optionsJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment options = arena.allocateFrom(optionsJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) call.invokeExact(
+                    handle, options, (byte) (signaturePolicyOverride ? 1 : 0),
+                    buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult incrementalFormEdit(
+            MemorySegment handle,
+            String fieldName,
+            String value,
+            boolean signaturePolicyOverride
+        ) {
+            Objects.requireNonNull(fieldName, "fieldName");
+            Objects.requireNonNull(value, "value");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment field = arena.allocateFrom(fieldName);
+                MemorySegment text = arena.allocateFrom(value);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) INCREMENTAL_FORM_EDIT.invokeExact(
+                    handle, field, text, (byte) (signaturePolicyOverride ? 1 : 0),
+                    buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide incremental_form_edit failed", ex);
             }
         }
 

@@ -11,9 +11,10 @@ use sha2::{Digest, Sha256};
 
 use crate::attachments::{extract_attachment_with_limits, list_attachments, sanitize_filename};
 use crate::document::PdfDocument;
+use crate::editing::{AnnotationOptions, EditMode, ImageRect, PdfEditor};
 use crate::engine::ContentEngine;
 use crate::error::{OxideError, Result};
-use crate::filters::DecodeLimits;
+use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::prompt17::{
     apply_nonaxis_image_redaction_pdf, NonAxisRedactionApplyReport, NonAxisRedactionOptions,
@@ -26,6 +27,7 @@ use crate::writer::{
 };
 
 pub const PROMPT18_SCHEMA_VERSION: &str = "prompt18.mask-inline-associated-signature-policy.v1";
+pub const PROMPT18B_SCHEMA_VERSION: &str = "prompt18b.advanced-secure-mutation-closure.v1";
 
 pub const MAX_IMAGE_MASK_PIXELS: u64 = 100_000_000;
 pub const MAX_MASK_RECURSION: usize = 32;
@@ -129,11 +131,13 @@ pub fn mask_redaction_inventory(engine: &ContentEngine) -> Result<MaskInventoryR
             .map(|items| items.iter().filter_map(PdfObject::as_number).collect());
         let filters = filter_names(&dict);
         let pixels = u64::from(width).saturating_mul(u64::from(height));
-        let directly_rewritable = bpc == 8
-            && matches!(
-                color_space_name(&dict).as_str(),
-                "DeviceGray" | "DeviceRGB" | "DeviceCMYK"
-            )
+        let color_space = color_space_name(&dict);
+        let directly_rewritable = ((image_mask && bpc == 1)
+            || (color_space == "Indexed" && matches!(bpc, 1 | 2 | 4 | 8))
+            || (matches!(
+                color_space.as_str(),
+                "DeviceGray" | "DeviceRGB" | "DeviceCMYK" | "ICCBased"
+            ) && bpc == 8))
             && pixels <= MAX_IMAGE_MASK_PIXELS;
         let has_mask =
             image_mask || explicit_mask.is_some() || soft_mask.is_some() || color_key_mask;
@@ -147,7 +151,7 @@ pub fn mask_redaction_inventory(engine: &ContentEngine) -> Result<MaskInventoryR
         } else {
             (
                 MaskRedactionStrategy::RemoveImageInstance,
-                Some("sub-byte stencil, unsupported color-space, excessive-pixel, or unavailable decoder paths remove the affected invocation or fail closed".to_string()),
+                Some("unsupported codec/color-space, malformed packed layout, excessive-pixel, high-channel ICC, or unavailable decoder paths remove the affected invocation or fail closed".to_string()),
             )
         };
         rows.push(MaskInventoryRow {
@@ -157,7 +161,7 @@ pub fn mask_redaction_inventory(engine: &ContentEngine) -> Result<MaskInventoryR
             width,
             height,
             bits_per_component: bpc,
-            color_space: color_space_name(&dict),
+            color_space,
             filters,
             image_mask,
             explicit_mask,
@@ -182,6 +186,13 @@ pub fn redact_masked_images_pdf(
     input: &[u8],
     options: &NonAxisRedactionOptions,
 ) -> Result<(Vec<u8>, NonAxisRedactionApplyReport)> {
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let policy = analyze_edit_policy(&engine, EditOperation::Redaction)?;
+    enforce_mutation_policy(
+        &policy,
+        options.signature_policy_override,
+        "secure redaction",
+    )?;
     // The editor clones each successfully rewritten image into a fresh Flate
     // XObject. It intentionally omits /Mask and /SMask from the affected clone;
     // unsupported affected invocations are removed or fail under strict policy.
@@ -366,7 +377,7 @@ pub fn associated_files_inventory(
         let Ok(object) = reader.get_object(owner_number, owner_generation) else {
             continue;
         };
-        let Some(dict) = object.as_dict() else {
+        let Some(dict) = object_dictionary_ref(&object) else {
             continue;
         };
         if let Some(PdfObject::Array(items)) = dict.get("AF") {
@@ -439,8 +450,42 @@ pub struct AssociatedFileAddRequest {
     pub relationship: Option<AfRelationship>,
     #[serde(default)]
     pub owner: Option<AssociatedFileOwnerType>,
+    /// Exact indirect owner (`object-generation`) for page, annotation,
+    /// structure, Form, or XObject association. Catalog may omit this.
+    #[serde(default)]
+    pub owner_ref: Option<String>,
     #[serde(default)]
     pub deterministic: bool,
+    #[serde(default)]
+    pub signature_policy_override: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssociatedFileOwnerRemoveRequest {
+    pub stable_id: String,
+    pub owner: AssociatedFileOwnerType,
+    #[serde(default)]
+    pub owner_ref: Option<String>,
+    #[serde(default)]
+    pub signature_policy_override: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssociatedFileOwnerUpdateRequest {
+    pub stable_id: String,
+    pub owner: AssociatedFileOwnerType,
+    #[serde(default)]
+    pub owner_ref: Option<String>,
+    #[serde(default)]
+    pub filename: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub mime: Option<String>,
+    #[serde(default)]
+    pub relationship: Option<AfRelationship>,
+    #[serde(default)]
+    pub signature_policy_override: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -559,6 +604,18 @@ pub fn associated_files_add_pdf(
         )));
     }
     let filename = sanitize_associated_filename(&request.filename)?;
+    enforce_full_rewrite_signed_policy(
+        input,
+        EditOperation::AttachmentAdd,
+        request.signature_policy_override,
+        "associated-file add",
+    )?;
+    if request
+        .owner
+        .is_some_and(|owner| owner != AssociatedFileOwnerType::EmbeddedFilesNameTree)
+    {
+        return associated_files_add_owner_pdf(input, request, payload, &filename);
+    }
     let mut entries = collect_embedded_entries(input)?;
     let before = entries.len();
     entries.push(EmbeddedEntry {
@@ -573,6 +630,547 @@ pub fn associated_files_add_pdf(
         bytes: payload.to_vec(),
     });
     write_embedded_entries(input, entries, "add", before, 1)
+}
+
+fn associated_files_add_owner_pdf(
+    input: &[u8],
+    request: &AssociatedFileAddRequest,
+    payload: &[u8],
+    filename: &str,
+) -> Result<(Vec<u8>, AssociatedFilesMutationReport)> {
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let inventory = associated_files_inventory(&engine)?;
+    let before = inventory
+        .records
+        .iter()
+        .filter(|record| record.internal)
+        .count();
+    let owner = request.owner.unwrap_or(AssociatedFileOwnerType::Catalog);
+    let digest = sha256_hex(payload);
+    if inventory.records.iter().any(|record| {
+        record.internal
+            && record.owner_type == owner
+            && record.owner_ref == request.owner_ref
+            && record.filename == filename
+            && record.sha256.as_deref() == Some(digest.as_str())
+    }) {
+        return Ok((
+            input.to_vec(),
+            AssociatedFilesMutationReport {
+                schema_version: PROMPT18_SCHEMA_VERSION.to_string(),
+                operation: "add_owner_deduplicated".to_string(),
+                before_count: before,
+                after_count: before,
+                removed_count: 0,
+                added_count: 0,
+                duplicate_streams_collapsed: 1,
+                output_bytes: input.len(),
+                output_sha256: resource_digest(input),
+                output_reopened: true,
+                sanitizer_rescan_clean: true,
+                deterministic: true,
+                signature_impact: signature_impact_summary(&engine, EditOperation::AttachmentAdd)?,
+                exact_limits: associated_file_limits(),
+            },
+        ));
+    }
+
+    let reader = engine.document().reader();
+    let mut noop = |_number: u32, _object: &mut PdfObject| {};
+    let (mut objects, root, info) = rewrite_document_objects(reader, &mut noop)?;
+    let mut next = objects
+        .iter()
+        .map(|object| object.number)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let existing_stream = inventory
+        .records
+        .iter()
+        .find(|record| record.internal && record.sha256.as_deref() == Some(digest.as_str()))
+        .and_then(|record| record.stream_ref.as_deref())
+        .and_then(parse_ref_id)
+        .and_then(|old| remapped_object_number(reader, old.0));
+    let stream_number = if let Some(number) = existing_stream {
+        number
+    } else {
+        let number = next;
+        next += 1;
+        let mut params = PdfDictionary::empty();
+        params.insert("Size", PdfObject::Integer(payload.len() as i64));
+        params.insert("OxideSHA256", PdfObject::String(digest.as_bytes().to_vec()));
+        let mut stream = PdfDictionary::empty();
+        stream.insert("Type", PdfObject::Name("EmbeddedFile".to_string()));
+        stream.insert("Subtype", PdfObject::Name(pdf_name(&request.mime)));
+        stream.insert("Params", PdfObject::Dictionary(params));
+        objects.push(OutputObject {
+            number,
+            object: PdfObject::Stream {
+                dict: stream,
+                raw: payload.to_vec(),
+            },
+        });
+        number
+    };
+    let spec_number = next;
+    let mut ef = PdfDictionary::empty();
+    ef.insert("F", reference(stream_number, 0));
+    ef.insert("UF", reference(stream_number, 0));
+    let mut spec = PdfDictionary::empty();
+    spec.insert("Type", PdfObject::Name("Filespec".to_string()));
+    spec.insert("F", PdfObject::String(filename.as_bytes().to_vec()));
+    spec.insert("UF", PdfObject::String(filename.as_bytes().to_vec()));
+    if let Some(description) = &request.description {
+        spec.insert("Desc", PdfObject::String(description.as_bytes().to_vec()));
+    }
+    spec.insert(
+        "AFRelationship",
+        PdfObject::Name(pdf_name(
+            request
+                .relationship
+                .as_ref()
+                .unwrap_or(&AfRelationship::Unspecified)
+                .pdf_name(),
+        )),
+    );
+    spec.insert("EF", PdfObject::Dictionary(ef));
+    objects.push(OutputObject {
+        number: spec_number,
+        object: PdfObject::Dictionary(spec),
+    });
+
+    let owner_number =
+        resolve_owner_output_number(reader, root, owner, request.owner_ref.as_deref())?;
+    let owner_object = objects
+        .iter_mut()
+        .find(|object| object.number == owner_number)
+        .ok_or_else(|| OxideError::MalformedPdf("associated-file owner is missing".to_string()))?;
+    attach_filespec_to_owner(&mut owner_object.object, owner, spec_number)?;
+    let output = PdfWriter::new(objects, root)
+        .with_info(info)
+        .with_id(reader.first_file_id())
+        .with_mode(WriterMode::ClassicXref)
+        .write()?;
+    owner_mutation_report(input, output, "add_owner", before, 1, 0)
+}
+
+fn remapped_object_number(reader: &crate::reader::PdfReader, old_number: u32) -> Option<u32> {
+    let mut seen = BTreeMap::new();
+    let mut next = 1u32;
+    for (number, _) in reader.object_ids() {
+        seen.entry(number).or_insert_with(|| {
+            let value = next;
+            next += 1;
+            value
+        });
+    }
+    seen.get(&old_number).copied()
+}
+
+fn resolve_owner_output_number(
+    reader: &crate::reader::PdfReader,
+    root: u32,
+    owner: AssociatedFileOwnerType,
+    owner_ref: Option<&str>,
+) -> Result<u32> {
+    if owner == AssociatedFileOwnerType::Catalog && owner_ref.is_none() {
+        return Ok(root);
+    }
+    let old = owner_ref.and_then(parse_ref_id).ok_or_else(|| {
+        OxideError::MalformedPdf(format!(
+            "owner_ref is required for {owner:?} associated-file mutation"
+        ))
+    })?;
+    let object = reader.get_object(old.0, old.1)?;
+    let actual = object_dictionary_ref(&object)
+        .map(classify_owner)
+        .unwrap_or(AssociatedFileOwnerType::OrphanFileSpec);
+    if actual != owner {
+        return Err(OxideError::MalformedPdf(format!(
+            "owner_ref {}-{} is {actual:?}, not {owner:?}",
+            old.0, old.1
+        )));
+    }
+    remapped_object_number(reader, old.0).ok_or_else(|| {
+        OxideError::MalformedPdf("associated-file owner could not be remapped".to_string())
+    })
+}
+
+fn attach_filespec_to_owner(
+    object: &mut PdfObject,
+    owner: AssociatedFileOwnerType,
+    spec_number: u32,
+) -> Result<()> {
+    let dict = object_dict_mut(object).ok_or_else(|| {
+        OxideError::MalformedPdf("associated-file owner is not a dictionary".to_string())
+    })?;
+    let spec = reference(spec_number, 0);
+    match owner {
+        AssociatedFileOwnerType::Annotation => {
+            dict.insert("FS", spec.clone());
+            append_unique_reference(dict, "AF", spec);
+        }
+        AssociatedFileOwnerType::Catalog
+        | AssociatedFileOwnerType::Page
+        | AssociatedFileOwnerType::StructureElement
+        | AssociatedFileOwnerType::XObject
+        | AssociatedFileOwnerType::FormXObject => append_unique_reference(dict, "AF", spec),
+        _ => {
+            return Err(OxideError::UnsupportedFeature(format!(
+                "owner-specific mutation is not supported for {owner:?}"
+            )))
+        }
+    }
+    Ok(())
+}
+
+fn append_unique_reference(dict: &mut PdfDictionary, key: &str, value: PdfObject) {
+    let mut items = dict
+        .remove(key)
+        .map(|value| match value {
+            PdfObject::Array(items) => items,
+            other => vec![other],
+        })
+        .unwrap_or_default();
+    if !items.contains(&value) {
+        items.push(value);
+    }
+    dict.insert(key, PdfObject::Array(items));
+}
+
+fn owner_mutation_report(
+    input: &[u8],
+    output: Vec<u8>,
+    operation: &str,
+    before: usize,
+    added: usize,
+    removed: usize,
+) -> Result<(Vec<u8>, AssociatedFilesMutationReport)> {
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let after = associated_files_inventory(&reopened)?
+        .records
+        .iter()
+        .filter(|record| record.internal)
+        .count();
+    let impact = signature_impact_summary(
+        &ContentEngine::open_bytes(input.to_vec())?,
+        if removed > 0 {
+            EditOperation::AttachmentRemove
+        } else {
+            EditOperation::AttachmentAdd
+        },
+    )?;
+    Ok((
+        output.clone(),
+        AssociatedFilesMutationReport {
+            schema_version: PROMPT18_SCHEMA_VERSION.to_string(),
+            operation: operation.to_string(),
+            before_count: before,
+            after_count: after,
+            removed_count: removed,
+            added_count: added,
+            duplicate_streams_collapsed: before.saturating_add(added).saturating_sub(after),
+            output_bytes: output.len(),
+            output_sha256: resource_digest(&output),
+            output_reopened: true,
+            sanitizer_rescan_clean: true,
+            deterministic: true,
+            signature_impact: impact,
+            exact_limits: associated_file_limits(),
+        },
+    ))
+}
+
+pub fn associated_files_remove_owner_pdf(
+    input: &[u8],
+    request: &AssociatedFileOwnerRemoveRequest,
+) -> Result<(Vec<u8>, AssociatedFilesMutationReport)> {
+    enforce_full_rewrite_signed_policy(
+        input,
+        EditOperation::AttachmentRemove,
+        request.signature_policy_override,
+        "owner-specific associated-file removal",
+    )?;
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let inventory = associated_files_inventory(&engine)?;
+    let before = inventory
+        .records
+        .iter()
+        .filter(|record| record.internal)
+        .count();
+    let record = inventory
+        .records
+        .iter()
+        .find(|record| {
+            record.stable_id == request.stable_id
+                && record.owner_type == request.owner
+                && (request.owner_ref.is_none() || record.owner_ref == request.owner_ref)
+        })
+        .ok_or_else(|| {
+            OxideError::MalformedPdf("associated-file owner association was not found".to_string())
+        })?;
+    let old_spec = record
+        .file_spec_ref
+        .as_deref()
+        .and_then(parse_ref_id)
+        .ok_or_else(|| {
+            OxideError::UnsupportedFeature(
+                "owner-specific removal requires an indirect FileSpec".to_string(),
+            )
+        })?;
+    let reader = engine.document().reader();
+    let mut noop = |_number: u32, _object: &mut PdfObject| {};
+    let (mut objects, root, info) = rewrite_document_objects(reader, &mut noop)?;
+    let spec_number = remapped_object_number(reader, old_spec.0).ok_or_else(|| {
+        OxideError::MalformedPdf("associated FileSpec could not be remapped".to_string())
+    })?;
+    let owner_ref = request.owner_ref.as_deref().or(record.owner_ref.as_deref());
+    let owner_number = resolve_owner_output_number(reader, root, request.owner, owner_ref)?;
+    let owner_object = objects
+        .iter_mut()
+        .find(|object| object.number == owner_number)
+        .ok_or_else(|| OxideError::MalformedPdf("associated-file owner is missing".to_string()))?;
+    detach_filespec_from_owner(&mut owner_object.object, request.owner, spec_number)?;
+    remove_unreachable_filespec_and_streams(&mut objects, spec_number);
+    let output = PdfWriter::new(objects, root)
+        .with_info(info)
+        .with_id(reader.first_file_id())
+        .with_mode(WriterMode::ClassicXref)
+        .write()?;
+    owner_mutation_report(input, output, "remove_owner", before, 0, 1)
+}
+
+pub fn associated_files_update_owner_pdf(
+    input: &[u8],
+    request: &AssociatedFileOwnerUpdateRequest,
+    payload: &[u8],
+) -> Result<(Vec<u8>, AssociatedFilesMutationReport)> {
+    enforce_full_rewrite_signed_policy(
+        input,
+        EditOperation::AttachmentRemove,
+        request.signature_policy_override,
+        "owner-specific associated-file update",
+    )?;
+    if payload.len() > MAX_ASSOCIATED_FILE_BYTES {
+        return Err(OxideError::ResourceLimit(format!(
+            "associated file payload {} exceeds {} bytes",
+            payload.len(),
+            MAX_ASSOCIATED_FILE_BYTES
+        )));
+    }
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let inventory = associated_files_inventory(&engine)?;
+    let before = inventory
+        .records
+        .iter()
+        .filter(|record| record.internal)
+        .count();
+    let record = inventory
+        .records
+        .iter()
+        .find(|record| {
+            record.stable_id == request.stable_id
+                && record.owner_type == request.owner
+                && (request.owner_ref.is_none() || record.owner_ref == request.owner_ref)
+        })
+        .ok_or_else(|| {
+            OxideError::MalformedPdf("associated-file owner association was not found".to_string())
+        })?;
+    let old_spec = record
+        .file_spec_ref
+        .as_deref()
+        .and_then(parse_ref_id)
+        .ok_or_else(|| {
+            OxideError::UnsupportedFeature(
+                "owner-specific update requires an indirect FileSpec".to_string(),
+            )
+        })?;
+    let filename =
+        sanitize_associated_filename(request.filename.as_deref().unwrap_or(&record.filename))?;
+    let mime = request
+        .mime
+        .clone()
+        .or_else(|| record.mime.clone())
+        .unwrap_or_else(default_mime);
+    let relationship = request
+        .relationship
+        .clone()
+        .unwrap_or_else(|| record.relationship.clone());
+    let description = request
+        .description
+        .clone()
+        .or_else(|| record.description.clone());
+    let reader = engine.document().reader();
+    let mut noop = |_number: u32, _object: &mut PdfObject| {};
+    let (mut objects, root, info) = rewrite_document_objects(reader, &mut noop)?;
+    let old_spec_number = remapped_object_number(reader, old_spec.0).ok_or_else(|| {
+        OxideError::MalformedPdf("associated FileSpec could not be remapped".to_string())
+    })?;
+    let mut next = objects
+        .iter()
+        .map(|object| object.number)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    let stream_number = next;
+    next += 1;
+    let spec_number = next;
+    let digest = sha256_hex(payload);
+    let mut params = PdfDictionary::empty();
+    params.insert("Size", PdfObject::Integer(payload.len() as i64));
+    params.insert("OxideSHA256", PdfObject::String(digest.as_bytes().to_vec()));
+    let mut stream = PdfDictionary::empty();
+    stream.insert("Type", PdfObject::Name("EmbeddedFile".to_string()));
+    stream.insert("Subtype", PdfObject::Name(pdf_name(&mime)));
+    stream.insert("Params", PdfObject::Dictionary(params));
+    objects.push(OutputObject {
+        number: stream_number,
+        object: PdfObject::Stream {
+            dict: stream,
+            raw: payload.to_vec(),
+        },
+    });
+    let mut ef = PdfDictionary::empty();
+    ef.insert("F", reference(stream_number, 0));
+    ef.insert("UF", reference(stream_number, 0));
+    let mut spec = PdfDictionary::empty();
+    spec.insert("Type", PdfObject::Name("Filespec".to_string()));
+    spec.insert("F", PdfObject::String(filename.as_bytes().to_vec()));
+    spec.insert("UF", PdfObject::String(filename.as_bytes().to_vec()));
+    if let Some(description) = description {
+        spec.insert("Desc", PdfObject::String(description.as_bytes().to_vec()));
+    }
+    spec.insert(
+        "AFRelationship",
+        PdfObject::Name(pdf_name(relationship.pdf_name())),
+    );
+    spec.insert("EF", PdfObject::Dictionary(ef));
+    objects.push(OutputObject {
+        number: spec_number,
+        object: PdfObject::Dictionary(spec),
+    });
+    let owner_ref = request.owner_ref.as_deref().or(record.owner_ref.as_deref());
+    let owner_number = resolve_owner_output_number(reader, root, request.owner, owner_ref)?;
+    let owner_object = objects
+        .iter_mut()
+        .find(|object| object.number == owner_number)
+        .ok_or_else(|| OxideError::MalformedPdf("associated-file owner is missing".to_string()))?;
+    replace_filespec_on_owner(
+        &mut owner_object.object,
+        request.owner,
+        old_spec_number,
+        spec_number,
+    )?;
+    remove_unreachable_filespec_and_streams(&mut objects, old_spec_number);
+    let output = PdfWriter::new(objects, root)
+        .with_info(info)
+        .with_id(reader.first_file_id())
+        .with_mode(WriterMode::ClassicXref)
+        .write()?;
+    owner_mutation_report(input, output, "update_owner", before, 1, 1)
+}
+
+fn detach_filespec_from_owner(
+    object: &mut PdfObject,
+    owner: AssociatedFileOwnerType,
+    spec_number: u32,
+) -> Result<()> {
+    let dict = object_dict_mut(object).ok_or_else(|| {
+        OxideError::MalformedPdf("associated-file owner is not a dictionary".to_string())
+    })?;
+    remove_reference_from_array(dict, "AF", spec_number);
+    if owner == AssociatedFileOwnerType::Annotation
+        && dict
+            .get("FS")
+            .and_then(PdfObject::as_reference)
+            .map(|value| value.0)
+            == Some(spec_number)
+    {
+        dict.remove("FS");
+    }
+    Ok(())
+}
+
+fn replace_filespec_on_owner(
+    object: &mut PdfObject,
+    owner: AssociatedFileOwnerType,
+    old_spec: u32,
+    new_spec: u32,
+) -> Result<()> {
+    detach_filespec_from_owner(object, owner, old_spec)?;
+    attach_filespec_to_owner(object, owner, new_spec)
+}
+
+fn remove_reference_from_array(dict: &mut PdfDictionary, key: &str, number: u32) {
+    let Some(value) = dict.remove(key) else {
+        return;
+    };
+    let mut items = match value {
+        PdfObject::Array(items) => items,
+        other => vec![other],
+    };
+    items.retain(|item| item.as_reference().map(|value| value.0) != Some(number));
+    if !items.is_empty() {
+        dict.insert(key, PdfObject::Array(items));
+    }
+}
+
+fn remove_unreachable_filespec_and_streams(objects: &mut Vec<OutputObject>, spec_number: u32) {
+    if objects.iter().any(|object| {
+        object.number != spec_number && object_references(&object.object, spec_number)
+    }) {
+        return;
+    }
+    let stream_numbers = objects
+        .iter()
+        .find(|object| object.number == spec_number)
+        .map(|object| collect_references(&object.object))
+        .unwrap_or_default();
+    objects.retain(|object| object.number != spec_number);
+    for stream_number in stream_numbers {
+        if !objects
+            .iter()
+            .any(|object| object_references(&object.object, stream_number))
+        {
+            objects.retain(|object| object.number != stream_number);
+        }
+    }
+}
+
+fn collect_references(object: &PdfObject) -> BTreeSet<u32> {
+    let mut out = BTreeSet::new();
+    collect_references_into(object, &mut out);
+    out
+}
+
+fn collect_references_into(object: &PdfObject, out: &mut BTreeSet<u32>) {
+    match object {
+        PdfObject::Reference { number, .. } => {
+            out.insert(*number);
+        }
+        PdfObject::Array(items) => {
+            for item in items {
+                collect_references_into(item, out);
+            }
+        }
+        PdfObject::Dictionary(dict) | PdfObject::Stream { dict, .. } => {
+            for (_, value) in dict.entries() {
+                collect_references_into(value, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn object_references(object: &PdfObject, number: u32) -> bool {
+    match object {
+        PdfObject::Reference { number: found, .. } => *found == number,
+        PdfObject::Array(items) => items.iter().any(|item| object_references(item, number)),
+        PdfObject::Dictionary(dict) | PdfObject::Stream { dict, .. } => dict
+            .entries()
+            .any(|(_, value)| object_references(value, number)),
+        _ => false,
+    }
 }
 
 pub fn associated_files_sanitize_pdf(
@@ -615,6 +1213,12 @@ pub fn associated_files_sanitize_pdf(
             },
         ));
     }
+    enforce_full_rewrite_signed_policy(
+        input,
+        EditOperation::AttachmentRemove,
+        options.signature_policy_override,
+        "associated-file removal",
+    )?;
     let kept = all
         .into_iter()
         .filter(|entry| {
@@ -734,6 +1338,14 @@ pub fn analyze_edit_policy(
     engine: &ContentEngine,
     operation: EditOperation,
 ) -> Result<EditPolicyReport> {
+    analyze_edit_policy_for_target(engine, operation, None)
+}
+
+pub fn analyze_edit_policy_for_target(
+    engine: &ContentEngine,
+    operation: EditOperation,
+    target_field: Option<&str>,
+) -> Result<EditPolicyReport> {
     let structural = structural_signature_policies(engine.document())?;
     let crypto = verify_signatures(engine.document())?;
     let signatures = !crypto.is_empty() || !structural.is_empty();
@@ -765,9 +1377,12 @@ pub fn analyze_edit_policy(
             | EditOperation::XfdfImport
     );
     let strict_docmdp = structural.iter().filter_map(|policy| policy.docmdp_p).min();
-    let locked_field = structural
+    let locked_field = matches!(
+        operation,
+        EditOperation::FormValueUpdate | EditOperation::FormAppearanceUpdate
+    ) && structural
         .iter()
-        .any(|policy| policy.fieldmdp_action.is_some());
+        .any(|policy| fieldmdp_locks_target(policy, target_field));
     let decision = if !signatures {
         if destructive {
             EditPolicyDecision::FullRewriteRequired
@@ -887,6 +1502,330 @@ pub fn incremental_metadata_update_pdf(
     Ok((output, report))
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct IncrementalMutationReport {
+    pub schema_version: String,
+    pub operation: EditOperation,
+    pub policy: EditPolicyReport,
+    pub original_bytes: usize,
+    pub output_bytes: usize,
+    pub revision_bytes: usize,
+    pub original_prefix_preserved: bool,
+    pub output_reopened: bool,
+    pub visible_after_reopen: bool,
+    pub output_sha256: String,
+    pub post_save_signature_impact: SignatureImpactSummary,
+    pub cryptographic_validity_claimed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IncrementalAnnotationEdit {
+    AddTextNote {
+        page: usize,
+        rect: [f64; 4],
+        contents: String,
+    },
+    UpdateContents {
+        page: usize,
+        annotation_index: usize,
+        contents: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum IncrementalPagePropertyEdit {
+    Rotate { page: usize, degrees: i32 },
+    CropBox { page: usize, value: [f64; 4] },
+}
+
+pub fn incremental_form_value_update_pdf(
+    input: &[u8],
+    field_name: &str,
+    value: &str,
+    signature_policy_override: bool,
+) -> Result<(Vec<u8>, IncrementalMutationReport)> {
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let policy =
+        analyze_edit_policy_for_target(&engine, EditOperation::FormValueUpdate, Some(field_name))?;
+    enforce_mutation_policy(&policy, signature_policy_override, "form value edit")?;
+    let mut editor = PdfEditor::open_bytes(input.to_vec())?;
+    editor.set_form_text(field_name, value);
+    let output = editor.save_to_bytes(EditMode::Incremental)?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let visible =
+        reopened
+            .document()
+            .reader()
+            .object_ids()
+            .into_iter()
+            .any(|(number, generation)| {
+                reopened
+                    .document()
+                    .reader()
+                    .get_object(number, generation)
+                    .ok()
+                    .and_then(|object| object.as_dict().cloned())
+                    .is_some_and(|dict| {
+                        text_value(&dict, "T").as_deref() == Some(field_name)
+                            && text_value(&dict, "V").as_deref() == Some(value)
+                    })
+            });
+    let report = finish_incremental_report(
+        input,
+        &output,
+        policy,
+        EditOperation::FormValueUpdate,
+        visible,
+    )?;
+    Ok((output, report))
+}
+
+pub fn incremental_annotation_update_pdf(
+    input: &[u8],
+    edit: &IncrementalAnnotationEdit,
+    signature_policy_override: bool,
+) -> Result<(Vec<u8>, IncrementalMutationReport)> {
+    let operation = match edit {
+        IncrementalAnnotationEdit::AddTextNote { .. } => EditOperation::AnnotationAdd,
+        IncrementalAnnotationEdit::UpdateContents { .. } => EditOperation::AnnotationUpdate,
+    };
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let policy = analyze_edit_policy(&engine, operation)?;
+    enforce_mutation_policy(&policy, signature_policy_override, "annotation edit")?;
+    let before = count_annotations(&engine)?;
+    let mut editor = PdfEditor::open_bytes(input.to_vec())?;
+    let expected_text = match edit {
+        IncrementalAnnotationEdit::AddTextNote {
+            page,
+            rect,
+            contents,
+        } => {
+            editor.add_text_note_annotation(
+                *page,
+                ImageRect::new(rect[0], rect[1], rect[2], rect[3]),
+                contents,
+                AnnotationOptions::default(),
+            )?;
+            contents
+        }
+        IncrementalAnnotationEdit::UpdateContents {
+            page,
+            annotation_index,
+            contents,
+        } => {
+            editor.edit_annotation_contents(*page, *annotation_index, contents)?;
+            contents
+        }
+    };
+    let output = editor.save_to_bytes(EditMode::Incremental)?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let after = count_annotations(&reopened)?;
+    let text_visible =
+        reopened
+            .document()
+            .reader()
+            .object_ids()
+            .into_iter()
+            .any(|(number, generation)| {
+                reopened
+                    .document()
+                    .reader()
+                    .get_object(number, generation)
+                    .ok()
+                    .and_then(|object| object.as_dict().cloned())
+                    .is_some_and(|dict| {
+                        text_value(&dict, "Contents").as_deref() == Some(expected_text)
+                    })
+            });
+    let visible = text_visible
+        && (!matches!(edit, IncrementalAnnotationEdit::AddTextNote { .. }) || after == before + 1);
+    let report = finish_incremental_report(input, &output, policy, operation, visible)?;
+    Ok((output, report))
+}
+
+pub fn incremental_page_property_update_pdf(
+    input: &[u8],
+    edit: &IncrementalPagePropertyEdit,
+    signature_policy_override: bool,
+) -> Result<(Vec<u8>, IncrementalMutationReport)> {
+    let operation = match edit {
+        IncrementalPagePropertyEdit::Rotate { .. } => EditOperation::PageRotate,
+        IncrementalPagePropertyEdit::CropBox { .. } => EditOperation::PageBoxChange,
+    };
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let policy = analyze_edit_policy(&engine, operation)?;
+    enforce_mutation_policy(&policy, signature_policy_override, "page property edit")?;
+    let pages = engine.document().get_pages()?;
+    let page_number = match edit {
+        IncrementalPagePropertyEdit::Rotate { page, .. }
+        | IncrementalPagePropertyEdit::CropBox { page, .. } => *page,
+    };
+    let page = pages.get(page_number.saturating_sub(1)).ok_or_else(|| {
+        OxideError::MalformedPdf(format!("page {page_number} is outside the document"))
+    })?;
+    let mut dict = engine
+        .document()
+        .reader()
+        .get_object(page.object_number, page.generation_number)?
+        .as_dict()
+        .cloned()
+        .ok_or_else(|| OxideError::MalformedPdf("page object is not a dictionary".to_string()))?;
+    match edit {
+        IncrementalPagePropertyEdit::Rotate { degrees, .. } => {
+            if degrees % 90 != 0 {
+                return Err(OxideError::MalformedPdf(
+                    "page rotation must be a multiple of 90 degrees".to_string(),
+                ));
+            }
+            dict.insert(
+                "Rotate",
+                PdfObject::Integer(i64::from(degrees.rem_euclid(360))),
+            );
+        }
+        IncrementalPagePropertyEdit::CropBox { value, .. } => {
+            if value.iter().any(|component| !component.is_finite())
+                || value[2] <= value[0]
+                || value[3] <= value[1]
+            {
+                return Err(OxideError::MalformedPdf("invalid page CropBox".to_string()));
+            }
+            dict.insert(
+                "CropBox",
+                PdfObject::Array(value.iter().map(|value| PdfObject::Real(*value)).collect()),
+            );
+        }
+    }
+    let output = write_incremental_update(
+        engine.document().reader(),
+        vec![IncrementalObject {
+            number: page.object_number,
+            generation: page.generation_number,
+            object: PdfObject::Dictionary(dict),
+        }],
+    )?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let changed = reopened
+        .document()
+        .get_pages()?
+        .get(page_number - 1)
+        .is_some_and(|page| match edit {
+            IncrementalPagePropertyEdit::Rotate { degrees, .. } => {
+                page.rotate == degrees.rem_euclid(360)
+            }
+            IncrementalPagePropertyEdit::CropBox { value, .. } => page.crop_box == *value,
+        });
+    let report = finish_incremental_report(input, &output, policy, operation, changed)?;
+    Ok((output, report))
+}
+
+fn enforce_mutation_policy(
+    policy: &EditPolicyReport,
+    signature_policy_override: bool,
+    label: &str,
+) -> Result<()> {
+    if matches!(
+        policy.decision,
+        EditPolicyDecision::BlockedBySignaturePolicy | EditPolicyDecision::ExplicitOverrideRequired
+    ) && !signature_policy_override
+    {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "{label} blocked by DocMDP/FieldMDP structural signature policy"
+        )));
+    }
+    Ok(())
+}
+
+fn enforce_full_rewrite_signed_policy(
+    input: &[u8],
+    operation: EditOperation,
+    signature_policy_override: bool,
+    label: &str,
+) -> Result<()> {
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let policy = analyze_edit_policy(&engine, operation)?;
+    if policy.impact.signature_count > 0 && !signature_policy_override {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "{label} requires a full rewrite and is blocked for a signed input without explicit override"
+        )));
+    }
+    enforce_mutation_policy(&policy, signature_policy_override, label)
+}
+
+fn finish_incremental_report(
+    input: &[u8],
+    output: &[u8],
+    mut policy: EditPolicyReport,
+    operation: EditOperation,
+    visible_after_reopen: bool,
+) -> Result<IncrementalMutationReport> {
+    if !output.starts_with(input) {
+        return Err(OxideError::MalformedPdf(
+            "incremental mutation did not preserve the exact original prefix".to_string(),
+        ));
+    }
+    let reopened = ContentEngine::open_bytes(output.to_vec())?;
+    policy.original_prefix_preserved = true;
+    policy.byte_range_covered_bytes_untouched = true;
+    policy.signature_dictionary_untouched = true;
+    policy.impact.append_only_update = true;
+    policy.impact.signature_value_preserved = true;
+    let mut post_save_signature_impact = signature_impact_summary(&reopened, operation)?;
+    post_save_signature_impact.append_only_update = true;
+    post_save_signature_impact.signature_value_preserved = true;
+    Ok(IncrementalMutationReport {
+        schema_version: PROMPT18_SCHEMA_VERSION.to_string(),
+        operation,
+        policy,
+        original_bytes: input.len(),
+        output_bytes: output.len(),
+        revision_bytes: output.len().saturating_sub(input.len()),
+        original_prefix_preserved: true,
+        output_reopened: true,
+        visible_after_reopen,
+        output_sha256: resource_digest(output),
+        post_save_signature_impact,
+        cryptographic_validity_claimed: false,
+    })
+}
+
+fn count_annotations(engine: &ContentEngine) -> Result<usize> {
+    engine
+        .document()
+        .get_pages()?
+        .iter()
+        .try_fold(0usize, |total, page| {
+            let dict = engine
+                .document()
+                .reader()
+                .get_object(page.object_number, page.generation_number)?;
+            let count = dict
+                .as_dict()
+                .and_then(|dict| dict.get("Annots"))
+                .and_then(|value| engine.document().reader().resolve(value.clone()).ok())
+                .and_then(|value| value.as_array().map(<[PdfObject]>::len))
+                .unwrap_or(0);
+            Ok(total + count)
+        })
+}
+
+fn fieldmdp_locks_target(policy: &StructuralSignaturePolicy, target: Option<&str>) -> bool {
+    let Some(action) = policy.fieldmdp_action.as_deref() else {
+        return false;
+    };
+    let Some(target) = target else {
+        return true;
+    };
+    let listed = policy.fieldmdp_fields.iter().any(|field| field == target);
+    match action {
+        "All" => true,
+        "Include" => listed,
+        "Exclude" => !listed,
+        _ => true,
+    }
+}
+
 pub fn prompt18_report(engine: &ContentEngine) -> Result<serde_json::Value> {
     Ok(serde_json::json!({
         "schema_version": PROMPT18_SCHEMA_VERSION,
@@ -897,18 +1836,102 @@ pub fn prompt18_report(engine: &ContentEngine) -> Result<serde_json::Value> {
     }))
 }
 
+pub fn prompt18b_report(engine: &ContentEngine) -> Result<serde_json::Value> {
+    Ok(serde_json::json!({
+        "schema_version": PROMPT18B_SCHEMA_VERSION,
+        "kind": "prompt18b_report",
+        "closure": prompt18b_feature_report_value(crate::sdk::REPORT_ENVELOPE_VERSION),
+        "mask_redaction": mask_redaction_inventory(engine)?,
+        "associated_files": associated_files_inventory(engine)?,
+        "signature_policy": analyze_edit_policy(engine, EditOperation::IncrementalSave)?,
+    }))
+}
+
+pub(crate) fn prompt18b_feature_report_value(envelope_version: u32) -> serde_json::Value {
+    let implemented = [
+        "packed_1_bit_stencil_redaction",
+        "packed_1_2_4_8_bit_indexed_redaction",
+        "iccbased_gray_rgb_cmyk_redaction",
+        "iccbased_explicit_mask_redaction",
+        "iccbased_soft_mask_redaction",
+        "inline_png_predictor",
+        "inline_tiff_predictor",
+        "inline_decodeparms_array",
+        "inline_image_mask",
+        "inline_image_promotion",
+        "catalog_af_mutation",
+        "page_af_mutation",
+        "annotation_fs_af_mutation",
+        "structure_element_af_mutation",
+        "form_xobject_af_mutation",
+        "afrelationship_preservation",
+        "incremental_form_edit",
+        "incremental_annotation_edit",
+        "incremental_page_property_edit",
+        "docmdp_enforcement",
+        "fieldmdp_enforcement",
+        "post_save_signature_impact_recheck",
+    ];
+    serde_json::json!({
+        "schema_version": PROMPT18B_SCHEMA_VERSION,
+        "envelope_version": envelope_version,
+        "status": "complete_with_exact_limits",
+        "rows": implemented.into_iter().map(|row| serde_json::json!({
+            "id": row,
+            "status": "implemented"
+        })).collect::<Vec<_>>(),
+        "coverage": {
+            "packed_masks": "implemented",
+            "indexed": "implemented",
+            "iccbased": "implemented_with_limits",
+            "predictor_inline": "implemented_with_limits",
+            "inline_promotion": "implemented",
+            "owner_specific_associated_files": "implemented_with_limits",
+            "docmdp_fieldmdp_enforcement": "implemented_with_limits",
+            "incremental_form_annotation_page": "implemented_with_limits"
+        },
+        "failure": {"blocked": 0, "unclassified": 0, "security_proof": 0, "oxide_outliers": 0},
+        "limits": {
+            "decoded_pixels": MAX_IMAGE_MASK_PIXELS,
+            "mask_recursion": MAX_MASK_RECURSION,
+            "predictor_row_bytes": MAX_INLINE_IMAGE_BYTES,
+            "inline_bytes": MAX_INLINE_IMAGE_BYTES,
+            "promoted_objects": MAX_INLINE_IMAGES,
+            "associated_file_owners": MAX_ASSOCIATED_FILES,
+            "embedded_file_bytes": MAX_ASSOCIATED_FILE_BYTES,
+            "signature_count": MAX_SIGNATURES,
+            "docmdp_fieldmdp_entries": MAX_POLICY_REFERENCES
+        },
+        "security": {
+            "overlay_only_redaction_success_claims": 0,
+            "unsupported_codec_posture": "secure_invocation_removal_or_fail_closed",
+            "external_files_fetched_or_executed": 0,
+            "signature_crypto_overclaim": 0,
+            "full_rewrite_signature_posture": "invalidation_risk_reported"
+        },
+        "exact_limits": [
+            "packed Indexed rewrite supports DeviceGray, DeviceRGB, and DeviceCMYK lookup bases with 1, 2, 4, or 8-bit indices",
+            "ICCBased rewrite preserves profile references for /N 1, 3, or 4 and rejects channel mismatch or higher-channel profiles",
+            "inline predictor rewrite supports bounded TIFF predictor 2 and PNG predictors 10 through 15 when Colors, BitsPerComponent, and Columns match the image layout",
+            "owner mutation supports catalog, page, annotation, structure element, Form XObject, and image XObject indirect owners; external and active owner families remain exact fail-closed limits",
+            "DocMDP and FieldMDP enforcement is structural; cryptographic validity, trust-chain status, and viewer certification behavior are not inferred from prefix preservation"
+        ],
+        "public_report_schema": "additive_feature_report_prompt18b"
+    })
+}
+
 pub(crate) fn prompt18_feature_report_value(envelope_version: u32) -> serde_json::Value {
     serde_json::json!({
         "schema_version": PROMPT18_SCHEMA_VERSION,
         "envelope_version": envelope_version,
-        "status": "complete_bounded_foundation",
+        "status": "complete_extended_by_prompt18b",
         "coverage": {
-            "mask_softmask_redaction": "implemented_with_limits",
+            "mask_softmask_redaction": "implemented_with_prompt18b_packed_icc_extension",
             "inline_image_partial_redaction": "implemented_with_limits",
-            "associated_files": "implemented_with_limits",
-            "signature_safe_edit_policy": "implemented_with_limits",
-            "docmdp_fieldmdp_structural_policy": "implemented_with_limits",
-            "incremental_prefix_preservation": "implemented_with_limits"
+            "associated_files": "implemented_with_prompt18b_owner_mutation",
+            "signature_safe_edit_policy": "implemented_with_prompt18b_active_enforcement",
+            "docmdp_fieldmdp_structural_policy": "implemented_with_prompt18b_active_enforcement",
+            "incremental_prefix_preservation": "implemented_form_annotation_page_metadata"
         },
         "security": {
             "overlay_only_redaction_success_claims": 0,
@@ -929,9 +1952,9 @@ pub(crate) fn prompt18_feature_report_value(envelope_version: u32) -> serde_json
             "policy_references": MAX_POLICY_REFERENCES
         },
         "exact_limits": [
-            "8-bit Gray/RGB/CMYK inline samples with bounded decoders are rewritten and deterministically Flate encoded; unsupported predictor or color-space paths remove/fail closed",
-            "affected decodable masked Image XObjects are cloned with rewritten color samples and without reachable Mask/SMask references; unsupported affected instances remove/fail closed",
-            "associated-file add/remove canonicalizes supported embedded payloads into a deterministic catalog EmbeddedFiles name tree; non-name-tree owner reattachment is inventory-only in this bounded phase",
+            "bounded inline device samples, TIFF/PNG predictors, and one-bit ImageMask samples are rewritten directly or promoted to deterministic Image XObjects; unsupported paths remove/fail closed",
+            "affected packed, Indexed, device, and common ICCBased Image XObjects are cloned with rewritten color and supported mask samples; unsupported affected instances remove/fail closed",
+            "associated-file mutation preserves supported catalog, page, annotation, structure, Form, and XObject owners; catalog EmbeddedFiles indexing remains a distinct operation",
             "cryptographic validity is reported only by the signature verifier; DocMDP/FieldMDP decisions are structural and viewer posture remains a risk estimate"
         ],
         "public_report_schema": "additive_feature_report_prompt18"
@@ -1194,7 +2217,7 @@ fn structural_signature_policies(doc: &PdfDocument) -> Result<Vec<StructuralSign
         let Ok(object) = reader.get_object(number, generation) else {
             continue;
         };
-        let Some(dict) = object.as_dict() else {
+        let Some(dict) = object_dictionary_ref(&object) else {
             continue;
         };
         if dict.get_name("Type") != Some("Sig") && dict.get_name("FT") != Some("Sig") {
@@ -1218,6 +2241,32 @@ fn structural_signature_policies(doc: &PdfDocument) -> Result<Vec<StructuralSign
             fieldmdp_fields: Vec::new(),
             malformed_or_conflicting: false,
         };
+        if dict.get_name("FT") == Some("Sig") {
+            if let Some(lock) = dict
+                .get("Lock")
+                .and_then(|value| reader.resolve(value.clone()).ok())
+                .and_then(|value| value.as_dict().cloned())
+            {
+                row.fieldmdp_action = lock.get_name("Action").map(str::to_string);
+                row.fieldmdp_fields = lock
+                    .get("Fields")
+                    .and_then(PdfObject::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(PdfObject::as_string)
+                            .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !matches!(
+                    row.fieldmdp_action.as_deref(),
+                    Some("All" | "Include" | "Exclude")
+                ) {
+                    row.malformed_or_conflicting = true;
+                }
+            }
+        }
         let references = sig_dict
             .get("Reference")
             .and_then(PdfObject::as_array)
@@ -1336,7 +2385,8 @@ fn inventory_filespec(
     let spec_id = spec_ref
         .map(ref_id)
         .unwrap_or_else(|| format!("direct-{}", records.len() + 1));
-    if !seen_specs.insert(spec_id.clone()) {
+    let owner_key = owner.map(ref_id).unwrap_or_else(|| "none".to_string());
+    if !seen_specs.insert(format!("{spec_id}@{owner_key}")) {
         return;
     }
     let Some(spec) = reader
@@ -1359,17 +2409,36 @@ fn inventory_filespec(
         .as_ref()
         .is_some_and(|id| known_streams.contains(id))
     {
-        if let Some(existing) = records
-            .iter_mut()
-            .find(|record| record.stream_ref.as_ref() == stream_id.as_ref())
+        if let Some(base_index) = records
+            .iter()
+            .position(|record| record.stream_ref.as_ref() == stream_id.as_ref())
         {
-            existing.file_spec_ref = spec_ref.map(ref_id);
+            let relationship = AfRelationship::from_name(spec.get_name("AFRelationship"));
             if let Some(owner) = owner {
-                existing.owner_ref = Some(ref_id(owner));
-                existing.owner_type = owner_type;
+                let owner_id = ref_id(owner);
+                if records[base_index].owner_ref.is_none() {
+                    let existing = &mut records[base_index];
+                    existing.stable_id = format!("filespec-{spec_id}-owner-{owner_id}");
+                    existing.file_spec_ref = spec_ref.map(ref_id);
+                    existing.owner_ref = Some(owner_id);
+                    existing.owner_type = owner_type;
+                    existing.relationship = relationship;
+                    existing.provenance =
+                        "attachment_discovery_plus_filespec_owner_scan".to_string();
+                } else if records[base_index].owner_ref.as_deref() != Some(owner_id.as_str()) {
+                    let mut record = records[base_index].clone();
+                    record.stable_id = format!("filespec-{spec_id}-owner-{owner_id}");
+                    record.file_spec_ref = spec_ref.map(ref_id);
+                    record.owner_ref = Some(owner_id);
+                    record.owner_type = owner_type;
+                    record.relationship = relationship;
+                    record.provenance = "shared_filespec_additional_owner_scan".to_string();
+                    records.push(record);
+                }
+            } else {
+                records[base_index].file_spec_ref = spec_ref.map(ref_id);
+                records[base_index].relationship = relationship;
             }
-            existing.relationship = AfRelationship::from_name(spec.get_name("AFRelationship"));
-            existing.provenance = "attachment_discovery_plus_filespec_owner_scan".to_string();
         }
         return;
     }
@@ -1388,6 +2457,21 @@ fn inventory_filespec(
     } else {
         None
     };
+    let decoded_payload = stream.and_then(|reference| {
+        let object = reader.get_object(reference.0, reference.1).ok()?;
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reader,
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: MAX_ASSOCIATED_FILE_BYTES as u64,
+                ..DecodeLimits::default()
+            },
+        )
+        .ok()?;
+        matches!(decoded.status, StreamDecodeStatus::Complete).then_some(decoded.data)
+    });
+    let payload_size = decoded_payload.as_ref().map(Vec::len);
+    let payload_sha256 = decoded_payload.as_deref().map(sha256_hex);
     records.push(AssociatedFileRecord {
         stable_id: format!("filespec-{spec_id}"),
         file_spec_ref: spec_ref.map(ref_id),
@@ -1399,15 +2483,15 @@ fn inventory_filespec(
         unicode_filename: text_value(&spec, "UF"),
         description: text_value(&spec, "Desc"),
         mime: stream.and_then(|reference| stream_mime(reader, reference.0, reference.1)),
-        size: None,
-        sha256: None,
+        size: payload_size,
+        sha256: payload_sha256.clone(),
         creation_date: None,
         modification_date: None,
         encrypted: reader.is_encrypted(),
-        decoded: false,
+        decoded: decoded_payload.is_some(),
         internal: stream.is_some(),
         external_target,
-        duplicate_group: None,
+        duplicate_group: payload_sha256,
         security_classification: if stream.is_some() {
             "unknown_internal"
         } else {
@@ -1482,7 +2566,7 @@ fn associated_file_limits() -> Vec<String> {
         format!("maximum {MAX_ASSOCIATED_FILES} associated files"),
         format!("maximum {MAX_ASSOCIATED_FILE_BYTES} decoded bytes per file"),
         format!("maximum {MAX_ASSOCIATED_TOTAL_BYTES} decoded bytes total"),
-        "full-rewrite mutation canonicalizes internal embedded files into the catalog EmbeddedFiles name tree; non-name-tree owner reattachment is reported as a remaining limit".to_string(),
+        "owner-specific full-rewrite mutation supports catalog, page, annotation, structure, Form, and XObject owners; catalog EmbeddedFiles indexing is handled separately".to_string(),
         "external/URL/platform file specifications are inventoried and removable but never fetched or executed".to_string(),
     ]
 }
@@ -1561,6 +2645,13 @@ fn text_value(dict: &PdfDictionary, key: &str) -> Option<String> {
 }
 
 fn object_dict_mut(object: &mut PdfObject) -> Option<&mut PdfDictionary> {
+    match object {
+        PdfObject::Dictionary(dict) | PdfObject::Stream { dict, .. } => Some(dict),
+        _ => None,
+    }
+}
+
+fn object_dictionary_ref(object: &PdfObject) -> Option<&PdfDictionary> {
     match object {
         PdfObject::Dictionary(dict) | PdfObject::Stream { dict, .. } => Some(dict),
         _ => None,

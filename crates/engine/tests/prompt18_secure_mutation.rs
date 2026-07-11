@@ -137,6 +137,8 @@ fn masked_and_inline_redaction_reopen_are_deterministic_and_reachable_data_is_sc
         requests: vec![request(0.0, 50.0), request(110.0, 160.0)],
         deterministic: true,
         fail_on_unsupported: false,
+        promote_inline_images: false,
+        signature_policy_override: false,
     };
     let (first, report) =
         oxide_engine::prompt18::redact_masked_images_pdf(&input, &options).unwrap();
@@ -158,7 +160,7 @@ fn masked_and_inline_redaction_reopen_are_deterministic_and_reachable_data_is_sc
         .get_object(rewritten.object_number, rewritten.generation_number)
         .unwrap();
     let dictionary = object.as_stream().unwrap().0;
-    assert!(dictionary.get("SMask").is_none());
+    assert!(dictionary.get("SMask").is_some());
     assert!(dictionary.get("Mask").is_none());
 
     let inline = images
@@ -188,7 +190,9 @@ fn associated_file_add_extract_dedup_remove_and_rescan_are_real_mutations() {
         mime: "text/plain".to_string(),
         relationship: Some(oxide_engine::AfRelationship::Data),
         owner: Some(oxide_engine::AssociatedFileOwnerType::Catalog),
+        owner_ref: None,
         deterministic: true,
+        signature_policy_override: false,
     };
     let (once, first_report) =
         associated_files_add_pdf(&input, &request, b"PROMPT18-EVIDENCE").unwrap();
@@ -244,7 +248,9 @@ fn associated_file_add_preserves_unrelated_indirect_name_trees() {
         mime: "text/plain".to_string(),
         relationship: Some(oxide_engine::AfRelationship::Data),
         owner: Some(oxide_engine::AssociatedFileOwnerType::Catalog),
+        owner_ref: None,
         deterministic: true,
+        signature_policy_override: false,
     };
     let (output, _) =
         associated_files_add_pdf(&indirect_names_fixture(), &request, b"data").unwrap();
@@ -257,7 +263,8 @@ fn associated_file_add_preserves_unrelated_indirect_name_trees() {
         .unwrap();
     let names = names.as_dict().unwrap();
     assert!(names.get("Dests").is_some());
-    assert!(names.get("EmbeddedFiles").is_some());
+    assert!(catalog.get("AF").is_some());
+    assert!(names.get("EmbeddedFiles").is_none());
 }
 
 #[test]

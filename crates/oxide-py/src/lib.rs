@@ -397,6 +397,10 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::prompt18_report_json(bytes, None))
     }
 
+    fn prompt18b_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt18b_report_json(bytes, None))
+    }
+
     fn associated_files_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::associated_files_report_json(bytes, None))
     }
@@ -726,6 +730,116 @@ impl PyDocument {
         let bytes = self.file_bytes();
         let (out, report) =
             run_oxide(|| sdk::associated_files_add_json(&bytes, payload, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (payload, options_json, output=None))]
+    fn associated_file_update_owner<'py>(
+        &self,
+        py: Python<'py>,
+        payload: &[u8],
+        options_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| {
+            sdk::associated_files_update_owner_json(&bytes, payload, options_json, None)
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (options_json, output=None))]
+    fn associated_file_remove_owner<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::associated_files_remove_owner_json(&bytes, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (field_name, value, signature_policy_override=false, output=None))]
+    fn incremental_form_edit<'py>(
+        &self,
+        py: Python<'py>,
+        field_name: &str,
+        value: &str,
+        signature_policy_override: bool,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| {
+            sdk::incremental_form_edit_json(
+                &bytes,
+                field_name,
+                value,
+                signature_policy_override,
+                None,
+            )
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (options_json, signature_policy_override=false, output=None))]
+    fn incremental_annotation_edit<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: &str,
+        signature_policy_override: bool,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| {
+            sdk::incremental_annotation_edit_json(
+                &bytes,
+                options_json,
+                signature_policy_override,
+                None,
+            )
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (options_json, signature_policy_override=false, output=None))]
+    fn incremental_page_property_edit<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: &str,
+        signature_policy_override: bool,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| {
+            sdk::incremental_page_property_edit_json(
+                &bytes,
+                options_json,
+                signature_policy_override,
+                None,
+            )
+        })?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),

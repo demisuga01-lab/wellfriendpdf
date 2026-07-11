@@ -33,6 +33,7 @@ public sealed class OxideSmokeTests
             ["annotation_appearance"] = doc.AnnotationAppearanceReportJson(),
             ["prompt17"] = doc.Prompt17ReportJson(),
             ["prompt18"] = doc.Prompt18ReportJson(),
+            ["prompt18b"] = doc.Prompt18bReportJson(),
             ["associated_files"] = doc.AssociatedFilesReportJson(),
             ["edit_policy"] = doc.EditPolicyReportJson("incremental_save"),
             ["pages"] = doc.PagesReportJson(),

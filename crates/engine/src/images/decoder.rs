@@ -212,6 +212,77 @@ impl ImageDecoder {
         )
     }
 
+    /// Decode an inline image with one `/DecodeParms` entry per filter. This is
+    /// used by secure mutation code, where applying predictor parameters to the
+    /// wrong filter would make a sample-space rewrite unsafe.
+    #[allow(clippy::too_many_arguments)]
+    pub fn decode_inline_with_param_array(
+        pixel_data: &[u8],
+        width: u32,
+        height: u32,
+        bpc: u8,
+        color_space: &str,
+        filters: &[&str],
+        decode_params: &[Option<PdfDictionary>],
+        limits: &DecodeLimits,
+    ) -> Result<RawImage> {
+        if decode_params.len() != filters.len() {
+            return Err(OxideError::MalformedPdf(format!(
+                "inline DecodeParms count {} does not match filter count {}",
+                decode_params.len(),
+                filters.len()
+            )));
+        }
+        let mut data = pixel_data.to_vec();
+        for (index, &filter) in filters.iter().enumerate() {
+            let params = decode_params[index].as_ref();
+            if matches!(
+                filter,
+                "DCTDecode" | "DCT" | "JPXDecode" | "CCITTFaxDecode" | "CCF" | "JBIG2Decode"
+            ) {
+                if index + 1 != filters.len() {
+                    return Err(OxideError::UnsupportedFeature(
+                        "inline image codec filter must be the final filter".to_string(),
+                    ));
+                }
+                return match filter {
+                    "DCTDecode" | "DCT" => {
+                        let (mut pixels, w, h, channels) = Self::decode_jpeg_with_info(&data)?;
+                        let channels = if channels == 4 {
+                            pixels = ColorSpaceConverter::cmyk_to_rgb(&pixels);
+                            3
+                        } else {
+                            channels
+                        };
+                        Ok(RawImage {
+                            width: w,
+                            height: h,
+                            channels,
+                            bits_per_sample: 8,
+                            pixels,
+                        })
+                    }
+                    "CCITTFaxDecode" | "CCF" => {
+                        ccitt::decode(&data, ccitt_decode_params(params, width, height)?)
+                    }
+                    "JBIG2Decode" => jbig2::decode(&data, None),
+                    "JPXDecode" => jpx::decode(&data),
+                    _ => unreachable!(),
+                };
+            }
+            data = apply_filter_bytes_with_limits(filter, &data, params, limits)?;
+        }
+        Self::build_raw_image(
+            data,
+            width,
+            height,
+            bpc,
+            color_space,
+            &PdfDictionary::empty(),
+            None,
+        )
+    }
+
     /// Decode a JPEG image reference directly from its original stream bytes.
     pub fn decode_jpeg_image(image: &ImageReference, reader: &PdfReader) -> Result<RawImage> {
         let raw = ImageLocator::get_stream_bytes(image, reader)?.ok_or_else(|| {

@@ -458,20 +458,32 @@ fn extract_actual_text(op: &ContentOperation) -> Option<String> {
 }
 
 fn operand_actual_text(operand: &Operand) -> Option<String> {
-    let Operand::Array(items) = operand else {
-        return None;
-    };
-    let mut iter = items.iter().peekable();
-    while let Some(item) = iter.next() {
-        if matches!(item.as_name(), Some("ActualText")) {
-            return iter
-                .next()
-                .and_then(Operand::as_bytes)
-                .map(decode_pdf_text_string);
+    match operand {
+        Operand::Dictionary(entries) => {
+            for (key, value) in entries {
+                if key == "ActualText" {
+                    return value.as_bytes().map(decode_pdf_text_string);
+                }
+                if let Some(text) = operand_actual_text(value) {
+                    return Some(text);
+                }
+            }
         }
-        if let Some(text) = operand_actual_text(item) {
-            return Some(text);
+        Operand::Array(items) => {
+            let mut iter = items.iter().peekable();
+            while let Some(item) = iter.next() {
+                if matches!(item.as_name(), Some("ActualText")) {
+                    return iter
+                        .next()
+                        .and_then(Operand::as_bytes)
+                        .map(decode_pdf_text_string);
+                }
+                if let Some(text) = operand_actual_text(item) {
+                    return Some(text);
+                }
+            }
         }
+        _ => {}
     }
     None
 }
@@ -491,6 +503,13 @@ fn operand_mcid(operand: &Operand) -> Option<i64> {
             }
             None
         }
+        Operand::Dictionary(entries) => entries.iter().find_map(|(key, value)| {
+            if key == "MCID" {
+                value.as_integer()
+            } else {
+                operand_mcid(value)
+            }
+        }),
         _ => None,
     }
 }

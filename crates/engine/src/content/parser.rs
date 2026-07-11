@@ -9,6 +9,7 @@ pub struct ContentParser;
 enum StackItem {
     Operand(Operand),
     ArrayStart,
+    DictStart,
 }
 
 impl ContentParser {
@@ -56,14 +57,25 @@ impl ContentParser {
             };
 
             match token {
-                ContentToken::ArrayStart | ContentToken::DictStart => {
+                ContentToken::ArrayStart => {
                     stack.push(StackItem::ArrayStart);
                     array_depth = array_depth.saturating_add(1);
                 }
-                ContentToken::ArrayEnd | ContentToken::DictEnd => {
+                ContentToken::DictStart => {
+                    stack.push(StackItem::DictStart);
+                    array_depth = array_depth.saturating_add(1);
+                }
+                ContentToken::ArrayEnd => {
                     match collect_array(&mut stack) {
                         Some(array) => stack.push(StackItem::Operand(Operand::Array(array))),
-                        None => log::warn!("content parser saw array/dict end without start"),
+                        None => log::warn!("content parser saw array end without start"),
+                    }
+                    array_depth = array_depth.saturating_sub(1);
+                }
+                ContentToken::DictEnd => {
+                    match collect_dictionary(&mut stack) {
+                        Some(dict) => stack.push(StackItem::Operand(Operand::Dictionary(dict))),
+                        None => log::warn!("content parser saw dict end without start"),
                     }
                     array_depth = array_depth.saturating_sub(1);
                 }
@@ -102,7 +114,7 @@ impl ContentParser {
                     .into_iter()
                     .filter_map(|item| match item {
                         StackItem::Operand(operand) => Some(operand),
-                        StackItem::ArrayStart => None,
+                        StackItem::ArrayStart | StackItem::DictStart => None,
                     })
                     .collect::<Vec<_>>()
             );
@@ -127,6 +139,30 @@ fn collect_array(stack: &mut Vec<StackItem>) -> Option<Vec<Operand>> {
                 values.reverse();
                 return Some(values);
             }
+            StackItem::DictStart => return None,
+        }
+    }
+    None
+}
+
+fn collect_dictionary(stack: &mut Vec<StackItem>) -> Option<Vec<(String, Operand)>> {
+    let mut values = Vec::new();
+    while let Some(item) = stack.pop() {
+        match item {
+            StackItem::Operand(operand) => values.push(operand),
+            StackItem::DictStart => {
+                values.reverse();
+                let mut entries = Vec::new();
+                let mut iter = values.into_iter();
+                while let Some(key) = iter.next() {
+                    let Operand::Name(key) = key else {
+                        return None;
+                    };
+                    entries.push((key, iter.next()?));
+                }
+                return Some(entries);
+            }
+            StackItem::ArrayStart => return None,
         }
     }
     None
@@ -137,7 +173,9 @@ fn drain_operands(stack: &mut Vec<StackItem>) -> Vec<Operand> {
     for item in stack.drain(..) {
         match item {
             StackItem::Operand(operand) => operands.push(operand),
-            StackItem::ArrayStart => log::warn!("discarding unmatched array start before operator"),
+            StackItem::ArrayStart | StackItem::DictStart => {
+                log::warn!("discarding unmatched container start before operator")
+            }
         }
     }
     operands
@@ -254,6 +292,12 @@ fn operand_to_pdf_object(operand: Operand) -> Option<PdfObject> {
                 .filter_map(operand_to_pdf_object)
                 .collect(),
         )),
+        Operand::Dictionary(entries) => Some(PdfObject::Dictionary(PdfDictionary::new(
+            entries
+                .into_iter()
+                .filter_map(|(key, value)| operand_to_pdf_object(value).map(|value| (key, value)))
+                .collect(),
+        ))),
     }
 }
 
@@ -266,6 +310,13 @@ fn pdf_object_to_operand(object: &PdfObject) -> Option<Operand> {
         PdfObject::String(value) => Some(Operand::String(value.clone())),
         PdfObject::Array(items) => Some(Operand::Array(
             items.iter().filter_map(pdf_object_to_operand).collect(),
+        )),
+        PdfObject::Dictionary(dict) => Some(Operand::Dictionary(
+            dict.entries()
+                .filter_map(|(key, value)| {
+                    pdf_object_to_operand(value).map(|value| (key.clone(), value))
+                })
+                .collect(),
         )),
         _ => None,
     }
@@ -432,5 +483,27 @@ mod tests {
 
         assert!(dict.get("BitsPerComponent").is_some());
         assert!(dict.get("BPC").is_none());
+    }
+
+    #[test]
+    fn preserves_inline_decodeparms_dictionary_and_array_shape() {
+        let operations = ContentParser::parse(
+            b"BI /W 2 /H 1 /CS /G /BPC 8 /F /Fl /DP << /Predictor 15 /Colors 1 /Columns 2 >> ID x EI",
+        )
+        .unwrap();
+        let id = operations
+            .iter()
+            .find(|operation| operation.operator == "ID")
+            .unwrap();
+        let params = id
+            .operands
+            .chunks_exact(2)
+            .find(|pair| pair[0].as_name() == Some("DecodeParms"))
+            .map(|pair| &pair[1])
+            .unwrap();
+        let entries = params.as_dictionary().expect("DecodeParms dictionary");
+        assert!(entries
+            .iter()
+            .any(|(key, value)| key == "Predictor" && value.as_integer() == Some(15)));
     }
 }

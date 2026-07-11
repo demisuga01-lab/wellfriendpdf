@@ -3424,6 +3424,10 @@ pub struct NonAxisRedactionOptions {
     pub requests: Vec<NonAxisRedactionRequest>,
     pub deterministic: bool,
     pub fail_on_unsupported: bool,
+    #[serde(default)]
+    pub promote_inline_images: bool,
+    #[serde(default)]
+    pub signature_policy_override: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3645,6 +3649,7 @@ pub fn apply_nonaxis_image_redaction_pdf(
                 fill,
                 scrub_metadata: true,
                 image_policy,
+                promote_inline_images: options.promote_inline_images,
                 ..RedactionOptions::default()
             },
         )?;

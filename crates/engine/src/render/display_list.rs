@@ -632,6 +632,10 @@ fn estimate_operand_bytes(operand: &crate::content::operation::Operand) -> usize
         Operand::Name(name) => name.len(),
         Operand::String(bytes) => bytes.len(),
         Operand::Array(items) => items.iter().map(estimate_operand_bytes).sum(),
+        Operand::Dictionary(entries) => entries
+            .iter()
+            .map(|(key, value)| key.len().saturating_add(estimate_operand_bytes(value)))
+            .sum(),
     }
 }
 

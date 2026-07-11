@@ -306,6 +306,8 @@ fn nonaxis_redaction_maps_polygon_and_rewrites_or_removes_securely() {
         ],
         deterministic: true,
         fail_on_unsupported: false,
+        promote_inline_images: false,
+        signature_policy_override: false,
     };
     let engine = ContentEngine::open_bytes(input.clone()).unwrap();
     let plan = plan_nonaxis_image_redaction(&engine, &options).unwrap();
@@ -345,6 +347,8 @@ fn rotated_crop_coordinate_mapping_is_bounded() {
         }],
         deterministic: true,
         fail_on_unsupported: false,
+        promote_inline_images: false,
+        signature_policy_override: false,
     };
     let plan = plan_nonaxis_image_redaction(&engine, &options).unwrap();
     assert_eq!(plan.rows[0].page_rotation, 90);

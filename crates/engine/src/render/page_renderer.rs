@@ -587,6 +587,7 @@ impl<'a> RenderState<'a> {
             })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn scheduled_decode_inline_image(
         &self,
         data: &[u8],
@@ -595,13 +596,25 @@ impl<'a> RenderState<'a> {
         bpc: u8,
         color_space: &str,
         filters: &[&str],
+        decode_params: &[Option<PdfDictionary>],
     ) -> Result<RawImage> {
         let estimated = estimate_inline_image_decode_bytes(data.len(), width, height, bpc);
         self.decode_scheduler.run(
             estimated,
             &self.cancel,
             "renderer inline image decode",
-            || ImageDecoder::decode_inline(data, width, height, bpc, color_space, filters, None),
+            || {
+                ImageDecoder::decode_inline_with_param_array(
+                    data,
+                    width,
+                    height,
+                    bpc,
+                    color_space,
+                    filters,
+                    decode_params,
+                    &crate::filters::DecodeLimits::default(),
+                )
+            },
         )
     }
 
@@ -1650,6 +1663,13 @@ impl<'a> RenderState<'a> {
         };
         let color_space = dict_name(&dict, "ColorSpace").unwrap_or("DeviceGray");
         let filters: Vec<&str> = dict_filter_list(&dict);
+        let decode_params = match inline_decode_params(&dict, filters.len()) {
+            Ok(params) => params,
+            Err(err) => {
+                log::warn!("PageRenderer: inline DecodeParms rejected: {err}");
+                return;
+            }
+        };
         let interpolate = dict_bool(&dict, "Interpolate").unwrap_or(false);
         if is_mask {
             let fill_color_state = self.gs.fill_color.clone();
@@ -1666,6 +1686,7 @@ impl<'a> RenderState<'a> {
             bpc,
             color_space,
             &filters,
+            &decode_params,
         ) {
             Ok(raw) => raw,
             Err(err) => {
@@ -4344,6 +4365,75 @@ fn dict_filter_list(map: &std::collections::HashMap<String, Operand>) -> Vec<&st
     }
 }
 
+fn inline_decode_params(
+    map: &std::collections::HashMap<String, Operand>,
+    filter_count: usize,
+) -> Result<Vec<Option<PdfDictionary>>> {
+    let Some(value) = map.get("DecodeParms") else {
+        return Ok(vec![None; filter_count]);
+    };
+    match value {
+        Operand::Dictionary(entries) => {
+            if filter_count == 0 {
+                return Err(OxideError::MalformedPdf(
+                    "inline DecodeParms present without Filter".to_string(),
+                ));
+            }
+            let mut out = vec![None; filter_count];
+            out[0] = Some(inline_operand_dictionary(entries)?);
+            Ok(out)
+        }
+        Operand::Array(items) if items.len() == filter_count => items
+            .iter()
+            .map(|item| match item {
+                Operand::Dictionary(entries) => Ok(Some(inline_operand_dictionary(entries)?)),
+                _ => Err(OxideError::MalformedPdf(
+                    "inline DecodeParms array contains a non-dictionary".to_string(),
+                )),
+            })
+            .collect(),
+        Operand::Array(items) => Err(OxideError::MalformedPdf(format!(
+            "inline DecodeParms count {} does not match Filter count {filter_count}",
+            items.len()
+        ))),
+        _ => Err(OxideError::MalformedPdf(
+            "inline DecodeParms is not a dictionary or matching array".to_string(),
+        )),
+    }
+}
+
+fn inline_operand_dictionary(entries: &[(String, Operand)]) -> Result<PdfDictionary> {
+    let mut dict = PdfDictionary::empty();
+    for (key, value) in entries {
+        let object = inline_operand_object(value).ok_or_else(|| {
+            OxideError::MalformedPdf(format!(
+                "inline DecodeParms /{key} contains an unsupported object"
+            ))
+        })?;
+        dict.insert(key, object);
+    }
+    Ok(dict)
+}
+
+fn inline_operand_object(value: &Operand) -> Option<PdfObject> {
+    match value {
+        Operand::Integer(value) => Some(PdfObject::Integer(*value)),
+        Operand::Real(value) => Some(PdfObject::Real(*value)),
+        Operand::Boolean(value) => Some(PdfObject::Boolean(*value)),
+        Operand::Name(value) => Some(PdfObject::Name(value.clone())),
+        Operand::String(value) => Some(PdfObject::String(value.clone())),
+        Operand::Array(items) => Some(PdfObject::Array(
+            items
+                .iter()
+                .map(inline_operand_object)
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Operand::Dictionary(entries) => Some(PdfObject::Dictionary(
+            inline_operand_dictionary(entries).ok()?,
+        )),
+    }
+}
+
 fn image_mask_to_stencil_rgba(
     raw: crate::images::decoder::RawImage,
     color: PixelColor,
@@ -6089,7 +6179,7 @@ mod tests {
         let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
         let state = blank_render_state(&engine);
         let raw = state
-            .scheduled_decode_inline_image(&[128], 1, 1, 8, "DeviceGray", &[])
+            .scheduled_decode_inline_image(&[128], 1, 1, 8, "DeviceGray", &[], &[])
             .expect("inline image decode");
         assert_eq!(raw.width, 1);
         let metrics = state.decode_scheduler.metrics();
@@ -6107,7 +6197,7 @@ mod tests {
             ..DecodeLimits::default()
         });
         let err = state
-            .scheduled_decode_inline_image(&[0; 16], 4, 4, 8, "DeviceGray", &[])
+            .scheduled_decode_inline_image(&[0; 16], 4, 4, 8, "DeviceGray", &[], &[])
             .expect_err("decode estimate should exceed scheduler budget");
         assert!(err.to_string().contains("exceeding scheduler budget"));
         let metrics = state.decode_scheduler.metrics();
@@ -6157,7 +6247,7 @@ mod tests {
         state.cancel = CancelToken::new();
         state.cancel.cancel();
         let err = state
-            .scheduled_decode_inline_image(&[0], 1, 1, 8, "DeviceGray", &[])
+            .scheduled_decode_inline_image(&[0], 1, 1, 8, "DeviceGray", &[], &[])
             .expect_err("pre-cancelled decode should fail");
         assert!(matches!(err, OxideError::Cancelled(_)));
         let metrics = state.decode_scheduler.metrics();

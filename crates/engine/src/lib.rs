@@ -316,15 +316,20 @@ pub use prompt17::{
     RichMediaLimits, RichMediaPolicyMode, RichMediaPolicyReport, PROMPT17_SCHEMA_VERSION,
 };
 pub use prompt18::{
-    analyze_edit_policy, associated_file_extract, associated_files_add_pdf,
-    associated_files_inventory, associated_files_sanitize_pdf, incremental_metadata_update_pdf,
-    mask_redaction_inventory, prompt18_report, redact_masked_images_pdf, AfRelationship,
-    AssociatedFileAddRequest, AssociatedFileOwnerType, AssociatedFileRecord,
+    analyze_edit_policy, analyze_edit_policy_for_target, associated_file_extract,
+    associated_files_add_pdf, associated_files_inventory, associated_files_remove_owner_pdf,
+    associated_files_sanitize_pdf, associated_files_update_owner_pdf,
+    incremental_annotation_update_pdf, incremental_form_value_update_pdf,
+    incremental_metadata_update_pdf, incremental_page_property_update_pdf,
+    mask_redaction_inventory, prompt18_report, prompt18b_report, redact_masked_images_pdf,
+    AfRelationship, AssociatedFileAddRequest, AssociatedFileOwnerRemoveRequest,
+    AssociatedFileOwnerType, AssociatedFileOwnerUpdateRequest, AssociatedFileRecord,
     AssociatedFileSanitizerOptions, AssociatedFileSanitizerPolicy, AssociatedFilesInventoryReport,
     AssociatedFilesMutationReport, EditOperation as SignatureEditOperation, EditPolicyDecision,
-    EditPolicyReport, MaskInventoryReport, MaskInventoryRow, MaskRedactionStrategy,
+    EditPolicyReport, IncrementalAnnotationEdit, IncrementalMutationReport,
+    IncrementalPagePropertyEdit, MaskInventoryReport, MaskInventoryRow, MaskRedactionStrategy,
     Prompt18SupportStatus, SignatureImpactSummary, StructuralSignaturePolicy,
-    PROMPT18_SCHEMA_VERSION,
+    PROMPT18B_SCHEMA_VERSION, PROMPT18_SCHEMA_VERSION,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
@@ -518,10 +523,15 @@ pub mod prelude {
     };
     pub use crate::prompt18::{
         analyze_edit_policy, associated_file_extract, associated_files_add_pdf,
-        associated_files_inventory, associated_files_sanitize_pdf, incremental_metadata_update_pdf,
-        mask_redaction_inventory, prompt18_report, redact_masked_images_pdf,
-        AssociatedFileAddRequest, AssociatedFileSanitizerOptions,
-        EditOperation as SignatureEditOperation,
+        associated_files_inventory, associated_files_remove_owner_pdf,
+        associated_files_sanitize_pdf, associated_files_update_owner_pdf,
+        incremental_annotation_update_pdf, incremental_form_value_update_pdf,
+        incremental_metadata_update_pdf, incremental_page_property_update_pdf,
+        mask_redaction_inventory, prompt18_report, prompt18b_report, redact_masked_images_pdf,
+        AssociatedFileAddRequest, AssociatedFileOwnerRemoveRequest,
+        AssociatedFileOwnerUpdateRequest, AssociatedFileSanitizerOptions,
+        EditOperation as SignatureEditOperation, IncrementalAnnotationEdit,
+        IncrementalPagePropertyEdit,
     };
     pub use crate::signature::{
         add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options,

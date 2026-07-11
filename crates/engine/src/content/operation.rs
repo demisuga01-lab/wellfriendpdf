@@ -8,6 +8,10 @@ pub enum Operand {
     Name(String),
     String(Vec<u8>),
     Array(Vec<Operand>),
+    /// A content-stream dictionary. Inline-image `/DecodeParms` commonly uses
+    /// this form; keeping it distinct from arrays is security-critical because
+    /// predictor parameters must be paired with the intended filter.
+    Dictionary(Vec<(String, Operand)>),
 }
 
 impl Operand {
@@ -50,6 +54,13 @@ impl Operand {
     pub fn as_array(&self) -> Option<&[Operand]> {
         match self {
             Self::Array(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn as_dictionary(&self) -> Option<&[(String, Operand)]> {
+        match self {
+            Self::Dictionary(value) => Some(value),
             _ => None,
         }
     }

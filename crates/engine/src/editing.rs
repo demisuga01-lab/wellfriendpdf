@@ -15,10 +15,9 @@ use crate::document::{PdfDocument, PdfPage};
 use crate::editable::{EditableBuildOptions, EditableDocument};
 use crate::engine::{ContentEngine, PageResources};
 use crate::error::{OxideError, Result};
-use crate::filters::{decode_stream_lossless, flate_encode};
+use crate::filters::{decode_stream_lossless, flate_encode, DecodeLimits, StreamDecodeStatus};
 use crate::fonts::FontResolver;
 use crate::images::decoder::{ImageDecoder, RawImage};
-use crate::images::locator::ImageReference;
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
@@ -181,6 +180,9 @@ pub struct RedactionOptions {
     pub scrub_metadata: bool,
     pub image_policy: ImageRedactionPolicy,
     pub attachment_policy: AttachmentRedactionPolicy,
+    /// Promote supported inline images to deterministic Image XObjects before
+    /// applying the sample rewrite. This never promotes malformed input.
+    pub promote_inline_images: bool,
 }
 
 impl Default for RedactionOptions {
@@ -190,6 +192,7 @@ impl Default for RedactionOptions {
             scrub_metadata: true,
             image_policy: ImageRedactionPolicy::Partial,
             attachment_policy: AttachmentRedactionPolicy::Keep,
+            promote_inline_images: false,
         }
     }
 }
@@ -436,6 +439,7 @@ pub fn replace_text_pdf(
         scrub_metadata: true,
         image_policy: ImageRedactionPolicy::Partial,
         attachment_policy: AttachmentRedactionPolicy::Keep,
+        promote_inline_images: false,
     };
     for (page, rect) in &regions {
         redactor.redact(*page, *rect, redaction_options.clone())?;
@@ -632,6 +636,7 @@ pub fn edit_paragraph_reflow_pdf(
             scrub_metadata: true,
             image_policy: ImageRedactionPolicy::Partial,
             attachment_policy: AttachmentRedactionPolicy::Keep,
+            promote_inline_images: false,
         },
     )?;
     let redacted = redactor.save_to_bytes(EditMode::FullRewrite)?;
@@ -2459,13 +2464,22 @@ fn rewrite_page_content_for_redaction(
                                 .unwrap_or(ImageRedactionPolicy::Partial)
                         });
                     if policy != ImageRedactionPolicy::Remove {
-                        let rewritten = rewrite_inline_image_group(
+                        let promote = overlapping
+                            .iter()
+                            .any(|redaction| redaction.options.promote_inline_images);
+                        let (rewritten, promoted_name) = rewrite_inline_image_group(
                             reader,
                             &operations[operation_index..=end],
                             state.ctm,
                             &overlapping,
+                            resources,
+                            changes,
+                            promote,
                             &mut out,
                         )?;
+                        if let Some(name) = promoted_name {
+                            retained_xobjects.insert(name);
+                        }
                         if !rewritten && policy == ImageRedactionPolicy::Fail {
                             return Err(OxideError::UnsupportedFeature(
                                 "inline image redaction failed closed: the filter, color space, bit depth, transform, or sample layout has no bounded deterministic rewrite"
@@ -2573,7 +2587,7 @@ fn rewrite_page_content_for_redaction(
                                     .is_some_and(|dict| dict.get_name("Subtype") == Some("Image"));
                                 if is_image {
                                     match redacted_image_xobject(
-                                        reader, *obj, *gen, state.ctm, redactions,
+                                        reader, *obj, *gen, state.ctm, redactions, changes,
                                     ) {
                                         Ok(Some(redacted)) => {
                                             let new_number = changes.alloc();
@@ -3025,13 +3039,17 @@ fn serialize_inline_image_group(operations: &[ContentOperation], out: &mut Vec<u
 /// binary payload, so this routine never searches for `EI` inside image data.
 /// Unsupported layouts return `Ok(false)` and the caller removes the complete
 /// invocation (or fails when strict policy was requested).
+#[allow(clippy::too_many_arguments)]
 fn rewrite_inline_image_group(
     reader: &PdfReader,
     operations: &[ContentOperation],
     image_ctm: Matrix,
     redactions: &[&RedactionEdit],
+    resources: &mut PdfDictionary,
+    changes: &mut ChangeSet,
+    promote: bool,
     out: &mut Vec<u8>,
-) -> Result<bool> {
+) -> Result<(bool, Option<String>)> {
     const MAX_INLINE_PIXELS: u64 = 100_000_000;
     const MAX_INLINE_BYTES: usize = 256 * 1024 * 1024;
 
@@ -3045,7 +3063,7 @@ fn rewrite_inline_image_group(
         .and_then(|operation| operation.string_bytes(0))
         .ok_or_else(|| OxideError::MalformedPdf("inline image has no captured data".to_string()))?;
     if data.len() > MAX_INLINE_BYTES || id.operands.len() % 2 != 0 {
-        return Ok(false);
+        return Ok((false, None));
     }
 
     let value = |key: &str| -> Option<&Operand> {
@@ -3072,17 +3090,21 @@ fn rewrite_inline_image_group(
     if width == 0
         || height == 0
         || u64::from(width).saturating_mul(u64::from(height)) > MAX_INLINE_PIXELS
-        || bpc != 8
-        || image_mask
+        || !matches!(bpc, 1 | 2 | 4 | 8)
+        || (image_mask && bpc != 1)
     {
-        return Ok(false);
+        return Ok((false, None));
     }
 
-    let color_space = value("ColorSpace")
-        .and_then(Operand::as_name)
-        .unwrap_or("DeviceGray");
+    let color_space = if image_mask {
+        "DeviceGray"
+    } else {
+        value("ColorSpace")
+            .and_then(Operand::as_name)
+            .unwrap_or("DeviceGray")
+    };
     if !matches!(color_space, "DeviceGray" | "DeviceRGB" | "DeviceCMYK") {
-        return Ok(false);
+        return Ok((false, None));
     }
     let filters: Vec<&str> = match value("Filter") {
         None => Vec::new(),
@@ -3093,34 +3115,58 @@ fn rewrite_inline_image_group(
                 .filter_map(Operand::as_name)
                 .collect::<Vec<_>>();
             if names.len() != items.len() {
-                return Ok(false);
+                return Ok((false, None));
             }
             names
         }
-        _ => return Ok(false),
+        _ => return Ok((false, None)),
     };
-    // DecodeParms dictionaries are not representable in ContentOperation's
-    // bounded operand model. Predictor-bearing chains therefore remove/fail
-    // instead of risking a misdecoded sample rewrite.
-    if value("DecodeParms").is_some() {
-        return Ok(false);
+    let decode_params = match inline_decode_params(value("DecodeParms"), filters.len()) {
+        Ok(params) => params,
+        Err(_) => return Ok((false, None)),
+    };
+    let input_channels = match color_space {
+        "DeviceGray" => 1,
+        "DeviceRGB" => 3,
+        "DeviceCMYK" => 4,
+        _ => unreachable!(),
+    };
+    if !inline_predictor_layout_is_safe(
+        &decode_params,
+        width,
+        input_channels,
+        bpc,
+        MAX_INLINE_BYTES,
+    ) {
+        return Ok((false, None));
     }
 
-    let mut raw =
-        match ImageDecoder::decode_inline(data, width, height, bpc, color_space, &filters, None) {
-            Ok(raw) => raw,
-            Err(_) => return Ok(false),
-        };
+    let mut raw = match ImageDecoder::decode_inline_with_param_array(
+        data,
+        width,
+        height,
+        bpc,
+        color_space,
+        &filters,
+        &decode_params,
+        &DecodeLimits {
+            max_decoded_bytes_per_stream: MAX_INLINE_BYTES as u64,
+            ..DecodeLimits::default()
+        },
+    ) {
+        Ok(raw) => raw,
+        Err(_) => return Ok((false, None)),
+    };
     if raw.bits_per_sample != 8
         || !matches!(raw.channels, 1 | 3 | 4)
         || !raw.is_valid()
         || raw.byte_count() > MAX_INLINE_BYTES
     {
-        return Ok(false);
+        return Ok((false, None));
     }
     let inverse = match invert_affine(&image_ctm) {
         Some(inverse) => inverse,
-        None => return Ok(false),
+        None => return Ok((false, None)),
     };
     let channels = raw.channels as usize;
     let mut changed = false;
@@ -3136,7 +3182,7 @@ fn rewrite_inline_image_group(
                 .iter()
                 .any(|(x, y)| !x.is_finite() || !y.is_finite())
         {
-            return Ok(false);
+            return Ok((false, None));
         }
         let bounds = rect_from_points(&sample_polygon);
         let x0 = bounds.x.floor().max(0.0) as usize;
@@ -3144,40 +3190,318 @@ fn rewrite_inline_image_group(
         let x1 = (bounds.x + bounds.width).ceil().min(raw.width as f64) as usize;
         let y1 = (bounds.y + bounds.height).ceil().min(raw.height as f64) as usize;
         let fill = fill_for_channels(&redaction.options.fill, raw.channels);
+        let mask_transparent = if inline_mask_paints_ones(value("Decode")) {
+            0
+        } else {
+            255
+        };
         for y in y0..y1 {
             for x in x0..x1 {
                 if !polygon_intersects_pixel(&sample_polygon, x as f64, y as f64) {
                     continue;
                 }
                 let offset = (y * raw.width as usize + x) * channels;
-                raw.pixels[offset..offset + channels].copy_from_slice(&fill[..channels]);
+                if image_mask {
+                    raw.pixels[offset] = mask_transparent;
+                } else {
+                    raw.pixels[offset..offset + channels].copy_from_slice(&fill[..channels]);
+                }
                 changed = true;
             }
         }
     }
     if !changed {
-        return Ok(false);
+        return Ok((false, None));
     }
 
-    out.extend_from_slice(b"BI\n");
-    out.extend_from_slice(format!("/Width {}\n/Height {}\n", raw.width, raw.height).as_bytes());
-    out.extend_from_slice(
-        format!(
-            "/ColorSpace /{}\n",
-            match raw.channels {
-                1 => "DeviceGray",
-                3 => "DeviceRGB",
-                4 => "DeviceCMYK",
-                _ => return Ok(false),
-            }
+    let output_bpc = if image_mask { 1 } else { 8 };
+    let unpacked = if image_mask {
+        pack_subbyte_rows(&raw.pixels, raw.width, raw.height, 1)
+    } else {
+        raw.pixels.clone()
+    };
+    let predictor = if image_mask {
+        None
+    } else {
+        output_predictor(
+            &decode_params,
+            raw.width,
+            raw.channels,
+            output_bpc,
+            &unpacked,
         )
-        .as_bytes(),
+    };
+    let encoded_samples = predictor
+        .as_ref()
+        .map(|(_, bytes)| bytes.as_slice())
+        .unwrap_or(&unpacked);
+    let encoded = flate_encode(encoded_samples, 9);
+    let mut image_dict = PdfDictionary::empty();
+    image_dict.insert("Width", PdfObject::Integer(i64::from(raw.width)));
+    image_dict.insert("Height", PdfObject::Integer(i64::from(raw.height)));
+    if image_mask {
+        image_dict.insert("ImageMask", PdfObject::Boolean(true));
+    } else {
+        let color_space = match raw.channels {
+            1 => "DeviceGray",
+            3 => "DeviceRGB",
+            4 => "DeviceCMYK",
+            _ => return Ok((false, None)),
+        };
+        image_dict.insert("ColorSpace", PdfObject::Name(color_space.to_string()));
+    }
+    image_dict.insert(
+        "BitsPerComponent",
+        PdfObject::Integer(i64::from(output_bpc)),
     );
-    out.extend_from_slice(b"/BitsPerComponent 8\n/Filter /FlateDecode\nID\n");
-    out.extend_from_slice(&flate_encode(&raw.pixels, 9));
-    out.extend_from_slice(b"\nEI\n");
-    let _ = reader; // retained in the signature for future resource color spaces.
-    Ok(true)
+    image_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+    if let Some(decode) = value("Decode").and_then(operand_to_pdf_object_for_inline) {
+        image_dict.insert("Decode", decode);
+    }
+    if let Some((params, _)) = predictor {
+        image_dict.insert("DecodeParms", PdfObject::Dictionary(params));
+    }
+
+    if promote {
+        image_dict.insert("Type", PdfObject::Name("XObject".to_string()));
+        image_dict.insert("Subtype", PdfObject::Name("Image".to_string()));
+        let number = changes.alloc();
+        changes.insert_new(
+            number,
+            PdfObject::Stream {
+                dict: image_dict,
+                raw: encoded,
+            },
+        );
+        let name = add_promoted_inline_xobject(resources, number);
+        serialize_content_operation(
+            &ContentOperation::new("Do", vec![Operand::Name(name.clone())]),
+            out,
+        );
+        let _ = reader;
+        Ok((true, Some(name)))
+    } else {
+        out.extend_from_slice(b"BI\n");
+        for (key, value) in image_dict.entries() {
+            out.push(b'/');
+            out.extend_from_slice(key.as_bytes());
+            out.push(b' ');
+            let Some(value) = pdf_object_to_inline_operand(value) else {
+                return Ok((false, None));
+            };
+            serialize_content_operand(&value, out);
+            out.push(b'\n');
+        }
+        out.extend_from_slice(b"ID\n");
+        out.extend_from_slice(&encoded);
+        out.extend_from_slice(b"\nEI\n");
+        let _ = reader;
+        Ok((true, None))
+    }
+}
+
+fn inline_decode_params(
+    operand: Option<&Operand>,
+    filter_count: usize,
+) -> Result<Vec<Option<PdfDictionary>>> {
+    let Some(operand) = operand else {
+        return Ok(vec![None; filter_count]);
+    };
+    match operand {
+        Operand::Dictionary(entries) => {
+            let mut out = vec![None; filter_count];
+            if let Some(first) = out.first_mut() {
+                *first = Some(inline_operand_dictionary(entries)?);
+            } else {
+                return Err(OxideError::MalformedPdf(
+                    "inline DecodeParms present without a Filter".to_string(),
+                ));
+            }
+            Ok(out)
+        }
+        Operand::Array(items) if items.len() == filter_count => items
+            .iter()
+            .map(|item| match item {
+                Operand::Dictionary(entries) => Ok(Some(inline_operand_dictionary(entries)?)),
+                _ => Err(OxideError::MalformedPdf(
+                    "inline DecodeParms array entries must be dictionaries".to_string(),
+                )),
+            })
+            .collect(),
+        Operand::Array(items) => Err(OxideError::MalformedPdf(format!(
+            "inline DecodeParms count {} does not match Filter count {filter_count}",
+            items.len()
+        ))),
+        _ => Err(OxideError::MalformedPdf(
+            "inline DecodeParms must be a dictionary or matching array".to_string(),
+        )),
+    }
+}
+
+fn inline_operand_dictionary(entries: &[(String, Operand)]) -> Result<PdfDictionary> {
+    let mut dict = PdfDictionary::empty();
+    for (key, value) in entries {
+        let value = operand_to_pdf_object_for_inline(value).ok_or_else(|| {
+            OxideError::MalformedPdf(format!(
+                "inline dictionary /{key} contains an unsupported value"
+            ))
+        })?;
+        dict.insert(key, value);
+    }
+    Ok(dict)
+}
+
+fn operand_to_pdf_object_for_inline(operand: &Operand) -> Option<PdfObject> {
+    match operand {
+        Operand::Integer(value) => Some(PdfObject::Integer(*value)),
+        Operand::Real(value) => Some(PdfObject::Real(*value)),
+        Operand::Boolean(value) => Some(PdfObject::Boolean(*value)),
+        Operand::Name(value) => Some(PdfObject::Name(value.clone())),
+        Operand::String(value) => Some(PdfObject::String(value.clone())),
+        Operand::Array(items) => Some(PdfObject::Array(
+            items
+                .iter()
+                .map(operand_to_pdf_object_for_inline)
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        Operand::Dictionary(entries) => Some(PdfObject::Dictionary(
+            inline_operand_dictionary(entries).ok()?,
+        )),
+    }
+}
+
+fn pdf_object_to_inline_operand(object: &PdfObject) -> Option<Operand> {
+    match object {
+        PdfObject::Integer(value) => Some(Operand::Integer(*value)),
+        PdfObject::Real(value) => Some(Operand::Real(*value)),
+        PdfObject::Boolean(value) => Some(Operand::Boolean(*value)),
+        PdfObject::Name(value) => Some(Operand::Name(value.clone())),
+        PdfObject::String(value) => Some(Operand::String(value.clone())),
+        PdfObject::Array(items) => Some(Operand::Array(
+            items
+                .iter()
+                .map(pdf_object_to_inline_operand)
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        PdfObject::Dictionary(dict) => Some(Operand::Dictionary(
+            dict.entries()
+                .map(|(key, value)| Some((key.clone(), pdf_object_to_inline_operand(value)?)))
+                .collect::<Option<Vec<_>>>()?,
+        )),
+        _ => None,
+    }
+}
+
+fn inline_predictor_layout_is_safe(
+    params: &[Option<PdfDictionary>],
+    width: u32,
+    colors: u8,
+    bpc: u8,
+    byte_cap: usize,
+) -> bool {
+    params.iter().flatten().all(|params| {
+        let predictor = params.get_integer("Predictor").unwrap_or(1);
+        let columns = params.get_integer("Columns").unwrap_or(i64::from(width));
+        let param_colors = params.get_integer("Colors").unwrap_or(i64::from(colors));
+        let param_bpc = params
+            .get_integer("BitsPerComponent")
+            .unwrap_or(i64::from(bpc));
+        let row_bits = u64::try_from(columns)
+            .ok()
+            .and_then(|columns| columns.checked_mul(u64::try_from(param_colors).ok()?))
+            .and_then(|samples| samples.checked_mul(u64::try_from(param_bpc).ok()?));
+        matches!(predictor, 1 | 2 | 10..=15)
+            && columns == i64::from(width)
+            && param_colors == i64::from(colors)
+            && param_bpc == i64::from(bpc)
+            && row_bits
+                .and_then(|bits| usize::try_from(bits.div_ceil(8)).ok())
+                .is_some_and(|bytes| bytes > 0 && bytes <= byte_cap)
+    })
+}
+
+fn output_predictor(
+    params: &[Option<PdfDictionary>],
+    width: u32,
+    colors: u8,
+    bpc: u8,
+    samples: &[u8],
+) -> Option<(PdfDictionary, Vec<u8>)> {
+    let predictor = params
+        .iter()
+        .flatten()
+        .find_map(|params| params.get_integer("Predictor"))
+        .filter(|value| *value != 1)?;
+    if bpc != 8 {
+        return None;
+    }
+    let row_len = usize::try_from(width).ok()?.checked_mul(colors as usize)?;
+    if row_len == 0 || !samples.len().is_multiple_of(row_len) {
+        return None;
+    }
+    let encoded = match predictor {
+        2 => {
+            let bytes_per_pixel = colors as usize;
+            let mut encoded = samples.to_vec();
+            for row in encoded.chunks_exact_mut(row_len) {
+                for index in (bytes_per_pixel..row.len()).rev() {
+                    row[index] = row[index].wrapping_sub(row[index - bytes_per_pixel]);
+                }
+            }
+            encoded
+        }
+        10..=15 => {
+            let mut encoded = Vec::with_capacity(samples.len() + samples.len() / row_len);
+            for row in samples.chunks_exact(row_len) {
+                encoded.push(0);
+                encoded.extend_from_slice(row);
+            }
+            encoded
+        }
+        _ => return None,
+    };
+    let mut output = PdfDictionary::empty();
+    output.insert("Predictor", PdfObject::Integer(predictor));
+    output.insert("Colors", PdfObject::Integer(i64::from(colors)));
+    output.insert("BitsPerComponent", PdfObject::Integer(i64::from(bpc)));
+    output.insert("Columns", PdfObject::Integer(i64::from(width)));
+    Some((output, encoded))
+}
+
+fn inline_mask_paints_ones(decode: Option<&Operand>) -> bool {
+    decode
+        .and_then(Operand::as_array)
+        .and_then(|items| Some((items.first()?.as_number()?, items.get(1)?.as_number()?)))
+        .map(|(zero, one)| one >= zero)
+        .unwrap_or(true)
+}
+
+fn pack_subbyte_rows(samples: &[u8], width: u32, height: u32, bpc: u8) -> Vec<u8> {
+    let samples_per_row = width as usize;
+    let row_bytes = samples_per_row.saturating_mul(bpc as usize).div_ceil(8);
+    let max = (1u16 << bpc) - 1;
+    let mut packed = vec![0u8; row_bytes.saturating_mul(height as usize)];
+    for y in 0..height as usize {
+        for x in 0..samples_per_row {
+            let sample = samples
+                .get(y.saturating_mul(samples_per_row).saturating_add(x))
+                .copied()
+                .unwrap_or(0);
+            let value = ((u16::from(sample) * max + 127) / 255) as u8;
+            let bit = x.saturating_mul(bpc as usize);
+            let shift = 8usize - bpc as usize - (bit % 8);
+            packed[y * row_bytes + bit / 8] |= value << shift;
+        }
+    }
+    packed
+}
+
+fn add_promoted_inline_xobject(resources: &mut PdfDictionary, number: u32) -> String {
+    let mut xobjects = dict_resource(resources, "XObject");
+    let name = next_resource_name(&xobjects, "OxP18Inline");
+    xobjects.insert(&name, reference(number, 0));
+    resources.insert("XObject", PdfObject::Dictionary(xobjects));
+    name
 }
 
 fn serialize_content_operand(operand: &Operand, out: &mut Vec<u8>) {
@@ -3205,6 +3529,17 @@ fn serialize_content_operand(operand: &Operand, out: &mut Vec<u8>) {
                 serialize_content_operand(item, out);
             }
             out.push(b']');
+        }
+        Operand::Dictionary(entries) => {
+            out.extend_from_slice(b"<<");
+            for (key, value) in entries {
+                out.push(b'/');
+                out.extend_from_slice(key.as_bytes());
+                out.push(b' ');
+                serialize_content_operand(value, out);
+                out.push(b' ');
+            }
+            out.extend_from_slice(b">>");
         }
     }
 }
@@ -3269,6 +3604,7 @@ fn redacted_image_xobject(
     generation: u16,
     image_ctm: Matrix,
     redactions: &[RedactionEdit],
+    changes: &mut ChangeSet,
 ) -> Result<Option<PdfObject>> {
     let obj = reader.get_object(number, generation)?;
     let PdfObject::Stream {
@@ -3298,52 +3634,38 @@ fn redacted_image_xobject(
             "partial image redaction rejected a singular or non-finite image transform".to_string(),
         )
     })?;
+    let image_mask = image_dict
+        .get_bool("ImageMask")
+        .or_else(|| image_dict.get_bool("IM"))
+        .unwrap_or(false);
     let bpc = image_dict
         .get_integer("BitsPerComponent")
         .or_else(|| image_dict.get_integer("BPC"))
-        .unwrap_or(8)
+        .unwrap_or(if image_mask { 1 } else { 8 })
         .clamp(0, 16) as u8;
-    let color_space = match image_dict
-        .get("ColorSpace")
-        .or_else(|| image_dict.get("CS"))
+    let layout = secure_image_sample_layout(image_dict, reader, image_mask)?;
+    if !matches!(bpc, 1 | 2 | 4 | 8)
+        || (image_mask && bpc != 1)
+        || (!matches!(layout, SecureImageLayout::Indexed { .. }) && !image_mask && bpc != 8)
     {
-        Some(PdfObject::Name(name)) => match name.as_str() {
-            "G" => "DeviceGray",
-            "RGB" => "DeviceRGB",
-            "CMYK" => "DeviceCMYK",
-            other => other,
-        },
-        _ => "DeviceRGB",
-    };
-    let reference = ImageReference {
-        page_number: 0,
-        xobject_name: String::new(),
-        object_number: number,
-        generation_number: generation,
-        width,
-        height,
-        bits_per_component: bpc,
-        color_space: color_space.to_string(),
-        filter: Vec::new(),
-        is_inline: false,
-        is_mask: image_dict
-            .get_bool("ImageMask")
-            .or_else(|| image_dict.get_bool("IM"))
-            .unwrap_or(false),
-        is_smask: false,
-        inline_data: None,
-    };
-    if bpc != 8 || reference.is_mask {
-        // Sub-byte/stencil data is intentionally not sent through the generic
-        // sample rewriter. The caller securely removes this invocation (or
-        // fails under strict policy), avoiding ambiguous packed-row handling.
         return Ok(None);
     }
-    let mut raw = ImageDecoder::decode(&reference, reader)?;
-    if raw.bits_per_sample != 8 || !matches!(raw.channels, 1 | 3 | 4) {
+    let decoded = decode_stream_lossless(&obj, reader)?;
+    if !matches!(decoded.status, StreamDecodeStatus::Complete) {
         return Ok(None);
     }
-    let channels = raw.channels as usize;
+    let channels = layout.channels();
+    let expected_samples = usize::try_from(width)
+        .ok()
+        .and_then(|w| w.checked_mul(height as usize))
+        .and_then(|pixels| pixels.checked_mul(channels))
+        .ok_or_else(|| OxideError::ResourceLimit("image sample count overflow".to_string()))?;
+    let mut samples = unpack_samples_exact(&decoded.data, width, height, channels, bpc)?;
+    if samples.len() != expected_samples {
+        return Err(OxideError::MalformedPdf(
+            "decoded image sample length does not match dimensions".to_string(),
+        ));
+    }
     let mut changed = false;
     for redaction in redactions {
         let image_rect = transformed_unit_rect(&image_ctm);
@@ -3354,7 +3676,7 @@ fn redacted_image_xobject(
             .polygon
             .iter()
             .map(|(x, y)| transform_point(&inverse, *x, *y))
-            .map(|(u, v)| (u * raw.width as f64, (1.0 - v) * raw.height as f64))
+            .map(|(u, v)| (u * width as f64, (1.0 - v) * height as f64))
             .collect();
         if sample_polygon
             .iter()
@@ -3369,18 +3691,19 @@ fn redacted_image_xobject(
         let y0 = sample_bounds.y.floor().max(0.0) as usize;
         let x1 = (sample_bounds.x + sample_bounds.width)
             .ceil()
-            .min(raw.width as f64) as usize;
+            .min(width as f64) as usize;
         let y1 = (sample_bounds.y + sample_bounds.height)
             .ceil()
-            .min(raw.height as f64) as usize;
-        let fill = fill_for_channels(&redaction.options.fill, raw.channels);
+            .min(height as f64) as usize;
+        let replacement =
+            secure_replacement_samples(&layout, image_dict, reader, &redaction.options.fill, bpc)?;
         for y in y0..y1 {
             for x in x0..x1 {
                 if !polygon_intersects_pixel(&sample_polygon, x as f64, y as f64) {
                     continue;
                 }
-                let offset = (y * raw.width as usize + x) * channels;
-                raw.pixels[offset..offset + channels].copy_from_slice(&fill[..channels]);
+                let offset = (y * width as usize + x) * channels;
+                samples[offset..offset + channels].copy_from_slice(&replacement[..channels]);
                 changed = true;
             }
         }
@@ -3388,24 +3711,386 @@ fn redacted_image_xobject(
     if !changed {
         return Ok(None);
     }
-    let color_space = match raw.channels {
-        1 => "DeviceGray",
-        3 => "DeviceRGB",
-        4 => "DeviceCMYK",
-        _ => return Ok(None),
-    };
+    let packed = pack_samples_exact(&samples, width, height, channels, bpc)?;
+    let mut output_dict = image_dict.clone();
+    output_dict.remove("F");
+    output_dict.remove("Filter");
+    output_dict.remove("DP");
+    output_dict.remove("DecodeParms");
+    output_dict.remove("Length");
+    output_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+    output_dict.remove("Mask");
+    output_dict.remove("SMask");
+
+    if let Some(mask_ref) = image_dict.get("Mask").and_then(PdfObject::as_reference) {
+        let mask = redacted_associated_mask(reader, mask_ref, image_ctm, redactions, false)?;
+        let mask_number = changes.alloc();
+        changes.insert_new(mask_number, mask);
+        output_dict.insert("Mask", reference(mask_number, 0));
+    } else if let Some(color_key) = image_dict.get("Mask") {
+        output_dict.insert("Mask", color_key.clone());
+    }
+    if let Some(mask_ref) = image_dict.get("SMask").and_then(PdfObject::as_reference) {
+        let mask = redacted_associated_mask(reader, mask_ref, image_ctm, redactions, true)?;
+        let mask_number = changes.alloc();
+        changes.insert_new(mask_number, mask);
+        output_dict.insert("SMask", reference(mask_number, 0));
+    }
     Ok(Some(PdfObject::Stream {
-        dict: dict(&[
-            ("Type", PdfObject::Name("XObject".to_string())),
-            ("Subtype", PdfObject::Name("Image".to_string())),
-            ("Width", PdfObject::Integer(i64::from(raw.width))),
-            ("Height", PdfObject::Integer(i64::from(raw.height))),
-            ("ColorSpace", PdfObject::Name(color_space.to_string())),
-            ("BitsPerComponent", PdfObject::Integer(8)),
-            ("Filter", PdfObject::Name("FlateDecode".to_string())),
-        ]),
-        raw: flate_encode(&raw.pixels, 9),
+        dict: output_dict,
+        raw: flate_encode(&packed, 9),
     }))
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SecureImageLayout {
+    Stencil { paints_ones: bool },
+    Device { channels: usize },
+    Indexed { hival: u8, base_channels: usize },
+    IccBased { channels: usize },
+}
+
+impl SecureImageLayout {
+    fn channels(self) -> usize {
+        match self {
+            Self::Stencil { .. } | Self::Indexed { .. } => 1,
+            Self::Device { channels } | Self::IccBased { channels } => channels,
+        }
+    }
+}
+
+fn secure_image_sample_layout(
+    dict: &PdfDictionary,
+    reader: &PdfReader,
+    image_mask: bool,
+) -> Result<SecureImageLayout> {
+    if image_mask {
+        return Ok(SecureImageLayout::Stencil {
+            paints_ones: pdf_decode_paints_ones(dict.get("Decode")),
+        });
+    }
+    let color_space = dict.get("ColorSpace").or_else(|| dict.get("CS"));
+    match color_space {
+        Some(PdfObject::Name(name)) => match name.as_str() {
+            "DeviceGray" | "G" => Ok(SecureImageLayout::Device { channels: 1 }),
+            "DeviceRGB" | "RGB" => Ok(SecureImageLayout::Device { channels: 3 }),
+            "DeviceCMYK" | "CMYK" => Ok(SecureImageLayout::Device { channels: 4 }),
+            _ => Err(OxideError::UnsupportedFeature(format!(
+                "secure image rewrite does not resolve named color space /{name}"
+            ))),
+        },
+        Some(PdfObject::Array(items)) => match items.first().and_then(PdfObject::as_name) {
+            Some("Indexed" | "I") if items.len() >= 4 => {
+                let hival = items[2]
+                    .as_integer()
+                    .and_then(|value| u8::try_from(value).ok())
+                    .ok_or_else(|| {
+                        OxideError::MalformedPdf("Indexed /hival is outside 0..255".to_string())
+                    })?;
+                let base_channels = match items[1].as_name() {
+                    Some("DeviceGray" | "G") => 1,
+                    Some("DeviceRGB" | "RGB") => 3,
+                    Some("DeviceCMYK" | "CMYK") => 4,
+                    _ => {
+                        return Err(OxideError::UnsupportedFeature(
+                            "secure Indexed rewrite supports DeviceGray/RGB/CMYK bases".to_string(),
+                        ))
+                    }
+                };
+                Ok(SecureImageLayout::Indexed {
+                    hival,
+                    base_channels,
+                })
+            }
+            Some("ICCBased") if items.len() >= 2 => {
+                let profile = reader.resolve(items[1].clone())?;
+                let channels = object_dictionary(&profile)
+                    .and_then(|dict| dict.get_integer("N"))
+                    .and_then(|value| usize::try_from(value).ok())
+                    .filter(|value| matches!(value, 1 | 3 | 4))
+                    .ok_or_else(|| {
+                        OxideError::UnsupportedFeature(
+                            "ICCBased secure rewrite requires profile /N 1, 3, or 4".to_string(),
+                        )
+                    })?;
+                Ok(SecureImageLayout::IccBased { channels })
+            }
+            Some(other) => Err(OxideError::UnsupportedFeature(format!(
+                "secure image rewrite does not support array color space {other}"
+            ))),
+            None => Err(OxideError::MalformedPdf(
+                "image ColorSpace array has no family name".to_string(),
+            )),
+        },
+        _ => Err(OxideError::MalformedPdf(
+            "non-stencil image has no supported ColorSpace".to_string(),
+        )),
+    }
+}
+
+fn unpack_samples_exact(
+    bytes: &[u8],
+    width: u32,
+    height: u32,
+    channels: usize,
+    bpc: u8,
+) -> Result<Vec<u8>> {
+    if !matches!(bpc, 1 | 2 | 4 | 8) || channels == 0 {
+        return Err(OxideError::UnsupportedFeature(
+            "packed sample rewrite supports 1, 2, 4, or 8 bits".to_string(),
+        ));
+    }
+    let samples_per_row = (width as usize)
+        .checked_mul(channels)
+        .ok_or_else(|| OxideError::ResourceLimit("packed row sample overflow".to_string()))?;
+    let row_bytes = samples_per_row
+        .checked_mul(bpc as usize)
+        .map(|bits| bits.div_ceil(8))
+        .ok_or_else(|| OxideError::ResourceLimit("packed row byte overflow".to_string()))?;
+    let expected = row_bytes
+        .checked_mul(height as usize)
+        .ok_or_else(|| OxideError::ResourceLimit("packed image byte overflow".to_string()))?;
+    if bytes.len() != expected {
+        return Err(OxideError::MalformedPdf(format!(
+            "packed image decoded length {} does not equal row-padded length {expected}",
+            bytes.len()
+        )));
+    }
+    let mask = ((1u16 << bpc) - 1) as u8;
+    let mut out = Vec::with_capacity(samples_per_row.saturating_mul(height as usize));
+    for row in bytes.chunks_exact(row_bytes) {
+        for sample in 0..samples_per_row {
+            let bit = sample * bpc as usize;
+            let shift = 8usize - bpc as usize - (bit % 8);
+            out.push((row[bit / 8] >> shift) & mask);
+        }
+    }
+    Ok(out)
+}
+
+fn pack_samples_exact(
+    samples: &[u8],
+    width: u32,
+    height: u32,
+    channels: usize,
+    bpc: u8,
+) -> Result<Vec<u8>> {
+    let samples_per_row = (width as usize)
+        .checked_mul(channels)
+        .ok_or_else(|| OxideError::ResourceLimit("packed row sample overflow".to_string()))?;
+    let expected_samples = samples_per_row
+        .checked_mul(height as usize)
+        .ok_or_else(|| OxideError::ResourceLimit("packed image sample overflow".to_string()))?;
+    if samples.len() != expected_samples {
+        return Err(OxideError::MalformedPdf(
+            "packed rewrite sample buffer length mismatch".to_string(),
+        ));
+    }
+    let row_bytes = samples_per_row
+        .checked_mul(bpc as usize)
+        .map(|bits| bits.div_ceil(8))
+        .ok_or_else(|| OxideError::ResourceLimit("packed row byte overflow".to_string()))?;
+    let mask = ((1u16 << bpc) - 1) as u8;
+    let mut out = vec![0u8; row_bytes.saturating_mul(height as usize)];
+    for y in 0..height as usize {
+        for x in 0..samples_per_row {
+            let bit = x * bpc as usize;
+            let shift = 8usize - bpc as usize - (bit % 8);
+            out[y * row_bytes + bit / 8] |= (samples[y * samples_per_row + x] & mask) << shift;
+        }
+    }
+    Ok(out)
+}
+
+fn secure_replacement_samples(
+    layout: &SecureImageLayout,
+    dict: &PdfDictionary,
+    reader: &PdfReader,
+    fill: &Color,
+    bpc: u8,
+) -> Result<Vec<u8>> {
+    let max = ((1u16 << bpc) - 1) as u8;
+    match *layout {
+        SecureImageLayout::Stencil { paints_ones } => Ok(vec![if paints_ones { 0 } else { max }]),
+        SecureImageLayout::Device { channels } | SecureImageLayout::IccBased { channels } => {
+            let bytes = fill_for_channels(fill, channels as u8);
+            Ok((0..channels)
+                .map(|channel| encode_sample_for_decode(dict, channel, bytes[channel], max))
+                .collect())
+        }
+        SecureImageLayout::Indexed {
+            hival,
+            base_channels,
+        } => {
+            let lookup = indexed_lookup_bytes(dict, reader)?;
+            let target = fill_for_channels(fill, base_channels as u8);
+            let mut best = (u64::MAX, 0u8);
+            for index in 0..=hival {
+                let start = index as usize * base_channels;
+                let end = start + base_channels;
+                let color = lookup.get(start..end).ok_or_else(|| {
+                    OxideError::MalformedPdf("Indexed lookup table is too short".to_string())
+                })?;
+                let distance = color
+                    .iter()
+                    .zip(target.iter())
+                    .map(|(actual, target)| {
+                        let delta = i64::from(*actual) - i64::from(*target);
+                        (delta * delta) as u64
+                    })
+                    .sum();
+                if distance < best.0 {
+                    best = (distance, index);
+                }
+            }
+            Ok(vec![encode_index_for_decode(dict, best.1, max)])
+        }
+    }
+}
+
+fn encode_sample_for_decode(dict: &PdfDictionary, channel: usize, desired: u8, max: u8) -> u8 {
+    let Some(values) = dict.get("Decode").and_then(PdfObject::as_array) else {
+        return ((u16::from(desired) * u16::from(max) + 127) / 255) as u8;
+    };
+    let Some(low) = values.get(channel * 2).and_then(PdfObject::as_number) else {
+        return ((u16::from(desired) * u16::from(max) + 127) / 255) as u8;
+    };
+    let Some(high) = values.get(channel * 2 + 1).and_then(PdfObject::as_number) else {
+        return ((u16::from(desired) * u16::from(max) + 127) / 255) as u8;
+    };
+    if !low.is_finite() || !high.is_finite() || (high - low).abs() <= f64::EPSILON {
+        return 0;
+    }
+    let desired = f64::from(desired) / 255.0;
+    (((desired - low) / (high - low)).clamp(0.0, 1.0) * f64::from(max)).round() as u8
+}
+
+fn encode_index_for_decode(dict: &PdfDictionary, desired: u8, max: u8) -> u8 {
+    let Some(values) = dict.get("Decode").and_then(PdfObject::as_array) else {
+        return desired.min(max);
+    };
+    let low = values.first().and_then(PdfObject::as_number).unwrap_or(0.0);
+    let high = values
+        .get(1)
+        .and_then(PdfObject::as_number)
+        .unwrap_or(f64::from(max));
+    if !low.is_finite() || !high.is_finite() || (high - low).abs() <= f64::EPSILON {
+        return 0;
+    }
+    (((f64::from(desired) - low) / (high - low)).clamp(0.0, 1.0) * f64::from(max)).round() as u8
+}
+
+fn indexed_lookup_bytes(dict: &PdfDictionary, reader: &PdfReader) -> Result<Vec<u8>> {
+    let items = dict
+        .get("ColorSpace")
+        .or_else(|| dict.get("CS"))
+        .and_then(PdfObject::as_array)
+        .ok_or_else(|| {
+            OxideError::MalformedPdf("Indexed ColorSpace is not an array".to_string())
+        })?;
+    match items.get(3) {
+        Some(PdfObject::String(bytes)) => Ok(bytes.clone()),
+        Some(value) => match reader.resolve(value.clone())? {
+            PdfObject::String(bytes) => Ok(bytes),
+            stream @ PdfObject::Stream { .. } => {
+                let decoded = decode_stream_lossless(&stream, reader)?;
+                if !matches!(decoded.status, StreamDecodeStatus::Complete) {
+                    return Err(OxideError::UnsupportedFeature(
+                        "Indexed lookup uses an unsupported image codec".to_string(),
+                    ));
+                }
+                Ok(decoded.data)
+            }
+            _ => Err(OxideError::MalformedPdf(
+                "Indexed lookup is not a string or stream".to_string(),
+            )),
+        },
+        None => Err(OxideError::MalformedPdf(
+            "Indexed ColorSpace has no lookup table".to_string(),
+        )),
+    }
+}
+
+fn pdf_decode_paints_ones(decode: Option<&PdfObject>) -> bool {
+    decode
+        .and_then(PdfObject::as_array)
+        .and_then(|items| Some((items.first()?.as_number()?, items.get(1)?.as_number()?)))
+        .map(|(zero, one)| one >= zero)
+        .unwrap_or(true)
+}
+
+fn redacted_associated_mask(
+    reader: &PdfReader,
+    mask_ref: (u32, u16),
+    image_ctm: Matrix,
+    redactions: &[RedactionEdit],
+    soft_mask: bool,
+) -> Result<PdfObject> {
+    let object = reader.get_object(mask_ref.0, mask_ref.1)?;
+    let PdfObject::Stream { dict, .. } = &object else {
+        return Err(OxideError::MalformedPdf(
+            "associated image mask is not a stream".to_string(),
+        ));
+    };
+    let width = dict.get_integer("Width").unwrap_or(0).max(0) as u32;
+    let height = dict.get_integer("Height").unwrap_or(0).max(0) as u32;
+    let stencil = dict.get_bool("ImageMask").unwrap_or(false);
+    let bpc = dict
+        .get_integer("BitsPerComponent")
+        .unwrap_or(if stencil { 1 } else { 8 }) as u8;
+    if width == 0 || height == 0 || !matches!(bpc, 1 | 8) {
+        return Err(OxideError::UnsupportedFeature(
+            "associated mask rewrite supports bounded 1-bit stencils and 8-bit gray masks"
+                .to_string(),
+        ));
+    }
+    let decoded = decode_stream_lossless(&object, reader)?;
+    if !matches!(decoded.status, StreamDecodeStatus::Complete) {
+        return Err(OxideError::UnsupportedFeature(
+            "associated mask codec has no safe lossless decoder".to_string(),
+        ));
+    }
+    let mut samples = unpack_samples_exact(&decoded.data, width, height, 1, bpc)?;
+    let inverse = invert_affine(&image_ctm).ok_or_else(|| {
+        OxideError::UnsupportedFeature("associated mask transform is singular".to_string())
+    })?;
+    let max = ((1u16 << bpc) - 1) as u8;
+    let transparent = if stencil && !soft_mask && !pdf_decode_paints_ones(dict.get("Decode")) {
+        max
+    } else {
+        0
+    };
+    for redaction in redactions {
+        let polygon = redaction
+            .polygon
+            .iter()
+            .map(|(x, y)| transform_point(&inverse, *x, *y))
+            .map(|(u, v)| (u * width as f64, (1.0 - v) * height as f64))
+            .collect::<Vec<_>>();
+        let bounds = rect_from_points(&polygon);
+        let x0 = bounds.x.floor().max(0.0) as usize;
+        let y0 = bounds.y.floor().max(0.0) as usize;
+        let x1 = (bounds.x + bounds.width).ceil().min(width as f64) as usize;
+        let y1 = (bounds.y + bounds.height).ceil().min(height as f64) as usize;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if polygon_intersects_pixel(&polygon, x as f64, y as f64) {
+                    samples[y * width as usize + x] = transparent;
+                }
+            }
+        }
+    }
+    let mut output = dict.clone();
+    output.remove("F");
+    output.remove("Filter");
+    output.remove("DP");
+    output.remove("DecodeParms");
+    output.remove("Length");
+    output.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+    Ok(PdfObject::Stream {
+        dict: output,
+        raw: flate_encode(&pack_samples_exact(&samples, width, height, 1, bpc)?, 9),
+    })
 }
 
 fn fill_for_channels(color: &Color, channels: u8) -> [u8; 4] {
@@ -5268,9 +5953,8 @@ fn scrub_bytes(data: &[u8], removed_text: &BTreeSet<String>) -> Option<Vec<u8>> 
 /// Re-parse a (already glyph-redacted) content stream and scrub redacted text
 /// from inline marked-content alternate representations (`/ActualText`, `/Alt`)
 /// carried in `BDC`/`DP` property lists, which the glyph rewriter passes through
-/// verbatim. The parser models a content-stream dictionary as an `Operand::Array`
-/// of alternating key/value operands, so the alternate text survives as a nested
-/// `Operand::String` until scrubbed here.
+/// verbatim. Dictionaries remain distinct from arrays, and both are traversed
+/// recursively so alternate text survives only until scrubbed here.
 fn scrub_marked_content_alt_text(
     content: &[u8],
     removed_text: &BTreeSet<String>,
@@ -5307,6 +5991,11 @@ fn scrub_operand_strings(operand: &mut Operand, removed_text: &BTreeSet<String>)
         Operand::Array(items) => {
             for item in items {
                 scrub_operand_strings(item, removed_text);
+            }
+        }
+        Operand::Dictionary(entries) => {
+            for (_, value) in entries {
+                scrub_operand_strings(value, removed_text);
             }
         }
         _ => {}
@@ -5418,6 +6107,9 @@ mod h2_alt_text_tests {
             match operand {
                 Operand::String(bytes) => out.push(decode_pdf_text_string(bytes)),
                 Operand::Array(items) => items.iter().for_each(|it| collect(it, out)),
+                Operand::Dictionary(entries) => {
+                    entries.iter().for_each(|(_, value)| collect(value, out))
+                }
                 _ => {}
             }
         }
@@ -5489,5 +6181,31 @@ mod h2_alt_text_tests {
         let mut page = PdfDictionary::empty();
         page.insert("Type", PdfObject::Name("Page".to_string()));
         assert!(!is_scrubbable_payload_stream(&page));
+    }
+
+    #[test]
+    fn prompt18b_packed_rows_round_trip_all_supported_depths() {
+        for bpc in [1, 2, 4, 8] {
+            let max = ((1u16 << bpc) - 1) as u8;
+            let samples = vec![0, max, max / 2, max, 0, max / 3];
+            let packed = pack_samples_exact(&samples, 3, 1, 2, bpc).unwrap();
+            assert_eq!(
+                unpack_samples_exact(&packed, 3, 1, 2, bpc).unwrap(),
+                samples
+            );
+        }
+    }
+
+    #[test]
+    fn prompt18b_tiff_and_png_predictors_reencode_deterministically() {
+        let mut tiff = PdfDictionary::empty();
+        tiff.insert("Predictor", PdfObject::Integer(2));
+        let first = output_predictor(&[Some(tiff)], 2, 1, 8, &[10, 20]).unwrap();
+        assert_eq!(first.1, vec![10, 10]);
+
+        let mut png = PdfDictionary::empty();
+        png.insert("Predictor", PdfObject::Integer(15));
+        let second = output_predictor(&[Some(png)], 2, 1, 8, &[10, 20]).unwrap();
+        assert_eq!(second.1, vec![0, 10, 20]);
     }
 }

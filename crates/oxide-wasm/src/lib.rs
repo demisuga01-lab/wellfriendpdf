@@ -311,6 +311,11 @@ mod wasm_api {
             self.report(|b| sdk::prompt18_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = prompt18bReportJson)]
+        pub fn prompt18b_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt18b_report_json(b, None))
+        }
+
         #[wasm_bindgen(js_name = associatedFilesReportJson)]
         pub fn associated_files_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::associated_files_report_json(b, None))
@@ -463,6 +468,73 @@ mod wasm_api {
             options_json: &str,
         ) -> Result<OxideOutput, JsValue> {
             self.output(|b| sdk::associated_files_add_json(b, payload, options_json, None))
+        }
+
+        #[wasm_bindgen(js_name = associatedFileUpdateOwner)]
+        pub fn associated_file_update_owner(
+            &self,
+            payload: &[u8],
+            options_json: &str,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::associated_files_update_owner_json(b, payload, options_json, None))
+        }
+
+        #[wasm_bindgen(js_name = associatedFileRemoveOwner)]
+        pub fn associated_file_remove_owner(
+            &self,
+            options_json: &str,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::associated_files_remove_owner_json(b, options_json, None))
+        }
+
+        #[wasm_bindgen(js_name = incrementalFormEdit)]
+        pub fn incremental_form_edit(
+            &self,
+            field_name: &str,
+            value: &str,
+            signature_policy_override: bool,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::incremental_form_edit_json(
+                    b,
+                    field_name,
+                    value,
+                    signature_policy_override,
+                    None,
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = incrementalAnnotationEdit)]
+        pub fn incremental_annotation_edit(
+            &self,
+            options_json: &str,
+            signature_policy_override: bool,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::incremental_annotation_edit_json(
+                    b,
+                    options_json,
+                    signature_policy_override,
+                    None,
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = incrementalPagePropertyEdit)]
+        pub fn incremental_page_property_edit(
+            &self,
+            options_json: &str,
+            signature_policy_override: bool,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::incremental_page_property_edit_json(
+                    b,
+                    options_json,
+                    signature_policy_override,
+                    None,
+                )
+            })
         }
 
         #[wasm_bindgen(js_name = associatedFilesSanitize)]

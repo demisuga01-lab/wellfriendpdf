@@ -33,6 +33,7 @@ public final class OxideSmokeTest {
             reports.put("annotation_appearance", doc.annotationAppearanceReportJson(null));
             reports.put("prompt17", doc.prompt17ReportJson());
             reports.put("prompt18", doc.prompt18ReportJson());
+            reports.put("prompt18b", doc.prompt18bReportJson());
             reports.put("associated_files", doc.associatedFilesReportJson());
             reports.put("edit_policy", doc.editPolicyReportJson("incremental_save"));
             reports.put("pages", doc.pagesReportJson());

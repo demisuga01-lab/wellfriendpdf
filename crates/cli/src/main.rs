@@ -228,6 +228,8 @@ enum Commands {
     AssociatedFilesExtract(AssociatedFilesExtractArgs),
     /// Add an associated file
     AssociatedFilesAdd(AssociatedFilesAddArgs),
+    /// Update one owner-specific associated-file association
+    AssociatedFilesUpdate(AssociatedFilesUpdateArgs),
     /// Remove associated files by stable id
     AssociatedFilesRemove(AssociatedFilesRemoveArgs),
     /// Apply an associated-file sanitizer policy
@@ -238,6 +240,14 @@ enum Commands {
     EditPolicyReport(EditPolicyArgs),
     /// Combined Prompt 18 report
     Prompt18Report(Prompt17ReportArgs),
+    /// Combined Prompt 18B closure report
+    Prompt18bReport(Prompt17ReportArgs),
+    /// Incrementally edit a form value under signature policy
+    EditForm(EditFormArgs),
+    /// Incrementally add/update an annotation under signature policy
+    EditAnnotation(EditMutationArgs),
+    /// Incrementally edit page rotation or CropBox under signature policy
+    EditPageProperty(EditMutationArgs),
     /// Flatten common page annotations into page content
     AnnotationsFlatten(AnnotationsFlattenArgs),
     /// Report page boxes, labels/outlines/destinations, and page-op preservation risks
@@ -1117,6 +1127,9 @@ struct NonAxisRedactionArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+    /// Promote securely decoded inline images to deterministic Image XObjects
+    #[arg(long)]
+    promote: bool,
 }
 
 #[derive(Parser)]
@@ -1152,12 +1165,76 @@ struct AssociatedFilesAddArgs {
 }
 
 #[derive(Parser)]
+struct AssociatedFilesUpdateArgs {
+    pdf: PathBuf,
+    file: PathBuf,
+    /// JSON AssociatedFileOwnerUpdateRequest
+    options: PathBuf,
+    #[arg(short, long, default_value = "associated-files-updated.pdf")]
+    output: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
 struct AssociatedFilesRemoveArgs {
     pdf: PathBuf,
     /// Stable ids to remove; repeat --id
     #[arg(long, required = true)]
     id: Vec<String>,
     #[arg(short, long, default_value = "associated-files-removed.pdf")]
+    output: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    password: Option<String>,
+    /// Owner kind for owner-specific unlink (requires exactly one --id)
+    #[arg(long)]
+    owner: Option<String>,
+    /// Exact owner object-generation id
+    #[arg(long)]
+    owner_ref: Option<String>,
+}
+
+#[derive(Parser)]
+struct EditFormArgs {
+    pdf: PathBuf,
+    #[arg(long)]
+    field: String,
+    #[arg(long)]
+    value: String,
+    #[arg(long, default_value = "enforce")]
+    signature_policy: String,
+    #[arg(short, long, default_value = "form-edited-incremental.pdf")]
+    output: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct EditMutationArgs {
+    pdf: PathBuf,
+    /// JSON mutation request
+    options: PathBuf,
+    #[arg(long, default_value = "enforce")]
+    signature_policy: String,
+    #[arg(short, long)]
     output: PathBuf,
     #[arg(long)]
     report: Option<PathBuf>,
@@ -2234,11 +2311,16 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::AssociatedFilesReport(args) => run_associated_files_report(args),
         Commands::AssociatedFilesExtract(args) => run_associated_files_extract(args),
         Commands::AssociatedFilesAdd(args) => run_associated_files_add(args),
+        Commands::AssociatedFilesUpdate(args) => run_associated_files_update(args),
         Commands::AssociatedFilesRemove(args) => run_associated_files_remove(args),
         Commands::AssociatedFilesSanitize(args) => run_associated_files_sanitize(args),
         Commands::EditSignatureImpact(args) => run_edit_policy_report(args, true),
         Commands::EditPolicyReport(args) => run_edit_policy_report(args, false),
         Commands::Prompt18Report(args) => run_prompt18_report(args),
+        Commands::Prompt18bReport(args) => run_prompt18b_report(args),
+        Commands::EditForm(args) => run_edit_form(args),
+        Commands::EditAnnotation(args) => run_edit_mutation(args, true),
+        Commands::EditPageProperty(args) => run_edit_mutation(args, false),
         Commands::AnnotationsFlatten(args) => run_annotations_flatten(args),
         Commands::PagesReport(args) => run_pages_report(args),
         Commands::InteractiveReport(args) => run_interactive_report(args),
@@ -3250,9 +3332,23 @@ fn run_prompt18_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
+fn run_prompt18b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt18b_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
 fn run_prompt18_redaction(args: NonAxisRedactionArgs, masked: bool) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let options = std::fs::read_to_string(&args.plan)?;
+    let mut options_value: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&args.plan)?)?;
+    if args.promote {
+        options_value["promote_inline_images"] = serde_json::Value::Bool(true);
+    }
+    let options = serde_json::to_string(&options_value)?;
     if args.dry_run {
         let report = oxide_engine::sdk::nonaxis_redaction_plan_json(
             &bytes,
@@ -3314,13 +3410,95 @@ fn run_associated_files_add(args: AssociatedFilesAddArgs) -> Result<(), Box<dyn 
     write_xfa_operation_report(&report, args.report.as_ref(), args.json)
 }
 
-fn run_associated_files_remove(args: AssociatedFilesRemoveArgs) -> Result<(), Box<dyn Error>> {
+fn run_associated_files_update(args: AssociatedFilesUpdateArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (output, report) = oxide_engine::sdk::associated_files_remove_json(
+    let payload = std::fs::read(&args.file)?;
+    let options = std::fs::read_to_string(&args.options)?;
+    let (output, report) = oxide_engine::sdk::associated_files_update_owner_json(
         &bytes,
-        &args.id,
+        &payload,
+        &options,
         args.password.as_deref().map(str::as_bytes),
     )?;
+    if !args.dry_run {
+        std::fs::write(args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)
+}
+
+fn run_associated_files_remove(args: AssociatedFilesRemoveArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (output, report) = if let Some(owner) = &args.owner {
+        if args.id.len() != 1 {
+            return Err(usage_error("--owner requires exactly one --id"));
+        }
+        let options = serde_json::json!({
+            "stable_id": args.id[0],
+            "owner": owner.trim().to_ascii_lowercase().replace('-', "_"),
+            "owner_ref": args.owner_ref,
+        });
+        oxide_engine::sdk::associated_files_remove_owner_json(
+            &bytes,
+            &options.to_string(),
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    } else {
+        oxide_engine::sdk::associated_files_remove_json(
+            &bytes,
+            &args.id,
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    };
+    if !args.dry_run {
+        std::fs::write(args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)
+}
+
+fn signature_policy_override(value: &str) -> Result<bool, Box<dyn Error>> {
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "enforce" | "warn" | "allow_warning" => Ok(false),
+        "override" | "explicit_override" => Ok(true),
+        other => Err(usage_error(format!(
+            "unknown signature policy '{other}'; use enforce, warn, or override"
+        ))),
+    }
+}
+
+fn run_edit_form(args: EditFormArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (output, report) = oxide_engine::sdk::incremental_form_edit_json(
+        &bytes,
+        &args.field,
+        &args.value,
+        signature_policy_override(&args.signature_policy)?,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)
+}
+
+fn run_edit_mutation(args: EditMutationArgs, annotation: bool) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options = std::fs::read_to_string(&args.options)?;
+    let override_policy = signature_policy_override(&args.signature_policy)?;
+    let (output, report) = if annotation {
+        oxide_engine::sdk::incremental_annotation_edit_json(
+            &bytes,
+            &options,
+            override_policy,
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    } else {
+        oxide_engine::sdk::incremental_page_property_edit_json(
+            &bytes,
+            &options,
+            override_policy,
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    };
     if !args.dry_run {
         std::fs::write(args.output, output)?;
     }
@@ -3477,6 +3655,7 @@ fn run_redact(args: RedactArgs) -> Result<(), Box<dyn Error>> {
         scrub_metadata: !args.no_metadata_scrub,
         image_policy,
         attachment_policy,
+        promote_inline_images: false,
     };
     let mut search_regions = Vec::new();
     for term in &args.text {

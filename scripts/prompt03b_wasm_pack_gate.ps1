@@ -17,6 +17,7 @@ $ExeSuffix = if ($Runtime::IsOSPlatform([System.Runtime.InteropServices.OSPlatfo
 $WasmPack = Join-Path $ToolRoot "bin/wasm-pack$ExeSuffix"
 $WebPackage = Join-Path $EvidenceDir "web-pkg"
 $NodePackage = Join-Path $EvidenceDir "node-pkg"
+$WasmCargoTarget = Join-Path $Repo "target/prompt03-tools/wasm-cargo-target"
 $Fixture = Join-Path $Repo "crates/engine/tests/fixtures/minimal.pdf"
 
 function Write-JsonNoBom {
@@ -162,8 +163,14 @@ Invoke-Logged "rustup target add wasm32-unknown-unknown" "rustup" @("target", "a
 Clear-TargetDir $WebPackage
 Clear-TargetDir $NodePackage
 
-Invoke-Logged "wasm-pack web build" $WasmPack @("build", "crates/oxide-wasm", "--target", "web", "--out-dir", $WebPackage) (Join-Path $EvidenceDir "wasm-pack-web-build-log.txt")
-Invoke-Logged "wasm-pack node build" $WasmPack @("build", "crates/oxide-wasm", "--target", "nodejs", "--out-dir", $NodePackage) (Join-Path $EvidenceDir "wasm-pack-node-build-log.txt")
+$previousCargoTarget = $env:CARGO_TARGET_DIR
+$env:CARGO_TARGET_DIR = $WasmCargoTarget
+try {
+    Invoke-Logged "wasm-pack web build" $WasmPack @("build", "crates/oxide-wasm", "--target", "web", "--out-dir", $WebPackage) (Join-Path $EvidenceDir "wasm-pack-web-build-log.txt")
+    Invoke-Logged "wasm-pack node build" $WasmPack @("build", "crates/oxide-wasm", "--target", "nodejs", "--out-dir", $NodePackage) (Join-Path $EvidenceDir "wasm-pack-node-build-log.txt")
+} finally {
+    $env:CARGO_TARGET_DIR = $previousCargoTarget
+}
 
 foreach ($pkg in @($WebPackage, $NodePackage)) {
     Copy-Item -LiteralPath (Join-Path $Repo "crates/oxide-wasm/README.md") -Destination (Join-Path $pkg "README.md") -Force

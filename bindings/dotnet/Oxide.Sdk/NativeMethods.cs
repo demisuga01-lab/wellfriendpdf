@@ -279,6 +279,10 @@ internal static partial class NativeMethods
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt18b_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_associated_files_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
@@ -413,6 +417,34 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_associated_files_add_json(
         DocumentHandle document, byte[] payload, UIntPtr payloadLen, IntPtr optionsJson,
+        out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_associated_files_update_owner_json(
+        DocumentHandle document, byte[] payload, UIntPtr payloadLen, IntPtr optionsJson,
+        out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_associated_files_remove_owner_json(
+        DocumentHandle document, IntPtr optionsJson, out OxideBuffer buffer,
+        out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_incremental_form_edit_json(
+        DocumentHandle document, IntPtr fieldName, IntPtr value,
+        [MarshalAs(UnmanagedType.I1)] bool signaturePolicyOverride,
+        out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_incremental_annotation_edit_json(
+        DocumentHandle document, IntPtr optionsJson,
+        [MarshalAs(UnmanagedType.I1)] bool signaturePolicyOverride,
+        out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_incremental_page_property_edit_json(
+        DocumentHandle document, IntPtr optionsJson,
+        [MarshalAs(UnmanagedType.I1)] bool signaturePolicyOverride,
         out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

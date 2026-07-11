@@ -317,6 +317,14 @@ pub fn prompt18_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<Str
     )
 }
 
+pub fn prompt18b_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt18b_report",
+        &crate::prompt18::prompt18b_report(&engine)?,
+    )
+}
+
 /// Prompt 18 mask/soft-mask inventory and secure fallback posture.
 pub fn mask_redaction_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
@@ -2563,6 +2571,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt16_xfa_runtime_sandbox_closure": crate::xfa::prompt16_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt17_annotation_xfdf_media_nonaxis_redaction": crate::prompt17::prompt17_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt18_mask_inline_associated_signature_safe_edits": crate::prompt18::prompt18_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt18b_advanced_secure_mutation_closure": crate::prompt18::prompt18b_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2582,7 +2591,9 @@ pub fn feature_report_json() -> Result<String> {
             "redact_image_mask", "redact_inline_image", "associated_files_report",
             "associated_files_extract", "associated_files_add", "associated_files_remove",
             "associated_files_sanitize", "edit_signature_impact", "edit_policy_report",
-            "prompt18_report",
+            "prompt18_report", "prompt18b_report", "associated_files_update_owner",
+            "associated_files_remove_owner", "incremental_form_edit",
+            "incremental_annotation_edit", "incremental_page_property_edit",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
@@ -2861,6 +2872,95 @@ pub fn associated_files_remove_json(
     };
     let (output, report) = crate::prompt18::associated_files_sanitize_pdf(&input, &options)?;
     Ok((output, envelope("associated_files_remove_report", &report)?))
+}
+
+pub fn associated_files_remove_owner_json(
+    bytes: &[u8],
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options: crate::prompt18::AssociatedFileOwnerRemoveRequest =
+        serde_json::from_str(options_json).map_err(json_err)?;
+    let (output, report) = crate::prompt18::associated_files_remove_owner_pdf(&input, &options)?;
+    Ok((
+        output,
+        envelope("associated_files_remove_owner_report", &report)?,
+    ))
+}
+
+pub fn associated_files_update_owner_json(
+    bytes: &[u8],
+    payload: &[u8],
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options: crate::prompt18::AssociatedFileOwnerUpdateRequest =
+        serde_json::from_str(options_json).map_err(json_err)?;
+    let (output, report) =
+        crate::prompt18::associated_files_update_owner_pdf(&input, &options, payload)?;
+    Ok((
+        output,
+        envelope("associated_files_update_owner_report", &report)?,
+    ))
+}
+
+pub fn incremental_form_edit_json(
+    bytes: &[u8],
+    field_name: &str,
+    value: &str,
+    signature_policy_override: bool,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let (output, report) = crate::prompt18::incremental_form_value_update_pdf(
+        &input,
+        field_name,
+        value,
+        signature_policy_override,
+    )?;
+    Ok((output, envelope("incremental_form_edit_report", &report)?))
+}
+
+pub fn incremental_annotation_edit_json(
+    bytes: &[u8],
+    options_json: &str,
+    signature_policy_override: bool,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options: crate::prompt18::IncrementalAnnotationEdit =
+        serde_json::from_str(options_json).map_err(json_err)?;
+    let (output, report) = crate::prompt18::incremental_annotation_update_pdf(
+        &input,
+        &options,
+        signature_policy_override,
+    )?;
+    Ok((
+        output,
+        envelope("incremental_annotation_edit_report", &report)?,
+    ))
+}
+
+pub fn incremental_page_property_edit_json(
+    bytes: &[u8],
+    options_json: &str,
+    signature_policy_override: bool,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options: crate::prompt18::IncrementalPagePropertyEdit =
+        serde_json::from_str(options_json).map_err(json_err)?;
+    let (output, report) = crate::prompt18::incremental_page_property_update_pdf(
+        &input,
+        &options,
+        signature_policy_override,
+    )?;
+    Ok((
+        output,
+        envelope("incremental_page_property_edit_report", &report)?,
+    ))
 }
 
 pub fn incremental_metadata_update_json(

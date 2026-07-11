@@ -1423,6 +1423,7 @@ xfa_document_report!(
 );
 xfa_document_report!(oxide_document_prompt17_report_json, prompt17_report_json);
 xfa_document_report!(oxide_document_prompt18_report_json, prompt18_report_json);
+xfa_document_report!(oxide_document_prompt18b_report_json, prompt18b_report_json);
 xfa_document_report!(
     oxide_document_associated_files_report_json,
     associated_files_report_json
@@ -1872,6 +1873,136 @@ pub unsafe extern "C" fn oxide_document_associated_files_add_json(
         })
     }
 }
+
+#[no_mangle]
+/// Update one owner-specific associated-file association.
+///
+/// # Safety
+/// The document and output pointers must be valid; `payload` must address
+/// `payload_len` bytes and `options_json` must be NUL-terminated UTF-8.
+pub unsafe extern "C" fn oxide_document_associated_files_update_owner_json(
+    document: *const OxideDocument,
+    payload: *const u8,
+    payload_len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { required_c_string(options_json, "options_json") };
+    let payload = if payload_len == 0 {
+        Ok(Vec::new())
+    } else if payload.is_null() {
+        Err("payload pointer is null".to_string())
+    } else {
+        Ok(unsafe { slice::from_raw_parts(payload, payload_len) }.to_vec())
+    };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::associated_files_update_owner_json(
+                bytes,
+                &payload.map_err(oxide_engine::OxideError::invalid_input)?,
+                &options.map_err(oxide_engine::OxideError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+#[no_mangle]
+/// Remove one owner-specific associated-file association.
+///
+/// # Safety
+/// The document and output pointers must be valid and `options_json` must be a
+/// NUL-terminated UTF-8 request.
+pub unsafe extern "C" fn oxide_document_associated_files_remove_owner_json(
+    document: *const OxideDocument,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { required_c_string(options_json, "options_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::associated_files_remove_owner_json(
+                bytes,
+                &options.map_err(oxide_engine::OxideError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+#[no_mangle]
+/// Incrementally update a form value under structural signature policy.
+///
+/// # Safety
+/// The document and output pointers must be valid; both string inputs must be
+/// NUL-terminated UTF-8.
+pub unsafe extern "C" fn oxide_document_incremental_form_edit_json(
+    document: *const OxideDocument,
+    field_name: *const c_char,
+    value: *const c_char,
+    signature_policy_override: bool,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let field_name = unsafe { required_c_string(field_name, "field_name") };
+    let value = unsafe { required_c_string(value, "value") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::incremental_form_edit_json(
+                bytes,
+                &field_name.map_err(oxide_engine::OxideError::invalid_input)?,
+                &value.map_err(oxide_engine::OxideError::invalid_input)?,
+                signature_policy_override,
+                None,
+            )
+        })
+    }
+}
+
+macro_rules! prompt18b_policy_output {
+    ($name:ident, $sdk_fn:ident) => {
+        /// Apply a Prompt 18B incremental JSON mutation under signature policy.
+        ///
+        /// # Safety
+        /// The document and output pointers must be valid and `options_json`
+        /// must be a NUL-terminated UTF-8 request.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(
+            document: *const OxideDocument,
+            options_json: *const c_char,
+            signature_policy_override: bool,
+            out_buffer: *mut OxideBuffer,
+            out_json: *mut *mut c_char,
+            error_out: *mut *mut c_char,
+        ) -> c_int {
+            let options = unsafe { required_c_string(options_json, "options_json") };
+            unsafe {
+                report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+                    sdk::$sdk_fn(
+                        bytes,
+                        &options.map_err(oxide_engine::OxideError::invalid_input)?,
+                        signature_policy_override,
+                        None,
+                    )
+                })
+            }
+        }
+    };
+}
+
+prompt18b_policy_output!(
+    oxide_document_incremental_annotation_edit_json,
+    incremental_annotation_edit_json
+);
+prompt18b_policy_output!(
+    oxide_document_incremental_page_property_edit_json,
+    incremental_page_property_edit_json
+);
 
 /// Extract an associated file into an owned output buffer.
 ///
@@ -2800,6 +2931,11 @@ mod tests {
         assert_eq!(
             prompt18["report"]["schema_version"],
             "prompt18.mask-inline-associated-signature-policy.v1"
+        );
+        let prompt18b = report_envelope(oxide_document_prompt18b_report_json, "prompt18b_report");
+        assert_eq!(
+            prompt18b["report"]["schema_version"],
+            "prompt18b.advanced-secure-mutation-closure.v1"
         );
         report_envelope(
             oxide_document_associated_files_report_json,

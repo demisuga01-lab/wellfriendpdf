@@ -88,7 +88,13 @@ def compare_reports(dotnet: dict | None, java: dict | None) -> dict:
 
     dotnet_reports = dotnet.get("reports", {})
     java_reports = java.get("reports", {})
-    common = sorted(set(dotnet_reports) & set(java_reports))
+    exclusions = {
+        "advanced_chunks": "Prompt 15 binding smokes intentionally use different semantic fixtures",
+        "semantic_bundle": "Prompt 15 binding smokes intentionally use different semantic fixtures",
+        "semantic_search": "Prompt 15 binding smokes intentionally use different semantic fixtures",
+        "xfa_runtime": "runtime report contains volatile elapsed-time measurements",
+    }
+    common = sorted((set(dotnet_reports) & set(java_reports)) - exclusions.keys())
     compared = {}
     mismatches = []
     for name in common:
@@ -105,7 +111,8 @@ def compare_reports(dotnet: dict | None, java: dict | None) -> dict:
 
     return {
         "status": "pass" if not mismatches and common else "fail",
-        "basis": "byte-identical UTF-8 JSON report hashes from .NET and Java C ABI wrappers",
+        "basis": "byte-identical UTF-8 JSON hashes for stable common reports from .NET and Java C ABI wrappers",
+        "excluded_reports": exclusions,
         "common_reports": compared,
         "mismatches": mismatches,
         "dotnet_engine_version": dotnet.get("engine_version"),
