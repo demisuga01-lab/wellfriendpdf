@@ -275,6 +275,18 @@ internal static partial class NativeMethods
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt18_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_associated_files_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_edit_policy_report_json(
+        DocumentHandle document, IntPtr operation, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_annotation_appearance_report_json(
         DocumentHandle document, IntPtr optionsJson, out IntPtr json, out IntPtr errorOut);
 
@@ -387,6 +399,36 @@ internal static partial class NativeMethods
         out OxideBuffer buffer,
         out IntPtr json,
         out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_redact_image_mask_json(
+        DocumentHandle document, IntPtr optionsJson, out OxideBuffer buffer,
+        out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_redact_inline_image_json(
+        DocumentHandle document, IntPtr optionsJson, out OxideBuffer buffer,
+        out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_associated_files_add_json(
+        DocumentHandle document, byte[] payload, UIntPtr payloadLen, IntPtr optionsJson,
+        out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_associated_files_extract_json(
+        DocumentHandle document, IntPtr stableId, out OxideBuffer buffer,
+        out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_associated_files_remove_json(
+        DocumentHandle document, IntPtr stableIdsJson, out OxideBuffer buffer,
+        out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_associated_files_sanitize_json(
+        DocumentHandle document, IntPtr optionsJson, out OxideBuffer buffer,
+        out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_sanitize_json(

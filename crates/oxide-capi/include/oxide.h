@@ -456,6 +456,23 @@ OXIDE_API int oxide_document_prompt17_report_json(
     const OxideDocument *document,
     char **out_json,
     char **error_out);
+OXIDE_API int oxide_document_prompt18_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_associated_files_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_mask_redaction_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_edit_policy_report_json(
+    const OxideDocument *document,
+    const char *operation,
+    char **out_json,
+    char **error_out);
 OXIDE_API int oxide_document_annotation_appearance_report_json(
     const OxideDocument *document,
     const char *options_json,
@@ -503,6 +520,44 @@ OXIDE_API int oxide_document_rich_media_flatten_poster_json(
     char **out_json,
     char **error_out);
 OXIDE_API int oxide_document_nonaxis_redaction_apply_json(
+    const OxideDocument *document,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_redact_image_mask_json(
+    const OxideDocument *document,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_redact_inline_image_json(
+    const OxideDocument *document,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_associated_files_add_json(
+    const OxideDocument *document,
+    const uint8_t *payload,
+    size_t payload_len,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_associated_files_extract_json(
+    const OxideDocument *document,
+    const char *stable_id,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_associated_files_remove_json(
+    const OxideDocument *document,
+    const char *stable_ids_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_associated_files_sanitize_json(
     const OxideDocument *document,
     const char *options_json,
     OxideBuffer *out_buffer,

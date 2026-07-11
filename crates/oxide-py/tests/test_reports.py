@@ -46,6 +46,10 @@ def test_read_only_report_envelopes():
     assert media["schema_version"].startswith("prompt17.")
     _envelope(doc.annotation_appearance_report(), "annotation_appearance_report")
     _envelope(doc.prompt17_report(), "prompt17_report")
+    _envelope(doc.prompt18_report(), "prompt18_report")
+    _envelope(doc.associated_files_report(), "associated_files_report")
+    _envelope(doc.mask_redaction_report(), "mask_redaction_report")
+    _envelope(doc.edit_policy_report("incremental_save"), "edit_policy_report")
     _envelope(doc.pages_report(), "page_operations_report")
     _envelope(doc.interactive_report(), "interactive_report")
     _envelope(doc.signature_report(), "signature_report")
@@ -268,6 +272,9 @@ def test_module_level_reports():
     assert prompt17["status"] == "complete_bounded_foundation"
     assert prompt17["failure"]["blocked"] == 0
     assert prompt17["security"]["overlay_only_redaction_success_claims"] == 0
+    prompt18 = feature["prompt18_mask_inline_associated_signature_safe_edits"]
+    assert prompt18["failure"]["blocked"] == 0
+    assert prompt18["security"]["signature_crypto_overclaim"] == 0
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

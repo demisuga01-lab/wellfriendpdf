@@ -239,6 +239,22 @@ public final class Oxide {
             return Native.documentReport(handle, Native.PROMPT17_REPORT, "prompt17_report");
         }
 
+        public String prompt18ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT18_REPORT, "prompt18_report");
+        }
+
+        public String associatedFilesReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.ASSOCIATED_FILES_REPORT, "associated_files_report");
+        }
+
+        public String editPolicyReportJson(String operation) {
+            ensureOpen();
+            Objects.requireNonNull(operation, "operation");
+            return Native.documentStringReport(handle, Native.EDIT_POLICY_REPORT, operation, "edit_policy_report");
+        }
+
         public String annotationAppearanceReportJson(String optionsJson) {
             ensureOpen();
             return Native.documentStringReport(handle, Native.ANNOTATION_APPEARANCE_REPORT, optionsJson, "annotation_appearance_report");
@@ -328,6 +344,40 @@ public final class Oxide {
             ensureOpen();
             Objects.requireNonNull(optionsJson, "optionsJson");
             return Native.documentStringOutput(handle, Native.NONAXIS_REDACTION_APPLY, optionsJson, "nonaxis_redaction_apply");
+        }
+
+        public BinaryResult redactImageMask(String optionsJson) {
+            ensureOpen();
+            Objects.requireNonNull(optionsJson, "optionsJson");
+            return Native.documentStringOutput(handle, Native.REDACT_IMAGE_MASK, optionsJson, "redact_image_mask");
+        }
+
+        public BinaryResult redactInlineImage(String optionsJson) {
+            ensureOpen();
+            Objects.requireNonNull(optionsJson, "optionsJson");
+            return Native.documentStringOutput(handle, Native.REDACT_INLINE_IMAGE, optionsJson, "redact_inline_image");
+        }
+
+        public BinaryResult associatedFileAdd(byte[] payload, String optionsJson) {
+            ensureOpen();
+            return Native.associatedFileAdd(handle, payload, optionsJson);
+        }
+
+        public BinaryResult associatedFileExtract(String stableId) {
+            ensureOpen();
+            Objects.requireNonNull(stableId, "stableId");
+            return Native.documentStringOutput(handle, Native.ASSOCIATED_FILES_EXTRACT, stableId, "associated_files_extract");
+        }
+
+        public BinaryResult associatedFilesRemove(String stableIdsJson) {
+            ensureOpen();
+            Objects.requireNonNull(stableIdsJson, "stableIdsJson");
+            return Native.documentStringOutput(handle, Native.ASSOCIATED_FILES_REMOVE, stableIdsJson, "associated_files_remove");
+        }
+
+        public BinaryResult associatedFilesSanitize(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringOutput(handle, Native.ASSOCIATED_FILES_SANITIZE, optionsJson, "associated_files_sanitize");
         }
 
         public BinaryResult sanitize(String policy) {
@@ -503,6 +553,9 @@ public final class Oxide {
         private static final MethodHandle ANNOTATIONS_REPORT = documentReport("oxide_document_annotations_report_json");
         private static final MethodHandle RICH_MEDIA_REPORT = documentReport("oxide_document_rich_media_report_json");
         private static final MethodHandle PROMPT17_REPORT = documentReport("oxide_document_prompt17_report_json");
+        private static final MethodHandle PROMPT18_REPORT = documentReport("oxide_document_prompt18_report_json");
+        private static final MethodHandle ASSOCIATED_FILES_REPORT = documentReport("oxide_document_associated_files_report_json");
+        private static final MethodHandle EDIT_POLICY_REPORT = documentStringReport("oxide_document_edit_policy_report_json");
         private static final MethodHandle ANNOTATION_APPEARANCE_REPORT = documentStringReport("oxide_document_annotation_appearance_report_json");
         private static final MethodHandle NONAXIS_REDACTION_PLAN = documentStringReport("oxide_document_nonaxis_redaction_plan_json");
         private static final MethodHandle PAGES_REPORT = documentReport("oxide_document_pages_report_json");
@@ -545,6 +598,30 @@ public final class Oxide {
         );
         private static final MethodHandle NONAXIS_REDACTION_APPLY = downcall(
             "oxide_document_nonaxis_redaction_apply_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle REDACT_IMAGE_MASK = downcall(
+            "oxide_document_redact_image_mask_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle REDACT_INLINE_IMAGE = downcall(
+            "oxide_document_redact_inline_image_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ASSOCIATED_FILES_ADD = downcall(
+            "oxide_document_associated_files_add_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ASSOCIATED_FILES_EXTRACT = downcall(
+            "oxide_document_associated_files_extract_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ASSOCIATED_FILES_REMOVE = downcall(
+            "oxide_document_associated_files_remove_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle ASSOCIATED_FILES_SANITIZE = downcall(
+            "oxide_document_associated_files_sanitize_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle SANITIZE = downcall(
@@ -882,6 +959,33 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide annotation_xfdf_import failed", ex);
+            }
+        }
+
+        private static BinaryResult associatedFileAdd(
+            MemorySegment handle,
+            byte[] payload,
+            String optionsJson
+        ) {
+            Objects.requireNonNull(payload, "payload");
+            Objects.requireNonNull(optionsJson, "optionsJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = payload.length == 0 ? MemorySegment.NULL : arena.allocate(payload.length);
+                if (payload.length > 0) {
+                    data.copyFrom(MemorySegment.ofArray(payload));
+                }
+                MemorySegment options = arena.allocateFrom(optionsJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) ASSOCIATED_FILES_ADD.invokeExact(
+                    handle, data, (long) payload.length, options, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide associated_files_add failed", ex);
             }
         }
 

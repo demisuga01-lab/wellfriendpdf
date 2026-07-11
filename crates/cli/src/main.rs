@@ -218,6 +218,26 @@ enum Commands {
     RedactImageNonaxis(NonAxisRedactionArgs),
     /// Combined Prompt 17 report
     Prompt17Report(Prompt17ReportArgs),
+    /// Secure mask/soft-mask image redaction
+    RedactImageMask(NonAxisRedactionArgs),
+    /// Secure inline-image partial redaction
+    RedactInlineImage(NonAxisRedactionArgs),
+    /// Inventory embedded and associated files
+    AssociatedFilesReport(Prompt17ReportArgs),
+    /// Extract one associated file by stable id
+    AssociatedFilesExtract(AssociatedFilesExtractArgs),
+    /// Add an associated file
+    AssociatedFilesAdd(AssociatedFilesAddArgs),
+    /// Remove associated files by stable id
+    AssociatedFilesRemove(AssociatedFilesRemoveArgs),
+    /// Apply an associated-file sanitizer policy
+    AssociatedFilesSanitize(AssociatedFilesSanitizeArgs),
+    /// Analyze signature impact for an edit operation
+    EditSignatureImpact(EditPolicyArgs),
+    /// Report the signature-aware edit-policy decision
+    EditPolicyReport(EditPolicyArgs),
+    /// Combined Prompt 18 report
+    Prompt18Report(Prompt17ReportArgs),
     /// Flatten common page annotations into page content
     AnnotationsFlatten(AnnotationsFlattenArgs),
     /// Report page boxes, labels/outlines/destinations, and page-op preservation risks
@@ -1095,6 +1115,85 @@ struct NonAxisRedactionArgs {
     #[arg(long)]
     dry_run: bool,
     /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AssociatedFilesExtractArgs {
+    pdf: PathBuf,
+    /// Stable id from associated-files-report
+    id: String,
+    #[arg(short, long)]
+    output: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AssociatedFilesAddArgs {
+    pdf: PathBuf,
+    /// Payload to embed
+    file: PathBuf,
+    /// JSON AssociatedFileAddRequest
+    options: PathBuf,
+    #[arg(short, long, default_value = "associated-files-added.pdf")]
+    output: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AssociatedFilesRemoveArgs {
+    pdf: PathBuf,
+    /// Stable ids to remove; repeat --id
+    #[arg(long, required = true)]
+    id: Vec<String>,
+    #[arg(short, long, default_value = "associated-files-removed.pdf")]
+    output: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct AssociatedFilesSanitizeArgs {
+    pdf: PathBuf,
+    /// JSON AssociatedFileSanitizerOptions
+    #[arg(long)]
+    options: Option<PathBuf>,
+    #[arg(short, long, default_value = "associated-files-sanitized.pdf")]
+    output: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct EditPolicyArgs {
+    pdf: PathBuf,
+    /// Operation such as form_value_update, annotation_add, redaction, or attachment_remove
+    operation: String,
+    #[arg(short, long)]
+    output: Option<PathBuf>,
     #[arg(long)]
     password: Option<String>,
 }
@@ -2130,6 +2229,16 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::RichMediaFlattenPoster(args) => run_rich_media_flatten_poster(args),
         Commands::RedactImageNonaxis(args) => run_nonaxis_redaction(args),
         Commands::Prompt17Report(args) => run_prompt17_report(args),
+        Commands::RedactImageMask(args) => run_prompt18_redaction(args, true),
+        Commands::RedactInlineImage(args) => run_prompt18_redaction(args, false),
+        Commands::AssociatedFilesReport(args) => run_associated_files_report(args),
+        Commands::AssociatedFilesExtract(args) => run_associated_files_extract(args),
+        Commands::AssociatedFilesAdd(args) => run_associated_files_add(args),
+        Commands::AssociatedFilesRemove(args) => run_associated_files_remove(args),
+        Commands::AssociatedFilesSanitize(args) => run_associated_files_sanitize(args),
+        Commands::EditSignatureImpact(args) => run_edit_policy_report(args, true),
+        Commands::EditPolicyReport(args) => run_edit_policy_report(args, false),
+        Commands::Prompt18Report(args) => run_prompt18_report(args),
         Commands::AnnotationsFlatten(args) => run_annotations_flatten(args),
         Commands::PagesReport(args) => run_pages_report(args),
         Commands::InteractiveReport(args) => run_interactive_report(args),
@@ -3130,6 +3239,128 @@ fn run_prompt17_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)?;
     Ok(())
+}
+
+fn run_prompt18_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt18_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt18_redaction(args: NonAxisRedactionArgs, masked: bool) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options = std::fs::read_to_string(&args.plan)?;
+    if args.dry_run {
+        let report = oxide_engine::sdk::nonaxis_redaction_plan_json(
+            &bytes,
+            &options,
+            args.password.as_deref().map(str::as_bytes),
+        )?;
+        return write_xfa_operation_report(&report, args.report.as_ref(), true);
+    }
+    let (output, report) = if masked {
+        oxide_engine::sdk::redact_image_mask_json(
+            &bytes,
+            &options,
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    } else {
+        oxide_engine::sdk::redact_inline_image_json(
+            &bytes,
+            &options,
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    };
+    std::fs::write(&args.output, output)?;
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)
+}
+
+fn run_associated_files_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::associated_files_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_associated_files_extract(args: AssociatedFilesExtractArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (payload, report) = oxide_engine::sdk::associated_files_extract_json(
+        &bytes,
+        &args.id,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(args.output, payload)?;
+    write_xfa_operation_report(&report, args.report.as_ref(), false)
+}
+
+fn run_associated_files_add(args: AssociatedFilesAddArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let payload = std::fs::read(&args.file)?;
+    let options = std::fs::read_to_string(&args.options)?;
+    let (output, report) = oxide_engine::sdk::associated_files_add_json(
+        &bytes,
+        &payload,
+        &options,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)
+}
+
+fn run_associated_files_remove(args: AssociatedFilesRemoveArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (output, report) = oxide_engine::sdk::associated_files_remove_json(
+        &bytes,
+        &args.id,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)
+}
+
+fn run_associated_files_sanitize(args: AssociatedFilesSanitizeArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options = args
+        .options
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    let (output, report) = oxide_engine::sdk::associated_files_sanitize_json(
+        &bytes,
+        options.as_deref(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)
+}
+
+fn run_edit_policy_report(args: EditPolicyArgs, impact: bool) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = if impact {
+        oxide_engine::sdk::edit_signature_impact_json(
+            &bytes,
+            &args.operation,
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    } else {
+        oxide_engine::sdk::edit_policy_report_json(
+            &bytes,
+            &args.operation,
+            args.password.as_deref().map(str::as_bytes),
+        )?
+    };
+    write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
 fn run_forms_export(args: FormsExportArgs) -> Result<(), Box<dyn Error>> {

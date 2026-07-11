@@ -306,6 +306,21 @@ mod wasm_api {
             self.report(|b| sdk::prompt17_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = prompt18ReportJson)]
+        pub fn prompt18_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt18_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = associatedFilesReportJson)]
+        pub fn associated_files_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::associated_files_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = editPolicyReportJson)]
+        pub fn edit_policy_report_json(&self, operation: &str) -> Result<String, JsValue> {
+            self.report(|b| sdk::edit_policy_report_json(b, operation, None))
+        }
+
         #[wasm_bindgen(js_name = pagesReportJson)]
         pub fn pages_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::page_operations_report_json(b, None))
@@ -429,6 +444,43 @@ mod wasm_api {
         #[wasm_bindgen(js_name = redactImageNonaxis)]
         pub fn redact_image_nonaxis(&self, options_json: &str) -> Result<OxideOutput, JsValue> {
             self.output(|b| sdk::nonaxis_redaction_apply_json(b, options_json, None))
+        }
+
+        #[wasm_bindgen(js_name = redactImageMask)]
+        pub fn redact_image_mask(&self, options_json: &str) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::redact_image_mask_json(b, options_json, None))
+        }
+
+        #[wasm_bindgen(js_name = redactInlineImage)]
+        pub fn redact_inline_image(&self, options_json: &str) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::redact_inline_image_json(b, options_json, None))
+        }
+
+        #[wasm_bindgen(js_name = associatedFileAdd)]
+        pub fn associated_file_add(
+            &self,
+            payload: &[u8],
+            options_json: &str,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::associated_files_add_json(b, payload, options_json, None))
+        }
+
+        #[wasm_bindgen(js_name = associatedFilesSanitize)]
+        pub fn associated_files_sanitize(
+            &self,
+            options_json: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::associated_files_sanitize_json(b, options_json.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = associatedFilesRemove)]
+        pub fn associated_files_remove(
+            &self,
+            stable_ids_json: &str,
+        ) -> Result<OxideOutput, JsValue> {
+            let stable_ids: Vec<String> = serde_json::from_str(stable_ids_json)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            self.output(|b| sdk::associated_files_remove_json(b, &stable_ids, None))
         }
 
         #[wasm_bindgen(js_name = sanitize)]

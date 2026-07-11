@@ -2446,16 +2446,37 @@ fn rewrite_page_content_for_redaction(
                     .collect();
                 if overlapping.is_empty() {
                     serialize_inline_image_group(&operations[operation_index..=end], &mut out)?;
-                } else if overlapping
-                    .iter()
-                    .any(|redaction| redaction.options.image_policy == ImageRedactionPolicy::Fail)
-                {
-                    return Err(OxideError::UnsupportedFeature(
-                        "inline image intersects redaction; secure partial inline rewrite is unsupported, use remove policy for fail-closed invocation removal"
-                            .to_string(),
-                    ));
+                } else {
+                    let policy = overlapping
+                        .iter()
+                        .map(|redaction| redaction.options.image_policy)
+                        .find(|policy| *policy == ImageRedactionPolicy::Fail)
+                        .unwrap_or_else(|| {
+                            overlapping
+                                .iter()
+                                .map(|redaction| redaction.options.image_policy)
+                                .find(|policy| *policy == ImageRedactionPolicy::Remove)
+                                .unwrap_or(ImageRedactionPolicy::Partial)
+                        });
+                    if policy != ImageRedactionPolicy::Remove {
+                        let rewritten = rewrite_inline_image_group(
+                            reader,
+                            &operations[operation_index..=end],
+                            state.ctm,
+                            &overlapping,
+                            &mut out,
+                        )?;
+                        if !rewritten && policy == ImageRedactionPolicy::Fail {
+                            return Err(OxideError::UnsupportedFeature(
+                                "inline image redaction failed closed: the filter, color space, bit depth, transform, or sample layout has no bounded deterministic rewrite"
+                                    .to_string(),
+                            ));
+                        }
+                    }
                 }
-                // Partial/Remove both omit the complete BI/ID/data/EI group.
+                // Unsupported Partial and explicit Remove omit the complete
+                // BI/ID/data/EI invocation. No visual overlay is accepted as
+                // secure redaction.
                 operation_index = end.saturating_add(1);
                 continue;
             }
@@ -2995,6 +3016,168 @@ fn serialize_inline_image_group(operations: &[ContentOperation], out: &mut Vec<u
     out.extend_from_slice(data);
     out.extend_from_slice(b"\nEI\n");
     Ok(())
+}
+
+/// Securely rewrite a bounded inline image into a deterministic Flate image.
+///
+/// The content parser has already expanded abbreviated BI keys and filter
+/// names. The tokenizer's stateful inline-image scanner supplies the exact
+/// binary payload, so this routine never searches for `EI` inside image data.
+/// Unsupported layouts return `Ok(false)` and the caller removes the complete
+/// invocation (or fails when strict policy was requested).
+fn rewrite_inline_image_group(
+    reader: &PdfReader,
+    operations: &[ContentOperation],
+    image_ctm: Matrix,
+    redactions: &[&RedactionEdit],
+    out: &mut Vec<u8>,
+) -> Result<bool> {
+    const MAX_INLINE_PIXELS: u64 = 100_000_000;
+    const MAX_INLINE_BYTES: usize = 256 * 1024 * 1024;
+
+    let id = operations
+        .iter()
+        .find(|operation| operation.operator == "ID")
+        .ok_or_else(|| OxideError::MalformedPdf("inline image has no ID operator".to_string()))?;
+    let data = operations
+        .iter()
+        .find(|operation| operation.operator == "inline_image_data")
+        .and_then(|operation| operation.string_bytes(0))
+        .ok_or_else(|| OxideError::MalformedPdf("inline image has no captured data".to_string()))?;
+    if data.len() > MAX_INLINE_BYTES || id.operands.len() % 2 != 0 {
+        return Ok(false);
+    }
+
+    let value = |key: &str| -> Option<&Operand> {
+        id.operands
+            .chunks_exact(2)
+            .find(|pair| pair[0].as_name() == Some(key))
+            .map(|pair| &pair[1])
+    };
+    let width = value("Width")
+        .and_then(Operand::as_integer)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    let height = value("Height")
+        .and_then(Operand::as_integer)
+        .and_then(|value| u32::try_from(value).ok())
+        .unwrap_or(0);
+    let bpc = value("BitsPerComponent")
+        .and_then(Operand::as_integer)
+        .and_then(|value| u8::try_from(value).ok())
+        .unwrap_or(8);
+    let image_mask = value("ImageMask")
+        .and_then(Operand::as_bool)
+        .unwrap_or(false);
+    if width == 0
+        || height == 0
+        || u64::from(width).saturating_mul(u64::from(height)) > MAX_INLINE_PIXELS
+        || bpc != 8
+        || image_mask
+    {
+        return Ok(false);
+    }
+
+    let color_space = value("ColorSpace")
+        .and_then(Operand::as_name)
+        .unwrap_or("DeviceGray");
+    if !matches!(color_space, "DeviceGray" | "DeviceRGB" | "DeviceCMYK") {
+        return Ok(false);
+    }
+    let filters: Vec<&str> = match value("Filter") {
+        None => Vec::new(),
+        Some(Operand::Name(name)) => vec![name.as_str()],
+        Some(Operand::Array(items)) => {
+            let names = items
+                .iter()
+                .filter_map(Operand::as_name)
+                .collect::<Vec<_>>();
+            if names.len() != items.len() {
+                return Ok(false);
+            }
+            names
+        }
+        _ => return Ok(false),
+    };
+    // DecodeParms dictionaries are not representable in ContentOperation's
+    // bounded operand model. Predictor-bearing chains therefore remove/fail
+    // instead of risking a misdecoded sample rewrite.
+    if value("DecodeParms").is_some() {
+        return Ok(false);
+    }
+
+    let mut raw =
+        match ImageDecoder::decode_inline(data, width, height, bpc, color_space, &filters, None) {
+            Ok(raw) => raw,
+            Err(_) => return Ok(false),
+        };
+    if raw.bits_per_sample != 8
+        || !matches!(raw.channels, 1 | 3 | 4)
+        || !raw.is_valid()
+        || raw.byte_count() > MAX_INLINE_BYTES
+    {
+        return Ok(false);
+    }
+    let inverse = match invert_affine(&image_ctm) {
+        Some(inverse) => inverse,
+        None => return Ok(false),
+    };
+    let channels = raw.channels as usize;
+    let mut changed = false;
+    for redaction in redactions {
+        let sample_polygon = redaction
+            .polygon
+            .iter()
+            .map(|(x, y)| transform_point(&inverse, *x, *y))
+            .map(|(u, v)| (u * raw.width as f64, (1.0 - v) * raw.height as f64))
+            .collect::<Vec<_>>();
+        if sample_polygon.is_empty()
+            || sample_polygon
+                .iter()
+                .any(|(x, y)| !x.is_finite() || !y.is_finite())
+        {
+            return Ok(false);
+        }
+        let bounds = rect_from_points(&sample_polygon);
+        let x0 = bounds.x.floor().max(0.0) as usize;
+        let y0 = bounds.y.floor().max(0.0) as usize;
+        let x1 = (bounds.x + bounds.width).ceil().min(raw.width as f64) as usize;
+        let y1 = (bounds.y + bounds.height).ceil().min(raw.height as f64) as usize;
+        let fill = fill_for_channels(&redaction.options.fill, raw.channels);
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if !polygon_intersects_pixel(&sample_polygon, x as f64, y as f64) {
+                    continue;
+                }
+                let offset = (y * raw.width as usize + x) * channels;
+                raw.pixels[offset..offset + channels].copy_from_slice(&fill[..channels]);
+                changed = true;
+            }
+        }
+    }
+    if !changed {
+        return Ok(false);
+    }
+
+    out.extend_from_slice(b"BI\n");
+    out.extend_from_slice(format!("/Width {}\n/Height {}\n", raw.width, raw.height).as_bytes());
+    out.extend_from_slice(
+        format!(
+            "/ColorSpace /{}\n",
+            match raw.channels {
+                1 => "DeviceGray",
+                3 => "DeviceRGB",
+                4 => "DeviceCMYK",
+                _ => return Ok(false),
+            }
+        )
+        .as_bytes(),
+    );
+    out.extend_from_slice(b"/BitsPerComponent 8\n/Filter /FlateDecode\nID\n");
+    out.extend_from_slice(&flate_encode(&raw.pixels, 9));
+    out.extend_from_slice(b"\nEI\n");
+    let _ = reader; // retained in the signature for future resource color spaces.
+    Ok(true)
 }
 
 fn serialize_content_operand(operand: &Operand, out: &mut Vec<u8>) {

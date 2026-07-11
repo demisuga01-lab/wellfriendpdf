@@ -392,6 +392,26 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::prompt17_report_json(bytes, None))
     }
 
+    /// Combined Prompt 18 secure-mutation report.
+    fn prompt18_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt18_report_json(bytes, None))
+    }
+
+    fn associated_files_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::associated_files_report_json(bytes, None))
+    }
+
+    fn mask_redaction_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::mask_redaction_report_json(bytes, None))
+    }
+
+    fn edit_policy_report<'py>(&self, py: Python<'py>, operation: &str) -> PyResult<Py<PyAny>> {
+        let operation = operation.to_string();
+        self.report_json(py, |bytes| {
+            sdk::edit_policy_report_json(bytes, &operation, None)
+        })
+    }
+
     /// Page-operations report (boxes, labels, destinations, preservation risk).
     fn pages_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::page_operations_report_json(bytes, None))
@@ -641,6 +661,105 @@ impl PyDocument {
         let bytes = self.file_bytes();
         let (out, report) =
             run_oxide(|| sdk::nonaxis_redaction_apply_json(&bytes, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (options_json, output=None))]
+    fn redact_image_mask<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::redact_image_mask_json(&bytes, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (options_json, output=None))]
+    fn redact_inline_image<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::redact_inline_image_json(&bytes, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    fn associated_file_extract<'py>(
+        &self,
+        py: Python<'py>,
+        stable_id: &str,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (payload, report) =
+            run_oxide(|| sdk::associated_files_extract_json(&bytes, stable_id, None))?;
+        Ok((
+            PyBytes::new(py, &payload).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (payload, options_json, output=None))]
+    fn associated_file_add<'py>(
+        &self,
+        py: Python<'py>,
+        payload: &[u8],
+        options_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::associated_files_add_json(&bytes, payload, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (options_json=None, output=None))]
+    fn associated_files_sanitize<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::associated_files_sanitize_json(&bytes, options_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (stable_ids, output=None))]
+    fn associated_files_remove<'py>(
+        &self,
+        py: Python<'py>,
+        stable_ids: Vec<String>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::associated_files_remove_json(&bytes, &stable_ids, None))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),

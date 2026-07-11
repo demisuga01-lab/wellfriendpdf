@@ -249,6 +249,27 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string Prompt18ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt18_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string AssociatedFilesReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_associated_files_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string EditPolicyReportJson(string operation)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(operation);
+        return ReportWithString(operation, NativeMethods.oxide_document_edit_policy_report_json);
+    }
+
     public string AnnotationAppearanceReportJson(string? optionsJson = null)
     {
         ThrowIfDisposed();
@@ -420,6 +441,59 @@ public sealed class OxideDocument : IDisposable
         finally
         {
             if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public OxideBinaryResult RedactImageMask(string optionsJson) => Prompt18StringOutput(
+        optionsJson, NativeMethods.oxide_document_redact_image_mask_json);
+
+    public OxideBinaryResult RedactInlineImage(string optionsJson) => Prompt18StringOutput(
+        optionsJson, NativeMethods.oxide_document_redact_inline_image_json);
+
+    public OxideBinaryResult AssociatedFileAdd(byte[] payload, string optionsJson)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentException.ThrowIfNullOrWhiteSpace(optionsJson);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_associated_files_add_json(
+                _handle, payload, (UIntPtr)payload.Length, optionsPtr,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public OxideBinaryResult AssociatedFileExtract(string stableId) =>
+        Prompt18StringOutput(stableId, NativeMethods.oxide_document_associated_files_extract_json);
+
+    public OxideBinaryResult AssociatedFilesRemove(string stableIdsJson) =>
+        Prompt18StringOutput(stableIdsJson, NativeMethods.oxide_document_associated_files_remove_json);
+
+    public OxideBinaryResult AssociatedFilesSanitize(string? optionsJson = null) =>
+        Prompt18StringOutput(optionsJson, NativeMethods.oxide_document_associated_files_sanitize_json);
+
+    private delegate int Prompt18OutputCall(
+        NativeMethods.DocumentHandle document, IntPtr value, out NativeMethods.OxideBuffer buffer,
+        out IntPtr json, out IntPtr error);
+
+    private OxideBinaryResult Prompt18StringOutput(string? value, Prompt18OutputCall call)
+    {
+        ThrowIfDisposed();
+        var valuePtr = NativeMethods.StringToNativeOrNull(value);
+        try
+        {
+            var status = call(_handle, valuePtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (valuePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(valuePtr);
         }
     }
 

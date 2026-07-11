@@ -32,6 +32,9 @@ public final class OxideSmokeTest {
             reports.put("rich_media", doc.richMediaReportJson());
             reports.put("annotation_appearance", doc.annotationAppearanceReportJson(null));
             reports.put("prompt17", doc.prompt17ReportJson());
+            reports.put("prompt18", doc.prompt18ReportJson());
+            reports.put("associated_files", doc.associatedFilesReportJson());
+            reports.put("edit_policy", doc.editPolicyReportJson("incremental_save"));
             reports.put("pages", doc.pagesReportJson());
             reports.put("interactive", doc.interactiveReportJson());
             reports.put("chunks", doc.chunksJson());

@@ -114,6 +114,7 @@ pub mod parser;
 pub mod parser_report;
 pub mod prepress;
 pub mod prompt17;
+pub mod prompt18;
 pub mod reader;
 pub mod render;
 pub mod sdk;
@@ -314,6 +315,17 @@ pub use prompt17::{
     RedactionCoordinateSpace, RichMediaCounts, RichMediaCustomPolicy, RichMediaInventoryReport,
     RichMediaLimits, RichMediaPolicyMode, RichMediaPolicyReport, PROMPT17_SCHEMA_VERSION,
 };
+pub use prompt18::{
+    analyze_edit_policy, associated_file_extract, associated_files_add_pdf,
+    associated_files_inventory, associated_files_sanitize_pdf, incremental_metadata_update_pdf,
+    mask_redaction_inventory, prompt18_report, redact_masked_images_pdf, AfRelationship,
+    AssociatedFileAddRequest, AssociatedFileOwnerType, AssociatedFileRecord,
+    AssociatedFileSanitizerOptions, AssociatedFileSanitizerPolicy, AssociatedFilesInventoryReport,
+    AssociatedFilesMutationReport, EditOperation as SignatureEditOperation, EditPolicyDecision,
+    EditPolicyReport, MaskInventoryReport, MaskInventoryRow, MaskRedactionStrategy,
+    Prompt18SupportStatus, SignatureImpactSummary, StructuralSignaturePolicy,
+    PROMPT18_SCHEMA_VERSION,
+};
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
     flatten_cubic, flatten_path, get_fallback_font, rgb, rgba, AlphaMask, CachedGlyph, ClipMask,
@@ -503,6 +515,13 @@ pub mod prelude {
         plan_nonaxis_image_redaction, rich_media_inventory, AnnotationAppearanceOptions,
         AnnotationXfdfImportOptions, NonAxisRedactionOptions, NonAxisRedactionRequest,
         RichMediaPolicyMode,
+    };
+    pub use crate::prompt18::{
+        analyze_edit_policy, associated_file_extract, associated_files_add_pdf,
+        associated_files_inventory, associated_files_sanitize_pdf, incremental_metadata_update_pdf,
+        mask_redaction_inventory, prompt18_report, redact_masked_images_pdf,
+        AssociatedFileAddRequest, AssociatedFileSanitizerOptions,
+        EditOperation as SignatureEditOperation,
     };
     pub use crate::signature::{
         add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options,

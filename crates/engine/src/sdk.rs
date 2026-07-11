@@ -308,6 +308,55 @@ pub fn prompt17_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<Str
     )
 }
 
+/// Combined Prompt 18 secure-mutation inventory and policy report.
+pub fn prompt18_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt18_report",
+        &crate::prompt18::prompt18_report(&engine)?,
+    )
+}
+
+/// Prompt 18 mask/soft-mask inventory and secure fallback posture.
+pub fn mask_redaction_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "mask_redaction_report",
+        &crate::prompt18::mask_redaction_inventory(&engine)?,
+    )
+}
+
+/// Inventory all supported embedded/associated-file locations.
+pub fn associated_files_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "associated_files_report",
+        &crate::prompt18::associated_files_inventory(&engine)?,
+    )
+}
+
+/// Structural and cryptographic signature-impact analysis for an edit class.
+pub fn edit_policy_report_json(
+    bytes: &[u8],
+    operation: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let operation = parse_prompt18_edit_operation(operation)?;
+    envelope(
+        "edit_policy_report",
+        &crate::prompt18::analyze_edit_policy(&engine, operation)?,
+    )
+}
+
+pub fn edit_signature_impact_json(
+    bytes: &[u8],
+    operation: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    edit_policy_report_json(bytes, operation, password)
+}
+
 /// Page-operations report: page boxes, labels/outlines/destinations, and
 /// page-operation preservation risks.
 pub fn page_operations_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
@@ -2513,6 +2562,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt15_semantic_binding_rag_benchmark_closeout": crate::semantic_intelligence::prompt15_semantic_binding_rag_benchmark_closeout_report_value(),
         "prompt16_xfa_runtime_sandbox_closure": crate::xfa::prompt16_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt17_annotation_xfdf_media_nonaxis_redaction": crate::prompt17::prompt17_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt18_mask_inline_associated_signature_safe_edits": crate::prompt18::prompt18_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2529,6 +2579,10 @@ pub fn feature_report_json() -> Result<String> {
             "annotation_appearance_generate", "annotation_appearance_report",
             "rich_media_report", "rich_media_sanitize", "rich_media_flatten_poster",
             "nonaxis_redaction_plan", "nonaxis_redaction_apply", "prompt17_report",
+            "redact_image_mask", "redact_inline_image", "associated_files_report",
+            "associated_files_extract", "associated_files_add", "associated_files_remove",
+            "associated_files_sanitize", "edit_signature_impact", "edit_policy_report",
+            "prompt18_report",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
@@ -2720,6 +2774,112 @@ pub fn nonaxis_redaction_apply_json(
     Ok((output, envelope("nonaxis_redaction_apply_report", &report)?))
 }
 
+/// Apply secure image-mask/soft-mask redaction using the canonical editor.
+pub fn redact_image_mask_json(
+    bytes: &[u8],
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options: crate::prompt17::NonAxisRedactionOptions =
+        serde_json::from_str(options_json).map_err(json_err)?;
+    let (output, report) = crate::prompt18::redact_masked_images_pdf(&input, &options)?;
+    Ok((output, envelope("mask_redaction_apply_report", &report)?))
+}
+
+/// Apply secure inline-image redaction. The shared editor rewrites bounded
+/// decoded samples and removes/fails closed for unsupported chains.
+pub fn redact_inline_image_json(
+    bytes: &[u8],
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    redact_image_mask_json(bytes, options_json, password)
+}
+
+pub fn associated_files_extract_json(
+    bytes: &[u8],
+    stable_id: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let engine = open(bytes, password)?;
+    let (filename, payload) = crate::prompt18::associated_file_extract(&engine, stable_id)?;
+    let report = envelope(
+        "associated_files_extract_report",
+        &json!({
+            "schema_version": crate::prompt18::PROMPT18_SCHEMA_VERSION,
+            "stable_id": stable_id,
+            "safe_filename": filename,
+            "bytes": payload.len(),
+            "external_access": false,
+            "execution": false
+        }),
+    )?;
+    Ok((payload, report))
+}
+
+pub fn associated_files_add_json(
+    bytes: &[u8],
+    payload: &[u8],
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options: crate::prompt18::AssociatedFileAddRequest =
+        serde_json::from_str(options_json).map_err(json_err)?;
+    let (output, report) = crate::prompt18::associated_files_add_pdf(&input, &options, payload)?;
+    Ok((output, envelope("associated_files_add_report", &report)?))
+}
+
+pub fn associated_files_sanitize_json(
+    bytes: &[u8],
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options = options_json
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let (output, report) = crate::prompt18::associated_files_sanitize_pdf(&input, &options)?;
+    Ok((
+        output,
+        envelope("associated_files_sanitize_report", &report)?,
+    ))
+}
+
+pub fn associated_files_remove_json(
+    bytes: &[u8],
+    stable_ids: &[String],
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options = crate::prompt18::AssociatedFileSanitizerOptions {
+        remove_ids: stable_ids.iter().cloned().collect(),
+        ..crate::prompt18::AssociatedFileSanitizerOptions::default()
+    };
+    let (output, report) = crate::prompt18::associated_files_sanitize_pdf(&input, &options)?;
+    Ok((output, envelope("associated_files_remove_report", &report)?))
+}
+
+pub fn incremental_metadata_update_json(
+    bytes: &[u8],
+    key: &str,
+    value: &str,
+    signature_policy_override: bool,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let (output, report) = crate::prompt18::incremental_metadata_update_pdf(
+        &input,
+        key,
+        value,
+        signature_policy_override,
+    )?;
+    Ok((output, envelope("incremental_edit_report", &report)?))
+}
+
 fn mutation_input(bytes: &[u8], password: Option<&[u8]>) -> Result<Vec<u8>> {
     if password.is_none_or(|password| password.is_empty()) {
         return Ok(bytes.to_vec());
@@ -2851,6 +3011,36 @@ fn parse_rich_media_mode(value: Option<&str>) -> Result<crate::prompt17::RichMed
         Some("custom") => Ok(RichMediaPolicyMode::Custom),
         Some(other) => Err(crate::OxideError::invalid_input(format!(
             "unknown rich-media policy '{other}'; use inventory_only, preserve_inert, remove_active_content, remove_all_media, flatten_static_poster, or custom"
+        ))),
+    }
+}
+
+fn parse_prompt18_edit_operation(value: &str) -> Result<crate::prompt18::EditOperation> {
+    use crate::prompt18::EditOperation;
+    match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "form_value" | "form_value_update" => Ok(EditOperation::FormValueUpdate),
+        "form_appearance" | "form_appearance_update" => Ok(EditOperation::FormAppearanceUpdate),
+        "annotation_add" => Ok(EditOperation::AnnotationAdd),
+        "annotation_update" => Ok(EditOperation::AnnotationUpdate),
+        "annotation_delete" => Ok(EditOperation::AnnotationDelete),
+        "xfdf_import" => Ok(EditOperation::XfdfImport),
+        "page_insert" => Ok(EditOperation::PageInsert),
+        "page_delete" => Ok(EditOperation::PageDelete),
+        "page_reorder" => Ok(EditOperation::PageReorder),
+        "page_rotate" => Ok(EditOperation::PageRotate),
+        "page_box" | "page_box_change" => Ok(EditOperation::PageBoxChange),
+        "content_edit" => Ok(EditOperation::ContentEdit),
+        "redaction" => Ok(EditOperation::Redaction),
+        "sanitizer" => Ok(EditOperation::Sanitizer),
+        "attachment_add" => Ok(EditOperation::AttachmentAdd),
+        "attachment_remove" => Ok(EditOperation::AttachmentRemove),
+        "xfa_flatten" => Ok(EditOperation::XfaFlatten),
+        "metadata" | "metadata_update" => Ok(EditOperation::MetadataUpdate),
+        "canonicalize" => Ok(EditOperation::Canonicalize),
+        "full_rewrite" => Ok(EditOperation::FullRewrite),
+        "incremental" | "incremental_save" => Ok(EditOperation::IncrementalSave),
+        other => Err(crate::OxideError::MalformedPdf(format!(
+            "unknown Prompt 18 edit operation {other}"
         ))),
     }
 }

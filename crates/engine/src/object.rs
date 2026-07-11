@@ -28,6 +28,10 @@ impl PdfDictionary {
         self.entries.get(key)
     }
 
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut PdfObject> {
+        self.entries.get_mut(key)
+    }
+
     pub fn contains_key(&self, key: &str) -> bool {
         self.entries.contains_key(key)
     }
@@ -147,6 +151,13 @@ impl PdfObject {
     }
 
     pub fn as_dict(&self) -> Option<&PdfDictionary> {
+        match self {
+            Self::Dictionary(value) => Some(value),
+            _ => None,
+        }
+    }
+
+    pub fn as_dict_mut(&mut self) -> Option<&mut PdfDictionary> {
         match self {
             Self::Dictionary(value) => Some(value),
             _ => None,

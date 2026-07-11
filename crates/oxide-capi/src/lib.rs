@@ -1422,6 +1422,37 @@ xfa_document_report!(
     rich_media_report_json
 );
 xfa_document_report!(oxide_document_prompt17_report_json, prompt17_report_json);
+xfa_document_report!(oxide_document_prompt18_report_json, prompt18_report_json);
+xfa_document_report!(
+    oxide_document_associated_files_report_json,
+    associated_files_report_json
+);
+xfa_document_report!(
+    oxide_document_mask_redaction_report_json,
+    mask_redaction_report_json
+);
+
+/// Analyze Prompt 18 signature-aware edit policy.
+///
+/// # Safety
+/// `document` must be a live handle, `operation` a NUL-terminated UTF-8
+/// string, and output pointers writable under the standard C ABI ownership
+/// rules.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_edit_policy_report_json(
+    document: *const OxideDocument,
+    operation: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let operation = unsafe { required_c_string(operation, "operation") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            let operation = operation.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::edit_policy_report_json(bytes, &operation, None)
+        })
+    }
+}
 
 /// Prompt 17 annotation appearance report using optional JSON options.
 ///
@@ -1769,6 +1800,144 @@ pub unsafe extern "C" fn oxide_document_nonaxis_redaction_apply_json(
         report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
             let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
             sdk::nonaxis_redaction_apply_json(bytes, &options, None)
+        })
+    }
+}
+
+macro_rules! prompt18_redaction_output {
+    ($name:ident, $sdk_fn:ident) => {
+        /// Apply a Prompt 18 image redaction operation.
+        ///
+        /// # Safety
+        /// The document handle must be live, options must be NUL-terminated
+        /// UTF-8 JSON, and output pointers must be writable. The caller frees
+        /// the returned buffer/string with the standard Oxide free functions.
+        #[no_mangle]
+        pub unsafe extern "C" fn $name(
+            document: *const OxideDocument,
+            options_json: *const c_char,
+            out_buffer: *mut OxideBuffer,
+            out_json: *mut *mut c_char,
+            error_out: *mut *mut c_char,
+        ) -> c_int {
+            let options = unsafe { required_c_string(options_json, "options_json") };
+            unsafe {
+                report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+                    let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+                    sdk::$sdk_fn(bytes, &options, None)
+                })
+            }
+        }
+    };
+}
+
+prompt18_redaction_output!(
+    oxide_document_redact_image_mask_json,
+    redact_image_mask_json
+);
+prompt18_redaction_output!(
+    oxide_document_redact_inline_image_json,
+    redact_inline_image_json
+);
+
+/// Add an associated-file payload and return owned PDF/report buffers.
+///
+/// # Safety
+/// `payload` must address `payload_len` readable bytes (or be NULL for zero
+/// length), `options_json` must be NUL-terminated UTF-8, the document must be
+/// live, and all output pointers must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_associated_files_add_json(
+    document: *const OxideDocument,
+    payload: *const u8,
+    payload_len: usize,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { required_c_string(options_json, "options_json") };
+    let payload = if payload_len == 0 {
+        Ok(Vec::new())
+    } else if payload.is_null() {
+        Err("payload pointer is null".to_string())
+    } else {
+        Ok(unsafe { slice::from_raw_parts(payload, payload_len) }.to_vec())
+    };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+            let payload = payload.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::associated_files_add_json(bytes, &payload, &options, None)
+        })
+    }
+}
+
+/// Extract an associated file into an owned output buffer.
+///
+/// # Safety
+/// `stable_id` must be NUL-terminated UTF-8, the document must be live, and
+/// output pointers must be writable and later freed by the caller.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_associated_files_extract_json(
+    document: *const OxideDocument,
+    stable_id: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let stable_id = unsafe { required_c_string(stable_id, "stable_id") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let stable_id = stable_id.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::associated_files_extract_json(bytes, &stable_id, None)
+        })
+    }
+}
+
+/// Remove associated files selected by a JSON string array of stable ids.
+///
+/// # Safety
+/// `stable_ids_json` must be NUL-terminated UTF-8 JSON, the document must be
+/// live, and output pointers must follow the standard owned-buffer rules.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_associated_files_remove_json(
+    document: *const OxideDocument,
+    stable_ids_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let stable_ids = unsafe { required_c_string(stable_ids_json, "stable_ids_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let stable_ids = stable_ids.map_err(oxide_engine::OxideError::invalid_input)?;
+            let stable_ids: Vec<String> = serde_json::from_str(&stable_ids)
+                .map_err(|error| oxide_engine::OxideError::invalid_input(error.to_string()))?;
+            sdk::associated_files_remove_json(bytes, &stable_ids, None)
+        })
+    }
+}
+
+/// Apply the Prompt 18 associated-file sanitizer.
+///
+/// # Safety
+/// The document handle must be live; optional JSON must be NULL or
+/// NUL-terminated UTF-8; output pointers must be writable and released with
+/// the standard Oxide free functions.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_associated_files_sanitize_json(
+    document: *const OxideDocument,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::associated_files_sanitize_json(bytes, options.as_deref(), None)
         })
     }
 }
@@ -2627,6 +2796,15 @@ mod tests {
             "prompt17.annotation-xfdf-media-redaction.v1"
         );
         report_envelope(oxide_document_prompt17_report_json, "prompt17_report");
+        let prompt18 = report_envelope(oxide_document_prompt18_report_json, "prompt18_report");
+        assert_eq!(
+            prompt18["report"]["schema_version"],
+            "prompt18.mask-inline-associated-signature-policy.v1"
+        );
+        report_envelope(
+            oxide_document_associated_files_report_json,
+            "associated_files_report",
+        );
         report_envelope(oxide_document_pages_report_json, "page_operations_report");
         report_envelope(oxide_document_interactive_report_json, "interactive_report");
         report_envelope(oxide_document_chunks_json, "chunk_set");
