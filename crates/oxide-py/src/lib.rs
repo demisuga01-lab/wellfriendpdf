@@ -431,6 +431,38 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::prompt20_report_json(bytes, None))
     }
 
+    fn prompt20b_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt20b_report_json(bytes, None))
+    }
+
+    #[pyo3(signature = (page=1))]
+    fn prompt20b_text_range_analyze<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt20b_text_range_analyze_json(bytes, page, None)
+        })
+    }
+
+    #[pyo3(signature = (request_json, output=None))]
+    fn edit_text_range<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_oxide(|| sdk::prompt20b_text_range_edit_json(&bytes, request_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
     #[pyo3(signature = (page=1))]
     fn prompt20_vector_list<'py>(&self, py: Python<'py>, page: usize) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {

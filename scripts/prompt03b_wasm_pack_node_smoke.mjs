@@ -1,6 +1,6 @@
 import { createRequire } from "node:module";
-import { readFileSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 
 const [, , packageDirArg, fixtureArg, outJsonArg] = process.argv;
 if (!packageDirArg || !fixtureArg || !outJsonArg) {
@@ -81,6 +81,56 @@ try {
   result.semantic_search_kind = semanticSearch.kind;
   result.apis_tested.push("semanticSearchJson");
 
+  const prompt20b = JSON.parse(pdf.prompt20bReportJson());
+  result.prompt20b_schema = prompt20b.report?.schema_version;
+  result.apis_tested.push("prompt20bReportJson");
+
+  let prompt20bPdf = pdf;
+  let rangeModel = JSON.parse(prompt20bPdf.prompt20bTextRangeAnalyzeJson(1));
+  if ((rangeModel.report?.source_spans?.length ?? 0) === 0) {
+    const textFixture = resolve(dirname(fixture), "multi_stream.pdf");
+    if (existsSync(textFixture)) {
+      prompt20bPdf = new oxide.OxidePdf(new Uint8Array(readFileSync(textFixture)));
+      result.apis_tested.push("new OxidePdf(multi_stream for Prompt20B)");
+      rangeModel = JSON.parse(prompt20bPdf.prompt20bTextRangeAnalyzeJson(1));
+    }
+  }
+  result.prompt20b_range_kind = rangeModel.kind;
+  result.prompt20b_range_logical_length = rangeModel.report?.logical_text?.length ?? 0;
+  result.apis_tested.push("prompt20bTextRangeAnalyzeJson");
+  const firstRange = rangeModel.report?.source_spans?.[0]?.logical_range;
+  if (Array.isArray(firstRange) && firstRange.length === 2) {
+    const edit = prompt20bPdf.editTextRange(
+      JSON.stringify({
+        page: 1,
+        logical_start: firstRange[0],
+        logical_end: firstRange[1],
+        replacement_text: "Wasm20B",
+        mode: "paragraph_reflow_horizontal",
+        style_policy: "inherit_leading",
+        options: {
+          region: [20.0, 80.0, 180.0, 140.0],
+          font_size: 12.0,
+          line_spacing: 1.2,
+          max_lines_or_columns: 4096,
+          overflow_policy: "error",
+          signature_policy_override: false,
+          deterministic: true,
+        },
+      }),
+    );
+    const editReport = JSON.parse(edit.reportJson());
+    result.prompt20b_edit_kind = editReport.kind;
+    result.prompt20b_edit_bytes = edit.bytes().length;
+    result.apis_tested.push("editTextRange");
+  } else {
+    result.errors.push("Prompt 20B range model did not expose a source span");
+  }
+  if (prompt20bPdf !== pdf) {
+    prompt20bPdf.close();
+    result.apis_tested.push("close Prompt20B fixture");
+  }
+
   const codec = JSON.parse(
     oxide.OxidePdf.codecIsolationReportJson(
       "FlateDecode",
@@ -121,6 +171,11 @@ try {
     result.advanced_chunks_kind === "advanced_rag_chunk_set",
     result.semantic_bundle_kind === "semantic_binding_report",
     result.semantic_search_kind === "semantic_search_report",
+    result.prompt20b_schema === "prompt20b.multirun-form-appearance-closure.v1",
+    result.prompt20b_range_kind === "prompt20b_multi_run_range_model",
+    result.prompt20b_range_logical_length > 0,
+    result.prompt20b_edit_kind === "prompt20b_multi_run_text_edit_report",
+    result.prompt20b_edit_bytes > 0,
     result.codec_isolation_status === "success",
     typeof result.invalid_input_error === "string" && result.invalid_input_error.length > 0,
   ];

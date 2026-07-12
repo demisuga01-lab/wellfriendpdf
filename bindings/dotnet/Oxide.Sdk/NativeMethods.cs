@@ -311,6 +311,18 @@ internal static partial class NativeMethods
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt20b_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt20b_text_range_analyze_json(
+        DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt20b_text_range_edit_json(
+        DocumentHandle document, IntPtr requestJson, out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_prompt20_vector_list_json(
         DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
 

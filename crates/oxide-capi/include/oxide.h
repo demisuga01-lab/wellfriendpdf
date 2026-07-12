@@ -468,6 +468,21 @@ OXIDE_API int oxide_document_prompt20_report_json(
     const OxideDocument *document,
     char **out_json,
     char **error_out);
+OXIDE_API int oxide_document_prompt20b_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt20b_text_range_analyze_json(
+    const OxideDocument *document,
+    size_t page,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt20b_text_range_edit_json(
+    const OxideDocument *document,
+    const char *request_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
 OXIDE_API int oxide_document_prompt20_vector_list_json(
     const OxideDocument *document,
     size_t page,

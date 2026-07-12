@@ -1478,6 +1478,51 @@ xfa_document_report!(
 );
 xfa_document_report!(oxide_document_prompt19_report_json, prompt19_report_json);
 xfa_document_report!(oxide_document_prompt20_report_json, prompt20_report_json);
+xfa_document_report!(oxide_document_prompt20b_report_json, prompt20b_report_json);
+
+/// Inspect a Prompt 20B page-local multi-run range model.
+///
+/// # Safety
+/// `document` must be live and output pointers writable; the returned string
+/// is owned by the caller and released with `oxide_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_prompt20b_text_range_analyze_json(
+    document: *const OxideDocument,
+    page: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt20b_text_range_analyze_json(bytes, page, None)
+        })
+    }
+}
+
+/// Apply a Prompt 20B multi-run request represented by versioned JSON.
+///
+/// # Safety
+/// `request_json` must be a NUL-terminated UTF-8 string; output pointers use
+/// the standard owned-buffer and owned-string free functions.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_prompt20b_text_range_edit_json(
+    document: *const OxideDocument,
+    request_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt20b_text_range_edit_json(
+                bytes,
+                &request.map_err(oxide_engine::OxideError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
 
 /// List Prompt 20 vector objects as an owned JSON string.
 ///
@@ -3187,6 +3232,11 @@ mod tests {
             prompt20["report"]["schema_version"],
             "prompt20.vertical-rtl-patch-vector-ink-editing.v1"
         );
+        let prompt20b = report_envelope(oxide_document_prompt20b_report_json, "prompt20b_report");
+        assert_eq!(
+            prompt20b["report"]["schema_version"],
+            "prompt20b.multirun-form-appearance-closure.v1"
+        );
         report_envelope(
             oxide_document_associated_files_report_json,
             "associated_files_report",
@@ -3211,6 +3261,81 @@ mod tests {
             "prompt15.semantic_binding.v1"
         );
         assert_eq!(semantic["report"]["privacy"]["cloud_upload_default"], false);
+    }
+
+    #[test]
+    fn capi_prompt20b_range_analyze_and_edit_return_owned_outputs() {
+        let (doc, _pdf) = open_sample();
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_prompt20b_text_range_analyze_json(doc, 1, &mut json, &mut error)
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "prompt20b_multi_run_range_model");
+        assert_eq!(
+            value["report"]["schema_version"],
+            "prompt20b.multirun-form-appearance-closure.v1"
+        );
+        assert!(value["report"]["logical_text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Hello"));
+        unsafe { oxide_string_free(json) };
+
+        let request = CString::new(
+            r#"{
+                "page":1,
+                "logical_start":0,
+                "logical_end":11,
+                "replacement_text":"CABI20B",
+                "mode":"paragraph_reflow_horizontal",
+                "style_policy":"inherit_leading",
+                "options":{
+                    "region":[20.0,80.0,180.0,140.0],
+                    "font_size":12.0,
+                    "line_spacing":1.2,
+                    "max_lines_or_columns":4096,
+                    "overflow_policy":"error",
+                    "signature_policy_override":false,
+                    "deterministic":true
+                }
+            }"#,
+        )
+        .unwrap();
+        let mut output = OxideBuffer::empty();
+        let mut edit_json = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_prompt20b_text_range_edit_json(
+                doc,
+                request.as_ptr(),
+                &mut output,
+                &mut edit_json,
+                &mut error,
+            )
+        };
+        let error_text = if error.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(status, OXIDE_STATUS_OK, "{error_text}");
+        let bytes = unsafe { slice::from_raw_parts(output.data, output.len) };
+        assert!(bytes.starts_with(b"%PDF-"));
+        let report = unsafe { CStr::from_ptr(edit_json) }.to_string_lossy();
+        assert!(report.contains("prompt20b_multi_run_text_edit_report"));
+        assert!(report.contains("\"replacement_extracts\":true"));
+        unsafe {
+            oxide_buffer_free(output);
+            oxide_string_free(edit_json);
+            oxide_document_free(doc);
+        }
     }
 
     #[test]

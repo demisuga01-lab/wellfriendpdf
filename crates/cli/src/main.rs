@@ -256,6 +256,18 @@ enum Commands {
     Prompt19Report(Prompt17ReportArgs),
     /// Combined Prompt 20 vertical/RTL, same-width, vector, and ink report
     Prompt20Report(Prompt17ReportArgs),
+    /// Combined Prompt 20B multi-run, Form ownership, and appearance report
+    Prompt20bReport(Prompt17ReportArgs),
+    /// Analyze or edit a logical text range spanning text-showing operators
+    EditTextRange(Prompt20bTextRangeArgs),
+    /// Alias for vector-list focused on Form invocation ownership
+    FormInstanceReport(Prompt20VectorListArgs),
+    /// Alias for vector-edit with clone-edit-one-instance policy
+    FormCloneOne(Prompt20VectorEditArgs),
+    /// Alias for vector-list focused on shared annotation appearances
+    AnnotationAppearanceSharedReport(Prompt20VectorListArgs),
+    /// Alias for vector-edit with clone-edit-one-instance appearance policy
+    AnnotationAppearanceCloneOne(Prompt20VectorEditArgs),
     /// List stable editable vector objects on a page
     VectorList(Prompt20VectorListArgs),
     /// Edit one stable vector object using a VectorEditOperation JSON file
@@ -1122,6 +1134,36 @@ struct Prompt20VectorDirectArgs {
     /// Shared Form policy: reject, edit-all-uses, or clone-edit-one-instance
     #[arg(long, default_value = "reject")]
     shared_form_policy: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt20bTextRangeArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// One-based page number used by --analyze
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Analyze the page-local logical range model instead of mutating
+    #[arg(long)]
+    analyze: bool,
+    /// Select by logical offsets supplied in the request JSON
+    #[arg(long)]
+    logical: bool,
+    /// Report that a visual selection has already been resolved to a logical request
+    #[arg(long)]
+    visual_selection: bool,
+    /// Complete MultiRunTextRangeRequest JSON file for a logical edit
+    #[arg(long)]
+    request: Option<PathBuf>,
+    /// Output PDF for an edit
+    #[arg(short, long, default_value = "text-range-edited.pdf")]
+    output: PathBuf,
+    /// Optional JSON report output
+    #[arg(long)]
+    report: Option<PathBuf>,
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
@@ -2511,6 +2553,18 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::WordPaginationAudit(args) => run_word_pagination_audit(args),
         Commands::Prompt19Report(args) => run_prompt19_report(args),
         Commands::Prompt20Report(args) => run_prompt20_report(args),
+        Commands::Prompt20bReport(args) => run_prompt20b_report(args),
+        Commands::EditTextRange(args) => run_prompt20b_text_range(args),
+        Commands::FormInstanceReport(args) => run_prompt20_vector_list(args),
+        Commands::FormCloneOne(mut args) => {
+            args.shared_form_policy = "clone-edit-one-instance".to_string();
+            run_prompt20_vector_edit(args)
+        }
+        Commands::AnnotationAppearanceSharedReport(args) => run_prompt20_vector_list(args),
+        Commands::AnnotationAppearanceCloneOne(mut args) => {
+            args.shared_form_policy = "clone-edit-one-instance".to_string();
+            run_prompt20_vector_edit(args)
+        }
         Commands::VectorList(args) => run_prompt20_vector_list(args),
         Commands::VectorEdit(args) => run_prompt20_vector_edit(args),
         Commands::VectorDelete(args) => run_prompt20_vector_direct(args, false),
@@ -3662,6 +3716,50 @@ fn run_prompt20_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt20b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt20b_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let _selection_mode = if args.visual_selection {
+        "visual_selection_resolved_to_logical"
+    } else {
+        "logical"
+    };
+    let _logical_requested = args.logical;
+    if args.analyze {
+        let report = oxide_engine::sdk::prompt20b_text_range_analyze_json(
+            &bytes,
+            args.page,
+            args.password.as_deref().map(str::as_bytes),
+        )?;
+        return write_output_optional(&args.report, &pretty_json(&report)?);
+    }
+    let request = args
+        .request
+        .ok_or_else(|| usage_error("edit-text-range requires --request or --analyze"))?;
+    let request_json = std::fs::read_to_string(request)?;
+    let (output, report) = oxide_engine::sdk::prompt20b_text_range_edit_json(
+        &bytes,
+        &request_json,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(args.output, output)?;
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, pretty)?;
+    } else {
+        println!("{pretty}");
+    }
+    Ok(())
 }
 
 fn run_prompt20_vector_list(args: Prompt20VectorListArgs) -> Result<(), Box<dyn Error>> {

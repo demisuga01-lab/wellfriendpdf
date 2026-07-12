@@ -346,6 +346,16 @@ mod wasm_api {
             self.report(|b| sdk::prompt20_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = prompt20bReportJson)]
+        pub fn prompt20b_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt20b_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt20bTextRangeAnalyzeJson)]
+        pub fn prompt20b_text_range_analyze_json(&self, page: usize) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt20b_text_range_analyze_json(b, page, None))
+        }
+
         #[wasm_bindgen(js_name = prompt20VectorListJson)]
         pub fn prompt20_vector_list_json(&self, page: usize) -> Result<String, JsValue> {
             self.report(|b| sdk::prompt20_vector_list_json(b, page, None))
@@ -525,6 +535,11 @@ mod wasm_api {
             self.output(|b| {
                 sdk::annotation_appearance_generate_json(b, options_json.as_deref(), None)
             })
+        }
+
+        #[wasm_bindgen(js_name = editTextRange)]
+        pub fn edit_text_range(&self, request_json: String) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::prompt20b_text_range_edit_json(b, &request_json, None))
         }
 
         #[wasm_bindgen(js_name = richMediaSanitize)]

@@ -432,6 +432,61 @@ pub fn prompt20_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<Str
     )
 }
 
+/// Prompt 20B's additive closure report.  This deliberately remains a shared
+/// SDK report so language bindings do not reimplement ownership policy.
+pub fn prompt20b_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt20b_report",
+        &serde_json::json!({
+            "schema_version": "prompt20b.multirun-form-appearance-closure.v1",
+            "status": "implemented_with_limits",
+            "multi_run_range": "implemented_token_boundary_page_stream",
+            "rtl_logical_visual_mapping": "implemented_bidi_provenance",
+            "vertical_range": "implemented_with_limits_cluster_policy",
+            "nested_form_clone_one": "implemented_with_limits_recursive_invocation_inventory",
+            "annotation_appearance_clone_one": "implemented_with_limits_owner_specific_N_R_D_state_widget_and_nested_Form_policy",
+            "bindings": ["rust", "cli", "python", "c_abi", "wasm", "dotnet", "java_maven", "java_gradle"],
+            "signature_policy": "prompt18b_preflight_required",
+            "cryptographic_validity_claimed": false,
+            "page_count": engine.page_count()?,
+            "exact_limits": [
+              "range edits require contiguous decoded string-token boundaries in one page content stream",
+              "arbitrary Type3 editing and pattern/shading program editing remain unsupported",
+              "visual quad selection must resolve to one unambiguous logical range before mutation",
+              "structural incremental preservation does not imply cryptographic signature validity"
+            ]
+        }),
+    )
+}
+
+pub fn prompt20b_text_range_analyze_json(
+    bytes: &[u8],
+    page: usize,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt20b_multi_run_range_model",
+        &crate::prompt20::analyze_multi_run_text_range(&input, page)?,
+    )
+}
+
+pub fn prompt20b_text_range_edit_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt20::MultiRunTextRangeRequest>(request_json)
+        .map_err(json_err)?;
+    let (output, report) = crate::prompt20::edit_multi_run_text_range(&input, &request, None)?;
+    Ok((
+        output,
+        envelope("prompt20b_multi_run_text_edit_report", &report)?,
+    ))
+}
+
 pub fn prompt20_vector_list_json(
     bytes: &[u8],
     page: usize,
@@ -2789,6 +2844,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt18b_advanced_secure_mutation_closure": crate::prompt18::prompt18b_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt19_form_js_interactive_docx_layout": crate::prompt19::prompt19_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt20_vertical_rtl_patch_vector_ink_editing": crate::prompt20::prompt20_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt20b_multirun_form_appearance_closure": crate::prompt20::prompt20b_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [

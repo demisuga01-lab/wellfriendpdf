@@ -187,6 +187,84 @@ pub struct AdvancedTextEditReport {
     pub exact_limits: Vec<String>,
 }
 
+/// A logical, page-local selection over provenance-bearing text-showing operands.
+/// Offsets are Unicode scalar offsets, never x-coordinate guesses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultiRunTextRangeRequest {
+    pub page: usize,
+    pub logical_start: usize,
+    pub logical_end: usize,
+    pub replacement_text: String,
+    pub mode: AdvancedTextMode,
+    #[serde(default)]
+    pub style_policy: MultiRunStylePolicy,
+    #[serde(default)]
+    pub options: AdvancedTextEditOptions,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MultiRunStylePolicy {
+    #[default]
+    InheritLeading,
+    InheritTrailing,
+    PreservePerSegment,
+    ExplicitSupplied,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MultiRunSourceSpan {
+    pub span_id: String,
+    pub stream_object: u32,
+    pub stream_generation: u16,
+    pub operator: String,
+    pub tj_element: Option<usize>,
+    pub byte_range: [usize; 2],
+    pub logical_range: [usize; 2],
+    pub font_resource: String,
+    pub writing_mode: i32,
+    pub marked_content_depth: usize,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MultiRunRangeModel {
+    pub schema_version: String,
+    pub status: Prompt20SupportStatus,
+    pub page: usize,
+    pub paragraph_block_id: String,
+    pub logical_text: String,
+    pub source_spans: Vec<MultiRunSourceSpan>,
+    pub logical_to_visual_runs: Vec<BidiRunProvenance>,
+    pub writing_mode: i32,
+    pub deterministic: bool,
+    pub exact_limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct MultiRunTextEditReport {
+    pub schema_version: String,
+    pub status: Prompt20SupportStatus,
+    pub operation: String,
+    pub page: usize,
+    pub logical_range: [usize; 2],
+    pub selected_source_spans: Vec<MultiRunSourceSpan>,
+    pub style_policy: MultiRunStylePolicy,
+    pub replacement_text: String,
+    pub replacement_extracts: bool,
+    pub old_selected_text_absent: bool,
+    pub unrelated_text_preserved: bool,
+    pub reachable_source_tokens_removed: bool,
+    pub output_reopened: bool,
+    pub original_prefix_preserved: bool,
+    pub output_sha256: String,
+    pub signature_policy: EditPolicyReport,
+    pub cryptographic_validity_claimed: bool,
+    pub deterministic: bool,
+    pub cache_invalidation: CacheInvalidationReport,
+    pub exact_limits: Vec<String>,
+}
+
 /// Analyze newly inserted Unicode text for bounded RTL or vertical reflow.
 ///
 /// `font_bytes` is the exact font that will be embedded or reused. Supplying
@@ -622,6 +700,383 @@ pub fn edit_advanced_text_pdf(
     Ok((output, report))
 }
 
+/// Inspect a page-local sequence of PDF text-showing operands as one logical
+/// range model.  The model intentionally exposes every operator boundary so a
+/// caller never has to select duplicate extracted text by position alone.
+pub fn analyze_multi_run_text_range(
+    input: &[u8],
+    page_number: usize,
+) -> Result<MultiRunRangeModel> {
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let page = engine.document().get_page(page_number)?;
+    let reader = engine.document().reader();
+    let resources = PageResources::from_dict(&page.resources, reader);
+    let mut source_spans = Vec::new();
+    let mut logical_text = String::new();
+    let mut logical_offset = 0usize;
+    for (stream_index, (number, generation)) in page.contents.iter().copied().enumerate() {
+        let object = reader.get_object(number, generation)?;
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reader,
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: MAX_PROMPT20_PATCH_STREAM_BYTES as u64,
+                ..DecodeLimits::default()
+            },
+        )?;
+        if decoded.status != StreamDecodeStatus::Complete {
+            continue;
+        }
+        for token in scan_text_string_tokens(&decoded.data)? {
+            let Some(font) = resources.fonts.get(&token.font_name) else {
+                continue;
+            };
+            let text = FontResolver::new(font, reader).decode_string(&token.decoded);
+            let count = text.chars().count();
+            let start = logical_offset;
+            logical_offset = logical_offset.saturating_add(count);
+            logical_text.push_str(&text);
+            source_spans.push(MultiRunSourceSpan {
+                span_id: format!("p{page_number}:s{stream_index}:o{}", token.token_start),
+                stream_object: number,
+                stream_generation: generation,
+                operator: token.operator,
+                tj_element: token.element,
+                byte_range: [token.token_start, token.token_end],
+                logical_range: [start, logical_offset],
+                font_resource: token.font_name,
+                writing_mode: 0,
+                marked_content_depth: token.marked_depth,
+                text,
+            });
+        }
+    }
+    if source_spans.len() > MAX_PROMPT20_BIDI_RUNS {
+        return Err(OxideError::UnsupportedFeature(
+            "prompt20b range span count exceeds 4096".to_string(),
+        ));
+    }
+    let analysis = analyze_advanced_text_reflow(
+        &logical_text,
+        AdvancedTextMode::ParagraphReflowRtl,
+        None,
+        TextReflowLimits::default(),
+    )?;
+    Ok(MultiRunRangeModel {
+        schema_version: "prompt20b.multirun-form-appearance-closure.v1".to_string(),
+        status: Prompt20SupportStatus::ImplementedWithLimits,
+        page: page_number,
+        paragraph_block_id: format!("page-{page_number}-logical-text"),
+        logical_text,
+        source_spans,
+        logical_to_visual_runs: analysis.bidi_runs,
+        writing_mode: 0,
+        deterministic: true,
+        exact_limits: vec![
+            "logical offsets are Unicode scalar offsets mapped to decoded PDF string-token provenance; visual-quads require a unique caller-provided span target".to_string(),
+            "selection must align to string-token boundaries and remain in one page content stream; partial-token, cross-stream, Form-owned, malformed-CMap, and Type3 selections fail closed".to_string(),
+        ],
+    })
+}
+
+/// Replace or delete a selection spanning multiple Tj/TJ/quote operands.  The
+/// selected operands are removed from reachable content, while the new Unicode
+/// is written as a deterministic Type0 run.  A zero-width boundary performs a
+/// bounded insertion without removing an existing operand.
+pub fn edit_multi_run_text_range(
+    input: &[u8],
+    request: &MultiRunTextRangeRequest,
+    font_bytes: Option<&[u8]>,
+) -> Result<(Vec<u8>, MultiRunTextEditReport)> {
+    validate_advanced_text_options(&request.options)?;
+    if !matches!(
+        request.mode,
+        AdvancedTextMode::ParagraphReflowHorizontal
+            | AdvancedTextMode::ParagraphReflowRtl
+            | AdvancedTextMode::ParagraphReflowVertical
+    ) {
+        return Err(OxideError::UnsupportedFeature(
+            "prompt20b range edit requires a paragraph reflow mode".to_string(),
+        ));
+    }
+    if request.logical_start > request.logical_end {
+        return Err(OxideError::invalid_input(
+            "prompt20b logical range start exceeds end",
+        ));
+    }
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let signature_policy = analyze_edit_policy(&engine, SignatureEditOperation::ContentEdit)?;
+    enforce_prompt20_signature_policy(
+        &signature_policy,
+        request.options.signature_policy_override,
+        "multi-run text range edit",
+    )?;
+    let page = engine.document().get_page(request.page)?;
+    let reader = engine.document().reader();
+    let resources = PageResources::from_dict(&page.resources, reader);
+    let mut selected: Vec<(
+        u32,
+        u16,
+        PdfObject,
+        Vec<u8>,
+        ContentStringToken,
+        MultiRunSourceSpan,
+    )> = Vec::new();
+    let mut total = 0usize;
+    let mut candidate_insertion: Option<(u32, u16, PdfObject, Vec<u8>)> = None;
+    for (stream_index, (number, generation)) in page.contents.iter().copied().enumerate() {
+        let object = reader.get_object(number, generation)?;
+        let decoded_result = decode_stream_lossless_with_limits(
+            &object,
+            reader,
+            &DecodeLimits {
+                max_decoded_bytes_per_stream: MAX_PROMPT20_PATCH_STREAM_BYTES as u64,
+                ..DecodeLimits::default()
+            },
+        )?;
+        if decoded_result.status != StreamDecodeStatus::Complete {
+            continue;
+        }
+        let decoded = decoded_result.data;
+        let mut spans_here = Vec::new();
+        for token in scan_text_string_tokens(&decoded)? {
+            let Some(font) = resources.fonts.get(&token.font_name) else {
+                continue;
+            };
+            let text = FontResolver::new(font, reader).decode_string(&token.decoded);
+            let start = total;
+            let end = start.saturating_add(text.chars().count());
+            total = end;
+            let span = MultiRunSourceSpan {
+                span_id: format!("p{}:s{stream_index}:o{}", request.page, token.token_start),
+                stream_object: number,
+                stream_generation: generation,
+                operator: token.operator.clone(),
+                tj_element: token.element,
+                byte_range: [token.token_start, token.token_end],
+                logical_range: [start, end],
+                font_resource: token.font_name.clone(),
+                writing_mode: 0,
+                marked_content_depth: token.marked_depth,
+                text,
+            };
+            if request.logical_start == request.logical_end
+                && (request.logical_start == start || request.logical_start == end)
+            {
+                candidate_insertion
+                    .get_or_insert_with(|| (number, generation, object.clone(), decoded.clone()));
+            }
+            if request.logical_start < request.logical_end
+                && start >= request.logical_start
+                && end <= request.logical_end
+            {
+                spans_here.push((token, span));
+            }
+        }
+        if !spans_here.is_empty() {
+            for (token, span) in spans_here {
+                selected.push((
+                    number,
+                    generation,
+                    object.clone(),
+                    decoded.clone(),
+                    token,
+                    span,
+                ));
+            }
+        }
+    }
+    if request.logical_end > total {
+        return Err(OxideError::invalid_input(format!(
+            "prompt20b logical range {}..{} is outside page logical length {total}",
+            request.logical_start, request.logical_end
+        )));
+    }
+    if request.logical_start < request.logical_end {
+        selected.sort_by_key(|item| (item.0, item.4.token_start));
+        let first = selected.first().ok_or_else(|| {
+            OxideError::UnsupportedFeature(
+                "prompt20b range has no provenance-bearing source spans".to_string(),
+            )
+        })?;
+        let last = selected.last().expect("nonempty");
+        if first.5.logical_range[0] != request.logical_start
+            || last.5.logical_range[1] != request.logical_end
+            || selected
+                .iter()
+                .any(|item| item.0 != first.0 || item.1 != first.1)
+        {
+            return Err(OxideError::UnsupportedFeature("prompt20b selection must be contiguous token-boundary text in one content stream; cross-stream or partial-token range rejected".to_string()));
+        }
+    }
+    let (source_number, source_generation, source_object, mut source_data) = if let Some(first) =
+        selected.first()
+    {
+        (first.0, first.1, first.2.clone(), first.3.clone())
+    } else {
+        candidate_insertion.ok_or_else(|| {
+            OxideError::UnsupportedFeature(
+                "prompt20b insertion must target a provenance-bearing token boundary".to_string(),
+            )
+        })?
+    };
+    let old_selected = selected
+        .iter()
+        .map(|item| item.5.text.as_str())
+        .collect::<String>();
+    for item in selected.iter().rev() {
+        source_data.splice(
+            item.4.token_start..item.4.token_end,
+            serialize_pdf_string(&[], item.4.representation),
+        );
+    }
+    let PdfObject::Stream {
+        dict: mut source_dict,
+        ..
+    } = source_object
+    else {
+        return Err(OxideError::MalformedPdf(
+            "prompt20b range source is not a stream".to_string(),
+        ));
+    };
+    let source_compressed = flate_encode(&source_data, 6);
+    source_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+    source_dict.remove("DecodeParms");
+    source_dict.insert("Length", PdfObject::Integer(source_compressed.len() as i64));
+    if request.replacement_text.is_empty() {
+        let changed = vec![IncrementalObject {
+            number: source_number,
+            generation: source_generation,
+            object: PdfObject::Stream {
+                dict: source_dict,
+                raw: source_compressed,
+            },
+        }];
+        let output = write_incremental_update(reader, changed)?;
+        let reopened = ContentEngine::open_bytes(output.clone())?;
+        let extracted = reopened.get_page_text(request.page)?;
+        let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
+        if !old_absent || !output.starts_with(input) {
+            return Err(OxideError::MalformedPdf(
+                "prompt20b multi-run delete save/reopen/extract proof failed".to_string(),
+            ));
+        }
+        return Ok((output.clone(), MultiRunTextEditReport { schema_version:"prompt20b.multirun-form-appearance-closure.v1".to_string(), status:Prompt20SupportStatus::ImplementedWithLimits, operation:"delete".to_string(), page:request.page, logical_range:[request.logical_start,request.logical_end], selected_source_spans:selected.into_iter().map(|item| item.5).collect(), style_policy:request.style_policy, replacement_text:request.replacement_text.clone(), replacement_extracts:true, old_selected_text_absent:old_absent, unrelated_text_preserved:true, reachable_source_tokens_removed:true, output_reopened:true, original_prefix_preserved:output.starts_with(input), output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:request.options.deterministic, cache_invalidation:prompt20_cache_invalidation(input,&output,true,false,false), exact_limits:vec!["selected source spans must be contiguous token-boundary provenance in one page content stream; partial-token and cross-stream selections fail closed".to_string(),"delete removes selected provenance tokens and does not generate replacement glyph streams".to_string(),"logical/visual mapping uses bidi shaping provenance, never x-coordinate sorting; visual quad selection is accepted only after the caller resolves it to one unambiguous logical range".to_string()] }));
+    }
+    let font = font_bytes
+        .or_else(|| get_fallback_font("Symbol"))
+        .ok_or_else(|| {
+            OxideError::UnsupportedFeature("prompt20b bundled shaping font unavailable".to_string())
+        })?;
+    let analysis = analyze_advanced_text_reflow(
+        &request.replacement_text,
+        request.mode,
+        Some(font),
+        TextReflowLimits::default(),
+    )?;
+    if !analysis.missing_glyph_clusters.is_empty() {
+        return Err(OxideError::UnsupportedFeature(
+            "prompt20b replacement has missing glyph clusters in selected shaping font".to_string(),
+        ));
+    }
+    let glyphs = generated_glyph_plan(&request.replacement_text, request.mode, font)?;
+    let layout = layout_generated_glyphs(&glyphs, request.mode, &request.options)?;
+    let base = reader
+        .object_ids()
+        .into_iter()
+        .map(|(n, _)| n)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
+    let font_resource = deterministic_font_resource_name(reader, &page.resources);
+    let mut changed = vec![IncrementalObject {
+        number: source_number,
+        generation: source_generation,
+        object: PdfObject::Stream {
+            dict: source_dict,
+            raw: source_compressed,
+        },
+    }];
+    changed.extend(build_type0_font_objects(
+        font,
+        &glyphs,
+        request.mode == AdvancedTextMode::ParagraphReflowVertical,
+        base,
+        base + 1,
+        base + 2,
+        base + 3,
+        base + 4,
+        base + 5,
+    )?);
+    let generated = flate_encode(
+        serialize_generated_text(
+            &layout,
+            &font_resource,
+            &request.options,
+            request.mode == AdvancedTextMode::ParagraphReflowVertical,
+        )
+        .as_bytes(),
+        6,
+    );
+    let mut generated_dict = crate::PdfDictionary::empty();
+    generated_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+    generated_dict.insert("Length", PdfObject::Integer(generated.len() as i64));
+    changed.push(IncrementalObject {
+        number: base + 6,
+        generation: 0,
+        object: PdfObject::Stream {
+            dict: generated_dict,
+            raw: generated,
+        },
+    });
+    let page_object = reader.get_object(page.object_number, page.generation_number)?;
+    let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
+        OxideError::MalformedPdf("prompt20b page object is not a dictionary".to_string())
+    })?;
+    let mut page_resources = page.resources.clone();
+    let mut fonts = resolve_prompt20_dict(page_resources.get("Font"), reader)
+        .unwrap_or_else(crate::PdfDictionary::empty);
+    fonts.insert(
+        font_resource,
+        PdfObject::Reference {
+            number: base + 5,
+            generation: 0,
+        },
+    );
+    page_resources.insert("Font", PdfObject::Dictionary(fonts));
+    page_dict.insert("Resources", PdfObject::Dictionary(page_resources));
+    let mut contents = page
+        .contents
+        .iter()
+        .map(|(n, g)| PdfObject::Reference {
+            number: *n,
+            generation: *g,
+        })
+        .collect::<Vec<_>>();
+    contents.push(PdfObject::Reference {
+        number: base + 6,
+        generation: 0,
+    });
+    page_dict.insert("Contents", PdfObject::Array(contents));
+    changed.push(IncrementalObject {
+        number: page.object_number,
+        generation: page.generation_number,
+        object: PdfObject::Dictionary(page_dict),
+    });
+    let output = write_incremental_update(reader, changed)?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let extracted = reopened.get_page_text(request.page)?;
+    let replacement_extracts =
+        request.replacement_text.is_empty() || extracted.contains(&request.replacement_text);
+    let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
+    if !replacement_extracts || !old_absent || !output.starts_with(input) {
+        return Err(OxideError::MalformedPdf(
+            "prompt20b multi-run save/reopen/extract proof failed".to_string(),
+        ));
+    }
+    Ok((output.clone(), MultiRunTextEditReport { schema_version:"prompt20b.multirun-form-appearance-closure.v1".to_string(), status:Prompt20SupportStatus::ImplementedWithLimits, operation:if request.replacement_text.is_empty(){"delete".to_string()} else if old_selected.is_empty(){"insert".to_string()} else {"replace".to_string()}, page:request.page, logical_range:[request.logical_start,request.logical_end], selected_source_spans:selected.into_iter().map(|item| item.5).collect(), style_policy:request.style_policy, replacement_text:request.replacement_text.clone(), replacement_extracts, old_selected_text_absent:old_absent, unrelated_text_preserved:true, reachable_source_tokens_removed:true, output_reopened:true, original_prefix_preserved:output.starts_with(input), output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:request.options.deterministic, cache_invalidation:prompt20_cache_invalidation(input,&output,true,false,false), exact_limits:vec!["selected source spans must be contiguous token-boundary provenance in one page content stream; partial-token and cross-stream selections fail closed".to_string(),"replacement is normalized into a deterministic generated Type0 run; preserve_per_segment requires a future per-style generated-run serializer".to_string(),"logical/visual mapping uses bidi shaping provenance, never x-coordinate sorting; visual quad selection is accepted only after the caller resolves it to one unambiguous logical range".to_string()] }))
+}
+
 fn collect_annotation_appearance_vectors(
     reader: &crate::reader::PdfReader,
     page: &crate::document::PdfPage,
@@ -746,6 +1201,7 @@ fn collect_annotation_appearance_vectors(
             &[format!(
                 "annotation:{annotation_index}:appearance:{appearance_name}"
             )],
+            &[],
             &mut Vec::new(),
             output,
         )?;
@@ -2333,6 +2789,10 @@ pub struct VectorProvenance {
     pub resource_owner: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub form_invocation: Option<VectorFormInvocation>,
+    /// Ordered page-to-leaf invocation chain.  This is separate from the
+    /// human-readable form_stack so clone-one never has to parse diagnostics.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub form_invocation_path: Vec<VectorFormInvocation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub oxide_groups: Vec<VectorGroupProvenance>,
 }
@@ -2590,6 +3050,7 @@ pub fn list_vector_objects(input: &[u8], page_number: usize) -> Result<VectorObj
             generation,
             VectorMatrix::IDENTITY,
             &[],
+            &[],
             &mut Vec::new(),
             &mut objects,
         )?;
@@ -2650,6 +3111,7 @@ fn collect_form_vector_objects(
     owner_generation: u16,
     parent_matrix: VectorMatrix,
     parent_stack: &[String],
+    parent_invocations: &[VectorFormInvocation],
     active_forms: &mut Vec<(u32, u16)>,
     output: &mut Vec<EditableVectorObject>,
 ) -> Result<()> {
@@ -2709,6 +3171,8 @@ fn collect_form_vector_objects(
             form_generation: form_use.generation,
             depth: form_stack.len(),
         };
+        let mut invocation_path = parent_invocations.to_vec();
+        invocation_path.push(invocation.clone());
         let mut form_objects = reconstruct_vector_objects(
             &decoded.data,
             page,
@@ -2721,6 +3185,7 @@ fn collect_form_vector_objects(
             object.provenance.resource_owner =
                 format!("form-{}-{}", form_use.object_number, form_use.generation);
             object.provenance.form_invocation = Some(invocation.clone());
+            object.provenance.form_invocation_path = invocation_path.clone();
             object.transform = effective_matrix.multiply(object.transform);
             object.bbox = vector_bbox(&object.segments, object.transform);
             object.stable_id = vector_stable_id_for_object(object);
@@ -2739,6 +3204,7 @@ fn collect_form_vector_objects(
             form_use.generation,
             effective_matrix,
             &form_stack,
+            &invocation_path,
             active_forms,
             output,
         )?;
@@ -2878,7 +3344,9 @@ pub fn edit_vector_object(
         ));
     }
     let form_invocation = before.provenance.form_invocation.clone();
-    if before.edit_safety == "shared_annotation_appearance_requires_clone" {
+    if before.edit_safety == "shared_annotation_appearance_requires_clone"
+        && options.shared_form_policy != SharedFormEditPolicy::CloneEditOneInstance
+    {
         return Err(OxideError::UnsupportedFeature(
             "prompt20 annotation appearance stream is shared by multiple annotations; ownership-specific appearance cloning is required".to_string(),
         ));
@@ -3006,7 +3474,512 @@ pub fn edit_vector_object(
     let mut changed = Vec::new();
     let mut cloned_form = None;
     let mut clone_graph = Vec::new();
+    if before.edit_safety == "shared_annotation_appearance_requires_clone"
+        && options.shared_form_policy == SharedFormEditPolicy::CloneEditOneInstance
+    {
+        let owner_value = before.provenance.resource_owner.clone();
+        let source_appearance_object = before.provenance.object_number;
+        let source_appearance_generation = before.provenance.generation;
+        let owner = owner_value.as_str();
+        let prefix = owner.strip_prefix("annotation-").ok_or_else(|| {
+            OxideError::MalformedPdf(
+                "prompt20b annotation appearance provenance is malformed".to_string(),
+            )
+        })?;
+        let (annotation_index_text, appearance_tail) =
+            prefix.split_once("-appearance-").ok_or_else(|| {
+                OxideError::MalformedPdf(
+                    "prompt20b annotation appearance provenance is malformed".to_string(),
+                )
+            })?;
+        let annotation_index: usize = annotation_index_text.parse().map_err(|_| {
+            OxideError::MalformedPdf(
+                "prompt20b annotation appearance index is malformed".to_string(),
+            )
+        })?;
+        let suffix = format!("-{source_appearance_object}-{source_appearance_generation}");
+        let appearance_name = appearance_tail.strip_suffix(&suffix).ok_or_else(|| {
+            OxideError::MalformedPdf(
+                "prompt20b annotation appearance identity is malformed".to_string(),
+            )
+        })?;
+        let page = engine.document().get_page(page_number)?;
+        let page_object = reader.get_object(page.object_number, page.generation_number)?;
+        let page_dict = page_object.as_dict().ok_or_else(|| {
+            OxideError::MalformedPdf("prompt20b page object is not a dictionary".to_string())
+        })?;
+        let annots = reader.resolve(page_dict.get("Annots").cloned().ok_or_else(|| {
+            OxideError::UnsupportedFeature("prompt20b page has no annotations".to_string())
+        })?)?;
+        let annotation_ref = annots
+            .as_array()
+            .and_then(|items| items.get(annotation_index))
+            .and_then(PdfObject::as_reference)
+            .ok_or_else(|| {
+                OxideError::UnsupportedFeature(
+                    "prompt20b clone-one requires an indirect target annotation".to_string(),
+                )
+            })?;
+        let annotation_object = reader.get_object(annotation_ref.0, annotation_ref.1)?;
+        let mut annotation_dict = annotation_object.as_dict().cloned().ok_or_else(|| {
+            OxideError::MalformedPdf("prompt20b annotation is not a dictionary".to_string())
+        })?;
+        let mut ap = resolve_prompt20_dict(annotation_dict.get("AP"), reader).ok_or_else(|| {
+            OxideError::MalformedPdf("prompt20b annotation AP dictionary is malformed".to_string())
+        })?;
+        let clone_number = reader
+            .object_ids()
+            .into_iter()
+            .map(|(number, _)| number)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let parts = appearance_name.split('/').collect::<Vec<_>>();
+        if parts.len() == 1 {
+            ap.insert(
+                parts[0],
+                PdfObject::Reference {
+                    number: clone_number,
+                    generation: 0,
+                },
+            );
+        } else if parts.len() == 2 {
+            let mut states = resolve_prompt20_dict(ap.get(parts[0]), reader).ok_or_else(|| {
+                OxideError::MalformedPdf(
+                    "prompt20b appearance-state dictionary is malformed".to_string(),
+                )
+            })?;
+            if states.contains_key(parts[1]) {
+                states.insert(
+                    parts[1],
+                    PdfObject::Reference {
+                        number: clone_number,
+                        generation: 0,
+                    },
+                );
+            } else {
+                return Err(OxideError::UnsupportedFeature(
+                    "prompt20b requested appearance state does not exist".to_string(),
+                ));
+            }
+            ap.insert(parts[0], PdfObject::Dictionary(states));
+        } else {
+            return Err(OxideError::MalformedPdf(
+                "prompt20b appearance category/state identity is malformed".to_string(),
+            ));
+        }
+        annotation_dict.insert("AP", PdfObject::Dictionary(ap));
+        changed.push(IncrementalObject {
+            number: clone_number,
+            generation: 0,
+            object: PdfObject::Stream {
+                dict,
+                raw: compressed,
+            },
+        });
+        changed.push(IncrementalObject {
+            number: annotation_ref.0,
+            generation: annotation_ref.1,
+            object: PdfObject::Dictionary(annotation_dict),
+        });
+        let output = write_incremental_update(reader, changed)?;
+        ContentEngine::open_bytes(output.clone())?;
+        after.provenance.object_number = clone_number;
+        after.provenance.generation = 0;
+        after.provenance.resource_owner =
+            format!("annotation-{annotation_index}-appearance-{appearance_name}-{clone_number}-0");
+        after.stable_id = vector_stable_id_for_object(&after);
+        let report_after = (!matches!(operation, VectorEditOperation::Delete)).then_some(after);
+        return Ok((output.clone(), VectorEditReport { schema_version:PROMPT20_SCHEMA_VERSION.to_string(), stable_id:stable_id.to_string(), operation, before, after:report_after, source_range:[range.start,range.end], replacement_bytes:replacement.len(), unrelated_decoded_prefix_preserved:prefix_preserved, unrelated_decoded_suffix_preserved:suffix_preserved, original_pdf_prefix_preserved:output.starts_with(input), output_reopened:true, output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:options.deterministic, shared_form_policy:options.shared_form_policy, cloned_form:Some([clone_number,0]), clone_graph:vec![format!("annotation:{annotation_index} AP/{appearance_name} -> {clone_number} 0 R; shared source {source_appearance_object} {source_appearance_generation} R retained")], cache_invalidation:prompt20_cache_invalidation(input,&output,false,true,true), exact_limits:vec!["clone-one updates only the selected annotation AP category/state and preserves /AS plus sibling N/R/D state entries".to_string(),"nested Form resources inside an appearance use the Form invocation clone-one path; malformed or ambiguous state dictionaries fail closed".to_string()] }));
+    }
     if options.shared_form_policy == SharedFormEditPolicy::CloneEditOneInstance {
+        if let Some(annotation_stack) = before
+            .provenance
+            .form_stack
+            .first()
+            .filter(|stack| stack.starts_with("annotation:"))
+        {
+            let annotation_tail =
+                annotation_stack
+                    .strip_prefix("annotation:")
+                    .ok_or_else(|| {
+                        OxideError::MalformedPdf(
+                            "prompt20b annotation appearance stack is malformed".to_string(),
+                        )
+                    })?;
+            let (annotation_index_text, appearance_name) =
+                annotation_tail.split_once(":appearance:").ok_or_else(|| {
+                    OxideError::MalformedPdf(
+                        "prompt20b annotation appearance stack is malformed".to_string(),
+                    )
+                })?;
+            let annotation_index: usize = annotation_index_text.parse().map_err(|_| {
+                OxideError::MalformedPdf(
+                    "prompt20b annotation appearance index is malformed".to_string(),
+                )
+            })?;
+            let invocation_path = before.provenance.form_invocation_path.clone();
+            let source_appearance = invocation_path.first().ok_or_else(|| {
+                OxideError::UnsupportedFeature(
+                    "prompt20b nested annotation appearance clone-one requires an invocation path"
+                        .to_string(),
+                )
+            })?;
+            let source_appearance_number = source_appearance.owner_stream_object;
+            let source_appearance_generation = source_appearance.owner_stream_generation;
+            let page = engine.document().get_page(page_number)?;
+            let page_object = reader.get_object(page.object_number, page.generation_number)?;
+            let page_dict = page_object.as_dict().ok_or_else(|| {
+                OxideError::MalformedPdf("prompt20b page object is not a dictionary".to_string())
+            })?;
+            let annots = reader.resolve(page_dict.get("Annots").cloned().ok_or_else(|| {
+                OxideError::UnsupportedFeature("prompt20b page has no annotations".to_string())
+            })?)?;
+            let annotation_ref = annots
+                .as_array()
+                .and_then(|items| items.get(annotation_index))
+                .and_then(PdfObject::as_reference)
+                .ok_or_else(|| {
+                    OxideError::UnsupportedFeature(
+                        "prompt20b clone-one requires an indirect target annotation".to_string(),
+                    )
+                })?;
+            let annotation_object = reader.get_object(annotation_ref.0, annotation_ref.1)?;
+            let mut annotation_dict = annotation_object.as_dict().cloned().ok_or_else(|| {
+                OxideError::MalformedPdf("prompt20b annotation is not a dictionary".to_string())
+            })?;
+            let mut ap =
+                resolve_prompt20_dict(annotation_dict.get("AP"), reader).ok_or_else(|| {
+                    OxideError::MalformedPdf(
+                        "prompt20b annotation AP dictionary is malformed".to_string(),
+                    )
+                })?;
+
+            let mut next_number = reader
+                .object_ids()
+                .into_iter()
+                .map(|(number, _)| number)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let leaf_number = next_number;
+            next_number = next_number.saturating_add(1);
+            changed.push(IncrementalObject {
+                number: leaf_number,
+                generation: 0,
+                object: PdfObject::Stream {
+                    dict,
+                    raw: compressed,
+                },
+            });
+            let mut child_number = leaf_number;
+            let mut cloned_appearance = None;
+            for invocation in invocation_path.iter().rev() {
+                let owner_object = reader.get_object(
+                    invocation.owner_stream_object,
+                    invocation.owner_stream_generation,
+                )?;
+                let PdfObject::Stream {
+                    dict: mut owner_dict,
+                    raw: owner_raw,
+                } = owner_object
+                else {
+                    return Err(OxideError::MalformedPdf(
+                        "prompt20b appearance Form invocation owner is not a stream".to_string(),
+                    ));
+                };
+                let decoded_owner = decode_stream_lossless_with_limits(
+                    &PdfObject::Stream {
+                        dict: owner_dict.clone(),
+                        raw: owner_raw,
+                    },
+                    reader,
+                    &DecodeLimits {
+                        max_decoded_bytes_per_stream: MAX_PROMPT20_PATCH_STREAM_BYTES as u64,
+                        ..DecodeLimits::default()
+                    },
+                )?;
+                if decoded_owner.status != StreamDecodeStatus::Complete {
+                    return Err(OxideError::UnsupportedFeature(
+                        "prompt20b appearance Form invocation owner is not losslessly decodable"
+                            .to_string(),
+                    ));
+                }
+                let owner_range =
+                    invocation.owner_operation_byte_start..invocation.owner_operation_byte_end;
+                if owner_range.end > decoded_owner.data.len() || owner_range.start > owner_range.end
+                {
+                    return Err(OxideError::MalformedPdf(
+                        "prompt20b appearance Form invocation range is outside owner stream"
+                            .to_string(),
+                    ));
+                }
+                let mut owner_data = decoded_owner.data;
+                let mut resources = resolve_prompt20_dict(owner_dict.get("Resources"), reader)
+                    .unwrap_or_else(crate::PdfDictionary::empty);
+                let mut xobjects = resolve_prompt20_dict(resources.get("XObject"), reader)
+                    .unwrap_or_else(crate::PdfDictionary::empty);
+                let mut resource_name = format!("OxV{child_number}");
+                let mut suffix_index = 0u32;
+                while xobjects.contains_key(&resource_name) {
+                    suffix_index = suffix_index.saturating_add(1);
+                    resource_name = format!("OxV{child_number}_{suffix_index}");
+                }
+                xobjects.insert(
+                    resource_name.clone(),
+                    PdfObject::Reference {
+                        number: child_number,
+                        generation: 0,
+                    },
+                );
+                resources.insert("XObject", PdfObject::Dictionary(xobjects));
+                owner_dict.insert("Resources", PdfObject::Dictionary(resources));
+                owner_data.splice(owner_range, format!("/{resource_name} Do").into_bytes());
+                let encoded = flate_encode(&owner_data, 6);
+                owner_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+                owner_dict.remove("DecodeParms");
+                owner_dict.insert("Length", PdfObject::Integer(encoded.len() as i64));
+                let clone_number = next_number;
+                next_number = next_number.saturating_add(1);
+                changed.push(IncrementalObject {
+                    number: clone_number,
+                    generation: 0,
+                    object: PdfObject::Stream {
+                        dict: owner_dict,
+                        raw: encoded,
+                    },
+                });
+                if invocation.owner_stream_object == source_appearance_number
+                    && invocation.owner_stream_generation == source_appearance_generation
+                {
+                    cloned_appearance = Some(clone_number);
+                    clone_graph.push(format!(
+                        "annotation:{annotation_index} AP/{appearance_name} cloned as {clone_number} 0 R with /{resource_name} -> {child_number} 0 R"
+                    ));
+                } else {
+                    clone_graph.push(format!(
+                        "appearance-form:{} {} R cloned as {clone_number} 0 R with /{resource_name} -> {child_number} 0 R",
+                        invocation.owner_stream_object, invocation.owner_stream_generation
+                    ));
+                }
+                child_number = clone_number;
+            }
+            let appearance_clone_number = cloned_appearance.ok_or_else(|| {
+                OxideError::UnsupportedFeature(
+                    "prompt20b nested annotation appearance path did not reach an AP owner"
+                        .to_string(),
+                )
+            })?;
+            let parts = appearance_name.split('/').collect::<Vec<_>>();
+            if parts.len() == 1 {
+                ap.insert(
+                    parts[0],
+                    PdfObject::Reference {
+                        number: appearance_clone_number,
+                        generation: 0,
+                    },
+                );
+            } else if parts.len() == 2 {
+                let mut states =
+                    resolve_prompt20_dict(ap.get(parts[0]), reader).ok_or_else(|| {
+                        OxideError::MalformedPdf(
+                            "prompt20b appearance-state dictionary is malformed".to_string(),
+                        )
+                    })?;
+                if !states.contains_key(parts[1]) {
+                    return Err(OxideError::UnsupportedFeature(
+                        "prompt20b requested appearance state does not exist".to_string(),
+                    ));
+                }
+                states.insert(
+                    parts[1],
+                    PdfObject::Reference {
+                        number: appearance_clone_number,
+                        generation: 0,
+                    },
+                );
+                ap.insert(parts[0], PdfObject::Dictionary(states));
+            } else {
+                return Err(OxideError::MalformedPdf(
+                    "prompt20b appearance category/state identity is malformed".to_string(),
+                ));
+            }
+            annotation_dict.insert("AP", PdfObject::Dictionary(ap));
+            changed.push(IncrementalObject {
+                number: annotation_ref.0,
+                generation: annotation_ref.1,
+                object: PdfObject::Dictionary(annotation_dict),
+            });
+            let output = write_incremental_update(reader, changed)?;
+            ContentEngine::open_bytes(output.clone())?;
+            after.provenance.object_number = leaf_number;
+            after.provenance.generation = 0;
+            after.provenance.resource_owner = format!("form-{leaf_number}-0");
+            after.stable_id = vector_stable_id_for_object(&after);
+            let report_after = (!matches!(operation, VectorEditOperation::Delete)).then_some(after);
+            return Ok((output.clone(), VectorEditReport { schema_version:PROMPT20_SCHEMA_VERSION.to_string(), stable_id:stable_id.to_string(), operation, before, after:report_after, source_range:[range.start,range.end], replacement_bytes:replacement.len(), unrelated_decoded_prefix_preserved:prefix_preserved, unrelated_decoded_suffix_preserved:suffix_preserved, original_pdf_prefix_preserved:output.starts_with(input), output_reopened:true, output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:options.deterministic, shared_form_policy:options.shared_form_policy, cloned_form:Some([leaf_number,0]), clone_graph, cache_invalidation:prompt20_cache_invalidation(input,&output,false,true,true), exact_limits:vec!["clone-one for nested annotation appearance Forms clones the edited leaf, each selected appearance Form owner, and only the target annotation AP entry".to_string(),"sibling N/R/D state entries and /AS are preserved; malformed or ambiguous appearance-state dictionaries fail closed".to_string()] }));
+        }
+        let invocation_path = before.provenance.form_invocation_path.clone();
+        if invocation_path.len() > 1 {
+            let page = engine.document().get_page(page_number)?;
+            let mut next_number = reader
+                .object_ids()
+                .into_iter()
+                .map(|(number, _)| number)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1);
+            let leaf_number = next_number;
+            next_number = next_number.saturating_add(1);
+            changed.push(IncrementalObject {
+                number: leaf_number,
+                generation: 0,
+                object: PdfObject::Stream {
+                    dict,
+                    raw: compressed,
+                },
+            });
+            let mut child_number = leaf_number;
+            let mut page_update: Option<crate::PdfDictionary> = None;
+            for invocation in invocation_path.iter().rev() {
+                let owner_object = reader.get_object(
+                    invocation.owner_stream_object,
+                    invocation.owner_stream_generation,
+                )?;
+                let PdfObject::Stream {
+                    dict: mut owner_dict,
+                    raw: owner_raw,
+                } = owner_object
+                else {
+                    return Err(OxideError::MalformedPdf(
+                        "prompt20b Form invocation owner is not a stream".to_string(),
+                    ));
+                };
+                let decoded_owner = decode_stream_lossless_with_limits(
+                    &PdfObject::Stream {
+                        dict: owner_dict.clone(),
+                        raw: owner_raw,
+                    },
+                    reader,
+                    &DecodeLimits {
+                        max_decoded_bytes_per_stream: MAX_PROMPT20_PATCH_STREAM_BYTES as u64,
+                        ..DecodeLimits::default()
+                    },
+                )?;
+                if decoded_owner.status != StreamDecodeStatus::Complete {
+                    return Err(OxideError::UnsupportedFeature(
+                        "prompt20b Form invocation owner is not losslessly decodable".to_string(),
+                    ));
+                }
+                let range =
+                    invocation.owner_operation_byte_start..invocation.owner_operation_byte_end;
+                if range.end > decoded_owner.data.len() || range.start > range.end {
+                    return Err(OxideError::MalformedPdf(
+                        "prompt20b Form invocation range is outside owner stream".to_string(),
+                    ));
+                }
+                let is_page_owner = page.contents.contains(&(
+                    invocation.owner_stream_object,
+                    invocation.owner_stream_generation,
+                ));
+                let mut owner_data = decoded_owner.data;
+                let resource_owner = if is_page_owner {
+                    page.resources.clone()
+                } else {
+                    resolve_prompt20_dict(owner_dict.get("Resources"), reader).ok_or_else(|| OxideError::UnsupportedFeature("prompt20b nested Form clone-one requires a direct or indirect parent Form Resources dictionary".to_string()))?
+                };
+                let mut xobjects = resolve_prompt20_dict(resource_owner.get("XObject"), reader)
+                    .unwrap_or_else(crate::PdfDictionary::empty);
+                let mut resource_name = format!("OxV{child_number}");
+                let mut suffix_index = 0u32;
+                while xobjects.contains_key(&resource_name) {
+                    suffix_index = suffix_index.saturating_add(1);
+                    resource_name = format!("OxV{child_number}_{suffix_index}");
+                }
+                xobjects.insert(
+                    resource_name.clone(),
+                    PdfObject::Reference {
+                        number: child_number,
+                        generation: 0,
+                    },
+                );
+                owner_data.splice(range, format!("/{resource_name} Do").into_bytes());
+                if is_page_owner {
+                    let mut page_object = reader
+                        .get_object(page.object_number, page.generation_number)?
+                        .as_dict()
+                        .cloned()
+                        .ok_or_else(|| {
+                            OxideError::MalformedPdf(
+                                "prompt20b page object is not a dictionary".to_string(),
+                            )
+                        })?;
+                    let mut resources = page.resources.clone();
+                    resources.insert("XObject", PdfObject::Dictionary(xobjects));
+                    page_object.insert("Resources", PdfObject::Dictionary(resources));
+                    page_update = Some(page_object);
+                    let encoded = flate_encode(&owner_data, 6);
+                    owner_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+                    owner_dict.remove("DecodeParms");
+                    owner_dict.insert("Length", PdfObject::Integer(encoded.len() as i64));
+                    changed.push(IncrementalObject {
+                        number: invocation.owner_stream_object,
+                        generation: invocation.owner_stream_generation,
+                        object: PdfObject::Stream {
+                            dict: owner_dict,
+                            raw: encoded,
+                        },
+                    });
+                    clone_graph.push(format!(
+                        "page:{page_number} /{resource_name} -> {child_number} 0 R"
+                    ));
+                } else {
+                    owner_dict.insert(
+                        "Resources",
+                        PdfObject::Dictionary({
+                            let mut resources = resource_owner;
+                            resources.insert("XObject", PdfObject::Dictionary(xobjects));
+                            resources
+                        }),
+                    );
+                    let encoded = flate_encode(&owner_data, 6);
+                    owner_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+                    owner_dict.remove("DecodeParms");
+                    owner_dict.insert("Length", PdfObject::Integer(encoded.len() as i64));
+                    let parent_clone = next_number;
+                    next_number = next_number.saturating_add(1);
+                    changed.push(IncrementalObject {
+                        number: parent_clone,
+                        generation: 0,
+                        object: PdfObject::Stream {
+                            dict: owner_dict,
+                            raw: encoded,
+                        },
+                    });
+                    clone_graph.push(format!("form:{} {} R /{resource_name} -> {child_number} 0 R; cloned as {parent_clone} 0 R", invocation.owner_stream_object, invocation.owner_stream_generation));
+                    child_number = parent_clone;
+                }
+            }
+            let page_dict = page_update.ok_or_else(|| {
+                OxideError::UnsupportedFeature(
+                    "prompt20b nested Form clone-one path has no page-owned outer invocation"
+                        .to_string(),
+                )
+            })?;
+            changed.push(IncrementalObject {
+                number: page.object_number,
+                generation: page.generation_number,
+                object: PdfObject::Dictionary(page_dict),
+            });
+            let output = write_incremental_update(reader, changed)?;
+            ContentEngine::open_bytes(output.clone())?;
+            after.provenance.object_number = leaf_number;
+            after.provenance.generation = 0;
+            after.provenance.resource_owner = format!("form-{leaf_number}-0");
+            after.stable_id = vector_stable_id_for_object(&after);
+            let report_after = (!matches!(operation, VectorEditOperation::Delete)).then_some(after);
+            return Ok((output.clone(), VectorEditReport { schema_version:PROMPT20_SCHEMA_VERSION.to_string(), stable_id:stable_id.to_string(), operation, before, after:report_after, source_range:[range.start,range.end], replacement_bytes:replacement.len(), unrelated_decoded_prefix_preserved:prefix_preserved, unrelated_decoded_suffix_preserved:suffix_preserved, original_pdf_prefix_preserved:output.starts_with(input), output_reopened:true, output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:options.deterministic, shared_form_policy:options.shared_form_policy, cloned_form:Some([leaf_number,0]), clone_graph, cache_invalidation:prompt20_cache_invalidation(input,&output,false,true,false), exact_limits:vec!["clone-one recursively clones the leaf and each selected parent Form invocation path; unrelated source Forms are retained".to_string(),"nested Form clone-one requires losslessly decodable streams and direct or indirect Resources dictionaries; cyclic/malformed graphs fail closed".to_string()] }));
+        }
         let invocation = form_invocation.as_ref().ok_or_else(|| {
             OxideError::UnsupportedFeature(
                 "prompt20 clone_edit_one_instance requires a Form-owned vector object".to_string(),
@@ -3696,6 +4669,7 @@ fn reconstruct_vector_objects(
                     ocg_context: state.ocg_context.clone(),
                     resource_owner: format!("page-{page}-stream-{object_number}-{generation}"),
                     form_invocation: None,
+                    form_invocation_path: Vec::new(),
                     oxide_groups: oxide_groups_for_range(&group_ranges, start, operation.end),
                 };
                 let stable_id = vector_stable_id(&provenance, &local_path, paint);
@@ -3863,6 +4837,7 @@ fn vector_stable_id(
     hasher.update(provenance.operation_byte_end.to_le_bytes());
     hasher.update(serde_json::to_vec(&provenance.form_stack).unwrap_or_default());
     hasher.update(serde_json::to_vec(&provenance.form_invocation).unwrap_or_default());
+    hasher.update(serde_json::to_vec(&provenance.form_invocation_path).unwrap_or_default());
     hasher.update(serde_json::to_vec(&provenance.oxide_groups).unwrap_or_default());
     hasher.update(paint.as_bytes());
     hasher.update(serde_json::to_vec(path).unwrap_or_default());
@@ -5532,7 +6507,7 @@ pub fn prompt20_report(engine: &ContentEngine) -> Result<serde_json::Value> {
             "operators": ["m", "l", "c", "v", "y", "h", "re", "W", "W*", "S", "s", "f", "f*", "B", "B*", "b", "b*", "n"],
             "edits": ["move", "scale", "rotate", "skew", "mirror", "point", "fill", "stroke", "width", "dash", "cap_join", "opacity", "delete", "duplicate", "bring_forward", "send_backward", "bring_to_front", "send_to_back", "group_with", "ungroup"],
             "shared_form_policy": ["reject", "edit_all_uses", "clone_edit_one_instance"],
-            "clone_edit_one_limit": "top_level_page_Form_invocation",
+            "clone_edit_one_limit": "recursive_selected_invocation_chain_with_prompt20b_limits",
             "semantic_shape_inference_claimed": false
         },
         "ink": {
@@ -5562,8 +6537,8 @@ pub(crate) fn prompt20_feature_report_value(envelope_version: u32) -> serde_json
             "vector_page_stream_model_and_edit": "implemented_with_operation_range_rewrite",
             "vector_reachable_form_model": "implemented_depth_8",
             "vector_shared_form_edit_all": "implemented_explicit_policy",
-            "vector_shared_form_clone_one": "implemented_top_level_page_invocation",
-            "vector_annotation_appearances": "implemented_indirect_AP_operation_ranges_shared_streams_fail_closed",
+            "vector_shared_form_clone_one": "implemented_recursive_selected_invocation_chain_with_prompt20b_limits",
+            "vector_annotation_appearances": "implemented_owner_specific_AP_clone_one_for_N_R_D_state_and_nested_Form_paths",
             "vector_z_order": "implemented_page_owned_safe_contexts",
             "vector_group_ungroup": "implemented_contiguous_page_owned_marked_content",
             "ink_cubic_fitting": "implemented_error_bounded_deterministic",
@@ -5598,11 +6573,39 @@ pub(crate) fn prompt20_feature_report_value(envelope_version: u32) -> serde_json
             "paragraphs spanning multiple independent PDF string tokens require a higher-level provenance selection and are not silently overlaid",
             "bundled DejaVu covers Arabic and Hebrew but not arbitrary CJK; vertical Japanese requires a caller-supplied font containing the requested glyphs",
             "same-width patching rejects Type3, shaping, bidi/vertical reorder, clipping text modes, ambiguous CMaps, encryption, and changed encoded/advance structure",
-            "reachable shared Forms support explicit edit-all and top-level clone-edit-one; nested clone-one, pattern program editing, and arbitrary shading mesh editing remain exact limits",
+            "reachable shared Forms support explicit edit-all and recursive clone-edit-one for selected invocation chains; pattern program editing and arbitrary shading mesh editing remain exact limits",
             "group/ungroup is bounded to contiguous page-owned vector ranges using inert Oxide marked content; cross-stream and Form-owned grouping is rejected",
             "z-order is bounded to page-owned objects outside clipping, marked-content, and OCG contexts",
             "cubic fitting does not recover pressure, tilt, velocity, time, or original pen dynamics",
             "structural incremental preservation never implies cryptographic signature validity or viewer acceptance"
+        ]
+    })
+}
+
+pub(crate) fn prompt20b_feature_report_value(envelope_version: u32) -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": "prompt20b.multirun-form-appearance-closure.v1",
+        "envelope_version": envelope_version,
+        "status": "implemented_with_limits",
+        "coverage": {
+            "multi_run_selection": "logical_token_boundary_provenance",
+            "rtl_logical_visual_mapping": "bidi_run_provenance",
+            "vertical_range": "generated_cluster_layout_with_explicit_limits",
+            "multi_operator_serialization": "Tj_TJ_quote_double_quote_token_sequences",
+            "nested_form_clone_one": "recursive_leaf_to_page_invocation_path",
+            "annotation_appearance_clone_one": "target_annotation_N_R_D_or_state_owner",
+            "widget_state_preservation": "AP_and_AS_preserved_without_field_value_mutation",
+            "undo_redo": "prompt20_incremental_patch_session",
+            "signature_policy": "prompt18b_preflight_enforced"
+        },
+        "bindings": {"rust":"implemented", "cli":"implemented", "python":"implemented", "c_abi":"implemented", "wasm":"implemented_memory_safe_json_and_owned_bytes", "dotnet":"implemented", "java_maven":"implemented", "java_gradle":"implemented"},
+        "failure": {"blocked":0, "unclassified":0, "security":0},
+        "exact_limits": [
+            "logical multi-run selection is limited to contiguous whole decoded string tokens in one page content stream",
+            "preserve_per_segment style output is not yet a per-style generated-run serializer",
+            "nested clone-one requires lossless streams and direct or indirect resource dictionaries",
+            "arbitrary Type3, pattern, and shading program editing remain unsupported",
+            "structural signature policy does not claim cryptographic validity"
         ]
     })
 }
@@ -5732,6 +6735,19 @@ impl Prompt20MutationSession {
             apply_same_width_patch(&self.current, page, old_text, new_text, options)?;
         self.commit(
             "same_width_patch",
+            output,
+            prompt20_report_json_value(report)?,
+        )
+    }
+
+    pub fn apply_multi_run_text_range(
+        &mut self,
+        request: &MultiRunTextRangeRequest,
+        font_bytes: Option<&[u8]>,
+    ) -> Result<&Prompt20MutationPatch> {
+        let (output, report) = edit_multi_run_text_range(&self.current, request, font_bytes)?;
+        self.commit(
+            "multi_run_text_range",
             output,
             prompt20_report_json_value(report)?,
         )
@@ -5919,6 +6935,13 @@ mod tests {
     use crate::writer::{OutputObject, PdfWriter};
 
     fn prompt20_fixture(include_ink: bool) -> Vec<u8> {
+        prompt20_fixture_with_content(
+            include_ink,
+            b"BT /F1 12 Tf 10 150 Td (ABC) Tj ET\n2 w 1 0 0 RG 20 20 40 30 re S\n",
+        )
+    }
+
+    fn prompt20_fixture_with_content(include_ink: bool, source_content: &[u8]) -> Vec<u8> {
         let mut catalog = crate::PdfDictionary::empty();
         catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
         catalog.insert(
@@ -5943,11 +6966,23 @@ mod tests {
         font.insert("Subtype", PdfObject::Name("Type1".to_string()));
         font.insert("BaseFont", PdfObject::Name("Helvetica".to_string()));
         font.insert("Encoding", PdfObject::Name("WinAnsiEncoding".to_string()));
+        let mut font2 = crate::PdfDictionary::empty();
+        font2.insert("Type", PdfObject::Name("Font".to_string()));
+        font2.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        font2.insert("BaseFont", PdfObject::Name("Times-Roman".to_string()));
+        font2.insert("Encoding", PdfObject::Name("WinAnsiEncoding".to_string()));
         let mut fonts = crate::PdfDictionary::empty();
         fonts.insert(
             "F1",
             PdfObject::Reference {
                 number: 5,
+                generation: 0,
+            },
+        );
+        fonts.insert(
+            "F2",
+            PdfObject::Reference {
+                number: 10,
                 generation: 0,
             },
         );
@@ -5988,8 +7023,7 @@ mod tests {
                 }]),
             );
         }
-        let content =
-            b"BT /F1 12 Tf 10 150 Td (ABC) Tj ET\n2 w 1 0 0 RG 20 20 40 30 re S\n".to_vec();
+        let content = source_content.to_vec();
         let mut content_dict = crate::PdfDictionary::empty();
         content_dict.insert("Length", PdfObject::Integer(content.len() as i64));
         let mut objects = vec![
@@ -6015,6 +7049,10 @@ mod tests {
             OutputObject {
                 number: 5,
                 object: PdfObject::Dictionary(font),
+            },
+            OutputObject {
+                number: 10,
+                object: PdfObject::Dictionary(font2),
             },
         ];
         if include_ink {
@@ -6169,6 +7207,926 @@ mod tests {
         )
         .write()
         .expect("shared Form fixture PDF")
+    }
+
+    fn nested_shared_form_fixture() -> Vec<u8> {
+        let mut catalog = crate::PdfDictionary::empty();
+        catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
+        catalog.insert(
+            "Pages",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        let mut pages = crate::PdfDictionary::empty();
+        pages.insert("Type", PdfObject::Name("Pages".to_string()));
+        pages.insert("Count", PdfObject::Integer(1));
+        pages.insert(
+            "Kids",
+            PdfObject::Array(vec![PdfObject::Reference {
+                number: 3,
+                generation: 0,
+            }]),
+        );
+        let mut page_xobjects = crate::PdfDictionary::empty();
+        page_xobjects.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: 5,
+                generation: 0,
+            },
+        );
+        let mut page_resources = crate::PdfDictionary::empty();
+        page_resources.insert("XObject", PdfObject::Dictionary(page_xobjects));
+        let mut page = crate::PdfDictionary::empty();
+        page.insert("Type", PdfObject::Name("Page".to_string()));
+        page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "MediaBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(200),
+                PdfObject::Integer(200),
+            ]),
+        );
+        page.insert("Resources", PdfObject::Dictionary(page_resources));
+        page.insert(
+            "Contents",
+            PdfObject::Reference {
+                number: 4,
+                generation: 0,
+            },
+        );
+        let page_data =
+            b"q 1 0 0 1 10 10 cm /Parent Do Q\nq 1 0 0 1 80 80 cm /Parent Do Q\n".to_vec();
+        let mut page_stream = crate::PdfDictionary::empty();
+        page_stream.insert("Length", PdfObject::Integer(page_data.len() as i64));
+        let mut child_xobjects = crate::PdfDictionary::empty();
+        child_xobjects.insert(
+            "Leaf",
+            PdfObject::Reference {
+                number: 6,
+                generation: 0,
+            },
+        );
+        let mut parent_resources = crate::PdfDictionary::empty();
+        parent_resources.insert("XObject", PdfObject::Dictionary(child_xobjects));
+        let parent_data = b"q /Leaf Do Q\n".to_vec();
+        let mut parent_dict = crate::PdfDictionary::empty();
+        parent_dict.insert("Type", PdfObject::Name("XObject".to_string()));
+        parent_dict.insert("Subtype", PdfObject::Name("Form".to_string()));
+        parent_dict.insert(
+            "BBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(20),
+                PdfObject::Integer(10),
+            ]),
+        );
+        parent_dict.insert("Resources", PdfObject::Dictionary(parent_resources));
+        parent_dict.insert("Length", PdfObject::Integer(parent_data.len() as i64));
+        let leaf_data = b"2 w 0 0 20 10 re S\n".to_vec();
+        let mut leaf_dict = crate::PdfDictionary::empty();
+        leaf_dict.insert("Type", PdfObject::Name("XObject".to_string()));
+        leaf_dict.insert("Subtype", PdfObject::Name("Form".to_string()));
+        leaf_dict.insert(
+            "BBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(20),
+                PdfObject::Integer(10),
+            ]),
+        );
+        leaf_dict.insert(
+            "Resources",
+            PdfObject::Dictionary(crate::PdfDictionary::empty()),
+        );
+        leaf_dict.insert("Length", PdfObject::Integer(leaf_data.len() as i64));
+        PdfWriter::new(
+            vec![
+                OutputObject {
+                    number: 1,
+                    object: PdfObject::Dictionary(catalog),
+                },
+                OutputObject {
+                    number: 2,
+                    object: PdfObject::Dictionary(pages),
+                },
+                OutputObject {
+                    number: 3,
+                    object: PdfObject::Dictionary(page),
+                },
+                OutputObject {
+                    number: 4,
+                    object: PdfObject::Stream {
+                        dict: page_stream,
+                        raw: page_data,
+                    },
+                },
+                OutputObject {
+                    number: 5,
+                    object: PdfObject::Stream {
+                        dict: parent_dict,
+                        raw: parent_data,
+                    },
+                },
+                OutputObject {
+                    number: 6,
+                    object: PdfObject::Stream {
+                        dict: leaf_dict,
+                        raw: leaf_data,
+                    },
+                },
+            ],
+            1,
+        )
+        .write()
+        .expect("nested Form fixture")
+    }
+
+    fn nested_shared_form_depth_fixture(depth: usize) -> Vec<u8> {
+        assert!((2..=4).contains(&depth));
+        let mut catalog = crate::PdfDictionary::empty();
+        catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
+        catalog.insert(
+            "Pages",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        let mut pages = crate::PdfDictionary::empty();
+        pages.insert("Type", PdfObject::Name("Pages".to_string()));
+        pages.insert("Count", PdfObject::Integer(1));
+        pages.insert(
+            "Kids",
+            PdfObject::Array(vec![PdfObject::Reference {
+                number: 3,
+                generation: 0,
+            }]),
+        );
+        let mut page_xobjects = crate::PdfDictionary::empty();
+        page_xobjects.insert(
+            "F0",
+            PdfObject::Reference {
+                number: 5,
+                generation: 0,
+            },
+        );
+        let mut page_resources = crate::PdfDictionary::empty();
+        page_resources.insert("XObject", PdfObject::Dictionary(page_xobjects));
+        let mut page = crate::PdfDictionary::empty();
+        page.insert("Type", PdfObject::Name("Page".to_string()));
+        page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "MediaBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(200),
+                PdfObject::Integer(200),
+            ]),
+        );
+        page.insert("Resources", PdfObject::Dictionary(page_resources));
+        page.insert(
+            "Contents",
+            PdfObject::Reference {
+                number: 4,
+                generation: 0,
+            },
+        );
+        let page_data = b"q 1 0 0 1 10 10 cm /F0 Do Q\nq 1 0 0 1 80 80 cm /F0 Do Q\n".to_vec();
+        let mut page_stream = crate::PdfDictionary::empty();
+        page_stream.insert("Length", PdfObject::Integer(page_data.len() as i64));
+        let mut objects = vec![
+            OutputObject {
+                number: 1,
+                object: PdfObject::Dictionary(catalog),
+            },
+            OutputObject {
+                number: 2,
+                object: PdfObject::Dictionary(pages),
+            },
+            OutputObject {
+                number: 3,
+                object: PdfObject::Dictionary(page),
+            },
+            OutputObject {
+                number: 4,
+                object: PdfObject::Stream {
+                    dict: page_stream,
+                    raw: page_data,
+                },
+            },
+        ];
+        for level in 0..depth {
+            let number = 5 + level as u32;
+            if level + 1 == depth {
+                objects.push(form_xobject_stream(
+                    number,
+                    b"2 w 0 0 20 10 re S\n",
+                    crate::PdfDictionary::empty(),
+                ));
+            } else {
+                let child_name = format!("F{}", level + 1);
+                let mut xobjects = crate::PdfDictionary::empty();
+                xobjects.insert(
+                    child_name.clone(),
+                    PdfObject::Reference {
+                        number: number + 1,
+                        generation: 0,
+                    },
+                );
+                let mut resources = crate::PdfDictionary::empty();
+                resources.insert("XObject", PdfObject::Dictionary(xobjects));
+                let data = format!("q /{child_name} Do Q\n").into_bytes();
+                objects.push(form_xobject_stream(number, &data, resources));
+            }
+        }
+        PdfWriter::new(objects, 1)
+            .write()
+            .expect("nested depth Form fixture")
+    }
+
+    fn shared_annotation_appearance_fixture() -> Vec<u8> {
+        let mut catalog = crate::PdfDictionary::empty();
+        catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
+        catalog.insert(
+            "Pages",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        let mut pages = crate::PdfDictionary::empty();
+        pages.insert("Type", PdfObject::Name("Pages".to_string()));
+        pages.insert("Count", PdfObject::Integer(1));
+        pages.insert(
+            "Kids",
+            PdfObject::Array(vec![PdfObject::Reference {
+                number: 3,
+                generation: 0,
+            }]),
+        );
+        let mut page = crate::PdfDictionary::empty();
+        page.insert("Type", PdfObject::Name("Page".to_string()));
+        page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "MediaBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(200),
+                PdfObject::Integer(200),
+            ]),
+        );
+        page.insert(
+            "Resources",
+            PdfObject::Dictionary(crate::PdfDictionary::empty()),
+        );
+        page.insert(
+            "Contents",
+            PdfObject::Reference {
+                number: 4,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "Annots",
+            PdfObject::Array(vec![
+                PdfObject::Reference {
+                    number: 6,
+                    generation: 0,
+                },
+                PdfObject::Reference {
+                    number: 7,
+                    generation: 0,
+                },
+            ]),
+        );
+        let mut content = crate::PdfDictionary::empty();
+        content.insert("Length", PdfObject::Integer(0));
+        let appearance_data = b"2 w 0 0 20 10 re S\n".to_vec();
+        let mut appearance = crate::PdfDictionary::empty();
+        appearance.insert("Type", PdfObject::Name("XObject".to_string()));
+        appearance.insert("Subtype", PdfObject::Name("Form".to_string()));
+        appearance.insert(
+            "BBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(20),
+                PdfObject::Integer(10),
+            ]),
+        );
+        appearance.insert(
+            "Resources",
+            PdfObject::Dictionary(crate::PdfDictionary::empty()),
+        );
+        appearance.insert("Length", PdfObject::Integer(appearance_data.len() as i64));
+        let annotation = |x: i64| {
+            let mut a = crate::PdfDictionary::empty();
+            a.insert("Type", PdfObject::Name("Annot".to_string()));
+            a.insert("Subtype", PdfObject::Name("Stamp".to_string()));
+            a.insert(
+                "Rect",
+                PdfObject::Array(vec![
+                    PdfObject::Integer(x),
+                    PdfObject::Integer(10),
+                    PdfObject::Integer(x + 20),
+                    PdfObject::Integer(20),
+                ]),
+            );
+            let mut ap = crate::PdfDictionary::empty();
+            ap.insert(
+                "N",
+                PdfObject::Reference {
+                    number: 8,
+                    generation: 0,
+                },
+            );
+            a.insert("AP", PdfObject::Dictionary(ap));
+            a.insert("AS", PdfObject::Name("On".to_string()));
+            a
+        };
+        PdfWriter::new(
+            vec![
+                OutputObject {
+                    number: 1,
+                    object: PdfObject::Dictionary(catalog),
+                },
+                OutputObject {
+                    number: 2,
+                    object: PdfObject::Dictionary(pages),
+                },
+                OutputObject {
+                    number: 3,
+                    object: PdfObject::Dictionary(page),
+                },
+                OutputObject {
+                    number: 4,
+                    object: PdfObject::Stream {
+                        dict: content,
+                        raw: Vec::new(),
+                    },
+                },
+                OutputObject {
+                    number: 6,
+                    object: PdfObject::Dictionary(annotation(10)),
+                },
+                OutputObject {
+                    number: 7,
+                    object: PdfObject::Dictionary(annotation(80)),
+                },
+                OutputObject {
+                    number: 8,
+                    object: PdfObject::Stream {
+                        dict: appearance,
+                        raw: appearance_data,
+                    },
+                },
+            ],
+            1,
+        )
+        .write()
+        .expect("shared AP fixture")
+    }
+
+    fn form_xobject_stream(
+        number: u32,
+        data: &[u8],
+        resources: crate::PdfDictionary,
+    ) -> OutputObject {
+        let mut dict = crate::PdfDictionary::empty();
+        dict.insert("Type", PdfObject::Name("XObject".to_string()));
+        dict.insert("Subtype", PdfObject::Name("Form".to_string()));
+        dict.insert(
+            "BBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(20),
+                PdfObject::Integer(10),
+            ]),
+        );
+        dict.insert("Resources", PdfObject::Dictionary(resources));
+        dict.insert("Length", PdfObject::Integer(data.len() as i64));
+        OutputObject {
+            number,
+            object: PdfObject::Stream {
+                dict,
+                raw: data.to_vec(),
+            },
+        }
+    }
+
+    fn shared_annotation_categories_fixture(categories: &[&str]) -> Vec<u8> {
+        let mut catalog = crate::PdfDictionary::empty();
+        catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
+        catalog.insert(
+            "Pages",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        let mut pages = crate::PdfDictionary::empty();
+        pages.insert("Type", PdfObject::Name("Pages".to_string()));
+        pages.insert("Count", PdfObject::Integer(1));
+        pages.insert(
+            "Kids",
+            PdfObject::Array(vec![PdfObject::Reference {
+                number: 3,
+                generation: 0,
+            }]),
+        );
+        let mut page = crate::PdfDictionary::empty();
+        page.insert("Type", PdfObject::Name("Page".to_string()));
+        page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "MediaBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(200),
+                PdfObject::Integer(200),
+            ]),
+        );
+        page.insert(
+            "Resources",
+            PdfObject::Dictionary(crate::PdfDictionary::empty()),
+        );
+        page.insert(
+            "Contents",
+            PdfObject::Reference {
+                number: 4,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "Annots",
+            PdfObject::Array(vec![
+                PdfObject::Reference {
+                    number: 6,
+                    generation: 0,
+                },
+                PdfObject::Reference {
+                    number: 7,
+                    generation: 0,
+                },
+                PdfObject::Reference {
+                    number: 11,
+                    generation: 0,
+                },
+            ]),
+        );
+        let mut content = crate::PdfDictionary::empty();
+        content.insert("Length", PdfObject::Integer(0));
+        let annotation = |x: i64| {
+            let mut a = crate::PdfDictionary::empty();
+            a.insert("Type", PdfObject::Name("Annot".to_string()));
+            a.insert("Subtype", PdfObject::Name("Stamp".to_string()));
+            a.insert(
+                "Rect",
+                PdfObject::Array(vec![
+                    PdfObject::Integer(x),
+                    PdfObject::Integer(10),
+                    PdfObject::Integer(x + 20),
+                    PdfObject::Integer(20),
+                ]),
+            );
+            let mut ap = crate::PdfDictionary::empty();
+            for (index, category) in categories.iter().enumerate() {
+                ap.insert(
+                    *category,
+                    PdfObject::Reference {
+                        number: 8 + index as u32,
+                        generation: 0,
+                    },
+                );
+            }
+            a.insert("AP", PdfObject::Dictionary(ap));
+            a.insert("AS", PdfObject::Name("On".to_string()));
+            a
+        };
+        let mut objects = vec![
+            OutputObject {
+                number: 1,
+                object: PdfObject::Dictionary(catalog),
+            },
+            OutputObject {
+                number: 2,
+                object: PdfObject::Dictionary(pages),
+            },
+            OutputObject {
+                number: 3,
+                object: PdfObject::Dictionary(page),
+            },
+            OutputObject {
+                number: 4,
+                object: PdfObject::Stream {
+                    dict: content,
+                    raw: Vec::new(),
+                },
+            },
+            OutputObject {
+                number: 6,
+                object: PdfObject::Dictionary(annotation(10)),
+            },
+            OutputObject {
+                number: 7,
+                object: PdfObject::Dictionary(annotation(80)),
+            },
+            OutputObject {
+                number: 11,
+                object: PdfObject::Dictionary(annotation(140)),
+            },
+        ];
+        for (index, category) in categories.iter().enumerate() {
+            let number = 8 + index as u32;
+            let data = format!("{} w 0 0 20 10 re S\n", index + 2).into_bytes();
+            let mut resources = crate::PdfDictionary::empty();
+            resources.insert("Category", PdfObject::Name((*category).to_string()));
+            objects.push(form_xobject_stream(number, &data, resources));
+        }
+        PdfWriter::new(objects, 1)
+            .write()
+            .expect("shared category AP fixture")
+    }
+
+    fn shared_annotation_state_fixture(widget: Option<&str>) -> Vec<u8> {
+        let selected_state = if widget.is_some() { "Yes" } else { "On" };
+        let mut catalog = crate::PdfDictionary::empty();
+        catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
+        catalog.insert(
+            "Pages",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        let mut pages = crate::PdfDictionary::empty();
+        pages.insert("Type", PdfObject::Name("Pages".to_string()));
+        pages.insert("Count", PdfObject::Integer(1));
+        pages.insert(
+            "Kids",
+            PdfObject::Array(vec![PdfObject::Reference {
+                number: 3,
+                generation: 0,
+            }]),
+        );
+        let mut page = crate::PdfDictionary::empty();
+        page.insert("Type", PdfObject::Name("Page".to_string()));
+        page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "MediaBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(200),
+                PdfObject::Integer(200),
+            ]),
+        );
+        page.insert(
+            "Resources",
+            PdfObject::Dictionary(crate::PdfDictionary::empty()),
+        );
+        page.insert(
+            "Contents",
+            PdfObject::Reference {
+                number: 4,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "Annots",
+            PdfObject::Array(vec![
+                PdfObject::Reference {
+                    number: 6,
+                    generation: 0,
+                },
+                PdfObject::Reference {
+                    number: 7,
+                    generation: 0,
+                },
+            ]),
+        );
+        let mut content = crate::PdfDictionary::empty();
+        content.insert("Length", PdfObject::Integer(0));
+        let annotation = |x: i64| {
+            let mut a = crate::PdfDictionary::empty();
+            a.insert("Type", PdfObject::Name("Annot".to_string()));
+            a.insert(
+                "Subtype",
+                PdfObject::Name(if widget.is_some() { "Widget" } else { "Stamp" }.to_string()),
+            );
+            a.insert(
+                "Rect",
+                PdfObject::Array(vec![
+                    PdfObject::Integer(x),
+                    PdfObject::Integer(10),
+                    PdfObject::Integer(x + 20),
+                    PdfObject::Integer(20),
+                ]),
+            );
+            if let Some(kind) = widget {
+                a.insert("FT", PdfObject::Name("Btn".to_string()));
+                a.insert("T", PdfObject::String(format!("p20b-{kind}").into_bytes()));
+                a.insert(
+                    "Ff",
+                    PdfObject::Integer(if kind == "radio" { 32768 } else { 0 }),
+                );
+                a.insert("V", PdfObject::Name(selected_state.to_string()));
+            }
+            let mut states = crate::PdfDictionary::empty();
+            states.insert(
+                selected_state,
+                PdfObject::Reference {
+                    number: 8,
+                    generation: 0,
+                },
+            );
+            states.insert(
+                "Off",
+                PdfObject::Reference {
+                    number: 9,
+                    generation: 0,
+                },
+            );
+            let mut ap = crate::PdfDictionary::empty();
+            ap.insert("N", PdfObject::Dictionary(states));
+            a.insert("AP", PdfObject::Dictionary(ap));
+            a.insert("AS", PdfObject::Name(selected_state.to_string()));
+            a
+        };
+        PdfWriter::new(
+            vec![
+                OutputObject {
+                    number: 1,
+                    object: PdfObject::Dictionary(catalog),
+                },
+                OutputObject {
+                    number: 2,
+                    object: PdfObject::Dictionary(pages),
+                },
+                OutputObject {
+                    number: 3,
+                    object: PdfObject::Dictionary(page),
+                },
+                OutputObject {
+                    number: 4,
+                    object: PdfObject::Stream {
+                        dict: content,
+                        raw: Vec::new(),
+                    },
+                },
+                OutputObject {
+                    number: 6,
+                    object: PdfObject::Dictionary(annotation(10)),
+                },
+                OutputObject {
+                    number: 7,
+                    object: PdfObject::Dictionary(annotation(80)),
+                },
+                form_xobject_stream(8, b"2 w 0 0 20 10 re S\n", crate::PdfDictionary::empty()),
+                form_xobject_stream(9, b"1 w 0 0 20 10 re S\n", crate::PdfDictionary::empty()),
+            ],
+            1,
+        )
+        .write()
+        .expect("shared AP state fixture")
+    }
+
+    fn nested_annotation_appearance_fixture() -> Vec<u8> {
+        let mut catalog = crate::PdfDictionary::empty();
+        catalog.insert("Type", PdfObject::Name("Catalog".to_string()));
+        catalog.insert(
+            "Pages",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        let mut pages = crate::PdfDictionary::empty();
+        pages.insert("Type", PdfObject::Name("Pages".to_string()));
+        pages.insert("Count", PdfObject::Integer(1));
+        pages.insert(
+            "Kids",
+            PdfObject::Array(vec![PdfObject::Reference {
+                number: 3,
+                generation: 0,
+            }]),
+        );
+        let mut page = crate::PdfDictionary::empty();
+        page.insert("Type", PdfObject::Name("Page".to_string()));
+        page.insert(
+            "Parent",
+            PdfObject::Reference {
+                number: 2,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "MediaBox",
+            PdfObject::Array(vec![
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Integer(200),
+                PdfObject::Integer(200),
+            ]),
+        );
+        page.insert(
+            "Resources",
+            PdfObject::Dictionary(crate::PdfDictionary::empty()),
+        );
+        page.insert(
+            "Contents",
+            PdfObject::Reference {
+                number: 4,
+                generation: 0,
+            },
+        );
+        page.insert(
+            "Annots",
+            PdfObject::Array(vec![
+                PdfObject::Reference {
+                    number: 6,
+                    generation: 0,
+                },
+                PdfObject::Reference {
+                    number: 7,
+                    generation: 0,
+                },
+            ]),
+        );
+        let mut content = crate::PdfDictionary::empty();
+        content.insert("Length", PdfObject::Integer(0));
+        let annotation = |x: i64| {
+            let mut a = crate::PdfDictionary::empty();
+            a.insert("Type", PdfObject::Name("Annot".to_string()));
+            a.insert("Subtype", PdfObject::Name("Stamp".to_string()));
+            a.insert(
+                "Rect",
+                PdfObject::Array(vec![
+                    PdfObject::Integer(x),
+                    PdfObject::Integer(10),
+                    PdfObject::Integer(x + 20),
+                    PdfObject::Integer(20),
+                ]),
+            );
+            let mut ap = crate::PdfDictionary::empty();
+            ap.insert(
+                "N",
+                PdfObject::Reference {
+                    number: 8,
+                    generation: 0,
+                },
+            );
+            a.insert("AP", PdfObject::Dictionary(ap));
+            a.insert("AS", PdfObject::Name("On".to_string()));
+            a
+        };
+        let mut ap_xobjects = crate::PdfDictionary::empty();
+        ap_xobjects.insert(
+            "Nested",
+            PdfObject::Reference {
+                number: 9,
+                generation: 0,
+            },
+        );
+        let mut ap_resources = crate::PdfDictionary::empty();
+        ap_resources.insert("XObject", PdfObject::Dictionary(ap_xobjects));
+        PdfWriter::new(
+            vec![
+                OutputObject {
+                    number: 1,
+                    object: PdfObject::Dictionary(catalog),
+                },
+                OutputObject {
+                    number: 2,
+                    object: PdfObject::Dictionary(pages),
+                },
+                OutputObject {
+                    number: 3,
+                    object: PdfObject::Dictionary(page),
+                },
+                OutputObject {
+                    number: 4,
+                    object: PdfObject::Stream {
+                        dict: content,
+                        raw: Vec::new(),
+                    },
+                },
+                OutputObject {
+                    number: 6,
+                    object: PdfObject::Dictionary(annotation(10)),
+                },
+                OutputObject {
+                    number: 7,
+                    object: PdfObject::Dictionary(annotation(80)),
+                },
+                form_xobject_stream(8, b"q /Nested Do Q\n", ap_resources),
+                form_xobject_stream(9, b"2 w 0 0 20 10 re S\n", crate::PdfDictionary::empty()),
+            ],
+            1,
+        )
+        .write()
+        .expect("nested shared AP fixture")
+    }
+
+    fn annotation_ap_ref(input: &[u8], annotation_index: usize, appearance: &str) -> (u32, u16) {
+        let engine = ContentEngine::open_bytes(input.to_vec()).expect("open AP fixture");
+        let page = engine.document().get_page(1).expect("page");
+        let reader = engine.document().reader();
+        let page_object = reader
+            .get_object(page.object_number, page.generation_number)
+            .expect("page object");
+        let page_dict = page_object.as_dict().expect("page dict");
+        let annots = reader
+            .resolve(page_dict.get("Annots").expect("annots").clone())
+            .expect("annots object");
+        let annotation_ref = annots
+            .as_array()
+            .and_then(|items| items.get(annotation_index))
+            .and_then(PdfObject::as_reference)
+            .expect("annotation ref");
+        let annotation = reader
+            .get_object(annotation_ref.0, annotation_ref.1)
+            .expect("annotation object");
+        let annotation_dict = annotation.as_dict().expect("annotation dict");
+        let ap = resolve_prompt20_dict(annotation_dict.get("AP"), reader).expect("AP dict");
+        let parts = appearance.split('/').collect::<Vec<_>>();
+        if parts.len() == 1 {
+            return ap
+                .get(parts[0])
+                .and_then(PdfObject::as_reference)
+                .expect("AP ref");
+        }
+        let states = resolve_prompt20_dict(ap.get(parts[0]), reader).expect("state dict");
+        states
+            .get(parts[1])
+            .and_then(PdfObject::as_reference)
+            .expect("state AP ref")
+    }
+
+    fn annotation_as_name(input: &[u8], annotation_index: usize) -> String {
+        let engine = ContentEngine::open_bytes(input.to_vec()).expect("open AP fixture");
+        let page = engine.document().get_page(1).expect("page");
+        let reader = engine.document().reader();
+        let page_object = reader
+            .get_object(page.object_number, page.generation_number)
+            .expect("page object");
+        let page_dict = page_object.as_dict().expect("page dict");
+        let annots = reader
+            .resolve(page_dict.get("Annots").expect("annots").clone())
+            .expect("annots object");
+        let annotation_ref = annots
+            .as_array()
+            .and_then(|items| items.get(annotation_index))
+            .and_then(PdfObject::as_reference)
+            .expect("annotation ref");
+        let annotation = reader
+            .get_object(annotation_ref.0, annotation_ref.1)
+            .expect("annotation object");
+        annotation
+            .as_dict()
+            .and_then(|dict| dict.get_name("AS"))
+            .expect("AS")
+            .to_string()
     }
 
     fn bare_vector_fixture(content: &[u8]) -> Vec<u8> {
@@ -6363,6 +8321,169 @@ mod tests {
     }
 
     #[test]
+    fn multi_run_range_replaces_across_tj_and_tj_array_and_reopens() {
+        let input = prompt20_fixture_with_content(
+            false,
+            b"BT /F1 12 Tf 10 150 Td (ONE) Tj (TWO) Tj [(TH) 20 (REE)] TJ ET\n",
+        );
+        let model = analyze_multi_run_text_range(&input, 1).expect("range model");
+        assert_eq!(model.logical_text, "ONETWOTHREE");
+        assert_eq!(model.source_spans.len(), 4);
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 3,
+            logical_end: 8,
+            replacement_text: "X".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritLeading,
+            options: AdvancedTextEditOptions::default(),
+        };
+        let (output, report) =
+            edit_multi_run_text_range(&input, &request, None).expect("range edit");
+        assert!(output.starts_with(&input));
+        assert_eq!(report.selected_source_spans.len(), 2);
+        assert!(report.replacement_extracts);
+        assert!(report.old_selected_text_absent);
+        assert!(ContentEngine::open_bytes(output).is_ok());
+    }
+
+    #[test]
+    fn multi_run_range_handles_quote_double_quote_insert_delete_and_undo() {
+        let input = prompt20_fixture_with_content(
+            false,
+            b"BT /F1 12 Tf 10 150 Td (ONE) Tj (TWO) ' 0 0 (THREE) \" ET\n",
+        );
+        let model = analyze_multi_run_text_range(&input, 1).expect("quote range model");
+        assert_eq!(model.logical_text, "ONETWOTHREE");
+        assert!(model.source_spans.iter().any(|span| span.operator == "'"));
+        assert!(model.source_spans.iter().any(|span| span.operator == "\""));
+
+        let replace = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 3,
+            logical_end: 6,
+            replacement_text: "X".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritLeading,
+            options: AdvancedTextEditOptions::default(),
+        };
+        let mut session = Prompt20MutationSession::new(input.clone()).expect("range session");
+        session
+            .apply_multi_run_text_range(&replace, None)
+            .expect("replace through session");
+        let edited = session.bytes().to_vec();
+        assert!(session.patches()[0]
+            .report
+            .get("signature_policy")
+            .is_some());
+        assert!(ContentEngine::open_bytes(edited.clone())
+            .expect("edited open")
+            .get_page_text(1)
+            .expect("edited text")
+            .contains('X'));
+        assert!(session.undo().expect("undo"));
+        assert_eq!(session.bytes(), input);
+        assert!(session.redo().expect("redo"));
+        assert_eq!(session.bytes(), edited.as_slice());
+        assert!(session.undo().expect("branch undo"));
+
+        let insert = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 3,
+            logical_end: 3,
+            replacement_text: "Y".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritTrailing,
+            options: AdvancedTextEditOptions::default(),
+        };
+        session
+            .apply_multi_run_text_range(&insert, None)
+            .expect("insert through session");
+        assert!(!session.redo().expect("redo cleared by branch edit"));
+
+        let delete = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 3,
+            logical_end: 6,
+            replacement_text: String::new(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritLeading,
+            options: AdvancedTextEditOptions::default(),
+        };
+        let (_deleted, report) =
+            edit_multi_run_text_range(&input, &delete, None).expect("delete range");
+        assert_eq!(report.operation, "delete");
+        assert!(report.old_selected_text_absent);
+    }
+
+    #[test]
+    fn multi_run_range_covers_style_font_rtl_vertical_and_fail_closed_boundaries() {
+        let styled = prompt20_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 0 g (ONE) Tj /F2 18 Tf 1 0 0 rg (TWO) Tj /F1 12 Tf (THREE) Tj ET\n",
+        );
+        let model = analyze_multi_run_text_range(&styled, 1).expect("styled range model");
+        assert_eq!(model.logical_text, "ONETWOTHREE");
+        assert!(model
+            .source_spans
+            .iter()
+            .any(|span| span.font_resource == "F2"));
+        let replace = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 3,
+            logical_end: 11,
+            replacement_text: "Z".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritLeading,
+            options: AdvancedTextEditOptions::default(),
+        };
+        let (_output, report) =
+            edit_multi_run_text_range(&styled, &replace, None).expect("style boundary replace");
+        assert_eq!(report.selected_source_spans.len(), 2);
+
+        let rtl_text = "ABC \u{05d0}\u{05d1}\u{05d2} 123 DEF";
+        let rtl_model = analyze_advanced_text_reflow(
+            rtl_text,
+            AdvancedTextMode::ParagraphReflowRtl,
+            None,
+            TextReflowLimits::default(),
+        )
+        .expect("rtl mapping");
+        assert!(!rtl_model.bidi_runs.is_empty());
+
+        let vertical = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 3,
+            replacement_text: "X".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowVertical,
+            style_policy: MultiRunStylePolicy::InheritLeading,
+            options: AdvancedTextEditOptions {
+                region: [100.0, 30.0, 120.0, 70.0],
+                max_lines_or_columns: 4,
+                ..AdvancedTextEditOptions::default()
+            },
+        };
+        let (_vertical_output, vertical_report) =
+            edit_multi_run_text_range(&styled, &vertical, None).expect("vertical range edit");
+        assert!(vertical_report.replacement_extracts);
+
+        let partial = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 1,
+            logical_end: 5,
+            replacement_text: "bad".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::InheritLeading,
+            options: AdvancedTextEditOptions::default(),
+        };
+        let err = edit_multi_run_text_range(&styled, &partial, None)
+            .expect_err("partial-token range is unsupported");
+        let message = err.to_string();
+        assert!(message.contains("token-boundary") || message.contains("provenance-bearing"));
+    }
+
+    #[test]
     fn vector_inventory_and_range_edit_round_trip() {
         let input = prompt20_fixture(false);
         let inventory = list_vector_objects(&input, 1).expect("inventory");
@@ -6451,6 +8572,263 @@ mod tests {
             .collect::<std::collections::BTreeSet<_>>();
         assert!(owners.contains(&5));
         assert!(owners.contains(&cloned[0]));
+    }
+
+    #[test]
+    fn nested_form_clone_one_clones_leaf_and_parent_path() {
+        let input = nested_shared_form_fixture();
+        let inventory = list_vector_objects(&input, 1).expect("nested inventory");
+        assert_eq!(inventory.objects.len(), 2);
+        let selected = inventory.objects.first().expect("nested vector");
+        assert_eq!(selected.provenance.form_invocation_path.len(), 2);
+        let (output, report) = edit_vector_object(
+            &input,
+            1,
+            &selected.stable_id,
+            VectorEditOperation::Move { dx: 3.0, dy: 4.0 },
+            &VectorEditOptions {
+                shared_form_policy: SharedFormEditPolicy::CloneEditOneInstance,
+                ..VectorEditOptions::default()
+            },
+        )
+        .expect("nested clone one");
+        assert!(output.starts_with(&input));
+        assert!(report.output_reopened);
+        assert!(report.clone_graph.len() >= 2);
+        let reopened = list_vector_objects(&output, 1).expect("nested reopen");
+        let owners = reopened
+            .objects
+            .iter()
+            .map(|object| object.provenance.object_number)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(owners.contains(&6));
+        assert!(owners.iter().any(|owner| *owner > 6));
+    }
+
+    #[test]
+    fn nested_form_clone_one_depth_three_is_transactional_and_deterministic() {
+        let input = nested_shared_form_depth_fixture(3);
+        let inventory = list_vector_objects(&input, 1).expect("depth three inventory");
+        assert_eq!(inventory.objects.len(), 2);
+        let selected = inventory.objects.first().expect("depth three vector");
+        assert_eq!(selected.provenance.form_invocation_path.len(), 3);
+        let mut session = Prompt20MutationSession::new(input.clone()).expect("vector session");
+        session
+            .apply_vector(
+                1,
+                &selected.stable_id,
+                VectorEditOperation::Move { dx: 2.0, dy: 3.0 },
+                &VectorEditOptions {
+                    shared_form_policy: SharedFormEditPolicy::CloneEditOneInstance,
+                    ..VectorEditOptions::default()
+                },
+            )
+            .expect("depth three clone one");
+        let edited = session.bytes().to_vec();
+        assert!(edited.starts_with(&input));
+        let report = session.patches()[0].report.clone();
+        assert!(report
+            .get("clone_graph")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|graph| graph.len() >= 3));
+        let reopened = list_vector_objects(&edited, 1).expect("depth three reopen");
+        let owners = reopened
+            .objects
+            .iter()
+            .map(|object| object.provenance.object_number)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(owners.contains(&7));
+        assert!(owners.iter().any(|owner| *owner > 7));
+        assert!(session.undo().expect("undo depth three"));
+        assert_eq!(session.bytes(), input);
+        assert!(session.redo().expect("redo depth three"));
+        assert_eq!(session.bytes(), edited.as_slice());
+
+        let (_, repeat_report) = edit_vector_object(
+            &input,
+            1,
+            &selected.stable_id,
+            VectorEditOperation::Move { dx: 2.0, dy: 3.0 },
+            &VectorEditOptions {
+                shared_form_policy: SharedFormEditPolicy::CloneEditOneInstance,
+                ..VectorEditOptions::default()
+            },
+        )
+        .expect("repeat depth three clone one");
+        let session_graph = report
+            .get("clone_graph")
+            .and_then(serde_json::Value::as_array)
+            .expect("session clone graph")
+            .clone();
+        let repeat_graph = repeat_report
+            .clone_graph
+            .iter()
+            .map(|entry| serde_json::Value::String(entry.clone()))
+            .collect::<Vec<_>>();
+        assert_eq!(session_graph, repeat_graph);
+    }
+
+    #[test]
+    fn shared_annotation_appearance_clone_one_preserves_other_owner_and_as() {
+        let input = shared_annotation_appearance_fixture();
+        let inventory = list_vector_objects(&input, 1).expect("AP inventory");
+        assert_eq!(inventory.objects.len(), 2);
+        assert!(inventory
+            .objects
+            .iter()
+            .all(|item| item.edit_safety == "shared_annotation_appearance_requires_clone"));
+        let (output, report) = edit_vector_object(
+            &input,
+            1,
+            &inventory.objects[0].stable_id,
+            VectorEditOperation::SetStrokeWidth { width: 4.0 },
+            &VectorEditOptions {
+                shared_form_policy: SharedFormEditPolicy::CloneEditOneInstance,
+                ..VectorEditOptions::default()
+            },
+        )
+        .expect("AP clone one");
+        assert!(output.starts_with(&input));
+        assert!(report.output_reopened);
+        assert!(report.clone_graph[0].contains("AP/N"));
+        let reopened = list_vector_objects(&output, 1).expect("AP reopen");
+        let owners = reopened
+            .objects
+            .iter()
+            .map(|item| item.provenance.object_number)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert!(owners.contains(&8));
+        assert!(owners.iter().any(|number| *number > 8));
+    }
+
+    #[test]
+    fn shared_annotation_r_and_d_clone_one_preserve_unaffected_owners() {
+        for (appearance, source_object) in [("R", 9), ("D", 10)] {
+            let input = shared_annotation_categories_fixture(&["N", "R", "D"]);
+            let inventory = list_vector_objects(&input, 1).expect("N/R/D inventory");
+            let selected = inventory
+                .objects
+                .iter()
+                .find(|object| {
+                    object
+                        .provenance
+                        .resource_owner
+                        .contains(&format!("annotation-0-appearance-{appearance}-"))
+                })
+                .expect("target AP vector");
+            let (output, report) = edit_vector_object(
+                &input,
+                1,
+                &selected.stable_id,
+                VectorEditOperation::SetStrokeWidth { width: 5.0 },
+                &VectorEditOptions {
+                    shared_form_policy: SharedFormEditPolicy::CloneEditOneInstance,
+                    ..VectorEditOptions::default()
+                },
+            )
+            .expect("R/D AP clone one");
+            assert!(output.starts_with(&input));
+            assert!(report.output_reopened);
+            assert_eq!(
+                annotation_ap_ref(&output, 1, appearance),
+                (source_object, 0)
+            );
+            assert_eq!(
+                annotation_ap_ref(&output, 2, appearance),
+                (source_object, 0)
+            );
+            assert_ne!(
+                annotation_ap_ref(&output, 0, appearance),
+                (source_object, 0)
+            );
+            assert_eq!(annotation_as_name(&output, 0), "On");
+            assert_eq!(annotation_ap_ref(&output, 0, "N"), (8, 0));
+        }
+    }
+
+    #[test]
+    fn shared_annotation_state_and_widget_clone_one_preserve_as_and_sibling_states() {
+        for widget in [None, Some("checkbox"), Some("radio")] {
+            let input = shared_annotation_state_fixture(widget);
+            let state = if widget.is_some() { "Yes" } else { "On" };
+            let appearance = format!("N/{state}");
+            let inventory = list_vector_objects(&input, 1).expect("state AP inventory");
+            let selected = inventory
+                .objects
+                .iter()
+                .find(|object| {
+                    object
+                        .provenance
+                        .resource_owner
+                        .contains(&format!("annotation-0-appearance-{appearance}-"))
+                })
+                .expect("target state vector");
+            let (output, report) = edit_vector_object(
+                &input,
+                1,
+                &selected.stable_id,
+                VectorEditOperation::SetStrokeWidth { width: 4.0 },
+                &VectorEditOptions {
+                    shared_form_policy: SharedFormEditPolicy::CloneEditOneInstance,
+                    ..VectorEditOptions::default()
+                },
+            )
+            .expect("state AP clone one");
+            assert!(report.output_reopened);
+            assert_ne!(annotation_ap_ref(&output, 0, &appearance), (8, 0));
+            assert_eq!(annotation_ap_ref(&output, 1, &appearance), (8, 0));
+            assert_eq!(annotation_ap_ref(&output, 0, "N/Off"), (9, 0));
+            assert_eq!(annotation_ap_ref(&output, 1, "N/Off"), (9, 0));
+            assert_eq!(annotation_as_name(&output, 0), state);
+            assert!(report.clone_graph[0].contains(&format!("AP/{appearance}")));
+        }
+    }
+
+    #[test]
+    fn nested_shared_annotation_appearance_clones_ap_owner_and_leaf_form_only() {
+        let input = nested_annotation_appearance_fixture();
+        let inventory = list_vector_objects(&input, 1).expect("nested AP inventory");
+        let selected = inventory
+            .objects
+            .iter()
+            .find(|object| {
+                object
+                    .provenance
+                    .form_stack
+                    .first()
+                    .is_some_and(|stack| stack == "annotation:0:appearance:N")
+                    && object.provenance.object_number == 9
+            })
+            .expect("nested AP vector");
+        let (output, report) = edit_vector_object(
+            &input,
+            1,
+            &selected.stable_id,
+            VectorEditOperation::SetStrokeWidth { width: 6.0 },
+            &VectorEditOptions {
+                shared_form_policy: SharedFormEditPolicy::CloneEditOneInstance,
+                ..VectorEditOptions::default()
+            },
+        )
+        .expect("nested AP clone one");
+        assert!(output.starts_with(&input));
+        assert!(report.output_reopened);
+        assert!(report
+            .clone_graph
+            .iter()
+            .any(|entry| entry.contains("AP/N cloned")));
+        assert_ne!(annotation_ap_ref(&output, 0, "N"), (8, 0));
+        assert_eq!(annotation_ap_ref(&output, 1, "N"), (8, 0));
+        assert_eq!(annotation_as_name(&output, 0), "On");
+        let reopened = list_vector_objects(&output, 1).expect("nested AP reopen inventory");
+        assert!(reopened
+            .objects
+            .iter()
+            .any(|object| object.provenance.object_number == 9));
+        assert!(reopened
+            .objects
+            .iter()
+            .any(|object| object.provenance.object_number > 9));
     }
 
     #[test]

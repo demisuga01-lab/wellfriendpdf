@@ -40,6 +40,7 @@ public final class OxideSmokeTest {
             reports.put("word_pagination", doc.wordPaginationAuditJson("page-faithful"));
             reports.put("prompt19", doc.prompt19ReportJson());
             reports.put("prompt20", doc.prompt20ReportJson());
+            reports.put("prompt20b", doc.prompt20bReportJson());
             reports.put("associated_files", doc.associatedFilesReportJson());
             reports.put("edit_policy", doc.editPolicyReportJson("incremental_save"));
             reports.put("pages", doc.pagesReportJson());
@@ -49,6 +50,33 @@ public final class OxideSmokeTest {
                 reports.put("advanced_chunks", prompt15.advancedChunksJson());
                 reports.put("semantic_bundle", prompt15.semanticBundleJson());
                 reports.put("semantic_search", prompt15.semanticSearchJson("Hello"));
+                String rangeModel = prompt15.prompt20bTextRangeAnalyzeJson(1);
+                reports.put("prompt20b_range_model", rangeModel);
+                assertTrue(rangeModel.contains("prompt20b_multi_run_range_model"), "Prompt20B range model");
+                Oxide.BinaryResult rangeEdited = prompt15.editTextRange("""
+                        {
+                          "page": 1,
+                          "logical_start": 0,
+                          "logical_end": 5,
+                          "replacement_text": "Java20B",
+                          "mode": "paragraph_reflow_horizontal",
+                          "style_policy": "inherit_leading",
+                          "options": {
+                            "region": [20.0, 80.0, 180.0, 140.0],
+                            "font_size": 12.0,
+                            "line_spacing": 1.2,
+                            "max_lines_or_columns": 4096,
+                            "overflow_policy": "error",
+                            "signature_policy_override": false,
+                            "deterministic": true
+                          }
+                        }
+                        """);
+                assertPrefix(rangeEdited.bytes(), "%PDF-", "Prompt20B text range edit");
+                assertTrue(
+                    rangeEdited.reportJson().contains("prompt20b_multi_run_text_edit_report"),
+                    "Prompt20B text range edit report");
+                reports.put("prompt20b_range_edit", rangeEdited.reportJson());
             }
             assertTrue(reports.get("feature").contains("feature_report"), "feature report");
             assertTrue(!Oxide.engineVersion().isBlank(), "engine version");

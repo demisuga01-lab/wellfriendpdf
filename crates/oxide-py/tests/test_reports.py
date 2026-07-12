@@ -6,6 +6,7 @@ a representative report field, honest handling of invalid input, and that the
 destructive operations produce real PDF bytes plus a report.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,42 @@ def test_security_report_fields():
 def test_parser_report_opened_true():
     report = _envelope(oxide.open(FIXTURE).parser_report(mode="audit"), "parser_report")
     assert report["opened"] is True
+
+
+def test_prompt20b_report_analyze_and_edit(tmp_path):
+    doc = oxide.open(FIXTURE)
+    report = _envelope(doc.prompt20b_report(), "prompt20b_report")
+    assert report["schema_version"] == "prompt20b.multirun-form-appearance-closure.v1"
+
+    model = _envelope(doc.prompt20b_text_range_analyze(1), "prompt20b_multi_run_range_model")
+    assert model["schema_version"] == "prompt20b.multirun-form-appearance-closure.v1"
+    assert model["logical_text"].startswith("Hello")
+    first_span = model["source_spans"][0]
+
+    request = json.dumps(
+        {
+            "page": 1,
+            "logical_start": first_span["logical_range"][0],
+            "logical_end": first_span["logical_range"][1],
+            "replacement_text": "Py20B",
+            "mode": "paragraph_reflow_horizontal",
+            "style_policy": "inherit_leading",
+            "options": {
+                "region": [20.0, 80.0, 180.0, 140.0],
+                "font_size": 12.0,
+                "line_spacing": 1.2,
+                "max_lines_or_columns": 4096,
+                "overflow_policy": "error",
+                "signature_policy_override": False,
+                "deterministic": True,
+            },
+        }
+    )
+    out, edit_report = doc.edit_text_range(request, output=tmp_path / "prompt20b-python.pdf")
+    assert bytes(out).startswith(b"%PDF-")
+    edited = _envelope(edit_report, "prompt20b_multi_run_text_edit_report")
+    assert edited["replacement_extracts"] is True
+    assert edited["old_selected_text_absent"] is True
 
 
 def test_forms_report_on_form_fixture():

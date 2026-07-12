@@ -305,6 +305,39 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string Prompt20bReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt20b_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt20bTextRangeAnalyzeJson(nuint page = 1)
+    {
+        ThrowIfDisposed();
+        if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
+        var status = NativeMethods.oxide_document_prompt20b_text_range_analyze_json(
+            _handle, (UIntPtr)page, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public OxideBinaryResult EditTextRange(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_prompt20b_text_range_edit_json(
+                _handle, requestPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
     public string Prompt20VectorListJson(nuint page = 1)
     {
         ThrowIfDisposed();

@@ -43,6 +43,10 @@ public final class PackageSmoke {
                     || !doc.semanticSearchJson("the").contains("semantic_search_report")) {
                 throw new AssertionError("Prompt 15 semantic report surface missing");
             }
+            if (!doc.prompt20bReportJson().contains("prompt20b.multirun-form-appearance-closure.v1")
+                    || !doc.prompt20bTextRangeAnalyzeJson(1).contains("prompt20b_multi_run_range_model")) {
+                throw new AssertionError("Prompt 20B report/range surfaces missing");
+            }
             Oxide.BinaryResult sanitized = doc.sanitize("balanced");
             if (sanitized.bytes().length == 0 || !sanitized.reportJson().contains("sanitize_report")) {
                 throw new AssertionError("sanitize output/report missing");
@@ -147,6 +151,11 @@ public final class PackageSmoke {
                 || !feature.contains("\"model_can_rewrite_deterministic_text\":false")
                 || !feature.contains("\"blocked\":0")) {
             throw new AssertionError("feature report missing Prompt 15 semantic closeout posture");
+        }
+        if (!feature.contains("\"prompt20b_multirun_form_appearance_closure\"")
+                || !feature.contains("\"annotation_appearance_clone_one\"")
+                || !feature.contains("\"binding_parity\"")) {
+            throw new AssertionError("feature report missing Prompt 20B closure posture");
         }
     }
 }

@@ -280,6 +280,22 @@ public final class Oxide {
             return Native.documentReport(handle, Native.PROMPT20_REPORT, "prompt20_report");
         }
 
+        public String prompt20bReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT20B_REPORT, "prompt20b_report");
+        }
+
+        public String prompt20bTextRangeAnalyzeJson(long page) {
+            ensureOpen();
+            if (page < 1) throw new IllegalArgumentException("page must be one-based");
+            return Native.prompt20bTextRangeAnalyze(handle, page);
+        }
+
+        public BinaryResult editTextRange(String requestJson) {
+            ensureOpen();
+            return Native.prompt20bTextRangeEdit(handle, requestJson);
+        }
+
         public String prompt20VectorListJson(long page) {
             ensureOpen();
             if (page < 1) throw new IllegalArgumentException("page must be one-based");
@@ -696,6 +712,17 @@ public final class Oxide {
         private static final MethodHandle WORD_PAGINATION_AUDIT = documentStringReport("oxide_document_word_pagination_audit_json");
         private static final MethodHandle PROMPT19_REPORT = documentReport("oxide_document_prompt19_report_json");
         private static final MethodHandle PROMPT20_REPORT = documentReport("oxide_document_prompt20_report_json");
+        private static final MethodHandle PROMPT20B_REPORT = documentReport("oxide_document_prompt20b_report_json");
+        private static final MethodHandle PROMPT20B_TEXT_RANGE_ANALYZE = downcall(
+            "oxide_document_prompt20b_text_range_analyze_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT20B_TEXT_RANGE_EDIT = downcall(
+            "oxide_document_prompt20b_text_range_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle PROMPT20_VECTOR_LIST = downcall(
             "oxide_document_prompt20_vector_list_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
@@ -1102,6 +1129,31 @@ public final class Oxide {
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide prompt20_vector_list failed", ex);
             }
+        }
+
+        private static String prompt20bTextRangeAnalyze(MemorySegment handle, long page) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT20B_TEXT_RANGE_ANALYZE.invokeExact(handle, page, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Oxide prompt20b_text_range_analyze failed", ex); }
+        }
+
+        private static BinaryResult prompt20bTextRangeEdit(MemorySegment handle, String requestJson) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT20B_TEXT_RANGE_EDIT.invokeExact(handle, request, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Oxide prompt20b_text_range_edit failed", ex); }
         }
 
         private static BinaryResult prompt20TextEdit(

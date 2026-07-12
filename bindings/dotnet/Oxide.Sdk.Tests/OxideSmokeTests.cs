@@ -40,6 +40,7 @@ public sealed class OxideSmokeTests
             ["word_pagination"] = doc.WordPaginationAuditJson(),
             ["prompt19"] = doc.Prompt19ReportJson(),
             ["prompt20"] = doc.Prompt20ReportJson(),
+            ["prompt20b"] = doc.Prompt20bReportJson(),
             ["associated_files"] = doc.AssociatedFilesReportJson(),
             ["edit_policy"] = doc.EditPolicyReportJson("incremental_save"),
             ["pages"] = doc.PagesReportJson(),
@@ -55,6 +56,39 @@ public sealed class OxideSmokeTests
         foreach (var report in reports.Values)
         {
             AssertReport(report);
+        }
+
+        using (var prompt20bDoc = OxideDocument.Open(FixturePath("multi_stream.pdf")))
+        {
+            var rangeModel = prompt20bDoc.Prompt20bTextRangeAnalyzeJson();
+            AssertReport(rangeModel);
+            Assert.Contains("prompt20b_multi_run_range_model", rangeModel);
+            var rangeDoc = JsonDocument.Parse(rangeModel);
+            var firstRange = rangeDoc.RootElement.GetProperty("report").GetProperty("source_spans")[0].GetProperty("logical_range");
+            var requestJson = $$"""
+            {
+              "page": 1,
+              "logical_start": {{firstRange[0].GetInt32()}},
+              "logical_end": {{firstRange[1].GetInt32()}},
+              "replacement_text": "Net20B",
+              "mode": "paragraph_reflow_horizontal",
+              "style_policy": "inherit_leading",
+              "options": {
+                "region": [20.0, 80.0, 180.0, 140.0],
+                "font_size": 12.0,
+                "line_spacing": 1.2,
+                "max_lines_or_columns": 4096,
+                "overflow_policy": "error",
+                "signature_policy_override": false,
+                "deterministic": true
+              }
+            }
+            """;
+            var rangeEdited = prompt20bDoc.EditTextRange(requestJson);
+            Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(rangeEdited.Bytes, 0, 5));
+            Assert.Contains("prompt20b_multi_run_text_edit_report", rangeEdited.ReportJson);
+            reports["prompt20b_range_model"] = rangeModel;
+            reports["prompt20b_range_edit"] = rangeEdited.ReportJson;
         }
 
         var docx = doc.ToDocx();
@@ -221,10 +255,10 @@ public sealed class OxideSmokeTests
         Assert.Throws<ObjectDisposedException>(() => doc.PageCount);
     }
 
-    private static string FixturePath()
+    private static string FixturePath(string name = "tracemonkey.pdf")
     {
         var env = Environment.GetEnvironmentVariable("OXIDE_FIXTURE_PDF");
-        if (!string.IsNullOrWhiteSpace(env) && File.Exists(env))
+        if (name == "tracemonkey.pdf" && !string.IsNullOrWhiteSpace(env) && File.Exists(env))
         {
             return env;
         }
@@ -232,7 +266,7 @@ public sealed class OxideSmokeTests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            var candidate = Path.Combine(dir.FullName, "crates", "engine", "tests", "fixtures", "tracemonkey.pdf");
+            var candidate = Path.Combine(dir.FullName, "crates", "engine", "tests", "fixtures", name);
             if (File.Exists(candidate))
             {
                 return candidate;
@@ -240,7 +274,7 @@ public sealed class OxideSmokeTests
             dir = dir.Parent;
         }
 
-        throw new FileNotFoundException("Could not locate tracemonkey.pdf fixture.");
+        throw new FileNotFoundException($"Could not locate {name} fixture.");
     }
 
     private static void AssertReport(string json)
