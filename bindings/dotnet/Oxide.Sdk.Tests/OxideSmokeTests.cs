@@ -39,6 +39,7 @@ public sealed class OxideSmokeTests
             ["interactive_data"] = doc.InteractiveDataReportJson(),
             ["word_pagination"] = doc.WordPaginationAuditJson(),
             ["prompt19"] = doc.Prompt19ReportJson(),
+            ["prompt20"] = doc.Prompt20ReportJson(),
             ["associated_files"] = doc.AssociatedFilesReportJson(),
             ["edit_policy"] = doc.EditPolicyReportJson("incremental_save"),
             ["pages"] = doc.PagesReportJson(),

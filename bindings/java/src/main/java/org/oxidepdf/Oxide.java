@@ -275,6 +275,39 @@ public final class Oxide {
             return Native.documentReport(handle, Native.PROMPT19_REPORT, "prompt19_report");
         }
 
+        public String prompt20ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT20_REPORT, "prompt20_report");
+        }
+
+        public String prompt20VectorListJson(long page) {
+            ensureOpen();
+            if (page < 1) throw new IllegalArgumentException("page must be one-based");
+            return Native.prompt20VectorList(handle, page);
+        }
+
+        public BinaryResult prompt20TextEdit(
+            long page, String oldText, String newText, String mode, String optionsJson
+        ) {
+            ensureOpen();
+            return Native.prompt20TextEdit(handle, page, oldText, newText, mode, optionsJson);
+        }
+
+        public BinaryResult prompt20VectorEdit(
+            long page, String stableId, String operationJson, String optionsJson
+        ) {
+            ensureOpen();
+            return Native.prompt20VectorEdit(handle, page, stableId, operationJson, optionsJson);
+        }
+
+        public BinaryResult prompt20InkFit(
+            long page, long annotationIndex, String optionsJson, boolean signaturePolicyOverride
+        ) {
+            ensureOpen();
+            return Native.prompt20InkFit(
+                handle, page, annotationIndex, optionsJson, signaturePolicyOverride);
+        }
+
         public String associatedFilesReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.ASSOCIATED_FILES_REPORT, "associated_files_report");
@@ -662,6 +695,30 @@ public final class Oxide {
         private static final MethodHandle INTERACTIVE_DATA_REPORT = documentReport("oxide_document_interactive_data_report_json");
         private static final MethodHandle WORD_PAGINATION_AUDIT = documentStringReport("oxide_document_word_pagination_audit_json");
         private static final MethodHandle PROMPT19_REPORT = documentReport("oxide_document_prompt19_report_json");
+        private static final MethodHandle PROMPT20_REPORT = documentReport("oxide_document_prompt20_report_json");
+        private static final MethodHandle PROMPT20_VECTOR_LIST = downcall(
+            "oxide_document_prompt20_vector_list_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT20_TEXT_EDIT = downcall(
+            "oxide_document_prompt20_text_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT20_VECTOR_EDIT = downcall(
+            "oxide_document_prompt20_vector_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT20_INK_FIT = downcall(
+            "oxide_document_prompt20_ink_fit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle ASSOCIATED_FILES_REPORT = documentReport("oxide_document_associated_files_report_json");
         private static final MethodHandle EDIT_POLICY_REPORT = documentStringReport("oxide_document_edit_policy_report_json");
         private static final MethodHandle ANNOTATION_APPEARANCE_REPORT = documentStringReport("oxide_document_annotation_appearance_report_json");
@@ -1030,6 +1087,94 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static String prompt20VectorList(MemorySegment handle, long page) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT20_VECTOR_LIST.invokeExact(handle, page, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide prompt20_vector_list failed", ex);
+            }
+        }
+
+        private static BinaryResult prompt20TextEdit(
+            MemorySegment handle, long page, String oldText, String newText,
+            String mode, String optionsJson
+        ) {
+            Objects.requireNonNull(oldText, "oldText");
+            Objects.requireNonNull(newText, "newText");
+            Objects.requireNonNull(mode, "mode");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment oldArg = arena.allocateFrom(oldText);
+                MemorySegment newArg = arena.allocateFrom(newText);
+                MemorySegment modeArg = arena.allocateFrom(mode);
+                MemorySegment options = optionsJson == null || optionsJson.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(optionsJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT20_TEXT_EDIT.invokeExact(
+                    handle, page, oldArg, newArg, modeArg, options, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide prompt20_text_edit failed", ex);
+            }
+        }
+
+        private static BinaryResult prompt20VectorEdit(
+            MemorySegment handle, long page, String stableId, String operationJson,
+            String optionsJson
+        ) {
+            Objects.requireNonNull(stableId, "stableId");
+            Objects.requireNonNull(operationJson, "operationJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment id = arena.allocateFrom(stableId);
+                MemorySegment operation = arena.allocateFrom(operationJson);
+                MemorySegment options = optionsJson == null || optionsJson.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(optionsJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT20_VECTOR_EDIT.invokeExact(
+                    handle, page, id, operation, options, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide prompt20_vector_edit failed", ex);
+            }
+        }
+
+        private static BinaryResult prompt20InkFit(
+            MemorySegment handle, long page, long annotationIndex, String optionsJson,
+            boolean signaturePolicyOverride
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment options = optionsJson == null || optionsJson.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(optionsJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT20_INK_FIT.invokeExact(
+                    handle, page, annotationIndex, options,
+                    signaturePolicyOverride ? 1 : 0, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide prompt20_ink_fit failed", ex);
             }
         }
 

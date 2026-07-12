@@ -116,6 +116,7 @@ pub mod prepress;
 pub mod prompt17;
 pub mod prompt18;
 pub mod prompt19;
+pub mod prompt20;
 pub mod reader;
 pub mod render;
 pub mod sdk;
@@ -339,6 +340,21 @@ pub use prompt19::{
     CalculationFlattenReport, CalculationResult, CustomActionPolicy, DocxLayoutAuditReport,
     FormActionGraphReport, FormJsInventoryReport, FormJsLimits, FormJsPolicyMode,
     FormJsSanitizerOptions, FormJsSanitizerReport, Prompt19SupportStatus, PROMPT19_SCHEMA_VERSION,
+};
+pub use prompt20::{
+    analyze_advanced_text_reflow, analyze_same_width_patch, apply_same_width_patch,
+    edit_advanced_text_pdf, edit_vector_object, fit_annotation_ink_pdf, fit_ink_stroke,
+    fit_ink_strokes, list_vector_objects, prompt20_report, AdvancedTextEditOptions,
+    AdvancedTextEditReport, AdvancedTextMode, AnnotationInkFitReport, BidiRunProvenance,
+    CacheInvalidationReport, CubicBezier, EditableVectorObject, InkFitOptions, InkFitPolicy,
+    InkFitReport, InkFitResult, InkPoint, InkStrokeSetResult, PatchStringRepresentation,
+    Prompt20MutationCheckpoint, Prompt20MutationPatch, Prompt20MutationSession,
+    Prompt20SupportStatus, SameWidthMode, SameWidthPatchApplyReport, SameWidthPatchEligibility,
+    SameWidthPatchEligibilityReport, SameWidthPatchOptions, SharedFormEditPolicy,
+    TextGlyphProvenance, TextOverflowPolicy, TextReflowAnalysis, TextReflowLimits, VectorColor,
+    VectorEditOperation, VectorEditOptions, VectorEditReport, VectorFillRule, VectorFormInvocation,
+    VectorGroupProvenance, VectorMatrix, VectorObjectInventory, VectorPaintMode, VectorPathSegment,
+    VectorProvenance, VectorStrokeStyle, VerticalGlyphOrientation, PROMPT20_SCHEMA_VERSION,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{

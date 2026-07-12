@@ -298,6 +298,96 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string Prompt20ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt20_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt20VectorListJson(nuint page = 1)
+    {
+        ThrowIfDisposed();
+        if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
+        var status = NativeMethods.oxide_document_prompt20_vector_list_json(
+            _handle, (UIntPtr)page, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public OxideBinaryResult Prompt20TextEdit(
+        nuint page, string oldText, string newText, string mode = "rtl-reflow", string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
+        ArgumentException.ThrowIfNullOrWhiteSpace(oldText);
+        ArgumentNullException.ThrowIfNull(newText);
+        ArgumentException.ThrowIfNullOrWhiteSpace(mode);
+        var oldPtr = NativeMethods.StringToNativeOrNull(oldText);
+        var newPtr = NativeMethods.StringToNativeOrNull(newText);
+        var modePtr = NativeMethods.StringToNativeOrNull(mode);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_prompt20_text_edit_json(
+                _handle, (UIntPtr)page, oldPtr, newPtr, modePtr, optionsPtr,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (oldPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(oldPtr);
+            if (newPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(newPtr);
+            if (modePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(modePtr);
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public OxideBinaryResult Prompt20VectorEdit(
+        nuint page, string stableId, string operationJson, string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
+        ArgumentException.ThrowIfNullOrWhiteSpace(stableId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationJson);
+        var idPtr = NativeMethods.StringToNativeOrNull(stableId);
+        var operationPtr = NativeMethods.StringToNativeOrNull(operationJson);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_prompt20_vector_edit_json(
+                _handle, (UIntPtr)page, idPtr, operationPtr, optionsPtr,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (idPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(idPtr);
+            if (operationPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(operationPtr);
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public OxideBinaryResult Prompt20InkFit(
+        nuint page, nuint annotationIndex = 0, string? optionsJson = null,
+        bool signaturePolicyOverride = false)
+    {
+        ThrowIfDisposed();
+        if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_prompt20_ink_fit_json(
+                _handle, (UIntPtr)page, (UIntPtr)annotationIndex, optionsPtr,
+                signaturePolicyOverride ? 1 : 0,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
     public string AssociatedFilesReportJson()
     {
         ThrowIfDisposed();

@@ -427,6 +427,17 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::prompt19_report_json(bytes, None))
     }
 
+    fn prompt20_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt20_report_json(bytes, None))
+    }
+
+    #[pyo3(signature = (page=1))]
+    fn prompt20_vector_list<'py>(&self, py: Python<'py>, page: usize) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt20_vector_list_json(bytes, page, None)
+        })
+    }
+
     fn associated_files_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::associated_files_report_json(bytes, None))
     }
@@ -535,6 +546,85 @@ impl PyDocument {
     }
 
     // ── Output-producing operations (return (bytes, report) tuples) ──────────
+
+    #[pyo3(signature = (page, old_text, new_text, mode="rtl-reflow", options_json=None, output=None))]
+    #[allow(clippy::too_many_arguments)]
+    fn prompt20_text_edit<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        old_text: &str,
+        new_text: &str,
+        mode: &str,
+        options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| {
+            sdk::prompt20_text_edit_json(&bytes, page, old_text, new_text, mode, options_json, None)
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (page, stable_id, operation_json, options_json=None, output=None))]
+    fn prompt20_vector_edit<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        stable_id: &str,
+        operation_json: &str,
+        options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| {
+            sdk::prompt20_vector_edit_json(
+                &bytes,
+                page,
+                stable_id,
+                operation_json,
+                options_json,
+                None,
+            )
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (page, annotation_index=0, options_json=None, signature_policy_override=false, output=None))]
+    fn prompt20_ink_fit<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        annotation_index: usize,
+        options_json: Option<&str>,
+        signature_policy_override: bool,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| {
+            sdk::prompt20_ink_fit_json(
+                &bytes,
+                page,
+                annotation_index,
+                options_json,
+                signature_policy_override,
+                None,
+            )
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
 
     /// Render a supported XFA preview as PDF overlay bytes plus a versioned
     /// report. The result can be written to `output`.

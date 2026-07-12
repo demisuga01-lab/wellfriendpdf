@@ -307,6 +307,29 @@ internal static partial class NativeMethods
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt20_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt20_vector_list_json(
+        DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt20_text_edit_json(
+        DocumentHandle document, UIntPtr page, IntPtr oldText, IntPtr newText, IntPtr mode,
+        IntPtr optionsJson, out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt20_vector_edit_json(
+        DocumentHandle document, UIntPtr page, IntPtr stableId, IntPtr operationJson,
+        IntPtr optionsJson, out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt20_ink_fit_json(
+        DocumentHandle document, UIntPtr page, UIntPtr annotationIndex, IntPtr optionsJson,
+        int signaturePolicyOverride, out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_word_pagination_audit_json(
         DocumentHandle document, IntPtr layout, out IntPtr json, out IntPtr errorOut);
 

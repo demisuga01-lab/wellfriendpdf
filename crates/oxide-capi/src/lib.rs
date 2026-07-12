@@ -1477,6 +1477,133 @@ xfa_document_report!(
     interactive_data_closeout_report_json
 );
 xfa_document_report!(oxide_document_prompt19_report_json, prompt19_report_json);
+xfa_document_report!(oxide_document_prompt20_report_json, prompt20_report_json);
+
+/// List Prompt 20 vector objects as an owned JSON string.
+///
+/// # Safety
+/// `document` must be a live handle; output pointers must be writable and the
+/// returned string must be released with `oxide_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_prompt20_vector_list_json(
+    document: *const OxideDocument,
+    page: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt20_vector_list_json(bytes, page, None)
+        })
+    }
+}
+
+/// Apply a Prompt 20 text edit and return owned PDF bytes plus owned JSON.
+///
+/// # Safety
+/// Input strings must be valid NUL-terminated UTF-8 (`options_json` may be
+/// NULL). Output pointers must be writable and released with
+/// `oxide_buffer_free` and `oxide_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_prompt20_text_edit_json(
+    document: *const OxideDocument,
+    page: usize,
+    old_text: *const c_char,
+    new_text: *const c_char,
+    mode: *const c_char,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let old_text = unsafe { required_c_string(old_text, "old_text") };
+    let new_text = unsafe { required_c_string(new_text, "new_text") };
+    let mode = unsafe { required_c_string(mode, "mode") };
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt20_text_edit_json(
+                bytes,
+                page,
+                &old_text.map_err(oxide_engine::OxideError::invalid_input)?,
+                &new_text.map_err(oxide_engine::OxideError::invalid_input)?,
+                &mode.map_err(oxide_engine::OxideError::invalid_input)?,
+                options
+                    .map_err(oxide_engine::OxideError::invalid_input)?
+                    .as_deref(),
+                None,
+            )
+        })
+    }
+}
+
+/// Apply a Prompt 20 vector edit and return owned PDF bytes plus owned JSON.
+///
+/// # Safety
+/// `stable_id` and `operation_json` must be valid NUL-terminated UTF-8;
+/// `options_json` may be NULL. Standard output ownership rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_prompt20_vector_edit_json(
+    document: *const OxideDocument,
+    page: usize,
+    stable_id: *const c_char,
+    operation_json: *const c_char,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let stable_id = unsafe { required_c_string(stable_id, "stable_id") };
+    let operation = unsafe { required_c_string(operation_json, "operation_json") };
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt20_vector_edit_json(
+                bytes,
+                page,
+                &stable_id.map_err(oxide_engine::OxideError::invalid_input)?,
+                &operation.map_err(oxide_engine::OxideError::invalid_input)?,
+                options
+                    .map_err(oxide_engine::OxideError::invalid_input)?
+                    .as_deref(),
+                None,
+            )
+        })
+    }
+}
+
+/// Fit an Ink annotation and return owned PDF bytes plus owned JSON.
+///
+/// # Safety
+/// `options_json` may be NULL; document and output pointers must follow the
+/// standard live-handle and explicit-free ownership rules.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_prompt20_ink_fit_json(
+    document: *const OxideDocument,
+    page: usize,
+    annotation_index: usize,
+    options_json: *const c_char,
+    signature_policy_override: c_int,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt20_ink_fit_json(
+                bytes,
+                page,
+                annotation_index,
+                options
+                    .map_err(oxide_engine::OxideError::invalid_input)?
+                    .as_deref(),
+                signature_policy_override != 0,
+                None,
+            )
+        })
+    }
+}
 xfa_document_report!(
     oxide_document_associated_files_report_json,
     associated_files_report_json
@@ -3054,6 +3181,11 @@ mod tests {
         assert_eq!(
             prompt19["report"]["schema_version"],
             "prompt19.form-js-interactive-docx-layout.v1"
+        );
+        let prompt20 = report_envelope(oxide_document_prompt20_report_json, "prompt20_report");
+        assert_eq!(
+            prompt20["report"]["schema_version"],
+            "prompt20.vertical-rtl-patch-vector-ink-editing.v1"
         );
         report_envelope(
             oxide_document_associated_files_report_json,

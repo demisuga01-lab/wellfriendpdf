@@ -341,6 +341,16 @@ mod wasm_api {
             self.report(|b| sdk::prompt19_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = prompt20ReportJson)]
+        pub fn prompt20_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt20_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt20VectorListJson)]
+        pub fn prompt20_vector_list_json(&self, page: usize) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt20_vector_list_json(b, page, None))
+        }
+
         #[wasm_bindgen(js_name = associatedFilesReportJson)]
         pub fn associated_files_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::associated_files_report_json(b, None))
@@ -405,6 +415,68 @@ mod wasm_api {
         pub fn table_proposal_status_json() -> Result<String, JsValue> {
             install_panic_hook();
             sdk::table_proposal_status_json().map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = prompt20TextEdit)]
+        pub fn prompt20_text_edit(
+            &self,
+            page: usize,
+            old_text: &str,
+            new_text: &str,
+            mode: &str,
+            options_json: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::prompt20_text_edit_json(
+                    b,
+                    page,
+                    old_text,
+                    new_text,
+                    mode,
+                    options_json.as_deref(),
+                    None,
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = prompt20VectorEdit)]
+        pub fn prompt20_vector_edit(
+            &self,
+            page: usize,
+            stable_id: &str,
+            operation_json: &str,
+            options_json: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::prompt20_vector_edit_json(
+                    b,
+                    page,
+                    stable_id,
+                    operation_json,
+                    options_json.as_deref(),
+                    None,
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = prompt20InkFit)]
+        pub fn prompt20_ink_fit(
+            &self,
+            page: usize,
+            annotation_index: usize,
+            options_json: Option<String>,
+            signature_policy_override: bool,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::prompt20_ink_fit_json(
+                    b,
+                    page,
+                    annotation_index,
+                    options_json.as_deref(),
+                    signature_policy_override,
+                    None,
+                )
+            })
         }
 
         #[wasm_bindgen(js_name = xfaRender)]

@@ -464,6 +464,43 @@ OXIDE_API int oxide_document_prompt18b_report_json(
     const OxideDocument *document,
     char **out_json,
     char **error_out);
+OXIDE_API int oxide_document_prompt20_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt20_vector_list_json(
+    const OxideDocument *document,
+    size_t page,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt20_text_edit_json(
+    const OxideDocument *document,
+    size_t page,
+    const char *old_text,
+    const char *new_text,
+    const char *mode,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt20_vector_edit_json(
+    const OxideDocument *document,
+    size_t page,
+    const char *stable_id,
+    const char *operation_json,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt20_ink_fit_json(
+    const OxideDocument *document,
+    size_t page,
+    size_t annotation_index,
+    const char *options_json,
+    int signature_policy_override,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
 OXIDE_API int oxide_document_associated_files_report_json(
     const OxideDocument *document,
     char **out_json,

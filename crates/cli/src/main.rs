@@ -254,6 +254,18 @@ enum Commands {
     WordPaginationAudit(WordPaginationAuditArgs),
     /// Combined Prompt 19 form/action/interactive/DOCX report
     Prompt19Report(Prompt17ReportArgs),
+    /// Combined Prompt 20 vertical/RTL, same-width, vector, and ink report
+    Prompt20Report(Prompt17ReportArgs),
+    /// List stable editable vector objects on a page
+    VectorList(Prompt20VectorListArgs),
+    /// Edit one stable vector object using a VectorEditOperation JSON file
+    VectorEdit(Prompt20VectorEditArgs),
+    /// Delete one stable vector object
+    VectorDelete(Prompt20VectorDirectArgs),
+    /// Duplicate one stable vector object
+    VectorDuplicate(Prompt20VectorDirectArgs),
+    /// Fit one Ink annotation and regenerate its cubic appearance
+    InkFit(Prompt20InkFitArgs),
     /// Incrementally edit a form value under signature policy
     EditForm(EditFormArgs),
     /// Incrementally add/update an annotation under signature policy
@@ -1032,6 +1044,111 @@ struct Prompt19SanitizeArgs {
     /// Inventory/validate without writing output bytes
     #[arg(long)]
     dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt20VectorListArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt20VectorEditArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Stable vector object ID from vector-list
+    #[arg(long)]
+    id: String,
+    /// VectorEditOperation JSON file
+    #[arg(long)]
+    operation: PathBuf,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Output PDF
+    #[arg(short, long, default_value = "vector-edited.pdf")]
+    output: PathBuf,
+    /// Optional JSON report
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Permit an explicit signature-policy override
+    #[arg(long)]
+    signature_policy_override: bool,
+    /// Shared Form policy: reject, edit-all-uses, or clone-edit-one-instance
+    #[arg(long, default_value = "reject")]
+    shared_form_policy: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt20VectorDirectArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Stable vector object ID from vector-list
+    #[arg(long)]
+    id: String,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Duplicate X offset (ignored for delete)
+    #[arg(long, default_value_t = 10.0)]
+    dx: f64,
+    /// Duplicate Y offset (ignored for delete)
+    #[arg(long, default_value_t = -10.0)]
+    dy: f64,
+    /// Output PDF
+    #[arg(short, long, default_value = "vector-output.pdf")]
+    output: PathBuf,
+    /// Optional JSON report
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Permit an explicit signature-policy override
+    #[arg(long)]
+    signature_policy_override: bool,
+    /// Shared Form policy: reject, edit-all-uses, or clone-edit-one-instance
+    #[arg(long, default_value = "reject")]
+    shared_form_policy: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt20InkFitArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Zero-based annotation index
+    #[arg(long, default_value_t = 0)]
+    annotation: usize,
+    /// Optional InkFitOptions JSON file
+    #[arg(long)]
+    options: Option<PathBuf>,
+    /// Output PDF
+    #[arg(short, long, default_value = "ink-fitted.pdf")]
+    output: PathBuf,
+    /// Optional JSON report
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Permit an explicit signature-policy override
+    #[arg(long)]
+    signature_policy_override: bool,
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
@@ -1924,7 +2041,7 @@ struct EditTextArgs {
     /// Replacement text to draw in the matched source region
     #[arg(long)]
     replacement: String,
-    /// Edit mode: paragraph-reflow (default true edit), safe-patch, or overlay-fallback
+    /// Edit mode: paragraph-reflow, safe-patch, overlay-fallback, rtl-reflow, vertical-reflow, or same-width-patch
     #[arg(long, default_value = "paragraph-reflow")]
     mode: String,
     /// Insert replacement text at this character offset inside the matched paragraph
@@ -1957,6 +2074,9 @@ struct EditTextArgs {
     /// Emit a JSON result summary
     #[arg(long)]
     json: bool,
+    /// Permit a Prompt 18B signature-policy override when structurally required
+    #[arg(long)]
+    signature_policy_override: bool,
 }
 
 #[derive(Parser)]
@@ -2390,6 +2510,12 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::InteractiveDataReport(args) => run_interactive_data_closeout_report(args),
         Commands::WordPaginationAudit(args) => run_word_pagination_audit(args),
         Commands::Prompt19Report(args) => run_prompt19_report(args),
+        Commands::Prompt20Report(args) => run_prompt20_report(args),
+        Commands::VectorList(args) => run_prompt20_vector_list(args),
+        Commands::VectorEdit(args) => run_prompt20_vector_edit(args),
+        Commands::VectorDelete(args) => run_prompt20_vector_direct(args, false),
+        Commands::VectorDuplicate(args) => run_prompt20_vector_direct(args, true),
+        Commands::InkFit(args) => run_prompt20_ink_fit(args),
         Commands::EditForm(args) => run_edit_form(args),
         Commands::EditAnnotation(args) => run_edit_mutation(args, true),
         Commands::EditPageProperty(args) => run_edit_mutation(args, false),
@@ -3527,6 +3653,123 @@ fn run_prompt19_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt20_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt20_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt20_vector_list(args: Prompt20VectorListArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let report = oxide_engine::list_vector_objects(&input, args.page)?;
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
+}
+
+fn run_prompt20_vector_edit(args: Prompt20VectorEditArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let operation: oxide_engine::VectorEditOperation =
+        serde_json::from_str(&std::fs::read_to_string(&args.operation)?)?;
+    let (output, report) = oxide_engine::edit_vector_object(
+        &input,
+        args.page,
+        &args.id,
+        operation,
+        &oxide_engine::VectorEditOptions {
+            signature_policy_override: args.signature_policy_override,
+            deterministic: true,
+            shared_form_policy: parse_prompt20_shared_form_policy(&args.shared_form_policy)?,
+        },
+    )?;
+    std::fs::write(&args.output, output)?;
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, json)?;
+    } else {
+        println!("{json}");
+    }
+    Ok(())
+}
+
+fn run_prompt20_vector_direct(
+    args: Prompt20VectorDirectArgs,
+    duplicate: bool,
+) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let operation = if duplicate {
+        oxide_engine::VectorEditOperation::Duplicate {
+            dx: args.dx,
+            dy: args.dy,
+        }
+    } else {
+        oxide_engine::VectorEditOperation::Delete
+    };
+    let (output, report) = oxide_engine::edit_vector_object(
+        &input,
+        args.page,
+        &args.id,
+        operation,
+        &oxide_engine::VectorEditOptions {
+            signature_policy_override: args.signature_policy_override,
+            deterministic: true,
+            shared_form_policy: parse_prompt20_shared_form_policy(&args.shared_form_policy)?,
+        },
+    )?;
+    std::fs::write(&args.output, output)?;
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, json)?;
+    } else {
+        println!("{json}");
+    }
+    Ok(())
+}
+
+fn parse_prompt20_shared_form_policy(
+    value: &str,
+) -> Result<oxide_engine::SharedFormEditPolicy, Box<dyn Error>> {
+    match value {
+        "reject" => Ok(oxide_engine::SharedFormEditPolicy::Reject),
+        "edit-all-uses" | "edit_all_uses" => Ok(oxide_engine::SharedFormEditPolicy::EditAllUses),
+        "clone-edit-one-instance" | "clone_edit_one_instance" => {
+            Ok(oxide_engine::SharedFormEditPolicy::CloneEditOneInstance)
+        }
+        other => Err(format!(
+            "unsupported shared Form policy '{other}'; expected reject, edit-all-uses, or clone-edit-one-instance"
+        )
+        .into()),
+    }
+}
+
+fn run_prompt20_ink_fit(args: Prompt20InkFitArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let options = args
+        .options
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?
+        .map(|json| serde_json::from_str::<oxide_engine::InkFitOptions>(&json))
+        .transpose()?
+        .unwrap_or_default();
+    let (output, report) = oxide_engine::fit_annotation_ink_pdf(
+        &input,
+        args.page,
+        args.annotation,
+        &options,
+        args.signature_policy_override,
+    )?;
+    std::fs::write(&args.output, output)?;
+    let json = serde_json::to_string_pretty(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, json)?;
+    } else {
+        println!("{json}");
+    }
+    Ok(())
 }
 
 fn run_prompt18_redaction(args: NonAxisRedactionArgs, masked: bool) -> Result<(), Box<dyn Error>> {
@@ -4871,6 +5114,76 @@ fn run_edit_text(args: EditTextArgs) -> Result<(), Box<dyn Error>> {
     let pages = parse_page_range_cli(&args.pages, total)?;
     let rgb = parse_rgb_color(&args.color)?;
     let input = read_edit_input(&args.pdf, &args.password)?;
+    if matches!(
+        args.mode.as_str(),
+        "rtl-reflow" | "vertical-reflow" | "same-width-patch"
+    ) {
+        if args.insert_at.is_some() || args.delete_range.is_some() {
+            return Err(usage_error(
+                "Prompt 20 rtl/vertical/same-width modes currently accept replacement operations only",
+            ));
+        }
+        let page = *pages
+            .first()
+            .ok_or_else(|| usage_error("Prompt 20 edit requires at least one selected page"))?;
+        let (bytes, report) = if args.mode == "same-width-patch" {
+            let (bytes, report) = oxide_engine::apply_same_width_patch(
+                &input,
+                page,
+                &args.query,
+                &args.replacement,
+                &oxide_engine::SameWidthPatchOptions {
+                    signature_policy_override: args.signature_policy_override,
+                    ..oxide_engine::SameWidthPatchOptions::default()
+                },
+            )?;
+            (bytes, serde_json::to_value(report)?)
+        } else {
+            let mode = if args.mode == "rtl-reflow" {
+                oxide_engine::AdvancedTextMode::ParagraphReflowRtl
+            } else {
+                oxide_engine::AdvancedTextMode::ParagraphReflowVertical
+            };
+            let page_info = engine.document().get_page(page)?;
+            let margin = 36.0;
+            let (bytes, report) = oxide_engine::edit_advanced_text_pdf(
+                &input,
+                page,
+                &args.query,
+                &args.replacement,
+                mode,
+                &oxide_engine::AdvancedTextEditOptions {
+                    region: [
+                        page_info.crop_box[0] + margin,
+                        page_info.crop_box[1] + margin,
+                        page_info.crop_box[2] - margin,
+                        page_info.crop_box[3] - margin,
+                    ],
+                    font_size: args.font_size,
+                    signature_policy_override: args.signature_policy_override,
+                    ..oxide_engine::AdvancedTextEditOptions::default()
+                },
+                None,
+            )?;
+            (bytes, serde_json::to_value(report)?)
+        };
+        std::fs::write(&args.output, &bytes)?;
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "op": "edit-text",
+                    "mode": args.mode,
+                    "output": args.output,
+                    "output_bytes": bytes.len(),
+                    "report": report,
+                }))?
+            );
+        } else {
+            eprintln!("Edited text -> {}.", args.output.display());
+        }
+        return Ok(());
+    }
     let style = oxide_engine::EditTextStyle::new(args.font_size)
         .fill(oxide_engine::Color::device_rgb(rgb.r, rgb.g, rgb.b));
     let mode =

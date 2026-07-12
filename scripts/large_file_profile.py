@@ -224,6 +224,8 @@ def run_capped_command(args: argparse.Namespace, command: list[str]) -> dict[str
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         bufsize=1,
         universal_newlines=True,
     )
@@ -277,6 +279,8 @@ def run_capped_command(args: argparse.Namespace, command: list[str]) -> dict[str
                     try:
                         event = json.loads(line)
                     except json.JSONDecodeError:
+                        event = {"event": "raw_stdout", "line": line}
+                    if not isinstance(event, dict):
                         event = {"event": "raw_stdout", "line": line}
                     events.append(event)
                     if event.get("event") == "page_done" and first_page_elapsed_ms is None:
@@ -417,6 +421,19 @@ def cmd_verify_cap(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_exec(args: argparse.Namespace) -> int:
+    """Run an arbitrary validation command inside the same capped Job Object."""
+    command = list(args.command_args)
+    if command and command[0] == "--":
+        command = command[1:]
+    if not command:
+        print("exec requires a command after --", file=sys.stderr)
+        return 2
+    result = run_capped_command(args, command)
+    print(json.dumps(result, indent=2))
+    return 0 if result["exit_code"] == 0 and not result["timed_out"] else 1
+
+
 def add_common_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--memory-limit-mb", type=int, default=2048)
     parser.add_argument("--sample-interval-ms", type=int, default=250)
@@ -445,6 +462,13 @@ def main() -> int:
     verify = sub.add_parser("verify-cap", help="verify the OS memory cap on a throwaway process")
     add_common_run_args(verify)
     verify.set_defaults(func=cmd_verify_cap)
+
+    execute = sub.add_parser(
+        "exec", help="run an arbitrary command under the process-tree memory cap"
+    )
+    add_common_run_args(execute)
+    execute.add_argument("command_args", nargs=argparse.REMAINDER)
+    execute.set_defaults(func=cmd_exec)
 
     args = parser.parse_args()
     return int(args.func(args))

@@ -424,6 +424,122 @@ pub fn prompt19_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<Str
     )
 }
 
+pub fn prompt20_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt20_report",
+        &crate::prompt20::prompt20_report(&engine)?,
+    )
+}
+
+pub fn prompt20_vector_list_json(
+    bytes: &[u8],
+    page: usize,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt20_vector_inventory",
+        &crate::prompt20::list_vector_objects(&input, page)?,
+    )
+}
+
+pub fn prompt20_text_edit_json(
+    bytes: &[u8],
+    page: usize,
+    old_text: &str,
+    new_text: &str,
+    mode: &str,
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let mode = match mode {
+        "horizontal-reflow" | "paragraph_reflow_horizontal" => {
+            crate::prompt20::AdvancedTextMode::ParagraphReflowHorizontal
+        }
+        "rtl-reflow" | "paragraph_reflow_rtl" => {
+            crate::prompt20::AdvancedTextMode::ParagraphReflowRtl
+        }
+        "vertical-reflow" | "paragraph_reflow_vertical" => {
+            crate::prompt20::AdvancedTextMode::ParagraphReflowVertical
+        }
+        "same-width-patch" | "safe_patch" => {
+            let options = options_json
+                .map(serde_json::from_str::<crate::prompt20::SameWidthPatchOptions>)
+                .transpose()
+                .map_err(json_err)?
+                .unwrap_or_default();
+            let (output, report) = crate::prompt20::apply_same_width_patch(
+                &input, page, old_text, new_text, &options,
+            )?;
+            return Ok((
+                output,
+                envelope("prompt20_same_width_patch_report", &report)?,
+            ));
+        }
+        other => {
+            return Err(OxideError::invalid_input(format!(
+                "unknown Prompt 20 text edit mode '{other}'"
+            )))
+        }
+    };
+    let options = options_json
+        .map(serde_json::from_str::<crate::prompt20::AdvancedTextEditOptions>)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let (output, report) = crate::prompt20::edit_advanced_text_pdf(
+        &input, page, old_text, new_text, mode, &options, None,
+    )?;
+    Ok((output, envelope("prompt20_text_edit_report", &report)?))
+}
+
+pub fn prompt20_vector_edit_json(
+    bytes: &[u8],
+    page: usize,
+    stable_id: &str,
+    operation_json: &str,
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let operation = serde_json::from_str::<crate::prompt20::VectorEditOperation>(operation_json)
+        .map_err(json_err)?;
+    let options = options_json
+        .map(serde_json::from_str::<crate::prompt20::VectorEditOptions>)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let (output, report) =
+        crate::prompt20::edit_vector_object(&input, page, stable_id, operation, &options)?;
+    Ok((output, envelope("prompt20_vector_edit_report", &report)?))
+}
+
+pub fn prompt20_ink_fit_json(
+    bytes: &[u8],
+    page: usize,
+    annotation_index: usize,
+    options_json: Option<&str>,
+    signature_policy_override: bool,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options = options_json
+        .map(serde_json::from_str::<crate::prompt20::InkFitOptions>)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let (output, report) = crate::prompt20::fit_annotation_ink_pdf(
+        &input,
+        page,
+        annotation_index,
+        &options,
+        signature_policy_override,
+    )?;
+    Ok((output, envelope("prompt20_ink_fit_report", &report)?))
+}
+
 /// Prompt 18 mask/soft-mask inventory and secure fallback posture.
 pub fn mask_redaction_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
@@ -2672,6 +2788,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt18_mask_inline_associated_signature_safe_edits": crate::prompt18::prompt18_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt18b_advanced_secure_mutation_closure": crate::prompt18::prompt18b_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt19_form_js_interactive_docx_layout": crate::prompt19::prompt19_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt20_vertical_rtl_patch_vector_ink_editing": crate::prompt20::prompt20_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2696,7 +2813,7 @@ pub fn feature_report_json() -> Result<String> {
             "incremental_annotation_edit", "incremental_page_property_edit",
             "form_js_report", "form_action_graph", "form_js_sanitize",
             "form_js_flatten_values", "interactive_data_report",
-            "word_pagination_audit", "prompt19_report",
+            "word_pagination_audit", "prompt19_report", "prompt20_report",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",

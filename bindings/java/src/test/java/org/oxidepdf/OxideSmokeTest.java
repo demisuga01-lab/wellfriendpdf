@@ -39,6 +39,7 @@ public final class OxideSmokeTest {
             reports.put("interactive_data", doc.interactiveDataReportJson());
             reports.put("word_pagination", doc.wordPaginationAuditJson("page-faithful"));
             reports.put("prompt19", doc.prompt19ReportJson());
+            reports.put("prompt20", doc.prompt20ReportJson());
             reports.put("associated_files", doc.associatedFilesReportJson());
             reports.put("edit_policy", doc.editPolicyReportJson("incremental_save"));
             reports.put("pages", doc.pagesReportJson());
