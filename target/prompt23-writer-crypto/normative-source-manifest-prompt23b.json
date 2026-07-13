@@ -1,0 +1,120 @@
+{
+  "schema": "prompt23b.normative-source-manifest.v1",
+  "status": "blocked_normative_dependency",
+  "recorded_date": "2026-07-13",
+  "documents": [
+    {
+      "title": "PDF 2.0 core specification",
+      "publication_identifier": "ISO 32000-2:2020",
+      "edition_version_date": "2020",
+      "source_organization": "ISO",
+      "acquisition_source": null,
+      "access_date": null,
+      "local_filename_or_path": null,
+      "sha256": null,
+      "license_access_status": "not_available_to_this_workspace",
+      "redistribution_status": "not_applicable",
+      "clauses_used": [],
+      "errata_resolution_set_applied": null,
+      "implementation_modules_depending_on_document": [
+        "crypto::pubsec",
+        "crypto::cms",
+        "crypto::recipient",
+        "crypto::aes_gcm_pdf",
+        "writer encryption integration"
+      ],
+      "blocker": "Required clauses for public-key security handler structures, recipient payload recovery, crypt filters, encryption dictionary semantics, object context, metadata, and embedded-file behavior are not available."
+    },
+    {
+      "title": "Document management - Portable document format - Extensions to ISO 32000-2 - Part 3: Use of AES-GCM in PDF 2.0",
+      "publication_identifier": "ISO/TS 32003:2023",
+      "edition_version_date": "2023",
+      "source_organization": "ISO",
+      "acquisition_source": null,
+      "access_date": null,
+      "local_filename_or_path": null,
+      "sha256": null,
+      "license_access_status": "not_available_to_this_workspace",
+      "redistribution_status": "not_applicable",
+      "clauses_used": [],
+      "errata_resolution_set_applied": null,
+      "implementation_modules_depending_on_document": [
+        "crypto::aes_gcm_pdf",
+        "writer encryption integration",
+        "parser decryption integration"
+      ],
+      "blocker": "Required AES-GCM crypt-filter name, nonce construction, tag placement, AAD behavior, object/string/stream representation, and writer rules are not available."
+    },
+    {
+      "title": "Document management - Portable document format - Extensions to ISO 32000-2 - Part 4: Integrity protection in encrypted documents",
+      "publication_identifier": "ISO/TS 32004:2024",
+      "edition_version_date": "2024",
+      "source_organization": "ISO",
+      "acquisition_source": null,
+      "access_date": null,
+      "local_filename_or_path": null,
+      "sha256": null,
+      "license_access_status": "not_available_to_this_workspace",
+      "redistribution_status": "not_applicable",
+      "clauses_used": [],
+      "errata_resolution_set_applied": null,
+      "implementation_modules_depending_on_document": [
+        "crypto::aes_gcm_pdf",
+        "crypto tamper/integrity reporting"
+      ],
+      "blocker": "Integrity-protection interaction with AES-GCM/PDF encryption cannot be evaluated without the normative text."
+    },
+    {
+      "title": "Document management - Portable document format - Extensions to ISO 32000-2 - Part 2: Digital signatures",
+      "publication_identifier": "ISO/TS 32002:2022",
+      "edition_version_date": "2022",
+      "source_organization": "ISO",
+      "acquisition_source": null,
+      "access_date": null,
+      "local_filename_or_path": null,
+      "sha256": null,
+      "license_access_status": "not_available_to_this_workspace",
+      "redistribution_status": "not_applicable",
+      "clauses_used": [],
+      "errata_resolution_set_applied": null,
+      "implementation_modules_depending_on_document": [
+        "CMS terminology review",
+        "signature-impact reporting"
+      ],
+      "blocker": "Only needed where Prompt 23B behavior intersects signature/CMS terminology; not available locally."
+    },
+    {
+      "title": "Applicable ISO 32000-2 errata and published issue resolutions",
+      "publication_identifier": "ISO 32000-2 errata/resolution set",
+      "edition_version_date": null,
+      "source_organization": "ISO / PDF Association issue-resolution process as adopted by the project",
+      "acquisition_source": null,
+      "access_date": null,
+      "local_filename_or_path": null,
+      "sha256": null,
+      "license_access_status": "not_available_to_this_workspace",
+      "redistribution_status": "not_applicable",
+      "clauses_used": [],
+      "errata_resolution_set_applied": null,
+      "implementation_modules_depending_on_document": [
+        "all Prompt 23B crypto modules"
+      ],
+      "blocker": "Current correction set for encryption clauses is not available."
+    }
+  ],
+  "local_search_evidence": [
+    {
+      "command": "rg --files | rg -i \"(iso.?32000|32003|32004|32002|aes.?gcm|pubsec|public.?key|cms|pkcs|x509|rsa|errata|spec|standard|normative)\"",
+      "result": "Found Prompt 23 docs, existing CMS/signature references, and fixtures, but no required PDF-family normative source files."
+    },
+    {
+      "command": "rg --files -u | rg -i \"(iso.?32000|iso.?ts.?32003|iso.?ts.?32004|iso.?ts.?32002|32000-2|32003|32004|32002|pdf.?2.?0|aes.?gcm|pubsec|public.?key.*security|cms|pkcs.?7|rfc5652|rfc5280|rfc8017|rfc5084|rfc5116|nist.*38d|sp800.*38d|x509|x\\.509|errata).*\\.(pdf|txt|md|html|json|xml|der|pem)$\"",
+      "result": "No matching local source files."
+    },
+    {
+      "command": "Get-ChildItem -LiteralPath references -Recurse -Force",
+      "result": "Only general engineering checklists were present."
+    }
+  ],
+  "implementation_decision": "No PubSec CMS or PDF AES-GCM code may be implemented until this manifest records legally usable normative sources and clause mappings."
+}

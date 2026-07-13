@@ -1,0 +1,15 @@
+{
+  "schema": "prompt23b.blocked-summary.v1",
+  "status": "blocked_normative_dependency",
+  "head": "29c7d14f7e975b5f591f078c1fa502eb2531ca6f",
+  "implementation_changed": false,
+  "reason": "Required PDF-family normative documents and interoperable vectors are absent from the repository/local workspace.",
+  "safe_next_steps": [
+    "Acquire legally usable ISO 32000-2:2020 plus errata/resolutions.",
+    "Acquire legally usable ISO/TS 32003:2023 and ISO/TS 32004:2024.",
+    "Acquire ISO/TS 32002:2022 if Prompt 23B behavior depends on its CMS/signature terminology.",
+    "Place local copies in a non-redistributed ignored standards directory or otherwise provide project-approved paths.",
+    "Record SHA-256, license/access status, redistribution status, and clause mappings.",
+    "Regenerate the normative dependency gate before implementation."
+  ]
+}

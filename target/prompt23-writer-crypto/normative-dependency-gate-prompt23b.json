@@ -1,0 +1,57 @@
+{
+  "schema": "prompt23b.normative-dependency-gate.v1",
+  "status": "failed",
+  "failure_code": "blocked_normative_dependency",
+  "recorded_date": "2026-07-13",
+  "checks": [
+    {
+      "id": "pdf_pubsec_clauses_available",
+      "required": true,
+      "passed": false,
+      "evidence": "ISO 32000-2:2020 and applicable errata/resolutions were not found locally."
+    },
+    {
+      "id": "aes_gcm_pdf_clauses_available",
+      "required": true,
+      "passed": false,
+      "evidence": "ISO/TS 32003:2023 was not found locally."
+    },
+    {
+      "id": "integrity_interaction_clauses_available",
+      "required": true,
+      "passed": false,
+      "evidence": "ISO/TS 32004:2024 was not found locally, so integrity-protection interactions cannot be ruled in or out."
+    },
+    {
+      "id": "cms_signature_intersection_clauses_available",
+      "required": true,
+      "passed": false,
+      "evidence": "ISO/TS 32002:2022 was not found locally for any signature/CMS terminology intersection."
+    },
+    {
+      "id": "pubsec_recipient_processing_unambiguous",
+      "required": true,
+      "passed": false,
+      "evidence": "Recipient payload layout, permissions bytes, seed/file-key recovery, and crypt-filter recipient locations are not available from normative text."
+    },
+    {
+      "id": "aes_gcm_nonce_tag_aad_unambiguous",
+      "required": true,
+      "passed": false,
+      "evidence": "Nonce construction, tag placement, AAD, object context, and incremental-revision behavior are not available from normative text."
+    },
+    {
+      "id": "required_algorithm_oids_and_der_parameters_known",
+      "required": true,
+      "passed": false,
+      "evidence": "PDF-selected CMS algorithms and parameter constraints cannot be derived without the PDF profile clauses."
+    },
+    {
+      "id": "trusted_vector_or_interoperability_route_available",
+      "required": true,
+      "passed": false,
+      "evidence": "No authoritative or independently cross-checked PubSec/AES-GCM PDF vectors were found locally."
+    }
+  ],
+  "result": "Implementation stopped before code changes. Continuing would require guessing cryptographic byte layouts or PDF crypt-filter semantics."
+}
