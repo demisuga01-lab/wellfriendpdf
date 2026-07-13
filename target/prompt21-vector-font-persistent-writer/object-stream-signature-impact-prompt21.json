@@ -1,0 +1,3 @@
+{
+  "policy": "object-stream packing is a full rewrite; previous cryptographic signatures are invalidated or become modified-document evidence"
+}

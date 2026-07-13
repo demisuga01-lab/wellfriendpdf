@@ -5,7 +5,7 @@
   "engine_version": "0.1.0",
   "abi_version": 1,
   "reports": {
-    "feature": {"sha256": "ab7d9de9823d3f560141aefd085dcad6a94cbbc5bb2cbe608a518d642078252f", "bytes": 122600},
+    "feature": {"sha256": "ab8dfcf9271ab5691118f5117feb17c51de1f403588dbf6cf6ef0e414874e3fa", "bytes": 125081},
     "security": {"sha256": "9579b959d297bb20fa27854e972689b5964f7eebe35848c91b853a67def07327", "bytes": 1870},
     "parser": {"sha256": "0ceed52840510991c9c57f90088d1f4d83ef71c7b6045c9b0d3a494b6d304934", "bytes": 19172},
     "color": {"sha256": "981b412a269c5a44a8389bc92ee8c93bec6711bdf5fcc2ea2175afd911d2fce1", "bytes": 131528},
@@ -15,7 +15,7 @@
     "xfa_extract": {"sha256": "89e4193208bea12c50932664f4620fb193b816cc7546cd89cab8586ff362932d", "bytes": 2265},
     "xfa_script": {"sha256": "39f45180c71db15e227751a6362c8924bb418d1bb37fee79bfd01de7953db812", "bytes": 728},
     "xfa_security": {"sha256": "97066e8d3d54b2c1683d65024e1498dc0f8ab05a683c4008fb6d39eb78f08fff", "bytes": 1208},
-    "xfa_runtime": {"sha256": "18fcfa23acaf436fed0ab2b9c87568552667d562cd64a4a6a4c1a27e0c4036b1", "bytes": 2615},
+    "xfa_runtime": {"sha256": "ce5bd3b95154a6939e80210d18b9b2242dd8d8f33bf264363c4620b86d62eefc", "bytes": 2615},
     "annotations": {"sha256": "ac1c91acf43f7cffba9bea61e28ae8e7d2212dc7104c7bbb0fd97aaa7c135232", "bytes": 127},
     "rich_media": {"sha256": "8c3b2caa0a9373f069580d17bc35dafbd9cda1e3e2dd106b226056f480bbdebe", "bytes": 934},
     "annotation_appearance": {"sha256": "313311e588db962034f841b11b5ee18a4fa6f32944fc97792b7ba0641762b493", "bytes": 906},

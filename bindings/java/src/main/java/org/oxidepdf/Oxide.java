@@ -25,6 +25,10 @@ public final class Oxide {
         return Native.featureReportJson();
     }
 
+    public static String prompt21HistoryReportJson() {
+        return Native.prompt21HistoryReportJson();
+    }
+
     public static String codecIsolationReportJson(String filter, byte[] encodedBytes, String policy) {
         Objects.requireNonNull(filter, "filter");
         Objects.requireNonNull(encodedBytes, "encodedBytes");
@@ -283,6 +287,34 @@ public final class Oxide {
         public String prompt20bReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.PROMPT20B_REPORT, "prompt20b_report");
+        }
+
+        public String prompt21ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT21_REPORT, "prompt21_report");
+        }
+
+        public String prompt21RasterVectorReportJson(long page, String optionsJson) {
+            ensureOpen();
+            if (page < 1) throw new IllegalArgumentException("page must be one-based");
+            return Native.prompt21RasterVectorReport(handle, page, optionsJson);
+        }
+
+        public String prompt21FontReconstructionReportJson() {
+            ensureOpen();
+            return Native.documentReport(
+                handle, Native.PROMPT21_FONT_RECONSTRUCTION_REPORT, "prompt21_font_reconstruction_report");
+        }
+
+        public String prompt21ObjectStreamReportJson() {
+            ensureOpen();
+            return Native.documentReport(
+                handle, Native.PROMPT21_OBJECT_STREAM_REPORT, "prompt21_object_stream_report");
+        }
+
+        public BinaryResult prompt21PackObjectStreams() {
+            ensureOpen();
+            return Native.documentOutput(handle, Native.PROMPT21_PACK_OBJECT_STREAMS, "prompt21_pack_object_streams");
         }
 
         public String prompt20bTextRangeAnalyzeJson(long page) {
@@ -713,6 +745,25 @@ public final class Oxide {
         private static final MethodHandle PROMPT19_REPORT = documentReport("oxide_document_prompt19_report_json");
         private static final MethodHandle PROMPT20_REPORT = documentReport("oxide_document_prompt20_report_json");
         private static final MethodHandle PROMPT20B_REPORT = documentReport("oxide_document_prompt20b_report_json");
+        private static final MethodHandle PROMPT21_REPORT = documentReport("oxide_document_prompt21_report_json");
+        private static final MethodHandle PROMPT21_RASTER_VECTOR_REPORT = downcall(
+            "oxide_document_prompt21_raster_vector_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT21_FONT_RECONSTRUCTION_REPORT =
+            documentReport("oxide_document_prompt21_font_reconstruction_report_json");
+        private static final MethodHandle PROMPT21_HISTORY_REPORT = downcall(
+            "oxide_prompt21_history_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT21_OBJECT_STREAM_REPORT =
+            documentReport("oxide_document_prompt21_object_stream_report_json");
+        private static final MethodHandle PROMPT21_PACK_OBJECT_STREAMS = downcall(
+            "oxide_document_prompt21_pack_object_streams_pdf",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle PROMPT20B_TEXT_RANGE_ANALYZE = downcall(
             "oxide_document_prompt20b_text_range_analyze_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
@@ -974,6 +1025,20 @@ public final class Oxide {
             }
         }
 
+        private static String prompt21HistoryReportJson() {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT21_HISTORY_REPORT.invokeExact(jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide prompt21_history_report failed", ex);
+            }
+        }
+
         private static String codecIsolationReportJson(String filter, byte[] encodedBytes, String policy) {
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment filterPtr = arena.allocateFrom(filter);
@@ -1128,6 +1193,26 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide prompt20_vector_list failed", ex);
+            }
+        }
+
+        private static String prompt21RasterVectorReport(
+            MemorySegment handle, long page, String optionsJson
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment options = optionsJson == null || optionsJson.isBlank()
+                    ? MemorySegment.NULL
+                    : arena.allocateFrom(optionsJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT21_RASTER_VECTOR_REPORT.invokeExact(
+                    handle, page, options, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide prompt21_raster_vector_report failed", ex);
             }
         }
 

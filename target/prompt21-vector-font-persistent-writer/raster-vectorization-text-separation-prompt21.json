@@ -1,0 +1,7 @@
+{
+  "accessibility_search_impact": "semantic text layer remains authoritative",
+  "policy": "known semantic text is preserved separately and not intentionally vectorized",
+  "status": "implemented_with_limits",
+  "text_layer_present": false,
+  "vectorize_text_as_outlines": false
+}

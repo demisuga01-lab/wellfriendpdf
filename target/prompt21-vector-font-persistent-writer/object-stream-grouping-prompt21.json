@@ -1,0 +1,8 @@
+{
+  "compression": "FlateDecode level 9 via existing deterministic writer",
+  "deterministic_compression": true,
+  "max_objects_per_stream": 200,
+  "object_stream_numbering": "fresh object stream numbers allocated after source object max, before xref stream",
+  "stable_order": "ascending output object number",
+  "status": "implemented"
+}

@@ -435,6 +435,50 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::prompt20b_report_json(bytes, None))
     }
 
+    fn prompt21_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt21_report_json(bytes, None))
+    }
+
+    #[pyo3(signature = (page=1, options_json=None))]
+    fn prompt21_raster_vector_report<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        options_json: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let options = options_json.map(str::to_string);
+        self.report_json(py, |bytes| {
+            sdk::prompt21_raster_vector_report_json(bytes, page, options.as_deref(), None)
+        })
+    }
+
+    fn prompt21_font_reconstruction_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt21_font_reconstruction_report_json(bytes, None)
+        })
+    }
+
+    fn prompt21_object_stream_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt21_object_stream_report_json(bytes, None)
+        })
+    }
+
+    #[pyo3(signature = (output=None))]
+    fn prompt21_pack_object_streams<'py>(
+        &self,
+        py: Python<'py>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::prompt21_pack_object_streams_json(&bytes, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
     #[pyo3(signature = (page=1))]
     fn prompt20b_text_range_analyze<'py>(
         &self,
@@ -1698,6 +1742,13 @@ fn feature_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
     parse_json_str(py, &json)
 }
 
+/// Prompt 21 persistent history store report. No document input.
+#[pyfunction]
+fn prompt21_history_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let json = run_oxide(sdk::prompt21_history_report_json)?;
+    parse_json_str(py, &json)
+}
+
 /// Decode budget report for a hypothetical image stream: shows the decode-limit
 /// / decompression-bomb policy that decoding a `filter`/`width`/`height`/
 /// `components` image would trigger. No document input.
@@ -1770,6 +1821,7 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(fonts, module)?)?;
     module.add_function(wrap_pyfunction!(verify_signatures, module)?)?;
     module.add_function(wrap_pyfunction!(feature_report, module)?)?;
+    module.add_function(wrap_pyfunction!(prompt21_history_report, module)?)?;
     module.add_function(wrap_pyfunction!(decode_budget_report, module)?)?;
     module.add_function(wrap_pyfunction!(codec_isolation_report, module)?)?;
     module.add_function(wrap_pyfunction!(resource_dedup_report, module)?)?;

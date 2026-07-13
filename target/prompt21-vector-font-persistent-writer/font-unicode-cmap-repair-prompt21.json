@@ -1,0 +1,65 @@
+[
+  {
+    "confidence": 0.92,
+    "evidence": [
+      "to_unicode=true",
+      "encoding=WinAnsi",
+      "predefined_cmap=Some(\"WinAnsiEncoding\")"
+    ],
+    "exact_limit": "unresolved glyphs remain explicit; no OCR-only glyph mapping is accepted silently",
+    "level": "unicode_mapping_repair",
+    "status": "implemented_with_limits"
+  },
+  {
+    "confidence": 0.78,
+    "evidence": [
+      "predefined_cmap_supported=false",
+      "writing_mode=horizontal"
+    ],
+    "exact_limit": "custom CMaps without bounded evidence are reported unresolved",
+    "level": "encoding_cmap_repair",
+    "status": "implemented_with_limits"
+  },
+  {
+    "confidence": 0.92,
+    "evidence": [
+      "to_unicode=true",
+      "encoding=WinAnsi",
+      "predefined_cmap=Some(\"WinAnsiEncoding\")"
+    ],
+    "exact_limit": "unresolved glyphs remain explicit; no OCR-only glyph mapping is accepted silently",
+    "level": "unicode_mapping_repair",
+    "status": "implemented_with_limits"
+  },
+  {
+    "confidence": 0.78,
+    "evidence": [
+      "predefined_cmap_supported=false",
+      "writing_mode=horizontal"
+    ],
+    "exact_limit": "custom CMaps without bounded evidence are reported unresolved",
+    "level": "encoding_cmap_repair",
+    "status": "implemented_with_limits"
+  },
+  {
+    "confidence": 0.72,
+    "evidence": [
+      "to_unicode=false",
+      "encoding=WinAnsi",
+      "predefined_cmap=Some(\"WinAnsiEncoding\")"
+    ],
+    "exact_limit": "unresolved glyphs remain explicit; no OCR-only glyph mapping is accepted silently",
+    "level": "unicode_mapping_repair",
+    "status": "implemented_with_limits"
+  },
+  {
+    "confidence": 0.0,
+    "evidence": [
+      "predefined_cmap_supported=false",
+      "writing_mode=horizontal"
+    ],
+    "exact_limit": "custom CMaps without bounded evidence are reported unresolved",
+    "level": "encoding_cmap_repair",
+    "status": "unsupported_reported_exact"
+  }
+]

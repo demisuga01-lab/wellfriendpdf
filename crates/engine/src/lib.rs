@@ -117,6 +117,7 @@ pub mod prompt17;
 pub mod prompt18;
 pub mod prompt19;
 pub mod prompt20;
+pub mod prompt21;
 pub mod reader;
 pub mod render;
 pub mod sdk;
@@ -357,6 +358,13 @@ pub use prompt20::{
     VectorFillRule, VectorFormInvocation, VectorGroupProvenance, VectorMatrix,
     VectorObjectInventory, VectorPaintMode, VectorPathSegment, VectorProvenance, VectorStrokeStyle,
     VerticalGlyphOrientation, PROMPT20_SCHEMA_VERSION,
+};
+pub use prompt21::{
+    font_reconstruction_report, object_stream_packing_report, pack_object_streams_pdf,
+    persistent_store_report, prompt21_report, raster_vectorization_report, vectorize_raw_image,
+    FontReconstructionReport, ObjectStreamPackingReport, PersistentStoreReport, Prompt21Report,
+    RasterVectorOutputMode, RasterVectorizationOptions, RasterVectorizationReport,
+    PROMPT21_ARTIFACT_ROOT, PROMPT21_SCHEMA_VERSION,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{

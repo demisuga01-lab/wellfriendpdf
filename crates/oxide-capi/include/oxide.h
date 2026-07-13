@@ -472,6 +472,32 @@ OXIDE_API int oxide_document_prompt20b_report_json(
     const OxideDocument *document,
     char **out_json,
     char **error_out);
+OXIDE_API int oxide_document_prompt21_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt21_raster_vector_report_json(
+    const OxideDocument *document,
+    size_t page,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt21_font_reconstruction_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_prompt21_history_report_json(
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt21_object_stream_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt21_pack_object_streams_pdf(
+    const OxideDocument *document,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
 OXIDE_API int oxide_document_prompt20b_text_range_analyze_json(
     const OxideDocument *document,
     size_t page,

@@ -83,6 +83,12 @@ mod wasm_api {
             sdk::feature_report_json().map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = prompt21HistoryReportJson)]
+        pub fn prompt21_history_report_json() -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::prompt21_history_report_json().map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = decodeBudgetReportJson)]
         pub fn decode_budget_report_json(
             filter: &str,
@@ -351,6 +357,32 @@ mod wasm_api {
             self.report(|b| sdk::prompt20b_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = prompt21ReportJson)]
+        pub fn prompt21_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt21_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt21RasterVectorReportJson)]
+        pub fn prompt21_raster_vector_report_json(
+            &self,
+            page: usize,
+            options_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.report(|b| {
+                sdk::prompt21_raster_vector_report_json(b, page, options_json.as_deref(), None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = prompt21FontReconstructionReportJson)]
+        pub fn prompt21_font_reconstruction_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt21_font_reconstruction_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt21ObjectStreamReportJson)]
+        pub fn prompt21_object_stream_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt21_object_stream_report_json(b, None))
+        }
+
         #[wasm_bindgen(js_name = prompt20bTextRangeAnalyzeJson)]
         pub fn prompt20b_text_range_analyze_json(&self, page: usize) -> Result<String, JsValue> {
             self.report(|b| sdk::prompt20b_text_range_analyze_json(b, page, None))
@@ -540,6 +572,11 @@ mod wasm_api {
         #[wasm_bindgen(js_name = editTextRange)]
         pub fn edit_text_range(&self, request_json: String) -> Result<OxideOutput, JsValue> {
             self.output(|b| sdk::prompt20b_text_range_edit_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt21PackObjectStreams)]
+        pub fn prompt21_pack_object_streams(&self) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::prompt21_pack_object_streams_json(b, None))
         }
 
         #[wasm_bindgen(js_name = richMediaSanitize)]

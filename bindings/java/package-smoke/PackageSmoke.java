@@ -47,6 +47,17 @@ public final class PackageSmoke {
                     || !doc.prompt20bTextRangeAnalyzeJson(1).contains("prompt20b_multi_run_range_model")) {
                 throw new AssertionError("Prompt 20B report/range surfaces missing");
             }
+            if (!doc.prompt21ReportJson().contains("prompt21.raster-vector-font-persistent-object-stream.v1")
+                    || !doc.prompt21RasterVectorReportJson(1, "").contains("prompt21_raster_vector_report")
+                    || !doc.prompt21FontReconstructionReportJson().contains("prompt21_font_reconstruction_report")
+                    || !doc.prompt21ObjectStreamReportJson().contains("prompt21_object_stream_report")) {
+                throw new AssertionError("Prompt 21 report surfaces missing");
+            }
+            Oxide.BinaryResult prompt21Packed = doc.prompt21PackObjectStreams();
+            if (prompt21Packed.bytes().length == 0
+                    || !prompt21Packed.reportJson().contains("prompt21_pack_object_streams_report")) {
+                throw new AssertionError("Prompt 21 packed output/report missing");
+            }
             Oxide.BinaryResult sanitized = doc.sanitize("balanced");
             if (sanitized.bytes().length == 0 || !sanitized.reportJson().contains("sanitize_report")) {
                 throw new AssertionError("sanitize output/report missing");
@@ -156,6 +167,12 @@ public final class PackageSmoke {
                 || !feature.contains("\"annotation_appearance_clone_one\"")
                 || !feature.contains("\"binding_parity\"")) {
             throw new AssertionError("feature report missing Prompt 20B closure posture");
+        }
+        if (!feature.contains("\"prompt21_raster_vector_font_persistent_object_stream\"")
+                || !feature.contains("\"object_stream_packing\"")
+                || !feature.contains("\"writer_mode\":\"XrefStreamWithObjStm\"")
+                || !Oxide.prompt21HistoryReportJson().contains("prompt21_history_report")) {
+            throw new AssertionError("feature report missing Prompt 21 closure posture");
         }
     }
 }

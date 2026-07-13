@@ -1,0 +1,134 @@
+{
+  "kind": "prompt21_raster_vector_report",
+  "report": {
+    "determinism_digest": "3c658d1b7484db45b708cb8ecc258fb52153b45e38d47815d6041f0b9bfeef05",
+    "diagnostics": [],
+    "image_count": 1,
+    "images": [
+      {
+        "bits_per_sample": 8,
+        "channels": 1,
+        "classification": "bounded_monochrome_line_art_candidate",
+        "component_count": 1,
+        "curve_error": {
+          "cubic_fitting": "candidate-only; no smooth curve is emitted above evidence confidence",
+          "max_deviation_px": 0.0,
+          "rms_deviation_px": 0.0,
+          "segment_count": 0,
+          "simplification": "bounded Douglas-Peucker-equivalent bbox/edge simplification"
+        },
+        "diagnostics": [
+          {
+            "code": "small_components_removed",
+            "message": "1 components below min_component_pixels removed",
+            "object": "page1:Im1:4-0",
+            "operation": "raster_vectorization",
+            "severity": "info",
+            "status": "implemented_with_limits"
+          }
+        ],
+        "foreground_pixels": 1,
+        "generation": 0,
+        "height": 1,
+        "image_id": "page1:Im1:4-0",
+        "inline_image": false,
+        "object_number": 4,
+        "page": 1,
+        "primitive_count": 0,
+        "primitives": [],
+        "provenance": {
+          "mask_policy": "no mask interaction observed for this image reference",
+          "page_space_mapping": "normalized image pixel box mapped through image placement inventory",
+          "shared_resource_policy": "replacement requires clone-one-resource policy; export/report does not mutate shared instances",
+          "source_object": "page1:Im1:4-0"
+        },
+        "status": "implemented_with_limits",
+        "threshold": 128,
+        "topology": {
+          "closed_contours": 0,
+          "contour_ordering": "deterministic top-left scan order",
+          "duplicate_contours_suppressed": 0,
+          "finite_coordinate_checks": "all integer pixel bboxes mapped to finite page-space boxes",
+          "holes": 0,
+          "open_contours": 0,
+          "self_intersections": 0
+        },
+        "width": 1
+      }
+    ],
+    "output_mode": "export_vector_model_only",
+    "page": 1,
+    "preprocessing_steps": [
+      {
+        "detail": "luminance conversion for Gray/RGB/RGBA and bounded channel averaging",
+        "deterministic": true,
+        "status": "implemented_with_limits",
+        "step": "color_space_normalization"
+      },
+      {
+        "detail": "RGBA is flattened over white for foreground/background decisions",
+        "deterministic": true,
+        "status": "implemented_with_limits",
+        "step": "alpha_flattening"
+      },
+      {
+        "detail": "Otsu threshold",
+        "deterministic": true,
+        "status": "implemented_with_limits",
+        "step": "thresholding"
+      },
+      {
+        "detail": "4-neighbor deterministic top-left scan",
+        "deterministic": true,
+        "status": "implemented_with_limits",
+        "step": "connected_components"
+      },
+      {
+        "detail": "components below min_component_pixels are reported and removed",
+        "deterministic": true,
+        "status": "implemented_with_limits",
+        "step": "small_component_removal"
+      },
+      {
+        "detail": "component boundary bbox and edge evidence are recorded",
+        "deterministic": true,
+        "status": "implemented_with_limits",
+        "step": "contour_extraction"
+      },
+      {
+        "detail": "only evidence-backed candidates are emitted; uncertain curves remain low confidence",
+        "deterministic": true,
+        "status": "implemented_with_limits",
+        "step": "curve_fitting"
+      },
+      {
+        "detail": "semantic text layer remains separate unless vectorize_text_as_outlines is explicit",
+        "deterministic": true,
+        "status": "implemented_with_limits",
+        "step": "text_separation"
+      }
+    ],
+    "schema_version": "prompt21.raster-vector-font-persistent-object-stream.v1",
+    "security_limits": {
+      "color_region_cap": 256,
+      "component_cap": 20000,
+      "curve_segment_cap": 16384,
+      "memory_policy": "bounded decoded pixels plus component/point caps",
+      "pixel_cap": 8000000,
+      "point_cap": 400000,
+      "scheduler_admission": "runs through existing image decode admission path",
+      "time_cap_ms": 30000
+    },
+    "status": "implemented_with_limits",
+    "supported_image_count": 1,
+    "text_separation": {
+      "accessibility_search_impact": "semantic text layer remains authoritative",
+      "policy": "known semantic text is preserved separately and not intentionally vectorized",
+      "status": "implemented_with_limits",
+      "text_layer_present": false,
+      "vectorize_text_as_outlines": false
+    },
+    "unsupported_image_count": 0
+  },
+  "schema_version": 1
+}

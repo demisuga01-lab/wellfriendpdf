@@ -1,0 +1,3 @@
+{
+  "policy": "unreachable branch garbage collection and snapshot compaction are explicit operations"
+}

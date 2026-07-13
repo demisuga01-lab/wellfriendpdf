@@ -1,0 +1,20 @@
+{
+  "fixtures": [
+    {
+      "id": "image_only",
+      "path": "crates\\engine\\tests\\fixtures\\image_only.pdf",
+      "purpose": "raster vectorization"
+    },
+    {
+      "id": "form_160f",
+      "path": "crates\\engine\\tests\\fixtures\\form_160f.pdf",
+      "purpose": "font/object-stream/binding reports"
+    }
+  ],
+  "synthetic_unit_fixtures": [
+    "prompt21 horizontal line art",
+    "prompt21 pixel-cap denial",
+    "prompt21 tiny object-stream PDF",
+    "prompt21 1000-edit persistent history"
+  ]
+}

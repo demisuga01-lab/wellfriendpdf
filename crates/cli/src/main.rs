@@ -258,6 +258,28 @@ enum Commands {
     Prompt20Report(Prompt17ReportArgs),
     /// Combined Prompt 20B multi-run, Form ownership, and appearance report
     Prompt20bReport(Prompt17ReportArgs),
+    /// Combined Prompt 21 raster/vector, font, persistent history, and writer report
+    Prompt21Report(Prompt17ReportArgs),
+    /// Analyze bounded raster-to-vector candidates on a page
+    RasterVectorReport(Prompt21RasterVectorArgs),
+    /// Alias for raster-vector-report; exports the vector model by default
+    RasterVectorize(Prompt21RasterVectorArgs),
+    /// Inspect safe font reconstruction eligibility and glyph hook policy
+    FontReconstruct(Prompt17ReportArgs),
+    /// Inspect safe font reconstruction eligibility and glyph hook policy
+    FontReconstructionReport(Prompt17ReportArgs),
+    /// Report Prompt 21 persistent edit history structures
+    HistoryReport(Prompt21HistoryArgs),
+    /// Export a Prompt 21 persistent history snapshot report
+    HistorySnapshot(Prompt21HistoryArgs),
+    /// Validate Prompt 21 persistent history restore posture
+    HistoryRestore(Prompt21HistoryArgs),
+    /// Report Prompt 21 persistent history diff posture
+    HistoryDiff(Prompt21HistoryArgs),
+    /// Inspect object-stream packing eligibility and xref-stream results
+    ObjectStreamReport(Prompt17ReportArgs),
+    /// Save a full-rewrite PDF using object streams and an xref stream
+    SaveObjectStreams(Prompt21SaveObjectStreamsArgs),
     /// Analyze or edit a logical text range spanning text-showing operators
     EditTextRange(Prompt20bTextRangeArgs),
     /// Alias for vector-list focused on Form invocation ownership
@@ -1016,6 +1038,52 @@ struct Prompt17OutputArgs {
     pdf: PathBuf,
     /// Output PDF
     #[arg(short, long, default_value = "prompt17-output.pdf")]
+    output: PathBuf,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print JSON report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Validate and report without writing the output PDF
+    #[arg(long)]
+    dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt21RasterVectorArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Optional RasterVectorizationOptions JSON file
+    #[arg(long)]
+    options: Option<PathBuf>,
+    /// Output JSON report; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt21HistoryArgs {
+    /// Output JSON report; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+struct Prompt21SaveObjectStreamsArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output PDF
+    #[arg(short, long, default_value = "object-stream-packed.pdf")]
     output: PathBuf,
     /// Optional JSON report path
     #[arg(long)]
@@ -2554,6 +2622,17 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Prompt19Report(args) => run_prompt19_report(args),
         Commands::Prompt20Report(args) => run_prompt20_report(args),
         Commands::Prompt20bReport(args) => run_prompt20b_report(args),
+        Commands::Prompt21Report(args) => run_prompt21_report(args),
+        Commands::RasterVectorReport(args) => run_prompt21_raster_vector_report(args),
+        Commands::RasterVectorize(args) => run_prompt21_raster_vector_report(args),
+        Commands::FontReconstruct(args) => run_prompt21_font_reconstruction_report(args),
+        Commands::FontReconstructionReport(args) => run_prompt21_font_reconstruction_report(args),
+        Commands::HistoryReport(args) => run_prompt21_history_report(args),
+        Commands::HistorySnapshot(args) => run_prompt21_history_report(args),
+        Commands::HistoryRestore(args) => run_prompt21_history_report(args),
+        Commands::HistoryDiff(args) => run_prompt21_history_report(args),
+        Commands::ObjectStreamReport(args) => run_prompt21_object_stream_report(args),
+        Commands::SaveObjectStreams(args) => run_prompt21_save_object_streams(args),
         Commands::EditTextRange(args) => run_prompt20b_text_range(args),
         Commands::FormInstanceReport(args) => run_prompt20_vector_list(args),
         Commands::FormCloneOne(mut args) => {
@@ -3725,6 +3804,74 @@ fn run_prompt20b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> 
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt21_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt21_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt21_raster_vector_report(args: Prompt21RasterVectorArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options_json = match args.options {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+    let report = oxide_engine::sdk::prompt21_raster_vector_report_json(
+        &bytes,
+        args.page,
+        options_json.as_deref(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt21_font_reconstruction_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt21_font_reconstruction_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt21_history_report(args: Prompt21HistoryArgs) -> Result<(), Box<dyn Error>> {
+    let report = oxide_engine::sdk::prompt21_history_report_json()?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt21_object_stream_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt21_object_stream_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt21_save_object_streams(
+    args: Prompt21SaveObjectStreamsArgs,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (output, report) = oxide_engine::sdk::prompt21_pack_object_streams_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(&args.output, output)?;
+    }
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, &pretty)?;
+    }
+    if args.json || !args.dry_run {
+        println!("{pretty}");
+    }
+    Ok(())
 }
 
 fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn Error>> {

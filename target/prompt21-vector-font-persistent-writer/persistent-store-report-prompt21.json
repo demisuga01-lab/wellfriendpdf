@@ -1,0 +1,73 @@
+{
+  "kind": "prompt21_history_report",
+  "report": {
+    "corruption_denial": {
+      "code": "snapshot_hash_mismatch_denied",
+      "message": "checkpoint restore verifies schema and sha256 before decoding bounded JSON nodes",
+      "object": null,
+      "operation": "persistent_store_restore",
+      "severity": "error",
+      "status": "unsupported_reported_security_policy"
+    },
+    "hamt": {
+      "deterministic_hash": "57e8881869d44cfc9e06b1da01dc88d1e7ed56c3c3afb3f85df1cc070a934d37",
+      "logical_entries": 1000,
+      "shared_node_ratio": 0.09760450915922968,
+      "shared_nodes_between_last_versions": 1039,
+      "status": "implemented_with_limits",
+      "structure": "HAMT-style 32-way persistent trie with Arc path-copying",
+      "total_nodes": 10645,
+      "versions": 4
+    },
+    "performance_memory": {
+      "branch_creation_latency_ms": 0,
+      "compaction_policy": "unreachable branch garbage collection and snapshot compaction are explicit operations",
+      "edit_count": 1000,
+      "memory_per_edit_bytes_estimate": 85,
+      "redo_latency_ms": 0,
+      "snapshot_latency_ms": 12,
+      "undo_latency_ms": 0
+    },
+    "rrb": {
+      "deterministic_hash": "17cbbe68de7f1ca05aab05144aea0d5e7f6c302464353c35abbd36f6929d984b",
+      "logical_entries": 1000,
+      "shared_node_ratio": 0.09375,
+      "shared_nodes_between_last_versions": 3,
+      "status": "implemented_with_limits",
+      "structure": "RRB-style persistent chunked vector with Arc shared chunks",
+      "total_nodes": 32,
+      "versions": 4
+    },
+    "schema_version": "prompt21.raster-vector-font-persistent-object-stream.v1",
+    "serialization": {
+      "corruption_hash_checked": true,
+      "deterministic": true,
+      "format_version": "prompt21.persistent-store.snapshot.v1",
+      "forward_version_policy": "reject forward schema until migration is registered",
+      "snapshot_bytes": 378,
+      "snapshot_sha256": "5c5be6d232ef0bed4d8137236ecea6c86e32f7decbcd10376607f6d97485bcd5",
+      "status": "implemented_with_limits"
+    },
+    "status": "implemented_with_limits",
+    "undo_redo": {
+      "branch_redo_policy": "redo is branch-local; creating a new child leaves sibling branch history addressable by version id",
+      "checkpoint_restore_hash_match": true,
+      "redo_restores_child": true,
+      "status": "implemented_with_limits",
+      "undo_restores_parent": true
+    },
+    "version_graph": {
+      "branch_count": 2,
+      "current_version": "v-21b6ed3d6fa67fab2737452b32ce24b1b52e430c6137358631da7d42ea35939f",
+      "deterministic_version_hash": "21b6ed3d6fa67fab2737452b32ce24b1b52e430c6137358631da7d42ea35939f",
+      "diff_changed_object_ids": [
+        "history/vector/op-1000"
+      ],
+      "merge_base": "v-8274bd2a683cc0859db1e3a9487e9611b19b813aa579d5f658806a64f8f4c67c",
+      "status": "implemented_with_limits",
+      "unsupported_policy": "three-way merge hook reports conflicts; page-content conflicts are not auto-merged",
+      "version_count": 1003
+    }
+  },
+  "schema_version": 1
+}

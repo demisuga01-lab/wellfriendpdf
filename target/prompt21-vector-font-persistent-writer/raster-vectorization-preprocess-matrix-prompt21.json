@@ -1,0 +1,50 @@
+[
+  {
+    "detail": "luminance conversion for Gray/RGB/RGBA and bounded channel averaging",
+    "deterministic": true,
+    "status": "implemented_with_limits",
+    "step": "color_space_normalization"
+  },
+  {
+    "detail": "RGBA is flattened over white for foreground/background decisions",
+    "deterministic": true,
+    "status": "implemented_with_limits",
+    "step": "alpha_flattening"
+  },
+  {
+    "detail": "Otsu threshold",
+    "deterministic": true,
+    "status": "implemented_with_limits",
+    "step": "thresholding"
+  },
+  {
+    "detail": "4-neighbor deterministic top-left scan",
+    "deterministic": true,
+    "status": "implemented_with_limits",
+    "step": "connected_components"
+  },
+  {
+    "detail": "components below min_component_pixels are reported and removed",
+    "deterministic": true,
+    "status": "implemented_with_limits",
+    "step": "small_component_removal"
+  },
+  {
+    "detail": "component boundary bbox and edge evidence are recorded",
+    "deterministic": true,
+    "status": "implemented_with_limits",
+    "step": "contour_extraction"
+  },
+  {
+    "detail": "only evidence-backed candidates are emitted; uncertain curves remain low confidence",
+    "deterministic": true,
+    "status": "implemented_with_limits",
+    "step": "curve_fitting"
+  },
+  {
+    "detail": "semantic text layer remains separate unless vectorize_text_as_outlines is explicit",
+    "deterministic": true,
+    "status": "implemented_with_limits",
+    "step": "text_separation"
+  }
+]

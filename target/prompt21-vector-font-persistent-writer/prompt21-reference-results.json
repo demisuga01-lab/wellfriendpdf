@@ -1,0 +1,136 @@
+{
+  "packed_pdf_sha256": "6a1b0f93e5cf4a3daec90b1ce115bc4692fbe8a26d1e9d810d4c14708ad0f6f0",
+  "packed_report": {
+    "classic_size_bytes": 386910,
+    "compatibility": [
+      {
+        "evidence": "packed output reopened and object ids enumerated",
+        "status": "implemented",
+        "tool": "Oxide parser"
+      },
+      {
+        "evidence": "scripted prompt21 audit records tool output when available",
+        "status": "implemented_with_limits",
+        "tool": "qpdf"
+      },
+      {
+        "evidence": "reference script records available render/parser evidence",
+        "status": "implemented_with_limits",
+        "tool": "Poppler/PDFium/MuPDF/PDFBox"
+      }
+    ],
+    "compression_ratio": 0.8470031790338839,
+    "deterministic": true,
+    "diagnostics": [],
+    "eligibility": [
+      {
+        "class": "eligible_non_stream_indirect_objects",
+        "count": 441,
+        "reason": "non-stream objects can be packed into /ObjStm in full rewrite mode",
+        "status": "implemented"
+      },
+      {
+        "class": "stream_objects",
+        "count": 86,
+        "reason": "PDF object streams cannot contain stream objects",
+        "status": "unsupported_reported_exact"
+      },
+      {
+        "class": "signature_dictionaries",
+        "count": 1,
+        "reason": "signature dictionaries are never packed; full rewrite invalidates prior ByteRange",
+        "status": "unsupported_reported_security_policy"
+      },
+      {
+        "class": "xref_or_existing_objstm",
+        "count": 13,
+        "reason": "xref streams and object-stream containers are writer-generated",
+        "status": "unsupported_reported_exact"
+      },
+      {
+        "class": "other_special_objects",
+        "count": 0,
+        "reason": "reserved compatibility exclusions",
+        "status": "unsupported_reported_exact"
+      }
+    ],
+    "eligible_object_count": 441,
+    "encryption_policy": "when encryption is configured, only the ObjStm stream is encrypted; inner objects are not independently encrypted",
+    "grouping_policy": {
+      "compression": "FlateDecode level 9 via existing deterministic writer",
+      "deterministic_compression": true,
+      "max_objects_per_stream": 200,
+      "object_stream_numbering": "fresh object stream numbers allocated after source object max, before xref stream",
+      "stable_order": "ascending output object number",
+      "status": "implemented"
+    },
+    "incremental_update_policy": "signature-preserving incremental updates do not repack existing objects",
+    "ineligible_object_count": 100,
+    "input_object_count": 541,
+    "input_sha256": "f41f0818365ffd14ca4e55c0556355193bd76632b970d60cc2dec554cac6f379",
+    "object_stream_count": 16,
+    "packed_object_count": 441,
+    "packed_sha256": "6a1b0f93e5cf4a3daec90b1ce115bc4692fbe8a26d1e9d810d4c14708ad0f6f0",
+    "packed_size_bytes": 327714,
+    "reopen": {
+      "input_pages": 1,
+      "object_stream_marker_present": true,
+      "output_pages": 1,
+      "oxide_reopened": true,
+      "text_digest_match": true,
+      "xref_stream_marker_present": true
+    },
+    "schema_version": "prompt21.raster-vector-font-persistent-object-stream.v1",
+    "signature_policy": "object-stream packing is a full rewrite; previous cryptographic signatures are invalidated or become modified-document evidence",
+    "status": "implemented",
+    "xref_stream_count": 1
+  },
+  "references": [
+    {
+      "args": [
+        "qpdf",
+        "--check",
+        "E:\\wellpdfsdk\\target\\prompt21-vector-font-persistent-writer\\prompt21-object-stream-packed.pdf"
+      ],
+      "returncode": 0,
+      "status": "passed",
+      "stderr": "",
+      "stdout": "checking E:\\wellpdfsdk\\target\\prompt21-vector-font-persistent-writer\\prompt21-object-stream-packed.pdf\nPDF Version: 1.7\nFile is not encrypted\nFile is not linearized\nNo syntax or stream encoding errors found; the file may still contain\nerrors that qpdf cannot detect\n",
+      "tool": "qpdf"
+    },
+    {
+      "args": [
+        "pdfinfo",
+        "E:\\wellpdfsdk\\target\\prompt21-vector-font-persistent-writer\\prompt21-object-stream-packed.pdf"
+      ],
+      "returncode": 0,
+      "status": "passed",
+      "stderr": "",
+      "stdout": "Title:           \nKeywords:        ID=ACD_160_2019; Version=1.00; Langue=FR;\nAuthor:          ACD\nCreator:         PScript5.dll Version 5.2\nProducer:        Acrobat Distiller 5.0.5 (Windows)\nCreationDate:    Thu Sep 25 20:36:14 2003 India Standard Time\nModDate:         Mon Dec 17 17:59:33 2018 India Standard Time\nCustom Metadata: no\nMetadata Stream: yes\nTagged:          no\nUserProperties:  no\nSuspects:        no\nForm:            AcroForm\nJavaScript:      yes\nPages:           1\nEncrypted:       no\nPage size:       595.2 x 841.68 pts (A4)\nPage rot:        0\nFile size:       327714 bytes\nOptimized:       no\nPDF version:     1.7\n",
+      "tool": "Poppler/pdfinfo"
+    },
+    {
+      "args": [
+        "mutool",
+        "info",
+        "E:\\wellpdfsdk\\target\\prompt21-vector-font-persistent-writer\\prompt21-object-stream-packed.pdf"
+      ],
+      "status": "unavailable_not_counted_as_passed",
+      "tool": "MuPDF/mutool"
+    },
+    {
+      "args": [
+        "java",
+        "-jar",
+        "pdfbox-app.jar",
+        "PDFDebugger",
+        "E:\\wellpdfsdk\\target\\prompt21-vector-font-persistent-writer\\prompt21-object-stream-packed.pdf"
+      ],
+      "returncode": 1,
+      "status": "failed",
+      "stderr": "Error: Unable to access jarfile pdfbox-app.jar\n",
+      "stdout": "",
+      "tool": "PDFBox"
+    }
+  ]
+}

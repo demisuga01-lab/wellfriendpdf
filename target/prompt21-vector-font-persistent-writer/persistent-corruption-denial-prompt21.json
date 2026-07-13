@@ -1,0 +1,8 @@
+{
+  "code": "snapshot_hash_mismatch_denied",
+  "message": "checkpoint restore verifies schema and sha256 before decoding bounded JSON nodes",
+  "object": null,
+  "operation": "persistent_store_restore",
+  "severity": "error",
+  "status": "unsupported_reported_security_policy"
+}

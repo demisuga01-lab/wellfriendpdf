@@ -1,0 +1,32 @@
+[
+  {
+    "confidence": 0.7,
+    "evidence": [
+      "subset=true",
+      "unicode_evidence=true"
+    ],
+    "exact_limit": "subset rebuild requires existing outlines plus mapping evidence; original font identity is not claimed",
+    "level": "subset_rebuild",
+    "status": "implemented_with_limits"
+  },
+  {
+    "confidence": 0.7,
+    "evidence": [
+      "subset=true",
+      "unicode_evidence=true"
+    ],
+    "exact_limit": "subset rebuild requires existing outlines plus mapping evidence; original font identity is not claimed",
+    "level": "subset_rebuild",
+    "status": "implemented_with_limits"
+  },
+  {
+    "confidence": 0.0,
+    "evidence": [
+      "subset=false",
+      "unicode_evidence=false"
+    ],
+    "exact_limit": "subset rebuild requires existing outlines plus mapping evidence; original font identity is not claimed",
+    "level": "subset_rebuild",
+    "status": "unsupported_reported_exact"
+  }
+]

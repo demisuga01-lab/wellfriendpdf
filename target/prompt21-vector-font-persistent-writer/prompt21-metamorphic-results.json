@@ -1,0 +1,7 @@
+{
+  "checkpoint_restore_then_save_policy": "deterministic snapshot hash maps to deterministic writer options",
+  "history_snapshot_hash": "5c5be6d232ef0bed4d8137236ecea6c86e32f7decbcd10376607f6d97485bcd5",
+  "object_stream_deterministic": true,
+  "unclassified_failures": 0,
+  "vectorization_deterministic_hash": "3c658d1b7484db45b708cb8ecc258fb52153b45e38d47815d6041f0b9bfeef05"
+}

@@ -1479,6 +1479,76 @@ xfa_document_report!(
 xfa_document_report!(oxide_document_prompt19_report_json, prompt19_report_json);
 xfa_document_report!(oxide_document_prompt20_report_json, prompt20_report_json);
 xfa_document_report!(oxide_document_prompt20b_report_json, prompt20b_report_json);
+xfa_document_report!(oxide_document_prompt21_report_json, prompt21_report_json);
+xfa_document_report!(
+    oxide_document_prompt21_font_reconstruction_report_json,
+    prompt21_font_reconstruction_report_json
+);
+xfa_document_report!(
+    oxide_document_prompt21_object_stream_report_json,
+    prompt21_object_stream_report_json
+);
+
+/// Analyze Prompt 21 raster-to-vector candidates for one page.
+///
+/// # Safety
+/// `options_json` may be NULL or a valid NUL-terminated UTF-8
+/// RasterVectorizationOptions JSON object.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_prompt21_raster_vector_report_json(
+    document: *const OxideDocument,
+    page: usize,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            let options = options.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::prompt21_raster_vector_report_json(bytes, page, options.as_deref(), None)
+        })
+    }
+}
+
+/// Report Prompt 21 persistent history store behavior.
+///
+/// # Safety
+/// `out_json` and `error_out` must follow report ownership rules.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_prompt21_history_report_json(
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let json = oxide(sdk::prompt21_history_report_json())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Save a full-rewrite PDF with xref-stream and object-stream packing.
+///
+/// # Safety
+/// Returns an owned buffer and owned report string.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_prompt21_pack_object_streams_pdf(
+    document: *const OxideDocument,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt21_pack_object_streams_json(bytes, None)
+        })
+    }
+}
 
 /// Inspect a Prompt 20B page-local multi-run range model.
 ///

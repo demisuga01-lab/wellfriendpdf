@@ -1,0 +1,15 @@
+{
+  "components": 1,
+  "limits": {
+    "color_region_cap": 256,
+    "component_cap": 20000,
+    "curve_segment_cap": 16384,
+    "memory_policy": "bounded decoded pixels plus component/point caps",
+    "pixel_cap": 8000000,
+    "point_cap": 400000,
+    "scheduler_admission": "runs through existing image decode admission path",
+    "time_cap_ms": 30000
+  },
+  "pixels": 1,
+  "primitives": 0
+}

@@ -1,0 +1,17 @@
+[
+  {
+    "evidence": "packed output reopened and object ids enumerated",
+    "status": "implemented",
+    "tool": "Oxide parser"
+  },
+  {
+    "evidence": "scripted prompt21 audit records tool output when available",
+    "status": "implemented_with_limits",
+    "tool": "qpdf"
+  },
+  {
+    "evidence": "reference script records available render/parser evidence",
+    "status": "implemented_with_limits",
+    "tool": "Poppler/PDFium/MuPDF/PDFBox"
+  }
+]

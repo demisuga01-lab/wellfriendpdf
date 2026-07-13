@@ -1,0 +1,17 @@
+{
+  "fonts": [
+    {
+      "embedding_rights": "existing document embedding observed; redistribution rights not inferred",
+      "font_id": "font-482-0"
+    },
+    {
+      "embedding_rights": "existing document embedding observed; redistribution rights not inferred",
+      "font_id": "font-484-0"
+    },
+    {
+      "embedding_rights": "existing document embedding observed; redistribution rights not inferred",
+      "font_id": "font-403-0"
+    }
+  ],
+  "policy": "font reconstruction never invents original font identity or embedding rights"
+}

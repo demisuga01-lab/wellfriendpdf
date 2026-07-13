@@ -460,6 +460,73 @@ pub fn prompt20b_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<St
     )
 }
 
+/// Combined Prompt 21 raster/vector, font reconstruction, persistent history,
+/// and object-stream writer report.
+pub fn prompt21_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt21_report",
+        &crate::prompt21::prompt21_report(&engine)?,
+    )
+}
+
+pub fn prompt21_raster_vector_report_json(
+    bytes: &[u8],
+    page: usize,
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let options = match options_json {
+        Some(json) if !json.trim().is_empty() => {
+            serde_json::from_str::<crate::prompt21::RasterVectorizationOptions>(json)
+                .map_err(json_err)?
+        }
+        _ => crate::prompt21::RasterVectorizationOptions::default(),
+    };
+    envelope(
+        "prompt21_raster_vector_report",
+        &crate::prompt21::raster_vectorization_report(&engine, page, options)?,
+    )
+}
+
+pub fn prompt21_font_reconstruction_report_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt21_font_reconstruction_report",
+        &crate::prompt21::font_reconstruction_report(&engine)?,
+    )
+}
+
+pub fn prompt21_history_report_json() -> Result<String> {
+    envelope(
+        "prompt21_history_report",
+        &crate::prompt21::persistent_store_report(),
+    )
+}
+
+pub fn prompt21_object_stream_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt21_object_stream_report",
+        &crate::prompt21::object_stream_packing_report(engine.document().reader())?,
+    )
+}
+
+pub fn prompt21_pack_object_streams_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let (output, report) = crate::prompt21::pack_object_streams_pdf(bytes, password)?;
+    Ok((
+        output,
+        envelope("prompt21_pack_object_streams_report", &report)?,
+    ))
+}
+
 pub fn prompt20b_text_range_analyze_json(
     bytes: &[u8],
     page: usize,
@@ -2845,6 +2912,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt19_form_js_interactive_docx_layout": crate::prompt19::prompt19_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt20_vertical_rtl_patch_vector_ink_editing": crate::prompt20::prompt20_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt20b_multirun_form_appearance_closure": crate::prompt20::prompt20b_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt21_raster_vector_font_persistent_object_stream": crate::prompt21::prompt21_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2870,6 +2938,9 @@ pub fn feature_report_json() -> Result<String> {
             "form_js_report", "form_action_graph", "form_js_sanitize",
             "form_js_flatten_values", "interactive_data_report",
             "word_pagination_audit", "prompt19_report", "prompt20_report",
+            "prompt20b_report", "prompt21_report", "prompt21_raster_vector_report",
+            "prompt21_font_reconstruction_report", "prompt21_history_report",
+            "prompt21_object_stream_report", "prompt21_pack_object_streams",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",

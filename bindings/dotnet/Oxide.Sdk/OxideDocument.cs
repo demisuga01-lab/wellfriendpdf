@@ -68,6 +68,12 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public static string Prompt21HistoryReportJson()
+    {
+        var status = NativeMethods.oxide_prompt21_history_report_json(out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
     public static string CodecIsolationReportJson(
         string filter,
         byte[] encodedBytes,
@@ -310,6 +316,57 @@ public sealed class OxideDocument : IDisposable
         ThrowIfDisposed();
         var status = NativeMethods.oxide_document_prompt20b_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt21ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt21_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt21RasterVectorReportJson(nuint page = 1, string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_prompt21_raster_vector_report_json(
+                _handle, (UIntPtr)page, optionsPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(optionsPtr);
+            }
+        }
+    }
+
+    public string Prompt21FontReconstructionReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt21_font_reconstruction_report_json(
+            _handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt21ObjectStreamReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt21_object_stream_report_json(
+            _handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public OxideBinaryResult Prompt21PackObjectStreams()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt21_pack_object_streams_pdf(
+            _handle, out var buffer, out var json, out var error);
+        return NativeMethods.TakeOutput(status, buffer, json, error);
     }
 
     public string Prompt20bTextRangeAnalyzeJson(nuint page = 1)

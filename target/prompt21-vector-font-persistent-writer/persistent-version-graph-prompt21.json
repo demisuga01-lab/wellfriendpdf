@@ -1,0 +1,12 @@
+{
+  "branch_count": 2,
+  "current_version": "v-21b6ed3d6fa67fab2737452b32ce24b1b52e430c6137358631da7d42ea35939f",
+  "deterministic_version_hash": "21b6ed3d6fa67fab2737452b32ce24b1b52e430c6137358631da7d42ea35939f",
+  "diff_changed_object_ids": [
+    "history/vector/op-1000"
+  ],
+  "merge_base": "v-8274bd2a683cc0859db1e3a9487e9611b19b813aa579d5f658806a64f8f4c67c",
+  "status": "implemented_with_limits",
+  "unsupported_policy": "three-way merge hook reports conflicts; page-content conflicts are not auto-merged",
+  "version_count": 1003
+}

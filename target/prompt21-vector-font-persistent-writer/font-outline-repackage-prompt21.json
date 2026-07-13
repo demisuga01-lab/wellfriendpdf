@@ -1,0 +1,32 @@
+[
+  {
+    "confidence": 0.74,
+    "evidence": [
+      "embedded=true",
+      "font_file_kind=Some(\"FontFile2\")"
+    ],
+    "exact_limit": "only existing embedded outlines are eligible; raster glyph evidence uses external hook policy",
+    "level": "outline_repackage",
+    "status": "implemented_with_limits"
+  },
+  {
+    "confidence": 0.74,
+    "evidence": [
+      "embedded=true",
+      "font_file_kind=Some(\"FontFile2\")"
+    ],
+    "exact_limit": "only existing embedded outlines are eligible; raster glyph evidence uses external hook policy",
+    "level": "outline_repackage",
+    "status": "implemented_with_limits"
+  },
+  {
+    "confidence": 0.74,
+    "evidence": [
+      "embedded=true",
+      "font_file_kind=Some(\"FontFile2\")"
+    ],
+    "exact_limit": "only existing embedded outlines are eligible; raster glyph evidence uses external hook policy",
+    "level": "outline_repackage",
+    "status": "implemented_with_limits"
+  }
+]

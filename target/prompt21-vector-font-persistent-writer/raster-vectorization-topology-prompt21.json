@@ -1,0 +1,11 @@
+[
+  {
+    "closed_contours": 0,
+    "contour_ordering": "deterministic top-left scan order",
+    "duplicate_contours_suppressed": 0,
+    "finite_coordinate_checks": "all integer pixel bboxes mapped to finite page-space boxes",
+    "holes": 0,
+    "open_contours": 0,
+    "self_intersections": 0
+  }
+]
