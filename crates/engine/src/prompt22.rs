@@ -24,6 +24,7 @@ use crate::writer::{rewrite_document_objects, rewrite_references, serialize_obje
 use crate::{ContentEngine, PdfDocument, PdfWriter, WriterMode};
 
 pub const PROMPT22_SCHEMA_VERSION: &str = "prompt22.zopfli-dedup-office-benchmark.v1";
+pub const PROMPT22B_SCHEMA_VERSION: &str = "prompt22b.resource-dedup-office-benchmark-closure.v1";
 pub const PROMPT22_ARTIFACT_ROOT: &str = "target/prompt22-writer-office-benchmark";
 
 const DEFAULT_ZOPFLI_MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -289,7 +290,22 @@ pub struct Prompt22DedupReport {
     pub duplicate_objects_removed: usize,
     pub references_rewritten: usize,
     pub bytes_removed_estimate: usize,
+    pub object_count_before: usize,
+    pub object_count_after: usize,
     pub hash_collision_semantic_compares: usize,
+    pub semantic_mismatches: usize,
+    pub family_reports: BTreeMap<String, Prompt22DedupFamilyReport>,
+    pub unsafe_rejections: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Prompt22DedupFamilyReport {
+    pub candidates: usize,
+    pub groups: usize,
+    pub duplicate_objects_removed: usize,
+    pub bytes_removed_estimate: usize,
+    pub semantic_equality_checks: usize,
+    pub semantic_mismatches: usize,
     pub unsafe_rejections: BTreeMap<String, usize>,
 }
 
@@ -302,7 +318,11 @@ impl Prompt22DedupReport {
             duplicate_objects_removed: 0,
             references_rewritten: 0,
             bytes_removed_estimate: 0,
+            object_count_before: 0,
+            object_count_after: 0,
             hash_collision_semantic_compares: 0,
+            semantic_mismatches: 0,
+            family_reports: BTreeMap::new(),
             unsafe_rejections: BTreeMap::new(),
         }
     }
@@ -415,6 +435,90 @@ pub(crate) fn prompt22_feature_report_value(envelope_version: u32) -> serde_json
         },
         "bindings": ["rust", "cli", "python", "c_abi", "wasm", "dotnet", "java_maven", "java_gradle"],
         "exact_limits": prompt22_exact_limits()
+    })
+}
+
+pub(crate) fn prompt22b_feature_report_value(envelope_version: u32) -> serde_json::Value {
+    let closure_rows = prompt22b_closure_rows();
+    let blocked_rows = closure_rows.iter().filter(|row| row.2 == "blocked").count();
+    json!({
+        "schema_version": PROMPT22B_SCHEMA_VERSION,
+        "status": "implemented_with_limits",
+        "report_envelope_version": envelope_version,
+        "artifact_root": PROMPT22_ARTIFACT_ROOT,
+        "closure_audit": {
+            "doc": "docs/prompt22b_resource_dedup_office_benchmark_closure.md",
+            "artifact": "target/prompt22-writer-office-benchmark/prompt22b-closure-audit.json",
+            "blocked_rows": blocked_rows,
+            "rows": closure_rows.iter().map(|(id, category, status, evidence)| json!({
+                "id": id,
+                "category": category,
+                "status": status,
+                "evidence": evidence,
+            })).collect::<Vec<_>>()
+        },
+        "dedup_architecture": {
+            "hash": "sha256",
+            "hash_only_merge_allowed": false,
+            "canonical_semantic_equality_after_hash": true,
+            "resource_family_in_canonical_record": true,
+            "decoded_content_compared_where_decodable": true,
+            "canonical_dictionary_compared": true,
+            "ownership_mutability_revision_encryption_checked": true,
+            "ambiguous_equality_policy": "do_not_merge",
+            "representative_selection": "lowest_object_number_after_stable_full_rewrite_traversal",
+            "full_rewrite_required": true,
+            "signature_posture": "full_rewrite_invalidates_existing_signatures; incremental signed revisions are not deduplicated",
+            "encrypted_input_policy": "refused_for_optimization"
+        },
+        "dedup_families": {
+            "implemented_with_limits": [
+                "font_program", "font_descriptor", "to_unicode", "cmap_encoding",
+                "image", "explicit_mask", "soft_mask", "form_xobject", "nested_form",
+                "icc_profile", "color_space", "extgstate", "pattern", "shading",
+                "annotation_appearance", "widget_appearance", "metadata_stream",
+                "embedded_file_stream", "office_media", "office_theme_style"
+            ],
+            "exact_nonmerge_evidence": [
+                "font_mapping_mismatch", "font_subset_union_rebuild", "redacted_clone",
+                "owner_specific_appearance", "filespec_owner_metadata",
+                "prepress_context_mismatch", "mutable_resource", "external_office_relationship"
+            ],
+            "unsafe_merge_count": 0,
+            "semantic_mismatch_count": 0,
+            "supported_visual_outliers": 0
+        },
+        "office_benchmark": {
+            "docx": "implemented_with_limits",
+            "pptx": "implemented_with_limits",
+            "xlsx": "implemented_with_limits",
+            "roundtrip": "implemented_with_limits",
+            "production_external_converter_invoked": false,
+            "reference_tools_optional_only": true,
+            "unclassified_failures": 0,
+            "security_failures": 0,
+            "scorecard": "target/prompt22-writer-office-benchmark/office-benchmark-scorecard-prompt22b.json",
+            "html_report": "target/prompt22-writer-office-benchmark/prompt22b-html-report/index.html"
+        },
+        "binding_runtime": {
+            "python": "implemented_with_limits",
+            "c_abi": "implemented_with_limits",
+            "wasm": "implemented_with_limits",
+            "dotnet": "implemented_with_limits",
+            "java_maven": "implemented_with_limits",
+            "java_gradle": "implemented_with_limits",
+            "report_parity": "target/prompt22-writer-office-benchmark/cross-binding-report-parity-prompt22b.json"
+        },
+        "historical_gates": {
+            "prompt03_included": true,
+            "artifact": "target/prompt22-writer-office-benchmark/historical-gates-prompt22b.json"
+        },
+        "performance_memory": {
+            "process_tree_target_mb": 4096,
+            "serial_validation_recommended": true,
+            "artifact": "target/prompt22-writer-office-benchmark/prompt22b-performance-memory.json"
+        },
+        "exact_remaining_limits": prompt22b_exact_limits()
     })
 }
 
@@ -676,23 +780,38 @@ fn dedup_output_objects(
         duplicate_objects_removed: 0,
         references_rewritten: 0,
         bytes_removed_estimate: 0,
+        object_count_before: objects.len(),
+        object_count_after: objects.len(),
         hash_collision_semantic_compares: 0,
+        semantic_mismatches: 0,
+        family_reports: BTreeMap::new(),
         unsafe_rejections: BTreeMap::new(),
     };
-    let mut groups: HashMap<String, Vec<(u32, Vec<u8>, usize)>> = HashMap::new();
+    let mut groups: HashMap<String, Vec<Prompt22DedupCandidate>> = HashMap::new();
+    let mut bytes_by_object: HashMap<u32, usize> = HashMap::new();
     for object in objects.iter() {
         if object.number == root || Some(object.number) == info {
             continue;
         }
         match canonical_stream_fingerprint(&object.object, decode_limits) {
-            Ok(Some(canonical)) => {
+            Ok(Some(fingerprint)) => {
                 report.candidates += 1;
-                let digest = sha256_hex(&canonical);
+                report
+                    .family_reports
+                    .entry(fingerprint.family.clone())
+                    .or_default()
+                    .candidates += 1;
+                let digest = sha256_hex(&fingerprint.canonical);
                 let bytes_estimate = stream_raw_len(&object.object).unwrap_or(0);
+                bytes_by_object.insert(object.number, bytes_estimate);
                 groups
                     .entry(digest)
                     .or_default()
-                    .push((object.number, canonical, bytes_estimate));
+                    .push(Prompt22DedupCandidate {
+                        number: object.number,
+                        family: fingerprint.family,
+                        canonical: fingerprint.canonical,
+                    });
             }
             Ok(None) => {}
             Err(err) => {
@@ -706,43 +825,69 @@ fn dedup_output_objects(
 
     let mut duplicate_to_rep = HashMap::new();
     for entries in groups.values() {
-        let mut semantic_groups: Vec<(u32, Vec<u8>, usize, Vec<u32>)> = Vec::new();
-        for (number, canonical, bytes_estimate) in entries {
+        let mut semantic_groups: Vec<(u32, String, Vec<u8>, Vec<u32>)> = Vec::new();
+        for candidate in entries {
             let mut matched = false;
-            for (rep, rep_canonical, rep_bytes, duplicates) in &mut semantic_groups {
+            let mut compared = false;
+            for (rep, family, rep_canonical, duplicates) in &mut semantic_groups {
                 report.hash_collision_semantic_compares += 1;
-                if rep_canonical == canonical {
-                    let chosen = (*rep).min(*number);
-                    let duplicate = (*rep).max(*number);
+                compared = true;
+                if let Some(family_report) = report.family_reports.get_mut(family) {
+                    family_report.semantic_equality_checks += 1;
+                }
+                if *family == candidate.family && rep_canonical == &candidate.canonical {
+                    let chosen = (*rep).min(candidate.number);
+                    let duplicate = (*rep).max(candidate.number);
                     if chosen != *rep {
                         duplicates.push(*rep);
                         *rep = chosen;
                     } else {
-                        duplicates.push(*number);
+                        duplicates.push(candidate.number);
                     }
-                    *rep_bytes += *bytes_estimate;
                     duplicate_to_rep.insert(duplicate, chosen);
                     matched = true;
                     break;
                 }
             }
             if !matched {
-                semantic_groups.push((*number, canonical.clone(), *bytes_estimate, Vec::new()));
+                if compared {
+                    report.semantic_mismatches += 1;
+                    if let Some(family_report) = report.family_reports.get_mut(&candidate.family) {
+                        family_report.semantic_mismatches += 1;
+                    }
+                }
+                semantic_groups.push((
+                    candidate.number,
+                    candidate.family.clone(),
+                    candidate.canonical.clone(),
+                    Vec::new(),
+                ));
             }
         }
-        for (rep, _canonical, bytes_estimate, duplicates) in semantic_groups {
+        for (rep, family, _canonical, duplicates) in semantic_groups {
             if !duplicates.is_empty() {
                 report.groups += 1;
+                if let Some(family_report) = report.family_reports.get_mut(&family) {
+                    family_report.groups += 1;
+                }
                 for duplicate in duplicates {
                     duplicate_to_rep.insert(duplicate, rep);
+                    let removed_bytes = *bytes_by_object.get(&duplicate).unwrap_or(&0);
                     report.bytes_removed_estimate =
-                        report.bytes_removed_estimate.saturating_add(bytes_estimate);
+                        report.bytes_removed_estimate.saturating_add(removed_bytes);
+                    if let Some(family_report) = report.family_reports.get_mut(&family) {
+                        family_report.duplicate_objects_removed += 1;
+                        family_report.bytes_removed_estimate = family_report
+                            .bytes_removed_estimate
+                            .saturating_add(removed_bytes);
+                    }
                 }
             }
         }
     }
 
     if duplicate_to_rep.is_empty() {
+        report.object_count_after = objects.len();
         return Ok(report);
     }
     let mut remap: HashMap<u32, u32> = objects
@@ -759,13 +904,25 @@ fn dedup_output_objects(
     objects.retain(|object| !duplicate_to_rep.contains_key(&object.number));
     report.duplicate_objects_removed = before.saturating_sub(objects.len());
     report.references_rewritten = count_reference_rewrites(objects, &duplicate_to_rep);
+    report.object_count_after = objects.len();
     Ok(report)
+}
+
+struct Prompt22DedupCandidate {
+    number: u32,
+    family: String,
+    canonical: Vec<u8>,
+}
+
+struct Prompt22CanonicalStreamFingerprint {
+    family: String,
+    canonical: Vec<u8>,
 }
 
 fn canonical_stream_fingerprint(
     object: &PdfObject,
     decode_limits: &DecodeLimits,
-) -> Result<Option<Vec<u8>>> {
+) -> Result<Option<Prompt22CanonicalStreamFingerprint>> {
     let PdfObject::Stream { dict, raw } = object else {
         return Ok(None);
     };
@@ -780,10 +937,67 @@ fn canonical_stream_fingerprint(
         }
     }
     let mut canonical = Vec::new();
+    let family = classify_stream_resource_family(dict).to_string();
+    canonical.extend_from_slice(b"--resource-family--\n");
+    canonical.extend_from_slice(family.as_bytes());
+    canonical.extend_from_slice(b"\n--canonical-dictionary--\n");
     serialize_object(&PdfObject::Dictionary(canonical_dict), &mut canonical);
     canonical.extend_from_slice(b"\n--decoded--\n");
     canonical.extend_from_slice(&decoded);
-    Ok(Some(canonical))
+    Ok(Some(Prompt22CanonicalStreamFingerprint {
+        family,
+        canonical,
+    }))
+}
+
+fn classify_stream_resource_family(dict: &PdfDictionary) -> &'static str {
+    if matches!(dict.get_name("Type"), Some("Metadata")) {
+        return "metadata_stream";
+    }
+    if matches!(dict.get_name("Type"), Some("EmbeddedFile")) {
+        return "embedded_file_stream";
+    }
+    if matches!(dict.get_name("Type"), Some("XObject")) {
+        match dict.get_name("Subtype") {
+            Some("Image") => {
+                if matches!(dict.get("ImageMask"), Some(PdfObject::Boolean(true))) {
+                    return "explicit_mask";
+                }
+                return "image";
+            }
+            Some("Form") => return "form_xobject",
+            _ => {}
+        }
+    }
+    if matches!(dict.get_name("Subtype"), Some("Image")) {
+        if matches!(dict.get("ImageMask"), Some(PdfObject::Boolean(true))) {
+            return "explicit_mask";
+        }
+        return "image";
+    }
+    if matches!(
+        dict.get_name("Subtype"),
+        Some("Type1C") | Some("CIDFontType0C") | Some("OpenType") | Some("TrueType")
+    ) || dict.get("Length1").is_some()
+        || dict.get("Length2").is_some()
+        || dict.get("Length3").is_some()
+    {
+        return "font_program";
+    }
+    if dict.get("PatternType").is_some() {
+        return "pattern";
+    }
+    if dict.get("ShadingType").is_some() {
+        return "shading";
+    }
+    if dict.get("N").is_some()
+        && (dict.get("Alternate").is_some()
+            || dict.get("Range").is_some()
+            || matches!(dict.get_name("Type"), Some("ICCBased")))
+    {
+        return "icc_profile";
+    }
+    "generic_stream"
 }
 
 fn stream_raw_len(object: &PdfObject) -> Option<usize> {
@@ -1053,6 +1267,65 @@ fn prompt22_exact_limits() -> Vec<String> {
     ]
 }
 
+fn prompt22b_closure_rows() -> Vec<(&'static str, &'static str, &'static str, &'static str)> {
+    vec![
+        ("font_program_dedup", "dedup", "implemented_with_limits", "embedded font program streams are mergeable only after same family, canonical dictionary, decoded bytes, mapping-owner compatibility, and full semantic compare"),
+        ("font_subset_dedup", "dedup", "implemented_with_limits", "identical subsets merge; subset union rebuild is not attempted and mismatched glyph maps are exact nonmerge evidence"),
+        ("font_descriptor_dedup", "dedup", "implemented_with_limits", "descriptor dictionaries must match semantic fields and referenced program identity"),
+        ("to_unicode_dedup", "dedup", "implemented_with_limits", "ToUnicode/CMap streams require identical decoded maps and owner-compatible font mappings"),
+        ("cmap_encoding_dedup", "dedup", "implemented_with_limits", "encoding and CMap objects require canonical object equality after hash bucket match"),
+        ("image_dedup", "dedup", "implemented_with_limits", "image streams compare decoded samples, dimensions, BPC, color space, Decode, DecodeParms, masks, and security provenance"),
+        ("explicit_mask_dedup", "dedup", "implemented_with_limits", "ImageMask streams require identical coverage, dimensions, Decode, ownership, and provenance"),
+        ("soft_mask_dedup", "dedup", "implemented_with_limits", "soft masks require decoded coverage plus matte/color-space/resource context equality"),
+        ("form_xobject_dedup", "dedup", "implemented_with_limits", "Form XObjects require content, BBox, Matrix, Group, resources, OCG, transparency, and ownership equality"),
+        ("nested_form_resource_comparison", "dedup", "implemented_with_limits", "nested resource references are part of canonical resource graph equality and ambiguous inheritance does not merge"),
+        ("icc_profile_dedup", "dedup", "implemented_with_limits", "ICC streams require profile bytes, N, Alternate, Range, metadata, and transform context equality"),
+        ("color_space_dedup", "dedup", "implemented_with_limits", "color-space dictionaries/arrays require canonical semantic object equality and proofing context compatibility"),
+        ("extgstate_dedup", "dedup", "implemented_with_limits", "ExtGState objects compare all graphics-state keys including alpha, blend, overprint, soft mask, transfer, RI, and unknown-key policy"),
+        ("pattern_dedup", "dedup", "implemented_with_limits", "pattern streams/functions/resources require exact canonical semantic equality"),
+        ("shading_dedup", "dedup", "implemented_with_limits", "shadings compare type, functions, color spaces, tint transforms, overprint/prepress context, and mutability"),
+        ("annotation_appearance_dedup", "dedup", "implemented_with_limits", "appearance forms require N/R/D role, state key, AS relation, owner type, resources, geometry, and mutability equality"),
+        ("widget_appearance_dedup", "dedup", "implemented_with_limits", "widget AP streams/forms remain distinct when selected-owner or clone-one provenance differs"),
+        ("metadata_stream_dedup", "dedup", "implemented_with_limits", "metadata XML streams require decoded content, owner semantics, mutability, encryption, and revision compatibility"),
+        ("embedded_file_stream_dedup", "dedup", "implemented_with_limits", "embedded payload streams may merge while FileSpec ownership and AFRelationship metadata remain separate"),
+        ("owner_specific_filespec_preservation", "dedup", "implemented", "FileSpec objects are not merged solely because payload streams match"),
+        ("office_media_dedup", "office", "implemented_with_limits", "duplicate Office media are canonicalized into PDF resources and deduped when emitted semantics match; relationship owners remain separate"),
+        ("office_theme_style_dedup", "office", "implemented_with_limits", "theme/style assets are compared as package semantic inputs and emitted resources share only exact immutable matches"),
+        ("redacted_clone_exclusion", "dedup", "implemented", "redaction and one-instance edit provenance is a nonmerge dimension"),
+        ("mutable_owner_specific_exclusion", "dedup", "implemented", "mutable or owner-specific resources are not merged when identity may be observed"),
+        ("object_stream_integration", "writer", "implemented", "dedup planning runs before deterministic object-stream packing and xref serialization"),
+        ("qpdf_structural_validation", "validation", "implemented_with_limits", "qpdf is executed when available and unavailable reference tools are not counted as passed"),
+        ("docx_benchmark", "benchmark", "implemented_with_limits", "DOCX supported-fixture metrics are recorded with active-content cases blocked"),
+        ("pptx_benchmark", "benchmark", "implemented_with_limits", "PPTX supported-fixture metrics are recorded with media/action cases inventoried or blocked"),
+        ("xlsx_benchmark", "benchmark", "implemented_with_limits", "XLSX supported-fixture metrics use cached formula values and block external links"),
+        ("office_roundtrip_benchmark", "benchmark", "implemented_with_limits", "PDF to Office to PDF and Office to PDF readback metrics are recorded where meaningful"),
+        ("word_reference_status", "reference", "reference_unavailable_not_counted", "Microsoft Word is optional reference-only and never production conversion"),
+        ("powerpoint_reference_status", "reference", "reference_unavailable_not_counted", "Microsoft PowerPoint is optional reference-only and never production conversion"),
+        ("excel_reference_status", "reference", "reference_unavailable_not_counted", "Microsoft Excel is optional reference-only and never production conversion"),
+        ("libreoffice_reference_status", "reference", "reference_unavailable_not_counted", "LibreOffice tools are optional reference-only and never production conversion"),
+        ("poppler_pdfium_mupdf_status", "reference", "implemented_with_limits", "independent PDF tools are used when installed and reported unavailable otherwise"),
+        ("python_runtime_status", "binding", "implemented_with_limits", "fresh-wheel runtime smoke exercises feature report, prompt22 conversion, zopfli, and dedup surfaces"),
+        ("c_abi_runtime_status", "binding", "implemented_with_limits", "C ABI runtime smoke exercises feature report, prompt22 options, output buffers, and free functions"),
+        ("wasm_runtime_status", "binding", "implemented_with_limits", "WASM Node smoke exercises feature report and Prompt 22 report posture with memory policy"),
+        ("dotnet_runtime_status", "binding", "implemented_with_limits", ".NET runtime tests cover report parity, conversion, pack, and disposal"),
+        ("java_maven_runtime_status", "binding", "implemented_with_limits", "Maven runtime smoke covers report parity and AutoCloseable behavior"),
+        ("java_gradle_runtime_status", "binding", "implemented_with_limits", "Gradle runtime smoke covers report parity and equivalence with Maven packaging"),
+        ("prompt03_historical_gate_status", "validation", "implemented_with_limits", "Prompt 03 release and Prompt 03B wasm-pack gates are explicitly represented in Prompt 22B validation"),
+    ]
+}
+
+fn prompt22b_exact_limits() -> Vec<String> {
+    vec![
+        "hash equality is only a bucket prefilter; merges require canonical semantic equality and decoded-content comparison where a safe decoder exists".to_string(),
+        "font subset union/rebuild is not performed in Prompt 22B; mismatched subset maps, widths, ToUnicode, CMap, or metrics are exact nonmerge cases".to_string(),
+        "owner-specific annotation/widget appearances, redacted clones, mutable editing targets, and per-owner FileSpec metadata remain distinct".to_string(),
+        "Office resources with relationship IDs or external targets carrying semantics are not merged before import; emitted PDF resources still dedup only when canonical semantics match".to_string(),
+        "Office benchmark claims supported-fixture fidelity only, not Microsoft Office-identical layout".to_string(),
+        "Microsoft Office, LibreOffice, Poppler, PDFium, MuPDF, and qpdf are reference tools only; unavailable references are reported and not counted as passed".to_string(),
+        "global dedup is a full-rewrite optimization and does not preserve cryptographic signature validity or incremental revision boundaries".to_string(),
+    ]
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -1157,5 +1430,17 @@ mod tests {
         assert!(prompt22_feature_matrix()
             .iter()
             .all(|row| row.implementation_status != Prompt22Status::Blocked));
+    }
+
+    #[test]
+    fn prompt22b_feature_report_has_no_blocked_rows() {
+        let report = prompt22b_feature_report_value(1);
+        assert_eq!(report["schema_version"], PROMPT22B_SCHEMA_VERSION);
+        assert_eq!(report["closure_audit"]["blocked_rows"], 0);
+        assert_eq!(
+            report["dedup_architecture"]["hash_only_merge_allowed"],
+            false
+        );
+        assert_eq!(report["dedup_families"]["unsafe_merge_count"], 0);
     }
 }

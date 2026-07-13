@@ -371,8 +371,9 @@ pub use prompt21::{
 pub use prompt22::{
     inspect_office_package_for_prompt22, office_to_pdf_with_report,
     optimize_pdf as prompt22_optimize_pdf, prompt22_report, Prompt22CompressionMode,
-    Prompt22CompressionOptions, Prompt22DedupReport, Prompt22OptimizeOptions,
-    Prompt22OptimizeReport, Prompt22Report, Prompt22Status, Prompt22WriterMode,
+    Prompt22CompressionOptions, Prompt22DedupFamilyReport, Prompt22DedupReport,
+    Prompt22OptimizeOptions, Prompt22OptimizeReport, Prompt22Report, Prompt22Status,
+    Prompt22WriterMode, PROMPT22B_SCHEMA_VERSION,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
@@ -580,8 +581,9 @@ pub mod prelude {
     pub use crate::prompt22::{
         inspect_office_package_for_prompt22, office_to_pdf_with_report,
         optimize_pdf as prompt22_optimize_pdf, prompt22_report, Prompt22CompressionMode,
-        Prompt22CompressionOptions, Prompt22DedupReport, Prompt22OptimizeOptions,
-        Prompt22OptimizeReport, Prompt22Report, Prompt22Status, Prompt22WriterMode,
+        Prompt22CompressionOptions, Prompt22DedupFamilyReport, Prompt22DedupReport,
+        Prompt22OptimizeOptions, Prompt22OptimizeReport, Prompt22Report, Prompt22Status,
+        Prompt22WriterMode, PROMPT22B_SCHEMA_VERSION,
     };
     pub use crate::signature::{
         add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options,

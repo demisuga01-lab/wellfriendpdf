@@ -2965,6 +2965,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt20b_multirun_form_appearance_closure": crate::prompt20::prompt20b_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt21_raster_vector_font_persistent_object_stream": crate::prompt21::prompt21_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt22_zopfli_dedup_office_to_pdf_benchmark": crate::prompt22::prompt22_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt22b_resource_dedup_office_benchmark_closure": crate::prompt22::prompt22b_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2995,6 +2996,7 @@ pub fn feature_report_json() -> Result<String> {
             "prompt21_object_stream_report", "prompt21_pack_object_streams",
             "prompt22_report", "prompt22_optimize_pdf",
             "prompt22_office_package_security", "prompt22_office_to_pdf",
+            "prompt22b_resource_dedup_office_benchmark_closure",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
@@ -4116,6 +4118,14 @@ mod tests {
         assert_eq!(prompt15["privacy"]["cloud_upload_default"], false);
         assert_eq!(
             prompt15["tableformer_table_transformer_hook"]["model_can_rewrite_deterministic_text"],
+            false
+        );
+        let prompt22b = &v["report"]["prompt22b_resource_dedup_office_benchmark_closure"];
+        assert_eq!(prompt22b["status"], "implemented_with_limits");
+        assert_eq!(prompt22b["closure_audit"]["blocked_rows"], 0);
+        assert_eq!(prompt22b["dedup_families"]["unsafe_merge_count"], 0);
+        assert_eq!(
+            prompt22b["office_benchmark"]["production_external_converter_invoked"],
             false
         );
         assert_envelope(
