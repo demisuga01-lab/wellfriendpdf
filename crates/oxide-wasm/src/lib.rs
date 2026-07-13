@@ -89,6 +89,22 @@ mod wasm_api {
             sdk::prompt21_history_report_json().map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = prompt22OfficeInspectJson)]
+        pub fn prompt22_office_inspect_json(bytes: &[u8], format: &str) -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::prompt22_office_inspect_json(bytes, format).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = prompt22OfficeToPdf)]
+        pub fn prompt22_office_to_pdf(bytes: &[u8], format: &str) -> Result<OxideOutput, JsValue> {
+            install_panic_hook();
+            let (out, report) = sdk::prompt22_office_to_pdf_json(bytes, format).map_err(js_err)?;
+            Ok(OxideOutput {
+                bytes: out,
+                report_json: report,
+            })
+        }
+
         #[wasm_bindgen(js_name = decodeBudgetReportJson)]
         pub fn decode_budget_report_json(
             filter: &str,
@@ -362,6 +378,11 @@ mod wasm_api {
             self.report(|b| sdk::prompt21_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = prompt22ReportJson)]
+        pub fn prompt22_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt22_report_json(b, None))
+        }
+
         #[wasm_bindgen(js_name = prompt21RasterVectorReportJson)]
         pub fn prompt21_raster_vector_report_json(
             &self,
@@ -577,6 +598,14 @@ mod wasm_api {
         #[wasm_bindgen(js_name = prompt21PackObjectStreams)]
         pub fn prompt21_pack_object_streams(&self) -> Result<OxideOutput, JsValue> {
             self.output(|b| sdk::prompt21_pack_object_streams_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt22Optimize)]
+        pub fn prompt22_optimize(
+            &self,
+            options_json: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| sdk::prompt22_optimize_pdf_json(b, options_json.as_deref(), None))
         }
 
         #[wasm_bindgen(js_name = richMediaSanitize)]

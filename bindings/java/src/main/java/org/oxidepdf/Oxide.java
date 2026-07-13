@@ -317,6 +317,16 @@ public final class Oxide {
             return Native.documentOutput(handle, Native.PROMPT21_PACK_OBJECT_STREAMS, "prompt21_pack_object_streams");
         }
 
+        public String prompt22ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT22_REPORT, "prompt22_report");
+        }
+
+        public BinaryResult prompt22Optimize(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringOutput(handle, Native.PROMPT22_OPTIMIZE, optionsJson, "prompt22_optimize");
+        }
+
         public String prompt20bTextRangeAnalyzeJson(long page) {
             ensureOpen();
             if (page < 1) throw new IllegalArgumentException("page must be one-based");
@@ -643,6 +653,14 @@ public final class Oxide {
         public static byte[] pptxToPdf(byte[] bytes) {
             return Native.officeToPdf(bytes, Native.PPTX_TO_PDF);
         }
+
+        public static String prompt22InspectJson(byte[] bytes, String format) {
+            return Native.prompt22OfficeInspect(bytes, format);
+        }
+
+        public static BinaryResult prompt22ToPdf(byte[] bytes, String format) {
+            return Native.prompt22OfficeToPdf(bytes, format);
+        }
     }
 
     private static final class Native {
@@ -763,6 +781,23 @@ public final class Oxide {
             "oxide_document_prompt21_pack_object_streams_pdf",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT22_REPORT =
+            documentReport("oxide_document_prompt22_report_json");
+        private static final MethodHandle PROMPT22_OPTIMIZE = downcall(
+            "oxide_document_prompt22_optimize_pdf",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT22_OFFICE_INSPECT = downcall(
+            "oxide_prompt22_office_inspect_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT22_OFFICE_TO_PDF = downcall(
+            "oxide_prompt22_office_to_pdf",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle PROMPT20B_TEXT_RANGE_ANALYZE = downcall(
             "oxide_document_prompt20b_text_range_analyze_json",
@@ -1568,6 +1603,47 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide office-to-pdf conversion failed", ex);
+            }
+        }
+
+        private static String prompt22OfficeInspect(byte[] bytes, String format) {
+            Objects.requireNonNull(bytes, "bytes");
+            Objects.requireNonNull(format, "format");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = arena.allocate(bytes.length);
+                data.copyFrom(MemorySegment.ofArray(bytes));
+                MemorySegment formatPtr = arena.allocateFrom(format);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT22_OFFICE_INSPECT.invokeExact(
+                    data, (long) bytes.length, formatPtr, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide prompt22_office_inspect failed", ex);
+            }
+        }
+
+        private static BinaryResult prompt22OfficeToPdf(byte[] bytes, String format) {
+            Objects.requireNonNull(bytes, "bytes");
+            Objects.requireNonNull(format, "format");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = arena.allocate(bytes.length);
+                data.copyFrom(MemorySegment.ofArray(bytes));
+                MemorySegment formatPtr = arena.allocateFrom(format);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT22_OFFICE_TO_PDF.invokeExact(
+                    data, (long) bytes.length, formatPtr, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide prompt22_office_to_pdf failed", ex);
             }
         }
 

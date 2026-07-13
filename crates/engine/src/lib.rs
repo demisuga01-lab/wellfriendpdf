@@ -118,6 +118,7 @@ pub mod prompt18;
 pub mod prompt19;
 pub mod prompt20;
 pub mod prompt21;
+pub mod prompt22;
 pub mod reader;
 pub mod render;
 pub mod sdk;
@@ -281,8 +282,9 @@ pub use ocr::preprocess::{
 };
 pub use ocr::{OcrEngine, OcrImage, OcrOptions, OcrPage, OcrPolicy, OcrWord};
 pub use office::{
-    docx_to_pdf, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf, xlsx_to_pdf, DocxLayout,
-    DocxOptions, OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
+    docx_to_pdf, inspect_office_package, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf,
+    xlsx_to_pdf, DocxLayout, DocxOptions, OfficeFormat, OfficePackageSecurityLimits,
+    OfficePackageSecurityReport, OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
 };
 pub use optional_content::{
     OptionalContentContext, OptionalContentLayerReport, OptionalContentMembershipReport,
@@ -365,6 +367,12 @@ pub use prompt21::{
     FontReconstructionReport, ObjectStreamPackingReport, PersistentStoreReport, Prompt21Report,
     RasterVectorOutputMode, RasterVectorizationOptions, RasterVectorizationReport,
     PROMPT21_ARTIFACT_ROOT, PROMPT21_SCHEMA_VERSION,
+};
+pub use prompt22::{
+    inspect_office_package_for_prompt22, office_to_pdf_with_report,
+    optimize_pdf as prompt22_optimize_pdf, prompt22_report, Prompt22CompressionMode,
+    Prompt22CompressionOptions, Prompt22DedupReport, Prompt22OptimizeOptions,
+    Prompt22OptimizeReport, Prompt22Report, Prompt22Status, Prompt22WriterMode,
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
@@ -542,8 +550,9 @@ pub mod prelude {
     };
     pub use crate::ocr::{OcrEngine, OcrOptions};
     pub use crate::office::{
-        docx_to_pdf, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf, xlsx_to_pdf, DocxLayout,
-        DocxOptions, OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
+        docx_to_pdf, inspect_office_package, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx, pptx_to_pdf,
+        xlsx_to_pdf, DocxLayout, DocxOptions, OfficeFormat, OfficePackageSecurityLimits,
+        OfficePackageSecurityReport, OfficeToPdfOptions, PptxOptions, XlsxLayout, XlsxOptions,
     };
     pub use crate::parse::{
         parse, Block, BlockKind, Document, DocumentMetadata, Page, ParseOptions, SerializeOptions,
@@ -567,6 +576,12 @@ pub mod prelude {
         AssociatedFileOwnerUpdateRequest, AssociatedFileSanitizerOptions,
         EditOperation as SignatureEditOperation, IncrementalAnnotationEdit,
         IncrementalPagePropertyEdit,
+    };
+    pub use crate::prompt22::{
+        inspect_office_package_for_prompt22, office_to_pdf_with_report,
+        optimize_pdf as prompt22_optimize_pdf, prompt22_report, Prompt22CompressionMode,
+        Prompt22CompressionOptions, Prompt22DedupReport, Prompt22OptimizeOptions,
+        Prompt22OptimizeReport, Prompt22Report, Prompt22Status, Prompt22WriterMode,
     };
     pub use crate::signature::{
         add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options,

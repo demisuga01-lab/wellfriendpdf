@@ -369,6 +369,32 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeOutput(status, buffer, json, error);
     }
 
+    public string Prompt22ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt22_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public OxideBinaryResult Prompt22Optimize(string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_prompt22_optimize_pdf(
+                _handle, optionsPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(optionsPtr);
+            }
+        }
+    }
+
     public string Prompt20bTextRangeAnalyzeJson(nuint page = 1)
     {
         ThrowIfDisposed();

@@ -339,6 +339,22 @@ internal static partial class NativeMethods
         DocumentHandle document, out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt22_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_prompt22_optimize_pdf(
+        DocumentHandle document, IntPtr optionsJson, out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_prompt22_office_inspect_json(
+        byte[] data, UIntPtr len, IntPtr format, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_prompt22_office_to_pdf(
+        byte[] data, UIntPtr len, IntPtr format, out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_prompt20b_text_range_analyze_json(
         DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
 

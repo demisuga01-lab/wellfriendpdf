@@ -260,6 +260,8 @@ enum Commands {
     Prompt20bReport(Prompt17ReportArgs),
     /// Combined Prompt 21 raster/vector, font, persistent history, and writer report
     Prompt21Report(Prompt17ReportArgs),
+    /// Combined Prompt 22 zopfli, dedup, Office conversion, and benchmark report
+    Prompt22Report(Prompt17ReportArgs),
     /// Analyze bounded raster-to-vector candidates on a page
     RasterVectorReport(Prompt21RasterVectorArgs),
     /// Alias for raster-vector-report; exports the vector model by default
@@ -280,6 +282,12 @@ enum Commands {
     ObjectStreamReport(Prompt17ReportArgs),
     /// Save a full-rewrite PDF using object streams and an xref stream
     SaveObjectStreams(Prompt21SaveObjectStreamsArgs),
+    /// Save a full-rewrite PDF with Prompt 22 compression and dedup planning
+    Prompt22Optimize(Prompt22OptimizeArgs),
+    /// Inspect a DOCX/PPTX/XLSX package under Prompt 22 security limits
+    Prompt22OfficeInspect(Prompt22OfficeArgs),
+    /// Convert DOCX/PPTX/XLSX to PDF through the Prompt 22 native conversion report path
+    Prompt22OfficeToPdf(Prompt22OfficeToPdfArgs),
     /// Analyze or edit a logical text range spanning text-showing operators
     EditTextRange(Prompt20bTextRangeArgs),
     /// Alias for vector-list focused on Form invocation ownership
@@ -1097,6 +1105,63 @@ struct Prompt21SaveObjectStreamsArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt22OptimizeArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output PDF
+    #[arg(short, long, default_value = "prompt22-optimized.pdf")]
+    output: PathBuf,
+    /// Optional Prompt22OptimizeOptions JSON file
+    #[arg(long)]
+    options: Option<PathBuf>,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print JSON report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Validate and report without writing the output PDF
+    #[arg(long)]
+    dry_run: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt22OfficeArgs {
+    /// Path to the input DOCX/PPTX/XLSX file
+    input: PathBuf,
+    /// Office format: docx, pptx, or xlsx
+    #[arg(long)]
+    format: String,
+    /// Output JSON report; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+struct Prompt22OfficeToPdfArgs {
+    /// Path to the input DOCX/PPTX/XLSX file
+    input: PathBuf,
+    /// Output PDF
+    #[arg(short, long, default_value = "prompt22-office.pdf")]
+    output: PathBuf,
+    /// Office format: docx, pptx, or xlsx
+    #[arg(long)]
+    format: String,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Print JSON report to stdout
+    #[arg(long)]
+    json: bool,
+    /// Validate and report without writing the output PDF
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Parser)]
@@ -2623,6 +2688,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Prompt20Report(args) => run_prompt20_report(args),
         Commands::Prompt20bReport(args) => run_prompt20b_report(args),
         Commands::Prompt21Report(args) => run_prompt21_report(args),
+        Commands::Prompt22Report(args) => run_prompt22_report(args),
         Commands::RasterVectorReport(args) => run_prompt21_raster_vector_report(args),
         Commands::RasterVectorize(args) => run_prompt21_raster_vector_report(args),
         Commands::FontReconstruct(args) => run_prompt21_font_reconstruction_report(args),
@@ -2633,6 +2699,9 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::HistoryDiff(args) => run_prompt21_history_report(args),
         Commands::ObjectStreamReport(args) => run_prompt21_object_stream_report(args),
         Commands::SaveObjectStreams(args) => run_prompt21_save_object_streams(args),
+        Commands::Prompt22Optimize(args) => run_prompt22_optimize(args),
+        Commands::Prompt22OfficeInspect(args) => run_prompt22_office_inspect(args),
+        Commands::Prompt22OfficeToPdf(args) => run_prompt22_office_to_pdf(args),
         Commands::EditTextRange(args) => run_prompt20b_text_range(args),
         Commands::FormInstanceReport(args) => run_prompt20_vector_list(args),
         Commands::FormCloneOne(mut args) => {
@@ -3861,6 +3930,61 @@ fn run_prompt21_save_object_streams(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
+    if !args.dry_run {
+        std::fs::write(&args.output, output)?;
+    }
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, &pretty)?;
+    }
+    if args.json || !args.dry_run {
+        println!("{pretty}");
+    }
+    Ok(())
+}
+
+fn run_prompt22_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt22_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt22_optimize(args: Prompt22OptimizeArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options_json = match args.options {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+    let (output, report) = oxide_engine::sdk::prompt22_optimize_pdf_json(
+        &bytes,
+        options_json.as_deref(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(&args.output, output)?;
+    }
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, &pretty)?;
+    }
+    if args.json || !args.dry_run {
+        println!("{pretty}");
+    }
+    Ok(())
+}
+
+fn run_prompt22_office_inspect(args: Prompt22OfficeArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.input)?;
+    let report = oxide_engine::sdk::prompt22_office_inspect_json(&bytes, &args.format)?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt22_office_to_pdf(args: Prompt22OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.input)?;
+    let (output, report) = oxide_engine::sdk::prompt22_office_to_pdf_json(&bytes, &args.format)?;
     if !args.dry_run {
         std::fs::write(&args.output, output)?;
     }

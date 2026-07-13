@@ -498,6 +498,29 @@ OXIDE_API int oxide_document_prompt21_pack_object_streams_pdf(
     OxideBuffer *out_buffer,
     char **out_json,
     char **error_out);
+OXIDE_API int oxide_document_prompt22_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_prompt22_optimize_pdf(
+    const OxideDocument *document,
+    const char *options_json,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_prompt22_office_inspect_json(
+    const uint8_t *data,
+    uintptr_t len,
+    const char *format,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_prompt22_office_to_pdf(
+    const uint8_t *data,
+    uintptr_t len,
+    const char *format,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
 OXIDE_API int oxide_document_prompt20b_text_range_analyze_json(
     const OxideDocument *document,
     size_t page,

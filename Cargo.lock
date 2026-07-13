@@ -1366,6 +1366,7 @@ dependencies = [
  "x509-cert",
  "zeroize",
  "zip",
+ "zopfli",
 ]
 
 [[package]]

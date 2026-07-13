@@ -479,6 +479,28 @@ impl PyDocument {
         ))
     }
 
+    fn prompt22_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt22_report_json(bytes, None))
+    }
+
+    #[pyo3(signature = (options_json=None, output=None))]
+    fn prompt22_optimize<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let options = options_json.map(str::to_string);
+        let (out, report) =
+            run_oxide(|| sdk::prompt22_optimize_pdf_json(&bytes, options.as_deref(), None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
     #[pyo3(signature = (page=1))]
     fn prompt20b_text_range_analyze<'py>(
         &self,
@@ -1599,6 +1621,35 @@ fn pptx_to_pdf(pptx: PathBuf, output: Option<PathBuf>) -> PyResult<Vec<u8>> {
 }
 
 #[pyfunction]
+#[pyo3(signature = (input, format))]
+fn prompt22_office_inspect<'py>(
+    py: Python<'py>,
+    input: PathBuf,
+    format: &str,
+) -> PyResult<Py<PyAny>> {
+    let bytes = std::fs::read(&input)?;
+    let json = run_oxide(|| sdk::prompt22_office_inspect_json(&bytes, format))?;
+    parse_json_str(py, &json)
+}
+
+#[pyfunction]
+#[pyo3(signature = (input, format, output=None))]
+fn prompt22_office_to_pdf<'py>(
+    py: Python<'py>,
+    input: PathBuf,
+    format: &str,
+    output: Option<PathBuf>,
+) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+    let bytes = std::fs::read(&input)?;
+    let (out, report) = run_oxide(|| sdk::prompt22_office_to_pdf_json(&bytes, format))?;
+    write_optional(&output, &out)?;
+    Ok((
+        PyBytes::new(py, &out).unbind(),
+        parse_json_str(py, &report)?,
+    ))
+}
+
+#[pyfunction]
 #[pyo3(signature = (pdf, text=None, image=None, output=None, pages="all", position="center", opacity=0.28, rotation=45.0, font_size=64.0, color="#8c8c8c", scale=0.5, password=None))]
 #[allow(clippy::too_many_arguments)]
 fn watermark_pdf(
@@ -1815,6 +1866,8 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(docx_to_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(xlsx_to_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(pptx_to_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(prompt22_office_inspect, module)?)?;
+    module.add_function(wrap_pyfunction!(prompt22_office_to_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(watermark_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(add_page_numbers, module)?)?;
     module.add_function(wrap_pyfunction!(organize_pdf, module)?)?;

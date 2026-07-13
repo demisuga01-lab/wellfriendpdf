@@ -1488,6 +1488,7 @@ xfa_document_report!(
     oxide_document_prompt21_object_stream_report_json,
     prompt21_object_stream_report_json
 );
+xfa_document_report!(oxide_document_prompt22_report_json, prompt22_report_json);
 
 /// Analyze Prompt 21 raster-to-vector candidates for one page.
 ///
@@ -1548,6 +1549,91 @@ pub unsafe extern "C" fn oxide_document_prompt21_pack_object_streams_pdf(
             sdk::prompt21_pack_object_streams_json(bytes, None)
         })
     }
+}
+
+/// Save a Prompt 22 optimized full-rewrite PDF.
+///
+/// # Safety
+/// `options_json` may be NULL or a valid NUL-terminated UTF-8
+/// Prompt22OptimizeOptions JSON object.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_prompt22_optimize_pdf(
+    document: *const OxideDocument,
+    options_json: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let options = options
+                .clone()
+                .map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::prompt22_optimize_pdf_json(bytes, options.as_deref(), None)
+        })
+    }
+}
+
+/// Inspect DOCX/PPTX/XLSX bytes under Prompt 22 package security policy.
+///
+/// # Safety
+/// `data` must point to `len` readable bytes and `format` must be a valid
+/// NUL-terminated UTF-8 string (`docx`, `pptx`, or `xlsx`).
+#[no_mangle]
+pub unsafe extern "C" fn oxide_prompt22_office_inspect_json(
+    data: *const u8,
+    len: usize,
+    format: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let format = unsafe { required_c_string(format, "format") };
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let bytes = unsafe { read_input_bytes(data, len, "data") }?;
+        let format = format.clone()?;
+        let json = oxide(sdk::prompt22_office_inspect_json(bytes, &format))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Convert DOCX/PPTX/XLSX bytes to PDF through the Prompt 22 report path.
+///
+/// # Safety
+/// `data` must point to `len` readable bytes and `format` must be a valid
+/// NUL-terminated UTF-8 string (`docx`, `pptx`, or `xlsx`).
+#[no_mangle]
+pub unsafe extern "C" fn oxide_prompt22_office_to_pdf(
+    data: *const u8,
+    len: usize,
+    format: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let format = unsafe { required_c_string(format, "format") };
+    ffi_status(error_out, || {
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let bytes = unsafe { read_input_bytes(data, len, "data") }?;
+        let format = format.clone()?;
+        let (out, json) = oxide(sdk::prompt22_office_to_pdf_json(bytes, &format))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
 }
 
 /// Inspect a Prompt 20B page-local multi-run range model.

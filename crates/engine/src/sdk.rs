@@ -527,6 +527,57 @@ pub fn prompt21_pack_object_streams_json(
     ))
 }
 
+/// Combined Prompt 22 zopfli, resource dedup, Office conversion, and benchmark report.
+pub fn prompt22_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt22_report",
+        &crate::prompt22::prompt22_report(&engine)?,
+    )
+}
+
+pub fn prompt22_optimize_pdf_json(
+    bytes: &[u8],
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let options = match options_json {
+        Some(json) if !json.trim().is_empty() => {
+            serde_json::from_str::<crate::prompt22::Prompt22OptimizeOptions>(json)
+                .map_err(json_err)?
+        }
+        _ => crate::prompt22::Prompt22OptimizeOptions::default(),
+    };
+    let (output, report) = crate::prompt22::optimize_pdf(bytes, password, options)?;
+    Ok((output, envelope("prompt22_optimize_report", &report)?))
+}
+
+pub fn prompt22_office_inspect_json(bytes: &[u8], format: &str) -> Result<String> {
+    let format = crate::office::OfficeFormat::parse(format).ok_or_else(|| {
+        OxideError::invalid_input(format!(
+            "unsupported Office format '{format}', expected docx, pptx, or xlsx"
+        ))
+    })?;
+    envelope(
+        "prompt22_office_package_security",
+        &crate::prompt22::inspect_office_package_for_prompt22(bytes, format)?,
+    )
+}
+
+pub fn prompt22_office_to_pdf_json(bytes: &[u8], format: &str) -> Result<(Vec<u8>, String)> {
+    let format = crate::office::OfficeFormat::parse(format).ok_or_else(|| {
+        OxideError::invalid_input(format!(
+            "unsupported Office format '{format}', expected docx, pptx, or xlsx"
+        ))
+    })?;
+    let (output, report) = crate::prompt22::office_to_pdf_with_report(
+        bytes,
+        format,
+        &crate::office::OfficeToPdfOptions::default(),
+    )?;
+    Ok((output, envelope("prompt22_office_to_pdf_report", &report)?))
+}
+
 pub fn prompt20b_text_range_analyze_json(
     bytes: &[u8],
     page: usize,
@@ -2913,6 +2964,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt20_vertical_rtl_patch_vector_ink_editing": crate::prompt20::prompt20_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt20b_multirun_form_appearance_closure": crate::prompt20::prompt20b_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt21_raster_vector_font_persistent_object_stream": crate::prompt21::prompt21_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt22_zopfli_dedup_office_to_pdf_benchmark": crate::prompt22::prompt22_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2941,6 +2993,8 @@ pub fn feature_report_json() -> Result<String> {
             "prompt20b_report", "prompt21_report", "prompt21_raster_vector_report",
             "prompt21_font_reconstruction_report", "prompt21_history_report",
             "prompt21_object_stream_report", "prompt21_pack_object_streams",
+            "prompt22_report", "prompt22_optimize_pdf",
+            "prompt22_office_package_security", "prompt22_office_to_pdf",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",

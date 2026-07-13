@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{Cursor, Read, Seek, Write};
 
+use serde::{Deserialize, Serialize};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -156,6 +157,493 @@ impl Default for OfficeToPdfOptions {
     }
 }
 
+/// Supported OOXML package families for secure inspection and native PDF conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OfficeFormat {
+    Docx,
+    Pptx,
+    Xlsx,
+}
+
+impl OfficeFormat {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.to_ascii_lowercase().as_str() {
+            "docx" | "word" => Some(Self::Docx),
+            "pptx" | "powerpoint" => Some(Self::Pptx),
+            "xlsx" | "excel" => Some(Self::Xlsx),
+            _ => None,
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Docx => "docx",
+            Self::Pptx => "pptx",
+            Self::Xlsx => "xlsx",
+        }
+    }
+
+    const fn root_part(self) -> &'static str {
+        match self {
+            Self::Docx => "word/document.xml",
+            Self::Pptx => "ppt/presentation.xml",
+            Self::Xlsx => "xl/workbook.xml",
+        }
+    }
+}
+
+/// Bounded package inspection limits shared by Office-to-PDF importers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfficePackageSecurityLimits {
+    pub max_package_bytes: u64,
+    pub max_parts: usize,
+    pub max_uncompressed_bytes: u64,
+    pub max_part_bytes: u64,
+    pub max_xml_part_bytes: u64,
+    pub max_media_part_bytes: u64,
+    pub max_decompression_ratio: u64,
+    pub max_relationships: usize,
+}
+
+impl Default for OfficePackageSecurityLimits {
+    fn default() -> Self {
+        Self {
+            max_package_bytes: 256 * 1024 * 1024,
+            max_parts: 10_000,
+            max_uncompressed_bytes: 512 * 1024 * 1024,
+            max_part_bytes: 128 * 1024 * 1024,
+            max_xml_part_bytes: 32 * 1024 * 1024,
+            max_media_part_bytes: 128 * 1024 * 1024,
+            max_decompression_ratio: 250,
+            max_relationships: 100_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfficePackageSecurityReport {
+    pub schema_version: &'static str,
+    pub format: String,
+    pub safe_for_conversion: bool,
+    pub part_count: usize,
+    pub compressed_bytes: u64,
+    pub uncompressed_bytes: u64,
+    pub relationship_count: usize,
+    pub external_relationship_count: usize,
+    pub active_content_count: usize,
+    pub blocked_reason: Option<String>,
+    pub limits: OfficePackageSecurityLimits,
+    pub relationships: Vec<OfficeRelationshipReport>,
+    pub findings: Vec<OfficeSecurityFinding>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfficeRelationshipReport {
+    pub owner_part: String,
+    pub id: String,
+    pub relationship_type: String,
+    pub target: String,
+    pub target_mode: String,
+    pub classification: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OfficeSecurityFinding {
+    pub part: String,
+    pub category: String,
+    pub reason: String,
+    pub severity: String,
+}
+
+/// Inspect an OOXML package without fetching external resources or executing active content.
+pub fn inspect_office_package(
+    bytes: &[u8],
+    format: OfficeFormat,
+    limits: &OfficePackageSecurityLimits,
+) -> Result<OfficePackageSecurityReport> {
+    if bytes.len() as u64 > limits.max_package_bytes {
+        return Ok(office_security_report(
+            format,
+            limits.clone(),
+            0,
+            bytes.len() as u64,
+            0,
+            Vec::new(),
+            vec![OfficeSecurityFinding {
+                part: "(package)".to_string(),
+                category: "zip_limit".to_string(),
+                reason: format!(
+                    "package size {} exceeds max_package_bytes {}",
+                    bytes.len(),
+                    limits.max_package_bytes
+                ),
+                severity: "block".to_string(),
+            }],
+        ));
+    }
+
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).map_err(zip_err)?;
+    let mut seen = BTreeSet::new();
+    let mut findings = Vec::new();
+    let mut relationships = Vec::new();
+    let mut uncompressed_total = 0u64;
+
+    if zip.len() > limits.max_parts {
+        findings.push(OfficeSecurityFinding {
+            part: "(package)".to_string(),
+            category: "zip_limit".to_string(),
+            reason: format!(
+                "part count {} exceeds max_parts {}",
+                zip.len(),
+                limits.max_parts
+            ),
+            severity: "block".to_string(),
+        });
+    }
+
+    for idx in 0..zip.len() {
+        let mut entry = zip.by_index(idx).map_err(zip_err)?;
+        let name = entry.name().to_string();
+        let compressed = entry.compressed_size();
+        let uncompressed = entry.size();
+        uncompressed_total = uncompressed_total.saturating_add(uncompressed);
+
+        if !seen.insert(name.clone()) {
+            findings.push(OfficeSecurityFinding {
+                part: name.clone(),
+                category: "duplicate_part".to_string(),
+                reason: "duplicate ZIP entry name".to_string(),
+                severity: "block".to_string(),
+            });
+        }
+        if unsafe_zip_path(&name) {
+            findings.push(OfficeSecurityFinding {
+                part: name.clone(),
+                category: "path_traversal".to_string(),
+                reason: "ZIP part path is absolute, drive-qualified, or contains traversal"
+                    .to_string(),
+                severity: "block".to_string(),
+            });
+        }
+        if !matches!(
+            entry.compression(),
+            CompressionMethod::Stored | CompressionMethod::Deflated
+        ) {
+            findings.push(OfficeSecurityFinding {
+                part: name.clone(),
+                category: "unsupported_compression".to_string(),
+                reason: format!(
+                    "unsupported ZIP compression method {:?}",
+                    entry.compression()
+                ),
+                severity: "block".to_string(),
+            });
+        }
+        if uncompressed > limits.max_part_bytes {
+            findings.push(OfficeSecurityFinding {
+                part: name.clone(),
+                category: "zip_limit".to_string(),
+                reason: format!("part size {uncompressed} exceeds max_part_bytes"),
+                severity: "block".to_string(),
+            });
+        }
+        if is_xml_part(&name) && uncompressed > limits.max_xml_part_bytes {
+            findings.push(OfficeSecurityFinding {
+                part: name.clone(),
+                category: "xml_limit".to_string(),
+                reason: format!("XML part size {uncompressed} exceeds max_xml_part_bytes"),
+                severity: "block".to_string(),
+            });
+        }
+        if is_media_part(&name) && uncompressed > limits.max_media_part_bytes {
+            findings.push(OfficeSecurityFinding {
+                part: name.clone(),
+                category: "media_limit".to_string(),
+                reason: format!("media part size {uncompressed} exceeds max_media_part_bytes"),
+                severity: "block".to_string(),
+            });
+        }
+        if compressed > 0 && uncompressed / compressed.max(1) > limits.max_decompression_ratio {
+            findings.push(OfficeSecurityFinding {
+                part: name.clone(),
+                category: "zip_bomb".to_string(),
+                reason: format!(
+                    "decompression ratio {} exceeds max_decompression_ratio {}",
+                    uncompressed / compressed.max(1),
+                    limits.max_decompression_ratio
+                ),
+                severity: "block".to_string(),
+            });
+        }
+        if active_content_part(&name) {
+            findings.push(OfficeSecurityFinding {
+                part: name.clone(),
+                category: "active_content".to_string(),
+                reason: "macro, OLE, ActiveX, embedded executable, or script part is present"
+                    .to_string(),
+                severity: "block".to_string(),
+            });
+        }
+
+        if is_xml_part(&name) && uncompressed <= limits.max_xml_part_bytes {
+            let mut data = Vec::new();
+            entry.read_to_end(&mut data)?;
+            let xml = String::from_utf8_lossy(&data);
+            scan_office_xml_text(&name, &xml, &mut findings);
+            if name.ends_with(".rels") {
+                relationships.extend(parse_relationship_reports(&name, &xml));
+            }
+        }
+    }
+
+    if uncompressed_total > limits.max_uncompressed_bytes {
+        findings.push(OfficeSecurityFinding {
+            part: "(package)".to_string(),
+            category: "zip_limit".to_string(),
+            reason: format!(
+                "total uncompressed size {uncompressed_total} exceeds max_uncompressed_bytes {}",
+                limits.max_uncompressed_bytes
+            ),
+            severity: "block".to_string(),
+        });
+    }
+    if relationships.len() > limits.max_relationships {
+        findings.push(OfficeSecurityFinding {
+            part: "(relationships)".to_string(),
+            category: "relationship_limit".to_string(),
+            reason: format!(
+                "relationship count {} exceeds max_relationships {}",
+                relationships.len(),
+                limits.max_relationships
+            ),
+            severity: "block".to_string(),
+        });
+    }
+    if !seen.contains(format.root_part()) {
+        findings.push(OfficeSecurityFinding {
+            part: format.root_part().to_string(),
+            category: "missing_required_part".to_string(),
+            reason: "format root part is missing".to_string(),
+            severity: "block".to_string(),
+        });
+    }
+    for rel in &relationships {
+        if rel.target_mode.eq_ignore_ascii_case("external") || external_target(&rel.target) {
+            findings.push(OfficeSecurityFinding {
+                part: rel.owner_part.clone(),
+                category: "external_relationship".to_string(),
+                reason: format!("relationship {} targets {}", rel.id, rel.target),
+                severity: "block".to_string(),
+            });
+        }
+    }
+
+    Ok(office_security_report(
+        format,
+        limits.clone(),
+        zip.len(),
+        bytes.len() as u64,
+        uncompressed_total,
+        relationships,
+        findings,
+    ))
+}
+
+fn enforce_office_package_security(bytes: &[u8], format: OfficeFormat) -> Result<()> {
+    let report = inspect_office_package(bytes, format, &OfficePackageSecurityLimits::default())?;
+    if report.safe_for_conversion {
+        return Ok(());
+    }
+    Err(OxideError::UnsupportedFeature(format!(
+        "unsafe {} package blocked by security policy: {}",
+        format.as_str(),
+        report
+            .blocked_reason
+            .unwrap_or_else(|| "unclassified security finding".to_string())
+    )))
+}
+
+fn office_security_report(
+    format: OfficeFormat,
+    limits: OfficePackageSecurityLimits,
+    part_count: usize,
+    compressed_bytes: u64,
+    uncompressed_bytes: u64,
+    relationships: Vec<OfficeRelationshipReport>,
+    findings: Vec<OfficeSecurityFinding>,
+) -> OfficePackageSecurityReport {
+    let external_relationship_count = relationships
+        .iter()
+        .filter(|rel| {
+            rel.target_mode.eq_ignore_ascii_case("external") || external_target(&rel.target)
+        })
+        .count();
+    let active_content_count = findings
+        .iter()
+        .filter(|finding| finding.category == "active_content")
+        .count();
+    let blocked_reason = findings
+        .iter()
+        .find(|finding| finding.severity == "block")
+        .map(|finding| format!("{}: {}", finding.category, finding.reason));
+    OfficePackageSecurityReport {
+        schema_version: "prompt22.office-package-security.v1",
+        format: format.as_str().to_string(),
+        safe_for_conversion: blocked_reason.is_none(),
+        part_count,
+        compressed_bytes,
+        uncompressed_bytes,
+        relationship_count: relationships.len(),
+        external_relationship_count,
+        active_content_count,
+        blocked_reason,
+        limits,
+        relationships,
+        findings,
+    }
+}
+
+fn unsafe_zip_path(name: &str) -> bool {
+    name.starts_with('/')
+        || name.starts_with('\\')
+        || name.contains("../")
+        || name.contains("..\\")
+        || name.contains(':')
+        || name.split('/').any(|segment| segment == "..")
+        || name.split('\\').any(|segment| segment == "..")
+}
+
+fn is_xml_part(name: &str) -> bool {
+    name.ends_with(".xml") || name.ends_with(".rels") || name.ends_with(".vml")
+}
+
+fn is_media_part(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("/media/")
+        || lower.ends_with(".png")
+        || lower.ends_with(".jpg")
+        || lower.ends_with(".jpeg")
+        || lower.ends_with(".gif")
+        || lower.ends_with(".bmp")
+        || lower.ends_with(".tif")
+        || lower.ends_with(".tiff")
+        || lower.ends_with(".wmf")
+        || lower.ends_with(".emf")
+        || lower.ends_with(".svg")
+}
+
+fn active_content_part(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with("vbaproject.bin")
+        || lower.contains("/activex/")
+        || lower.contains("/embeddings/")
+        || lower.ends_with(".bin")
+        || lower.ends_with(".exe")
+        || lower.ends_with(".dll")
+        || lower.ends_with(".com")
+        || lower.ends_with(".bat")
+        || lower.ends_with(".cmd")
+        || lower.ends_with(".js")
+        || lower.ends_with(".vbs")
+        || lower.ends_with(".ps1")
+}
+
+fn external_target(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    lower.starts_with("http:")
+        || lower.starts_with("https:")
+        || lower.starts_with("ftp:")
+        || lower.starts_with("file:")
+        || lower.starts_with("\\\\")
+        || lower.starts_with("//")
+}
+
+fn scan_office_xml_text(part: &str, xml: &str, findings: &mut Vec<OfficeSecurityFinding>) {
+    let lower = xml.to_ascii_lowercase();
+    for (needle, category, reason) in [
+        (
+            "<!doctype",
+            "xml_entity",
+            "DOCTYPE declarations are not accepted",
+        ),
+        ("<!entity", "xml_entity", "XML entities are not accepted"),
+        (
+            "targetmode=\"external\"",
+            "external_relationship",
+            "external relationship target mode",
+        ),
+        (
+            "targetmode='external'",
+            "external_relationship",
+            "external relationship target mode",
+        ),
+        (
+            "externalLink",
+            "external_workbook",
+            "external workbook link",
+        ),
+        (
+            "externalbook",
+            "external_workbook",
+            "external workbook link",
+        ),
+        ("<dde", "active_content", "DDE marker"),
+        ("ddelink", "active_content", "DDE link marker"),
+        ("ddeservice", "active_content", "DDE service marker"),
+        ("oleobject", "active_content", "OLE object marker"),
+        ("activex", "active_content", "ActiveX marker"),
+        ("vbaproject", "active_content", "VBA macro marker"),
+        ("javascript:", "active_content", "JavaScript URI"),
+    ] {
+        if lower.contains(&needle.to_ascii_lowercase()) {
+            findings.push(OfficeSecurityFinding {
+                part: part.to_string(),
+                category: category.to_string(),
+                reason: reason.to_string(),
+                severity: "block".to_string(),
+            });
+        }
+    }
+}
+
+fn parse_relationship_reports(owner_part: &str, xml: &str) -> Vec<OfficeRelationshipReport> {
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while let Some(start_rel) = xml[pos..].find("<Relationship ") {
+        let start = pos + start_rel;
+        let Some(end_rel) = xml[start..].find('>') else {
+            break;
+        };
+        let tag = &xml[start..start + end_rel + 1];
+        if let (Some(id), Some(target)) = (attr_value(tag, "Id"), attr_value(tag, "Target")) {
+            let relationship_type = attr_value(tag, "Type").unwrap_or_default();
+            let target_mode =
+                attr_value(tag, "TargetMode").unwrap_or_else(|| "Internal".to_string());
+            let classification =
+                if target_mode.eq_ignore_ascii_case("external") || external_target(&target) {
+                    "external"
+                } else if active_content_part(&target)
+                    || relationship_type.to_ascii_lowercase().contains("ole")
+                {
+                    "active_content"
+                } else {
+                    "internal"
+                };
+            out.push(OfficeRelationshipReport {
+                owner_part: owner_part.to_string(),
+                id,
+                relationship_type,
+                target,
+                target_mode,
+                classification: classification.to_string(),
+            });
+        }
+        pos = start + end_rel + 1;
+    }
+    out
+}
+
 #[derive(Debug, Clone, PartialEq)]
 enum OfficeBlock {
     Paragraph {
@@ -301,18 +789,21 @@ pub fn pdf_to_docx(engine: &ContentEngine, options: &DocxOptions) -> Result<Vec<
 
 /// Convert DOCX bytes to PDF using Oxide's native authoring path.
 pub fn docx_to_pdf(bytes: &[u8], options: &OfficeToPdfOptions) -> Result<Vec<u8>> {
+    enforce_office_package_security(bytes, OfficeFormat::Docx)?;
     let blocks = parse_docx_blocks(bytes)?;
     office_blocks_to_pdf(&blocks, options)
 }
 
 /// Convert XLSX bytes to PDF using Oxide's native authoring path.
 pub fn xlsx_to_pdf(bytes: &[u8], options: &OfficeToPdfOptions) -> Result<Vec<u8>> {
+    enforce_office_package_security(bytes, OfficeFormat::Xlsx)?;
     let sheets = parse_xlsx_sheets(bytes)?;
     xlsx_sheets_to_pdf(&sheets, options)
 }
 
 /// Convert PPTX bytes to PDF using Oxide's native authoring path.
 pub fn pptx_to_pdf(bytes: &[u8], _options: &OfficeToPdfOptions) -> Result<Vec<u8>> {
+    enforce_office_package_security(bytes, OfficeFormat::Pptx)?;
     let slides = parse_pptx_slides(bytes)?;
     pptx_slides_to_pdf(&slides)
 }
