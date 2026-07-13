@@ -316,6 +316,12 @@ def test_module_level_reports():
     prompt18b = feature["prompt18b_advanced_secure_mutation_closure"]
     assert prompt18b["failure"]["blocked"] == 0
     assert prompt18b["failure"]["security_proof"] == 0
+    prompt23 = feature["prompt23_deterministic_writer_pubsec_aesgcm"]
+    assert prompt23["blocked_rows"] == 0
+    assert prompt23["public_key_handler_status"] == "unsupported_reported_exact"
+    assert prompt23["aes_gcm_decrypt_status"] == "unsupported_reported_exact"
+    tamper = _envelope(oxide.crypto_tamper_test(), "crypto_tamper_test")
+    assert tamper["plaintext_release_possible"] is False
     decode = _envelope(
         oxide.decode_budget_report("DCTDecode", 4096, 4096, 3), "decode_budget_report"
     )

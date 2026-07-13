@@ -310,6 +310,18 @@ public final class OxideSmokeTest {
         assertTrue(
             feature.contains("\"overlay_only_redaction_success_claims\":0"),
             "prompt17 secure redaction posture");
+        assertTrue(
+            feature.contains("\"prompt23_deterministic_writer_pubsec_aesgcm\""),
+            "prompt23 feature posture");
+        assertTrue(
+            feature.contains("\"public_key_handler_status\":\"unsupported_reported_exact\""),
+            "prompt23 public-key posture");
+        assertTrue(
+            feature.contains("\"aes_gcm_decrypt_status\":\"unsupported_reported_exact\""),
+            "prompt23 AES-GCM posture");
+        assertTrue(
+            Oxide.cryptoTamperTestJson().contains("crypto_tamper_test"),
+            "prompt23 tamper report");
         String isolation = Oxide.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),

@@ -1,0 +1,17 @@
+{
+  "artifact_root": "target/prompt23-writer-crypto",
+  "generated_at_utc": "2026-07-13T16:23:45.636057+00:00",
+  "platform": {
+    "cwd": "E:\\wellpdfsdk",
+    "machine": "AMD64",
+    "python": "3.14.3",
+    "release": "11",
+    "system": "Windows",
+    "timezone": null
+  },
+  "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+  "security_failures": 0,
+  "status": "implemented",
+  "title": "Environment",
+  "unclassified_failures": 0
+}

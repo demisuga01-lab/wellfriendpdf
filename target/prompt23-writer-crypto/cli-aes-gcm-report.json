@@ -1,0 +1,27 @@
+{
+  "kind": "aes_gcm_report",
+  "report": {
+    "backend_status": "unsupported_reported_no_crypto_backend",
+    "decrypt_status": "unsupported_reported_exact",
+    "detected_in_input": false,
+    "encrypt_status": "unsupported_reported_exact",
+    "implementation_started": false,
+    "normative_dependency": {
+      "required_before_implementation": [
+        "PDF 2.0 AES-GCM extension identifier/version",
+        "crypt-filter CFM value",
+        "nonce/IV construction",
+        "authentication tag placement",
+        "associated-data rules",
+        "object/string/stream and incremental-update rules",
+        "official or independently reproducible vectors"
+      ],
+      "status": "missing_vendored_normative_text"
+    },
+    "plaintext_release_possible": false,
+    "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+    "security_posture": "fail closed; AES-GCM is not mapped onto AES-CBC or any unauthenticated mode",
+    "status": "unsupported_reported_exact"
+  },
+  "schema_version": 1
+}

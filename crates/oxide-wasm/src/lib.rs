@@ -89,6 +89,12 @@ mod wasm_api {
             sdk::prompt21_history_report_json().map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = cryptoTamperTestJson)]
+        pub fn crypto_tamper_test_json() -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::crypto_tamper_test_json().map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = prompt22OfficeInspectJson)]
         pub fn prompt22_office_inspect_json(bytes: &[u8], format: &str) -> Result<String, JsValue> {
             install_panic_hook();
@@ -381,6 +387,36 @@ mod wasm_api {
         #[wasm_bindgen(js_name = prompt22ReportJson)]
         pub fn prompt22_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::prompt22_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt23ReportJson)]
+        pub fn prompt23_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt23_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = writerDeterminismAuditJson)]
+        pub fn writer_determinism_audit_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::writer_determinism_audit_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = writerExternalDiffJson)]
+        pub fn writer_external_diff_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::writer_external_diff_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = writerCloseoutReportJson)]
+        pub fn writer_closeout_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::writer_closeout_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = pubsecReportJson)]
+        pub fn pubsec_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::pubsec_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = aesGcmReportJson)]
+        pub fn aes_gcm_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::aes_gcm_report_json(b, None))
         }
 
         #[wasm_bindgen(js_name = prompt21RasterVectorReportJson)]

@@ -174,5 +174,11 @@ public final class PackageSmoke {
                 || !Oxide.prompt21HistoryReportJson().contains("prompt21_history_report")) {
             throw new AssertionError("feature report missing Prompt 21 closure posture");
         }
+        if (!feature.contains("\"prompt23_deterministic_writer_pubsec_aesgcm\"")
+                || !feature.contains("\"public_key_handler_status\":\"unsupported_reported_exact\"")
+                || !feature.contains("\"aes_gcm_decrypt_status\":\"unsupported_reported_exact\"")
+                || !Oxide.cryptoTamperTestJson().contains("crypto_tamper_test")) {
+            throw new AssertionError("feature report missing Prompt 23 writer/crypto posture");
+        }
     }
 }

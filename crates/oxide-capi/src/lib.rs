@@ -1489,6 +1489,42 @@ xfa_document_report!(
     prompt21_object_stream_report_json
 );
 xfa_document_report!(oxide_document_prompt22_report_json, prompt22_report_json);
+xfa_document_report!(oxide_document_prompt23_report_json, prompt23_report_json);
+xfa_document_report!(
+    oxide_document_writer_determinism_audit_json,
+    writer_determinism_audit_json
+);
+xfa_document_report!(
+    oxide_document_writer_external_diff_json,
+    writer_external_diff_json
+);
+xfa_document_report!(
+    oxide_document_writer_closeout_report_json,
+    writer_closeout_report_json
+);
+xfa_document_report!(oxide_document_pubsec_report_json, pubsec_report_json);
+xfa_document_report!(oxide_document_aes_gcm_report_json, aes_gcm_report_json);
+
+/// Prompt 23 crypto tamper policy report JSON.
+///
+/// # Safety
+/// `out_json` and `error_out` must follow report ownership rules.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_crypto_tamper_test_json(
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let json = oxide(sdk::crypto_tamper_test_json())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
 
 /// Analyze Prompt 21 raster-to-vector candidates for one page.
 ///

@@ -502,6 +502,33 @@ OXIDE_API int oxide_document_prompt22_report_json(
     const OxideDocument *document,
     char **out_json,
     char **error_out);
+OXIDE_API int oxide_document_prompt23_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_writer_determinism_audit_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_writer_external_diff_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_writer_closeout_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_pubsec_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_aes_gcm_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_crypto_tamper_test_json(
+    char **out_json,
+    char **error_out);
 OXIDE_API int oxide_document_prompt22_optimize_pdf(
     const OxideDocument *document,
     const char *options_json,

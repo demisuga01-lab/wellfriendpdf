@@ -1,0 +1,15 @@
+{
+  "artifact_root": "target/prompt23-writer-crypto",
+  "exact_limit": "Repository lacks exact vendored/licensed normative text and vectors; implementation disabled rather than inferred.",
+  "family": "cms",
+  "generated_at_utc": "2026-07-13T16:23:44.935065+00:00",
+  "implementation_started": false,
+  "missing_normative_dependency": true,
+  "plaintext_release_possible": false,
+  "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+  "secret_material_processed": false,
+  "security_failures": 0,
+  "status": "unsupported_reported_exact",
+  "title": "cms-recipient-matrix-prompt23.json",
+  "unclassified_failures": 0
+}

@@ -483,6 +483,30 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::prompt22_report_json(bytes, None))
     }
 
+    fn prompt23_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt23_report_json(bytes, None))
+    }
+
+    fn writer_determinism_audit<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::writer_determinism_audit_json(bytes, None))
+    }
+
+    fn writer_external_diff<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::writer_external_diff_json(bytes, None))
+    }
+
+    fn writer_closeout_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::writer_closeout_report_json(bytes, None))
+    }
+
+    fn pubsec_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::pubsec_report_json(bytes, None))
+    }
+
+    fn aes_gcm_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::aes_gcm_report_json(bytes, None))
+    }
+
     #[pyo3(signature = (options_json=None, output=None))]
     fn prompt22_optimize<'py>(
         &self,
@@ -1800,6 +1824,13 @@ fn prompt21_history_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
     parse_json_str(py, &json)
 }
 
+/// Prompt 23 AES-GCM/PubSec tamper policy report. No secret material is accepted.
+#[pyfunction]
+fn crypto_tamper_test(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let json = run_oxide(sdk::crypto_tamper_test_json)?;
+    parse_json_str(py, &json)
+}
+
 /// Decode budget report for a hypothetical image stream: shows the decode-limit
 /// / decompression-bomb policy that decoding a `filter`/`width`/`height`/
 /// `components` image would trigger. No document input.
@@ -1875,6 +1906,7 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(verify_signatures, module)?)?;
     module.add_function(wrap_pyfunction!(feature_report, module)?)?;
     module.add_function(wrap_pyfunction!(prompt21_history_report, module)?)?;
+    module.add_function(wrap_pyfunction!(crypto_tamper_test, module)?)?;
     module.add_function(wrap_pyfunction!(decode_budget_report, module)?)?;
     module.add_function(wrap_pyfunction!(codec_isolation_report, module)?)?;
     module.add_function(wrap_pyfunction!(resource_dedup_report, module)?)?;

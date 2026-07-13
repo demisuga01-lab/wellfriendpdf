@@ -227,6 +227,10 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"prompt17_annotation_xfdf_media_nonaxis_redaction\"", feature);
         Assert.Contains("\"additive_feature_report_prompt17\"", feature);
         Assert.Contains("\"overlay_only_redaction_success_claims\":0", feature);
+        Assert.Contains("\"prompt23_deterministic_writer_pubsec_aesgcm\"", feature);
+        Assert.Contains("\"public_key_handler_status\":\"unsupported_reported_exact\"", feature);
+        Assert.Contains("\"aes_gcm_decrypt_status\":\"unsupported_reported_exact\"", feature);
+        Assert.Contains("crypto_tamper_test", OxideDocument.CryptoTamperTestJson());
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",
             Encoding.UTF8.GetBytes("not-decoded-in-report-only"),

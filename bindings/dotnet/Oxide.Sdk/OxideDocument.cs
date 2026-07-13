@@ -74,6 +74,12 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public static string CryptoTamperTestJson()
+    {
+        var status = NativeMethods.oxide_crypto_tamper_test_json(out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
     public static string CodecIsolationReportJson(
         string filter,
         byte[] encodedBytes,
@@ -373,6 +379,48 @@ public sealed class OxideDocument : IDisposable
     {
         ThrowIfDisposed();
         var status = NativeMethods.oxide_document_prompt22_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt23ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_prompt23_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string WriterDeterminismAuditJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_writer_determinism_audit_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string WriterExternalDiffJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_writer_external_diff_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string WriterCloseoutReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_writer_closeout_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string PubsecReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_pubsec_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string AesGcmReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_aes_gcm_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 

@@ -1,0 +1,129 @@
+{
+  "artifact_root": "target/prompt23-writer-crypto",
+  "generated_at_utc": "2026-07-13T16:23:44.896467+00:00",
+  "git": {
+    "commands": {
+      "head": {
+        "command": [
+          "git",
+          "rev-parse",
+          "HEAD"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "2439c7918f4e20d46155bec429597dbee0adf0f8"
+      },
+      "log": {
+        "command": [
+          "git",
+          "log",
+          "--oneline",
+          "-n",
+          "35"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "2439c79 Close combined prompt 22B resource dedup office benchmark evidence\ndda4406 Complete combined prompt 22 zopfli dedup office conversion benchmark\n7ac69de Complete combined prompt 21 raster vector font persistent object streams\n5573732 Close combined prompt 20B multirun form appearance closure\n754025c Complete combined prompt 20 vertical rtl vector ink editing\n61551f9 Complete combined prompt 19 form js interactive docx layout\n6d07aa3 Close combined prompt 18B advanced secure mutation gaps\n261968c Complete combined prompt 18 mask inline associated signature policy\nd0842aa Complete combined prompt 17 annotation xfdf media nonaxis redaction\nf063ab0 Complete combined prompt 16 xfa runtime sandbox foundation\n26ceb3f Complete combined prompt 15 semantic intelligence closeout\n9521ede Close combined prompt 14B production cjk dictionary closure\nc6d0771 Complete combined prompt 14 semantic intelligence foundation\nfdc646b Complete combined prompt 13 full overprint prepress closeout\n8eb09c1 Close combined prompt 12B nchannel plate reference closure\n829d570 Complete combined prompt 12 prepress cmm separation plates\n077e33d Close combined prompt 11B native littlecms cmm backend\ndbbfcb2 Complete combined prompt 11 renderer fuzz cmm closeout\n7a5a116 Close combined prompt 10F colrv1 porterduff radial closure\ndbebab7 Close combined prompt 10E colrv1 gradient clip composite closure\nf200f97 Close combined prompt 10D full color glyph rendering closure\n38e0957 Close combined prompt 10C color glyph hinting cff closure\nb8f5f7e Close combined prompt 10B color glyph cjk rtl fidelity\n208883e Complete combined prompt 10 cjk rtl color glyph reference harness parity\nb378b44 Close combined prompt 09B annotation progressive cache validation\ndf9fa7d Complete combined prompt 09 annotation ocg progressive cache parity\nd3b27eb Complete prompt 08B type3 cid tensor closure\na403873 Complete combined prompt 08 text clipping shading pattern parity\nf2dfdbb Complete prompt 07B transparency closure\n0373037 Complete combined prompt 07 transparency blend softmask knockout parity\n58a3908 Close combined prompt 06B multi-renderer audit\n2f63888 Complete combined prompt 06 renderer parity native replay foundation\n37c1466 Complete combined prompt 05 extraction scheduler codec fuzz closeout\n67ab86a Complete combined prompt 04 codec boundary scanner scheduler\n79b15aa Close combined prompt 03B wasm-pack packaging gate"
+      },
+      "status": {
+        "command": [
+          "git",
+          "status",
+          "--short"
+        ],
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "M bindings/dotnet/Oxide.Sdk.Tests/OxideSmokeTests.cs\n M bindings/dotnet/Oxide.Sdk/NativeMethods.cs\n M bindings/dotnet/Oxide.Sdk/OxideDocument.cs\n M bindings/java/package-smoke/PackageSmoke.java\n M bindings/java/src/main/java/org/oxidepdf/Oxide.java\n M bindings/java/src/test/java/org/oxidepdf/OxideSmokeTest.java\n M crates/cli/src/main.rs\n M crates/engine/src/lib.rs\n M crates/engine/src/sdk.rs\n M crates/oxide-capi/include/oxide.h\n M crates/oxide-capi/src/lib.rs\n M crates/oxide-py/src/lib.rs\n M crates/oxide-py/tests/test_reports.py\n M crates/oxide-wasm/src/lib.rs\n?? crates/engine/src/prompt23.rs\n?? docs/aes_gcm_nonce_and_tag_policy.md\n?? docs/aes_gcm_pdf_encryption.md\n?? docs/canonical_pdf_serialization.md\n?? docs/cms_recipient_processing.md\n?? docs/crypto_secret_handling.md\n?? docs/decrypt_edit_reencrypt.md\n?? docs/deterministic_writer_external_diff.md\n?? docs/incremental_writer_closeout.md\n?? docs/pdf_linearization_writer.md\n?? docs/prompt23_bindings.md\n?? docs/prompt23_editing_writer_closeout_scorecard.md\n?? docs/prompt23_interoperability.md\n?? docs/prompt23_known_limits.md\n?? docs/prompt23_release_verdict.md\n?? docs/prompt23_writer_crypto_audit.md\n?? docs/public_key_key_providers.md\n?? docs/public_key_security_handler.md\n?? scripts/prompt23_writer_crypto_audit.py"
+      }
+    },
+    "log_oneline_35": [
+      "2439c79 Close combined prompt 22B resource dedup office benchmark evidence",
+      "dda4406 Complete combined prompt 22 zopfli dedup office conversion benchmark",
+      "7ac69de Complete combined prompt 21 raster vector font persistent object streams",
+      "5573732 Close combined prompt 20B multirun form appearance closure",
+      "754025c Complete combined prompt 20 vertical rtl vector ink editing",
+      "61551f9 Complete combined prompt 19 form js interactive docx layout",
+      "6d07aa3 Close combined prompt 18B advanced secure mutation gaps",
+      "261968c Complete combined prompt 18 mask inline associated signature policy",
+      "d0842aa Complete combined prompt 17 annotation xfdf media nonaxis redaction",
+      "f063ab0 Complete combined prompt 16 xfa runtime sandbox foundation",
+      "26ceb3f Complete combined prompt 15 semantic intelligence closeout",
+      "9521ede Close combined prompt 14B production cjk dictionary closure",
+      "c6d0771 Complete combined prompt 14 semantic intelligence foundation",
+      "fdc646b Complete combined prompt 13 full overprint prepress closeout",
+      "8eb09c1 Close combined prompt 12B nchannel plate reference closure",
+      "829d570 Complete combined prompt 12 prepress cmm separation plates",
+      "077e33d Close combined prompt 11B native littlecms cmm backend",
+      "dbbfcb2 Complete combined prompt 11 renderer fuzz cmm closeout",
+      "7a5a116 Close combined prompt 10F colrv1 porterduff radial closure",
+      "dbebab7 Close combined prompt 10E colrv1 gradient clip composite closure",
+      "f200f97 Close combined prompt 10D full color glyph rendering closure",
+      "38e0957 Close combined prompt 10C color glyph hinting cff closure",
+      "b8f5f7e Close combined prompt 10B color glyph cjk rtl fidelity",
+      "208883e Complete combined prompt 10 cjk rtl color glyph reference harness parity",
+      "b378b44 Close combined prompt 09B annotation progressive cache validation",
+      "df9fa7d Complete combined prompt 09 annotation ocg progressive cache parity",
+      "d3b27eb Complete prompt 08B type3 cid tensor closure",
+      "a403873 Complete combined prompt 08 text clipping shading pattern parity",
+      "f2dfdbb Complete prompt 07B transparency closure",
+      "0373037 Complete combined prompt 07 transparency blend softmask knockout parity",
+      "58a3908 Close combined prompt 06B multi-renderer audit",
+      "2f63888 Complete combined prompt 06 renderer parity native replay foundation",
+      "37c1466 Complete combined prompt 05 extraction scheduler codec fuzz closeout",
+      "67ab86a Complete combined prompt 04 codec boundary scanner scheduler",
+      "79b15aa Close combined prompt 03B wasm-pack packaging gate"
+    ],
+    "prompt_start_record": {
+      "actual_head_at_prompt_start": "2439c7918f4e20d46155bec429597dbee0adf0f8",
+      "expected_start": "2439c7918f4e20d46155bec429597dbee0adf0f8",
+      "head_matches_expected": true,
+      "source": "verify-first command run before Prompt 23 edits",
+      "worktree_clean_at_prompt_start": true
+    },
+    "script_run_state": {
+      "actual_head": "2439c7918f4e20d46155bec429597dbee0adf0f8",
+      "head_matches_expected": true,
+      "status_short": [
+        "M bindings/dotnet/Oxide.Sdk.Tests/OxideSmokeTests.cs",
+        " M bindings/dotnet/Oxide.Sdk/NativeMethods.cs",
+        " M bindings/dotnet/Oxide.Sdk/OxideDocument.cs",
+        " M bindings/java/package-smoke/PackageSmoke.java",
+        " M bindings/java/src/main/java/org/oxidepdf/Oxide.java",
+        " M bindings/java/src/test/java/org/oxidepdf/OxideSmokeTest.java",
+        " M crates/cli/src/main.rs",
+        " M crates/engine/src/lib.rs",
+        " M crates/engine/src/sdk.rs",
+        " M crates/oxide-capi/include/oxide.h",
+        " M crates/oxide-capi/src/lib.rs",
+        " M crates/oxide-py/src/lib.rs",
+        " M crates/oxide-py/tests/test_reports.py",
+        " M crates/oxide-wasm/src/lib.rs",
+        "?? crates/engine/src/prompt23.rs",
+        "?? docs/aes_gcm_nonce_and_tag_policy.md",
+        "?? docs/aes_gcm_pdf_encryption.md",
+        "?? docs/canonical_pdf_serialization.md",
+        "?? docs/cms_recipient_processing.md",
+        "?? docs/crypto_secret_handling.md",
+        "?? docs/decrypt_edit_reencrypt.md",
+        "?? docs/deterministic_writer_external_diff.md",
+        "?? docs/incremental_writer_closeout.md",
+        "?? docs/pdf_linearization_writer.md",
+        "?? docs/prompt23_bindings.md",
+        "?? docs/prompt23_editing_writer_closeout_scorecard.md",
+        "?? docs/prompt23_interoperability.md",
+        "?? docs/prompt23_known_limits.md",
+        "?? docs/prompt23_release_verdict.md",
+        "?? docs/prompt23_writer_crypto_audit.md",
+        "?? docs/public_key_key_providers.md",
+        "?? docs/public_key_security_handler.md",
+        "?? scripts/prompt23_writer_crypto_audit.py"
+      ],
+      "worktree_clean_at_script_start": false
+    }
+  },
+  "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+  "security_failures": 0,
+  "status": "implemented",
+  "title": "Starting state",
+  "unclassified_failures": 0
+}

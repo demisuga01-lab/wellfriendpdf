@@ -29,6 +29,10 @@ public final class Oxide {
         return Native.prompt21HistoryReportJson();
     }
 
+    public static String cryptoTamperTestJson() {
+        return Native.cryptoTamperTestJson();
+    }
+
     public static String codecIsolationReportJson(String filter, byte[] encodedBytes, String policy) {
         Objects.requireNonNull(filter, "filter");
         Objects.requireNonNull(encodedBytes, "encodedBytes");
@@ -320,6 +324,38 @@ public final class Oxide {
         public String prompt22ReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.PROMPT22_REPORT, "prompt22_report");
+        }
+
+        public String prompt23ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT23_REPORT, "prompt23_report");
+        }
+
+        public String writerDeterminismAuditJson() {
+            ensureOpen();
+            return Native.documentReport(
+                handle, Native.WRITER_DETERMINISM_AUDIT, "writer_determinism_audit");
+        }
+
+        public String writerExternalDiffJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.WRITER_EXTERNAL_DIFF, "writer_external_diff");
+        }
+
+        public String writerCloseoutReportJson() {
+            ensureOpen();
+            return Native.documentReport(
+                handle, Native.WRITER_CLOSEOUT_REPORT, "writer_closeout_report");
+        }
+
+        public String pubsecReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PUBSEC_REPORT, "pubsec_report");
+        }
+
+        public String aesGcmReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.AES_GCM_REPORT, "aes_gcm_report");
         }
 
         public BinaryResult prompt22Optimize(String optionsJson) {
@@ -784,6 +820,18 @@ public final class Oxide {
         );
         private static final MethodHandle PROMPT22_REPORT =
             documentReport("oxide_document_prompt22_report_json");
+        private static final MethodHandle PROMPT23_REPORT =
+            documentReport("oxide_document_prompt23_report_json");
+        private static final MethodHandle WRITER_DETERMINISM_AUDIT =
+            documentReport("oxide_document_writer_determinism_audit_json");
+        private static final MethodHandle WRITER_EXTERNAL_DIFF =
+            documentReport("oxide_document_writer_external_diff_json");
+        private static final MethodHandle WRITER_CLOSEOUT_REPORT =
+            documentReport("oxide_document_writer_closeout_report_json");
+        private static final MethodHandle PUBSEC_REPORT =
+            documentReport("oxide_document_pubsec_report_json");
+        private static final MethodHandle AES_GCM_REPORT =
+            documentReport("oxide_document_aes_gcm_report_json");
         private static final MethodHandle PROMPT22_OPTIMIZE = downcall(
             "oxide_document_prompt22_optimize_pdf",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
@@ -946,6 +994,10 @@ public final class Oxide {
             "oxide_feature_report_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle CRYPTO_TAMPER_TEST = downcall(
+            "oxide_crypto_tamper_test_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle CODEC_ISOLATION_REPORT = downcall(
             "oxide_codec_isolation_report_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
@@ -1071,6 +1123,20 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide prompt21_history_report failed", ex);
+            }
+        }
+
+        private static String cryptoTamperTestJson() {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) CRYPTO_TAMPER_TEST.invokeExact(jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide crypto_tamper_test failed", ex);
             }
         }
 

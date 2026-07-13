@@ -119,6 +119,7 @@ pub mod prompt19;
 pub mod prompt20;
 pub mod prompt21;
 pub mod prompt22;
+pub mod prompt23;
 pub mod reader;
 pub mod render;
 pub mod sdk;
@@ -375,6 +376,12 @@ pub use prompt22::{
     Prompt22OptimizeOptions, Prompt22OptimizeReport, Prompt22Report, Prompt22Status,
     Prompt22WriterMode, PROMPT22B_SCHEMA_VERSION,
 };
+pub use prompt23::{
+    aes_gcm_report_bytes, crypto_tamper_test_report, deterministic_writer_audit, prompt23_report,
+    public_key_handler_report_bytes, writer_closeout_report, writer_external_diff_report,
+    Prompt23FeatureMatrixRow, Prompt23Report, Prompt23Status, PROMPT23_ARTIFACT_ROOT,
+    PROMPT23_SCHEMA_VERSION,
+};
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
     flatten_cubic, flatten_path, get_fallback_font, rgb, rgba, AlphaMask, CachedGlyph, ClipMask,
@@ -584,6 +591,12 @@ pub mod prelude {
         Prompt22CompressionOptions, Prompt22DedupFamilyReport, Prompt22DedupReport,
         Prompt22OptimizeOptions, Prompt22OptimizeReport, Prompt22Report, Prompt22Status,
         Prompt22WriterMode, PROMPT22B_SCHEMA_VERSION,
+    };
+    pub use crate::prompt23::{
+        aes_gcm_report_bytes, crypto_tamper_test_report, deterministic_writer_audit,
+        prompt23_report, public_key_handler_report_bytes, writer_closeout_report,
+        writer_external_diff_report, Prompt23FeatureMatrixRow, Prompt23Report, Prompt23Status,
+        PROMPT23_ARTIFACT_ROOT, PROMPT23_SCHEMA_VERSION,
     };
     pub use crate::signature::{
         add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options,

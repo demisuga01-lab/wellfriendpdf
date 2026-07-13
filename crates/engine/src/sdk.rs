@@ -536,6 +536,60 @@ pub fn prompt22_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<Str
     )
 }
 
+/// Combined Prompt 23 deterministic writer, PubSec, and AES-GCM posture report.
+pub fn prompt23_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "prompt23_report",
+        &crate::prompt23::prompt23_report(&engine)?,
+    )
+}
+
+pub fn writer_determinism_audit_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "writer_determinism_audit",
+        &crate::prompt23::deterministic_writer_audit(&engine)?,
+    )
+}
+
+pub fn writer_external_diff_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "writer_external_diff",
+        &crate::prompt23::writer_external_diff_report(&engine)?,
+    )
+}
+
+pub fn writer_closeout_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "writer_closeout_report",
+        &crate::prompt23::writer_closeout_report(&engine)?,
+    )
+}
+
+pub fn pubsec_report_json(bytes: &[u8], _password: Option<&[u8]>) -> Result<String> {
+    envelope(
+        "pubsec_report",
+        &crate::prompt23::public_key_handler_report_bytes(bytes),
+    )
+}
+
+pub fn aes_gcm_report_json(bytes: &[u8], _password: Option<&[u8]>) -> Result<String> {
+    envelope(
+        "aes_gcm_report",
+        &crate::prompt23::aes_gcm_report_bytes(bytes),
+    )
+}
+
+pub fn crypto_tamper_test_json() -> Result<String> {
+    envelope(
+        "crypto_tamper_test",
+        &crate::prompt23::crypto_tamper_test_report(),
+    )
+}
+
 pub fn prompt22_optimize_pdf_json(
     bytes: &[u8],
     options_json: Option<&str>,
@@ -2966,6 +3020,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt21_raster_vector_font_persistent_object_stream": crate::prompt21::prompt21_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt22_zopfli_dedup_office_to_pdf_benchmark": crate::prompt22::prompt22_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt22b_resource_dedup_office_benchmark_closure": crate::prompt22::prompt22b_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt23_deterministic_writer_pubsec_aesgcm": crate::prompt23::prompt23_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -2997,6 +3052,9 @@ pub fn feature_report_json() -> Result<String> {
             "prompt22_report", "prompt22_optimize_pdf",
             "prompt22_office_package_security", "prompt22_office_to_pdf",
             "prompt22b_resource_dedup_office_benchmark_closure",
+            "prompt23_report", "writer_determinism_audit", "writer_external_diff",
+            "writer_closeout_report", "pubsec_report", "aes_gcm_report",
+            "crypto_tamper_test",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
@@ -4127,6 +4185,17 @@ mod tests {
         assert_eq!(
             prompt22b["office_benchmark"]["production_external_converter_invoked"],
             false
+        );
+        let prompt23 = &v["report"]["prompt23_deterministic_writer_pubsec_aesgcm"];
+        assert_eq!(prompt23["status"], "implemented_with_limits");
+        assert_eq!(prompt23["blocked_rows"], 0);
+        assert_eq!(
+            prompt23["public_key_handler_status"],
+            "unsupported_reported_exact"
+        );
+        assert_eq!(
+            prompt23["aes_gcm_decrypt_status"],
+            "unsupported_reported_exact"
         );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),

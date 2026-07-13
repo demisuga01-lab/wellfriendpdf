@@ -1,0 +1,27 @@
+{
+  "kind": "pubsec_report",
+  "report": {
+    "detected_in_input": false,
+    "diagnostic": "public-key PDF decryption is disabled until exact normative inputs are present",
+    "implementation_started": false,
+    "normative_dependency": {
+      "required_before_implementation": [
+        "PDF public-key security-handler normative text",
+        "CMS recipient processing rules as applied by the PDF specification",
+        "algorithm and crypt-filter matrix",
+        "licensed fixtures or official vectors"
+      ],
+      "status": "missing_vendored_normative_text"
+    },
+    "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+    "security_posture": "fail closed; no private-key, CMS, or recipient-key material is parsed by Prompt 23",
+    "status": "unsupported_reported_exact",
+    "supported_variants": [],
+    "unsupported_variants_reported": [
+      "/Filter /Adobe.PubSec",
+      "/Recipients",
+      "CMS EnvelopedData recipient structures"
+    ]
+  },
+  "schema_version": 1
+}

@@ -1,0 +1,57 @@
+{
+  "artifact_root": "target/prompt23-writer-crypto",
+  "generated_at_utc": "2026-07-13T16:23:45.575579+00:00",
+  "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+  "security_failures": 0,
+  "status": "implemented",
+  "title": "Tool availability",
+  "tools": {
+    "cargo": {
+      "available": true,
+      "path": "C:\\Users\\payme\\.cargo\\bin\\cargo.EXE",
+      "tool": "cargo",
+      "version": "cargo 1.95.0 (f2d3ce0bd 2026-03-21)"
+    },
+    "dotnet": {
+      "available": true,
+      "path": "C:\\Program Files\\dotnet\\dotnet.EXE",
+      "tool": "dotnet",
+      "version": "10.0.103"
+    },
+    "java": {
+      "available": true,
+      "path": "C:\\Program Files\\Common Files\\Oracle\\Java\\javapath\\java.EXE",
+      "tool": "java",
+      "version": "java 25.0.2 2026-01-20 LTS"
+    },
+    "mutool": {
+      "available": false,
+      "tool": "mutool",
+      "version": null
+    },
+    "openssl": {
+      "available": false,
+      "tool": "openssl",
+      "version": null
+    },
+    "pdftoppm": {
+      "available": true,
+      "path": "C:\\Users\\payme\\scoop\\shims\\pdftoppm.EXE",
+      "tool": "pdftoppm",
+      "version": "I/O Error: Couldn't open file '--version': No error."
+    },
+    "python": {
+      "available": true,
+      "path": "C:\\Users\\payme\\AppData\\Local\\Programs\\Python\\Python314\\python.EXE",
+      "tool": "python",
+      "version": "Python 3.14.3"
+    },
+    "qpdf": {
+      "available": true,
+      "path": "C:\\Users\\payme\\scoop\\shims\\qpdf.EXE",
+      "tool": "qpdf",
+      "version": "qpdf version 12.3.2"
+    }
+  },
+  "unclassified_failures": 0
+}

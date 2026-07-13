@@ -1,0 +1,391 @@
+{
+  "kind": "prompt23_report",
+  "report": {
+    "aes_gcm": {
+      "backend_status": "unsupported_reported_no_crypto_backend",
+      "decrypt_status": "unsupported_reported_exact",
+      "detected_in_input": false,
+      "encrypt_status": "unsupported_reported_exact",
+      "implementation_started": false,
+      "normative_dependency": {
+        "required_before_implementation": [
+          "PDF 2.0 AES-GCM extension identifier/version",
+          "crypt-filter CFM value",
+          "nonce/IV construction",
+          "authentication tag placement",
+          "associated-data rules",
+          "object/string/stream and incremental-update rules",
+          "official or independently reproducible vectors"
+        ],
+        "status": "missing_vendored_normative_text"
+      },
+      "plaintext_release_possible": false,
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "security_posture": "fail closed; AES-GCM is not mapped onto AES-CBC or any unauthenticated mode",
+      "status": "unsupported_reported_exact"
+    },
+    "artifact_root": "target/prompt23-writer-crypto",
+    "audit_doc": "docs/prompt23_writer_crypto_audit.md",
+    "blocked_rows": 0,
+    "cms_recipient_processing": {
+      "bounds_policy": {
+        "asn1_depth": "would be bounded before enabling",
+        "cms_bytes": "would be bounded before enabling",
+        "recipient_count": "would be bounded before enabling"
+      },
+      "cms_parser_enabled": false,
+      "key_transport_enabled": false,
+      "recipient_matching_enabled": false,
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "security_posture": "no CMS bytes are decrypted or interpreted as recipient secrets in Prompt 23",
+      "status": "unsupported_reported_exact"
+    },
+    "current_document": {
+      "encrypted": false,
+      "input_sha256": "3662ff519e485810520552bf301d8c3b2b917fd2f83303f4965d7abed367e113",
+      "object_count": 996,
+      "page_count": 14,
+      "stream_count": 377
+    },
+    "decrypt_edit_reencrypt": {
+      "aes_gcm_documents": "unsupported_reported_exact",
+      "history_secret_exclusion": "no new key provider or decrypted file key serialization path is added",
+      "public_key_documents": "unsupported_reported_exact",
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "signature_impact": "report-only surfaces preserved",
+      "standard_security_handler": "existing password-based decrypt/rewrite/encrypt paths remain available",
+      "status": "implemented_with_limits"
+    },
+    "deterministic_external_diff": {
+      "byte_diff_artifact": "target/prompt23-writer-crypto/deterministic-byte-diff-prompt23.json",
+      "first_differing_byte_offset": null,
+      "first_output_bytes": 959200,
+      "first_reopened": true,
+      "first_sha256": "0987552d39dbcd8c875f811abe757599de26e76c1a74d55f9e3f199690fa05da",
+      "object_diff_artifact": "target/prompt23-writer-crypto/deterministic-object-diff-prompt23.json",
+      "same_process_repeat_equal": true,
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "second_output_bytes": 959200,
+      "second_reopened": true,
+      "second_sha256": "0987552d39dbcd8c875f811abe757599de26e76c1a74d55f9e3f199690fa05da",
+      "status": "implemented_with_limits",
+      "unclassified_mismatches": 0,
+      "writer_mode": "xref_stream_with_objstm"
+    },
+    "exact_remaining_limits": [
+      "Public-key security-handler decryption is not implemented because the repository does not contain the exact normative PDF public-key handler text and licensed vectors required by Prompt 23.",
+      "PDF AES-GCM encryption/decryption is not implemented because the repository does not contain the exact PDF 2.0 extension text for CFM, nonce, authentication tag, AAD, metadata, object-stream, and incremental-update rules.",
+      "Cross-platform and cross-architecture deterministic byte equality is not claimed unless run by the generated Prompt 23 artifact matrix on that platform.",
+      "Incremental object-stream packing for arbitrary edits remains unsupported-reported exact.",
+      "Certificate trust, revocation, signer identity, and signature validity are outside Prompt 23 and are not claimed."
+    ],
+    "feature_matrix": [
+      {
+        "artifact": "deterministic-external-matrix-prompt23.json",
+        "c_abi": "oxide_document_writer_determinism_audit_json",
+        "capability": "Full rewrite byte reproducibility for writer modes",
+        "category": "deterministic_writer",
+        "cli": "writer-determinism-audit",
+        "cryptographic_status": "not_cryptographic",
+        "deterministic_status": "same-process byte equality executed; cross-platform artifacts record availability",
+        "dotnet": "WriterDeterminismAuditJson",
+        "feature_id": "deterministic-full-rewrite",
+        "fixture": "tiny deterministic PDF",
+        "full_rewrite_status": "implemented",
+        "future_owner": "writer",
+        "implementation_status": "implemented_with_limits",
+        "incremental_status": "not_in_prompt23_scope",
+        "java": "writerDeterminismAuditJson",
+        "python": "writer_determinism_audit",
+        "reference_differential_status": "qpdf availability reported separately",
+        "remaining_exact_limit": "OS/architecture equality is only claimed when executed",
+        "rust_api": "deterministic_writer_audit",
+        "security_posture": "no secrets involved",
+        "test": "prompt23 deterministic writer tests",
+        "wasm": "writerDeterminismAuditJson"
+      },
+      {
+        "artifact": "canonical-object-order-prompt23.json",
+        "c_abi": "oxide_document_writer_closeout_report_json",
+        "capability": "Canonical object/dictionary/number/stream writer posture",
+        "category": "writer_closeout",
+        "cli": "writer-closeout-report",
+        "cryptographic_status": "not_cryptographic",
+        "deterministic_status": "deterministic object traversal and serialization report",
+        "dotnet": "WriterCloseoutReportJson",
+        "feature_id": "writer-canonicalization-closeout",
+        "fixture": "existing writer fixtures",
+        "full_rewrite_status": "implemented",
+        "future_owner": "writer",
+        "implementation_status": "implemented_with_limits",
+        "incremental_status": "implemented_with_limits",
+        "java": "writerCloseoutReportJson",
+        "python": "writer_closeout_report",
+        "reference_differential_status": "qpdf validation when available",
+        "remaining_exact_limit": "incremental object-stream packing remains exact unsupported",
+        "rust_api": "writer_closeout_report",
+        "security_posture": "preserves malformed-input fail-closed policy",
+        "test": "writer module tests plus prompt23 report tests",
+        "wasm": "writerCloseoutReportJson"
+      },
+      {
+        "artifact": "linearization-status-prompt23.json",
+        "c_abi": "oxide_document_writer_closeout_report_json",
+        "capability": "Linearized full rewrite posture",
+        "category": "writer_closeout",
+        "cli": "writer-closeout-report",
+        "cryptographic_status": "encrypted linearization unsupported by policy",
+        "deterministic_status": "same-process linearized repeat probe when supported",
+        "dotnet": "WriterCloseoutReportJson",
+        "feature_id": "linearization-posture",
+        "fixture": "linearization writer fixtures",
+        "full_rewrite_status": "implemented_with_limits",
+        "future_owner": "writer",
+        "implementation_status": "implemented_with_limits",
+        "incremental_status": "unsupported_reported_exact",
+        "java": "writerCloseoutReportJson",
+        "python": "writer_closeout_report",
+        "reference_differential_status": "qpdf linearization validation when available",
+        "remaining_exact_limit": "incremental linearization preservation is unsupported",
+        "rust_api": "writer_closeout_report",
+        "security_posture": "does not claim signature validity",
+        "test": "writer linearization tests",
+        "wasm": "writerCloseoutReportJson"
+      },
+      {
+        "artifact": "public-key-handler-normative-matrix-prompt23.json",
+        "c_abi": "oxide_document_pubsec_report_json",
+        "capability": "Public-key PDF security-handler decryption",
+        "category": "public_key_crypto",
+        "cli": "pubsec-report",
+        "cryptographic_status": "disabled_missing_normative_dependency",
+        "deterministic_status": "not_deterministic",
+        "dotnet": "PubsecReportJson",
+        "feature_id": "public-key-security-handler",
+        "fixture": "synthetic detection-only inputs",
+        "full_rewrite_status": "unsupported_reported_exact",
+        "future_owner": "crypto",
+        "implementation_status": "unsupported_reported_exact",
+        "incremental_status": "unsupported_reported_exact",
+        "java": "pubsecReportJson",
+        "python": "pubsec_report",
+        "reference_differential_status": "OpenSSL only for future CMS comparison",
+        "remaining_exact_limit": "vendored/licensed normative public-key handler text and vectors missing",
+        "rust_api": "pubsec_report",
+        "security_posture": "fail closed; no private keys accepted",
+        "test": "security report detects unsupported PubSec",
+        "wasm": "pubsecReportJson"
+      },
+      {
+        "artifact": "cms-recipient-matrix-prompt23.json",
+        "c_abi": "oxide_document_pubsec_report_json",
+        "capability": "CMS recipient matching and key transport",
+        "category": "public_key_crypto",
+        "cli": "pubsec-report",
+        "cryptographic_status": "disabled_missing_normative_dependency",
+        "deterministic_status": "not_deterministic",
+        "dotnet": "PubsecReportJson",
+        "feature_id": "cms-recipient-processing",
+        "fixture": "none; report-only",
+        "full_rewrite_status": "unsupported_reported_exact",
+        "future_owner": "crypto",
+        "implementation_status": "unsupported_reported_exact",
+        "incremental_status": "unsupported_reported_exact",
+        "java": "pubsecReportJson",
+        "python": "pubsec_report",
+        "reference_differential_status": "not run until CMS parser enabled",
+        "remaining_exact_limit": "recipient algorithms and permission payload rules missing from normative source",
+        "rust_api": "pubsec_report",
+        "security_posture": "no CMS byte parsing or key unwrap path enabled",
+        "test": "prompt23 feature matrix test",
+        "wasm": "pubsecReportJson"
+      },
+      {
+        "artifact": "aes-gcm-normative-matrix-prompt23.json",
+        "c_abi": "oxide_document_aes_gcm_report_json",
+        "capability": "PDF AES-GCM encryption/decryption",
+        "category": "aes_gcm_crypto",
+        "cli": "aes-gcm-report",
+        "cryptographic_status": "disabled_missing_normative_dependency",
+        "deterministic_status": "production_crypto_must_not_be_byte_deterministic",
+        "dotnet": "AesGcmReportJson",
+        "feature_id": "aes-gcm-pdf-encryption",
+        "fixture": "none; report-only",
+        "full_rewrite_status": "unsupported_reported_exact",
+        "future_owner": "crypto",
+        "implementation_status": "unsupported_reported_exact",
+        "incremental_status": "unsupported_reported_exact",
+        "java": "aesGcmReportJson",
+        "python": "aes_gcm_report",
+        "reference_differential_status": "no tool support claimed",
+        "remaining_exact_limit": "PDF 2.0 AES-GCM extension text, nonce/tag/AAD rules, and vectors missing",
+        "rust_api": "aes_gcm_report",
+        "security_posture": "fail closed; no unauthenticated plaintext path",
+        "test": "prompt23 feature matrix test",
+        "wasm": "aesGcmReportJson"
+      },
+      {
+        "artifact": "decrypt-edit-reencrypt-prompt23.json",
+        "c_abi": "oxide_document_prompt23_report_json",
+        "capability": "Decrypt/edit/re-encrypt integration report",
+        "category": "integration",
+        "cli": "prompt23-report",
+        "cryptographic_status": "standard-handler only; PubSec/AES-GCM unsupported exact",
+        "deterministic_status": "writer deterministic; production crypto entropy excluded",
+        "dotnet": "Prompt23ReportJson",
+        "feature_id": "decrypt-edit-reencrypt",
+        "fixture": "standard encrypted fixtures from prior prompts",
+        "full_rewrite_status": "implemented_with_limits",
+        "future_owner": "crypto",
+        "implementation_status": "implemented_with_limits",
+        "incremental_status": "implemented_with_limits",
+        "java": "prompt23ReportJson",
+        "python": "prompt23_report",
+        "reference_differential_status": "external crypto tools availability reported",
+        "remaining_exact_limit": "public-key/AES-GCM re-encryption requires normative implementation",
+        "rust_api": "prompt23_report",
+        "security_posture": "no key material serialized into reports",
+        "test": "existing standard crypto tests plus prompt23 report tests",
+        "wasm": "prompt23ReportJson"
+      }
+    ],
+    "interoperability_fuzz_metamorphic": {
+      "external_tools": {
+        "mupdf": "availability recorded by artifact script",
+        "openssl": "availability recorded by artifact script",
+        "pdfium": "availability recorded by artifact script",
+        "poppler": "availability recorded by artifact script",
+        "qpdf": "availability recorded by artifact script"
+      },
+      "fuzz_targets": [
+        "canonical serialization",
+        "xref stream parsing",
+        "object stream parsing",
+        "encrypted-object parser reporting"
+      ],
+      "metamorphic": [
+        "same-process deterministic writer equality",
+        "ObjStm on/off semantic rewrite posture",
+        "wrong-key unsupported crypto fail closed"
+      ],
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "security_failures": 0,
+      "status": "implemented_with_limits",
+      "unclassified_failures": 0
+    },
+    "key_provider": {
+      "accepted_secret_logging": false,
+      "future_provider_shapes": [
+        "PEM",
+        "DER",
+        "PKCS8",
+        "PKCS12",
+        "OS store hook",
+        "HSM/PKCS11 hook"
+      ],
+      "password_command_line_arguments": "not_added",
+      "provider_interface_status": "report_surface_only",
+      "remaining_exact_limit": "No provider is enabled until public-key normative matrix and safe key parsing scope are approved.",
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "status": "unsupported_reported_exact",
+      "zeroization_policy": "no new key material accepted; existing Standard handler uses zeroizing buffers"
+    },
+    "performance_memory": {
+      "aes_gcm_bytes_decrypted": 0,
+      "aes_gcm_bytes_encrypted": 0,
+      "cms_bytes_processed": 0,
+      "crypto_reason": "Prompt 23 does not process unsupported public-key or AES-GCM secrets without normative inputs.",
+      "input_bytes": 1016315,
+      "key_cache_entries": 0,
+      "nonce_count": 0,
+      "object_count": 996,
+      "recipient_count_processed": 0,
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "status": "implemented_with_limits",
+      "stream_count": 377
+    },
+    "public_key_handler": {
+      "detected_in_input": false,
+      "diagnostic": "public-key PDF decryption is disabled until exact normative inputs are present",
+      "implementation_started": false,
+      "normative_dependency": {
+        "required_before_implementation": [
+          "PDF public-key security-handler normative text",
+          "CMS recipient processing rules as applied by the PDF specification",
+          "algorithm and crypt-filter matrix",
+          "licensed fixtures or official vectors"
+        ],
+        "status": "missing_vendored_normative_text"
+      },
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "security_posture": "fail closed; no private-key, CMS, or recipient-key material is parsed by Prompt 23",
+      "status": "unsupported_reported_exact",
+      "supported_variants": [],
+      "unsupported_variants_reported": [
+        "/Filter /Adobe.PubSec",
+        "/Recipients",
+        "CMS EnvelopedData recipient structures"
+      ]
+    },
+    "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+    "status": "implemented_with_limits",
+    "validation_manifest": {
+      "crypto_suite": "target/prompt23-writer-crypto/crypto-test-vector-manifest-prompt23.json",
+      "deterministic_suite": "target/prompt23-writer-crypto/deterministic-external-matrix-prompt23.json",
+      "feature_matrix": "target/prompt23-writer-crypto/prompt23-feature-matrix.json",
+      "must_not_count_unavailable_commands_as_passed": true,
+      "required_artifact_root": "target/prompt23-writer-crypto",
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "status": "implemented_with_limits"
+    },
+    "writer_closeout": {
+      "canonical_serialization": {
+        "dictionary_key_order": "writer serializes dictionary keys deterministically",
+        "metadata_clock_policy": "deterministic reports require injected or preserved metadata; production modes may retain source metadata",
+        "object_numbering": "full rewrite remaps to contiguous deterministic generation-0 object numbers",
+        "stream_length_policy": "writer resets stream /Length to emitted byte length",
+        "xref_modes": [
+          "classic_xref",
+          "xref_stream",
+          "xref_stream_with_objstm"
+        ]
+      },
+      "current_document": {
+        "encrypted": false,
+        "object_count": 996,
+        "stream_count": 377
+      },
+      "incremental_writer": {
+        "aes_gcm_new_object_encryption": "unsupported_reported_exact pending normative AES-GCM rules",
+        "generation_policy": "caller-provided generation numbers with deterministic appended xref groups",
+        "object_stream_incremental_packing": "unsupported_reported_exact for arbitrary updates",
+        "original_prefix": "preserved by write_incremental_update callers",
+        "status": "implemented_with_limits"
+      },
+      "linearization": {
+        "encrypted_document_posture": "unsupported_reported_security_policy",
+        "function": "write_document_linearized",
+        "incremental_update_compatibility": "unsupported_reported_exact",
+        "same_process_probe": {
+          "byte_identical": true,
+          "first_differing_byte_offset": null,
+          "first_sha256": "947fdd38f48a1544beca974a4c9ef14385189d152814914169183824d003a416",
+          "mode": "linearized",
+          "output_bytes": 989827,
+          "reopened": true,
+          "second_sha256": "947fdd38f48a1544beca974a4c9ef14385189d152814914169183824d003a416",
+          "status": "implemented_with_limits"
+        },
+        "status": "implemented_with_limits"
+      },
+      "qpdf_validation": {
+        "artifact": "target/prompt23-writer-crypto/writer-qpdf-validation-prompt23.json",
+        "status": "artifact_reported_when_tool_available"
+      },
+      "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
+      "status": "implemented_with_limits",
+      "unclassified_mismatches": 0
+    }
+  },
+  "schema_version": 1
+}

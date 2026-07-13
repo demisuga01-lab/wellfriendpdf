@@ -262,6 +262,26 @@ enum Commands {
     Prompt21Report(Prompt17ReportArgs),
     /// Combined Prompt 22 zopfli, dedup, Office conversion, and benchmark report
     Prompt22Report(Prompt17ReportArgs),
+    /// Combined Prompt 23 deterministic writer, PubSec, and AES-GCM report
+    Prompt23Report(Prompt17ReportArgs),
+    /// Audit deterministic writer reproducibility through the production writer
+    WriterDeterminismAudit(Prompt17ReportArgs),
+    /// Produce an object-aware deterministic writer external diff report
+    WriterExternalDiff(Prompt17ReportArgs),
+    /// Report advanced writer canonicalization and close-out posture
+    WriterCloseoutReport(Prompt17ReportArgs),
+    /// Report public-key security-handler support and exact unsupported status
+    PubsecReport(Prompt17ReportArgs),
+    /// Public-key security-handler decrypt command; report-only until supported
+    PubsecDecrypt(Prompt23CryptoReportArgs),
+    /// Report PDF AES-GCM support and exact unsupported status
+    AesGcmReport(Prompt17ReportArgs),
+    /// AES-GCM decrypt command; report-only until supported
+    AesGcmDecrypt(Prompt23CryptoReportArgs),
+    /// AES-GCM encrypt command; report-only until supported
+    AesGcmEncrypt(Prompt23CryptoReportArgs),
+    /// Run/report Prompt 23 crypto tamper policy checks
+    CryptoTamperTest(Prompt23TamperArgs),
     /// Analyze bounded raster-to-vector candidates on a page
     RasterVectorReport(Prompt21RasterVectorArgs),
     /// Alias for raster-vector-report; exports the vector model by default
@@ -1038,6 +1058,34 @@ struct Prompt17ReportArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt23CryptoReportArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output JSON report; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Optional certificate path. Prompt 23 records this as configured but does not read key material.
+    #[arg(long)]
+    certificate: Option<PathBuf>,
+    /// Optional private-key path. Prompt 23 records this as configured but does not read key material.
+    #[arg(long)]
+    private_key: Option<PathBuf>,
+    /// Password for already-supported Standard handler PDFs. Do not pass private-key passwords here.
+    #[arg(long)]
+    password: Option<String>,
+    /// Return a non-zero exit status after writing the unsupported report.
+    #[arg(long)]
+    fail_on_unsupported: bool,
+}
+
+#[derive(Parser)]
+struct Prompt23TamperArgs {
+    /// Output JSON report; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -2689,6 +2737,16 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Prompt20bReport(args) => run_prompt20b_report(args),
         Commands::Prompt21Report(args) => run_prompt21_report(args),
         Commands::Prompt22Report(args) => run_prompt22_report(args),
+        Commands::Prompt23Report(args) => run_prompt23_report(args),
+        Commands::WriterDeterminismAudit(args) => run_writer_determinism_audit(args),
+        Commands::WriterExternalDiff(args) => run_writer_external_diff(args),
+        Commands::WriterCloseoutReport(args) => run_writer_closeout_report(args),
+        Commands::PubsecReport(args) => run_pubsec_report(args),
+        Commands::PubsecDecrypt(args) => run_prompt23_unsupported_crypto(args, "pubsec_decrypt"),
+        Commands::AesGcmReport(args) => run_aes_gcm_report(args),
+        Commands::AesGcmDecrypt(args) => run_prompt23_unsupported_crypto(args, "aes_gcm_decrypt"),
+        Commands::AesGcmEncrypt(args) => run_prompt23_unsupported_crypto(args, "aes_gcm_encrypt"),
+        Commands::CryptoTamperTest(args) => run_crypto_tamper_test(args),
         Commands::RasterVectorReport(args) => run_prompt21_raster_vector_report(args),
         Commands::RasterVectorize(args) => run_prompt21_raster_vector_report(args),
         Commands::FontReconstruct(args) => run_prompt21_font_reconstruction_report(args),
@@ -3950,6 +4008,98 @@ fn run_prompt22_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt23_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::prompt23_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_writer_determinism_audit(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::writer_determinism_audit_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_writer_external_diff(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::writer_external_diff_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_writer_closeout_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::writer_closeout_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_pubsec_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report =
+        oxide_engine::sdk::pubsec_report_json(&bytes, args.password.as_deref().map(str::as_bytes))?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_aes_gcm_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::aes_gcm_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_crypto_tamper_test(args: Prompt23TamperArgs) -> Result<(), Box<dyn Error>> {
+    let report = oxide_engine::sdk::crypto_tamper_test_json()?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt23_unsupported_crypto(
+    args: Prompt23CryptoReportArgs,
+    operation: &'static str,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = if operation.starts_with("pubsec") {
+        oxide_engine::sdk::pubsec_report_json(&bytes, args.password.as_deref().map(str::as_bytes))?
+    } else {
+        oxide_engine::sdk::aes_gcm_report_json(&bytes, args.password.as_deref().map(str::as_bytes))?
+    };
+    let mut value: serde_json::Value = serde_json::from_str(&report)?;
+    if let Some(report_obj) = value
+        .get_mut("report")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        report_obj.insert("operation".to_string(), serde_json::json!(operation));
+        report_obj.insert(
+            "certificate_path_configured".to_string(),
+            serde_json::json!(args.certificate.is_some()),
+        );
+        report_obj.insert(
+            "private_key_path_configured".to_string(),
+            serde_json::json!(args.private_key.is_some()),
+        );
+        report_obj.insert("output_pdf_written".to_string(), serde_json::json!(false));
+        report_obj.insert("secret_material_read".to_string(), serde_json::json!(false));
+    }
+    let pretty = serde_json::to_string_pretty(&value)?;
+    write_output_optional(&args.output, &pretty)?;
+    if args.fail_on_unsupported {
+        return Err(format!("{operation} is unsupported in Prompt 23; see JSON report").into());
+    }
+    Ok(())
 }
 
 fn run_prompt22_optimize(args: Prompt22OptimizeArgs) -> Result<(), Box<dyn Error>> {
