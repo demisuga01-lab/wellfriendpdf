@@ -137,6 +137,8 @@ def test_signature_report_on_signed_fixture():
 
 
 def test_module_level_reports():
+    assert hasattr(oxide, "pubsec_decrypt_pdf_pfx")
+    assert hasattr(oxide, "pubsec_reencrypt_pdf_pfx")
     feature = _envelope(oxide.feature_report(), "feature_report")
     assert isinstance(feature["engine_version"], str)
     assert feature["report_envelope_version"] == 1
@@ -318,8 +320,8 @@ def test_module_level_reports():
     assert prompt18b["failure"]["security_proof"] == 0
     prompt23 = feature["prompt23_deterministic_writer_pubsec_aesgcm"]
     assert prompt23["blocked_rows"] == 0
-    assert prompt23["public_key_handler_status"] == "unsupported_reported_exact"
-    assert prompt23["aes_gcm_decrypt_status"] == "unsupported_reported_exact"
+    assert prompt23["public_key_handler_status"] == "implemented_with_limits"
+    assert prompt23["aes_gcm_decrypt_status"] == "implemented_with_limits"
     tamper = _envelope(oxide.crypto_tamper_test(), "crypto_tamper_test")
     assert tamper["plaintext_release_possible"] is False
     decode = _envelope(
@@ -340,6 +342,18 @@ def test_sanitize_produces_bytes_and_report(tmp_path):
     assert out.read_bytes() == data
     r = _envelope(report, "sanitize_report")
     assert r["output_bytes"] > 0
+
+
+def test_pdf_mac_create_owned_output_and_verify(tmp_path):
+    doc = oxide.open(FIXTURE)
+    data, report = doc.pdf_mac_create(output=tmp_path / "pdfmac.pdf")
+    assert bytes(data).startswith(b"%PDF-")
+    created = _envelope(report, "pdf_mac_create")
+    assert created["verification_state"] == "valid"
+    reopened = oxide.open(bytes(data))
+    verified = _envelope(reopened.pdf_mac_verify(), "pdf_mac_verify")
+    assert verified["state"] == "valid"
+    assert verified["trusted_document_integrity"] is True
 
 
 def test_xfa_owned_output_surfaces_on_non_xfa_pdf(tmp_path):

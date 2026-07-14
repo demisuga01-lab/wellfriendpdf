@@ -1,0 +1,22 @@
+{
+  "schema": "prompt23b.performance-memory.v1",
+  "status": "focused_smoke",
+  "cli_aesgcm_runtime": {
+    "input": "tests/corpus/pdfs/pdfjs/openoffice.pdf",
+    "encrypted_output_bytes": 11083,
+    "decrypted_output_bytes": 10443,
+    "process_tree_cap": "established serial 4 GiB posture requested; focused commands were not separately wrapped"
+  },
+  "aesgcm_limits": {
+    "key_bytes": 32,
+    "iv_bytes": 12,
+    "tag_bytes": 16
+  },
+  "pubsec": {
+    "cms_bytes_processed": "bounded by MAX_CMS_BYTES=1048576 in runtime PubSec provider path",
+    "recipient_count_processed": "bounded by MAX_RECIPIENTS=64 in CMS and provider paths",
+    "writer_recipient_count": "bounded by PubSecEncryptOptions validation at 1..=64 recipients",
+    "writer_key_rotation": "full rewrite generates a fresh 20-byte seed and file key per output",
+    "fixture": "synthetic adbe.pkcs7.s5 KeyTrans CMS decrypt/write/re-encrypt fixtures generated in tests"
+  }
+}

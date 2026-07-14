@@ -1,0 +1,59 @@
+{
+  "schema": "prompt23b.crypto-vector-manifest.v1",
+  "status": "implemented_with_limits",
+  "vectors": [
+    {
+      "id": "aesv4-test-nonce-roundtrip",
+      "source": "generated_test_only",
+      "algorithm": "AES-256-GCM",
+      "nonce_policy": "fixed nonce helper; unavailable to production writer",
+      "test": "crypto::tests::aes256_gcm_pdf_object_round_trips_with_test_nonce"
+    },
+    {
+      "id": "aesv4-cli-runtime-smoke",
+      "source": "generated_runtime",
+      "algorithm": "AESV4 Standard handler",
+      "input": "tests/corpus/pdfs/pdfjs/openoffice.pdf",
+      "reports": [
+        "target/prompt23-writer-crypto/cli-aesgcm-runtime-encrypt.json",
+        "target/prompt23-writer-crypto/cli-aesgcm-runtime-decrypt.json"
+      ]
+    },
+    {
+      "id": "pubsec-s5-keytrans-rsa-synthetic",
+      "source": "generated_test_only",
+      "algorithm": "Adobe.PubSec adbe.pkcs7.s5 CMS EnvelopedData KeyTrans RSA AES-CBC content",
+      "test": "pubsec::tests::pubsec_s5_pdf_opens_with_matching_key_and_wrong_key_fails",
+      "secret_policy": "ephemeral test RSA key is generated in memory and not committed"
+    },
+    {
+      "id": "pubsec-s5-writer-multi-recipient",
+      "source": "generated_test_only",
+      "algorithm": "Adobe.PubSec adbe.pkcs7.s5 full-rewrite KeyTrans writer",
+      "test": "pubsec::tests::pubsec_writer_creates_multi_recipient_pdf_and_reopens_each_key",
+      "expected": "each intended recipient opens; unrelated recipient fails"
+    },
+    {
+      "id": "pubsec-s5-recipient-rotation",
+      "source": "generated_test_only",
+      "algorithm": "Adobe.PubSec adbe.pkcs7.s5 full-rewrite recipient replacement",
+      "test": "pubsec::tests::pubsec_reencrypt_rotates_recipient_access_on_removal",
+      "expected": "new recipient opens; removed recipient fails"
+    },
+    {
+      "id": "pubsec-s5-duplicate-recipient-denial",
+      "source": "generated_test_only",
+      "algorithm": "Adobe.PubSec adbe.pkcs7.s5 recipient-set validation",
+      "test": "pubsec::tests::pubsec_writer_rejects_duplicate_recipient_certificate",
+      "expected": "duplicate recipient certificate fingerprint is rejected before writing"
+    },
+    {
+      "id": "pubsec-oaep-explicit-sha256-mgf1-sha1",
+      "source": "generated_test_only",
+      "algorithm": "RSAES-OAEP explicit SHA-256 hash and MGF1-SHA1 parameters",
+      "test": "pubsec::tests::rsa_oaep_explicit_sha256_mgf1_sha1_parameters_decrypt_key_transport",
+      "expected": "matching private key recovers seed/permissions; malformed/unsupported OAEP parameters fail closed"
+    }
+  ],
+  "pubsec_vectors": "implemented_with_limits_internal_synthetic_decrypt_writer_reencrypt_and_oaep_fixtures; external PDF interoperability fixture not yet recorded"
+}

@@ -1,0 +1,65 @@
+﻿{
+    "schema":  "prompt23b_final_core_validation_v1",
+    "created_at":  "2026-07-14T12:05:23.4959194Z",
+    "total":  5,
+    "passed":  4,
+    "failed":  1,
+    "result":  "failed",
+    "gates":  [
+                  {
+                      "id":  "cargo-fmt-check",
+                      "command":  "cargo fmt --check",
+                      "exit_code":  0,
+                      "status":  "passed",
+                      "start_time":  "2026-07-14T11:50:26.8560516Z",
+                      "end_time":  "2026-07-14T11:50:30.1651242Z",
+                      "duration_seconds":  3.309,
+                      "log_path":  "target\\prompt23-writer-crypto\\final-validation-logs\\cargo-fmt-check.log",
+                      "log_sha256":  "7EB70257593DA06F682A3DDDA54A9D260D4FC514F645237F5CA74B08F8DA61A6"
+                  },
+                  {
+                      "id":  "git-diff-check",
+                      "command":  "git diff --check",
+                      "exit_code":  0,
+                      "status":  "passed",
+                      "start_time":  "2026-07-14T11:50:30.2798094Z",
+                      "end_time":  "2026-07-14T11:50:30.6285112Z",
+                      "duration_seconds":  0.349,
+                      "log_path":  "target\\prompt23-writer-crypto\\final-validation-logs\\git-diff-check.log",
+                      "log_sha256":  "3E9A1AF8C8F4ABAEE0EB41596246307B09678E53AAE444C15339752E94B09C3B"
+                  },
+                  {
+                      "id":  "git-diff-cached-check",
+                      "command":  "git diff --cached --check",
+                      "exit_code":  0,
+                      "status":  "passed",
+                      "start_time":  "2026-07-14T11:50:30.6307459Z",
+                      "end_time":  "2026-07-14T11:50:30.7039358Z",
+                      "duration_seconds":  0.073,
+                      "log_path":  "target\\prompt23-writer-crypto\\final-validation-logs\\git-diff-cached-check.log",
+                      "log_sha256":  "7EB70257593DA06F682A3DDDA54A9D260D4FC514F645237F5CA74B08F8DA61A6"
+                  },
+                  {
+                      "id":  "cargo-clippy-workspace",
+                      "command":  "cargo clippy --workspace --all-targets --jobs 1 -- -D warnings",
+                      "exit_code":  0,
+                      "status":  "passed",
+                      "start_time":  "2026-07-14T11:50:30.7061438Z",
+                      "end_time":  "2026-07-14T11:52:58.4441754Z",
+                      "duration_seconds":  147.738,
+                      "log_path":  "target\\prompt23-writer-crypto\\final-validation-logs\\cargo-clippy-workspace.log",
+                      "log_sha256":  "595A5D37294D520DECA6478F809503A390F44145880C0A4E644612F5C1FA14AA"
+                  },
+                  {
+                      "id":  "cargo-test-workspace",
+                      "command":  "cargo test --workspace --all-targets --jobs 1",
+                      "exit_code":  101,
+                      "status":  "failed",
+                      "start_time":  "2026-07-14T11:52:58.4563401Z",
+                      "end_time":  "2026-07-14T12:05:23.4852300Z",
+                      "duration_seconds":  745.029,
+                      "log_path":  "target\\prompt23-writer-crypto\\final-validation-logs\\cargo-test-workspace.log",
+                      "log_sha256":  "D413E3F182643E616224CD5932AAE113D3A4D062BEFEF9912234B8AE781FEEE8"
+                  }
+              ]
+}

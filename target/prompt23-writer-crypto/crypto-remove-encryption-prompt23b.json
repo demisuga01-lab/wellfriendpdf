@@ -1,0 +1,7 @@
+{
+  "schema": "prompt23b.crypto-remove-encryption.v1",
+  "status": "implemented_with_limits",
+  "standard_handler": "decrypt_pdf writes an unencrypted full rewrite after successful open",
+  "aesv4": "covered by CLI aes-gcm-decrypt smoke",
+  "pubsec": "unsupported_reported_exact"
+}

@@ -256,15 +256,15 @@ fn add_security_rules(engine: &ContentEngine, rules: &mut Vec<ValidationRuleResu
             "security",
             "security.public_key_handler",
             "/Encrypt",
-            "Public-key security handler detected; certificate decryption is reported but unsupported.",
+            "Public-key security handler detected; explicit-provider PubSec decrypt is supported for scoped KeyTrans profiles, with no certificate-trust claim.",
         ));
     }
-    if report.aes_gcm_detected {
+    if report.aes_gcm_detected && !report.aes_gcm_supported {
         rules.push(warn(
             "security",
             "security.aes_gcm",
             "/Encrypt",
-            "AES-GCM/integrity-extension crypt filter detected but not supported.",
+            "AES-GCM crypt filter detected outside the supported AESV4 Standard-handler shape or without full ISO/TS 32004 PDF-MAC validation.",
         ));
     }
     Ok(())

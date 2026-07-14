@@ -91,11 +91,13 @@ public final class OxideSmokeTest {
             byte[] pptx = doc.toPptx(true);
             Oxide.BinaryResult sanitized = doc.sanitize("balanced");
             Oxide.BinaryResult canonicalized = doc.canonicalize(0L);
+            Oxide.BinaryResult pdfMac = doc.pdfMacCreate();
             Oxide.BinaryResult xfdf = doc.annotationXfdfExport();
             Oxide.BinaryResult appearances = doc.annotationAppearanceGenerate(null);
             Oxide.BinaryResult mediaSanitized = doc.richMediaSanitize("remove_all_media", null);
             reports.put("sanitize", sanitized.reportJson());
             reports.put("canonicalize", canonicalized.reportJson());
+            reports.put("pdf_mac_create", pdfMac.reportJson());
             reports.put("xfdf", xfdf.reportJson());
             reports.put("appearances", appearances.reportJson());
             reports.put("media_sanitized", mediaSanitized.reportJson());
@@ -105,6 +107,13 @@ public final class OxideSmokeTest {
             assertPrefix(pptx, "PK", "pptx");
             assertPrefix(sanitized.bytes(), "%PDF-", "sanitized pdf");
             assertPrefix(canonicalized.bytes(), "%PDF-", "canonicalized pdf");
+            assertPrefix(pdfMac.bytes(), "%PDF-", "PDF-MAC pdf");
+            assertTrue(pdfMac.reportJson().contains("pdf_mac_create"), "PDF-MAC create report");
+            try (Oxide.Document pdfMacDoc = Oxide.Document.open(pdfMac.bytes())) {
+                assertTrue(
+                    pdfMacDoc.pdfMacVerifyJson().contains("\"state\":\"valid\""),
+                    "PDF-MAC verify valid");
+            }
             assertPrefix(xfdf.bytes(), "<?xml", "annotation xfdf");
             assertPrefix(appearances.bytes(), "%PDF-", "annotation appearances pdf");
             assertPrefix(mediaSanitized.bytes(), "%PDF-", "media sanitized pdf");
@@ -314,11 +323,23 @@ public final class OxideSmokeTest {
             feature.contains("\"prompt23_deterministic_writer_pubsec_aesgcm\""),
             "prompt23 feature posture");
         assertTrue(
-            feature.contains("\"public_key_handler_status\":\"unsupported_reported_exact\""),
+            feature.contains("\"public_key_handler_status\":\"implemented_with_limits\""),
             "prompt23 public-key posture");
         assertTrue(
-            feature.contains("\"aes_gcm_decrypt_status\":\"unsupported_reported_exact\""),
+            feature.contains("\"aes_gcm_decrypt_status\":\"implemented_with_limits\""),
             "prompt23 AES-GCM posture");
+        assertTrue(
+            Oxide.Document.class.getMethod("openPubSec", byte[].class, byte[].class, byte[].class) != null,
+            "PubSec open runtime surface");
+        assertTrue(
+            Oxide.Document.class.getMethod("openPubSecPfx", byte[].class, byte[].class, byte[].class) != null,
+            "PubSec PFX open runtime surface");
+        assertTrue(
+            Oxide.Document.class.getMethod("pubsecEncryptPdf", byte[].class) != null,
+            "PubSec encrypt runtime surface");
+        assertTrue(
+            Oxide.Document.class.getMethod("pdfMacCreate") != null,
+            "PDF-MAC create runtime surface");
         assertTrue(
             Oxide.cryptoTamperTestJson().contains("crypto_tamper_test"),
             "prompt23 tamper report");

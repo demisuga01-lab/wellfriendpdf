@@ -191,12 +191,15 @@ impl DocumentInfo {
 }
 
 fn build_encryption_report(enc: &EncryptionInfo) -> EncryptionReport {
-    let algorithm = if enc.is_v5() {
+    let algorithm = if enc.is_aes_gcm() {
+        "AES-256-GCM".to_string()
+    } else if enc.is_v5() {
         "AES-256".to_string()
     } else {
         match enc.cf_method {
             CryptMethod::AesV2 => "AES-128".to_string(),
             CryptMethod::AesV3 => "AES-256".to_string(),
+            CryptMethod::AesV4 => "AES-256-GCM".to_string(),
             CryptMethod::V2 => format!("RC4 {}-bit", enc.key_length),
             CryptMethod::None => format!("RC4 {}-bit", enc.key_length),
         }
@@ -512,6 +515,7 @@ mod tests {
             string_method: cf.clone(),
             embedded_file_method: cf,
             crypt_filters: std::collections::HashMap::new(),
+            kdf_salt: None,
             v5: None,
         }
     }

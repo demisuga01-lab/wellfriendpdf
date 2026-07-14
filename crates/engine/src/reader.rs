@@ -9,9 +9,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{OnceLock, RwLock};
 
 use crate::crypto::{
-    compute_encryption_key, decrypt_string, derive_v5_file_key_from_owner,
-    derive_v5_file_key_from_user, verify_user_password, verify_v5_owner_password, verify_v5_perms,
-    verify_v5_user_password, CryptMethod, EncryptionInfo, SecretBytes,
+    aes256_gcm_decrypt_pdf_object, compute_encryption_key, decrypt_string,
+    derive_v5_file_key_from_owner, derive_v5_file_key_from_user, verify_user_password,
+    verify_v5_owner_password, verify_v5_perms, verify_v5_user_password, CryptMethod,
+    EncryptionInfo, SecretBytes,
 };
 use crate::decode_scanner::{find_marker_accelerated, rfind_marker_accelerated};
 use crate::error::{OxideError, Result};
@@ -19,6 +20,7 @@ use crate::filters::decode_stream_from_dict;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::parser::{ParserResolver, PdfParser};
 use crate::parser_report::{ParserCategory, ParserDiagnostic, ParserSeverity, ParserSourceMetrics};
+use crate::pubsec::{parse_pubsec_encryption_info, recover_pubsec_file_key, PubSecKeyProvider};
 
 const MAX_FALLBACK_XREF_OBJECTS: usize = 200_000;
 const STREAMING_TAIL_READ_LIMIT: usize = 16 * 1024 * 1024;
@@ -477,6 +479,99 @@ impl PdfReader {
         })
     }
 
+    /// Open a PDF from bytes using an explicit public-key security-handler
+    /// provider. This path is used only for `/Filter /Adobe.PubSec` documents;
+    /// it does not scan the filesystem or validate certificate trust.
+    pub fn from_bytes_with_pubsec_provider(
+        data: Vec<u8>,
+        provider: &PubSecKeyProvider,
+    ) -> Result<Self> {
+        let mut diagnostics = crate::parser_report::diagnose_pdf_bytes(&data);
+        let version = parse_header_version(&data)?;
+        let mut xref = HashMap::new();
+        let mut trailer = None;
+        let mut visited = HashSet::new();
+
+        let startxref = match find_startxref(&data) {
+            Ok(startxref) => {
+                if let Err(primary) =
+                    read_xref_chain(&data, startxref, &mut xref, &mut trailer, &mut visited)
+                {
+                    xref.clear();
+                    trailer = None;
+                    if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
+                        return Err(primary);
+                    }
+                    diagnostics.push(
+                        ParserDiagnostic::new(
+                            ParserSeverity::RecoverableError,
+                            ParserCategory::Repair,
+                            "xref_chain_rebuilt_from_object_scan",
+                            "xref chain could not be trusted and was rebuilt from a bounded indirect-object scan",
+                        )
+                        .at_offset(startxref)
+                        .with_recovery("discarded damaged xref chain and used recovered object offsets")
+                        .incomplete(),
+                    );
+                }
+                startxref
+            }
+            Err(primary) => {
+                if rebuild_xref_from_object_scan(&data, &mut xref, &mut trailer).is_err() {
+                    return Err(primary);
+                }
+                diagnostics.push(
+                    ParserDiagnostic::new(
+                        ParserSeverity::RecoverableError,
+                        ParserCategory::Repair,
+                        "missing_startxref_repaired",
+                        "missing startxref was repaired by bounded indirect-object scan",
+                    )
+                    .with_recovery("built xref table from indirect-object headers")
+                    .incomplete(),
+                );
+                0
+            }
+        };
+        let repaired_offsets = repair_uncompressed_xref_offsets(&data, &mut xref);
+        if repaired_offsets > 0 {
+            diagnostics.push(
+                ParserDiagnostic::new(
+                    ParserSeverity::RecoverableError,
+                    ParserCategory::Repair,
+                    "xref_offsets_repaired",
+                    format!(
+                        "{repaired_offsets} xref offset(s) were corrected by nearby object headers"
+                    ),
+                )
+                .with_recovery(
+                    "replaced damaged uncompressed xref offsets with scanned object offsets",
+                )
+                .incomplete(),
+            );
+        }
+
+        let trailer = trailer.ok_or_else(|| {
+            OxideError::MalformedPdf("PDF did not contain a trailer dictionary".to_string())
+        })?;
+
+        let source = PdfSource::Memory(data);
+        let encryption = setup_encryption_pubsec(&source, &xref, &trailer, provider)?;
+
+        Ok(Self {
+            source,
+            version,
+            xref,
+            trailer,
+            object_stream_cache: RwLock::new(BoundedObjectStreamCache::new(
+                DEFAULT_OBJECT_STREAM_CACHE_LIMIT,
+            )),
+            encryption,
+            startxref,
+            diagnostics,
+        })
+    }
+
     fn from_seekable_source_with_password(source: PdfSource, password: &[u8]) -> Result<Self> {
         let diagnostics = Vec::new();
         let prefix = source.read_prefix(1024)?;
@@ -650,7 +745,7 @@ impl PdfReader {
                 if parsed.number != number || parsed.generation != generation {
                     return Err(OxideError::MissingObject { number, generation });
                 }
-                Ok(self.decrypt_object(parsed.object, number, generation))
+                self.decrypt_object(parsed.object, number, generation)
             }
             XrefEntry::Compressed { stream_obj, index } => {
                 // Objects stored inside an object stream are decrypted as part
@@ -784,9 +879,9 @@ impl PdfReader {
     /// never encrypted and are left untouched; object streams (`/Type /ObjStm`)
     /// ARE encrypted and are decrypted here (their sub-objects are then parsed
     /// from the already-decrypted bytes and not decrypted again).
-    fn decrypt_object(&self, obj: PdfObject, obj_num: u32, gen_num: u16) -> PdfObject {
+    fn decrypt_object(&self, obj: PdfObject, obj_num: u32, gen_num: u16) -> Result<PdfObject> {
         let ctx = match &self.encryption {
-            None => return obj,
+            None => return Ok(obj),
             Some(ctx) => ctx,
         };
         self.decrypt_object_inner(obj, obj_num, gen_num, ctx)
@@ -798,15 +893,15 @@ impl PdfReader {
         obj_num: u32,
         gen_num: u16,
         ctx: &EncryptionContext,
-    ) -> PdfObject {
-        match obj {
+    ) -> Result<PdfObject> {
+        Ok(match obj {
             PdfObject::String(bytes) => PdfObject::String(decrypt_bytes_by_method(
                 &bytes,
                 ctx,
                 obj_num,
                 gen_num,
                 &ctx.string_method,
-            )),
+            )?),
             PdfObject::Stream { dict, raw } => {
                 match dict.get_name("Type") {
                     // Cross-reference streams are never encrypted.
@@ -816,7 +911,7 @@ impl PdfReader {
                     _ => {
                         let method = stream_crypt_method(&dict, ctx);
                         let decrypted =
-                            decrypt_bytes_by_method(&raw, ctx, obj_num, gen_num, &method);
+                            decrypt_bytes_by_method(&raw, ctx, obj_num, gen_num, &method)?;
                         // String values inside the stream dictionary are also
                         // encrypted; decrypt them too.
                         let dict = match self.decrypt_object_inner(
@@ -824,7 +919,7 @@ impl PdfReader {
                             obj_num,
                             gen_num,
                             ctx,
-                        ) {
+                        )? {
                             PdfObject::Dictionary(d) => d,
                             // decrypt_object_inner on a Dictionary always yields
                             // a Dictionary; this arm is unreachable in practice.
@@ -837,25 +932,26 @@ impl PdfReader {
                     }
                 }
             }
-            PdfObject::Array(items) => PdfObject::Array(
-                items
-                    .into_iter()
-                    .map(|item| self.decrypt_object_inner(item, obj_num, gen_num, ctx))
-                    .collect(),
-            ),
+            PdfObject::Array(items) => {
+                let mut out = Vec::with_capacity(items.len());
+                for item in items {
+                    out.push(self.decrypt_object_inner(item, obj_num, gen_num, ctx)?);
+                }
+                PdfObject::Array(out)
+            }
             PdfObject::Dictionary(dict) => {
                 let mut out = PdfDictionary::empty();
                 for (key, value) in dict.iter() {
                     out.insert(
                         key.clone(),
-                        self.decrypt_object_inner(value.clone(), obj_num, gen_num, ctx),
+                        self.decrypt_object_inner(value.clone(), obj_num, gen_num, ctx)?,
                     );
                 }
                 PdfObject::Dictionary(out)
             }
             // Integers, reals, booleans, names, references, null: unchanged.
             other => other,
-        }
+        })
     }
 
     pub fn resolve(&self, object: PdfObject) -> Result<PdfObject> {
@@ -1006,6 +1102,42 @@ fn setup_encryption(
     Err(OxideError::EncryptedPdf(
         "PDF is password-protected; provide the correct password".to_string(),
     ))
+}
+
+fn setup_encryption_pubsec(
+    source: &PdfSource,
+    xref: &HashMap<(u32, u16), XrefEntry>,
+    trailer: &PdfDictionary,
+    provider: &PubSecKeyProvider,
+) -> Result<Option<EncryptionContext>> {
+    let Some(encrypt_obj) = trailer.get("Encrypt") else {
+        return Ok(None);
+    };
+    let encrypt_dict = match resolve_encrypt_dict(source, xref, encrypt_obj)? {
+        Some(dict) => dict,
+        None => return Err(OxideError::EncryptedDocument),
+    };
+    let filter = encrypt_dict.get_name("Filter").unwrap_or("");
+    if filter != "Adobe.PubSec" {
+        return Err(OxideError::UnsupportedFeature(format!(
+            "public-key provider open requires /Filter /Adobe.PubSec, got /{filter}"
+        )));
+    }
+    let info = parse_pubsec_encryption_info(&encrypt_dict)?;
+    let recovered = recover_pubsec_file_key(&info, provider)?;
+    let is_v5 = matches!(info.stream_method, CryptMethod::AesV3)
+        || matches!(info.string_method, CryptMethod::AesV3)
+        || matches!(info.embedded_file_method, CryptMethod::AesV3);
+    Ok(Some(EncryptionContext {
+        file_key: recovered.file_key,
+        is_aes: matches!(info.stream_method, CryptMethod::AesV2),
+        is_v5,
+        stream_method: info.stream_method,
+        string_method: info.string_method,
+        embedded_file_method: info.embedded_file_method,
+        crypt_filters: info.crypt_filters,
+        encrypt_metadata: info.encrypt_metadata,
+    }))
 }
 
 /// Set up decryption for a V5 (AES-256, R5/R6) document.
@@ -1244,17 +1376,18 @@ fn decrypt_bytes_by_method(
     obj_num: u32,
     gen_num: u16,
     method: &CryptMethod,
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     match method {
-        CryptMethod::None => data.to_vec(),
-        CryptMethod::V2 | CryptMethod::AesV2 | CryptMethod::AesV3 => decrypt_string(
+        CryptMethod::None => Ok(data.to_vec()),
+        CryptMethod::V2 | CryptMethod::AesV2 | CryptMethod::AesV3 => Ok(decrypt_string(
             data,
             &ctx.file_key,
             obj_num,
             gen_num,
             method_is_aes128(method),
             method_is_aes256(method),
-        ),
+        )),
+        CryptMethod::AesV4 => aes256_gcm_decrypt_pdf_object(data, &ctx.file_key),
     }
 }
 

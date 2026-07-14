@@ -2168,6 +2168,7 @@ fn build_rc4_128_encrypted_pdf() -> Vec<u8> {
         string_method: CryptMethod::V2,
         embedded_file_method: CryptMethod::V2,
         crypt_filters: std::collections::HashMap::new(),
+        kdf_salt: None,
         v5: None,
     };
     let file_key = compute_encryption_key(b"", &info, &file_id);

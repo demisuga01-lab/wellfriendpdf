@@ -121,6 +121,73 @@ public final class Oxide {
             }
         }
 
+        public static Document openPubSec(byte[] bytes, byte[] certificate, byte[] privateKey) {
+            Objects.requireNonNull(bytes, "bytes");
+            Objects.requireNonNull(certificate, "certificate");
+            Objects.requireNonNull(privateKey, "privateKey");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = arena.allocate(bytes.length);
+                data.copyFrom(MemorySegment.ofArray(bytes));
+                MemorySegment cert = arena.allocate(certificate.length);
+                cert.copyFrom(MemorySegment.ofArray(certificate));
+                MemorySegment key = arena.allocate(privateKey.length);
+                key.copyFrom(MemorySegment.ofArray(privateKey));
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment handle = (MemorySegment) Native.OPEN_PUBSEC.invokeExact(
+                    data,
+                    (long) bytes.length,
+                    cert,
+                    (long) certificate.length,
+                    key,
+                    (long) privateKey.length,
+                    err
+                );
+                if (Native.isNull(handle)) {
+                    Native.throwError(2, err);
+                }
+                return new Document(handle);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide native PubSec open failed", ex);
+            }
+        }
+
+        public static Document openPubSecPfx(byte[] bytes, byte[] pfx, byte[] password) {
+            Objects.requireNonNull(bytes, "bytes");
+            Objects.requireNonNull(pfx, "pfx");
+            byte[] effectivePassword = password == null ? new byte[0] : password;
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment data = arena.allocate(bytes.length);
+                data.copyFrom(MemorySegment.ofArray(bytes));
+                MemorySegment pfxBytes = arena.allocate(pfx.length);
+                pfxBytes.copyFrom(MemorySegment.ofArray(pfx));
+                MemorySegment passwordBytes = MemorySegment.NULL;
+                if (effectivePassword.length > 0) {
+                    passwordBytes = arena.allocate(effectivePassword.length);
+                    passwordBytes.copyFrom(MemorySegment.ofArray(effectivePassword));
+                }
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment handle = (MemorySegment) Native.OPEN_PUBSEC_PFX.invokeExact(
+                    data,
+                    (long) bytes.length,
+                    pfxBytes,
+                    (long) pfx.length,
+                    passwordBytes,
+                    (long) effectivePassword.length,
+                    err
+                );
+                if (Native.isNull(handle)) {
+                    Native.throwError(2, err);
+                }
+                return new Document(handle);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide native PubSec PFX open failed", ex);
+            }
+        }
+
         public int pageCount() {
             ensureOpen();
             try (Arena arena = Arena.ofConfined()) {
@@ -356,6 +423,21 @@ public final class Oxide {
         public String aesGcmReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.AES_GCM_REPORT, "aes_gcm_report");
+        }
+
+        public String pdfMacReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PDF_MAC_REPORT, "pdf_mac_report");
+        }
+
+        public String pdfMacVerifyJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PDF_MAC_VERIFY, "pdf_mac_verify");
+        }
+
+        public BinaryResult pdfMacCreate() {
+            ensureOpen();
+            return Native.documentOutput(handle, Native.PDF_MAC_CREATE, "pdf_mac_create");
         }
 
         public BinaryResult prompt22Optimize(String optionsJson) {
@@ -647,6 +729,11 @@ public final class Oxide {
             return Native.documentToBytes(handle, Native.TO_PPTX, includeImages ? 1 : 0);
         }
 
+        public byte[] pubsecEncryptPdf(byte[] recipientCertificate) {
+            ensureOpen();
+            return Native.pubsecEncrypt(handle, recipientCertificate);
+        }
+
         @Override
         public void close() {
             if (!closed) {
@@ -718,6 +805,14 @@ public final class Oxide {
             "oxide_document_open_from_bytes_with_password",
             FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle OPEN_PUBSEC = downcall(
+            "oxide_document_open_pubsec_from_bytes",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle OPEN_PUBSEC_PFX = downcall(
+            "oxide_document_open_pubsec_pfx_from_bytes",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle FREE_DOC = downcall(
             "oxide_document_free",
             FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
@@ -761,6 +856,10 @@ public final class Oxide {
         private static final MethodHandle TO_DOCX_WITH_LAYOUT = downcall(
             "oxide_document_to_docx_with_layout",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PUBSEC_ENCRYPT = downcall(
+            "oxide_document_pubsec_encrypt_pdf",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle DOCX_TO_PDF = downcall(
             "oxide_docx_to_pdf",
@@ -832,6 +931,15 @@ public final class Oxide {
             documentReport("oxide_document_pubsec_report_json");
         private static final MethodHandle AES_GCM_REPORT =
             documentReport("oxide_document_aes_gcm_report_json");
+        private static final MethodHandle PDF_MAC_REPORT =
+            documentReport("oxide_document_pdf_mac_report_json");
+        private static final MethodHandle PDF_MAC_VERIFY =
+            documentReport("oxide_document_pdf_mac_verify_json");
+        private static final MethodHandle PDF_MAC_CREATE = downcall(
+            "oxide_document_pdf_mac_create_pdf",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle PROMPT22_OPTIMIZE = downcall(
             "oxide_document_prompt22_optimize_pdf",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
@@ -1652,6 +1760,24 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide document conversion failed", ex);
+            }
+        }
+
+        private static byte[] pubsecEncrypt(MemorySegment handle, byte[] recipientCertificate) {
+            Objects.requireNonNull(recipientCertificate, "recipientCertificate");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment cert = arena.allocate(recipientCertificate.length);
+                cert.copyFrom(MemorySegment.ofArray(recipientCertificate));
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PUBSEC_ENCRYPT.invokeExact(
+                    handle, cert, (long) recipientCertificate.length, buffer, err);
+                throwError(status, err);
+                return takeBuffer(buffer);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide PubSec encrypt failed", ex);
             }
         }
 

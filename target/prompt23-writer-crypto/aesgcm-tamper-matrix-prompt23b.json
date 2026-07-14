@@ -1,0 +1,17 @@
+{
+  "schema": "prompt23b.aesgcm-tamper-matrix.v1",
+  "status": "implemented_with_limits",
+  "cases": [
+    {"case": "ciphertext_bit_flip", "result": "authentication_failure", "plaintext_returned": false, "test": "crypto::tests::aes256_gcm_pdf_object_tamper_returns_no_plaintext"},
+    {"case": "nonce_bit_flip", "result": "authentication_failure", "plaintext_returned": false, "test": "crypto::tests::aes256_gcm_pdf_object_tamper_returns_no_plaintext"},
+    {"case": "tag_bit_flip", "result": "authentication_failure", "plaintext_returned": false, "test": "crypto::tests::aes256_gcm_pdf_object_tamper_returns_no_plaintext"},
+    {"case": "truncated_tag", "result": "authentication_failure", "plaintext_returned": false, "test": "crypto::tests::aes256_gcm_pdf_object_tamper_returns_no_plaintext"},
+    {"case": "stream_payload_tamper", "result": "authentication_failure_at_reader_object_boundary", "plaintext_returned": false, "test": "utilities::tests::aes_gcm_encrypt_pdf_roundtrips_and_rejects_stream_tamper"},
+    {"case": "object_number_change", "result": "not_authenticated_by_iso_ts_32003_nil_aad", "plaintext_returned": "not_applicable"},
+    {"case": "generation_number_change", "result": "not_authenticated_by_iso_ts_32003_nil_aad", "plaintext_returned": "not_applicable"},
+    {"case": "crypt_filter_dictionary_change", "result": "parse_or_unsupported_feature", "plaintext_returned": false},
+    {"case": "encryption_dictionary_change", "result": "parse_or_authentication_failure", "plaintext_returned": false},
+    {"case": "stream_length_change", "result": "parse_or_authentication_failure", "plaintext_returned": false}
+  ],
+  "security_posture": "No AESV4 plaintext is returned before tag verification succeeds."
+}

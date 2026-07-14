@@ -1,0 +1,57 @@
+# Prompt 23B Interoperability
+
+Status: `implemented_with_limits`
+
+Evidence root: `target/prompt23-writer-crypto/`
+
+AES-GCM:
+
+- Internal known-answer style vectors use fixed nonce helper only in tests.
+- Runtime CLI smoke created an AESV4 PDF and decrypted it through Oxide.
+- qpdf 12.3.2 was executed against the Oxide AESV4 encrypted output and
+  returned an explicit unsupported encryption-dictionary result for `/R 7` and
+  `/V 6`; this is recorded as unsupported, not as a pass.
+- qpdf successfully checked the Oxide-decrypted output.
+- Poppler `pdftoppm` 26.02.0 rendered the Oxide-decrypted output.
+- Java JCA 25.0.2 matched independent public vectors for AES-GCM, AES Key
+  Wrap, HMAC-SHA256, and HKDF-SHA256.
+
+PubSec:
+
+- A local scoped `/adbe.pkcs7.s5` fixture is generated in engine tests with a synthetic RSA identity and CMS EnvelopedData recipient.
+- The fixture proves Oxide can recover the file key, decrypt the PDF, reject the wrong key, and extract visible text.
+- Writer fixtures create multi-recipient PubSec PDFs, reopen with each intended recipient, reject a non-recipient key, and rotate recipients by full rewrite so removed recipients fail on the new output.
+- No local independent PDF implementation with demonstrated `/Adobe.PubSec`
+  `/adbe.pkcs7.s5` create/open support and compatible fixture was available in
+  this closure pass. PubSec PDF-level external interoperability is therefore
+  unclaimed; lower-layer primitive/provider evidence is recorded separately.
+
+PDF-MAC:
+
+- Oxide creates and verifies the standalone AESV4 PDF-MAC fixture.
+- qpdf 12.3.2 was executed against the PDF-MAC output and returned the same
+  unsupported `/R 7` and `/V 6` encryption-dictionary result, so qpdf is not a
+  compatible ISO/TS 32004 validator in this environment.
+- Java JCA primitive vectors cover the AES-KW/HMAC/HKDF layers used by the
+  mapped PDF-MAC profile.
+
+CMS/provider:
+
+- OpenSSL CMS was not available on `PATH` in this closure pass.
+- No local Bouncy Castle JAR or dependency was discovered outside the managed
+  Java binding build.
+- Missing OpenSSL/Bouncy Castle/PDFBox/iText/MuPDF/PDFium support is reported
+  as unavailable, never as pass evidence.
+
+Tool policy:
+
+- qpdf and other tools are recorded only for features they actually support.
+- Unsupported external behavior is not a pass.
+
+Machine-readable artifacts:
+
+- `prompt23b-independent-tool-support-matrix.json`
+- `prompt23b-pubsec-interoperability.json`
+- `prompt23b-aesv4-interoperability.json`
+- `prompt23b-pdfmac-interoperability.json`
+- `prompt23b-cms-provider-interoperability.json`

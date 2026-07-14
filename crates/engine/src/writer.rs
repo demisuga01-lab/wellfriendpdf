@@ -93,6 +93,10 @@ pub struct PdfWriter {
     encryption: Option<WriterEncryption>,
     /// Cross-reference structure to emit. See [`WriterMode`].
     mode: WriterMode,
+    /// Additional trailer keys supplied by higher-level features such as
+    /// ISO/TS 32004 PDF-MAC `/AuthCode`. Core keys (`/Size`, `/Root`, `/Info`,
+    /// `/ID`, `/Encrypt`) are still owned by the writer.
+    trailer_extra: Option<PdfDictionary>,
 }
 
 /// The cross-reference structure the writer emits.
@@ -117,8 +121,64 @@ pub enum WriterMode {
 /// Encryption configuration for [`PdfWriter`]: the derived key/params plus the
 /// output object number reserved for the `/Encrypt` dictionary.
 struct WriterEncryption {
-    state: crate::crypto::EncryptState,
+    state: WriterEncryptionState,
     encrypt_obj_number: u32,
+}
+
+enum WriterEncryptionState {
+    Standard(crate::crypto::EncryptState),
+    Custom(PdfWriterCustomEncryption),
+}
+
+impl WriterEncryptionState {
+    fn file_key(&self) -> &[u8] {
+        match self {
+            Self::Standard(state) => &state.file_key,
+            Self::Custom(state) => &state.file_key,
+        }
+    }
+
+    fn string_method(&self) -> &crate::crypto::CryptMethod {
+        match self {
+            Self::Standard(state) => &state.info.string_method,
+            Self::Custom(state) => &state.string_method,
+        }
+    }
+
+    fn stream_method(&self) -> &crate::crypto::CryptMethod {
+        match self {
+            Self::Standard(state) => &state.info.stream_method,
+            Self::Custom(state) => &state.stream_method,
+        }
+    }
+
+    fn encrypt_dict(&self) -> PdfDictionary {
+        match self {
+            Self::Standard(state) => encryption_info_to_dict(&state.info),
+            Self::Custom(state) => state.encrypt_dict.clone(),
+        }
+    }
+
+    fn pdf_version(&self) -> &str {
+        match self {
+            Self::Standard(state) => match state.info.v {
+                6 | 5 => "2.0",
+                4 => "1.6",
+                _ => "1.4",
+            },
+            Self::Custom(state) => &state.pdf_version,
+        }
+    }
+}
+
+/// Custom encryption state for PDF security handlers whose `/Encrypt`
+/// dictionary is built outside the Standard security handler.
+pub struct PdfWriterCustomEncryption {
+    pub file_key: crate::crypto::SecretBytes,
+    pub encrypt_dict: PdfDictionary,
+    pub string_method: crate::crypto::CryptMethod,
+    pub stream_method: crate::crypto::CryptMethod,
+    pub pdf_version: String,
 }
 
 impl PdfWriter {
@@ -134,6 +194,7 @@ impl PdfWriter {
             id: None,
             encryption: None,
             mode: WriterMode::ClassicXref,
+            trailer_extra: None,
         }
     }
 
@@ -166,11 +227,27 @@ impl PdfWriter {
         if self.id.is_none() {
             self.id = Some(crate::crypto::random_bytes(16));
         }
-        self.version = match state.info.v {
-            5 => "2.0".to_string(),
-            4 => "1.6".to_string(),
-            _ => "1.4".to_string(),
-        };
+        let state = WriterEncryptionState::Standard(state);
+        self.version = state.pdf_version().to_string();
+        self.encryption = Some(WriterEncryption {
+            state,
+            encrypt_obj_number,
+        });
+        self
+    }
+
+    /// Encrypt the output using a prebuilt non-Standard security-handler
+    /// dictionary. This is used by `/Adobe.PubSec`, where recipient CMS blobs
+    /// and file-key derivation are handler-specific but object encryption still
+    /// follows the selected crypt-filter method.
+    pub fn with_custom_encryption(mut self, state: PdfWriterCustomEncryption) -> Self {
+        let max = self.objects.iter().map(|o| o.number).max().unwrap_or(0);
+        let encrypt_obj_number = max + 1;
+        if self.id.is_none() {
+            self.id = Some(crate::crypto::random_bytes(16));
+        }
+        let state = WriterEncryptionState::Custom(state);
+        self.version = state.pdf_version().to_string();
         self.encryption = Some(WriterEncryption {
             state,
             encrypt_obj_number,
@@ -194,6 +271,20 @@ impl PdfWriter {
     pub fn with_id(mut self, id: Option<Vec<u8>>) -> Self {
         self.id = id;
         self
+    }
+
+    /// Add direct trailer entries that are not part of the writer's core
+    /// trailer contract. Entries with core trailer names are ignored so callers
+    /// cannot accidentally corrupt `/Size`, `/Root`, `/Info`, `/ID`, or
+    /// `/Encrypt`.
+    pub fn with_trailer_extra(mut self, extra: PdfDictionary) -> Self {
+        self.trailer_extra = Some(extra);
+        self
+    }
+
+    /// Replace the non-core trailer extras used on subsequent [`write`] calls.
+    pub fn set_trailer_extra(&mut self, extra: PdfDictionary) {
+        self.trailer_extra = Some(extra);
     }
 
     /// Serialize the whole document to PDF bytes, using the configured
@@ -254,7 +345,7 @@ impl PdfWriter {
         let mut out: Vec<OutputObject> = self.objects.clone();
         out.push(OutputObject {
             number: enc.encrypt_obj_number,
-            object: PdfObject::Dictionary(encryption_info_to_dict(&enc.state.info)),
+            object: PdfObject::Dictionary(enc.state.encrypt_dict()),
         });
         out
     }
@@ -350,6 +441,14 @@ impl PdfWriter {
                 },
             );
         }
+        if let Some(extra) = &self.trailer_extra {
+            for (key, value) in extra.iter() {
+                if matches!(key.as_str(), "Size" | "Root" | "Info" | "ID" | "Encrypt") {
+                    continue;
+                }
+                trailer.insert(key.clone(), value.clone());
+            }
+        }
         trailer
     }
 
@@ -418,42 +517,46 @@ impl PdfWriter {
         // Helper to fetch an object body, applying per-object encryption for the
         // DIRECT path (packed objects are handled separately, unencrypted-inner).
         let enc_state = self.encryption.as_ref().map(|e| &e.state);
-        let emit_direct = |out: &mut Vec<u8>, obj: &OutputObject| -> Result<usize> {
-            let offset = out.len();
-            let mut object = obj.object.clone();
-            if let Some(state) = enc_state {
-                if Some(obj.number) != encrypt_obj_number {
-                    encrypt_object_in_place(
-                        &mut object,
-                        obj.number,
-                        0,
-                        &state.file_key,
-                        state.is_aes(),
-                        state.is_v5(),
-                    )?;
-                }
-            }
-            out.extend_from_slice(format!("{} 0 obj\n", obj.number).as_bytes());
-            serialize_object(&object, out);
-            out.extend_from_slice(b"\nendobj\n");
-            Ok(offset)
-        };
+        let mut gcm_nonces = BTreeSet::new();
 
         // 1. Emit direct (type-1) objects.
-        for obj in &direct {
-            // When NOT packing and NOT encrypting-at-write, `objects` may already
-            // be encrypted by the caller; emit verbatim in that case.
-            let offset = if pack || !encrypting {
-                emit_direct(&mut out, obj)?
-            } else {
-                // Caller already encrypted; emit as-is.
-                let off = out.len();
+        {
+            let mut emit_direct = |out: &mut Vec<u8>, obj: &OutputObject| -> Result<usize> {
+                let offset = out.len();
+                let mut object = obj.object.clone();
+                if let Some(state) = enc_state {
+                    if Some(obj.number) != encrypt_obj_number {
+                        encrypt_object_in_place(
+                            &mut object,
+                            obj.number,
+                            0,
+                            state.file_key(),
+                            state.string_method(),
+                            state.stream_method(),
+                            &mut gcm_nonces,
+                        )?;
+                    }
+                }
                 out.extend_from_slice(format!("{} 0 obj\n", obj.number).as_bytes());
-                serialize_object(&obj.object, &mut out);
+                serialize_object(&object, out);
                 out.extend_from_slice(b"\nendobj\n");
-                off
+                Ok(offset)
             };
-            entries.push((obj.number, XrefEntryOut::Uncompressed { offset }));
+            for obj in &direct {
+                // When NOT packing and NOT encrypting-at-write, `objects` may already
+                // be encrypted by the caller; emit verbatim in that case.
+                let offset = if pack || !encrypting {
+                    emit_direct(&mut out, obj)?
+                } else {
+                    // Caller already encrypted; emit as-is.
+                    let off = out.len();
+                    out.extend_from_slice(format!("{} 0 obj\n", obj.number).as_bytes());
+                    serialize_object(&obj.object, &mut out);
+                    out.extend_from_slice(b"\nendobj\n");
+                    off
+                };
+                entries.push((obj.number, XrefEntryOut::Uncompressed { offset }));
+            }
         }
 
         // 2. Build + emit each object stream; record type-2 entries for members.
@@ -468,13 +571,13 @@ impl PdfWriter {
             // inner objects are NOT individually encrypted.
             let compressed = crate::filters::flate_encode(&objstm_bytes, 9);
             let payload = if let Some(state) = enc_state {
-                crate::crypto::encrypt_bytes(
+                encrypt_bytes_for_writer(
                     &compressed,
-                    &state.file_key,
+                    state.file_key(),
                     plan.number,
                     0,
-                    state.is_aes(),
-                    state.is_v5(),
+                    state.stream_method(),
+                    &mut gcm_nonces,
                 )?
             } else {
                 compressed
@@ -534,14 +637,23 @@ impl PdfWriter {
     /// its strings + stream bytes encrypted per-object, plus the appended
     /// `/Encrypt` dictionary object (itself unencrypted).
     fn build_encrypted_objects(&self, enc: &WriterEncryption) -> Result<Vec<OutputObject>> {
-        let is_aes = enc.state.is_aes();
-        let is_v5 = enc.state.is_v5();
-        let key = &enc.state.file_key;
+        let key = enc.state.file_key();
+        let string_method = enc.state.string_method();
+        let stream_method = enc.state.stream_method();
+        let mut gcm_nonces = BTreeSet::new();
 
         let mut out: Vec<OutputObject> = Vec::with_capacity(self.objects.len() + 1);
         for obj in &self.objects {
             let mut object = obj.object.clone();
-            encrypt_object_in_place(&mut object, obj.number, 0, key, is_aes, is_v5)?;
+            encrypt_object_in_place(
+                &mut object,
+                obj.number,
+                0,
+                key,
+                string_method,
+                stream_method,
+                &mut gcm_nonces,
+            )?;
             out.push(OutputObject {
                 number: obj.number,
                 object,
@@ -550,7 +662,7 @@ impl PdfWriter {
         // Append the /Encrypt dictionary object (NOT encrypted).
         out.push(OutputObject {
             number: enc.encrypt_obj_number,
-            object: PdfObject::Dictionary(encryption_info_to_dict(&enc.state.info)),
+            object: PdfObject::Dictionary(enc.state.encrypt_dict()),
         });
         Ok(out)
     }
@@ -565,24 +677,50 @@ fn encrypt_object_in_place(
     obj_num: u32,
     gen_num: u16,
     key: &[u8],
-    is_aes: bool,
-    is_v5: bool,
+    string_method: &crate::crypto::CryptMethod,
+    stream_method: &crate::crypto::CryptMethod,
+    gcm_nonces: &mut BTreeSet<[u8; 12]>,
 ) -> Result<()> {
     match object {
         PdfObject::String(bytes) => {
-            *bytes = crate::crypto::encrypt_bytes(bytes, key, obj_num, gen_num, is_aes, is_v5)?;
+            *bytes =
+                encrypt_bytes_for_writer(bytes, key, obj_num, gen_num, string_method, gcm_nonces)?;
         }
         PdfObject::Array(items) => {
             for item in items.iter_mut() {
-                encrypt_object_in_place(item, obj_num, gen_num, key, is_aes, is_v5)?;
+                encrypt_object_in_place(
+                    item,
+                    obj_num,
+                    gen_num,
+                    key,
+                    string_method,
+                    stream_method,
+                    gcm_nonces,
+                )?;
             }
         }
         PdfObject::Dictionary(dict) => {
-            encrypt_dict_in_place(dict, obj_num, gen_num, key, is_aes, is_v5)?;
+            encrypt_dict_in_place(
+                dict,
+                obj_num,
+                gen_num,
+                key,
+                string_method,
+                stream_method,
+                gcm_nonces,
+            )?;
         }
         PdfObject::Stream { dict, raw } => {
-            encrypt_dict_in_place(dict, obj_num, gen_num, key, is_aes, is_v5)?;
-            *raw = crate::crypto::encrypt_bytes(raw, key, obj_num, gen_num, is_aes, is_v5)?;
+            encrypt_dict_in_place(
+                dict,
+                obj_num,
+                gen_num,
+                key,
+                string_method,
+                stream_method,
+                gcm_nonces,
+            )?;
+            *raw = encrypt_bytes_for_writer(raw, key, obj_num, gen_num, stream_method, gcm_nonces)?;
         }
         _ => {}
     }
@@ -594,19 +732,44 @@ fn encrypt_dict_in_place(
     obj_num: u32,
     gen_num: u16,
     key: &[u8],
-    is_aes: bool,
-    is_v5: bool,
+    string_method: &crate::crypto::CryptMethod,
+    stream_method: &crate::crypto::CryptMethod,
+    gcm_nonces: &mut BTreeSet<[u8; 12]>,
 ) -> Result<()> {
     // Rebuild the dictionary with encrypted string values (BTreeMap iteration is
     // by key; we collect then reinsert to mutate values).
     let keys: Vec<String> = dict.iter().map(|(k, _)| k.clone()).collect();
     for k in keys {
         if let Some(mut value) = dict.get(&k).cloned() {
-            encrypt_object_in_place(&mut value, obj_num, gen_num, key, is_aes, is_v5)?;
+            encrypt_object_in_place(
+                &mut value,
+                obj_num,
+                gen_num,
+                key,
+                string_method,
+                stream_method,
+                gcm_nonces,
+            )?;
             dict.insert(k, value);
         }
     }
     Ok(())
+}
+
+fn encrypt_bytes_for_writer(
+    data: &[u8],
+    key: &[u8],
+    obj_num: u32,
+    gen_num: u16,
+    method: &crate::crypto::CryptMethod,
+    gcm_nonces: &mut BTreeSet<[u8; 12]>,
+) -> Result<Vec<u8>> {
+    match method {
+        crate::crypto::CryptMethod::AesV4 => {
+            crate::crypto::aes256_gcm_encrypt_pdf_object_tracked(data, key, gcm_nonces)
+        }
+        _ => crate::crypto::encrypt_bytes_by_method(data, key, obj_num, gen_num, method),
+    }
 }
 
 /// Serialize an [`crate::crypto::EncryptionInfo`] into the `/Encrypt`
@@ -629,9 +792,13 @@ fn encryption_info_to_dict(info: &crate::crypto::EncryptionInfo) -> PdfDictionar
         d.insert("UE", PdfObject::String(v5.ue.clone()));
         d.insert("Perms", PdfObject::String(v5.perms.clone()));
     }
+    if let Some(kdf_salt) = &info.kdf_salt {
+        d.insert("KDFSalt", PdfObject::String(kdf_salt.clone()));
+    }
     // V4/V5 require crypt filters (/CF, /StmF, /StrF) naming the method.
     if info.v >= 4 {
         let cfm = match info.stream_method {
+            CryptMethod::AesV4 => "AESV4",
             CryptMethod::AesV3 => "AESV3",
             CryptMethod::AesV2 => "AESV2",
             _ => "V2",
@@ -640,7 +807,7 @@ fn encryption_info_to_dict(info: &crate::crypto::EncryptionInfo) -> PdfDictionar
         stdcf.insert("Type", PdfObject::Name("CryptFilter".to_string()));
         stdcf.insert("CFM", PdfObject::Name(cfm.to_string()));
         // AuthEvent defaults to DocOpen; Length in bytes for the filter.
-        let cf_len = if info.v == 5 { 32 } else { info.key_length / 8 };
+        let cf_len = if info.v >= 5 { 32 } else { info.key_length / 8 };
         stdcf.insert("Length", PdfObject::Integer(cf_len as i64));
         let mut cf = PdfDictionary::empty();
         cf.insert("StdCF", PdfObject::Dictionary(stdcf));

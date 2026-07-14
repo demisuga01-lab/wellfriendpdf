@@ -199,6 +199,9 @@ pub fn security_report(engine: &ContentEngine) -> Result<SecurityReport> {
     let encryption = info.encryption.clone();
     let public_key_security_handler_detected = public_key_security_handler_detected(reader);
     let aes_gcm_detected = aes_gcm_detected(reader);
+    let aes_gcm_supported = encryption
+        .as_ref()
+        .is_some_and(|enc| enc.algorithm == "AES-256-GCM");
     let signatures = engine.verify_signatures()?;
     let mut risky_content = scan_risky_content(doc)?;
     let xfa = crate::xfa::xfa_security_report(engine, &crate::xfa::XfaLimits::default())?;
@@ -230,13 +233,13 @@ pub fn security_report(engine: &ContentEngine) -> Result<SecurityReport> {
 
     if public_key_security_handler_detected {
         findings.push(SecurityFinding {
-            code: "encryption.public_key_handler_unsupported".to_string(),
+            code: "encryption.public_key_handler_requires_provider".to_string(),
             severity: SecuritySeverity::Warning,
             location: "/Encrypt".to_string(),
-            message: "Public-key security handlers are detected and reported, but certificate-based decryption is not implemented in the default pure-Rust path.".to_string(),
+            message: "Public-key security handlers require an explicit certificate/private-key provider; default password-only opening does not scan keystores or infer recipients.".to_string(),
         });
     }
-    if aes_gcm_detected {
+    if aes_gcm_detected && !aes_gcm_supported {
         findings.push(SecurityFinding {
             code: "encryption.aes_gcm_unsupported".to_string(),
             severity: SecuritySeverity::Warning,
@@ -251,7 +254,7 @@ pub fn security_report(engine: &ContentEngine) -> Result<SecurityReport> {
         encryption,
         public_key_security_handler_detected,
         aes_gcm_detected,
-        aes_gcm_supported: false,
+        aes_gcm_supported,
         permissions_note: "Owner-password permissions are viewer-enforced policy after a document is opened; they are not cryptographic secrecy against a processor that has the opening key.".to_string(),
         signatures,
         risky_content,
@@ -352,7 +355,10 @@ fn aes_gcm_detected(reader: &PdfReader) -> bool {
     let Some(dict) = reader.encrypt_dictionary() else {
         return false;
     };
-    contains_name_containing(&PdfObject::Dictionary(dict), "GCM")
+    let object = PdfObject::Dictionary(dict);
+    matches!(&object, PdfObject::Dictionary(d) if d.get_integer("V") == Some(6) || d.get_integer("R") == Some(7))
+        || contains_name_containing(&object, "GCM")
+        || contains_name_containing(&object, "AESV4")
 }
 
 fn contains_name_containing(object: &PdfObject, needle: &str) -> bool {

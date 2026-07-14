@@ -49,6 +49,9 @@ impl From<oxide_engine::OxideError> for ServerError {
         match e {
             EncryptedDocument => ServerError::EncryptedDocument,
             EncryptedPdf(msg) => ServerError::EncryptedPdf(msg),
+            AuthenticationFailure(_) => {
+                ServerError::EncryptedPdf("encrypted PDF authentication failed".to_string())
+            }
             MalformedPdf(msg) => ServerError::MalformedPdf(msg),
             ParseError(msg) => ServerError::MalformedPdf(msg),
             MissingObject { number, generation } => {

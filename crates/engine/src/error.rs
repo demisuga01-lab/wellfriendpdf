@@ -20,6 +20,8 @@ pub enum OxideError {
     EncryptedDocument,
     #[error("encrypted PDF: {0}")]
     EncryptedPdf(String),
+    #[error("authentication failure: {0}")]
+    AuthenticationFailure(String),
     #[error("operation cancelled: {0}")]
     Cancelled(String),
     #[error("resource limit exceeded: {0}")]
@@ -39,6 +41,7 @@ pub enum ErrorKind {
     MissingObject,
     UnsupportedFeature,
     Encrypted,
+    AuthenticationFailure,
     Cancelled,
     ResourceLimit,
 }
@@ -53,6 +56,7 @@ impl ErrorKind {
             Self::MissingObject => "missing_object",
             Self::UnsupportedFeature => "unsupported_feature",
             Self::Encrypted => "encrypted",
+            Self::AuthenticationFailure => "authentication_failure",
             Self::Cancelled => "cancelled",
             Self::ResourceLimit => "resource_limit",
         }
@@ -68,6 +72,7 @@ impl ErrorKind {
                 | Self::MissingObject
                 | Self::UnsupportedFeature
                 | Self::Encrypted
+                | Self::AuthenticationFailure
                 | Self::ResourceLimit
         )
     }
@@ -83,6 +88,7 @@ impl OxideError {
             Self::MissingObject { .. } => ErrorKind::MissingObject,
             Self::UnsupportedFeature(_) => ErrorKind::UnsupportedFeature,
             Self::EncryptedDocument | Self::EncryptedPdf(_) => ErrorKind::Encrypted,
+            Self::AuthenticationFailure(_) => ErrorKind::AuthenticationFailure,
             Self::Cancelled(_) => ErrorKind::Cancelled,
             Self::ResourceLimit(_) => ErrorKind::ResourceLimit,
         }

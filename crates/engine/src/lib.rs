@@ -112,6 +112,7 @@ pub mod optional_content;
 pub mod parse;
 pub mod parser;
 pub mod parser_report;
+pub mod pdf_mac;
 pub mod prepress;
 pub mod prompt17;
 pub mod prompt18;
@@ -120,6 +121,7 @@ pub mod prompt20;
 pub mod prompt21;
 pub mod prompt22;
 pub mod prompt23;
+pub mod pubsec;
 pub mod reader;
 pub mod render;
 pub mod sdk;
@@ -194,11 +196,14 @@ pub use content::{
     Matrix, Operand, TextState, IDENTITY_MATRIX,
 };
 pub use crypto::{
-    aes128_cbc_decrypt, aes256_cbc_decrypt, build_encryption, compute_encryption_key,
+    aes128_cbc_decrypt, aes256_cbc_decrypt, aes256_gcm_decrypt_pdf_object,
+    aes256_gcm_encrypt_pdf_object, aes256_gcm_encrypt_pdf_object_tracked,
+    aes256_gcm_encrypt_pdf_object_with_nonce, build_encryption, compute_encryption_key,
     decrypt_stream, decrypt_string, derive_v5_file_key_from_owner, derive_v5_file_key_from_user,
-    encrypt_bytes, md5, object_key, r6_hash, verify_user_password, verify_v5_owner_password,
-    verify_v5_perms, verify_v5_user_password, CryptMethod, EncryptAlgorithm, EncryptParams,
-    EncryptState, EncryptionInfo, Rc4, SecretBytes, V5Fields, PADDING,
+    encrypt_bytes, encrypt_bytes_by_method, md5, object_key, r6_hash, verify_user_password,
+    verify_v5_owner_password, verify_v5_perms, verify_v5_user_password, CryptMethod,
+    EncryptAlgorithm, EncryptParams, EncryptState, EncryptionInfo, Rc4, SecretBytes, V5Fields,
+    PADDING,
 };
 pub use decode_cache::{DecodeCache, DecodeCacheKey, DecodeCacheMetrics};
 pub use decode_scanner::{
@@ -302,6 +307,10 @@ pub use parser_report::{
     ParserReportOptions, ParserSeverity, ParserSourceMetrics, RepairSummary, RevisionHistory,
     RevisionSection,
 };
+pub use pdf_mac::{
+    pdf_mac_report, pdf_mac_report_bytes, pdf_mac_verify_report_bytes, write_standalone_pdf_mac,
+    PdfMacReport, PdfMacState, PdfMacWriteReport,
+};
 pub use prepress::{
     classify_icc_profile, IccProfileClass, IccProfileInfo, NChannelPixelFormatReport,
     NChannelSample, PlateContribution, PlateKind, PlatePreviewHash, PlatePreviewReport,
@@ -382,6 +391,12 @@ pub use prompt23::{
     Prompt23FeatureMatrixRow, Prompt23Report, Prompt23Status, PROMPT23_ARTIFACT_ROOT,
     PROMPT23_SCHEMA_VERSION,
 };
+pub use pubsec::{
+    encrypt_pdf_pubsec, parse_pubsec_encryption_info, recover_pubsec_file_key,
+    reencrypt_pdf_pubsec, PubSecEncryptOptions, PubSecEncryptReport, PubSecEncryptionInfo,
+    PubSecIdentity, PubSecKeyProvider, PubSecRecipientCertificate, PubSecRecipientIdMode,
+    PubSecRecoveredKey,
+};
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
     flatten_cubic, flatten_path, get_fallback_font, rgb, rgba, AlphaMask, CachedGlyph, ClipMask,
@@ -459,12 +474,12 @@ pub use text::{
 };
 pub use utilities::{
     add_page_numbers_pdf, attachments_json, crop_pdf, crop_pdf_pages, decrypt_pdf, encrypt_pdf,
-    export_pdf_pages_to_images, fonts_json, html_string, images_to_pdf_from_bytes,
-    images_to_pdf_from_paths, linearize_pdf, n_up_pdf, optimize_pdf, organize_pdf,
-    organize_pdf_with_insert, render_page_image, repair_pdf, rotate_pdf, scale_pdf_pages,
-    signatures_json, watermark_image_pdf, watermark_text_pdf, ImagePdfPageSize, ImageToPdfOptions,
-    ImageWatermarkOptions, NUpOptions, PageNumberOptions, RasterImageFormat, RasterPageResult,
-    RgbColor, ScalePagesOptions, StampPosition, TextWatermarkOptions,
+    encrypt_pdf_with_pdf_mac, export_pdf_pages_to_images, fonts_json, html_string,
+    images_to_pdf_from_bytes, images_to_pdf_from_paths, linearize_pdf, n_up_pdf, optimize_pdf,
+    organize_pdf, organize_pdf_with_insert, render_page_image, repair_pdf, rotate_pdf,
+    scale_pdf_pages, signatures_json, watermark_image_pdf, watermark_text_pdf, ImagePdfPageSize,
+    ImageToPdfOptions, ImageWatermarkOptions, NUpOptions, PageNumberOptions, RasterImageFormat,
+    RasterPageResult, RgbColor, ScalePagesOptions, StampPosition, TextWatermarkOptions,
 };
 pub use versioning::{
     content_defined_chunks, hamming_distance, resource_dedup_report, resource_digest, simhash_text,

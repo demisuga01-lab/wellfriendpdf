@@ -124,6 +124,26 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern DocumentHandle oxide_document_open_pubsec_from_bytes(
+        byte[] data,
+        UIntPtr len,
+        byte[] certificate,
+        UIntPtr certificateLen,
+        byte[] privateKey,
+        UIntPtr privateKeyLen,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern DocumentHandle oxide_document_open_pubsec_pfx_from_bytes(
+        byte[] data,
+        UIntPtr len,
+        byte[] pfx,
+        UIntPtr pfxLen,
+        byte[] password,
+        UIntPtr passwordLen,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern void oxide_document_free(IntPtr document);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
@@ -187,6 +207,14 @@ internal static partial class NativeMethods
         DocumentHandle document,
         int includeImages,
         IntPtr layout,
+        out OxideBuffer buffer,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_pubsec_encrypt_pdf(
+        DocumentHandle document,
+        byte[] recipientCertificate,
+        UIntPtr recipientCertificateLen,
         out OxideBuffer buffer,
         out IntPtr errorOut);
 
@@ -365,6 +393,18 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_aes_gcm_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_pdf_mac_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_pdf_mac_verify_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_pdf_mac_create_pdf(
+        DocumentHandle document, out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_prompt22_optimize_pdf(

@@ -1,0 +1,21 @@
+{
+  "schema": "prompt23b.aesgcm-integrity-results.v1",
+  "status": "implemented_with_limits",
+  "aes_gcm_object_authentication": "implemented",
+  "pdf_mac_document_integrity": "implemented_with_limits_structure_discovery",
+  "source_boundary": {
+    "aes_gcm": "ISO/TS 32003:2023",
+    "pdf_mac": "ISO/TS 32004:2024"
+  },
+  "validity_claims": {
+    "aes_gcm_tag": "verified per encrypted string or stream before plaintext return",
+    "pdf_mac": "not claimed; structure-only report never returns valid"
+  },
+  "pdf_mac_runtime": {
+    "auth_code_discovery": "implemented",
+    "kdf_salt_posture": "implemented",
+    "cms_authenticated_data_envelope": "implemented_with_limits_parse_only",
+    "full_mac_generation": "unsupported_reported_exact",
+    "full_mac_verification": "unsupported_reported_exact"
+  }
+}

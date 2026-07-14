@@ -11,7 +11,7 @@
 
 use std::collections::HashMap;
 
-use crate::crypto::{build_encryption, EncryptParams};
+use crate::crypto::{build_encryption, EncryptAlgorithm, EncryptParams};
 use crate::editing::ImageRect;
 use crate::engine::ContentEngine;
 use crate::error::{OxideError, Result};
@@ -265,6 +265,33 @@ pub fn encrypt(engine: &ContentEngine, params: &EncryptParams) -> Result<Vec<u8>
         .with_id(Some(file_id))
         .with_encryption(state);
     writer.write()
+}
+
+/// Encrypt with the ISO/TS 32003 AESV4 Standard handler and add a standalone
+/// ISO/TS 32004 PDF-MAC token over the final byte layout.
+pub fn encrypt_with_pdf_mac(
+    engine: &ContentEngine,
+    params: &EncryptParams,
+) -> Result<(Vec<u8>, crate::pdf_mac::PdfMacWriteReport)> {
+    if params.algorithm != EncryptAlgorithm::Aes256Gcm {
+        return Err(OxideError::UnsupportedFeature(
+            "PDF-MAC writer is implemented for AESV4/AES-256-GCM full rewrite only".to_string(),
+        ));
+    }
+    let reader = engine.document().reader();
+    let file_id = crate::crypto::random_bytes(16);
+    let state = build_encryption(params, &file_id)?;
+    let file_key = state.file_key.clone();
+    let kdf_salt = state.info.kdf_salt.clone().ok_or_else(|| {
+        OxideError::MalformedPdf("PDF-MAC AESV4 writer did not generate /KDFSalt".to_string())
+    })?;
+    let mut noop = |_n: u32, _o: &mut PdfObject| {};
+    let (objects, new_root, info_number) = rewrite_document_objects(reader, &mut noop)?;
+    let writer = PdfWriter::new(objects, new_root)
+        .with_info(info_number)
+        .with_id(Some(file_id))
+        .with_encryption(state);
+    crate::pdf_mac::write_standalone_pdf_mac(writer, &file_key, &kdf_salt)
 }
 
 fn pdf_number(value: f64) -> PdfObject {

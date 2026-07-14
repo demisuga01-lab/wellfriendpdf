@@ -1,0 +1,18 @@
+{
+  "schema": "prompt23b.pubsec-decrypt-edit-reencrypt.v1",
+  "status": "implemented_with_limits",
+  "reason": "PubSec document open/decrypt and full-rewrite re-encryption are implemented for explicit-provider adbe.pkcs7.s5 KeyTrans profiles.",
+  "decrypt_open": "implemented_with_limits",
+  "edit_after_decrypt": "implemented_with_limits_via_decrypt_full_rewrite_and_reopen_tests",
+  "reencrypt_to_pubsec": "implemented_with_limits_full_rewrite_keytrans",
+  "recipient_add_remove_replace": "implemented_with_limits_full_rewrite_rotates_seed_and_file_key",
+  "removed_recipient_access": "rejected_in_pubsec_reencrypt_rotates_recipient_access_on_removal",
+  "wrong_recipient": "rejected",
+  "secret_material_serialized": false,
+  "output_written": true,
+  "remaining_limits": [
+    "encrypted incremental PubSec updates are unsupported exact",
+    "ambiguous/non-RSA PFX bundles and WASM PFX extraction are unsupported exact",
+    "PDF-MAC structure discovery and supported standalone verification are implemented; provider-aware PubSec PDF-MAC verification remains unsupported exact"
+  ]
+}

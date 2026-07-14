@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Prompt 23B Normative Crypto Closure</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 2rem; line-height: 1.45; color: #1b1f24; }
+    h1, h2 { line-height: 1.2; }
+    code { background: #f2f4f7; padding: 0.1rem 0.25rem; border-radius: 4px; }
+    .ok { color: #116329; }
+    .warn { color: #9a6700; }
+    .bad { color: #b42318; }
+    table { border-collapse: collapse; width: 100%; margin: 1rem 0; }
+    th, td { border: 1px solid #d0d7de; padding: 0.5rem; text-align: left; vertical-align: top; }
+  </style>
+</head>
+<body>
+  <h1>Prompt 23B Normative Crypto Closure</h1>
+  <p>Status: <strong class="warn">not_complete</strong></p>
+  <p>Starting checkpoint: <code>40556fb1f48cd1035f0767b78afbfe1c2034bb36</code>.</p>
+  <h2>Implemented</h2>
+  <table>
+    <tr><th>Area</th><th>Status</th><th>Evidence</th></tr>
+    <tr><td>Normative source gate</td><td class="ok">passed</td><td><code>normative-source-manifest-prompt23b.json</code></td></tr>
+    <tr><td>AESV4 Standard handler</td><td class="ok">implemented with limits</td><td><code>aesgcm-normative-mapping-prompt23b.json</code></td></tr>
+    <tr><td>AES-GCM tamper/no plaintext</td><td class="ok">focused tests passed</td><td><code>aesgcm-tamper-matrix-prompt23b.json</code></td></tr>
+    <tr><td>CLI AES-GCM runtime smoke</td><td class="ok">passed</td><td><code>cli-aesgcm-runtime-encrypt.json</code>, <code>cli-aesgcm-runtime-decrypt.json</code></td></tr>
+    <tr><td>PubSec CMS KeyTrans decryption</td><td class="ok">implemented with limits</td><td><code>pubsec-interoperability-results-prompt23b.json</code></td></tr>
+    <tr><td>PubSec writer/re-encryption</td><td class="ok">implemented with limits</td><td><code>pubsec-decrypt-edit-reencrypt-prompt23b.json</code>, <code>crypto-change-recipient-prompt23b.json</code></td></tr>
+  </table>
+  <h2>Remaining</h2>
+  <table>
+    <tr><th>Area</th><th>Status</th><th>Reason</th></tr>
+    <tr><td>PubSec encrypted incremental update</td><td class="bad">unsupported reported exact</td><td>Full-rewrite recipient mutation is implemented; append-only encrypted updates are not.</td></tr>
+    <tr><td>External PubSec interoperability</td><td class="warn">not claimed</td><td>No independent compatible vector/tool pass is recorded.</td></tr>
+    <tr><td>ISO/TS 32004 PDF-MAC validation</td><td class="bad">unsupported reported exact</td><td>AuthenticatedData verification is not implemented.</td></tr>
+    <tr><td>Full historical/binding gates</td><td class="warn">not fully run</td><td>Only focused Rust and CLI checks were run in this pass.</td></tr>
+  </table>
+  <p>Combined Prompt 24 must not begin from this state.</p>
+</body>
+</html>

@@ -20,10 +20,12 @@
 //! derivation only) uses `md-5`. SHA-256/384/512 (R5/R6 key derivation) use
 //! `sha2`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use crate::error::{OxideError, Result};
 use crate::object::{PdfDictionary, PdfObject};
+use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use subtle::ConstantTimeEq;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -433,6 +435,8 @@ pub enum CryptMethod {
     AesV2,
     /// AES-256 (`/CFM /AESV3`, V5).
     AesV3,
+    /// AES-256-GCM (`/CFM /AESV4`, V6, ISO/TS 32003).
+    AesV4,
 }
 
 /// V5-specific fields from the `/Encrypt` dictionary (R5 / R6, PDF 2.0).
@@ -475,6 +479,10 @@ pub struct EncryptionInfo {
     /// Named crypt filters from `/CF`, used by explicit `/Filter /Crypt`
     /// stream filters.
     pub crypt_filters: HashMap<String, CryptMethod>,
+    /// ISO/TS 32004 `/KDFSalt` used by PDF-MAC for PDF 2.0 encrypted
+    /// documents. Present for V6 writer output when document-level MAC support
+    /// is requested or available.
+    pub kdf_salt: Option<Vec<u8>>,
     /// V5-specific fields (present only when v == 5).
     pub v5: Option<V5Fields>,
 }
@@ -492,8 +500,8 @@ impl EncryptionInfo {
         let v = dict.get_integer("V").unwrap_or(0) as u8;
         let r = dict.get_integer("R").unwrap_or(0) as u8;
 
-        if v == 5 {
-            return Self::parse_v5(dict, r);
+        if v == 5 || v == 6 {
+            return Self::parse_v5_family(dict, v, r);
         }
 
         if v == 0 || v > 4 {
@@ -521,7 +529,7 @@ impl EncryptionInfo {
             .and_then(PdfObject::as_bool)
             .unwrap_or(true);
 
-        let crypt_filters = collect_crypt_filters(dict);
+        let crypt_filters = collect_crypt_filters(dict)?;
         let (stream_method, string_method, embedded_file_method) = if v == 4 {
             resolve_crypt_methods(dict, "Identity", CryptMethod::V2)?
         } else {
@@ -542,15 +550,25 @@ impl EncryptionInfo {
             string_method,
             embedded_file_method,
             crypt_filters,
+            kdf_salt: None,
             v5: None,
         })
     }
 
-    fn parse_v5(dict: &PdfDictionary, r: u8) -> Result<Self> {
-        if r != 5 && r != 6 {
-            return Err(OxideError::MalformedPdf(format!(
-                "V=5 requires R=5 or R=6, got R={r}"
-            )));
+    fn parse_v5_family(dict: &PdfDictionary, v: u8, r: u8) -> Result<Self> {
+        match (v, r) {
+            (5, 5 | 6) | (6, 7) => {}
+            (5, _) => {
+                return Err(OxideError::MalformedPdf(format!(
+                    "V=5 requires R=5 or R=6, got R={r}"
+                )));
+            }
+            (6, _) => {
+                return Err(OxideError::MalformedPdf(format!(
+                    "V=6 requires R=7, got R={r}"
+                )));
+            }
+            _ => unreachable!("parse_v5_family is only called for V=5 or V=6"),
         }
 
         let o = extract_bytes(dict, "O")?;
@@ -600,13 +618,28 @@ impl EncryptionInfo {
             .and_then(PdfObject::as_bool)
             .unwrap_or(true);
 
-        let crypt_filters = collect_crypt_filters(dict);
+        let crypt_filters = collect_crypt_filters(dict)?;
+        let default_method = if v == 6 {
+            CryptMethod::AesV4
+        } else {
+            CryptMethod::AesV3
+        };
         let (stream_method, string_method, embedded_file_method) =
-            resolve_crypt_methods(dict, "StdCF", CryptMethod::AesV3)?;
+            resolve_crypt_methods(dict, "StdCF", default_method)?;
         let cf_method = stream_method.clone();
+        let kdf_salt = match dict.get("KDFSalt") {
+            Some(PdfObject::String(bytes)) => Some(bytes.clone()),
+            Some(other) => {
+                return Err(OxideError::MalformedPdf(format!(
+                    "V6 /KDFSalt must be a byte string, got {}",
+                    other.variant_name()
+                )));
+            }
+            None => None,
+        };
 
         Ok(EncryptionInfo {
-            v: 5,
+            v,
             r,
             key_length: 256,
             o,
@@ -618,6 +651,7 @@ impl EncryptionInfo {
             string_method,
             embedded_file_method,
             crypt_filters,
+            kdf_salt,
             v5: Some(V5Fields { oe, ue, perms }),
         })
     }
@@ -629,7 +663,12 @@ impl EncryptionInfo {
 
     /// True if this is a V5 (AES-256) encrypted document.
     pub fn is_v5(&self) -> bool {
-        self.v == 5
+        self.v == 5 || self.v == 6
+    }
+
+    /// True if this document uses ISO/TS 32003 AES-GCM object protection.
+    pub fn is_aes_gcm(&self) -> bool {
+        self.v == 6 || self.cf_method == CryptMethod::AesV4
     }
 }
 
@@ -646,9 +685,9 @@ fn resolve_crypt_methods(
     let embedded_filter = dict.get_name("EFF").unwrap_or(stream_filter);
 
     Ok((
-        resolve_named_crypt_method(dict, stream_filter, default_unknown_method.clone()),
-        resolve_named_crypt_method(dict, string_filter, default_unknown_method.clone()),
-        resolve_named_crypt_method(dict, embedded_filter, default_unknown_method),
+        resolve_named_crypt_method(dict, stream_filter, default_unknown_method.clone())?,
+        resolve_named_crypt_method(dict, string_filter, default_unknown_method.clone())?,
+        resolve_named_crypt_method(dict, embedded_filter, default_unknown_method)?,
     ))
 }
 
@@ -656,36 +695,37 @@ fn resolve_named_crypt_method(
     dict: &PdfDictionary,
     filter_name: &str,
     default_unknown_method: CryptMethod,
-) -> CryptMethod {
+) -> Result<CryptMethod> {
     if filter_name == "Identity" {
-        return CryptMethod::None;
+        return Ok(CryptMethod::None);
     }
     if let Some(cf) = dict.get_dict("CF") {
         if let Some(filter) = cf.get_dict(filter_name) {
             return match filter.get_name("CFM") {
-                Some("AESV2") => CryptMethod::AesV2,
-                Some("AESV3") => CryptMethod::AesV3,
-                Some("V2") => CryptMethod::V2,
-                Some("Identity") | None => CryptMethod::None,
-                Some(other) => {
-                    log::warn!("unknown crypt filter method /CFM /{other}; assuming RC4");
-                    CryptMethod::V2
-                }
+                Some("AESV2") => Ok(CryptMethod::AesV2),
+                Some("AESV3") => Ok(CryptMethod::AesV3),
+                Some("AESV4") => Ok(CryptMethod::AesV4),
+                Some("V2") => Ok(CryptMethod::V2),
+                Some("Identity") | None => Ok(CryptMethod::None),
+                Some(other) => Err(OxideError::UnsupportedFeature(format!(
+                    "unsupported crypt filter method /CFM /{other}"
+                ))),
             };
         }
     }
 
-    match filter_name {
+    Ok(match filter_name {
         "AESV2" => CryptMethod::AesV2,
         "AESV3" => CryptMethod::AesV3,
+        "AESV4" => CryptMethod::AesV4,
         _ => default_unknown_method,
-    }
+    })
 }
 
-fn collect_crypt_filters(dict: &PdfDictionary) -> HashMap<String, CryptMethod> {
+fn collect_crypt_filters(dict: &PdfDictionary) -> Result<HashMap<String, CryptMethod>> {
     let mut out = HashMap::new();
     let Some(cf) = dict.get_dict("CF") else {
-        return out;
+        return Ok(out);
     };
     for (name, obj) in cf.iter() {
         let Some(filter) = obj.as_dict() else {
@@ -694,16 +734,18 @@ fn collect_crypt_filters(dict: &PdfDictionary) -> HashMap<String, CryptMethod> {
         let method = match filter.get_name("CFM") {
             Some("AESV2") => CryptMethod::AesV2,
             Some("AESV3") => CryptMethod::AesV3,
+            Some("AESV4") => CryptMethod::AesV4,
             Some("V2") => CryptMethod::V2,
             Some("Identity") | None => CryptMethod::None,
             Some(other) => {
-                log::warn!("unknown crypt filter method /CFM /{other}; assuming RC4");
-                CryptMethod::V2
+                return Err(OxideError::UnsupportedFeature(format!(
+                    "unsupported crypt filter method /CFM /{other}"
+                )));
             }
         };
         out.insert(name.clone(), method);
     }
-    out
+    Ok(out)
 }
 
 /// Read a required PDF string entry as raw bytes.
@@ -868,7 +910,7 @@ pub fn verify_v5_user_password(password: &[u8], info: &EncryptionInfo) -> bool {
     let pwd = truncate_v5_password(password);
     // /U layout: [0..32] = hash, [32..40] = validation_salt, [40..48] = key_salt
     let validation_salt = &info.u[32..40];
-    let computed = if info.r == 6 {
+    let computed = if info.r >= 6 {
         secret_bytes(r6_hash(pwd, validation_salt, None).to_vec())
     } else {
         // R5: plain SHA-256(password || validation_salt)
@@ -894,7 +936,7 @@ pub fn verify_v5_owner_password(password: &[u8], info: &EncryptionInfo) -> bool 
     let validation_salt = &info.o[32..40];
     // Owner path includes the full 48-byte /U value in the hash input.
     let u48 = &info.u[..48.min(info.u.len())];
-    let computed = if info.r == 6 {
+    let computed = if info.r >= 6 {
         secret_bytes(r6_hash(pwd, validation_salt, Some(u48)).to_vec())
     } else {
         let mut input = secret_bytes(Vec::with_capacity(pwd.len() + 8 + u48.len()));
@@ -918,7 +960,7 @@ pub fn derive_v5_file_key_from_user(password: &[u8], info: &EncryptionInfo) -> R
     let pwd = truncate_v5_password(password);
     // /U layout: [40..48] = key_salt
     let key_salt = &info.u[40..48];
-    let mut intermediate_key = if info.r == 6 {
+    let mut intermediate_key = if info.r >= 6 {
         secret_bytes(r6_hash(pwd, key_salt, None).to_vec())
     } else {
         let mut input = secret_bytes(Vec::with_capacity(pwd.len() + 8));
@@ -951,7 +993,7 @@ pub fn derive_v5_file_key_from_owner(
     // /O layout: [40..48] = key_salt
     let key_salt = &info.o[40..48];
     let u48 = &info.u[..48.min(info.u.len())];
-    let mut intermediate_key = if info.r == 6 {
+    let mut intermediate_key = if info.r >= 6 {
         secret_bytes(r6_hash(pwd, key_salt, Some(u48)).to_vec())
     } else {
         let mut input = secret_bytes(Vec::with_capacity(pwd.len() + 8 + u48.len()));
@@ -1054,6 +1096,89 @@ pub fn decrypt_stream(
     is_v5: bool,
 ) -> Vec<u8> {
     decrypt_string(data, file_key, obj_num, gen_num, is_aes, is_v5)
+}
+
+/// Decrypt one ISO/TS 32003 AESV4 PDF object payload.
+///
+/// The PDF representation is 12-byte IV, ciphertext, then 16-byte tag. AAD is
+/// empty. Plaintext is returned only after the AEAD tag verifies.
+pub fn aes256_gcm_decrypt_pdf_object(data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+    const IV_LEN: usize = 12;
+    const TAG_LEN: usize = 16;
+    if key.len() != 32 {
+        return Err(OxideError::MalformedPdf(format!(
+            "AES-GCM PDF object key must be 32 bytes, got {}",
+            key.len()
+        )));
+    }
+    if data.len() < IV_LEN + TAG_LEN {
+        return Err(OxideError::MalformedPdf(format!(
+            "AES-GCM PDF object payload must be at least {} bytes, got {}",
+            IV_LEN + TAG_LEN,
+            data.len()
+        )));
+    }
+    let (iv, encrypted) = data.split_at(IV_LEN);
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| OxideError::MalformedPdf("AES-GCM: invalid key length".to_string()))?;
+    cipher
+        .decrypt(Nonce::from_slice(iv), encrypted)
+        .map_err(|_| OxideError::AuthenticationFailure("AES-GCM authentication failed".to_string()))
+}
+
+/// Encrypt one ISO/TS 32003 AESV4 PDF object payload with a fresh production IV.
+pub fn aes256_gcm_encrypt_pdf_object(data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
+    let iv = random_bytes(12);
+    let mut nonce = [0u8; 12];
+    nonce.copy_from_slice(&iv);
+    aes256_gcm_encrypt_pdf_object_with_nonce(data, key, nonce)
+}
+
+/// Encrypt one AESV4 PDF object payload while enforcing nonce uniqueness within
+/// a single writer operation.
+pub fn aes256_gcm_encrypt_pdf_object_tracked(
+    data: &[u8],
+    key: &[u8],
+    used_nonces: &mut BTreeSet<[u8; 12]>,
+) -> Result<Vec<u8>> {
+    const MAX_ATTEMPTS: usize = 16;
+    for _ in 0..MAX_ATTEMPTS {
+        let iv = random_bytes(12);
+        let mut nonce = [0u8; 12];
+        nonce.copy_from_slice(&iv);
+        if used_nonces.insert(nonce) {
+            return aes256_gcm_encrypt_pdf_object_with_nonce(data, key, nonce);
+        }
+    }
+    Err(OxideError::AuthenticationFailure(
+        "AES-GCM nonce generation produced a repeated IV".to_string(),
+    ))
+}
+
+/// Encrypt one AESV4 PDF object payload with an explicit IV.
+///
+/// This helper is intended for deterministic test vectors. Production writer
+/// paths use [`aes256_gcm_encrypt_pdf_object`] so IVs come from the OS CSPRNG.
+pub fn aes256_gcm_encrypt_pdf_object_with_nonce(
+    data: &[u8],
+    key: &[u8],
+    nonce: [u8; 12],
+) -> Result<Vec<u8>> {
+    if key.len() != 32 {
+        return Err(OxideError::MalformedPdf(format!(
+            "AES-GCM PDF object key must be 32 bytes, got {}",
+            key.len()
+        )));
+    }
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| OxideError::MalformedPdf("AES-GCM: invalid key length".to_string()))?;
+    let mut out = Vec::with_capacity(12 + data.len() + 16);
+    out.extend_from_slice(&nonce);
+    let mut encrypted = cipher
+        .encrypt(Nonce::from_slice(&nonce), data)
+        .map_err(|_| OxideError::MalformedPdf("AES-GCM encryption failed".to_string()))?;
+    out.append(&mut encrypted);
+    Ok(out)
 }
 
 // ===========================================================================
@@ -1201,6 +1326,28 @@ pub fn encrypt_bytes(
     }
 }
 
+/// Encrypt bytes according to a resolved PDF crypt-filter method.
+pub fn encrypt_bytes_by_method(
+    data: &[u8],
+    file_key: &[u8],
+    obj_num: u32,
+    gen_num: u16,
+    method: &CryptMethod,
+) -> Result<Vec<u8>> {
+    match method {
+        CryptMethod::None => Ok(data.to_vec()),
+        CryptMethod::V2 | CryptMethod::AesV2 | CryptMethod::AesV3 => encrypt_bytes(
+            data,
+            file_key,
+            obj_num,
+            gen_num,
+            matches!(method, CryptMethod::AesV2),
+            matches!(method, CryptMethod::AesV3),
+        ),
+        CryptMethod::AesV4 => aes256_gcm_encrypt_pdf_object(data, file_key),
+    }
+}
+
 /// Parameters for building an encrypted document (the write-side request).
 #[derive(Debug, Clone)]
 pub struct EncryptParams {
@@ -1248,6 +1395,8 @@ pub enum EncryptAlgorithm {
     Aes128,
     /// AES-256 (V=5, R=6) — the secure, cross-reader-verified default.
     Aes256,
+    /// AES-256-GCM (V=6, R=7, ISO/TS 32003).
+    Aes256Gcm,
 }
 
 impl EncryptAlgorithm {
@@ -1256,6 +1405,7 @@ impl EncryptAlgorithm {
             "rc4" | "rc4128" => Some(Self::Rc4_128),
             "aes128" => Some(Self::Aes128),
             "aes256" | "aes" => Some(Self::Aes256),
+            "aesgcm" | "aes256gcm" | "aes256gcmv6" => Some(Self::Aes256Gcm),
             _ => None,
         }
     }
@@ -1273,7 +1423,7 @@ impl EncryptState {
         self.info.is_aes()
     }
     pub fn is_v5(&self) -> bool {
-        self.info.v == 5
+        self.info.is_v5()
     }
 }
 
@@ -1294,6 +1444,7 @@ pub fn build_encryption(params: &EncryptParams, file_id: &[u8]) -> Result<Encryp
             build_legacy(params, &owner_pw, file_id, 4, 4, 128, CryptMethod::AesV2)
         }
         EncryptAlgorithm::Aes256 => build_v5(params, &owner_pw),
+        EncryptAlgorithm::Aes256Gcm => build_v6_gcm(params, &owner_pw),
     }
 }
 
@@ -1325,6 +1476,7 @@ fn build_legacy(
         string_method: method.clone(),
         embedded_file_method: method.clone(),
         crypt_filters: HashMap::new(),
+        kdf_salt: None,
         v5: None,
     };
     let file_key = compute_encryption_key(&params.user_password, &info, file_id);
@@ -1381,7 +1533,20 @@ fn compute_user_entry(file_key: &[u8], file_id: &[u8], r: u8) -> Vec<u8> {
 /// 32-byte hash + 8-byte validation salt + 8-byte key salt), /UE + /OE (the
 /// file key wrapped under the key-salt intermediate key), and /Perms.
 fn build_v5(params: &EncryptParams, owner_pw: &[u8]) -> Result<EncryptState> {
-    let r = 6u8;
+    build_v5_family(params, owner_pw, 5, 6, CryptMethod::AesV3)
+}
+
+fn build_v6_gcm(params: &EncryptParams, owner_pw: &[u8]) -> Result<EncryptState> {
+    build_v5_family(params, owner_pw, 6, 7, CryptMethod::AesV4)
+}
+
+fn build_v5_family(
+    params: &EncryptParams,
+    owner_pw: &[u8],
+    v: u8,
+    r: u8,
+    method: CryptMethod,
+) -> Result<EncryptState> {
     let file_key = secret_bytes(random_bytes(32));
     let user_pw = truncate_v5_password(&params.user_password);
     let owner_pw = truncate_v5_password(owner_pw);
@@ -1419,19 +1584,22 @@ fn build_v5(params: &EncryptParams, owner_pw: &[u8]) -> Result<EncryptState> {
     // /Perms = AES-256-ECB(file_key) of the 16-byte permissions block.
     let perms = build_v5_perms(&file_key, params.permissions, params.encrypt_metadata)?;
 
+    let kdf_salt = if v == 6 { Some(random_bytes(32)) } else { None };
+
     let info = EncryptionInfo {
-        v: 5,
+        v,
         r,
         key_length: 256,
         o,
         u,
         p: params.permissions,
         encrypt_metadata: params.encrypt_metadata,
-        cf_method: CryptMethod::AesV3,
-        stream_method: CryptMethod::AesV3,
-        string_method: CryptMethod::AesV3,
-        embedded_file_method: CryptMethod::AesV3,
+        cf_method: method.clone(),
+        stream_method: method.clone(),
+        string_method: method.clone(),
+        embedded_file_method: method,
         crypt_filters: HashMap::new(),
+        kdf_salt,
         v5: Some(V5Fields { oe, ue, perms }),
     };
     Ok(EncryptState { file_key, info })
@@ -1603,6 +1771,7 @@ mod tests {
             string_method: CryptMethod::V2,
             embedded_file_method: CryptMethod::V2,
             crypt_filters: HashMap::new(),
+            kdf_salt: None,
             v5: None,
         };
         let file_id = vec![0x42u8; 16];
@@ -1627,6 +1796,7 @@ mod tests {
             string_method: CryptMethod::V2,
             embedded_file_method: CryptMethod::V2,
             crypt_filters: HashMap::new(),
+            kdf_salt: None,
             v5: None,
         };
         let fid = vec![0u8; 16];
@@ -1649,6 +1819,7 @@ mod tests {
             string_method: CryptMethod::V2,
             embedded_file_method: CryptMethod::V2,
             crypt_filters: HashMap::new(),
+            kdf_salt: None,
             v5: None,
         };
 
@@ -1671,6 +1842,7 @@ mod tests {
             string_method: CryptMethod::V2,
             embedded_file_method: CryptMethod::V2,
             crypt_filters: HashMap::new(),
+            kdf_salt: None,
             v5: None,
         };
         let fid = vec![0xABu8; 16];
@@ -1755,6 +1927,58 @@ mod tests {
     #[test]
     fn aes256_ciphertext_shorter_than_iv_errors() {
         assert!(aes256_cbc_decrypt(&[0u8; 32], b"too short").is_err());
+    }
+
+    #[test]
+    fn aes256_gcm_pdf_object_round_trips_with_test_nonce() {
+        let key = [0x42u8; 32];
+        let nonce = [0x24u8; 12];
+        let plain = b"ISO/TS 32003 AESV4 object payload";
+        let encrypted = aes256_gcm_encrypt_pdf_object_with_nonce(plain, &key, nonce).unwrap();
+        assert_eq!(&encrypted[..12], &nonce);
+        assert_eq!(encrypted.len(), 12 + plain.len() + 16);
+
+        let decrypted = aes256_gcm_decrypt_pdf_object(&encrypted, &key).unwrap();
+        assert_eq!(decrypted, plain);
+    }
+
+    #[test]
+    fn aes256_gcm_pdf_object_tamper_returns_no_plaintext() {
+        let key = [0x31u8; 32];
+        let nonce = [0x13u8; 12];
+        let plain = b"authenticated payload";
+        let encrypted = aes256_gcm_encrypt_pdf_object_with_nonce(plain, &key, nonce).unwrap();
+
+        for mutate_at in [0usize, 12usize, encrypted.len() - 1] {
+            let mut tampered = encrypted.clone();
+            tampered[mutate_at] ^= 0x40;
+            let err = aes256_gcm_decrypt_pdf_object(&tampered, &key).unwrap_err();
+            assert!(matches!(err, OxideError::AuthenticationFailure(_)));
+            assert!(!err.to_string().contains("authenticated payload"));
+        }
+
+        let truncated = &encrypted[..encrypted.len() - 1];
+        let err = aes256_gcm_decrypt_pdf_object(truncated, &key).unwrap_err();
+        assert!(matches!(err, OxideError::AuthenticationFailure(_)));
+    }
+
+    #[test]
+    fn aes256_gcm_pdf_object_rejects_short_payload_and_wrong_key_size() {
+        let err = aes256_gcm_decrypt_pdf_object(b"too short", &[0u8; 32]).unwrap_err();
+        assert!(matches!(err, OxideError::MalformedPdf(_)));
+        let err =
+            aes256_gcm_encrypt_pdf_object_with_nonce(b"data", &[0u8; 16], [0u8; 12]).unwrap_err();
+        assert!(matches!(err, OxideError::MalformedPdf(_)));
+    }
+
+    #[test]
+    fn aes256_gcm_tracked_nonce_records_unique_writer_ivs() {
+        let key = [0x55u8; 32];
+        let mut seen = BTreeSet::new();
+        let first = aes256_gcm_encrypt_pdf_object_tracked(b"one", &key, &mut seen).unwrap();
+        let second = aes256_gcm_encrypt_pdf_object_tracked(b"two", &key, &mut seen).unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_ne!(&first[..12], &second[..12]);
     }
 
     // --- R6 hash (Algorithm 2.B) ---
@@ -1917,6 +2141,7 @@ mod tests {
             string_method: CryptMethod::AesV3,
             embedded_file_method: CryptMethod::AesV3,
             crypt_filters: HashMap::new(),
+            kdf_salt: None,
             v5: Some(V5Fields { oe, ue, perms }),
         }
     }
@@ -2029,6 +2254,7 @@ mod tests {
             string_method: CryptMethod::V2,
             embedded_file_method: CryptMethod::V2,
             crypt_filters: HashMap::new(),
+            kdf_salt: None,
             v5: None,
         };
         let file_id = vec![0x01u8; 16];
@@ -2110,6 +2336,62 @@ mod tests {
         assert_eq!(info.v, 5);
         assert_eq!(info.r, 5);
         assert!(info.is_v5());
+    }
+
+    #[test]
+    fn from_dict_v6_r7_aesv4_parses_successfully() {
+        let cf_filter = dict(&[
+            ("CFM", PdfObject::Name("AESV4".to_string())),
+            ("Length", PdfObject::Integer(32)),
+        ]);
+        let cf = dict(&[("StdCF", PdfObject::Dictionary(cf_filter))]);
+        let d = dict(&[
+            ("Filter", PdfObject::Name("Standard".to_string())),
+            ("V", PdfObject::Integer(6)),
+            ("R", PdfObject::Integer(7)),
+            ("O", PdfObject::String(vec![1u8; 48])),
+            ("U", PdfObject::String(vec![2u8; 48])),
+            ("OE", PdfObject::String(vec![3u8; 32])),
+            ("UE", PdfObject::String(vec![4u8; 32])),
+            ("Perms", PdfObject::String(vec![5u8; 16])),
+            ("P", PdfObject::Integer(-4)),
+            ("CF", PdfObject::Dictionary(cf)),
+            ("StmF", PdfObject::Name("StdCF".to_string())),
+            ("StrF", PdfObject::Name("StdCF".to_string())),
+        ]);
+        let info = EncryptionInfo::from_dict(&d).unwrap();
+        assert_eq!(info.v, 6);
+        assert_eq!(info.r, 7);
+        assert_eq!(info.key_length, 256);
+        assert_eq!(info.cf_method, CryptMethod::AesV4);
+        assert_eq!(info.stream_method, CryptMethod::AesV4);
+        assert_eq!(info.string_method, CryptMethod::AesV4);
+        assert!(info.is_v5());
+        assert!(info.is_aes_gcm());
+    }
+
+    #[test]
+    fn from_dict_v4_unknown_crypt_filter_fails_closed() {
+        let cf_filter = dict(&[
+            ("CFM", PdfObject::Name("MadeUpCipher".to_string())),
+            ("Length", PdfObject::Integer(16)),
+        ]);
+        let cf = dict(&[("StdCF", PdfObject::Dictionary(cf_filter))]);
+        let d = dict(&[
+            ("Filter", PdfObject::Name("Standard".to_string())),
+            ("V", PdfObject::Integer(4)),
+            ("R", PdfObject::Integer(4)),
+            ("Length", PdfObject::Integer(128)),
+            ("O", PdfObject::String(vec![1u8; 32])),
+            ("U", PdfObject::String(vec![2u8; 32])),
+            ("P", PdfObject::Integer(-4)),
+            ("CF", PdfObject::Dictionary(cf)),
+            ("StmF", PdfObject::Name("StdCF".to_string())),
+        ]);
+        assert!(matches!(
+            EncryptionInfo::from_dict(&d),
+            Err(OxideError::UnsupportedFeature(_))
+        ));
     }
 
     #[test]

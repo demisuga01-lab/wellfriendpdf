@@ -1,0 +1,111 @@
+{
+  "build_timeout_seconds": 900,
+  "completed_at": "2026-07-14T12:27:05Z",
+  "elapsed_seconds": 7.901,
+  "global_timeout_seconds": 1200,
+  "kill_grace_seconds": 5,
+  "max_len": 4096,
+  "mode": "smoke",
+  "per_target_timeout_seconds": 75,
+  "results": [
+    {
+      "artifact_count_after": 0,
+      "artifact_count_before": 0,
+      "corpus_count_after": 93,
+      "corpus_count_before": 90,
+      "phases": [
+        {
+          "command": [
+            "cargo",
+            "+nightly",
+            "fuzz",
+            "build",
+            "crypto"
+          ],
+          "configured_duration_seconds": null,
+          "cwd": "E:\\wellpdfsdk\\fuzz",
+          "elapsed_seconds": 0.523,
+          "exit_code": 0,
+          "kill_grace_seconds": 5,
+          "max_len": null,
+          "phase": "build",
+          "pid": 83012,
+          "started_at": "2026-07-14T12:26:58Z",
+          "status": "passed",
+          "tail": [
+            "    Finished `release` profile [optimized + debuginfo] target(s) in 0.24s"
+          ],
+          "target": "crypto",
+          "target_index": 1,
+          "target_total": 1,
+          "termination": {
+            "attempted": false
+          },
+          "timed_out": false,
+          "timeout_seconds": 900
+        },
+        {
+          "command": [
+            "cargo",
+            "+nightly",
+            "fuzz",
+            "run",
+            "crypto",
+            "--",
+            "-max_total_time=5",
+            "-max_len=4096",
+            "-artifact_prefix=E:/wellpdfsdk/target/ci-fuzz-artifacts/crypto/"
+          ],
+          "configured_duration_seconds": 5,
+          "cwd": "E:\\wellpdfsdk\\fuzz",
+          "elapsed_seconds": 7.365,
+          "exit_code": 0,
+          "kill_grace_seconds": 5,
+          "max_len": 4096,
+          "phase": "smoke",
+          "pid": 87084,
+          "started_at": "2026-07-14T12:26:58Z",
+          "status": "passed",
+          "tail": [
+            "    Finished `release` profile [optimized + debuginfo] target(s) in 0.21s",
+            "    Finished `release` profile [optimized + debuginfo] target(s) in 0.21s",
+            "     Running `target\\x86_64-pc-windows-msvc\\release\\crypto.exe -artifact_prefix=E:\\wellpdfsdk\\fuzz\\artifacts\\crypto\\ -max_total_time=5 -max_len=4096 -artifact_prefix=E:/wellpdfsdk/target/ci-fuzz-artifacts/crypto/ E:\\wellpdfsdk\\fuzz\\corpus\\crypto`",
+            "INFO: Running with entropic power schedule (0xFF, 100).",
+            "INFO: Seed: 1005916251",
+            "INFO: Loaded 1 modules   (7554 inline 8-bit counters): 7554 [00007FF67ABF2CC8, 00007FF67ABF4A4A), ",
+            "INFO: Loaded 1 PC tables (7554 PCs): 7554 [00007FF67ABA9E68,00007FF67ABC7688), ",
+            "INFO:       90 files found in E:\\wellpdfsdk\\fuzz\\corpus\\crypto",
+            "INFO: seed corpus: files: 90 min: 1b max: 196b total: 8572b rss: 41Mb",
+            "#92\tINITED cov: 1442 ft: 2082 corp: 73/7308b exec/s: 30 rss: 164Mb",
+            "#115\tNEW    cov: 1442 ft: 2083 corp: 74/7501b lim: 196 exec/s: 38 rss: 179Mb L: 193/196 MS: 3 CopyPart-EraseBytes-CrossOver-",
+            "#127\tNEW    cov: 1444 ft: 2085 corp: 75/7677b lim: 196 exec/s: 31 rss: 204Mb L: 176/196 MS: 2 InsertRepeatedBytes-CrossOver-",
+            "#128\tpulse  cov: 1444 ft: 2085 corp: 75/7677b lim: 196 exec/s: 32 rss: 204Mb",
+            "#148\tNEW    cov: 1445 ft: 2087 corp: 76/7869b lim: 196 exec/s: 29 rss: 258Mb L: 192/196 MS: 1 InsertRepeatedBytes-",
+            "#173\tDONE   cov: 1445 ft: 2087 corp: 76/7869b lim: 196 exec/s: 28 rss: 286Mb",
+            "Done 173 runs in 6 second(s)"
+          ],
+          "target": "crypto",
+          "target_index": 1,
+          "target_total": 1,
+          "termination": {
+            "attempted": false
+          },
+          "timed_out": false,
+          "timeout_seconds": 75
+        }
+      ],
+      "status": "passed",
+      "target": "crypto",
+      "target_index": 1,
+      "target_total": 1
+    }
+  ],
+  "sanitizer": null,
+  "schema": "ci_fuzz_report_v2",
+  "seconds": 5,
+  "started_at": "2026-07-14T12:26:58Z",
+  "status": "passed",
+  "targets": [
+    "crypto"
+  ]
+}

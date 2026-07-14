@@ -17,7 +17,7 @@ PDF owner-password permissions are viewer-enforced restrictions after the docume
 
 ## Public-Key Handlers
 
-Public-key security handlers such as `/Filter /Adobe.PubSec` are detected and reported. Certificate-based decryption is not implemented in the default pure-Rust engine and is not claimed.
+Public-key security handlers such as `/Filter /Adobe.PubSec` are detected and reported. Scoped certificate/private-key decryption is implemented only through an explicit provider; default password-only opening does not scan certificate stores or infer recipients.
 
 ## Tests
 

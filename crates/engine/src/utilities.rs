@@ -672,6 +672,13 @@ pub fn encrypt_pdf(engine: &ContentEngine, params: &EncryptParams) -> Result<Vec
     crate::structural::encrypt(engine, params)
 }
 
+pub fn encrypt_pdf_with_pdf_mac(
+    engine: &ContentEngine,
+    params: &EncryptParams,
+) -> Result<(Vec<u8>, crate::PdfMacWriteReport)> {
+    crate::structural::encrypt_with_pdf_mac(engine, params)
+}
+
 pub fn rotate_pdf(
     engine: &ContentEngine,
     pages: &[usize],
@@ -1097,6 +1104,8 @@ fn rgb_to_rgba(width: u32, height: u32, samples: &[u8], channels: u8) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+    use crate::error::ErrorKind;
     use crate::{ContentEngine, TextStyle};
 
     fn tiny_pdf() -> Vec<u8> {
@@ -1147,6 +1156,55 @@ mod tests {
         assert!(text.contains("Phase 3"));
         assert!(text.contains("DRAFT"));
         assert!(text.contains("Page 1 of 1"));
+    }
+
+    #[test]
+    fn aes_gcm_encrypt_pdf_roundtrips_and_rejects_stream_tamper() {
+        let engine = ContentEngine::open_bytes(tiny_pdf()).unwrap();
+        let params = EncryptParams {
+            algorithm: EncryptAlgorithm::Aes256Gcm,
+            user_password: secret_bytes(b"secret".to_vec()),
+            ..Default::default()
+        };
+
+        let encrypted = encrypt_pdf(&engine, &params).unwrap();
+        assert!(encrypted.windows(5).any(|w| w == b"AESV4"));
+        assert!(ContentEngine::open_bytes(encrypted.clone()).is_err());
+
+        let reopened =
+            ContentEngine::open_bytes_with_password(encrypted.clone(), b"secret").unwrap();
+        assert!(reopened.get_page_text(1).unwrap().contains("Phase 3"));
+        let stream_id = reopened
+            .document()
+            .reader()
+            .object_ids()
+            .into_iter()
+            .find(|(number, generation)| {
+                matches!(
+                    reopened
+                        .document()
+                        .reader()
+                        .get_object(*number, *generation),
+                    Ok(crate::object::PdfObject::Stream { .. })
+                )
+            })
+            .expect("encrypted PDF should contain at least one stream object");
+
+        let mut tampered = encrypted;
+        let stream_start = tampered
+            .windows(b"stream\n".len())
+            .position(|w| w == b"stream\n")
+            .expect("encrypted PDF should contain a content stream")
+            + b"stream\n".len();
+        tampered[stream_start] ^= 0x01;
+        let reopened = ContentEngine::open_bytes_with_password(tampered, b"secret").unwrap();
+        let err = reopened
+            .document()
+            .reader()
+            .get_object(stream_id.0, stream_id.1)
+            .unwrap_err();
+        assert_eq!(err.kind(), ErrorKind::AuthenticationFailure);
+        assert!(!err.to_string().contains("Phase 3"));
     }
 
     #[test]

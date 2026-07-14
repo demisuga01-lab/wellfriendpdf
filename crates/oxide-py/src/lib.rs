@@ -507,6 +507,29 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::aes_gcm_report_json(bytes, None))
     }
 
+    fn pdf_mac_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::pdf_mac_report_json(bytes, None))
+    }
+
+    fn pdf_mac_verify<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::pdf_mac_verify_json(bytes, None))
+    }
+
+    #[pyo3(signature = (output=None))]
+    fn pdf_mac_create<'py>(
+        &self,
+        py: Python<'py>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| sdk::pdf_mac_create_json(&bytes, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
     #[pyo3(signature = (options_json=None, output=None))]
     fn prompt22_optimize<'py>(
         &self,
@@ -1453,7 +1476,7 @@ fn encrypt_pdf(
     use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
     let engine = open_engine_path(&pdf, password)?;
     let algorithm = EncryptAlgorithm::parse(algo)
-        .ok_or_else(|| PyValueError::new_err("algo must be aes256, aes128, or rc4"))?;
+        .ok_or_else(|| PyValueError::new_err("algo must be aes256, aesgcm, aes128, or rc4"))?;
     let owner = owner_password.unwrap_or(user_password);
     let params = EncryptParams {
         user_password: secret_bytes(user_password.as_bytes().to_vec()),
@@ -1465,6 +1488,151 @@ fn encrypt_pdf(
     let bytes = run_oxide(|| oxide_engine::encrypt(&engine, &params))?;
     write_optional(&output, &bytes)?;
     Ok(bytes)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, certificate, private_key, output=None))]
+fn pubsec_decrypt_pdf(
+    pdf: PathBuf,
+    certificate: PathBuf,
+    private_key: PathBuf,
+    output: Option<PathBuf>,
+) -> PyResult<Vec<u8>> {
+    let cert = std::fs::read(&certificate).map_err(|err| OxideError::new_err(err.to_string()))?;
+    let key = std::fs::read(&private_key).map_err(|err| OxideError::new_err(err.to_string()))?;
+    let identity = run_oxide(|| oxide_engine::PubSecIdentity::from_bytes(&cert, &key))?;
+    let provider = oxide_engine::PubSecKeyProvider::single(identity);
+    let bytes = std::fs::read(&pdf).map_err(|err| OxideError::new_err(err.to_string()))?;
+    let engine = run_oxide(|| {
+        oxide_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)
+    })?;
+    let out = run_oxide(|| oxide_engine::decrypt_pdf(&engine))?;
+    write_optional(&output, &out)?;
+    Ok(out)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, pfx, password=None, output=None))]
+fn pubsec_decrypt_pdf_pfx(
+    pdf: PathBuf,
+    pfx: PathBuf,
+    password: Option<Vec<u8>>,
+    output: Option<PathBuf>,
+) -> PyResult<Vec<u8>> {
+    let pfx_bytes = std::fs::read(&pfx).map_err(|err| OxideError::new_err(err.to_string()))?;
+    let password = password.unwrap_or_default();
+    let identity =
+        run_oxide(|| oxide_engine::PubSecIdentity::from_pkcs12_der(&pfx_bytes, &password))?;
+    let provider = oxide_engine::PubSecKeyProvider::single(identity);
+    let bytes = std::fs::read(&pdf).map_err(|err| OxideError::new_err(err.to_string()))?;
+    let engine = run_oxide(|| {
+        oxide_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)
+    })?;
+    let out = run_oxide(|| oxide_engine::decrypt_pdf(&engine))?;
+    write_optional(&output, &out)?;
+    Ok(out)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, recipient_certificates, output=None, password=None))]
+fn pubsec_encrypt_pdf(
+    pdf: PathBuf,
+    recipient_certificates: Vec<PathBuf>,
+    output: Option<PathBuf>,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let engine = open_engine_path(&pdf, password)?;
+    let options = pubsec_options_from_paths(&recipient_certificates)?;
+    let (out, _) =
+        run_oxide(|| oxide_engine::encrypt_pdf_pubsec(engine.document().reader(), &options))?;
+    write_optional(&output, &out)?;
+    Ok(out)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, recipient_certificates, certificate=None, private_key=None, output=None, password=None))]
+fn pubsec_reencrypt_pdf(
+    pdf: PathBuf,
+    recipient_certificates: Vec<PathBuf>,
+    certificate: Option<PathBuf>,
+    private_key: Option<PathBuf>,
+    output: Option<PathBuf>,
+    password: Option<&str>,
+) -> PyResult<Vec<u8>> {
+    let options = pubsec_options_from_paths(&recipient_certificates)?;
+    let engine = match (certificate, private_key) {
+        (Some(certificate), Some(private_key)) => {
+            let cert =
+                std::fs::read(&certificate).map_err(|err| OxideError::new_err(err.to_string()))?;
+            let key =
+                std::fs::read(&private_key).map_err(|err| OxideError::new_err(err.to_string()))?;
+            let identity = run_oxide(|| oxide_engine::PubSecIdentity::from_bytes(&cert, &key))?;
+            let provider = oxide_engine::PubSecKeyProvider::single(identity);
+            let bytes = std::fs::read(&pdf).map_err(|err| OxideError::new_err(err.to_string()))?;
+            run_oxide(|| {
+                oxide_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)
+            })?
+        }
+        (None, None) => open_engine_path(&pdf, password)?,
+        _ => {
+            return Err(PyValueError::new_err(
+                "pubsec_reencrypt_pdf requires both certificate and private_key, or neither",
+            ));
+        }
+    };
+    let (out, _) =
+        run_oxide(|| oxide_engine::reencrypt_pdf_pubsec(engine.document().reader(), &options))?;
+    write_optional(&output, &out)?;
+    Ok(out)
+}
+
+#[pyfunction]
+#[pyo3(signature = (pdf, recipient_certificates, pfx, password=None, output=None))]
+fn pubsec_reencrypt_pdf_pfx(
+    pdf: PathBuf,
+    recipient_certificates: Vec<PathBuf>,
+    pfx: PathBuf,
+    password: Option<Vec<u8>>,
+    output: Option<PathBuf>,
+) -> PyResult<Vec<u8>> {
+    let options = pubsec_options_from_paths(&recipient_certificates)?;
+    let pfx_bytes = std::fs::read(&pfx).map_err(|err| OxideError::new_err(err.to_string()))?;
+    let password = password.unwrap_or_default();
+    let identity =
+        run_oxide(|| oxide_engine::PubSecIdentity::from_pkcs12_der(&pfx_bytes, &password))?;
+    let provider = oxide_engine::PubSecKeyProvider::single(identity);
+    let bytes = std::fs::read(&pdf).map_err(|err| OxideError::new_err(err.to_string()))?;
+    let engine = run_oxide(|| {
+        oxide_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)
+    })?;
+    let (out, _) =
+        run_oxide(|| oxide_engine::reencrypt_pdf_pubsec(engine.document().reader(), &options))?;
+    write_optional(&output, &out)?;
+    Ok(out)
+}
+
+fn pubsec_options_from_paths(
+    recipient_certificates: &[PathBuf],
+) -> PyResult<oxide_engine::PubSecEncryptOptions> {
+    if recipient_certificates.is_empty() {
+        return Err(PyValueError::new_err(
+            "recipient_certificates must contain at least one certificate path",
+        ));
+    }
+    let mut recipients = Vec::with_capacity(recipient_certificates.len());
+    for path in recipient_certificates {
+        let bytes = std::fs::read(path).map_err(|err| OxideError::new_err(err.to_string()))?;
+        recipients.push(run_oxide(|| {
+            oxide_engine::PubSecRecipientCertificate::from_bytes(&bytes)
+        })?);
+    }
+    Ok(oxide_engine::PubSecEncryptOptions {
+        recipients,
+        permissions: 0xFFFF_FFFCu32,
+        encrypt_metadata: true,
+        method: oxide_engine::CryptMethod::AesV2,
+        recipient_id_mode: oxide_engine::PubSecRecipientIdMode::IssuerAndSerial,
+    })
 }
 
 #[pyfunction]
@@ -1886,6 +2054,11 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(rotate_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(decrypt_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(encrypt_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(pubsec_decrypt_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(pubsec_decrypt_pdf_pfx, module)?)?;
+    module.add_function(wrap_pyfunction!(pubsec_encrypt_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(pubsec_reencrypt_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(pubsec_reencrypt_pdf_pfx, module)?)?;
     module.add_function(wrap_pyfunction!(optimize_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(repair_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(linearize_pdf, module)?)?;

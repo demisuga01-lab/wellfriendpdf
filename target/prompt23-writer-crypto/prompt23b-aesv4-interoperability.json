@@ -1,0 +1,20 @@
+﻿{
+    "schema":  "prompt23b.aesv4-interoperability.v2",
+    "created_at":  "2026-07-14T11:45:29.3116912Z",
+    "status":  "implemented_with_limits_external_pdf_tool_unsupported_R7_V6",
+    "oxide_files":  [
+                        "target/prompt23-writer-crypto/cli-aesgcm-runtime-encrypted.pdf",
+                        "target/prompt23-writer-crypto/cli-aesgcm-runtime-decrypted.pdf"
+                    ],
+    "qpdf_encrypted_result":  "unsupported_R7_V6_not_counted_as_pass",
+    "qpdf_decrypted_result":  "passed_qpdf_check_after_oxide_decrypt",
+    "poppler_decrypted_render":  "passed",
+    "java_primitive_vectors":  {
+                                   "status":  "passed",
+                                   "aes_gcm":  "match",
+                                   "aes_kw":  "match",
+                                   "hmac_sha256":  "match",
+                                   "hkdf_sha256":  "match"
+                               },
+    "unclassified_failures":  0
+}

@@ -1,0 +1,17 @@
+﻿{
+    "schema":  "prompt23b.cms-provider-interoperability.v1",
+    "created_at":  "2026-07-14T11:45:29.3116912Z",
+    "status":  "implemented_with_limits",
+    "openssl_cms":  "unavailable_on_PATH_not_counted_as_pass",
+    "bouncy_castle":  "no_local_jar_or_dependency_discovered_not_counted_as_pass",
+    "java_provider_vectors":  {
+                                  "status":  "passed",
+                                  "aes_gcm":  "match",
+                                  "aes_kw":  "match",
+                                  "hmac_sha256":  "match",
+                                  "hkdf_sha256":  "match"
+                              },
+    "pfx_provider":  "Rust/Python/C ABI/.NET/Java runtime surfaces tested by package gates; external Bouncy Castle PFX unavailable locally",
+    "encrypted_pkcs8_provider":  "Rust/Python/C ABI/.NET/Java runtime surfaces tested by package gates; external OpenSSL unavailable locally",
+    "unclassified_failures":  0
+}

@@ -1,0 +1,11 @@
+{
+  "algorithm": "aes256gcm",
+  "bytes": 11083,
+  "certificate_path_configured": false,
+  "operation": "aes_gcm_encrypt",
+  "output_pdf": "target/prompt23-writer-crypto/cli-aesgcm-runtime-encrypted.pdf",
+  "output_pdf_written": true,
+  "private_key_path_configured": false,
+  "secret_material_reported": false,
+  "status": "implemented_with_limits"
+}

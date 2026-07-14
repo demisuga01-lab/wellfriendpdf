@@ -1,0 +1,10 @@
+{
+  "bytes": 10443,
+  "certificate_path_configured": false,
+  "operation": "aes_gcm_decrypt",
+  "output_pdf": "target/prompt23-writer-crypto/cli-aesgcm-runtime-decrypted.pdf",
+  "output_pdf_written": true,
+  "private_key_path_configured": false,
+  "secret_material_reported": false,
+  "status": "implemented_with_limits"
+}

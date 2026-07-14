@@ -10,6 +10,7 @@ use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::encoder::{ImageEncoder, ImageOutputFormat};
 use crate::images::locator::{ImageLocateOptions, ImageLocator, ImageReference};
 use crate::object::{PdfDictionary, PdfObject};
+use crate::pubsec::PubSecKeyProvider;
 use crate::reader::PdfReader;
 use crate::render::{
     DisplayList, PageRenderer, PixelBuffer, ProgressiveRenderJob, RenderCache, RenderMode,
@@ -475,6 +476,15 @@ impl ContentEngine {
     /// Open a PDF from a file path, supplying a password for encrypted PDFs.
     pub fn open_path_with_password(path: impl AsRef<Path>, password: &[u8]) -> Result<Self> {
         let doc = PdfDocument::open_path_with_password(path, password)?;
+        Ok(Self { doc })
+    }
+
+    /// Open a public-key encrypted PDF from bytes using an explicit provider.
+    pub fn open_bytes_with_pubsec_provider(
+        data: Vec<u8>,
+        provider: &PubSecKeyProvider,
+    ) -> Result<Self> {
+        let doc = PdfDocument::open_bytes_with_pubsec_provider(data, provider)?;
         Ok(Self { doc })
     }
 

@@ -1,0 +1,77 @@
+{
+  "bounded_fuzz_smoke": "timed_out_not_counted",
+  "commit_created": false,
+  "commit_policy_reason": "User required no partial commit; Prompt 23B acceptance criteria still require bounded fuzz smoke, individual historical gates, and independent PDF interoperability before closure commit.",
+  "full_workspace_tests": "passed",
+  "fuzz_bin_compile": "passed",
+  "newly_implemented_or_preserved": [
+    "ISO/TS 32004 standalone PDF-MAC writer placeholder and ByteRange patching",
+    "CMS AuthenticatedData PasswordRecipientInfo/pdfMacWrapKdf/AES-256-KW/HMAC-SHA256 supported profile",
+    "PDF-MAC valid/tamper/no-structure-only-valid behavior",
+    "encrypted PKCS#8 DER/PEM provider with explicit password bytes",
+    "bounded PKCS#12/PFX provider for one unambiguous RSA identity on non-WASM builds",
+    "PFX runtime entry points for CLI, Python, C ABI, .NET, and Java",
+    "Java empty-password PFX path uses null pointer plus length zero per C ABI",
+    "PubSec/AESV4/PDF-MAC existing implementations preserved"
+  ],
+  "not_counted_as_passed": [
+    {
+      "gate": "python scripts/ci_fuzz.py --targets crypto --mode smoke --seconds 5 --max-len 4096",
+      "reason": "cargo-fuzz smoke exceeded 5 minute tool timeout; leftover fuzz-attempt cargo/rustc processes were stopped; fuzz-bin compile passed separately",
+      "status": "timed_out"
+    },
+    {
+      "gate": "scripts/prompt03b_wasm_pack_gate.ps1 with relative OutDir",
+      "reason": "relative OutDir package inspection failed to find package.json; absolute OutDir rerun passed and is counted",
+      "status": "failed_known_path_mode"
+    },
+    {
+      "gate": "Prompt 04 through Prompt 22B individual historical audit scripts",
+      "reason": "full workspace tests and Prompt 03B wasm-pack gate passed, but individual historical scripts were not all rerun in this continuation",
+      "status": "not_individually_rerun"
+    },
+    {
+      "gate": "independent PDF implementation interoperability for every implemented profile",
+      "reason": "independent primitive/CMS evidence exists in tests/artifacts; compatible external PDF implementation pass for every PubSec/AESV4/PDF-MAC profile is not established",
+      "status": "not_claimed_complete"
+    }
+  ],
+  "passed_this_continuation": [
+    "git status --short inspected dirty worktree",
+    "git diff --stat inspected",
+    "git diff --check passed with CRLF warnings only",
+    "git diff --cached --check passed",
+    "git rev-parse HEAD inspected",
+    "git log --oneline -n 25 inspected",
+    "git diff preserved at target/prompt23-writer-crypto/prompt23b-current-dirty.diff",
+    "cargo fmt",
+    "cargo fmt --check",
+    "cargo check -p oxide-cli --bin oxide --jobs 1",
+    "cargo check -p oxide-capi --jobs 1",
+    "cargo check -p oxide-py --tests --jobs 1",
+    "cargo check -p oxide-wasm --target wasm32-unknown-unknown --jobs 1",
+    "cargo build -p oxide-cli --bin oxide --jobs 1",
+    "cargo test -p oxide-engine pubsec --lib --jobs 1",
+    "cargo test -p oxide-engine pdf_mac --lib --jobs 1",
+    "cargo test -p oxide-engine aes256_gcm --lib --jobs 1",
+    "cargo test -p oxide-capi --jobs 1",
+    "cargo test -p oxide-py --jobs 1",
+    "cargo clippy --workspace --all-targets --jobs 1 -- -D warnings",
+    "cargo test --workspace --all-targets --jobs 1",
+    "cargo check --manifest-path fuzz/Cargo.toml --bins",
+    "CLI prompt23-report/aes-gcm-report regenerated on one-page fixture",
+    "CLI pdf-mac-create/pdf-mac-verify refreshed and verified valid standalone PDF-MAC",
+    "dotnet test bindings/dotnet/Oxide.Sdk.Tests/Oxide.Sdk.Tests.csproj --no-restore",
+    "dotnet pack bindings/dotnet/Oxide.Sdk/Oxide.Sdk.csproj --no-build",
+    "scripts/prompt02b_java_package_smoke.ps1",
+    "scripts/prompt02c_gradle_package_smoke.ps1",
+    "python -m maturin build --manifest-path crates/oxide-py/Cargo.toml --out target/prompt23-writer-crypto/python-wheel-smoke-pfx",
+    "fresh venv pip install wheel + pytest crates/oxide-py/tests -q (22 passed)",
+    "scripts/prompt03b_wasm_pack_gate.ps1 with absolute OutDir target/prompt23-writer-crypto/wasm-pack-gate-prompt23b-rerun-abs"
+  ],
+  "pfx_provider_status": "implemented_with_limits_non_wasm_single_unambiguous_rsa_identity",
+  "recorded_date": "2026-07-14",
+  "schema": "prompt23b.validation-summary.v3",
+  "starting_checkpoint": "40556fb1f48cd1035f0767b78afbfe1c2034bb36",
+  "status": "not_complete"
+}

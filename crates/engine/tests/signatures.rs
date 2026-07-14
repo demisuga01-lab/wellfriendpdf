@@ -158,7 +158,7 @@ fn rsa_signing_appends_valid_incremental_signature() {
     assert_eq!(r.signer_name.as_deref(), Some("Oxide SDK Signing Test"));
     assert_eq!(r.reason.as_deref(), Some("integration test"));
     assert_eq!(r.location.as_deref(), Some("test suite"));
-    assert_eq!(r.validity, SignatureValidity::Valid);
+    assert_eq!(r.validity, SignatureValidity::Valid, "{r:#?}");
     assert_eq!(r.coverage, Coverage::WholeFile);
     assert_eq!(r.digest_algorithm.as_deref(), Some("SHA-256"));
     let cert = r.certificate.as_ref().expect("signer cert reported");

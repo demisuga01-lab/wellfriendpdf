@@ -1,0 +1,391 @@
+[
+  {
+    "value": [
+      {
+        "value": [
+          {
+            "value": [
+              {
+                "value": [
+                  {
+                    "name": "cargo-fmt-check",
+                    "command": "cargo fmt --check",
+                    "start_time": "2026-07-14T17:54:38.6082593+05:30",
+                    "end_time": "2026-07-14T17:54:40.9307209+05:30",
+                    "duration_seconds": 2.319,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\cargo-fmt-check.log",
+                    "log_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "git-diff-check",
+                    "command": "git diff --check",
+                    "start_time": "2026-07-14T17:54:41.0232575+05:30",
+                    "end_time": "2026-07-14T17:54:41.4045605+05:30",
+                    "duration_seconds": 0.381,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\git-diff-check.log",
+                    "log_sha256": "BE0A2D267F38F0972DB7E0C5080DC1DB127CB707CB626BC6977C8554E280C605",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "git-diff-cached-check",
+                    "command": "git diff --cached --check",
+                    "start_time": "2026-07-14T17:54:41.4196533+05:30",
+                    "end_time": "2026-07-14T17:54:41.5643339+05:30",
+                    "duration_seconds": 0.145,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\git-diff-cached-check.log",
+                    "log_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "cargo-clippy-workspace",
+                    "command": "cargo clippy --workspace --all-targets --jobs 1 -- -D warnings",
+                    "start_time": "2026-07-14T17:54:41.5703482+05:30",
+                    "end_time": "2026-07-14T17:54:51.9451886+05:30",
+                    "duration_seconds": 10.375,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\cargo-clippy-workspace.log",
+                    "log_sha256": "CCD61FCA967104918DA10E48AE6EE27E87BA4A74D62D9F60AE54B856CE996029",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "focused-cms-pubsec",
+                    "command": "cargo test -p oxide-engine pubsec --lib --jobs 1",
+                    "start_time": "2026-07-14T17:54:51.9551849+05:30",
+                    "end_time": "2026-07-14T17:56:45.6935888+05:30",
+                    "duration_seconds": 113.738,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\focused-cms-pubsec.log",
+                    "log_sha256": "8A5B1094C2C23998AE07A6EE2673B631842FC3145C1B2CAEA376EC4368D947D9",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "focused-pdf-mac",
+                    "command": "cargo test -p oxide-engine pdf_mac --lib --jobs 1",
+                    "start_time": "2026-07-14T17:56:45.7071092+05:30",
+                    "end_time": "2026-07-14T17:56:46.7636785+05:30",
+                    "duration_seconds": 1.057,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\focused-pdf-mac.log",
+                    "log_sha256": "B08E039F47CB6B73F87F8BECF246BE9ACBF0D36FFA0CBACDA9D0942F14B33D71",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "focused-aesv4",
+                    "command": "cargo test -p oxide-engine aes256_gcm --lib --jobs 1",
+                    "start_time": "2026-07-14T17:56:46.7759641+05:30",
+                    "end_time": "2026-07-14T17:56:47.3785951+05:30",
+                    "duration_seconds": 0.603,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\focused-aesv4.log",
+                    "log_sha256": "FF81369F6B96E9AE2C679030C578789875CA2A5D91C12C31CB968348C0E288A7",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "focused-signatures",
+                    "command": "cargo test -p oxide-engine --test signatures -- --test-threads=1",
+                    "start_time": "2026-07-14T17:56:47.3925990+05:30",
+                    "end_time": "2026-07-14T17:56:53.1617384+05:30",
+                    "duration_seconds": 5.769,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\focused-signatures.log",
+                    "log_sha256": "170CF7E43041078BF22211AD28F9E4B21E7DC0F56C275C5291EB0B29EAE5FCD7",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "fuzz-bin-compile-crypto",
+                    "command": "python scripts/ci_fuzz.py --targets crypto --mode build --json-report target/prompt23-writer-crypto/prompt23b-fuzz-build-results.json --global-timeout 1200 --build-timeout 900 --kill-grace 5",
+                    "start_time": "2026-07-14T17:56:53.1719623+05:30",
+                    "end_time": "2026-07-14T17:56:57.8847501+05:30",
+                    "duration_seconds": 4.712,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\fuzz-bin-compile-crypto.log",
+                    "log_sha256": "2858F87404EFFB5D982672B8353FCC3A06D802098A495F5FEB0D00FAE0C72C75",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "bounded-fuzz-smoke-crypto",
+                    "command": "python scripts/ci_fuzz.py --targets crypto --mode smoke --seconds 5 --max-len 4096 --json-report target/prompt23-writer-crypto/prompt23b-fuzz-smoke-results-final.json --global-timeout 1200 --per-target-timeout 75 --build-timeout 900 --kill-grace 5",
+                    "start_time": "2026-07-14T17:56:57.8959019+05:30",
+                    "end_time": "2026-07-14T17:57:05.9471496+05:30",
+                    "duration_seconds": 8.05,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\bounded-fuzz-smoke-crypto.log",
+                    "log_sha256": "84795ADEB81F33C095AC4785BB27183ED83A9A9D381C3DF75943FC2221790FD4",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "wasm-target-check",
+                    "command": "cargo check -p oxide-wasm --target wasm32-unknown-unknown",
+                    "start_time": "2026-07-14T17:57:05.9592108+05:30",
+                    "end_time": "2026-07-14T17:57:11.2904574+05:30",
+                    "duration_seconds": 5.331,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\wasm-target-check.log",
+                    "log_sha256": "CF53EF8DFEF47B1C3154F1AD4B6DDE02189E93D213E7B9CF34BA08C719B11638",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "capi-runtime-tests",
+                    "command": "cargo test -p oxide-capi --jobs 1",
+                    "start_time": "2026-07-14T17:57:11.2991204+05:30",
+                    "end_time": "2026-07-14T17:57:18.2510991+05:30",
+                    "duration_seconds": 6.952,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\capi-runtime-tests.log",
+                    "log_sha256": "CB3F38F05C3C4D79416B4C330A36DED6E49C723B9F7C8D7500C839DC2BB6C833",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "python-binding-tests",
+                    "command": "cargo test -p oxide-py --jobs 1",
+                    "start_time": "2026-07-14T17:57:18.2620985+05:30",
+                    "end_time": "2026-07-14T17:57:18.9638526+05:30",
+                    "duration_seconds": 0.702,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\python-binding-tests.log",
+                    "log_sha256": "B46F9AB6A1F8DF0DD567913610552508E3818D5A1B0D95338F6AF6A9EC8E0792",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "cargo-build-capi",
+                    "command": "cargo build -p oxide-capi",
+                    "start_time": "2026-07-14T17:57:18.9748527+05:30",
+                    "end_time": "2026-07-14T17:57:20.5120869+05:30",
+                    "duration_seconds": 1.538,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\cargo-build-capi.log",
+                    "log_sha256": "D24367A3D448F6114C95C46D24233F57A1877A3B01C200EA548CBC07F8A99503",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "dotnet-test",
+                    "command": "set OXIDE_NATIVE_LIBRARY=E:\\wellpdfsdk\\target\\debug\\oxide_capi.dll&& dotnet test bindings/dotnet/Oxide.Sdk.Tests/Oxide.Sdk.Tests.csproj --nologo",
+                    "start_time": "2026-07-14T17:57:20.5220953+05:30",
+                    "end_time": "2026-07-14T17:58:19.7263541+05:30",
+                    "duration_seconds": 59.204,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\dotnet-test.log",
+                    "log_sha256": "CE2B71173BC041FC92E2DC1EC969A95C3FF809F00DDD45D6209FDB82B3BFDC31",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "dotnet-pack",
+                    "command": "dotnet pack bindings/dotnet/Oxide.Sdk/Oxide.Sdk.csproj -o target/prompt23-writer-crypto/dotnet-pack --nologo",
+                    "start_time": "2026-07-14T17:58:19.7498633+05:30",
+                    "end_time": "2026-07-14T17:58:23.9980397+05:30",
+                    "duration_seconds": 4.249,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\dotnet-pack.log",
+                    "log_sha256": "4947FC6D9C4FE9A9295AD41645CD640A4A4241104B4E0452685F6E5BB211925D",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "java-maven-package-smoke",
+                    "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prompt02b_java_package_smoke.ps1",
+                    "start_time": "2026-07-14T17:58:24.0112729+05:30",
+                    "end_time": "2026-07-14T18:01:18.6570675+05:30",
+                    "duration_seconds": 174.645,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\java-maven-package-smoke.log",
+                    "log_sha256": "15BAF51BA168EA5E780B4C4466EF8A5FC9EF5F6D9D2F9DADA4FE36A0B6863CF7",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "java-gradle-package-smoke",
+                    "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prompt02c_gradle_package_smoke.ps1",
+                    "start_time": "2026-07-14T18:01:18.6751581+05:30",
+                    "end_time": "2026-07-14T18:03:26.3744645+05:30",
+                    "duration_seconds": 127.699,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\java-gradle-package-smoke.log",
+                    "log_sha256": "43819E43A0ECC830A4C51F4B74C4E00D7A730E894CBA1C9996656833DD76D55E",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "prompt03-release-gate",
+                    "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prompt03_release_gate.ps1",
+                    "start_time": "2026-07-14T18:03:26.3920159+05:30",
+                    "end_time": "2026-07-14T18:16:12.2699600+05:30",
+                    "duration_seconds": 765.877,
+                    "exit_code": 0,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\prompt03-release-gate.log",
+                    "log_sha256": "E9C5611D94B7F321BD4AF4F504A0A2185AF8102A14C2DBB1647E8F33DE7BC067",
+                    "result": "passed"
+                  },
+                  {
+                    "name": "prompt03b-wasm-pack-gate",
+                    "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prompt03b_wasm_pack_gate.ps1 -OutDir target/prompt23-writer-crypto/final-wasm-pack",
+                    "start_time": "2026-07-14T18:16:12.2977060+05:30",
+                    "end_time": "2026-07-14T18:19:42.8702159+05:30",
+                    "duration_seconds": 210.572,
+                    "exit_code": 1,
+                    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\prompt03b-wasm-pack-gate.log",
+                    "log_sha256": "254567092896C7A753E1C9C15DFD68B0E38F126ED4598FAAED1F693036681040",
+                    "result": "failed"
+                  }
+                ],
+                "Count": 20
+              },
+              {
+                "name": "prompt03b-wasm-pack-gate-rerun",
+                "command": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prompt03b_wasm_pack_gate.ps1 -OutDir target/prompt23-writer-crypto/final-wasm-pack",
+                "start_time": "2026-07-14T18:20:17.1062043+05:30",
+                "end_time": "2026-07-14T18:23:24.6112445+05:30",
+                "duration_seconds": 187.502,
+                "exit_code": 0,
+                "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\prompt03b-wasm-pack-gate-rerun.log",
+                "log_sha256": "66B06940CE088FF5BD81CB67F60A5409BADEEA6DADFFD527EA2ABDEE519493FC",
+                "result": "passed"
+              },
+              {
+                "name": "prompt23-audit",
+                "command": "python scripts/prompt23_writer_crypto_audit.py",
+                "start_time": "2026-07-14T18:23:24.7959737+05:30",
+                "end_time": "2026-07-14T18:23:26.7264434+05:30",
+                "duration_seconds": 1.93,
+                "exit_code": 0,
+                "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\prompt23-audit.log",
+                "log_sha256": "E70C198B4B3BAEE1BF47865C4AF047EAFE3ED80F9AAC06E2F5C8EEFCECBCB5E4",
+                "result": "passed"
+              }
+            ],
+            "Count": 3
+          },
+          {
+            "name": "python-wheel-build",
+            "command": "python -m maturin build --manifest-path crates/oxide-py/Cargo.toml --out target/prompt23-writer-crypto/python-wheel",
+            "start_time": "2026-07-14T18:24:01.1823033+05:30",
+            "end_time": "2026-07-14T18:24:04.0931142+05:30",
+            "duration_seconds": 2.907,
+            "exit_code": 0,
+            "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\python-wheel-build.log",
+            "log_sha256": "ACCE03E37FC0FA32927D7028ADB2F6FAEACE3D165779A33381A0EF7B0E54787A",
+            "result": "passed"
+          },
+          {
+            "name": "python-wheel-venv-create",
+            "command": "python -m venv target/prompt23-writer-crypto/python-wheel-venv",
+            "start_time": "2026-07-14T18:24:04.2749546+05:30",
+            "end_time": "2026-07-14T18:24:07.0831414+05:30",
+            "duration_seconds": 2.808,
+            "exit_code": 0,
+            "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\python-wheel-venv-create.log",
+            "log_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+            "result": "passed"
+          },
+          {
+            "name": "python-wheel-install",
+            "command": "target/prompt23-writer-crypto/python-wheel-venv/Scripts/python.exe -m pip install --force-reinstall E:\\wellpdfsdk\\target\\prompt23-writer-crypto\\python-wheel\\oxide_pdf-0.1.0-cp39-abi3-win_amd64.whl",
+            "start_time": "2026-07-14T18:24:07.1023218+05:30",
+            "end_time": "2026-07-14T18:24:09.7001969+05:30",
+            "duration_seconds": 2.597,
+            "exit_code": 0,
+            "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\python-wheel-install.log",
+            "log_sha256": "3851AE29855A9AAFDD500DAFAC51C08116A0EF38947E1F54084D56BAFD744ED6",
+            "result": "passed"
+          },
+          {
+            "name": "python-installed-wheel-smoke",
+            "command": "target/prompt23-writer-crypto/python-wheel-venv/Scripts/python.exe scripts/prompt15_python_wheel_smoke.py crates/engine/tests/fixtures/basicapi.pdf target/prompt23-writer-crypto/python-installed-wheel-smoke.json",
+            "start_time": "2026-07-14T18:24:09.7061984+05:30",
+            "end_time": "2026-07-14T18:24:15.6391086+05:30",
+            "duration_seconds": 5.932,
+            "exit_code": 0,
+            "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\python-installed-wheel-smoke.log",
+            "log_sha256": "A23B5FD5A00270E99CB01D1D9D98A2AC30F4558369EB436DA52DEB8B70AD02A4",
+            "result": "passed"
+          },
+          {
+            "name": "python-installed-wheel-prompt23b-smoke",
+            "command": "target/prompt23-writer-crypto/python-wheel-venv/Scripts/python.exe -c <prompt23b feature smoke>",
+            "start_time": "2026-07-14T18:24:15.6458488+05:30",
+            "end_time": "2026-07-14T18:24:15.7629373+05:30",
+            "duration_seconds": 0.116,
+            "exit_code": 1,
+            "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\python-installed-wheel-prompt23b-smoke.log",
+            "log_sha256": "8EFEDA97392D8EA450B46D82FFC273F1B99C2BC10EE4CF4FCA339D801FBF3D6E",
+            "result": "failed"
+          }
+        ],
+        "Count": 6
+      },
+      {
+        "name": "python-installed-wheel-prompt23b-surface-smoke",
+        "command": "target/prompt23-writer-crypto/python-wheel-venv/Scripts/python.exe target/prompt23-writer-crypto/python_prompt23b_surface_smoke.py",
+        "start_time": "2026-07-14T18:24:36.4424131+05:30",
+        "end_time": "2026-07-14T18:24:36.5400037+05:30",
+        "duration_seconds": 0.094,
+        "exit_code": 0,
+        "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\python-installed-wheel-prompt23b-surface-smoke.log",
+        "log_sha256": "46DF18C193D2FAA2FD636DD31E0BC1CA754D656F7B6504171B3F6F9EC9AF4C3E",
+        "result": "passed",
+        "failure_classification": "none"
+      }
+    ],
+    "Count": 2
+  },
+  {
+    "name": "final-git-diff-check",
+    "command": "git diff --check",
+    "start_time": "2026-07-14T18:28:01.3902647+05:30",
+    "end_time": "2026-07-14T18:28:01.6014022+05:30",
+    "duration_seconds": 0.208,
+    "exit_code": 0,
+    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\final-git-diff-check.log",
+    "log_sha256": "566FE04170180F756203010594AB641F9F20E8A61DB45BB010898C9E5A0D9E87",
+    "result": "passed",
+    "failure_classification": "none"
+  },
+  {
+    "name": "final-git-diff-cached-check",
+    "command": "git diff --cached --check",
+    "start_time": "2026-07-14T18:28:01.6914244+05:30",
+    "end_time": "2026-07-14T18:28:01.7663120+05:30",
+    "duration_seconds": 0.075,
+    "exit_code": 0,
+    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\final-git-diff-cached-check.log",
+    "log_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+    "result": "passed",
+    "failure_classification": "none"
+  },
+  {
+    "name": "final-cargo-fmt-check",
+    "command": "cargo fmt --check",
+    "start_time": "2026-07-14T18:28:01.7708285+05:30",
+    "end_time": "2026-07-14T18:28:04.3784939+05:30",
+    "duration_seconds": 2.607,
+    "exit_code": 0,
+    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\final-cargo-fmt-check.log",
+    "log_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+    "result": "passed",
+    "failure_classification": "none"
+  },
+  {
+    "name": "final-audit-verification",
+    "command": "python -c \"import json; p=r\\\"target/prompt23-writer-crypto/prompt23b-final-audit-verification.json\\\"; d=json.load(open(p,encoding=\\\"utf-8\\\")); assert d[\\\"status\\\"]==\\\"passed\\\"; print(json.dumps({\\\"status\\\":\\\"passed\\\",\\\"checks\\\":len(d[\\\"checks\\\"])}))\"",
+    "start_time": "2026-07-14T18:28:04.4125942+05:30",
+    "end_time": "2026-07-14T18:28:04.5346445+05:30",
+    "duration_seconds": 0.122,
+    "exit_code": 0,
+    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\final-audit-verification.log",
+    "log_sha256": "0DB44B283B15A54FD3BA2FDEB9E70A15BB17B9040FE04B19FFA64B10FBDFFBC7",
+    "result": "passed",
+    "failure_classification": "none"
+  },
+  {
+    "name": "final-security-verdict-check",
+    "command": "python -c \"import json; p=r\\\"target/prompt23-writer-crypto/prompt23b-final-security-verdict.json\\\"; d=json.load(open(p,encoding=\\\"utf-8\\\")); assert d[\\\"status\\\"]==\\\"passed\\\"; print(json.dumps({\\\"status\\\":\\\"passed\\\",\\\"findings\\\":len(d.get(\\\"findings\\\",[]))}))\"",
+    "start_time": "2026-07-14T18:28:04.5526847+05:30",
+    "end_time": "2026-07-14T18:28:04.6859854+05:30",
+    "duration_seconds": 0.133,
+    "exit_code": 0,
+    "log_path": "target\\prompt23-writer-crypto\\final-validation-logs\\final-security-verdict-check.log",
+    "log_sha256": "5F4B7C51AF447D793D1B16E1CA89A56FF60B3F4D413B6EF522DE6AADD44710F8",
+    "result": "passed",
+    "failure_classification": "none"
+  }
+]

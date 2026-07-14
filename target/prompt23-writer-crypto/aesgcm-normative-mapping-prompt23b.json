@@ -1,0 +1,29 @@
+{
+  "schema": "prompt23b.aesgcm-normative-mapping.v1",
+  "status": "implemented_with_limits",
+  "source": "ISO/TS 32003:2023",
+  "clauses": ["5.1", "5.2", "Table 2", "Table 3", "Table 4"],
+  "mapping": {
+    "handler": "Standard",
+    "V": 6,
+    "R": 7,
+    "CFM": "AESV4",
+    "key_bytes": 32,
+    "iv_bytes": 12,
+    "tag_bytes": 16,
+    "aad": "nil",
+    "wire_layout": "iv || ciphertext || tag",
+    "padding": "none"
+  },
+  "implementation": {
+    "parser": "crates/engine/src/crypto.rs EncryptionInfo::from_dict",
+    "reader": "crates/engine/src/reader.rs decrypt_bytes_by_method",
+    "writer": "crates/engine/src/writer.rs encrypt_bytes_for_writer",
+    "primitive": "crates/engine/src/crypto.rs aes256_gcm_*"
+  },
+  "limits": [
+    "Public-key Adobe.PubSec processing is implemented for scoped KeyTrans decrypt/full-rewrite write/re-encrypt; non-KeyTrans recipient classes remain unsupported.",
+    "AESV4 encrypted incremental updates are unsupported until cross-revision nonce uniqueness is proven.",
+    "PDF-MAC AuthCode/KDFSalt/CMS structure discovery from ISO/TS 32004 is implemented without validity claims; full MAC generation and verification remain unsupported exact."
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "schema": "prompt23b.aesgcm-interoperability-results.v1",
+  "status": "implemented_with_limits",
+  "oxide_runtime": {
+    "created": "target/prompt23-writer-crypto/cli-aesgcm-runtime-encrypted.pdf",
+    "decrypted": "target/prompt23-writer-crypto/cli-aesgcm-runtime-decrypted.pdf",
+    "reports": [
+      "target/prompt23-writer-crypto/cli-aesgcm-runtime-encrypt.json",
+      "target/prompt23-writer-crypto/cli-aesgcm-runtime-decrypt.json"
+    ]
+  },
+  "external_tools": {
+    "status": "not_counted_as_pass_without_confirmed_iso_ts_32003_support",
+    "passes": 0
+  },
+  "unclassified_failures": 0
+}

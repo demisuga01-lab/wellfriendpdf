@@ -62,6 +62,46 @@ public sealed class OxideDocument : IDisposable
         return new OxideDocument(handle);
     }
 
+    public static OxideDocument OpenPubSec(byte[] bytes, byte[] certificate, byte[] privateKey)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentNullException.ThrowIfNull(certificate);
+        ArgumentNullException.ThrowIfNull(privateKey);
+        var handle = NativeMethods.oxide_document_open_pubsec_from_bytes(
+            bytes,
+            (UIntPtr)bytes.Length,
+            certificate,
+            (UIntPtr)certificate.Length,
+            privateKey,
+            (UIntPtr)privateKey.Length,
+            out var error);
+        if (handle.IsInvalid)
+        {
+            NativeMethods.ThrowIfError(2, error);
+        }
+        return new OxideDocument(handle);
+    }
+
+    public static OxideDocument OpenPubSecPfx(byte[] bytes, byte[] pfx, byte[] password)
+    {
+        ArgumentNullException.ThrowIfNull(bytes);
+        ArgumentNullException.ThrowIfNull(pfx);
+        password ??= Array.Empty<byte>();
+        var handle = NativeMethods.oxide_document_open_pubsec_pfx_from_bytes(
+            bytes,
+            (UIntPtr)bytes.Length,
+            pfx,
+            (UIntPtr)pfx.Length,
+            password,
+            (UIntPtr)password.Length,
+            out var error);
+        if (handle.IsInvalid)
+        {
+            NativeMethods.ThrowIfError(2, error);
+        }
+        return new OxideDocument(handle);
+    }
+
     public static string FeatureReportJson()
     {
         var status = NativeMethods.oxide_feature_report_json(out var json, out var error);
@@ -422,6 +462,28 @@ public sealed class OxideDocument : IDisposable
         ThrowIfDisposed();
         var status = NativeMethods.oxide_document_aes_gcm_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string PdfMacReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_pdf_mac_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string PdfMacVerifyJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_pdf_mac_verify_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public OxideBinaryResult PdfMacCreate()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_pdf_mac_create_pdf(
+            _handle, out var buffer, out var json, out var error);
+        return NativeMethods.TakeOutput(status, buffer, json, error);
     }
 
     public OxideBinaryResult Prompt22Optimize(string? optionsJson = null)
@@ -994,6 +1056,20 @@ public sealed class OxideDocument : IDisposable
         {
             if (layoutPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(layoutPtr);
         }
+    }
+
+    public byte[] PubSecEncryptPdf(byte[] recipientCertificate)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(recipientCertificate);
+        var status = NativeMethods.oxide_document_pubsec_encrypt_pdf(
+            _handle,
+            recipientCertificate,
+            (UIntPtr)recipientCertificate.Length,
+            out var buffer,
+            out var error);
+        NativeMethods.ThrowIfError(status, error);
+        return NativeMethods.TakeBuffer(buffer);
     }
 
     public void Dispose()

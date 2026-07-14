@@ -1,0 +1,137 @@
+﻿{
+    "schema":  "prompt23b_fuzz_target_inventory_v1",
+    "created_at":  "2026-07-14T11:22:55.0912310Z",
+    "fuzz_crate":  "fuzz/Cargo.toml",
+    "target_count":  25,
+    "targets":  [
+                    {
+                        "name":  "parse_pdf",
+                        "path":  "fuzz_targets/parse_pdf.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "filters",
+                        "path":  "fuzz_targets/filters.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "predictor",
+                        "path":  "fuzz_targets/predictor.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "content_tokenizer",
+                        "path":  "fuzz_targets/content_tokenizer.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "image_decoders",
+                        "path":  "fuzz_targets/image_decoders.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "fonts",
+                        "path":  "fuzz_targets/fonts.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "font_mapping",
+                        "path":  "fuzz_targets/font_mapping.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "cmap",
+                        "path":  "fuzz_targets/cmap.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "crypto",
+                        "path":  "fuzz_targets/crypto.rs",
+                        "selected_for_prompt23b_crypto_smoke":  true
+                    },
+                    {
+                        "name":  "functions",
+                        "path":  "fuzz_targets/functions.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "writer",
+                        "path":  "fuzz_targets/writer.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "cos_object",
+                        "path":  "fuzz_targets/cos_object.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "parser_report",
+                        "path":  "fuzz_targets/parser_report.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "color_report",
+                        "path":  "fuzz_targets/color_report.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "xref_stream",
+                        "path":  "fuzz_targets/xref_stream.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "object_stream",
+                        "path":  "fuzz_targets/object_stream.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "document_rewrite",
+                        "path":  "fuzz_targets/document_rewrite.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "linearize",
+                        "path":  "fuzz_targets/linearize.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "pdfa",
+                        "path":  "fuzz_targets/pdfa.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "editing",
+                        "path":  "fuzz_targets/editing.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "signature_validation",
+                        "path":  "fuzz_targets/signature_validation.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "structured_pdf",
+                        "path":  "fuzz_targets/structured_pdf.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "display_list",
+                        "path":  "fuzz_targets/display_list.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "decode_scanner",
+                        "path":  "fuzz_targets/decode_scanner.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    },
+                    {
+                        "name":  "renderer_prompt11",
+                        "path":  "fuzz_targets/renderer_prompt11.rs",
+                        "selected_for_prompt23b_crypto_smoke":  false
+                    }
+                ],
+    "prompt23b_crypto_targets":  [
+                                     "crypto"
+                                 ],
+    "crypto_target_scope":  "oxide_engine::fuzz::fuzz_crypto covers encryption dictionary parsing, password/security handler key derivation paths, PubSec/AESV4/PDF-MAC malformed crypto surfaces reached by the engine fuzz entry point."
+}

@@ -85,6 +85,103 @@ pub unsafe extern "C" fn oxide_document_open_from_bytes_with_password(
     unsafe { open_document_from_parts(data, len, password, password_len, error_out) }
 }
 
+/// Opens a public-key encrypted PDF from bytes with explicit certificate and
+/// private-key buffers. The certificate and key may be PEM or DER. The key is
+/// used only during open and is not serialized by the C ABI wrapper.
+///
+/// # Safety
+///
+/// Every pointer must address the corresponding readable byte count. If
+/// `error_out` is non-null, it must be writable and freed with
+/// `oxide_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_open_pubsec_from_bytes(
+    data: *const u8,
+    len: usize,
+    certificate: *const u8,
+    certificate_len: usize,
+    private_key: *const u8,
+    private_key_len: usize,
+    error_out: *mut *mut c_char,
+) -> *mut OxideDocument {
+    clear_error(error_out);
+    if data.is_null() || certificate.is_null() || private_key.is_null() {
+        set_error(
+            error_out,
+            "data, certificate, and private_key pointers are required",
+        );
+        return ptr::null_mut();
+    }
+    match catch_unwind(AssertUnwindSafe(|| {
+        let bytes = unsafe { slice::from_raw_parts(data, len) }.to_vec();
+        let cert = unsafe { slice::from_raw_parts(certificate, certificate_len) };
+        let key = unsafe { slice::from_raw_parts(private_key, private_key_len) };
+        let identity = oxide_engine::PubSecIdentity::from_bytes(cert, key)?;
+        let provider = oxide_engine::PubSecKeyProvider::single(identity);
+        ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)
+    })) {
+        Ok(Ok(engine)) => Box::into_raw(Box::new(OxideDocument { engine, ocr: None })),
+        Ok(Err(err)) => {
+            set_error(error_out, &err.to_string());
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error_out, "panic while opening PubSec document");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Opens a public-key encrypted PDF from bytes with a PKCS #12/PFX provider
+/// bundle and explicit password bytes.
+///
+/// # Safety
+///
+/// Every pointer must address the corresponding readable byte count. A null
+/// password pointer is accepted only with password_len == 0. If `error_out` is
+/// non-null, it must be writable and freed with `oxide_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_open_pubsec_pfx_from_bytes(
+    data: *const u8,
+    len: usize,
+    pfx: *const u8,
+    pfx_len: usize,
+    password: *const u8,
+    password_len: usize,
+    error_out: *mut *mut c_char,
+) -> *mut OxideDocument {
+    clear_error(error_out);
+    if data.is_null() || pfx.is_null() || (password.is_null() && password_len != 0) {
+        set_error(
+            error_out,
+            "data, pfx, and password pointer/length arguments are invalid",
+        );
+        return ptr::null_mut();
+    }
+    match catch_unwind(AssertUnwindSafe(|| {
+        let bytes = unsafe { slice::from_raw_parts(data, len) }.to_vec();
+        let pfx_bytes = unsafe { slice::from_raw_parts(pfx, pfx_len) };
+        let password_bytes = if password_len == 0 {
+            &[][..]
+        } else {
+            unsafe { slice::from_raw_parts(password, password_len) }
+        };
+        let identity = oxide_engine::PubSecIdentity::from_pkcs12_der(pfx_bytes, password_bytes)?;
+        let provider = oxide_engine::PubSecKeyProvider::single(identity);
+        ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)
+    })) {
+        Ok(Ok(engine)) => Box::into_raw(Box::new(OxideDocument { engine, ocr: None })),
+        Ok(Err(err)) => {
+            set_error(error_out, &err.to_string());
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error_out, "panic while opening PubSec PFX document");
+            ptr::null_mut()
+        }
+    }
+}
+
 unsafe fn open_document_from_parts(
     data: *const u8,
     len: usize,
@@ -709,6 +806,51 @@ pub unsafe extern "C" fn oxide_document_decrypt_pdf(
             return Err("out_buffer pointer is null".into());
         }
         let out = oxide(oxide_engine::decrypt_pdf(&doc.engine))?;
+        unsafe {
+            *out_buffer = into_buffer(out);
+        }
+        Ok(())
+    })
+}
+
+/// Encrypts an opened document with `/Adobe.PubSec` for one recipient
+/// certificate and returns the encrypted PDF.
+///
+/// # Safety
+///
+/// `document` must be valid. `recipient_certificate` must point to
+/// `recipient_certificate_len` readable bytes. `out_buffer` must be writable
+/// and freed with `oxide_buffer_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_pubsec_encrypt_pdf(
+    document: *const OxideDocument,
+    recipient_certificate: *const u8,
+    recipient_certificate_len: usize,
+    out_buffer: *mut OxideBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if recipient_certificate.is_null() {
+            return Err("recipient_certificate pointer is null".into());
+        }
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let cert =
+            unsafe { slice::from_raw_parts(recipient_certificate, recipient_certificate_len) };
+        let recipient = oxide(oxide_engine::PubSecRecipientCertificate::from_bytes(cert))?;
+        let options = oxide_engine::PubSecEncryptOptions {
+            recipients: vec![recipient],
+            permissions: 0xFFFF_FFFCu32,
+            encrypt_metadata: true,
+            method: oxide_engine::CryptMethod::AesV2,
+            recipient_id_mode: oxide_engine::PubSecRecipientIdMode::IssuerAndSerial,
+        };
+        let (out, _) = oxide(oxide_engine::encrypt_pdf_pubsec(
+            doc.engine.document().reader(),
+            &options,
+        ))?;
         unsafe {
             *out_buffer = into_buffer(out);
         }
@@ -1504,6 +1646,28 @@ xfa_document_report!(
 );
 xfa_document_report!(oxide_document_pubsec_report_json, pubsec_report_json);
 xfa_document_report!(oxide_document_aes_gcm_report_json, aes_gcm_report_json);
+xfa_document_report!(oxide_document_pdf_mac_report_json, pdf_mac_report_json);
+xfa_document_report!(oxide_document_pdf_mac_verify_json, pdf_mac_verify_json);
+
+/// Writes an AESV4 encrypted full-rewrite PDF with a standalone PDF-MAC token.
+///
+/// # Safety
+/// Returns an owned buffer and owned JSON report. The output buffer must be
+/// freed with `oxide_buffer_free`; the report string must be freed with
+/// `oxide_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_pdf_mac_create_pdf(
+    document: *const OxideDocument,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::pdf_mac_create_json(bytes, None)
+        })
+    }
+}
 
 /// Prompt 23 crypto tamper policy report JSON.
 ///

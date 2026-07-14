@@ -1,0 +1,18 @@
+﻿{
+    "schema":  "prompt23b.pdfmac-interoperability.v2",
+    "created_at":  "2026-07-14T11:45:29.3116912Z",
+    "status":  "implemented_with_limits_external_pdf_tool_unsupported_R7_V6",
+    "oxide_files":  [
+                        "target/prompt23-writer-crypto/cli-smoke/one-page-pdfmac-refresh2.pdf"
+                    ],
+    "qpdf_result":  "unsupported_R7_V6_not_counted_as_pass",
+    "java_primitive_vectors":  {
+                                   "status":  "passed",
+                                   "aes_gcm":  "match",
+                                   "aes_kw":  "match",
+                                   "hmac_sha256":  "match",
+                                   "hkdf_sha256":  "match"
+                               },
+    "oxide_pdfmac_verify":  "valid in target/prompt23-writer-crypto/cli-smoke/pdf-mac-verify-refresh2.json",
+    "unclassified_failures":  0
+}

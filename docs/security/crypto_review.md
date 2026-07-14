@@ -71,7 +71,7 @@ prefer migration when a fixed or better-maintained pure-Rust option is available
 - RC4 and AES-128 are supported for interoperability with existing PDFs, not
   recommended for new sensitive documents.
 - Full live PAdES LTA/document timestamp refresh is not claimed.
-- Public-key PDF encryption handlers are not implemented.
+- Public-key PDF encryption handlers are implemented for scoped explicit-provider PubSec KeyTrans decryption and full-rewrite writing/re-encryption. Standalone PDF-MAC creation/verification is implemented for AESV4 full rewrite and never returns `valid` from structure-only inspection. PKCS #12/PFX provider extraction is implemented with bounded non-WASM RSA identity matching. Certificate trust, revocation, signer identity validation, non-KeyTrans PubSec recipient classes, encrypted incremental PubSec updates, AttachedToSig PDF-MAC binding, ambiguous/non-RSA PFX bundles, and WASM PFX extraction remain unsupported.
 - ECDSA, EdDSA, and RSA-PSS signing/verification are not implemented yet; the
   current signer applies RSA/SHA-256 for compatibility.
 - RustCrypto `rsa` currently carries `RUSTSEC-2023-0071` with no fixed upgrade;

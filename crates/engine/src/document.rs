@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 use crate::error::{OxideError, Result};
 use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
+use crate::pubsec::PubSecKeyProvider;
 use crate::reader::{ContentStreamRange, PdfReader};
 
 const DEFAULT_MEDIA_BOX: [f64; 4] = [0.0, 0.0, 612.0, 792.0];
@@ -61,6 +62,17 @@ impl PdfDocument {
     pub fn open_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
         Ok(Self {
             reader: PdfReader::from_bytes_with_password(data, password)?,
+            pages_cache: OnceLock::new(),
+        })
+    }
+
+    /// Open a public-key encrypted PDF from bytes using an explicit provider.
+    pub fn open_bytes_with_pubsec_provider(
+        data: Vec<u8>,
+        provider: &PubSecKeyProvider,
+    ) -> Result<Self> {
+        Ok(Self {
+            reader: PdfReader::from_bytes_with_pubsec_provider(data, provider)?,
             pages_cache: OnceLock::new(),
         })
     }

@@ -14,7 +14,11 @@ include = ["src/**/*", "examples/**/*", "fonts/*.ttf", "fonts/LICENSE-*.txt", "f
 
 [dependencies]
 aes = "0.8"
+aes-kw = "0.3.1"
+aes-gcm = "0.10"
 cbc = "0.1"
+hmac = "0.12"
+hkdf = "0.12"
 sha2 = { version = "0.10", features = ["oid"] }
 flate2 = "1"
 getrandom = "0.2"
@@ -39,6 +43,7 @@ unicode-bidi = "0.3"
 cms = { version = "0.2", features = ["builder"] }
 x509-cert = "0.2"
 rsa = { version = "0.9", features = ["sha2"] }
+pkcs8 = { version = "0.10", features = ["encryption", "pem"] }
 sha1 = { version = "0.10", features = ["oid"] }
 const-oid = "0.9"
 der = { version = "0.7", features = ["oid"] }
@@ -47,6 +52,9 @@ subtle = "2"
 zeroize = "1"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zopfli = { version = "0.8.3", default-features = false, features = ["std", "zlib"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+p12 = "0.6.3"
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "0.3"

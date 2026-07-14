@@ -583,6 +583,33 @@ pub fn aes_gcm_report_json(bytes: &[u8], _password: Option<&[u8]>) -> Result<Str
     )
 }
 
+pub fn pdf_mac_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    envelope(
+        "pdf_mac_report",
+        &crate::pdf_mac::pdf_mac_report_bytes(bytes, password)?,
+    )
+}
+
+pub fn pdf_mac_verify_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    envelope(
+        "pdf_mac_verify",
+        &crate::pdf_mac::pdf_mac_verify_report_bytes(bytes, password)?,
+    )
+}
+
+pub fn pdf_mac_create_json(bytes: &[u8], password: Option<&[u8]>) -> Result<(Vec<u8>, String)> {
+    let engine = open(bytes, password)?;
+    let params = crate::EncryptParams {
+        user_password: crate::crypto::secret_bytes(Vec::new()),
+        owner_password: crate::crypto::secret_bytes(Vec::new()),
+        permissions: -1,
+        algorithm: crate::EncryptAlgorithm::Aes256Gcm,
+        encrypt_metadata: true,
+    };
+    let (output, report) = crate::encrypt_pdf_with_pdf_mac(&engine, &params)?;
+    Ok((output, envelope("pdf_mac_create", &report)?))
+}
+
 pub fn crypto_tamper_test_json() -> Result<String> {
     envelope(
         "crypto_tamper_test",
@@ -3054,7 +3081,7 @@ pub fn feature_report_json() -> Result<String> {
             "prompt22b_resource_dedup_office_benchmark_closure",
             "prompt23_report", "writer_determinism_audit", "writer_external_diff",
             "writer_closeout_report", "pubsec_report", "aes_gcm_report",
-            "crypto_tamper_test",
+            "pdf_mac_report", "pdf_mac_verify", "crypto_tamper_test",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
@@ -4191,11 +4218,11 @@ mod tests {
         assert_eq!(prompt23["blocked_rows"], 0);
         assert_eq!(
             prompt23["public_key_handler_status"],
-            "unsupported_reported_exact"
+            "implemented_with_limits"
         );
         assert_eq!(
             prompt23["aes_gcm_decrypt_status"],
-            "unsupported_reported_exact"
+            "implemented_with_limits"
         );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),

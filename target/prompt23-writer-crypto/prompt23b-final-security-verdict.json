@@ -1,0 +1,21 @@
+{
+  "schema": "prompt23b_final_security_verdict_v5",
+  "created_at": "2026-07-14T12:57:41.978013Z",
+  "status": "passed",
+  "scanned_roots": [
+    "target/prompt23-writer-crypto",
+    "docs"
+  ],
+  "patterns": [
+    "pem_private_key",
+    "aws_access_key",
+    "hex_32_byte_key_label",
+    "base64_secret_label"
+  ],
+  "findings": [],
+  "secret_material_in_reports": false,
+  "notes": [
+    "Documentation words such as password/key are allowed when no secret value follows.",
+    "Binary fixtures/packages are excluded from text scanning; committed test fixture keys predate Prompt 23B and are not copied into Prompt 23B reports."
+  ]
+}

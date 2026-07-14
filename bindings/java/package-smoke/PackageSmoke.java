@@ -19,6 +19,10 @@ public final class PackageSmoke {
         }
         Oxide.Document.class.getMethod("open", Path.class, String.class);
         Oxide.Document.class.getMethod("open", byte[].class, String.class);
+        Oxide.Document.class.getMethod("openPubSec", byte[].class, byte[].class, byte[].class);
+        Oxide.Document.class.getMethod("openPubSecPfx", byte[].class, byte[].class, byte[].class);
+        Oxide.Document.class.getMethod("pubsecEncryptPdf", byte[].class);
+        Oxide.Document.class.getMethod("pdfMacCreate");
         if (Oxide.engineVersion().isBlank() || Oxide.abiVersion() < 1) {
             throw new AssertionError("version queries failed");
         }
@@ -61,6 +65,15 @@ public final class PackageSmoke {
             Oxide.BinaryResult sanitized = doc.sanitize("balanced");
             if (sanitized.bytes().length == 0 || !sanitized.reportJson().contains("sanitize_report")) {
                 throw new AssertionError("sanitize output/report missing");
+            }
+            Oxide.BinaryResult pdfMac = doc.pdfMacCreate();
+            if (pdfMac.bytes().length == 0 || !pdfMac.reportJson().contains("pdf_mac_create")) {
+                throw new AssertionError("PDF-MAC output/report missing");
+            }
+            try (Oxide.Document pdfMacDoc = Oxide.Document.open(pdfMac.bytes())) {
+                if (!pdfMacDoc.pdfMacVerifyJson().contains("\"state\":\"valid\"")) {
+                    throw new AssertionError("PDF-MAC verification did not return valid");
+                }
             }
         }
 
@@ -175,8 +188,8 @@ public final class PackageSmoke {
             throw new AssertionError("feature report missing Prompt 21 closure posture");
         }
         if (!feature.contains("\"prompt23_deterministic_writer_pubsec_aesgcm\"")
-                || !feature.contains("\"public_key_handler_status\":\"unsupported_reported_exact\"")
-                || !feature.contains("\"aes_gcm_decrypt_status\":\"unsupported_reported_exact\"")
+                || !feature.contains("\"public_key_handler_status\":\"implemented_with_limits\"")
+                || !feature.contains("\"aes_gcm_decrypt_status\":\"implemented_with_limits\"")
                 || !Oxide.cryptoTamperTestJson().contains("crypto_tamper_test")) {
             throw new AssertionError("feature report missing Prompt 23 writer/crypto posture");
         }

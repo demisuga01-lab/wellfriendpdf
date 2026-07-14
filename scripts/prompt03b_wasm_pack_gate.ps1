@@ -8,6 +8,10 @@ $ErrorActionPreference = "Stop"
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ($OutDir -eq "") {
     $OutDir = Join-Path $Repo "target/prompt03-packaging-codec-isolation"
+} elseif (![System.IO.Path]::IsPathRooted($OutDir)) {
+    $OutDir = [System.IO.Path]::GetFullPath((Join-Path $Repo $OutDir))
+} else {
+    $OutDir = [System.IO.Path]::GetFullPath($OutDir)
 }
 $EvidenceDir = Join-Path $OutDir "wasm-pack"
 $ToolRoot = Join-Path $Repo "target/prompt03-tools/wasm-pack-$WasmPackVersion"

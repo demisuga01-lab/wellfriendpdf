@@ -120,6 +120,7 @@ fn classify_error(err: &(dyn Error + 'static)) -> CliExitCode {
                 | oxide_engine::ErrorKind::Parse
                 | oxide_engine::ErrorKind::MissingObject
                 | oxide_engine::ErrorKind::Encrypted
+                | oxide_engine::ErrorKind::AuthenticationFailure
                 | oxide_engine::ErrorKind::ResourceLimit => CliExitCode::Input,
                 oxide_engine::ErrorKind::Cancelled => CliExitCode::Internal,
             };
@@ -274,11 +275,29 @@ enum Commands {
     PubsecReport(Prompt17ReportArgs),
     /// Public-key security-handler decrypt command; report-only until supported
     PubsecDecrypt(Prompt23CryptoReportArgs),
-    /// Report PDF AES-GCM support and exact unsupported status
+    /// Public-key security-handler encrypt command for supported KeyTrans recipients
+    PubsecEncrypt(Prompt23CryptoReportArgs),
+    /// Add a public-key recipient by full-rewrite re-encryption to the supplied recipient set
+    PubsecAddRecipient(Prompt23CryptoReportArgs),
+    /// Remove a public-key recipient by full-rewrite re-encryption to the supplied recipient set
+    PubsecRemoveRecipient(Prompt23CryptoReportArgs),
+    /// Replace public-key recipients by full-rewrite re-encryption to the supplied recipient set
+    PubsecReplaceRecipient(Prompt23CryptoReportArgs),
+    /// Public-key security-handler full-rewrite re-encrypt command
+    PubsecReencrypt(Prompt23CryptoReportArgs),
+    /// Public-key decrypt/edit/re-encrypt workflow using the supported full-rewrite policy
+    PubsecDecryptEditReencrypt(Prompt23CryptoReportArgs),
+    /// Report ISO/TS 32004 PDF-MAC structure and exact verification posture
+    PdfMacReport(Prompt17ReportArgs),
+    /// Verify ISO/TS 32004 PDF-MAC where supported; never claims validity from structure alone
+    PdfMacVerify(Prompt17ReportArgs),
+    /// Create AESV4 encrypted PDF output with a standalone ISO/TS 32004 PDF-MAC token
+    PdfMacCreate(Prompt23CryptoReportArgs),
+    /// Report PDF AES-GCM support and exact remaining limits
     AesGcmReport(Prompt17ReportArgs),
-    /// AES-GCM decrypt command; report-only until supported
+    /// AES-GCM decrypt command; writes plaintext only with --pdf-output
     AesGcmDecrypt(Prompt23CryptoReportArgs),
-    /// AES-GCM encrypt command; report-only until supported
+    /// AES-GCM encrypt command; writes encrypted PDF only with --pdf-output
     AesGcmEncrypt(Prompt23CryptoReportArgs),
     /// Run/report Prompt 23 crypto tamper policy checks
     CryptoTamperTest(Prompt23TamperArgs),
@@ -463,7 +482,7 @@ struct EncryptArgs {
     /// Owner (full-permissions) password; defaults to the user password
     #[arg(long, default_value = "")]
     owner_pw: String,
-    /// Algorithm: aes256 (default), aes128, or rc4
+    /// Algorithm: aes256 (default), aesgcm, aes128, or rc4
     #[arg(long, default_value = "aes256")]
     algo: String,
     /// Permission bitmask (/P), signed 32-bit; default -1 grants everything
@@ -1067,15 +1086,36 @@ struct Prompt23CryptoReportArgs {
     /// Output JSON report; defaults to stdout
     #[arg(short, long)]
     output: Option<PathBuf>,
-    /// Optional certificate path. Prompt 23 records this as configured but does not read key material.
+    /// Output PDF path for supported AES-GCM encrypt/decrypt operations.
+    #[arg(long, alias = "out")]
+    pdf_output: Option<PathBuf>,
+    /// Certificate path for PubSec provider input; may be repeated for output recipients.
     #[arg(long)]
-    certificate: Option<PathBuf>,
-    /// Optional private-key path. Prompt 23 records this as configured but does not read key material.
+    certificate: Vec<PathBuf>,
+    /// Private-key path for PubSec provider input.
     #[arg(long)]
-    private_key: Option<PathBuf>,
+    private_key: Vec<PathBuf>,
+    /// PKCS #12 / PFX provider bundle for PubSec open/decrypt.
+    #[arg(long = "pfx")]
+    pfx: Option<PathBuf>,
+    /// File containing the PKCS #8 / PFX password bytes. Prefer this over command-line secrets.
+    #[arg(long = "private-key-password-file")]
+    private_key_password_file: Option<PathBuf>,
+    /// Output recipient certificate path for PubSec encrypt/re-encrypt; repeat for multiple recipients.
+    #[arg(long = "recipient-certificate")]
+    recipient_certificate: Vec<PathBuf>,
     /// Password for already-supported Standard handler PDFs. Do not pass private-key passwords here.
     #[arg(long)]
     password: Option<String>,
+    /// AES-GCM output user password for aes-gcm-encrypt. Defaults to --password or empty.
+    #[arg(long)]
+    user_pw: Option<String>,
+    /// AES-GCM output owner password for aes-gcm-encrypt. Defaults to the user password.
+    #[arg(long)]
+    owner_pw: Option<String>,
+    /// AES-GCM output permission bitmask (/P), signed 32-bit; default -1 grants everything.
+    #[arg(long, default_value = "-1", allow_negative_numbers = true)]
+    permissions: i32,
     /// Return a non-zero exit status after writing the unsupported report.
     #[arg(long)]
     fail_on_unsupported: bool,
@@ -2664,6 +2704,25 @@ struct CanonicalizeArgs {
 }
 
 fn main() -> ExitCode {
+    match std::thread::Builder::new()
+        .name("oxide-cli".to_string())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(run_cli)
+    {
+        Ok(handle) => handle.join().unwrap_or_else(|_| {
+            eprintln!(
+                "oxide: internal error: command panicked; this is a bug, not a PDF-level error"
+            );
+            ExitCode::from(CliExitCode::Internal.code())
+        }),
+        Err(err) => {
+            eprintln!("oxide: internal error: could not start CLI worker thread: {err}");
+            ExitCode::from(CliExitCode::Internal.code())
+        }
+    }
+}
+
+fn run_cli() -> ExitCode {
     let cli = Cli::parse();
 
     let default_panic_hook = std::panic::take_hook();
@@ -2742,10 +2801,27 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::WriterExternalDiff(args) => run_writer_external_diff(args),
         Commands::WriterCloseoutReport(args) => run_writer_closeout_report(args),
         Commands::PubsecReport(args) => run_pubsec_report(args),
-        Commands::PubsecDecrypt(args) => run_prompt23_unsupported_crypto(args, "pubsec_decrypt"),
+        Commands::PubsecDecrypt(args) => run_pubsec_decrypt(args),
+        Commands::PubsecEncrypt(args) => run_pubsec_encrypt(args),
+        Commands::PubsecAddRecipient(args) => {
+            run_pubsec_reencrypt_with_operation(args, "pubsec_add_recipient")
+        }
+        Commands::PubsecRemoveRecipient(args) => {
+            run_pubsec_reencrypt_with_operation(args, "pubsec_remove_recipient")
+        }
+        Commands::PubsecReplaceRecipient(args) => {
+            run_pubsec_reencrypt_with_operation(args, "pubsec_replace_recipient")
+        }
+        Commands::PubsecReencrypt(args) => run_pubsec_reencrypt(args),
+        Commands::PubsecDecryptEditReencrypt(args) => {
+            run_pubsec_reencrypt_with_operation(args, "pubsec_decrypt_edit_reencrypt")
+        }
+        Commands::PdfMacReport(args) => run_pdf_mac_report(args),
+        Commands::PdfMacVerify(args) => run_pdf_mac_verify(args),
+        Commands::PdfMacCreate(args) => run_pdf_mac_create(args),
         Commands::AesGcmReport(args) => run_aes_gcm_report(args),
-        Commands::AesGcmDecrypt(args) => run_prompt23_unsupported_crypto(args, "aes_gcm_decrypt"),
-        Commands::AesGcmEncrypt(args) => run_prompt23_unsupported_crypto(args, "aes_gcm_encrypt"),
+        Commands::AesGcmDecrypt(args) => run_aes_gcm_decrypt(args),
+        Commands::AesGcmEncrypt(args) => run_aes_gcm_encrypt(args),
         Commands::CryptoTamperTest(args) => run_crypto_tamper_test(args),
         Commands::RasterVectorReport(args) => run_prompt21_raster_vector_report(args),
         Commands::RasterVectorize(args) => run_prompt21_raster_vector_report(args),
@@ -4053,6 +4129,224 @@ fn run_pubsec_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
+fn run_pubsec_decrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+    let output = args
+        .pdf_output
+        .as_ref()
+        .ok_or("pubsec-decrypt requires --pdf-output to write decrypted PDF bytes")?;
+    refuse_overwrite(output)?;
+    let provider = load_pubsec_provider(&args)?;
+    let bytes = std::fs::read(&args.pdf)?;
+    let engine = oxide_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)?;
+    let out = oxide_engine::decrypt_pdf(&engine)?;
+    std::fs::write(output, &out)?;
+    let report = serde_json::json!({
+        "operation": "pubsec_decrypt",
+        "status": "implemented_with_limits",
+        "output_pdf": output.display().to_string(),
+        "output_pdf_written": true,
+        "bytes": out.len(),
+        "certificate_path_count": args.certificate.len(),
+        "private_key_path_count": args.private_key.len(),
+        "pfx_provider_configured": args.pfx.is_some(),
+        "secret_material_reported": false,
+    });
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
+}
+
+fn run_pubsec_encrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+    let output = args
+        .pdf_output
+        .as_ref()
+        .ok_or("pubsec-encrypt requires --pdf-output to write encrypted PDF bytes")?;
+    refuse_overwrite(output)?;
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let options = pubsec_encrypt_options_from_args(&args)?;
+    let (out, pubsec_report) =
+        oxide_engine::encrypt_pdf_pubsec(engine.document().reader(), &options)?;
+    std::fs::write(output, &out)?;
+    let report = serde_json::json!({
+        "operation": "pubsec_encrypt",
+        "status": "implemented_with_limits",
+        "output_pdf": output.display().to_string(),
+        "output_pdf_written": true,
+        "bytes": out.len(),
+        "recipient_count": pubsec_report.recipient_count,
+        "crypt_filter": pubsec_report.crypt_filter,
+        "method": format!("{:?}", pubsec_report.method),
+        "permissions": pubsec_report.permissions,
+        "encrypt_metadata": pubsec_report.encrypt_metadata,
+        "secret_material_reported": false,
+    });
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
+}
+
+fn run_pubsec_reencrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+    run_pubsec_reencrypt_with_operation(args, "pubsec_reencrypt")
+}
+
+fn run_pubsec_reencrypt_with_operation(
+    args: Prompt23CryptoReportArgs,
+    operation: &str,
+) -> Result<(), Box<dyn Error>> {
+    let output = args
+        .pdf_output
+        .as_ref()
+        .ok_or("PubSec recipient mutation requires --pdf-output to write encrypted PDF bytes")?;
+    refuse_overwrite(output)?;
+    let options = pubsec_encrypt_options_from_args(&args)?;
+    let engine = if args.private_key.is_empty() && args.pfx.is_none() {
+        open_engine(&args.pdf, &args.password)?
+    } else {
+        let provider = load_pubsec_provider(&args)?;
+        let bytes = std::fs::read(&args.pdf)?;
+        oxide_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)?
+    };
+    let (out, pubsec_report) =
+        oxide_engine::reencrypt_pdf_pubsec(engine.document().reader(), &options)?;
+    std::fs::write(output, &out)?;
+    let report = serde_json::json!({
+        "operation": operation,
+        "status": "implemented_with_limits",
+        "recipient_mutation_policy": "full_rewrite_rotates_file_key",
+        "output_pdf": output.display().to_string(),
+        "output_pdf_written": true,
+        "bytes": out.len(),
+        "recipient_count": pubsec_report.recipient_count,
+        "old_provider_supplied": !args.private_key.is_empty() || args.pfx.is_some(),
+        "secret_material_reported": false,
+    });
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
+}
+
+fn run_pdf_mac_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::pdf_mac_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_pdf_mac_verify(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = oxide_engine::sdk::pdf_mac_verify_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_pdf_mac_create(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+    let output = args
+        .pdf_output
+        .as_ref()
+        .ok_or("pdf-mac-create requires --pdf-output to write protected PDF bytes")?;
+    refuse_overwrite(output)?;
+    let bytes = std::fs::read(&args.pdf)?;
+    let (out, report) = oxide_engine::sdk::pdf_mac_create_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(output, &out)?;
+    let mut value: serde_json::Value = serde_json::from_str(&report)?;
+    if let Some(obj) = value.as_object_mut() {
+        obj.insert(
+            "operation".to_string(),
+            serde_json::Value::String("pdf_mac_create".to_string()),
+        );
+        obj.insert(
+            "output_pdf".to_string(),
+            serde_json::Value::String(output.display().to_string()),
+        );
+        obj.insert(
+            "output_pdf_written".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&value)?)
+}
+
+fn load_pubsec_provider(
+    args: &Prompt23CryptoReportArgs,
+) -> Result<oxide_engine::PubSecKeyProvider, Box<dyn Error>> {
+    if let Some(pfx_path) = &args.pfx {
+        if !args.certificate.is_empty() || !args.private_key.is_empty() {
+            return Err(
+                "PubSec provider accepts either --pfx or --certificate/--private-key, not both"
+                    .into(),
+            );
+        }
+        let pfx = std::fs::read(pfx_path)?;
+        let password = read_private_key_password(args)?;
+        let identity = oxide_engine::PubSecIdentity::from_pkcs12_der(&pfx, &password)?;
+        return Ok(oxide_engine::PubSecKeyProvider::single(identity));
+    }
+    if args.certificate.len() != 1 || args.private_key.len() != 1 {
+        return Err(
+            "PubSec provider operations require exactly one --certificate and one --private-key"
+                .into(),
+        );
+    }
+    let cert = std::fs::read(&args.certificate[0])?;
+    let key = std::fs::read(&args.private_key[0])?;
+    let password = read_private_key_password(args)?;
+    let identity = if password.is_empty() {
+        oxide_engine::PubSecIdentity::from_bytes(&cert, &key)?
+    } else {
+        oxide_engine::PubSecIdentity::from_encrypted_pkcs8_der(&cert, &key, &password)?
+    };
+    Ok(oxide_engine::PubSecKeyProvider::single(identity))
+}
+
+fn read_private_key_password(args: &Prompt23CryptoReportArgs) -> Result<Vec<u8>, Box<dyn Error>> {
+    let Some(path) = &args.private_key_password_file else {
+        return Ok(Vec::new());
+    };
+    let mut bytes = std::fs::read(path)?;
+    while matches!(bytes.last(), Some(b'\r' | b'\n')) {
+        bytes.pop();
+    }
+    Ok(bytes)
+}
+
+fn pubsec_encrypt_options_from_args(
+    args: &Prompt23CryptoReportArgs,
+) -> Result<oxide_engine::PubSecEncryptOptions, Box<dyn Error>> {
+    let recipient_paths = if args.recipient_certificate.is_empty() {
+        &args.certificate
+    } else {
+        &args.recipient_certificate
+    };
+    if recipient_paths.is_empty() {
+        return Err(
+            "PubSec encrypt/re-encrypt requires at least one --recipient-certificate or --certificate"
+                .into(),
+        );
+    }
+    let mut recipients = Vec::with_capacity(recipient_paths.len());
+    for path in recipient_paths {
+        let bytes = std::fs::read(path)?;
+        recipients.push(oxide_engine::PubSecRecipientCertificate::from_bytes(
+            &bytes,
+        )?);
+    }
+    Ok(oxide_engine::PubSecEncryptOptions {
+        recipients,
+        permissions: args.permissions as u32,
+        encrypt_metadata: true,
+        method: oxide_engine::CryptMethod::AesV2,
+        recipient_id_mode: oxide_engine::PubSecRecipientIdMode::IssuerAndSerial,
+    })
+}
+
+fn refuse_overwrite(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
+    if path.exists() {
+        return Err(format!("refusing to overwrite existing output {}", path.display()).into());
+    }
+    Ok(())
+}
+
 fn run_aes_gcm_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = oxide_engine::sdk::aes_gcm_report_json(
@@ -4062,44 +4356,73 @@ fn run_aes_gcm_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
+fn run_aes_gcm_encrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+    use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+
+    let output = args
+        .pdf_output
+        .as_ref()
+        .ok_or("aes-gcm-encrypt requires --pdf-output to write encrypted PDF bytes")?;
+    if output.exists() {
+        return Err(format!("refusing to overwrite existing output {}", output.display()).into());
+    }
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let user_pw = args
+        .user_pw
+        .clone()
+        .or_else(|| args.password.clone())
+        .unwrap_or_default();
+    let owner_pw = args.owner_pw.clone().unwrap_or_else(|| user_pw.clone());
+    let params = EncryptParams {
+        user_password: secret_bytes(user_pw.into_bytes()),
+        owner_password: secret_bytes(owner_pw.into_bytes()),
+        permissions: args.permissions,
+        algorithm: EncryptAlgorithm::Aes256Gcm,
+        encrypt_metadata: true,
+    };
+    let bytes = oxide_engine::encrypt(&engine, &params)?;
+    std::fs::write(output, &bytes)?;
+    let report = serde_json::json!({
+        "operation": "aes_gcm_encrypt",
+        "status": "implemented_with_limits",
+        "output_pdf": output.display().to_string(),
+        "output_pdf_written": true,
+        "bytes": bytes.len(),
+        "algorithm": "aes256gcm",
+        "certificate_path_configured": !args.certificate.is_empty(),
+        "private_key_path_configured": !args.private_key.is_empty(),
+        "secret_material_reported": false,
+    });
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
+}
+
+fn run_aes_gcm_decrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+    let output = args
+        .pdf_output
+        .as_ref()
+        .ok_or("aes-gcm-decrypt requires --pdf-output to write decrypted PDF bytes")?;
+    if output.exists() {
+        return Err(format!("refusing to overwrite existing output {}", output.display()).into());
+    }
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let bytes = oxide_engine::decrypt_pdf(&engine)?;
+    std::fs::write(output, &bytes)?;
+    let report = serde_json::json!({
+        "operation": "aes_gcm_decrypt",
+        "status": "implemented_with_limits",
+        "output_pdf": output.display().to_string(),
+        "output_pdf_written": true,
+        "bytes": bytes.len(),
+        "certificate_path_configured": !args.certificate.is_empty(),
+        "private_key_path_configured": !args.private_key.is_empty(),
+        "secret_material_reported": false,
+    });
+    write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
+}
+
 fn run_crypto_tamper_test(args: Prompt23TamperArgs) -> Result<(), Box<dyn Error>> {
     let report = oxide_engine::sdk::crypto_tamper_test_json()?;
     write_output_optional(&args.output, &pretty_json(&report)?)
-}
-
-fn run_prompt23_unsupported_crypto(
-    args: Prompt23CryptoReportArgs,
-    operation: &'static str,
-) -> Result<(), Box<dyn Error>> {
-    let bytes = std::fs::read(&args.pdf)?;
-    let report = if operation.starts_with("pubsec") {
-        oxide_engine::sdk::pubsec_report_json(&bytes, args.password.as_deref().map(str::as_bytes))?
-    } else {
-        oxide_engine::sdk::aes_gcm_report_json(&bytes, args.password.as_deref().map(str::as_bytes))?
-    };
-    let mut value: serde_json::Value = serde_json::from_str(&report)?;
-    if let Some(report_obj) = value
-        .get_mut("report")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        report_obj.insert("operation".to_string(), serde_json::json!(operation));
-        report_obj.insert(
-            "certificate_path_configured".to_string(),
-            serde_json::json!(args.certificate.is_some()),
-        );
-        report_obj.insert(
-            "private_key_path_configured".to_string(),
-            serde_json::json!(args.private_key.is_some()),
-        );
-        report_obj.insert("output_pdf_written".to_string(), serde_json::json!(false));
-        report_obj.insert("secret_material_read".to_string(), serde_json::json!(false));
-    }
-    let pretty = serde_json::to_string_pretty(&value)?;
-    write_output_optional(&args.output, &pretty)?;
-    if args.fail_on_unsupported {
-        return Err(format!("{operation} is unsupported in Prompt 23; see JSON report").into());
-    }
-    Ok(())
 }
 
 fn run_prompt22_optimize(args: Prompt22OptimizeArgs) -> Result<(), Box<dyn Error>> {
@@ -7135,8 +7458,12 @@ fn run_extract_pages(args: ExtractPagesArgs) -> Result<(), Box<dyn Error>> {
 fn run_encrypt(args: EncryptArgs) -> Result<(), Box<dyn Error>> {
     use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
 
-    let algo = EncryptAlgorithm::parse(&args.algo)
-        .ok_or_else(|| format!("unknown --algo '{}'; use aes256, aes128, or rc4", args.algo))?;
+    let algo = EncryptAlgorithm::parse(&args.algo).ok_or_else(|| {
+        format!(
+            "unknown --algo '{}'; use aes256, aesgcm, aes128, or rc4",
+            args.algo
+        )
+    })?;
     let engine = open_engine(&args.pdf, &args.password)?;
     let owner = if args.owner_pw.is_empty() {
         args.user_pw.clone()
@@ -7150,7 +7477,7 @@ fn run_encrypt(args: EncryptArgs) -> Result<(), Box<dyn Error>> {
         algorithm: algo,
         encrypt_metadata: true,
     };
-    if !matches!(algo, EncryptAlgorithm::Aes256) {
+    if matches!(algo, EncryptAlgorithm::Rc4_128 | EncryptAlgorithm::Aes128) {
         eprintln!(
             "Warning: {} is a legacy algorithm. Oxide reads its own output, but \
              cross-reader interop is only verified for AES-256 (the default). \

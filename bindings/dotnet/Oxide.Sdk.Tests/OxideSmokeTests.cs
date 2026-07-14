@@ -97,11 +97,13 @@ public sealed class OxideSmokeTests
         var pptx = doc.ToPptx();
         var sanitized = doc.Sanitize();
         var canonicalized = doc.Canonicalize(0);
+        var pdfMac = doc.PdfMacCreate();
         var xfdf = doc.AnnotationXfdfExport();
         var appearances = doc.AnnotationAppearanceGenerate();
         var mediaSanitized = doc.RichMediaSanitize("remove_all_media");
         reports["sanitize"] = sanitized.ReportJson;
         reports["canonicalize"] = canonicalized.ReportJson;
+        reports["pdf_mac_create"] = pdfMac.ReportJson;
         reports["xfdf"] = xfdf.ReportJson;
         reports["appearances"] = appearances.ReportJson;
         reports["media_sanitized"] = mediaSanitized.ReportJson;
@@ -116,6 +118,12 @@ public sealed class OxideSmokeTests
         Assert.StartsWith("PK", Encoding.ASCII.GetString(pptx, 0, 2));
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(sanitized.Bytes, 0, 5));
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(canonicalized.Bytes, 0, 5));
+        Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(pdfMac.Bytes, 0, 5));
+        Assert.Contains("pdf_mac_create", pdfMac.ReportJson);
+        using (var pdfMacDoc = OxideDocument.Open(pdfMac.Bytes))
+        {
+            Assert.Contains("\"state\":\"valid\"", pdfMacDoc.PdfMacVerifyJson());
+        }
         AssertReport(sanitized.ReportJson);
         AssertReport(canonicalized.ReportJson);
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(OfficeConverters.DocxToPdf(docx), 0, 5));
@@ -228,8 +236,18 @@ public sealed class OxideSmokeTests
         Assert.Contains("\"additive_feature_report_prompt17\"", feature);
         Assert.Contains("\"overlay_only_redaction_success_claims\":0", feature);
         Assert.Contains("\"prompt23_deterministic_writer_pubsec_aesgcm\"", feature);
-        Assert.Contains("\"public_key_handler_status\":\"unsupported_reported_exact\"", feature);
-        Assert.Contains("\"aes_gcm_decrypt_status\":\"unsupported_reported_exact\"", feature);
+        Assert.Contains("\"public_key_handler_status\":\"implemented_with_limits\"", feature);
+        Assert.Contains("\"aes_gcm_decrypt_status\":\"implemented_with_limits\"", feature);
+        Assert.NotNull(typeof(OxideDocument).GetMethod(
+            nameof(OxideDocument.OpenPubSec),
+            new[] { typeof(byte[]), typeof(byte[]), typeof(byte[]) }));
+        Assert.NotNull(typeof(OxideDocument).GetMethod(
+            nameof(OxideDocument.OpenPubSecPfx),
+            new[] { typeof(byte[]), typeof(byte[]), typeof(byte[]) }));
+        Assert.NotNull(typeof(OxideDocument).GetMethod(
+            nameof(OxideDocument.PubSecEncryptPdf),
+            new[] { typeof(byte[]) }));
+        Assert.NotNull(typeof(OxideDocument).GetMethod(nameof(OxideDocument.PdfMacCreate)));
         Assert.Contains("crypto_tamper_test", OxideDocument.CryptoTamperTestJson());
         var isolation = OxideDocument.CodecIsolationReportJson(
             "FlateDecode",

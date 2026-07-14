@@ -1,0 +1,91 @@
+{
+  "schema": "prompt23b_final_audit_verification_v1",
+  "created_at": "2026-07-14T12:56:00.749226Z",
+  "status": "passed",
+  "checks": [
+    {
+      "path": "target/prompt23-writer-crypto/normative-source-manifest-prompt23b.json",
+      "exists": true,
+      "bytes": 12451,
+      "sha256": "099e502766a668228f91be07927501139f97adf654b007ffd71e208281c0ef7d"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/clause-implementation-matrix-prompt23b.json",
+      "exists": true,
+      "bytes": 11930,
+      "sha256": "fa694d623ffbfff902a9f8a96dc0bf7d3d10f479dbb5895073cff930e368bc65"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/pubsec-recipient-profile-matrix-prompt23b.json",
+      "exists": true,
+      "bytes": 3154,
+      "sha256": "d9b543395eedc41f915a829e8f6cded1ad874e690bac3a15e94b03a21b8918e0"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/pdf-mac-results-prompt23b.json",
+      "exists": true,
+      "bytes": 2081,
+      "sha256": "883c7c15e14bf8b30bc3f4c61488b2ddd8f82b8b4fd8777fbf9a73489277ea4b"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-performance-memory.json",
+      "exists": true,
+      "bytes": 948,
+      "sha256": "dd5982392302a6e1f1b6a65747a7771318cf838abcb4535fefac2ac970f34539"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-binding-runtime-parity.json",
+      "exists": true,
+      "bytes": 2457,
+      "sha256": "6d8f538b4753d413ab44683711a903670fd49195accab80e3bc181aeba095c6e"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-limit-denial-results.json",
+      "exists": true,
+      "bytes": 923,
+      "sha256": "5359ca9d19af558790ac22b9bb69c663d7d78dfe8815c46d44209d2111b2fdf0"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-malformed-corpus-results.json",
+      "exists": true,
+      "bytes": 420,
+      "sha256": "424b4a14c04f182800467393592ea5fefac59bc8aec16ac67c3dd5a685c1abe1"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-final-validation-summary.json",
+      "exists": true,
+      "bytes": 20091,
+      "sha256": "0a1f3d1cf62e4e4545e7adccca72829080642d89fff4965c258a27de328051e0"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-final-release-verdict.json",
+      "exists": true,
+      "bytes": 1543,
+      "sha256": "56f363839601a4bc09fc69b0615ed8013b9c5db5fc90c9f4f54ad40dc35c70bd"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-final-fuzz-verdict.json",
+      "exists": true,
+      "bytes": 582,
+      "sha256": "54af97766c4491a4edd06eff9e3b80c37493996fc0ec8f33217e7780a2237a49"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-final-historical-gates-verdict.json",
+      "exists": true,
+      "bytes": 452,
+      "sha256": "fa7fbd4f6400c189e3ca7c17c75400cbc51976b94b027c58195ced79e8eb84ee"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-final-interoperability-verdict.json",
+      "exists": true,
+      "bytes": 3680,
+      "sha256": "950f6a9ff054ff2055e2f362446852d314e4e477cb391b3f405f69ed58e8a664"
+    },
+    {
+      "path": "target/prompt23-writer-crypto/prompt23b-final-security-verdict.json",
+      "exists": true,
+      "bytes": 9466,
+      "sha256": "0fff22b2700705b58e0440912d747e790590908c20af62b6db611cd21db5c91b"
+    }
+  ]
+}

@@ -2,55 +2,78 @@
   "kind": "prompt23_report",
   "report": {
     "aes_gcm": {
-      "backend_status": "unsupported_reported_no_crypto_backend",
-      "decrypt_status": "unsupported_reported_exact",
+      "backend_status": "implemented_aes_gcm_crate",
+      "decrypt_status": "implemented_with_limits",
       "detected_in_input": false,
-      "encrypt_status": "unsupported_reported_exact",
-      "implementation_started": false,
+      "detected_supported_by_reader": false,
+      "encrypt_status": "implemented_with_limits",
+      "implementation_started": true,
       "normative_dependency": {
-        "required_before_implementation": [
-          "PDF 2.0 AES-GCM extension identifier/version",
-          "crypt-filter CFM value",
-          "nonce/IV construction",
-          "authentication tag placement",
-          "associated-data rules",
-          "object/string/stream and incremental-update rules",
-          "official or independently reproducible vectors"
-        ],
-        "status": "missing_vendored_normative_text"
+        "identifier": "ISO/TS 32003:2023",
+        "implemented_mapping": "V=6/R=7 Standard handler with /CFM /AESV4, 32-byte crypt-filter key, 12-byte IV prefix, ciphertext, 16-byte tag, nil AAD",
+        "status": "source_gate_passed_for_iso_ts_32003"
       },
       "plaintext_release_possible": false,
+      "remaining_limits": [
+        "Public-key Adobe.PubSec recipient processing and full-rewrite writing are implemented for scoped /adbe.pkcs7.s5 KeyTrans profiles; non-KeyTrans recipient classes remain unsupported exact.",
+        "ISO/TS 32004 standalone PDF-MAC generation and verification is implemented for AESV4 full rewrite with PasswordRecipientInfo/pdfMacWrapKdf/AES-256-KW/HMAC-SHA256; AttachedToSig remains unsupported exact. PFX provider loading is available on non-WASM PubSec provider paths."
+      ],
       "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
       "security_posture": "fail closed; AES-GCM is not mapped onto AES-CBC or any unauthenticated mode",
-      "status": "unsupported_reported_exact"
+      "status": "implemented_with_limits"
     },
     "artifact_root": "target/prompt23-writer-crypto",
     "audit_doc": "docs/prompt23_writer_crypto_audit.md",
     "blocked_rows": 0,
     "cms_recipient_processing": {
       "bounds_policy": {
-        "asn1_depth": "would be bounded before enabling",
-        "cms_bytes": "would be bounded before enabling",
-        "recipient_count": "would be bounded before enabling"
+        "candidate_identity_count": 64,
+        "cms_bytes": 1048576,
+        "der_parser": "der crate strict DER parser; BER indefinite lengths rejected",
+        "recipient_count": 64
       },
-      "cms_parser_enabled": false,
-      "key_transport_enabled": false,
-      "recipient_matching_enabled": false,
+      "cms_parser_enabled": true,
+      "key_transport_enabled": true,
+      "recipient_matching_enabled": true,
       "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
-      "security_posture": "no CMS bytes are decrypted or interpreted as recipient secrets in Prompt 23",
-      "status": "unsupported_reported_exact"
+      "security_posture": "RSA decryption uses rsa crate primitives; key-transport failures are generic and do not log recovered keys",
+      "status": "implemented_with_limits",
+      "supported_content_encryption": [
+        "AES-128-CBC",
+        "AES-192-CBC",
+        "AES-256-CBC"
+      ],
+      "supported_key_transport": [
+        "rsaEncryption",
+        "id-RSAES-OAEP default parameters",
+        "id-RSAES-OAEP explicit SHA-1/SHA-256/SHA-384/SHA-512 with id-mgf1 and empty pSpecified"
+      ],
+      "supported_matching": [
+        "issuerAndSerialNumber",
+        "subjectKeyIdentifier"
+      ],
+      "supported_recipient_info": [
+        "KeyTransRecipientInfo",
+        "PasswordRecipientInfo for ISO/TS 32004 PDF-MAC only"
+      ],
+      "unsupported_recipient_info": [
+        "KeyAgreeRecipientInfo",
+        "KEKRecipientInfo",
+        "OtherRecipientInfo",
+        "PasswordRecipientInfo outside PDF-MAC"
+      ]
     },
     "current_document": {
       "encrypted": false,
-      "input_sha256": "3662ff519e485810520552bf301d8c3b2b917fd2f83303f4965d7abed367e113",
-      "object_count": 996,
-      "page_count": 14,
-      "stream_count": 377
+      "input_sha256": "d1931e13528fb24405142bcec0d98b8d71f087847caa60fa8a2fe1b4393f868d",
+      "object_count": 3,
+      "page_count": 1,
+      "stream_count": 0
     },
     "decrypt_edit_reencrypt": {
-      "aes_gcm_documents": "unsupported_reported_exact",
-      "history_secret_exclusion": "no new key provider or decrypted file key serialization path is added",
-      "public_key_documents": "unsupported_reported_exact",
+      "aes_gcm_documents": "implemented_with_limits_full_rewrite_standard_handler",
+      "history_secret_exclusion": "key providers and recovered file keys are not serialized into reports or history artifacts",
+      "public_key_documents": "implemented_with_limits_for_explicit_provider_decrypt_and_full_rewrite_pubsec_reencrypt",
       "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
       "signature_impact": "report-only surfaces preserved",
       "standard_security_handler": "existing password-based decrypt/rewrite/encrypt paths remain available",
@@ -59,22 +82,24 @@
     "deterministic_external_diff": {
       "byte_diff_artifact": "target/prompt23-writer-crypto/deterministic-byte-diff-prompt23.json",
       "first_differing_byte_offset": null,
-      "first_output_bytes": 959200,
+      "first_output_bytes": 402,
       "first_reopened": true,
-      "first_sha256": "0987552d39dbcd8c875f811abe757599de26e76c1a74d55f9e3f199690fa05da",
+      "first_sha256": "92ab8436c88987ea1a5f0539bafee3f976c08d95df4b983749d3bca212a2cd49",
       "object_diff_artifact": "target/prompt23-writer-crypto/deterministic-object-diff-prompt23.json",
       "same_process_repeat_equal": true,
       "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
-      "second_output_bytes": 959200,
+      "second_output_bytes": 402,
       "second_reopened": true,
-      "second_sha256": "0987552d39dbcd8c875f811abe757599de26e76c1a74d55f9e3f199690fa05da",
+      "second_sha256": "92ab8436c88987ea1a5f0539bafee3f976c08d95df4b983749d3bca212a2cd49",
       "status": "implemented_with_limits",
       "unclassified_mismatches": 0,
       "writer_mode": "xref_stream_with_objstm"
     },
     "exact_remaining_limits": [
-      "Public-key security-handler decryption is not implemented because the repository does not contain the exact normative PDF public-key handler text and licensed vectors required by Prompt 23.",
-      "PDF AES-GCM encryption/decryption is not implemented because the repository does not contain the exact PDF 2.0 extension text for CFM, nonce, authentication tag, AAD, metadata, object-stream, and incremental-update rules.",
+      "Public-key security-handler decryption/encryption/re-encryption is implemented for explicit-provider /adbe.pkcs7.s5 KeyTransRecipientInfo profiles with AESV2/AESV3 object crypt filters.",
+      "Public-key security-handler /adbe.pkcs7.s3 and /adbe.pkcs7.s4 interoperability fixtures remain unproven in this closure.",
+      "CMS KeyAgreeRecipientInfo, KEKRecipientInfo, OtherRecipientInfo, PubSec PasswordRecipientInfo, RSA-OAEP non-empty pSpecified labels, ambiguous/non-RSA PFX bundles, WASM PFX extraction, and legacy non-AES CMS content algorithms remain unsupported_reported_exact.",
+      "ISO/TS 32004 standalone PDF-MAC AuthCode/KDFSalt/CMS AuthenticatedData generation and verification is implemented for AESV4 full rewrite; AttachedToSig remains unsupported exact.",
       "Cross-platform and cross-architecture deterministic byte equality is not claimed unless run by the generated Prompt 23 artifact matrix on that platform.",
       "Incremental object-stream packing for arbitrary edits remains unsupported-reported exact.",
       "Certificate trust, revocation, signer identity, and signature validity are outside Prompt 23 and are not claimed."
@@ -154,26 +179,26 @@
       },
       {
         "artifact": "public-key-handler-normative-matrix-prompt23.json",
-        "c_abi": "oxide_document_pubsec_report_json",
+        "c_abi": "oxide_document_pubsec_report_json; oxide_document_open_pubsec_from_bytes; oxide_document_pubsec_encrypt_pdf",
         "capability": "Public-key PDF security-handler decryption",
         "category": "public_key_crypto",
-        "cli": "pubsec-report",
-        "cryptographic_status": "disabled_missing_normative_dependency",
+        "cli": "pubsec-report/pubsec-decrypt/pubsec-encrypt/pubsec-reencrypt",
+        "cryptographic_status": "implemented_with_limits_keytrans_decrypt_encrypt_reencrypt",
         "deterministic_status": "not_deterministic",
         "dotnet": "PubsecReportJson",
         "feature_id": "public-key-security-handler",
-        "fixture": "synthetic detection-only inputs",
-        "full_rewrite_status": "unsupported_reported_exact",
+        "fixture": "synthetic adbe.pkcs7.s5 encrypted PDF with CMS recipient",
+        "full_rewrite_status": "implemented_with_limits_remove_encryption_full_rewrite_and_pubsec_reencrypt",
         "future_owner": "crypto",
-        "implementation_status": "unsupported_reported_exact",
+        "implementation_status": "implemented_with_limits",
         "incremental_status": "unsupported_reported_exact",
         "java": "pubsecReportJson",
-        "python": "pubsec_report",
-        "reference_differential_status": "OpenSSL only for future CMS comparison",
-        "remaining_exact_limit": "vendored/licensed normative public-key handler text and vectors missing",
-        "rust_api": "pubsec_report",
-        "security_posture": "fail closed; no private keys accepted",
-        "test": "security report detects unsupported PubSec",
+        "python": "pubsec_report; pubsec_decrypt_pdf/pubsec_encrypt_pdf/pubsec_reencrypt_pdf",
+        "reference_differential_status": "external PubSec interoperability remains artifact-reported, not counted as pass",
+        "remaining_exact_limit": "key agreement, KEK, OtherRecipientInfo, PubSec PasswordRecipientInfo, non-empty OAEP pSpecified labels, ambiguous/non-RSA PFX bundles, WASM PFX extraction, and certificate trust remain unsupported exact",
+        "rust_api": "open_bytes_with_pubsec_provider",
+        "security_posture": "explicit provider only; no certificate trust validation claim",
+        "test": "PubSec CMS recovery, PDF open, writer, and recipient rotation tests",
         "wasm": "pubsecReportJson"
       },
       {
@@ -181,47 +206,47 @@
         "c_abi": "oxide_document_pubsec_report_json",
         "capability": "CMS recipient matching and key transport",
         "category": "public_key_crypto",
-        "cli": "pubsec-report",
-        "cryptographic_status": "disabled_missing_normative_dependency",
+        "cli": "pubsec-report/pubsec-decrypt",
+        "cryptographic_status": "implemented_keytrans_rsa_with_explicit_oaep_subset",
         "deterministic_status": "not_deterministic",
         "dotnet": "PubsecReportJson",
         "feature_id": "cms-recipient-processing",
-        "fixture": "none; report-only",
-        "full_rewrite_status": "unsupported_reported_exact",
+        "fixture": "CMS EnvelopedData fixture generated in tests",
+        "full_rewrite_status": "not_writer_crypto",
         "future_owner": "crypto",
-        "implementation_status": "unsupported_reported_exact",
+        "implementation_status": "implemented_with_limits",
         "incremental_status": "unsupported_reported_exact",
         "java": "pubsecReportJson",
         "python": "pubsec_report",
-        "reference_differential_status": "not run until CMS parser enabled",
-        "remaining_exact_limit": "recipient algorithms and permission payload rules missing from normative source",
-        "rust_api": "pubsec_report",
-        "security_posture": "no CMS byte parsing or key unwrap path enabled",
-        "test": "prompt23 feature matrix test",
+        "reference_differential_status": "OpenSSL availability recorded separately",
+        "remaining_exact_limit": "key agreement, KEK, PubSec password recipient, other recipient, non-empty OAEP labels, ambiguous/non-RSA PFX bundles, and WASM PFX extraction unsupported exact",
+        "rust_api": "recover_pubsec_file_key",
+        "security_posture": "bounded DER parse; generic key-transport failures; recovered secrets zeroized",
+        "test": "issuer/serial, SKI, wrong-key, malformed-recipient, and explicit-OAEP tests",
         "wasm": "pubsecReportJson"
       },
       {
-        "artifact": "aes-gcm-normative-matrix-prompt23.json",
+        "artifact": "aesgcm-normative-mapping-prompt23b.json",
         "c_abi": "oxide_document_aes_gcm_report_json",
         "capability": "PDF AES-GCM encryption/decryption",
         "category": "aes_gcm_crypto",
         "cli": "aes-gcm-report",
-        "cryptographic_status": "disabled_missing_normative_dependency",
+        "cryptographic_status": "implemented_iso_ts_32003_standard_handler",
         "deterministic_status": "production_crypto_must_not_be_byte_deterministic",
         "dotnet": "AesGcmReportJson",
         "feature_id": "aes-gcm-pdf-encryption",
-        "fixture": "none; report-only",
-        "full_rewrite_status": "unsupported_reported_exact",
+        "fixture": "AESV4 primitive and writer/readback fixtures",
+        "full_rewrite_status": "implemented_with_limits",
         "future_owner": "crypto",
-        "implementation_status": "unsupported_reported_exact",
+        "implementation_status": "implemented_with_limits",
         "incremental_status": "unsupported_reported_exact",
         "java": "aesGcmReportJson",
         "python": "aes_gcm_report",
-        "reference_differential_status": "no tool support claimed",
-        "remaining_exact_limit": "PDF 2.0 AES-GCM extension text, nonce/tag/AAD rules, and vectors missing",
+        "reference_differential_status": "external support recorded separately; no unsupported tool counted as pass",
+        "remaining_exact_limit": "Standalone PDF-MAC AESV4 full-rewrite create/verify is implemented; AttachedToSig and PubSec AESV4 CMS content remain unsupported exact; PFX providers are implemented on non-WASM PubSec paths",
         "rust_api": "aes_gcm_report",
-        "security_posture": "fail closed; no unauthenticated plaintext path",
-        "test": "prompt23 feature matrix test",
+        "security_posture": "fail closed; authentication failure returns no plaintext",
+        "test": "AES-GCM primitive, parser, full rewrite, and tamper tests",
         "wasm": "aesGcmReportJson"
       },
       {
@@ -230,7 +255,7 @@
         "capability": "Decrypt/edit/re-encrypt integration report",
         "category": "integration",
         "cli": "prompt23-report",
-        "cryptographic_status": "standard-handler only; PubSec/AES-GCM unsupported exact",
+        "cryptographic_status": "standard-handler including AESV4; PubSec decrypt/encrypt/re-encrypt with explicit providers",
         "deterministic_status": "writer deterministic; production crypto entropy excluded",
         "dotnet": "Prompt23ReportJson",
         "feature_id": "decrypt-edit-reencrypt",
@@ -242,7 +267,7 @@
         "java": "prompt23ReportJson",
         "python": "prompt23_report",
         "reference_differential_status": "external crypto tools availability reported",
-        "remaining_exact_limit": "public-key/AES-GCM re-encryption requires normative implementation",
+        "remaining_exact_limit": "non-KeyTrans public-key recipient classes remain unsupported exact",
         "rust_api": "prompt23_report",
         "security_posture": "no key material serialized into reports",
         "test": "existing standard crypto tests plus prompt23 report tests",
@@ -275,56 +300,78 @@
     },
     "key_provider": {
       "accepted_secret_logging": false,
-      "future_provider_shapes": [
-        "PEM",
-        "DER",
-        "PKCS8",
-        "PKCS12",
-        "OS store hook",
-        "HSM/PKCS11 hook"
-      ],
       "password_command_line_arguments": "not_added",
-      "provider_interface_status": "report_surface_only",
-      "remaining_exact_limit": "No provider is enabled until public-key normative matrix and safe key parsing scope are approved.",
+      "provider_interface_status": "explicit_in_memory_provider",
+      "remaining_exact_limit": "Provider APIs support DER/PEM encrypted PKCS#8 and bounded PKCS#12/PFX RSA identities with explicit password bytes; OS store, HSM, non-RSA keys, ambiguous PFX bundles, and WASM PFX extraction remain unsupported exact.",
       "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
-      "status": "unsupported_reported_exact",
-      "zeroization_policy": "no new key material accepted; existing Standard handler uses zeroizing buffers"
+      "status": "implemented_with_limits",
+      "supported_inputs": [
+        "DER certificate plus PKCS#8 or PKCS#1 RSA private key",
+        "PEM certificate plus PKCS#8 or PKCS#1 RSA private key",
+        "DER/PEM encrypted PKCS#8 RSA private key with explicit password bytes",
+        "bounded PKCS#12/PFX RSA certificate/private-key bundle on non-WASM builds",
+        "mixed DER/PEM certificate and RSA private-key byte inputs",
+        "pre-parsed RSA private key for adapter hooks"
+      ],
+      "unsupported_inputs": [
+        "OS certificate store adapter",
+        "HSM/PKCS#11 adapter implementation",
+        "non-RSA private keys"
+      ],
+      "zeroization_policy": "CMS content keys, recovered seed payloads, file keys, and AESV4 temporary secrets are zeroized where practical; private keys are not serialized or debug-printed"
     },
     "performance_memory": {
       "aes_gcm_bytes_decrypted": 0,
       "aes_gcm_bytes_encrypted": 0,
-      "cms_bytes_processed": 0,
-      "crypto_reason": "Prompt 23 does not process unsupported public-key or AES-GCM secrets without normative inputs.",
-      "input_bytes": 1016315,
+      "cms_bytes_processed": "bounded at runtime for PubSec provider opens; current document report does not include secret counts",
+      "crypto_reason": "AESV4 Standard-handler paths process object bytes with no plaintext on authentication failure; PubSec CMS provider paths are explicit and bounded.",
+      "input_bytes": 329,
       "key_cache_entries": 0,
       "nonce_count": 0,
-      "object_count": 996,
-      "recipient_count_processed": 0,
+      "object_count": 3,
+      "recipient_count_processed": "bounded at 64 for CMS and provider identities",
       "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
       "status": "implemented_with_limits",
-      "stream_count": 377
+      "stream_count": 0
     },
     "public_key_handler": {
       "detected_in_input": false,
-      "diagnostic": "public-key PDF decryption is disabled until exact normative inputs are present",
-      "implementation_started": false,
+      "diagnostic": "scoped PubSec decrypt/encrypt/re-encrypt is enabled for explicit KeyTrans providers and recipient certificates",
+      "implementation_started": true,
       "normative_dependency": {
-        "required_before_implementation": [
-          "PDF public-key security-handler normative text",
-          "CMS recipient processing rules as applied by the PDF specification",
-          "algorithm and crypt-filter matrix",
-          "licensed fixtures or official vectors"
+        "identifier": "ISO 32000-2:2020",
+        "implemented_clauses": [
+          "7.6.5 public-key security handlers",
+          "7.6.6 crypt filters"
         ],
-        "status": "missing_vendored_normative_text"
+        "status": "source_gate_passed_for_iso_32000_2"
       },
       "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
-      "security_posture": "fail closed; no private-key, CMS, or recipient-key material is parsed by Prompt 23",
-      "status": "unsupported_reported_exact",
-      "supported_variants": [],
-      "unsupported_variants_reported": [
+      "security_posture": "explicit caller-supplied key provider only; no certificate trust claim; CMS and recovered key material are bounded and zeroized where practical; PubSec writer uses fresh seed/file-key material per full rewrite",
+      "status": "implemented_with_limits",
+      "supported_variants": [
         "/Filter /Adobe.PubSec",
-        "/Recipients",
-        "CMS EnvelopedData recipient structures"
+        "/SubFilter /adbe.pkcs7.s5 with crypt-filter recipient arrays",
+        "CMS EnvelopedData ContentInfo",
+        "KeyTransRecipientInfo",
+        "issuerAndSerialNumber recipient matching",
+        "subjectKeyIdentifier recipient matching",
+        "RSAES-PKCS1-v1_5 key transport",
+        "RSAES-OAEP with default and supported explicit SHA-1/SHA-256/SHA-384/SHA-512 MGF1 parameters",
+        "AES-128-CBC, AES-192-CBC, and AES-256-CBC CMS content encryption",
+        "PDF crypt-filter methods V2, AESV2, and AESV3 for recovered file keys",
+        "PubSec full-rewrite writer for /adbe.pkcs7.s5 KeyTrans recipients",
+        "PubSec re-encryption with file-key rotation for recipient add/remove/replace workflows"
+      ],
+      "unsupported_variants_reported": [
+        "/SubFilter /adbe.pkcs7.s3 and /adbe.pkcs7.s4 interoperability fixtures remain unproven",
+        "KeyAgreeRecipientInfo",
+        "KEKRecipientInfo",
+        "PasswordRecipientInfo outside the ISO/TS 32004 PDF-MAC profile",
+        "OtherRecipientInfo",
+        "RSA-OAEP non-empty pSpecified labels",
+        "DES, 3DES, RC2, RC4, and AES-GCM CMS content encryption",
+        "certificate trust, revocation, signer identity, PAdES, OCSP, CRL, and TSA validation"
       ]
     },
     "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
@@ -352,11 +399,11 @@
       },
       "current_document": {
         "encrypted": false,
-        "object_count": 996,
-        "stream_count": 377
+        "object_count": 3,
+        "stream_count": 0
       },
       "incremental_writer": {
-        "aes_gcm_new_object_encryption": "unsupported_reported_exact pending normative AES-GCM rules",
+        "aes_gcm_new_object_encryption": "unsupported_reported_exact for incremental updates; AESV4 full rewrite is implemented",
         "generation_policy": "caller-provided generation numbers with deterministic appended xref groups",
         "object_stream_incremental_packing": "unsupported_reported_exact for arbitrary updates",
         "original_prefix": "preserved by write_incremental_update callers",
@@ -369,11 +416,11 @@
         "same_process_probe": {
           "byte_identical": true,
           "first_differing_byte_offset": null,
-          "first_sha256": "947fdd38f48a1544beca974a4c9ef14385189d152814914169183824d003a416",
+          "first_sha256": "d2298df568bb06b8087608232b0f3bb755d6babfbdc0498457a81a32d292a283",
           "mode": "linearized",
-          "output_bytes": 989827,
+          "output_bytes": 953,
           "reopened": true,
-          "second_sha256": "947fdd38f48a1544beca974a4c9ef14385189d152814914169183824d003a416",
+          "second_sha256": "d2298df568bb06b8087608232b0f3bb755d6babfbdc0498457a81a32d292a283",
           "status": "implemented_with_limits"
         },
         "status": "implemented_with_limits"

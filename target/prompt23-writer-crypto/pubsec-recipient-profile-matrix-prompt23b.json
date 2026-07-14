@@ -1,0 +1,61 @@
+﻿{
+    "schema":  "prompt23b.pubsec-recipient-profile-matrix.v3",
+    "recorded_date":  "2026-07-14",
+    "profiles":  [
+                     {
+                         "recipient_info":  "KeyTransRecipientInfo",
+                         "pdf_profile":  "Adobe.PubSec adbe.pkcs7.s5",
+                         "status":  "implemented",
+                         "key_algorithms":  [
+                                                "RSAES-PKCS1-v1_5",
+                                                "RSAES-OAEP default/explicit supported hashes with empty label"
+                                            ],
+                         "tests":  [
+                                       "cargo test -p oxide-engine pubsec --lib --jobs 1"
+                                   ]
+                     },
+                     {
+                         "recipient_info":  "PasswordRecipientInfo",
+                         "pdf_profile":  "ISO/TS 32004 PDF-MAC",
+                         "status":  "implemented_with_limits",
+                         "key_algorithms":  [
+                                                "pdfMacWrapKdf",
+                                                "AES-256-KW",
+                                                "HMAC-SHA256"
+                                            ],
+                         "tests":  [
+                                       "cargo test -p oxide-engine pdf_mac --lib --jobs 1"
+                                   ]
+                     },
+                     {
+                         "recipient_info":  "KeyAgreeRecipientInfo",
+                         "pdf_profile":  "not applicable to supported PubSec/PDF-MAC profile",
+                         "status":  "not_applicable_to_supported_pdf_profile",
+                         "tests":  [
+                                       "unsupported profile matrix"
+                                   ]
+                     },
+                     {
+                         "recipient_info":  "KEKRecipientInfo",
+                         "pdf_profile":  "not applicable to supported PubSec/PDF-MAC profile",
+                         "status":  "not_applicable_to_supported_pdf_profile",
+                         "tests":  [
+                                       "unsupported profile matrix"
+                                   ]
+                     },
+                     {
+                         "recipient_info":  "OtherRecipientInfo",
+                         "pdf_profile":  "not applicable to supported PubSec/PDF-MAC profile",
+                         "status":  "not_applicable_to_supported_pdf_profile",
+                         "tests":  [
+                                       "unsupported profile matrix"
+                                   ]
+                     }
+                 ],
+    "unsupported_exact":  [
+                              "PubSec PasswordRecipientInfo",
+                              "PubSec KeyAgreeRecipientInfo",
+                              "PubSec KEKRecipientInfo",
+                              "PubSec OtherRecipientInfo"
+                          ]
+}

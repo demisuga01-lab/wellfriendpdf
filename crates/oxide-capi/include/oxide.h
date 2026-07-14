@@ -87,6 +87,31 @@ OXIDE_API OxideDocument *oxide_document_open_from_bytes_with_password(
     size_t password_len,
     char **error_out);
 
+/* Opens a public-key encrypted PDF from bytes with explicit certificate and
+ * private-key buffers. Certificate and private key may be PEM or DER. The
+ * private key buffer is read only for the duration of this call and is not
+ * retained by the C ABI wrapper. */
+OXIDE_API OxideDocument *oxide_document_open_pubsec_from_bytes(
+    const uint8_t *data,
+    size_t len,
+    const uint8_t *certificate,
+    size_t certificate_len,
+    const uint8_t *private_key,
+    size_t private_key_len,
+    char **error_out);
+
+/* Opens a public-key encrypted PDF from bytes with a PKCS #12/PFX provider
+ * bundle and explicit password bytes. The PFX and password buffers are read
+ * only for the duration of this call and are not retained or serialized. */
+OXIDE_API OxideDocument *oxide_document_open_pubsec_pfx_from_bytes(
+    const uint8_t *data,
+    size_t len,
+    const uint8_t *pfx,
+    size_t pfx_len,
+    const uint8_t *password,
+    size_t password_len,
+    char **error_out);
+
 OXIDE_API void oxide_document_free(OxideDocument *document);
 
 OXIDE_API void oxide_string_free(char *value);
@@ -208,6 +233,17 @@ OXIDE_API int oxide_document_linearize_pdf(
 
 OXIDE_API int oxide_document_decrypt_pdf(
     const OxideDocument *document,
+    OxideBuffer *out_buffer,
+    char **error_out);
+
+/* Encrypts an opened document with /Adobe.PubSec for one recipient
+ * certificate. The certificate may be PEM or DER. Multi-recipient workflows
+ * are available through Rust/CLI/Python; this C ABI entry point is deliberately
+ * single-recipient to keep ownership and buffer lifetimes explicit. */
+OXIDE_API int oxide_document_pubsec_encrypt_pdf(
+    const OxideDocument *document,
+    const uint8_t *recipient_certificate,
+    size_t recipient_certificate_len,
     OxideBuffer *out_buffer,
     char **error_out);
 
@@ -524,6 +560,19 @@ OXIDE_API int oxide_document_pubsec_report_json(
     char **error_out);
 OXIDE_API int oxide_document_aes_gcm_report_json(
     const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_pdf_mac_report_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_pdf_mac_verify_json(
+    const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_pdf_mac_create_pdf(
+    const OxideDocument *document,
+    OxideBuffer *out_buffer,
     char **out_json,
     char **error_out);
 OXIDE_API int oxide_crypto_tamper_test_json(

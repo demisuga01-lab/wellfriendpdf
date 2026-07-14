@@ -1,6 +1,6 @@
 {
   "schema": "prompt23b.normative-crypto-closure.starting-state.v1",
-  "status": "blocked_normative_dependency",
+  "status": "resumed_from_blocker_source_gate_passed",
   "recorded_date": "2026-07-13",
   "cwd": "E:\\wellpdfsdk",
   "expected_head": "29c7d14f7e975b5f591f078c1fa502eb2531ca6f",
@@ -40,5 +40,14 @@
     "a403873 Complete combined prompt 08 text clipping shading pattern parity",
     "f2dfdbb Complete prompt 07B transparency closure"
   ],
-  "decision": "Stop before implementation because the required normative PDF-family source material and vectors were not available locally."
+  "decision": "Original Prompt 23B attempt stopped before implementation because the required normative PDF-family source material and vectors were not available locally.",
+  "resume": {
+    "recorded_date": "2026-07-14",
+    "expected_head": "40556fb1f48cd1035f0767b78afbfe1c2034bb36",
+    "actual_head": "40556fb1f48cd1035f0767b78afbfe1c2034bb36",
+    "worktree_status_short": [],
+    "source_gate": "passed_for_implementation",
+    "local_pdfa_directory": "E:\\wellpdfsdk\\PDFA",
+    "local_pdfa_directory_policy": "excluded by .git/info/exclude; do not commit or redistribute normative PDFs"
+  }
 }

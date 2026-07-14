@@ -1,0 +1,11 @@
+{
+  "schema": "prompt23b_final_historical_gates_verdict_v1",
+  "created_at": "2026-07-14T12:56:00.547254Z",
+  "status": "passed",
+  "total": 34,
+  "passed": 34,
+  "failed": 0,
+  "manifest": "target/prompt23-writer-crypto/prompt04-22b-historical-gate-manifest.json",
+  "results": "target/prompt23-writer-crypto/prompt04-22b-historical-gate-results.json",
+  "summary": "target/prompt23-writer-crypto/prompt04-22b-historical-gate-summary.md"
+}
