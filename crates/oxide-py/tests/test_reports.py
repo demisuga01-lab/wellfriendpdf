@@ -136,6 +136,78 @@ def test_signature_report_on_signed_fixture():
     assert isinstance(report, list)
 
 
+def test_prompt24_owned_signature_validation_options():
+    if not SIG.exists():
+        pytest.skip("signed fixture not present")
+
+    options = oxide.SignatureValidationOptions()
+    options.set_validation_time_unix(1_704_067_200)
+    options.set_revocation_mode("online_strict")
+    options.set_revocation_mode("online_best_effort")
+    options.set_revocation_mode("offline_best_effort")
+    options.set_algorithm_policy_json('{"allow_rsa_pkcs1v15": false}')
+    options.set_path_limits(4, 32)
+    options.set_retrieval_policy_json('{"enabled": false}')
+    options.add_distrusted_certificate_sha256("00" * 32)
+
+    doc = oxide.open(SIG)
+    reports = doc.signature_validation(options)
+    assert isinstance(reports, list)
+    outcome = doc.signature_validation_with_evidence_options(options)
+    assert isinstance(outcome, dict)
+    assert isinstance(outcome["reports"], list)
+    assert isinstance(outcome["evidence_bundle"], dict)
+
+    with pytest.raises(ValueError):
+        options.set_path_limits(0, 32)
+    with pytest.raises(ValueError):
+        options.add_distrusted_certificate_sha256("not-a-fingerprint")
+
+
+def test_prompt24_signature_validation_component_handles_and_cancellation():
+    if not SIG.exists():
+        pytest.skip("signed fixture not present")
+
+    trust = oxide.SignatureTrustStore()
+    assert trust.is_empty()
+    with pytest.raises(ValueError):
+        trust.add_anchor_der(b"not a certificate")
+    trust.add_distrusted_certificate_sha256("00" * 32)
+    assert trust.len() == 0
+
+    intermediates = oxide.SignatureIntermediateStore()
+    assert intermediates.is_empty()
+    with pytest.raises(ValueError):
+        intermediates.add_der(b"not a certificate")
+
+    evidence = oxide.SignatureEvidenceStore()
+    evidence.add_ocsp_response_der(b"not an ocsp response")
+    evidence.add_crl_der(b"not a crl")
+    evidence.import_bundle_json('{"schema_version":1,"records":[]}')
+    assert evidence.ocsp_count() == 1
+    assert evidence.crl_count() == 1
+    assert evidence.bundle_json() is not None
+
+    retrieval = oxide.SignatureRetrievalPolicy()
+    retrieval.set_json('{"enabled": false}')
+    assert '"enabled":false' in retrieval.to_json().replace(" ", "")
+
+    cancellation = oxide.SignatureValidationCancellation()
+    assert cancellation.is_cancelled() is False
+
+    options = oxide.SignatureValidationOptions()
+    options.apply_trust_store(trust)
+    options.apply_intermediate_store(intermediates)
+    options.apply_evidence_store(evidence)
+    options.apply_retrieval_policy(retrieval)
+    options.set_cancellation(cancellation)
+
+    cancellation.cancel()
+    assert cancellation.is_cancelled() is True
+    with pytest.raises(oxide.OxideError, match="operation cancelled"):
+        oxide.open(SIG).signature_validation(options)
+
+
 def test_module_level_reports():
     assert hasattr(oxide, "pubsec_decrypt_pdf_pfx")
     assert hasattr(oxide, "pubsec_reencrypt_pdf_pfx")

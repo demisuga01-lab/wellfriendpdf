@@ -13,6 +13,9 @@ import java.net.URISyntaxException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyStore;
+import java.security.cert.CertificateEncodingException;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -60,9 +63,365 @@ public final class Oxide {
         }
     }
 
+    /**
+     * Owned explicit trust-anchor store. Only certificates added here can
+     * become trust anchors when the store is attached to validation options;
+     * embedded or intermediate certificates never gain that status implicitly.
+     */
+    public static final class SignatureTrustStore implements AutoCloseable {
+        private MemorySegment handle;
+        private boolean closed;
+
+        public SignatureTrustStore() {
+            this.handle = Native.newSignatureComponent(
+                Native.SIGNATURE_TRUST_STORE_NEW, "trust store");
+        }
+
+        public void addTrustAnchorDer(byte[] der) {
+            Native.addSignatureValidationDer(nativeHandle(), der, Native.SIGNATURE_TRUST_STORE_ADD_ANCHOR);
+        }
+
+        public void addTrustAnchor(X509Certificate certificate) {
+            Objects.requireNonNull(certificate, "certificate");
+            try {
+                addTrustAnchorDer(certificate.getEncoded());
+            } catch (CertificateEncodingException ex) {
+                throw new IllegalArgumentException("X509Certificate encoding failed", ex);
+            }
+        }
+
+        /** Adds every X.509 certificate visible in a caller-selected KeyStore. */
+        public void addTrustAnchors(KeyStore keyStore) {
+            Objects.requireNonNull(keyStore, "keyStore");
+            try {
+                var aliases = keyStore.aliases();
+                while (aliases.hasMoreElements()) {
+                    var certificate = keyStore.getCertificate(aliases.nextElement());
+                    if (certificate instanceof X509Certificate x509) {
+                        addTrustAnchor(x509);
+                    }
+                }
+            } catch (Exception ex) {
+                throw new IllegalArgumentException("KeyStore enumeration failed", ex);
+            }
+        }
+
+        public void addDistrustedCertificateSha256(String fingerprint) {
+            Native.setSignatureValidationString(
+                nativeHandle(), fingerprint, Native.SIGNATURE_TRUST_STORE_ADD_DISTRUST,
+                "certificate distrust");
+        }
+
+        private MemorySegment nativeHandle() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureTrustStore is closed");
+            return handle;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            Native.freeSignatureComponent(handle, Native.SIGNATURE_TRUST_STORE_FREE, "trust store");
+            handle = MemorySegment.NULL;
+            closed = true;
+        }
+    }
+
+    /** Owned untrusted path-building certificate store. */
+    public static final class SignatureIntermediateStore implements AutoCloseable {
+        private MemorySegment handle;
+        private boolean closed;
+
+        public SignatureIntermediateStore() {
+            this.handle = Native.newSignatureComponent(
+                Native.SIGNATURE_INTERMEDIATE_STORE_NEW, "intermediate store");
+        }
+
+        public void addDer(byte[] der) {
+            Native.addSignatureValidationDer(nativeHandle(), der, Native.SIGNATURE_INTERMEDIATE_STORE_ADD_DER);
+        }
+
+        public void add(X509Certificate certificate) {
+            Objects.requireNonNull(certificate, "certificate");
+            try {
+                addDer(certificate.getEncoded());
+            } catch (CertificateEncodingException ex) {
+                throw new IllegalArgumentException("X509Certificate encoding failed", ex);
+            }
+        }
+
+        private MemorySegment nativeHandle() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureIntermediateStore is closed");
+            return handle;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            Native.freeSignatureComponent(handle, Native.SIGNATURE_INTERMEDIATE_STORE_FREE, "intermediate store");
+            handle = MemorySegment.NULL;
+            closed = true;
+        }
+    }
+
+    /**
+     * Owned supplied/replayed OCSP and CRL evidence. Adding evidence does not
+     * make it good: the native engine authenticates, authorizes, scopes, and
+     * freshness-checks it for each validation use.
+     */
+    public static final class SignatureEvidenceStore implements AutoCloseable {
+        private MemorySegment handle;
+        private boolean closed;
+
+        public SignatureEvidenceStore() {
+            this.handle = Native.newSignatureComponent(
+                Native.SIGNATURE_EVIDENCE_STORE_NEW, "evidence store");
+        }
+
+        public void addOcspDer(byte[] der) {
+            Native.addSignatureValidationDer(nativeHandle(), der, Native.SIGNATURE_EVIDENCE_STORE_ADD_OCSP);
+        }
+
+        public void addCrlDer(byte[] der) {
+            Native.addSignatureValidationDer(nativeHandle(), der, Native.SIGNATURE_EVIDENCE_STORE_ADD_CRL);
+        }
+
+        public void importBundleJson(String bundleJson) {
+            Native.setSignatureValidationJson(
+                nativeHandle(), bundleJson, Native.SIGNATURE_EVIDENCE_STORE_SET_BUNDLE);
+        }
+
+        private MemorySegment nativeHandle() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureEvidenceStore is closed");
+            return handle;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            Native.freeSignatureComponent(handle, Native.SIGNATURE_EVIDENCE_STORE_FREE, "evidence store");
+            handle = MemorySegment.NULL;
+            closed = true;
+        }
+    }
+
+    /** Owned bounded AIA/OCSP/CRL retrieval policy. It starts offline. */
+    public static final class SignatureRetrievalPolicy implements AutoCloseable {
+        private MemorySegment handle;
+        private boolean closed;
+
+        public SignatureRetrievalPolicy() {
+            this.handle = Native.newSignatureComponent(
+                Native.SIGNATURE_RETRIEVAL_POLICY_NEW, "retrieval policy");
+        }
+
+        public void setJson(String policyJson) {
+            Native.setSignatureValidationJson(
+                nativeHandle(), policyJson, Native.SIGNATURE_RETRIEVAL_POLICY_SET_JSON);
+        }
+
+        private MemorySegment nativeHandle() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureRetrievalPolicy is closed");
+            return handle;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            Native.freeSignatureComponent(handle, Native.SIGNATURE_RETRIEVAL_POLICY_FREE, "retrieval policy");
+            handle = MemorySegment.NULL;
+            closed = true;
+        }
+    }
+
+    /** Cooperative cancellation source for a signature-validation operation. */
+    public static final class SignatureValidationCancellation implements AutoCloseable {
+        private MemorySegment handle;
+        private boolean closed;
+
+        public SignatureValidationCancellation() {
+            this.handle = Native.newSignatureComponent(
+                Native.SIGNATURE_CANCELLATION_NEW, "signature validation cancellation");
+        }
+
+        public void cancel() {
+            Native.cancelSignatureValidation(nativeHandle());
+        }
+
+        private MemorySegment nativeHandle() {
+            if (closed || Native.isNull(handle)) throw new IllegalStateException("SignatureValidationCancellation is closed");
+            return handle;
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            Native.freeSignatureComponent(handle, Native.SIGNATURE_CANCELLATION_FREE, "signature validation cancellation");
+            handle = MemorySegment.NULL;
+            closed = true;
+        }
+    }
+
     public record BinaryResult(byte[] bytes, String reportJson) {
         public void writeBytes(Path path) throws IOException {
             Files.write(path, bytes);
+        }
+    }
+
+    /**
+     * Owned Prompt 24 signature-validation configuration. Certificates and
+     * evidence are copied by the native layer; this handle never contains a
+     * private key. Network retrieval stays disabled unless the caller supplies
+     * an explicit bounded retrieval-policy JSON object with {@code enabled}.
+     */
+    public static final class SignatureValidationOptions implements AutoCloseable {
+        private MemorySegment handle;
+        private boolean closed;
+
+        public SignatureValidationOptions() {
+            this.handle = Native.newSignatureValidationOptions();
+        }
+
+        public void addTrustAnchorDer(byte[] der) {
+            Native.addSignatureValidationDer(nativeHandle(), der, Native.SIGNATURE_OPTIONS_ADD_TRUST_ANCHOR);
+        }
+
+        /** Copies explicit anchors and distrust entries from an owned store. */
+        public void applyTrustStore(SignatureTrustStore trustStore) {
+            Objects.requireNonNull(trustStore, "trustStore");
+            Native.applySignatureComponent(
+                nativeHandle(), trustStore.nativeHandle(), Native.SIGNATURE_OPTIONS_APPLY_TRUST_STORE,
+                "trust store");
+        }
+
+        public void addTrustAnchor(X509Certificate certificate) {
+            addTrustAnchorDer(encodedCertificate(certificate));
+        }
+
+        public void addIntermediateDer(byte[] der) {
+            Native.addSignatureValidationDer(nativeHandle(), der, Native.SIGNATURE_OPTIONS_ADD_INTERMEDIATE);
+        }
+
+        /** Copies untrusted path-building candidates from an owned store. */
+        public void applyIntermediateStore(SignatureIntermediateStore intermediateStore) {
+            Objects.requireNonNull(intermediateStore, "intermediateStore");
+            Native.applySignatureComponent(
+                nativeHandle(), intermediateStore.nativeHandle(),
+                Native.SIGNATURE_OPTIONS_APPLY_INTERMEDIATE_STORE, "intermediate store");
+        }
+
+        public void addIntermediate(X509Certificate certificate) {
+            addIntermediateDer(encodedCertificate(certificate));
+        }
+
+        /** Adds a SHA-256 certificate fingerprint to the selected-path deny list. */
+        public void addDistrustedCertificateSha256(String fingerprint) {
+            Native.setSignatureValidationString(
+                nativeHandle(),
+                fingerprint,
+                Native.SIGNATURE_OPTIONS_ADD_DISTRUST,
+                "certificate distrust"
+            );
+        }
+
+        public void addOcspDer(byte[] der) {
+            Native.addSignatureValidationDer(nativeHandle(), der, Native.SIGNATURE_OPTIONS_ADD_OCSP);
+        }
+
+        public void addCrlDer(byte[] der) {
+            Native.addSignatureValidationDer(nativeHandle(), der, Native.SIGNATURE_OPTIONS_ADD_CRL);
+        }
+
+        /** Copies supplied/replayed evidence without making it trusted. */
+        public void applyEvidenceStore(SignatureEvidenceStore evidenceStore) {
+            Objects.requireNonNull(evidenceStore, "evidenceStore");
+            Native.applySignatureComponent(
+                nativeHandle(), evidenceStore.nativeHandle(), Native.SIGNATURE_OPTIONS_APPLY_EVIDENCE_STORE,
+                "evidence store");
+        }
+
+        public void setValidationTimeUnix(long validationTimeUnix) {
+            Native.setSignatureValidationTime(nativeHandle(), validationTimeUnix);
+        }
+
+        public void useSystemValidationTime() {
+            Native.clearSignatureValidationTime(nativeHandle());
+        }
+
+        /**
+         * Revocation mode: 0 = not checked, 1 = offline strict, 2 = offline best effort,
+         * 3 = online strict, 4 = online best effort. Online modes still require an explicit
+         * bounded retrieval policy and never enable network access on their own.
+         */
+        public void setRevocationMode(int mode) {
+            if (mode < 0 || mode > 4) {
+                throw new IllegalArgumentException("unsupported revocation mode");
+            }
+            Native.setSignatureValidationMode(nativeHandle(), mode);
+        }
+
+        public void setPathLimits(long maxChainDepth, long maxPathCandidates) {
+            if (maxChainDepth <= 0 || maxPathCandidates <= 0) {
+                throw new IllegalArgumentException("path limits must be positive");
+            }
+            Native.setSignatureValidationPathLimits(nativeHandle(), maxChainDepth, maxPathCandidates);
+        }
+
+        /**
+         * Applies the native RetrievalPolicy JSON schema. Passing a policy does
+         * not enable online access unless its {@code enabled} field is true.
+         */
+        public void setRetrievalPolicyJson(String policyJson) {
+            Native.setSignatureValidationJson(nativeHandle(), policyJson, Native.SIGNATURE_OPTIONS_SET_RETRIEVAL_POLICY);
+        }
+
+        /** Copies a bounded retrieval policy; online access remains opt-in. */
+        public void applyRetrievalPolicy(SignatureRetrievalPolicy policy) {
+            Objects.requireNonNull(policy, "policy");
+            Native.applySignatureComponent(
+                nativeHandle(), policy.nativeHandle(), Native.SIGNATURE_OPTIONS_APPLY_RETRIEVAL_POLICY,
+                "retrieval policy");
+        }
+
+        /** Attaches a shared cooperative cancellation token. */
+        public void setCancellation(SignatureValidationCancellation cancellation) {
+            Objects.requireNonNull(cancellation, "cancellation");
+            Native.applySignatureComponent(
+                nativeHandle(), cancellation.nativeHandle(), Native.SIGNATURE_OPTIONS_SET_CANCELLATION,
+                "signature validation cancellation");
+        }
+
+        /** Applies the native SignatureAlgorithmPolicy JSON schema. */
+        public void setAlgorithmPolicyJson(String policyJson) {
+            Native.setSignatureValidationJson(nativeHandle(), policyJson, Native.SIGNATURE_OPTIONS_SET_ALGORITHM_POLICY);
+        }
+
+        /** Imports a replay bundle; every evidence item is revalidated at use time. */
+        public void setEvidenceBundleJson(String bundleJson) {
+            Native.setSignatureValidationJson(nativeHandle(), bundleJson, Native.SIGNATURE_OPTIONS_SET_EVIDENCE_BUNDLE);
+        }
+
+        private MemorySegment nativeHandle() {
+            if (closed || Native.isNull(handle)) {
+                throw new IllegalStateException("SignatureValidationOptions is closed");
+            }
+            return handle;
+        }
+
+        private static byte[] encodedCertificate(X509Certificate certificate) {
+            Objects.requireNonNull(certificate, "certificate");
+            try {
+                return certificate.getEncoded();
+            } catch (CertificateEncodingException ex) {
+                throw new IllegalArgumentException("X509Certificate encoding failed", ex);
+            }
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            Native.freeSignatureValidationOptions(handle);
+            handle = MemorySegment.NULL;
+            closed = true;
         }
     }
 
@@ -396,6 +755,35 @@ public final class Oxide {
         public String prompt23ReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.PROMPT23_REPORT, "prompt23_report");
+        }
+
+        public String signatureReportWithOptionsJson(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.SIGNATURE_REPORT_WITH_OPTIONS, optionsJson, "signature_report_with_options");
+        }
+
+        public String signatureValidationWithEvidenceJson(String optionsJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.SIGNATURE_VALIDATION_WITH_EVIDENCE, optionsJson,
+                "signature_validation_with_evidence");
+        }
+
+        public String signatureValidationReport(SignatureValidationOptions options) {
+            ensureOpen();
+            Objects.requireNonNull(options, "options");
+            return Native.documentSignatureOptionsReport(
+                handle, options.nativeHandle(), Native.SIGNATURE_REPORT_WITH_OPTIONS_HANDLE,
+                "signature_validation");
+        }
+
+        public String signatureValidationWithEvidence(SignatureValidationOptions options) {
+            ensureOpen();
+            Objects.requireNonNull(options, "options");
+            return Native.documentSignatureOptionsReport(
+                handle, options.nativeHandle(), Native.SIGNATURE_VALIDATION_WITH_EVIDENCE_HANDLE,
+                "signature_validation_with_evidence");
         }
 
         public String writerDeterminismAuditJson() {
@@ -921,6 +1309,191 @@ public final class Oxide {
             documentReport("oxide_document_prompt22_report_json");
         private static final MethodHandle PROMPT23_REPORT =
             documentReport("oxide_document_prompt23_report_json");
+        private static final MethodHandle SIGNATURE_REPORT_WITH_OPTIONS =
+            documentStringReport("oxide_document_signatures_with_options_json");
+        private static final MethodHandle SIGNATURE_VALIDATION_WITH_EVIDENCE =
+            documentStringReport("oxide_document_signature_validation_with_evidence_json");
+        private static final MethodHandle SIGNATURE_TRUST_STORE_NEW = downcall(
+            "oxide_signature_trust_store_new",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_TRUST_STORE_FREE = downcall(
+            "oxide_signature_trust_store_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_TRUST_STORE_ADD_ANCHOR = downcall(
+            "oxide_signature_trust_store_add_anchor_der",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_TRUST_STORE_ADD_DISTRUST = downcall(
+            "oxide_signature_trust_store_add_distrusted_certificate_sha256",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_INTERMEDIATE_STORE_NEW = downcall(
+            "oxide_signature_intermediate_store_new",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_INTERMEDIATE_STORE_FREE = downcall(
+            "oxide_signature_intermediate_store_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_INTERMEDIATE_STORE_ADD_DER = downcall(
+            "oxide_signature_intermediate_store_add_der",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_EVIDENCE_STORE_NEW = downcall(
+            "oxide_signature_evidence_store_new",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_EVIDENCE_STORE_FREE = downcall(
+            "oxide_signature_evidence_store_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_EVIDENCE_STORE_ADD_OCSP = downcall(
+            "oxide_signature_evidence_store_add_ocsp_der",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_EVIDENCE_STORE_ADD_CRL = downcall(
+            "oxide_signature_evidence_store_add_crl_der",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_EVIDENCE_STORE_SET_BUNDLE = downcall(
+            "oxide_signature_evidence_store_set_bundle_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_RETRIEVAL_POLICY_NEW = downcall(
+            "oxide_signature_retrieval_policy_new",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_RETRIEVAL_POLICY_FREE = downcall(
+            "oxide_signature_retrieval_policy_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_RETRIEVAL_POLICY_SET_JSON = downcall(
+            "oxide_signature_retrieval_policy_set_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_CANCELLATION_NEW = downcall(
+            "oxide_signature_validation_cancellation_new",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_CANCELLATION_FREE = downcall(
+            "oxide_signature_validation_cancellation_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_CANCELLATION_CANCEL = downcall(
+            "oxide_signature_validation_cancellation_cancel",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_NEW = downcall(
+            "oxide_signature_validation_options_new",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_FREE = downcall(
+            "oxide_signature_validation_options_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_ADD_TRUST_ANCHOR = downcall(
+            "oxide_signature_validation_options_add_trust_anchor_der",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_ADD_INTERMEDIATE = downcall(
+            "oxide_signature_validation_options_add_intermediate_der",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_ADD_DISTRUST = downcall(
+            "oxide_signature_validation_options_add_distrusted_certificate_sha256",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_ADD_OCSP = downcall(
+            "oxide_signature_validation_options_add_ocsp_der",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_ADD_CRL = downcall(
+            "oxide_signature_validation_options_add_crl_der",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_SET_VALIDATION_TIME = downcall(
+            "oxide_signature_validation_options_set_validation_time_unix",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_CLEAR_VALIDATION_TIME = downcall(
+            "oxide_signature_validation_options_clear_validation_time",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_SET_REVOCATION_MODE = downcall(
+            "oxide_signature_validation_options_set_revocation_mode",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_INT,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_SET_RETRIEVAL_POLICY = downcall(
+            "oxide_signature_validation_options_set_retrieval_policy_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_SET_ALGORITHM_POLICY = downcall(
+            "oxide_signature_validation_options_set_algorithm_policy_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_SET_EVIDENCE_BUNDLE = downcall(
+            "oxide_signature_validation_options_set_evidence_bundle_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_SET_PATH_LIMITS = downcall(
+            "oxide_signature_validation_options_set_path_limits",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_APPLY_TRUST_STORE = downcall(
+            "oxide_signature_validation_options_apply_trust_store",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_APPLY_INTERMEDIATE_STORE = downcall(
+            "oxide_signature_validation_options_apply_intermediate_store",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_APPLY_EVIDENCE_STORE = downcall(
+            "oxide_signature_validation_options_apply_evidence_store",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_APPLY_RETRIEVAL_POLICY = downcall(
+            "oxide_signature_validation_options_apply_retrieval_policy",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_OPTIONS_SET_CANCELLATION = downcall(
+            "oxide_signature_validation_options_set_cancellation",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_REPORT_WITH_OPTIONS_HANDLE = downcall(
+            "oxide_document_signatures_with_options_handle",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_VALIDATION_WITH_EVIDENCE_HANDLE = downcall(
+            "oxide_document_signature_validation_with_evidence_handle",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle WRITER_DETERMINISM_AUDIT =
             documentReport("oxide_document_writer_determinism_audit_json");
         private static final MethodHandle WRITER_EXTERNAL_DIFF =
@@ -1300,6 +1873,198 @@ public final class Oxide {
                 return (int) ABI_VERSION.invokeExact();
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide ABI version query failed", ex);
+            }
+        }
+
+        private static MemorySegment newSignatureValidationOptions() {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment options = (MemorySegment) SIGNATURE_OPTIONS_NEW.invokeExact(error);
+                if (isNull(options)) {
+                    throwError(2, error);
+                }
+                return options;
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide signature validation options creation failed", ex);
+            }
+        }
+
+        private static void freeSignatureValidationOptions(MemorySegment options) {
+            if (isNull(options)) return;
+            try {
+                SIGNATURE_OPTIONS_FREE.invokeExact(options);
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide signature validation options release failed", ex);
+            }
+        }
+
+        private static MemorySegment newSignatureComponent(MethodHandle constructor, String operation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment component = (MemorySegment) constructor.invokeExact(error);
+                if (isNull(component)) {
+                    throwError(2, error);
+                }
+                return component;
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " creation failed", ex);
+            }
+        }
+
+        private static void freeSignatureComponent(
+            MemorySegment component, MethodHandle destructor, String operation
+        ) {
+            if (isNull(component)) return;
+            try {
+                destructor.invokeExact(component);
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " release failed", ex);
+            }
+        }
+
+        private static void applySignatureComponent(
+            MemorySegment options, MemorySegment component, MethodHandle method, String operation
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(options, component, error);
+                throwError(status, error);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " attachment failed", ex);
+            }
+        }
+
+        private static void cancelSignatureValidation(MemorySegment cancellation) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) SIGNATURE_CANCELLATION_CANCEL.invokeExact(cancellation, error);
+                throwError(status, error);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide signature validation cancellation failed", ex);
+            }
+        }
+
+        private static void addSignatureValidationDer(MemorySegment options, byte[] der, MethodHandle method) {
+            Objects.requireNonNull(der, "der");
+            if (der.length == 0) throw new IllegalArgumentException("DER input must not be empty");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment bytes = arena.allocate(der.length);
+                bytes.copyFrom(MemorySegment.ofArray(der));
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(options, bytes, (long) der.length, error);
+                throwError(status, error);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide signature validation DER input failed", ex);
+            }
+        }
+
+        private static void setSignatureValidationTime(MemorySegment options, long validationTimeUnix) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) SIGNATURE_OPTIONS_SET_VALIDATION_TIME.invokeExact(
+                    options, validationTimeUnix, error);
+                throwError(status, error);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide signature validation time configuration failed", ex);
+            }
+        }
+
+        private static void clearSignatureValidationTime(MemorySegment options) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) SIGNATURE_OPTIONS_CLEAR_VALIDATION_TIME.invokeExact(options, error);
+                throwError(status, error);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide signature validation clock configuration failed", ex);
+            }
+        }
+
+        private static void setSignatureValidationMode(MemorySegment options, int mode) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) SIGNATURE_OPTIONS_SET_REVOCATION_MODE.invokeExact(options, mode, error);
+                throwError(status, error);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide revocation-policy configuration failed", ex);
+            }
+        }
+
+        private static void setSignatureValidationPathLimits(
+            MemorySegment options, long maxChainDepth, long maxPathCandidates
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) SIGNATURE_OPTIONS_SET_PATH_LIMITS.invokeExact(
+                    options, maxChainDepth, maxPathCandidates, error);
+                throwError(status, error);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide path-limit configuration failed", ex);
+            }
+        }
+
+        private static void setSignatureValidationJson(
+            MemorySegment options, String json, MethodHandle method
+        ) {
+            Objects.requireNonNull(json, "json");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment value = arena.allocateFrom(json);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(options, value, error);
+                throwError(status, error);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide signature validation JSON configuration failed", ex);
+            }
+        }
+
+        private static void setSignatureValidationString(
+            MemorySegment options, String value, MethodHandle method, String operation
+        ) {
+            Objects.requireNonNull(value, "value");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment nativeValue = arena.allocateFrom(value);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(options, nativeValue, error);
+                throwError(status, error);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " configuration failed", ex);
+            }
+        }
+
+        private static String documentSignatureOptionsReport(
+            MemorySegment document, MemorySegment options, MethodHandle method, String operation
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment error = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(document, options, jsonOut, error);
+                throwError(status, error);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide " + operation + " failed", ex);
             }
         }
 

@@ -2,8 +2,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use oxide_engine::{
-    sdk, ContentEngine, DocType, DocumentInfo, ExtractOptions, ExtractionProfile,
-    ImageLocateOptions, ImageOutputFormat, OcrPolicy, PageRegion, ParseOptions, SerializeOptions,
+    sdk, CancelToken, ContentEngine, DocType, DocumentInfo, EvidenceBundle, ExtractOptions,
+    ExtractionProfile, ImageLocateOptions, ImageOutputFormat, IntermediateStore, NetworkBudget,
+    OcrPolicy, PageRegion, ParseOptions, RetrievalPolicy, SerializeOptions,
+    SignatureRevocationMode, TrustStore, VerifyOptions,
 };
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyIndexError, PyTypeError, PyValueError};
@@ -40,6 +42,468 @@ struct PyPageIterator {
     engine: Arc<ContentEngine>,
     next: usize,
     total: usize,
+}
+
+#[pyclass(name = "SignatureTrustStore", module = "oxide", unsendable)]
+struct PySignatureTrustStore {
+    store: TrustStore,
+    distrusted_certificate_sha256: Vec<String>,
+}
+
+#[pyclass(name = "SignatureIntermediateStore", module = "oxide", unsendable)]
+struct PySignatureIntermediateStore {
+    store: IntermediateStore,
+}
+
+#[pyclass(name = "SignatureEvidenceStore", module = "oxide", unsendable)]
+struct PySignatureEvidenceStore {
+    ocsp_responses_der: Vec<Vec<u8>>,
+    crls_der: Vec<Vec<u8>>,
+    bundle: Option<EvidenceBundle>,
+}
+
+#[pyclass(name = "SignatureRetrievalPolicy", module = "oxide", unsendable)]
+struct PySignatureRetrievalPolicy {
+    policy: RetrievalPolicy,
+}
+
+#[pyclass(name = "SignatureValidationCancellation", module = "oxide", unsendable)]
+struct PySignatureValidationCancellation {
+    token: CancelToken,
+}
+
+#[pymethods]
+impl PySignatureTrustStore {
+    #[new]
+    fn new() -> Self {
+        Self {
+            store: TrustStore::new(),
+            distrusted_certificate_sha256: Vec::new(),
+        }
+    }
+
+    #[pyo3(signature = (der, origin="python", purpose=None))]
+    fn add_anchor_der(
+        &mut self,
+        der: Vec<u8>,
+        origin: &str,
+        purpose: Option<String>,
+    ) -> PyResult<()> {
+        self.store
+            .add_der(&der, origin.to_string(), purpose)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyo3(signature = (pem, origin="python", purpose=None))]
+    fn add_anchor_pem(&mut self, pem: &str, origin: &str, purpose: Option<String>) -> PyResult<()> {
+        self.store
+            .add_pem(pem.as_bytes(), origin.to_string(), purpose)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    #[pyo3(signature = (path, origin=None, purpose=None))]
+    fn add_anchor_file(
+        &mut self,
+        path: PathBuf,
+        origin: Option<String>,
+        purpose: Option<String>,
+    ) -> PyResult<()> {
+        let bytes = read_signature_component_file(&path)?;
+        let origin = origin.unwrap_or_else(|| "python:file".to_string());
+        if looks_like_pem(&bytes) {
+            self.store
+                .add_pem(&bytes, origin, purpose)
+                .map_err(|error| PyValueError::new_err(error.to_string()))
+        } else {
+            self.store
+                .add_der(&bytes, origin, purpose)
+                .map_err(|error| PyValueError::new_err(error.to_string()))
+        }
+    }
+
+    fn add_distrusted_certificate_sha256(&mut self, fingerprint: &str) -> PyResult<()> {
+        let normalized = VerifyOptions::default()
+            .with_distrusted_certificate_sha256(fingerprint)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?
+            .distrusted_certificate_sha256
+            .into_iter()
+            .next()
+            .ok_or_else(|| PyValueError::new_err("empty certificate fingerprint"))?;
+        if !self
+            .distrusted_certificate_sha256
+            .iter()
+            .any(|existing| existing == &normalized)
+        {
+            self.distrusted_certificate_sha256.push(normalized);
+            self.distrusted_certificate_sha256.sort();
+        }
+        Ok(())
+    }
+
+    fn len(&self) -> usize {
+        self.store.anchors().len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.store.is_empty()
+    }
+}
+
+#[pymethods]
+impl PySignatureIntermediateStore {
+    #[new]
+    fn new() -> Self {
+        Self {
+            store: IntermediateStore::new(),
+        }
+    }
+
+    fn add_der(&mut self, der: Vec<u8>) -> PyResult<()> {
+        self.store
+            .add_der(&der)
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn add_pem(&mut self, pem: &str) -> PyResult<()> {
+        self.store
+            .add_pem(pem.as_bytes())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn add_file(&mut self, path: PathBuf) -> PyResult<()> {
+        let bytes = read_signature_component_file(&path)?;
+        if looks_like_pem(&bytes) {
+            self.store
+                .add_pem(&bytes)
+                .map_err(|error| PyValueError::new_err(error.to_string()))
+        } else {
+            self.store
+                .add_der(&bytes)
+                .map_err(|error| PyValueError::new_err(error.to_string()))
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.store.certificates_der().len()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.store.certificates_der().is_empty()
+    }
+}
+
+#[pymethods]
+impl PySignatureEvidenceStore {
+    #[new]
+    fn new() -> Self {
+        Self {
+            ocsp_responses_der: Vec::new(),
+            crls_der: Vec::new(),
+            bundle: None,
+        }
+    }
+
+    fn add_ocsp_response_der(&mut self, der: Vec<u8>) {
+        self.ocsp_responses_der.push(der);
+    }
+
+    fn add_ocsp_response_file(&mut self, path: PathBuf) -> PyResult<()> {
+        let bytes = read_signature_component_file(&path)?;
+        self.ocsp_responses_der.push(bytes);
+        Ok(())
+    }
+
+    fn add_crl_der(&mut self, der: Vec<u8>) {
+        self.crls_der.push(der);
+    }
+
+    fn add_crl_file(&mut self, path: PathBuf) -> PyResult<()> {
+        let bytes = read_signature_component_file(&path)?;
+        self.crls_der.push(bytes);
+        Ok(())
+    }
+
+    fn import_bundle_json(&mut self, bundle_json: &str) -> PyResult<()> {
+        let bundle: EvidenceBundle = serde_json::from_str(bundle_json)
+            .map_err(|error| PyValueError::new_err(format!("evidence bundle JSON: {error}")))?;
+        let budget = NetworkBudget::default();
+        bundle
+            .validate(budget.max_cache_entries, budget.max_cache_bytes)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        self.bundle = Some(bundle);
+        Ok(())
+    }
+
+    fn set_bundle_json(&mut self, bundle_json: &str) -> PyResult<()> {
+        self.import_bundle_json(bundle_json)
+    }
+
+    fn bundle_json(&self) -> PyResult<Option<String>> {
+        self.bundle
+            .as_ref()
+            .map(|bundle| {
+                serde_json::to_string(bundle).map_err(|error| {
+                    OxideError::new_err(format!("JSON serialization error: {error}"))
+                })
+            })
+            .transpose()
+    }
+
+    fn ocsp_count(&self) -> usize {
+        self.ocsp_responses_der.len()
+    }
+
+    fn crl_count(&self) -> usize {
+        self.crls_der.len()
+    }
+}
+
+#[pymethods]
+impl PySignatureRetrievalPolicy {
+    #[new]
+    fn new() -> Self {
+        Self {
+            policy: RetrievalPolicy::offline(),
+        }
+    }
+
+    #[staticmethod]
+    fn offline() -> Self {
+        Self {
+            policy: RetrievalPolicy::offline(),
+        }
+    }
+
+    #[staticmethod]
+    fn online() -> Self {
+        Self {
+            policy: RetrievalPolicy::online(),
+        }
+    }
+
+    fn set_json(&mut self, policy_json: &str) -> PyResult<()> {
+        let policy: RetrievalPolicy = serde_json::from_str(policy_json)
+            .map_err(|error| PyValueError::new_err(format!("retrieval policy JSON: {error}")))?;
+        policy
+            .validate()
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        self.policy = policy;
+        Ok(())
+    }
+
+    fn to_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.policy)
+            .map_err(|error| OxideError::new_err(format!("JSON serialization error: {error}")))
+    }
+}
+
+#[pymethods]
+impl PySignatureValidationCancellation {
+    #[new]
+    fn new() -> Self {
+        Self {
+            token: CancelToken::new(),
+        }
+    }
+
+    fn cancel(&self) {
+        self.token.cancel();
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.token.is_cancelled()
+    }
+}
+
+/// Owned Prompt 24 signature-validation configuration.
+///
+/// The object owns every byte supplied by Python.  Certificates remain either
+/// explicit trust anchors or untrusted intermediates according to the method
+/// used to add them; evidence is never promoted to trust merely by being
+/// loaded here.  Network retrieval remains disabled unless an explicit,
+/// validated retrieval policy enables it.
+#[pyclass(name = "SignatureValidationOptions", module = "oxide", unsendable)]
+struct PySignatureValidationOptions {
+    options: VerifyOptions,
+}
+
+#[pymethods]
+impl PySignatureValidationOptions {
+    #[new]
+    fn new() -> Self {
+        Self {
+            options: VerifyOptions::default(),
+        }
+    }
+
+    fn add_trust_anchor_der(&mut self, der: Vec<u8>) {
+        self.options.trust_anchors_der.push(der);
+    }
+
+    fn add_intermediate_der(&mut self, der: Vec<u8>) {
+        self.options.intermediates_der.push(der);
+    }
+
+    /// Add a certificate SHA-256 deny-list entry. It is enforced during path
+    /// selection and does not merely annotate the resulting report.
+    fn add_distrusted_certificate_sha256(&mut self, fingerprint: &str) -> PyResult<()> {
+        self.options = self
+            .options
+            .clone()
+            .with_distrusted_certificate_sha256(fingerprint)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(())
+    }
+
+    fn add_ocsp_response_der(&mut self, der: Vec<u8>) {
+        self.options.ocsp_responses_der.push(der);
+    }
+
+    fn add_crl_der(&mut self, der: Vec<u8>) {
+        self.options.crls_der.push(der);
+    }
+
+    fn set_validation_time_unix(&mut self, unix: u64) {
+        self.options.validation_time_unix = Some(unix);
+    }
+
+    fn use_system_validation_time(&mut self) {
+        self.options.validation_time_unix = None;
+    }
+
+    fn set_revocation_mode(&mut self, mode: &str) -> PyResult<()> {
+        self.options.revocation_mode = match mode {
+            "not_checked" | "not-checked" | "disabled" => SignatureRevocationMode::NotChecked,
+            "offline_strict"
+            | "offline-strict"
+            | "offline_supplied_only"
+            | "offline-supplied-only"
+            | "require_any_fresh_evidence"
+            | "require-any-fresh-evidence" => SignatureRevocationMode::OfflineStrict,
+            "offline_best_effort" | "offline-best-effort" => {
+                SignatureRevocationMode::OfflineBestEffort
+            }
+            "online_strict" | "online-strict" | "online_hard_fail" | "online-hard-fail"
+            | "require_fresh_good" | "require-fresh-good" => SignatureRevocationMode::OnlineStrict,
+            "online_best_effort"
+            | "online-best-effort"
+            | "online_best_evidence"
+            | "online-best-evidence"
+            | "soft_fail_network"
+            | "soft-fail-network" => SignatureRevocationMode::OnlineBestEffort,
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "unknown signature revocation mode '{mode}'"
+                )))
+            }
+        };
+        Ok(())
+    }
+
+    fn set_path_limits(
+        &mut self,
+        max_chain_depth: usize,
+        max_path_candidates: usize,
+    ) -> PyResult<()> {
+        if max_chain_depth == 0 || max_path_candidates == 0 {
+            return Err(PyValueError::new_err(
+                "max_chain_depth and max_path_candidates must both be positive",
+            ));
+        }
+        self.options.max_chain_depth = max_chain_depth;
+        self.options.max_path_candidates = max_path_candidates;
+        Ok(())
+    }
+
+    /// Set the shared CMS/PKIX algorithm policy from its JSON representation.
+    /// Recognized legacy algorithms remain unavailable unless this policy
+    /// explicitly permits them.
+    fn set_algorithm_policy_json(&mut self, policy_json: &str) -> PyResult<()> {
+        let policy: oxide_engine::SignatureAlgorithmPolicy = serde_json::from_str(policy_json)
+            .map_err(|error| PyValueError::new_err(format!("algorithm policy JSON: {error}")))?;
+        self.options = self
+            .options
+            .clone()
+            .with_algorithm_policy(policy)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Set the bounded AIA/OCSP/CRL retrieval policy.  Passing an offline
+    /// policy keeps all transport disabled; the binding never enables it by
+    /// default.
+    fn set_retrieval_policy_json(&mut self, policy_json: &str) -> PyResult<()> {
+        let policy: RetrievalPolicy = serde_json::from_str(policy_json)
+            .map_err(|error| PyValueError::new_err(format!("retrieval policy JSON: {error}")))?;
+        self.options = self
+            .options
+            .clone()
+            .with_retrieval_policy(policy)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Import portable evidence for offline replay.  Evidence is hash-checked
+    /// here and cryptographically revalidated by the verification pipeline.
+    fn set_evidence_bundle_json(&mut self, bundle_json: &str) -> PyResult<()> {
+        let bundle: EvidenceBundle = serde_json::from_str(bundle_json)
+            .map_err(|error| PyValueError::new_err(format!("evidence bundle JSON: {error}")))?;
+        self.options = self
+            .options
+            .clone()
+            .with_evidence_bundle(bundle)
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(())
+    }
+
+    fn apply_trust_store(&mut self, store: PyRef<'_, PySignatureTrustStore>) -> PyResult<()> {
+        let mut options = self.options.clone().with_trust_store(&store.store);
+        for fingerprint in &store.distrusted_certificate_sha256 {
+            options = options
+                .with_distrusted_certificate_sha256(fingerprint)
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        }
+        self.options = options;
+        Ok(())
+    }
+
+    fn apply_intermediate_store(&mut self, store: PyRef<'_, PySignatureIntermediateStore>) {
+        self.options = self.options.clone().with_intermediate_store(&store.store);
+    }
+
+    fn apply_evidence_store(&mut self, store: PyRef<'_, PySignatureEvidenceStore>) -> PyResult<()> {
+        let mut options = self.options.clone();
+        options
+            .ocsp_responses_der
+            .extend(store.ocsp_responses_der.iter().cloned());
+        options.crls_der.extend(store.crls_der.iter().cloned());
+        if let Some(bundle) = &store.bundle {
+            options = options
+                .with_evidence_bundle(bundle.clone())
+                .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        }
+        self.options = options;
+        Ok(())
+    }
+
+    fn apply_retrieval_policy(
+        &mut self,
+        policy: PyRef<'_, PySignatureRetrievalPolicy>,
+    ) -> PyResult<()> {
+        self.options = self
+            .options
+            .clone()
+            .with_retrieval_policy(policy.policy.clone())
+            .map_err(|error| PyValueError::new_err(error.to_string()))?;
+        Ok(())
+    }
+
+    fn set_cancellation(&mut self, cancellation: PyRef<'_, PySignatureValidationCancellation>) {
+        self.options = self
+            .options
+            .clone()
+            .with_cancellation_token(cancellation.token.clone());
+    }
 }
 
 #[pymethods]
@@ -606,6 +1070,60 @@ impl PyDocument {
     /// Signature report (validity, trust, coverage, LTV, certificate).
     fn signature_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::signature_report_json(bytes, None))
+    }
+
+    /// Prompt 24 signature report with explicit trust/evidence options JSON.
+    fn signature_report_with_options<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let options = options_json.to_string();
+        self.report_json(py, |bytes| {
+            sdk::signature_report_with_options_json(bytes, &options, None)
+        })
+    }
+
+    /// Prompt 24 validation outcome with an explicit replayable evidence bundle.
+    /// Online retrieval is still disabled unless the options JSON enables the
+    /// shared bounded retrieval policy.
+    fn signature_validation_with_evidence<'py>(
+        &self,
+        py: Python<'py>,
+        options_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let options = options_json.to_string();
+        self.report_json(py, |bytes| {
+            sdk::signature_validation_with_evidence_json(bytes, &options, None)
+        })
+    }
+
+    /// Validate signatures through the owned Prompt 24 options object.  This
+    /// bypasses the JSON facade and calls the same typed engine API exposed by
+    /// the Rust SDK.
+    fn signature_validation<'py>(
+        &self,
+        py: Python<'py>,
+        options: PyRef<'_, PySignatureValidationOptions>,
+    ) -> PyResult<Py<PyAny>> {
+        let options = options.options.clone();
+        let reports = run_oxide(|| self.engine.verify_signatures_with_options(&options))?;
+        json_to_py(py, &reports)
+    }
+
+    /// Validate signatures and return both reports and an exportable evidence
+    /// bundle using the owned Prompt 24 options object.
+    fn signature_validation_with_evidence_options<'py>(
+        &self,
+        py: Python<'py>,
+        options: PyRef<'_, PySignatureValidationOptions>,
+    ) -> PyResult<Py<PyAny>> {
+        let options = options.options.clone();
+        let outcome = run_oxide(|| {
+            self.engine
+                .verify_signatures_with_options_and_evidence(&options)
+        })?;
+        json_to_py(py, &outcome)
     }
 
     /// Font inventory (name, type, embedding status, subsetting, encoding).
@@ -1977,6 +2495,22 @@ fn verify_signatures<'py>(
     json_to_py(py, &sigs)
 }
 
+#[pyfunction]
+#[pyo3(signature = (pdf, options_json, password=None))]
+fn verify_signatures_with_options<'py>(
+    py: Python<'py>,
+    pdf: PathBuf,
+    options_json: &str,
+    password: Option<&str>,
+) -> PyResult<Py<PyAny>> {
+    let bytes = std::fs::read(&pdf)?;
+    let password_bytes = password.map(str::as_bytes);
+    let json = run_oxide(|| {
+        sdk::signature_report_with_options_json(&bytes, options_json, password_bytes)
+    })?;
+    parse_json_str(py, &json)
+}
+
 /// Feature / capability report: SDK version, envelope version, and which
 /// optional engine capabilities are compiled into this build. No document input.
 #[pyfunction]
@@ -2046,6 +2580,12 @@ fn resource_dedup_report(py: Python<'_>, resources: Vec<Vec<u8>>) -> PyResult<Py
 fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("OxideError", py.get_type::<OxideError>())?;
     module.add_class::<PyDocument>()?;
+    module.add_class::<PySignatureTrustStore>()?;
+    module.add_class::<PySignatureIntermediateStore>()?;
+    module.add_class::<PySignatureEvidenceStore>()?;
+    module.add_class::<PySignatureRetrievalPolicy>()?;
+    module.add_class::<PySignatureValidationCancellation>()?;
+    module.add_class::<PySignatureValidationOptions>()?;
     module.add_class::<PyPage>()?;
     module.add_class::<PyRegionPage>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
@@ -2077,6 +2617,7 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(organize_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(fonts, module)?)?;
     module.add_function(wrap_pyfunction!(verify_signatures, module)?)?;
+    module.add_function(wrap_pyfunction!(verify_signatures_with_options, module)?)?;
     module.add_function(wrap_pyfunction!(feature_report, module)?)?;
     module.add_function(wrap_pyfunction!(prompt21_history_report, module)?)?;
     module.add_function(wrap_pyfunction!(crypto_tamper_test, module)?)?;
@@ -2226,6 +2767,23 @@ where
         Ok(Err(err)) => Err(OxideError::new_err(err.to_string())),
         Err(_) => Err(OxideError::new_err("Rust panic while processing PDF")),
     }
+}
+
+fn read_signature_component_file(path: &PathBuf) -> PyResult<Vec<u8>> {
+    std::fs::read(path).map_err(|error| {
+        PyValueError::new_err(format!(
+            "signature validation file '{}': {error}",
+            path.display()
+        ))
+    })
+}
+
+fn looks_like_pem(bytes: &[u8]) -> bool {
+    bytes
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+        == Some(b'-')
 }
 
 fn validate_page(engine: &ContentEngine, page: usize) -> PyResult<()> {

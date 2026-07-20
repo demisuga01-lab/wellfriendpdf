@@ -321,7 +321,7 @@
       "command": [
         "E:\\wellpdfsdk\\target\\release\\examples\\sign_document.exe",
         "E:\\wellpdfsdk\\crates\\engine\\tests\\fixtures\\basicapi.pdf",
-        "E:\\wellpdfsdk\\crates\\engine\\tests\\fixtures\\sign_test_rsa_key.pem",
+        "E:\\wellpdfsdk\\target\\capstone-op-bench\\nonproduction-signing-key.pem",
         "E:\\wellpdfsdk\\crates\\engine\\tests\\fixtures\\sign_test_rsa_cert.pem",
         "E:\\wellpdfsdk\\target\\capstone-op-bench\\signed.pdf"
       ],

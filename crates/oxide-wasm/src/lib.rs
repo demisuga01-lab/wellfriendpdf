@@ -9,7 +9,441 @@
 mod wasm_api {
     use wasm_bindgen::prelude::*;
 
-    use oxide_engine::{sdk, ChunkOptions, ContentEngine, DocType, ExtractOptions, ParseOptions};
+    use oxide_engine::{
+        sdk, CancelToken, ChunkOptions, ContentEngine, DocType, EvidenceBundle, ExtractOptions,
+        IntermediateStore, NetworkBudget, ParseOptions, RetrievalPolicy, SignatureRevocationMode,
+        TrustStore, VerifyOptions,
+    };
+
+    #[wasm_bindgen]
+    pub struct SignatureTrustStore {
+        store: TrustStore,
+        distrusted_certificate_sha256: Vec<String>,
+    }
+
+    #[wasm_bindgen]
+    impl SignatureTrustStore {
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> SignatureTrustStore {
+            SignatureTrustStore {
+                store: TrustStore::new(),
+                distrusted_certificate_sha256: Vec::new(),
+            }
+        }
+
+        #[wasm_bindgen(js_name = addAnchorDer)]
+        pub fn add_anchor_der(
+            &mut self,
+            der: &[u8],
+            origin: Option<String>,
+            purpose: Option<String>,
+        ) -> Result<(), JsValue> {
+            self.store
+                .add_der(der, origin.unwrap_or_else(|| "wasm".to_string()), purpose)
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = addDistrustedCertificateSha256)]
+        pub fn add_distrusted_certificate_sha256(
+            &mut self,
+            fingerprint: &str,
+        ) -> Result<(), JsValue> {
+            let normalized = VerifyOptions::default()
+                .with_distrusted_certificate_sha256(fingerprint)
+                .map_err(js_err)?
+                .distrusted_certificate_sha256
+                .into_iter()
+                .next()
+                .ok_or_else(|| JsValue::from_str("empty certificate fingerprint"))?;
+            if !self
+                .distrusted_certificate_sha256
+                .iter()
+                .any(|existing| existing == &normalized)
+            {
+                self.distrusted_certificate_sha256.push(normalized);
+                self.distrusted_certificate_sha256.sort();
+            }
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = anchorCount)]
+        pub fn anchor_count(&self) -> usize {
+            self.store.anchors().len()
+        }
+    }
+
+    #[wasm_bindgen]
+    pub struct SignatureIntermediateStore {
+        store: IntermediateStore,
+    }
+
+    #[wasm_bindgen]
+    impl SignatureIntermediateStore {
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> SignatureIntermediateStore {
+            SignatureIntermediateStore {
+                store: IntermediateStore::new(),
+            }
+        }
+
+        #[wasm_bindgen(js_name = addDer)]
+        pub fn add_der(&mut self, der: &[u8]) -> Result<(), JsValue> {
+            self.store.add_der(der).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = certificateCount)]
+        pub fn certificate_count(&self) -> usize {
+            self.store.certificates_der().len()
+        }
+    }
+
+    #[wasm_bindgen]
+    pub struct SignatureEvidenceStore {
+        ocsp_responses_der: Vec<Vec<u8>>,
+        crls_der: Vec<Vec<u8>>,
+        bundle: Option<EvidenceBundle>,
+    }
+
+    #[wasm_bindgen]
+    impl SignatureEvidenceStore {
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> SignatureEvidenceStore {
+            SignatureEvidenceStore {
+                ocsp_responses_der: Vec::new(),
+                crls_der: Vec::new(),
+                bundle: None,
+            }
+        }
+
+        #[wasm_bindgen(js_name = addOcspResponseDer)]
+        pub fn add_ocsp_response_der(&mut self, der: &[u8]) {
+            self.ocsp_responses_der.push(der.to_vec());
+        }
+
+        #[wasm_bindgen(js_name = addCrlDer)]
+        pub fn add_crl_der(&mut self, der: &[u8]) {
+            self.crls_der.push(der.to_vec());
+        }
+
+        #[wasm_bindgen(js_name = importBundleJson)]
+        pub fn import_bundle_json(&mut self, bundle_json: &str) -> Result<(), JsValue> {
+            let bundle: EvidenceBundle = serde_json::from_str(bundle_json)
+                .map_err(|error| JsValue::from_str(&format!("evidence bundle JSON: {error}")))?;
+            let budget = NetworkBudget::default();
+            bundle
+                .validate(budget.max_cache_entries, budget.max_cache_bytes)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            self.bundle = Some(bundle);
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = bundleJson)]
+        pub fn bundle_json(&self) -> Result<Option<String>, JsValue> {
+            self.bundle
+                .as_ref()
+                .map(|bundle| {
+                    serde_json::to_string(bundle).map_err(|error| {
+                        JsValue::from_str(&format!("evidence bundle JSON: {error}"))
+                    })
+                })
+                .transpose()
+        }
+
+        #[wasm_bindgen(js_name = ocspCount)]
+        pub fn ocsp_count(&self) -> usize {
+            self.ocsp_responses_der.len()
+        }
+
+        #[wasm_bindgen(js_name = crlCount)]
+        pub fn crl_count(&self) -> usize {
+            self.crls_der.len()
+        }
+    }
+
+    #[wasm_bindgen]
+    pub struct SignatureRetrievalPolicy {
+        policy: RetrievalPolicy,
+    }
+
+    #[wasm_bindgen]
+    impl SignatureRetrievalPolicy {
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> SignatureRetrievalPolicy {
+            SignatureRetrievalPolicy {
+                policy: RetrievalPolicy::offline(),
+            }
+        }
+
+        #[wasm_bindgen(js_name = setJson)]
+        pub fn set_json(&mut self, policy_json: &str) -> Result<(), JsValue> {
+            let policy: RetrievalPolicy = serde_json::from_str(policy_json)
+                .map_err(|error| JsValue::from_str(&format!("retrieval policy JSON: {error}")))?;
+            policy
+                .validate()
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            self.policy = policy;
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = toJson)]
+        pub fn to_json(&self) -> Result<String, JsValue> {
+            serde_json::to_string(&self.policy)
+                .map_err(|error| JsValue::from_str(&format!("retrieval policy JSON: {error}")))
+        }
+    }
+
+    #[wasm_bindgen]
+    pub struct SignatureValidationCancellation {
+        token: CancelToken,
+    }
+
+    #[wasm_bindgen]
+    impl SignatureValidationCancellation {
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> SignatureValidationCancellation {
+            SignatureValidationCancellation {
+                token: CancelToken::new(),
+            }
+        }
+
+        pub fn cancel(&self) {
+            self.token.cancel();
+        }
+
+        #[wasm_bindgen(js_name = isCancelled)]
+        pub fn is_cancelled(&self) -> bool {
+            self.token.is_cancelled()
+        }
+    }
+
+    /// Owned offline Prompt 24 validation options for the WASM surface.
+    ///
+    /// WASM accepts caller-supplied trust anchors, intermediates, and
+    /// revocation evidence, but has no native network transport.  Enabling a
+    /// retrieval policy returns an exact unsupported error instead of allowing
+    /// implicit browser networking or relying on ambient platform trust.
+    #[wasm_bindgen]
+    pub struct SignatureValidationOptions {
+        options: VerifyOptions,
+    }
+
+    #[wasm_bindgen]
+    impl SignatureValidationOptions {
+        #[wasm_bindgen(constructor)]
+        pub fn new() -> SignatureValidationOptions {
+            SignatureValidationOptions {
+                options: VerifyOptions::default(),
+            }
+        }
+
+        #[wasm_bindgen(js_name = addTrustAnchorDer)]
+        pub fn add_trust_anchor_der(&mut self, der: &[u8]) {
+            self.options.trust_anchors_der.push(der.to_vec());
+        }
+
+        #[wasm_bindgen(js_name = addIntermediateDer)]
+        pub fn add_intermediate_der(&mut self, der: &[u8]) {
+            self.options.intermediates_der.push(der.to_vec());
+        }
+
+        #[wasm_bindgen(js_name = addDistrustedCertificateSha256)]
+        pub fn add_distrusted_certificate_sha256(
+            &mut self,
+            fingerprint: &str,
+        ) -> Result<(), JsValue> {
+            self.options = self
+                .options
+                .clone()
+                .with_distrusted_certificate_sha256(fingerprint)
+                .map_err(js_err)?;
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = addOcspResponseDer)]
+        pub fn add_ocsp_response_der(&mut self, der: &[u8]) {
+            self.options.ocsp_responses_der.push(der.to_vec());
+        }
+
+        #[wasm_bindgen(js_name = addCrlDer)]
+        pub fn add_crl_der(&mut self, der: &[u8]) {
+            self.options.crls_der.push(der.to_vec());
+        }
+
+        #[wasm_bindgen(js_name = setValidationTimeUnix)]
+        pub fn set_validation_time_unix(&mut self, unix: f64) -> Result<(), JsValue> {
+            if !unix.is_finite() || unix < 0.0 || unix.fract() != 0.0 || unix > u64::MAX as f64 {
+                return Err(JsValue::from_str(
+                    "validation time must be a non-negative integral Unix second",
+                ));
+            }
+            self.options.validation_time_unix = Some(unix as u64);
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = useSystemValidationTime)]
+        pub fn use_system_validation_time(&mut self) {
+            self.options.validation_time_unix = None;
+        }
+
+        #[wasm_bindgen(js_name = setRevocationMode)]
+        pub fn set_revocation_mode(&mut self, mode: &str) -> Result<(), JsValue> {
+            self.options.revocation_mode = match mode {
+                "not_checked" | "not-checked" | "disabled" => SignatureRevocationMode::NotChecked,
+                "offline_strict"
+                | "offline-strict"
+                | "offline_supplied_only"
+                | "offline-supplied-only"
+                | "require_any_fresh_evidence"
+                | "require-any-fresh-evidence" => SignatureRevocationMode::OfflineStrict,
+            "offline_best_effort"
+                | "offline-best-effort" => SignatureRevocationMode::OfflineBestEffort,
+                "online_strict"
+                | "online-strict"
+                | "online_hard_fail"
+                | "online-hard-fail"
+                | "online_best_effort"
+                | "online-best-effort"
+                | "online_best_evidence"
+                | "online-best-evidence"
+                | "soft_fail_network"
+                | "soft-fail-network" => {
+                    return Err(JsValue::from_str(
+                        "online revocation modes are unsupported in WASM without an explicit host transport",
+                    ))
+                }
+                _ => {
+                    return Err(JsValue::from_str(&format!(
+                        "unknown signature revocation mode '{mode}'"
+                    )))
+                }
+            };
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = setPathLimits)]
+        pub fn set_path_limits(
+            &mut self,
+            max_chain_depth: usize,
+            max_path_candidates: usize,
+        ) -> Result<(), JsValue> {
+            if max_chain_depth == 0 || max_path_candidates == 0 {
+                return Err(JsValue::from_str(
+                    "max_chain_depth and max_path_candidates must both be positive",
+                ));
+            }
+            self.options.max_chain_depth = max_chain_depth;
+            self.options.max_path_candidates = max_path_candidates;
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = setAlgorithmPolicyJson)]
+        pub fn set_algorithm_policy_json(&mut self, policy_json: &str) -> Result<(), JsValue> {
+            let policy: oxide_engine::SignatureAlgorithmPolicy = serde_json::from_str(policy_json)
+                .map_err(|error| JsValue::from_str(&format!("algorithm policy JSON: {error}")))?;
+            self.options = self
+                .options
+                .clone()
+                .with_algorithm_policy(policy)
+                .map_err(js_err)?;
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = setRetrievalPolicyJson)]
+        pub fn set_retrieval_policy_json(&mut self, policy_json: &str) -> Result<(), JsValue> {
+            let policy: RetrievalPolicy = serde_json::from_str(policy_json)
+                .map_err(|error| JsValue::from_str(&format!("retrieval policy JSON: {error}")))?;
+            if policy.enabled {
+                return Err(JsValue::from_str(
+                    "online retrieval is unsupported in WASM without an explicit host transport",
+                ));
+            }
+            self.options = self
+                .options
+                .clone()
+                .with_retrieval_policy(policy)
+                .map_err(js_err)?;
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = setEvidenceBundleJson)]
+        pub fn set_evidence_bundle_json(&mut self, bundle_json: &str) -> Result<(), JsValue> {
+            let bundle: EvidenceBundle = serde_json::from_str(bundle_json)
+                .map_err(|error| JsValue::from_str(&format!("evidence bundle JSON: {error}")))?;
+            self.options = self
+                .options
+                .clone()
+                .with_evidence_bundle(bundle)
+                .map_err(js_err)?;
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = applyTrustStore)]
+        pub fn apply_trust_store(&mut self, store: &SignatureTrustStore) -> Result<(), JsValue> {
+            let mut options = self.options.clone().with_trust_store(&store.store);
+            for fingerprint in &store.distrusted_certificate_sha256 {
+                options = options
+                    .with_distrusted_certificate_sha256(fingerprint)
+                    .map_err(js_err)?;
+            }
+            self.options = options;
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = applyIntermediateStore)]
+        pub fn apply_intermediate_store(&mut self, store: &SignatureIntermediateStore) {
+            self.options = self.options.clone().with_intermediate_store(&store.store);
+        }
+
+        #[wasm_bindgen(js_name = applyEvidenceStore)]
+        pub fn apply_evidence_store(
+            &mut self,
+            store: &SignatureEvidenceStore,
+        ) -> Result<(), JsValue> {
+            let mut options = self.options.clone();
+            options
+                .ocsp_responses_der
+                .extend(store.ocsp_responses_der.iter().cloned());
+            options.crls_der.extend(store.crls_der.iter().cloned());
+            if let Some(bundle) = &store.bundle {
+                options = options
+                    .with_evidence_bundle(bundle.clone())
+                    .map_err(js_err)?;
+            }
+            self.options = options;
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = applyRetrievalPolicy)]
+        pub fn apply_retrieval_policy(
+            &mut self,
+            policy: &SignatureRetrievalPolicy,
+        ) -> Result<(), JsValue> {
+            if policy.policy.enabled {
+                return Err(JsValue::from_str(
+                    "online retrieval is unsupported in WASM without an explicit host transport",
+                ));
+            }
+            self.options = self
+                .options
+                .clone()
+                .with_retrieval_policy(policy.policy.clone())
+                .map_err(js_err)?;
+            Ok(())
+        }
+
+        #[wasm_bindgen(js_name = setCancellation)]
+        pub fn set_cancellation(&mut self, cancellation: &SignatureValidationCancellation) {
+            self.options = self
+                .options
+                .clone()
+                .with_cancellation_token(cancellation.token.clone());
+        }
+
+        #[wasm_bindgen(js_name = onlineRetrievalCapability)]
+        pub fn online_retrieval_capability() -> String {
+            "unsupported_without_explicit_host_transport".to_string()
+        }
+    }
 
     #[wasm_bindgen]
     pub struct OxidePdf {
@@ -473,6 +907,52 @@ mod wasm_api {
         #[wasm_bindgen(js_name = signatureReportJson)]
         pub fn signature_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::signature_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = signatureReportWithOptionsJson)]
+        pub fn signature_report_with_options_json(
+            &self,
+            options_json: &str,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::signature_report_with_options_json(b, options_json, None))
+        }
+
+        #[wasm_bindgen(js_name = signatureValidationWithEvidenceJson)]
+        pub fn signature_validation_with_evidence_json(
+            &self,
+            options_json: &str,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::signature_validation_with_evidence_json(b, options_json, None))
+        }
+
+        /// Offline Prompt 24 validation with owned caller-supplied trust and
+        /// evidence.  WASM never performs implicit AIA, OCSP, or CRL retrieval.
+        #[wasm_bindgen(js_name = signatureValidation)]
+        pub fn signature_validation(
+            &self,
+            options: &SignatureValidationOptions,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let reports = self
+                .engine
+                .verify_signatures_with_options(&options.options)
+                .map_err(js_err)?;
+            serde_json::to_string(&reports).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        /// Offline Prompt 24 validation plus a portable, hash-checked evidence
+        /// bundle that can be replayed by a later WASM or native invocation.
+        #[wasm_bindgen(js_name = signatureValidationWithEvidence)]
+        pub fn signature_validation_with_evidence(
+            &self,
+            options: &SignatureValidationOptions,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let outcome = self
+                .engine
+                .verify_signatures_with_options_and_evidence(&options.options)
+                .map_err(js_err)?;
+            serde_json::to_string(&outcome).map_err(|error| JsValue::from_str(&error.to_string()))
         }
 
         #[wasm_bindgen(js_name = fontReportJson)]

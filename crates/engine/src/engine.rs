@@ -1458,6 +1458,15 @@ impl ContentEngine {
         crate::signature::verify_signatures_with_options(&self.doc, options)
     }
 
+    /// Verify signatures and return a portable bundle containing only the
+    /// evidence accepted by the validation pipeline for offline replay.
+    pub fn verify_signatures_with_options_and_evidence(
+        &self,
+        options: &crate::signature::VerifyOptions,
+    ) -> Result<crate::signature::SignatureValidationOutcome> {
+        crate::signature::verify_signatures_with_options_and_evidence(&self.doc, options)
+    }
+
     /// Apply an RSA/SHA-256 detached CMS digital signature as an incremental
     /// update, preserving the original file bytes as an exact prefix.
     pub fn sign(

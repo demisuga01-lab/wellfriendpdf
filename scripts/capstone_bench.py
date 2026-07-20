@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import datetime
 import json
 import os
 import platform
@@ -18,6 +19,11 @@ import sys
 import time
 from ctypes import wintypes
 from pathlib import Path
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 
 REPO = Path(__file__).resolve().parents[1]
@@ -123,6 +129,46 @@ def version(cmd: list[str]) -> str:
         return str(exc)
 
 
+def write_nonproduction_signing_material(out_root: Path) -> tuple[Path, Path]:
+    """Write benchmark-only signing material under target/.
+
+    The repository must not carry private-key fixtures. The signing benchmark
+    still needs to exercise the example binary, so it generates an ephemeral
+    self-signed RSA identity in the benchmark output directory.
+    """
+    key_path = out_root / "nonproduction-signing-key.pem"
+    cert_path = out_root / "nonproduction-signing-cert.pem"
+    if key_path.exists() and cert_path.exists():
+        return key_path, cert_path
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name(
+        [
+            x509.NameAttribute(NameOID.COMMON_NAME, "Oxide Benchmark Test Signer"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Oxide Nonproduction Fixture"),
+            x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
+        ]
+    )
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(issuer)
+        .public_key(key.public_key())
+        .serial_number(0x24030001)
+        .not_valid_before(datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc))
+        .not_valid_after(datetime.datetime(2036, 1, 1, tzinfo=datetime.timezone.utc))
+        .sign(key, hashes.SHA256())
+    )
+    key_path.write_bytes(
+        key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+    )
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    return key_path, cert_path
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repeats", type=int, default=3)
@@ -142,8 +188,7 @@ def main() -> int:
     out_root.mkdir(parents=True, exist_ok=True)
     basic = ENGINE_FIXTURES / "basicapi.pdf"
     multi = ENGINE_FIXTURES / "multi_stream.pdf"
-    key = ENGINE_FIXTURES / "sign_test_rsa_key.pem"
-    cert = ENGINE_FIXTURES / "sign_test_rsa_cert.pem"
+    key, cert = write_nonproduction_signing_material(out_root)
 
     operations = [
         (

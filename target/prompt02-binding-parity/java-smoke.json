@@ -5,7 +5,7 @@
   "engine_version": "0.1.0",
   "abi_version": 1,
   "reports": {
-    "feature": {"sha256": "637d7cfbabf6553825b50af2338581cd5806e1fa920bf6577b1cf34267c5ce39", "bytes": 141605},
+    "feature": {"sha256": "45d91043517503d35f7c2352837fa0aaaadb5d2fc9544f6f8248388f0c1fcce8", "bytes": 144701},
     "security": {"sha256": "9579b959d297bb20fa27854e972689b5964f7eebe35848c91b853a67def07327", "bytes": 1870},
     "parser": {"sha256": "0ceed52840510991c9c57f90088d1f4d83ef71c7b6045c9b0d3a494b6d304934", "bytes": 19172},
     "color": {"sha256": "981b412a269c5a44a8389bc92ee8c93bec6711bdf5fcc2ea2175afd911d2fce1", "bytes": 131528},
@@ -15,7 +15,7 @@
     "xfa_extract": {"sha256": "89e4193208bea12c50932664f4620fb193b816cc7546cd89cab8586ff362932d", "bytes": 2265},
     "xfa_script": {"sha256": "39f45180c71db15e227751a6362c8924bb418d1bb37fee79bfd01de7953db812", "bytes": 728},
     "xfa_security": {"sha256": "97066e8d3d54b2c1683d65024e1498dc0f8ab05a683c4008fb6d39eb78f08fff", "bytes": 1208},
-    "xfa_runtime": {"sha256": "bb2ae4ec629f22527ef25a313c47da29a088d917b1ac49eb76d16d64faab2caa", "bytes": 2615},
+    "xfa_runtime": {"sha256": "8abb2fbc35c9d3292b4591c26474d0dc9481a82156558e985c0f3694f874d835", "bytes": 2615},
     "annotations": {"sha256": "ac1c91acf43f7cffba9bea61e28ae8e7d2212dc7104c7bbb0fd97aaa7c135232", "bytes": 127},
     "rich_media": {"sha256": "8c3b2caa0a9373f069580d17bc35dafbd9cda1e3e2dd106b226056f480bbdebe", "bytes": 934},
     "annotation_appearance": {"sha256": "313311e588db962034f841b11b5ee18a4fa6f32944fc97792b7ba0641762b493", "bytes": 906},
@@ -41,7 +41,7 @@
     "prompt20b_range_edit": {"sha256": "bab0027f581873573a3069dfaf3a7e5239329b1bf2306f29c200ed648a4a1078", "bytes": 3436},
     "sanitize": {"sha256": "3354f9c8a9bd9936f8304643a6d81923d6363e94974fb2581be1858329ec934d", "bytes": 199},
     "canonicalize": {"sha256": "0f4ccfa362091ce2e59939d5da38277faa0f903a98afed9f910ac2d113dfc741", "bytes": 413},
-    "pdf_mac_create": {"sha256": "3fbb5883fe6bb8320f2dd28e6d72567e2c45ee12958e9627cf8d1c35fbf646e2", "bytes": 705},
+    "pdf_mac_create": {"sha256": "6367c010ec219c497557986e523404b01173a08d7f9b5651e2da544291cb507a", "bytes": 705},
     "xfdf": {"sha256": "8e327cc4a78dc70f9db072dd5c092e32cf6179add38aff7cfe3eecfb1050f7e7", "bytes": 622},
     "appearances": {"sha256": "3e1b29fef411e2b62e37ce242c36d5b09d280b6fce319e41ba0ed266134e3a4e", "bytes": 917},
     "media_sanitized": {"sha256": "4c502ce0d30b90ba7680e63db56d720ebfacfe858e899288091174f56e52cba6", "bytes": 1288}

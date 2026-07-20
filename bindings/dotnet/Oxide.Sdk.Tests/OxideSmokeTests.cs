@@ -51,6 +51,16 @@ public sealed class OxideSmokeTests
             ["semantic_search"] = doc.SemanticSearchJson("the"),
         };
         Assert.Contains("feature_report", reports["feature"]);
+        Assert.Equal("[]", doc.SignatureReportWithOptionsJson("""{"policy_profile":"offline_strict"}"""));
+        using var signatureOptions = new SignatureValidationOptions();
+        signatureOptions.SetRevocationMode(SignatureRevocationMode.OfflineStrict);
+        signatureOptions.SetRevocationMode(SignatureRevocationMode.OnlineStrict);
+        signatureOptions.SetRevocationMode(SignatureRevocationMode.OnlineBestEffort);
+        signatureOptions.SetAlgorithmPolicyJson("{\"allow_rsa_pkcs1v15\":false}");
+        signatureOptions.SetPathLimits(8, 128);
+        signatureOptions.AddDistrustedCertificateSha256(new string('0', 64));
+        Assert.Equal("[]", doc.SignatureValidationReport(signatureOptions));
+        Assert.Contains("evidence_bundle", doc.SignatureValidationWithEvidence(signatureOptions));
         Assert.False(string.IsNullOrWhiteSpace(OxideDocument.EngineVersion()));
         Assert.True(OxideDocument.AbiVersion >= 1);
         foreach (var report in reports.Values)
@@ -130,6 +140,31 @@ public sealed class OxideSmokeTests
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(OfficeConverters.XlsxToPdf(xlsx), 0, 5));
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(OfficeConverters.PptxToPdf(pptx), 0, 5));
         WritePrompt02Artifact(FixturePath(), reports, sanitized, canonicalized);
+    }
+
+    [Fact]
+    public void SignatureComponentHandlesHaveExplicitOwnershipAndCancellation()
+    {
+        using var doc = OxideDocument.Open(FixturePath());
+        using var trust = new SignatureTrustStore();
+        using var intermediates = new SignatureIntermediateStore();
+        using var evidence = new SignatureEvidenceStore();
+        using var retrieval = new SignatureRetrievalPolicy();
+        using var cancellation = new SignatureValidationCancellation();
+        using var options = new SignatureValidationOptions();
+
+        evidence.AddOcspDer(Encoding.ASCII.GetBytes("untrusted-ocsp"));
+        evidence.AddCrlDer(Encoding.ASCII.GetBytes("untrusted-crl"));
+        retrieval.SetJson("{\"enabled\":false}");
+        options.ApplyTrustStore(trust);
+        options.ApplyIntermediateStore(intermediates);
+        options.ApplyEvidenceStore(evidence);
+        options.ApplyRetrievalPolicy(retrieval);
+        options.SetCancellation(cancellation);
+
+        cancellation.Cancel();
+        var error = Assert.Throws<OxideException>(() => doc.SignatureValidationReport(options));
+        Assert.Contains("operation cancelled", error.Message, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -15,12 +15,35 @@
 //! objective findings (cryptographic validity + coverage + signer details) are
 //! exactly what a `pdfsig` cross-check would compare.
 
+use std::io::{Read, Write};
+use std::net::TcpListener;
 use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::OnceLock;
+use std::thread;
+use std::time::{Duration, Instant};
 
+use der::asn1::GeneralizedTime;
+use der::{DateTime, Encode};
 use oxide_engine::{
-    ContentEngine, Coverage, LtvMaterial, PadesLevel, PdfSigner, RevocationStatus,
-    SignatureOptions, SignatureStatus, SignatureTrust, SignatureValidity, VerifyOptions,
+    verify_options_from_json, CancelToken, ContentEngine, Coverage, EvidenceBundle,
+    IntermediateStore, LtvMaterial, PadesLevel, PdfSigner, RetrievalPolicy, RevocationStatus,
+    SignatureOptions, SignatureRevocationMode, SignatureStatus, SignatureTrust,
+    SignatureValidationIndication, SignatureValidationPolicyProfile, SignatureValidationState,
+    SignatureValidationSubindication, SignatureValidity, TrustStore, VerifyOptions,
 };
+use rsa::pkcs1v15::SigningKey as RsaSigningKey;
+use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+use rsa::rand_core::OsRng;
+use rsa::{RsaPrivateKey, RsaPublicKey};
+use sha2::Sha256;
+use spki::SubjectPublicKeyInfoOwned;
+use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+use x509_cert::name::Name;
+use x509_cert::serial_number::SerialNumber;
+use x509_cert::time::{Time, Validity};
+
+const PROMPT24_FIXTURE_VALIDATION_TIME_UNIX: u64 = 1_784_548_800; // 2026-07-20T12:00:00Z
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -33,24 +56,55 @@ fn fixture_bytes(name: &str) -> Vec<u8> {
     std::fs::read(fixture(name)).expect("fixture present (run make_signature_fixtures.py)")
 }
 
-fn fixture_pem(name: &str) -> String {
-    let raw = std::fs::read_to_string(fixture(name)).expect("PEM fixture present");
-    let mut pem = raw
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
-    pem.push('\n');
-    pem
+fn generated_signer_material() -> &'static (Vec<u8>, Vec<u8>) {
+    static MATERIAL: OnceLock<(Vec<u8>, Vec<u8>)> = OnceLock::new();
+    MATERIAL.get_or_init(|| {
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("RSA key");
+        let signing_key = RsaSigningKey::<Sha256>::new(private_key.clone());
+        let public_key = RsaPublicKey::from(&private_key);
+        let spki_der = public_key.to_public_key_der().expect("SPKI DER");
+        let spki = SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("SPKI parse");
+        let subject = Name::from_str("CN=Oxide SDK Signing Test,O=Oxide SDK Test Fixtures,C=US")
+            .expect("name");
+        let validity = Validity {
+            not_before: Time::GeneralTime(GeneralizedTime::from_date_time(
+                DateTime::new(2026, 1, 1, 0, 0, 0).unwrap(),
+            )),
+            not_after: Time::GeneralTime(GeneralizedTime::from_date_time(
+                DateTime::new(2036, 1, 1, 0, 0, 0).unwrap(),
+            )),
+        };
+        let builder = CertificateBuilder::new(
+            Profile::Leaf {
+                issuer: subject.clone(),
+                enable_key_agreement: false,
+                enable_key_encipherment: false,
+            },
+            SerialNumber::from(0x20260801u32),
+            validity,
+            subject,
+            spki,
+            &signing_key,
+        )
+        .expect("cert builder");
+        let cert = builder
+            .build::<rsa::pkcs1v15::Signature>()
+            .expect("cert build");
+        (
+            private_key
+                .to_pkcs8_der()
+                .expect("private key DER")
+                .as_bytes()
+                .to_vec(),
+            cert.to_der().expect("certificate DER"),
+        )
+    })
 }
 
 fn test_signer() -> PdfSigner {
-    PdfSigner::from_pem(
-        &fixture_pem("sign_test_rsa_key.pem"),
-        &fixture_pem("sign_test_rsa_cert.pem"),
-        &[],
-    )
-    .expect("test signer parses")
+    let (key_der, cert_der) = generated_signer_material();
+    PdfSigner::from_der(key_der, cert_der, &[]).expect("runtime test signer parses")
 }
 
 fn test_timestamp_token_der() -> Vec<u8> {
@@ -63,6 +117,16 @@ fn test_timestamp_token_der() -> Vec<u8> {
         content: Any::new(Tag::OctetString, b"oxide-test-rfc3161-token".to_vec()).unwrap(),
     };
     token.to_der().unwrap()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest as _, Sha256};
+
+    hex(&Sha256::digest(bytes))
 }
 
 fn test_crl_der(signer: &PdfSigner, revoked_serial: &[u8]) -> Vec<u8> {
@@ -259,10 +323,512 @@ fn valid_signature_is_cryptographically_valid_with_cert_details() {
     );
 }
 
-fn sign_minimal_with_test_signer() -> Vec<u8> {
+#[test]
+fn generic_detached_cms_is_not_claimed_as_pades_baseline() {
+    let e = ContentEngine::open_bytes(fixture_bytes("sig_valid.pdf")).unwrap();
+    let r = &e.verify_signatures().unwrap()[0];
+    assert_eq!(r.validity, SignatureValidity::Valid);
+    assert_eq!(
+        r.prompt24.cms.content_info,
+        SignatureValidationState::Valid,
+        "the CMS container itself must have passed strict ContentInfo validation"
+    );
+    assert_eq!(
+        r.prompt24.cms.detached_content,
+        SignatureValidationState::Valid,
+        "the PDF fixture is detached CMS"
+    );
+    assert_eq!(
+        r.prompt24.pades.status,
+        SignatureValidationState::UnsupportedProfile,
+        "adbe.pkcs7.detached is generic PDF/CMS, not a PAdES baseline claim"
+    );
+}
+
+#[test]
+fn independently_generated_p256_ecdsa_pdf_signature_verifies() {
+    let e = ContentEngine::open_bytes(fixture_bytes("sig_ecdsa_p256.pdf")).unwrap();
+    let r = &e.verify_signatures().unwrap()[0];
+    assert_eq!(r.validity, SignatureValidity::Valid, "{r:#?}");
+    assert_eq!(r.digest_algorithm.as_deref(), Some("SHA-256"));
+    assert_eq!(r.coverage, Coverage::WholeFile);
+    assert_eq!(r.trust, SignatureTrust::NotVerified);
+    assert_eq!(
+        r.certificate
+            .as_ref()
+            .map(|cert| cert.subject.contains("Prompt24 ECDSA Signer")),
+        Some(true)
+    );
+    assert_eq!(r.prompt24.cms.status, SignatureValidationState::Valid);
+    assert_eq!(
+        r.prompt24.pades.status,
+        SignatureValidationState::UnsupportedProfile,
+        "a generic pyHanko detached CMS fixture must not be promoted to PAdES"
+    );
+}
+
+#[test]
+fn independently_generated_pades_b_fixture_validates_pdf_cms_and_ess_requirements() {
+    let e = ContentEngine::open_bytes(fixture_bytes("sig_pades_b_ecdsa_p256.pdf")).unwrap();
+    let r = &e.verify_signatures().unwrap()[0];
+    assert_eq!(r.validity, SignatureValidity::Valid, "{r:#?}");
+    assert_eq!(r.sub_filter.as_deref(), Some("ETSI.CAdES.detached"));
+    assert_eq!(
+        r.prompt24.cms.signed_attributes,
+        SignatureValidationState::Valid
+    );
+    assert_eq!(
+        r.prompt24.cms.signing_certificate_reference,
+        SignatureValidationState::Valid,
+        "the external PAdES producer's ESS reference must bind the selected signer cert"
+    );
+    assert_eq!(
+        r.prompt24.pades.status,
+        SignatureValidationState::Indeterminate,
+        "{r:#?}"
+    );
+    assert_eq!(
+        r.prompt24.pades.structural_status,
+        SignatureValidationState::Valid,
+        "the PDF/CMS/ESS baseline shape remains a separate structural result"
+    );
+    assert_eq!(
+        r.prompt24.pades.certificate_path_status,
+        SignatureValidationState::EvidenceMissing,
+        "baseline format conformance is not a substitute for explicit trust anchors"
+    );
+    assert_eq!(r.trust, SignatureTrust::NotVerified);
+}
+
+#[test]
+fn pades_b_fixture_becomes_baseline_valid_with_explicit_signer_anchor() {
+    let mut trust_store = TrustStore::new();
+    trust_store
+        .add_pem(
+            &fixture_bytes("sig_ecdsa_p256_cert.pem"),
+            "prompt24-pyhanko-fixture",
+            Some("document-signing-test-anchor".to_string()),
+        )
+        .unwrap();
+    let options = VerifyOptions::default().with_trust_store(&trust_store);
+    let e = ContentEngine::open_bytes(fixture_bytes("sig_pades_b_ecdsa_p256.pdf")).unwrap();
+    let r = &e.verify_signatures_with_options(&options).unwrap()[0];
+
+    assert_eq!(r.validity, SignatureValidity::Valid, "{r:#?}");
+    assert_eq!(r.trust, SignatureTrust::Trusted, "{r:#?}");
+    assert_eq!(r.status, SignatureStatus::Trusted, "{r:#?}");
+    assert_eq!(r.prompt24.path.status, SignatureValidationState::Valid);
+    assert_eq!(
+        r.prompt24.cms.signing_certificate_reference,
+        SignatureValidationState::Valid
+    );
+    assert_eq!(r.prompt24.pades.status, SignatureValidationState::Valid);
+    assert_eq!(
+        r.prompt24.pades.higher_level_evidence_status,
+        SignatureValidationState::NotChecked,
+        "B-T/LT/LTA evidence must not be claimed when only Prompt 24 baseline-B checks ran"
+    );
+}
+
+#[test]
+fn controlled_aia_and_crl_fetch_validate_a_complete_local_path() {
+    const AIA_PORT: u16 = 18_781;
+    let intermediate = fixture_bytes("aia_intermediate.der");
+    let leaf_crl = fixture_bytes("aia_leaf_good.crl");
+    let intermediate_crl = fixture_bytes("aia_intermediate_good.crl");
+    let leaf_ocsp = fixture_bytes("aia_leaf_good.ocsp");
+    let intermediate_ocsp = fixture_bytes("aia_intermediate_good.ocsp");
+    let listener = TcpListener::bind(("127.0.0.1", AIA_PORT))
+        .expect("Prompt 24 local AIA test port is available");
+    listener.set_nonblocking(true).unwrap();
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut served = Vec::new();
+        while Instant::now() < deadline {
+            match listener.accept() {
+                Ok((mut stream, _)) => {
+                    stream.set_nonblocking(false).unwrap();
+                    let mut request = [0_u8; 2048];
+                    let read = stream.read(&mut request).unwrap();
+                    // OCSP POST requests contain DER after the HTTP headers.
+                    // Inspect only the ASCII request line; decoding the full
+                    // buffer would turn a valid binary request into a server
+                    // panic and falsely exercise the network-failure path.
+                    let request_line_end = request[..read]
+                        .windows(2)
+                        .position(|bytes| bytes == b"\r\n")
+                        .unwrap_or(read);
+                    let request = std::str::from_utf8(&request[..request_line_end]).unwrap();
+                    let (name, body, content_type) =
+                        if request.starts_with("GET /intermediate.der HTTP/1.1") {
+                            ("intermediate", &intermediate, "application/pkix-cert")
+                        } else if request.starts_with("POST /leaf.ocsp HTTP/1.1") {
+                            ("leaf-ocsp", &leaf_ocsp, "application/ocsp-response")
+                        } else if request.starts_with("POST /intermediate.ocsp HTTP/1.1") {
+                            (
+                                "intermediate-ocsp",
+                                &intermediate_ocsp,
+                                "application/ocsp-response",
+                            )
+                        } else if request.starts_with("GET /leaf.crl HTTP/1.1") {
+                            ("leaf-crl", &leaf_crl, "application/pkix-crl")
+                        } else if request.starts_with("GET /intermediate.crl HTTP/1.1") {
+                            (
+                                "intermediate-crl",
+                                &intermediate_crl,
+                                "application/pkix-crl",
+                            )
+                        } else {
+                            panic!("unexpected local evidence request: {request}");
+                        };
+                    let header = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    stream.write_all(header.as_bytes()).unwrap();
+                    stream.write_all(body).unwrap();
+                    served.push(name);
+                    if served.len() == 5 {
+                        return served;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("local AIA server accept: {error}"),
+            }
+        }
+        served
+    });
+
+    let mut policy = RetrievalPolicy::online();
+    policy.allow_private_network = true;
+    policy.allow_non_default_ports = true;
+    policy.allowed_ports.push(AIA_PORT);
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_validation_time_unix(PROMPT24_FIXTURE_VALIDATION_TIME_UNIX)
+        .with_offline_revocation_strict()
+        .with_retrieval_policy(policy)
+        .unwrap();
+    let engine = ContentEngine::open_bytes(fixture_bytes("sig_aia_leaf_only.pdf")).unwrap();
+    let outcome = engine
+        .verify_signatures_with_options_and_evidence(&options)
+        .unwrap();
+    let report = &outcome.reports[0];
+    assert_eq!(report.validity, SignatureValidity::Valid, "{report:#?}");
+    assert_eq!(report.trust, SignatureTrust::Trusted, "{report:#?}");
+    assert_eq!(report.prompt24.path.status, SignatureValidationState::Valid);
+    assert_eq!(
+        report.prompt24.network.aia_fetching,
+        SignatureValidationState::Valid,
+        "AIA data must be fetched through the bounded transport"
+    );
+    assert_eq!(
+        report.prompt24.network.crl_fetching,
+        SignatureValidationState::Valid
+    );
+    assert_eq!(
+        report.prompt24.network.ocsp_fetching,
+        SignatureValidationState::Valid
+    );
+    assert_eq!(
+        report.prompt24.revocation.status,
+        SignatureValidationState::Valid,
+        "{report:#?}"
+    );
+    assert!(
+        report
+            .prompt24
+            .path
+            .selected_path_subjects
+            .iter()
+            .any(|subject| subject.contains("AIA Intermediate")),
+        "the fetched certificate must be used only as an intermediate"
+    );
+    let served = server.join().unwrap();
+    assert_eq!(
+        served.len(),
+        5,
+        "local evidence server did not receive all expected requests: {served:?}"
+    );
+    assert_eq!(
+        outcome.evidence_bundle.records.len(),
+        5,
+        "only the selected AIA intermediate and cryptographically accepted OCSP/CRL evidence are exportable"
+    );
+
+    let replay_options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_validation_time_unix(PROMPT24_FIXTURE_VALIDATION_TIME_UNIX)
+        .with_offline_revocation_strict()
+        .with_evidence_bundle(outcome.evidence_bundle)
+        .unwrap();
+    let replay = &engine
+        .verify_signatures_with_options(&replay_options)
+        .unwrap()[0];
+    assert_eq!(replay.trust, SignatureTrust::Trusted, "{replay:#?}");
+    assert_eq!(
+        replay.prompt24.revocation.status,
+        SignatureValidationState::Valid
+    );
+    assert_eq!(
+        replay.prompt24.network.status,
+        SignatureValidationState::NetworkDisabled,
+        "offline replay must not reopen the completed local server"
+    );
+}
+
+#[test]
+fn evidence_bundle_rejects_an_explicit_source_document_mismatch() {
+    let bundle = EvidenceBundle {
+        source_document_sha256: Some("00".repeat(32)),
+        ..EvidenceBundle::default()
+    };
+    let options = VerifyOptions::default()
+        .with_evidence_bundle(bundle)
+        .unwrap();
+    let engine = ContentEngine::open_bytes(fixture_bytes("sig_aia_leaf_only.pdf")).unwrap();
+    let error = engine
+        .verify_signatures_with_options(&options)
+        .expect_err("a source-bound evidence bundle must not replay for another PDF");
+    assert!(error
+        .to_string()
+        .contains("source_document_sha256 does not match"));
+}
+
+#[test]
+fn revoked_crl_takes_precedence_over_conflicting_good_crl() {
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_intermediate_der(fixture_bytes("aia_intermediate.der"))
+        .with_validation_time_unix(PROMPT24_FIXTURE_VALIDATION_TIME_UNIX)
+        .with_crl_der(fixture_bytes("aia_leaf_good.crl"))
+        .with_crl_der(fixture_bytes("aia_leaf_revoked.crl"))
+        .with_crl_der(fixture_bytes("aia_intermediate_good.crl"))
+        .with_offline_revocation_strict();
+    let engine = ContentEngine::open_bytes(fixture_bytes("sig_aia_leaf_only.pdf")).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+
+    assert_eq!(report.validity, SignatureValidity::Valid, "{report:#?}");
+    assert_eq!(report.trust, SignatureTrust::Revoked, "{report:#?}");
+    assert_eq!(report.status, SignatureStatus::Revoked);
+    assert_eq!(
+        report.prompt24.revocation.status,
+        SignatureValidationState::Revoked,
+        "a good CRL must never override a valid revoked result"
+    );
+    let leaf = report
+        .prompt24
+        .revocation
+        .certificate_decisions
+        .first()
+        .expect("leaf revocation decision");
+    assert_eq!(leaf.status, SignatureValidationState::Revoked);
+    assert!(
+        leaf.error
+            .as_deref()
+            .is_some_and(|error| error.contains("conflicting revocation evidence")),
+        "expected an explicit conflict trace: {leaf:#?}"
+    );
+}
+
+#[test]
+fn delta_crl_is_merged_with_its_base_and_can_revoke() {
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_intermediate_der(fixture_bytes("aia_intermediate.der"))
+        .with_validation_time_unix(PROMPT24_FIXTURE_VALIDATION_TIME_UNIX)
+        .with_crl_der(fixture_bytes("aia_leaf_delta_base_good.crl"))
+        .with_crl_der(fixture_bytes("aia_leaf_delta_revoked.crl"))
+        .with_crl_der(fixture_bytes("aia_intermediate_good.crl"))
+        .with_offline_revocation_strict();
+    let engine = ContentEngine::open_bytes(fixture_bytes("sig_aia_leaf_only.pdf")).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+
+    assert_eq!(report.validity, SignatureValidity::Valid);
+    assert_eq!(report.trust, SignatureTrust::Revoked, "{report:#?}");
+    assert_eq!(
+        report.prompt24.revocation.status,
+        SignatureValidationState::Revoked,
+        "{report:#?}"
+    );
+    assert!(report
+        .prompt24
+        .revocation
+        .certificate_decisions
+        .iter()
+        .any(|decision| {
+            decision.status == SignatureValidationState::Revoked
+                && decision
+                    .evidence_type
+                    .as_deref()
+                    .is_some_and(|source| source.contains("base_0_delta_1"))
+        }));
+}
+
+#[test]
+fn delta_crl_without_a_valid_base_never_establishes_good_status() {
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_intermediate_der(fixture_bytes("aia_intermediate.der"))
+        .with_validation_time_unix(PROMPT24_FIXTURE_VALIDATION_TIME_UNIX)
+        .with_crl_der(fixture_bytes("aia_leaf_delta_revoked.crl"))
+        .with_crl_der(fixture_bytes("aia_intermediate_good.crl"))
+        .with_offline_revocation_strict();
+    let engine = ContentEngine::open_bytes(fixture_bytes("sig_aia_leaf_only.pdf")).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+
+    assert_ne!(
+        report.prompt24.revocation.status,
+        SignatureValidationState::Valid,
+        "{report:#?}"
+    );
+    assert_ne!(report.trust, SignatureTrust::Trusted, "{report:#?}");
+    assert!(report
+        .prompt24
+        .revocation
+        .certificate_decisions
+        .iter()
+        .flat_map(|decision| decision.error.iter())
+        .any(|error| error.contains("delta CRL 0 had no valid supplied base CRL pair")));
+}
+
+#[test]
+fn signer_leaf_key_usage_must_allow_document_signatures() {
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_intermediate_der(fixture_bytes("aia_intermediate.der"));
+    let engine = ContentEngine::open_bytes(fixture_bytes("sig_aia_bad_key_usage.pdf")).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+
+    assert_eq!(
+        report.validity,
+        SignatureValidity::Valid,
+        "CMS math must remain separately observable: {report:#?}"
+    );
+    assert_eq!(report.trust, SignatureTrust::Untrusted, "{report:#?}");
+    assert_eq!(
+        report.prompt24.path.status,
+        SignatureValidationState::PolicyRejected,
+        "a certificate restricted to key encipherment must not become trusted for PDF signing"
+    );
+    assert_eq!(
+        report.prompt24.path.signer_certificate_status,
+        SignatureValidationState::PolicyRejected
+    );
+    assert!(report
+        .prompt24
+        .path
+        .validation_error
+        .as_deref()
+        .is_some_and(|error| error.contains("KeyUsage")));
+}
+
+#[test]
+fn indirect_crl_requires_a_path_validated_crl_signer() {
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_intermediate_der(fixture_bytes("aia_intermediate.der"))
+        .with_intermediate_der(fixture_bytes("aia_crl_signer.der"))
+        .with_validation_time_unix(PROMPT24_FIXTURE_VALIDATION_TIME_UNIX)
+        .with_crl_der(fixture_bytes("aia_indirect_leaf_revoked.crl"))
+        .with_offline_revocation_strict();
+    let engine =
+        ContentEngine::open_bytes(fixture_bytes("sig_aia_indirect_leaf_only.pdf")).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+
+    assert_eq!(report.validity, SignatureValidity::Valid, "{report:#?}");
+    assert_eq!(report.trust, SignatureTrust::Revoked, "{report:#?}");
+    let leaf = report
+        .prompt24
+        .revocation
+        .certificate_decisions
+        .first()
+        .expect("leaf revocation decision");
+    assert_eq!(leaf.status, SignatureValidationState::Revoked, "{leaf:#?}");
+    assert_eq!(leaf.evidence_type.as_deref(), Some("crl_0"));
+}
+
+#[test]
+fn indirect_crl_signer_without_a_valid_path_cannot_revoke_or_establish_good() {
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_intermediate_der(fixture_bytes("aia_intermediate.der"))
+        .with_validation_time_unix(PROMPT24_FIXTURE_VALIDATION_TIME_UNIX)
+        .with_crl_der(fixture_bytes("aia_indirect_leaf_revoked.crl"))
+        .with_offline_revocation_strict();
+    let engine =
+        ContentEngine::open_bytes(fixture_bytes("sig_aia_indirect_leaf_only.pdf")).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+
+    assert_ne!(report.trust, SignatureTrust::Trusted, "{report:#?}");
+    assert_ne!(
+        report.prompt24.revocation.status,
+        SignatureValidationState::Valid,
+        "{report:#?}"
+    );
+    assert!(report
+        .prompt24
+        .revocation
+        .certificate_decisions
+        .iter()
+        .flat_map(|decision| decision.error.iter())
+        .any(|error| error.contains("indirect CRL signer")));
+}
+
+#[test]
+fn delegated_ocsp_responder_with_ocsp_signing_eku_is_accepted() {
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_intermediate_der(fixture_bytes("aia_intermediate.der"))
+        .with_validation_time_unix(PROMPT24_FIXTURE_VALIDATION_TIME_UNIX)
+        .with_ocsp_response_der(fixture_bytes("aia_leaf_delegated_good.ocsp"))
+        .with_ocsp_response_der(fixture_bytes("aia_intermediate_good.ocsp"))
+        .with_offline_revocation_strict();
+    let engine = ContentEngine::open_bytes(fixture_bytes("sig_aia_leaf_only.pdf")).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+
+    assert_eq!(report.validity, SignatureValidity::Valid, "{report:#?}");
+    assert_eq!(report.trust, SignatureTrust::Trusted, "{report:#?}");
+    assert_eq!(
+        report.prompt24.revocation.status,
+        SignatureValidationState::Valid,
+        "{report:#?}"
+    );
+}
+
+#[test]
+fn delegated_ocsp_responder_without_ocsp_signing_eku_is_rejected() {
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(fixture_bytes("aia_root.der"))
+        .with_intermediate_der(fixture_bytes("aia_intermediate.der"))
+        .with_validation_time_unix(PROMPT24_FIXTURE_VALIDATION_TIME_UNIX)
+        .with_ocsp_response_der(fixture_bytes("aia_leaf_delegated_wrong_eku.ocsp"))
+        .with_ocsp_response_der(fixture_bytes("aia_intermediate_good.ocsp"))
+        .with_offline_revocation_strict();
+    let engine = ContentEngine::open_bytes(fixture_bytes("sig_aia_leaf_only.pdf")).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+
+    assert_ne!(report.trust, SignatureTrust::Trusted, "{report:#?}");
+    assert_ne!(
+        report.prompt24.revocation.status,
+        SignatureValidationState::Valid,
+        "{report:#?}"
+    );
+    assert!(report
+        .prompt24
+        .revocation
+        .certificate_decisions
+        .first()
+        .and_then(|decision| decision.error.as_deref())
+        .is_some_and(|error| error.contains("OCSPSigning")));
+}
+
+fn sign_minimal_with_signer(signer: &PdfSigner) -> Vec<u8> {
     let e = ContentEngine::open_bytes(fixture_bytes("minimal.pdf")).unwrap();
     e.sign(
-        &test_signer(),
+        signer,
         &SignatureOptions {
             field_name: "OxideTrust".to_string(),
             signing_time: Some("D:20260622000000Z".to_string()),
@@ -270,6 +836,10 @@ fn sign_minimal_with_test_signer() -> Vec<u8> {
         },
     )
     .unwrap()
+}
+
+fn sign_minimal_with_test_signer() -> Vec<u8> {
+    sign_minimal_with_signer(&test_signer())
 }
 
 #[test]
@@ -301,7 +871,7 @@ fn self_signed_signature_is_valid_but_not_trusted_by_default() {
 #[test]
 fn pinning_signer_cert_as_trust_anchor_makes_it_trusted() {
     let signer = test_signer();
-    let engine = ContentEngine::open_bytes(sign_minimal_with_test_signer()).unwrap();
+    let engine = ContentEngine::open_bytes(sign_minimal_with_signer(&signer)).unwrap();
     let options =
         VerifyOptions::default().with_trust_anchor_der(signer.signer_certificate_der().unwrap());
     let r = &engine.verify_signatures_with_options(&options).unwrap()[0];
@@ -313,6 +883,178 @@ fn pinning_signer_cert_as_trust_anchor_makes_it_trusted() {
     );
     assert_eq!(r.coverage, Coverage::WholeFile);
     assert_eq!(r.status, SignatureStatus::Trusted);
+    assert_eq!(
+        r.prompt24.signer_resolution,
+        SignatureValidationState::Valid
+    );
+    assert_eq!(r.prompt24.path.status, SignatureValidationState::Valid);
+    assert_eq!(r.prompt24.path.candidate_paths_tried, 1);
+    assert_eq!(r.prompt24.overall, SignatureValidationState::Valid);
+}
+
+#[test]
+fn typed_trust_store_and_distrust_overlay_control_path_selection() {
+    let signer = test_signer();
+    let signer_der = signer.signer_certificate_der().unwrap();
+    let mut trust_store = TrustStore::new();
+    trust_store
+        .add_der(
+            &signer_der,
+            "fixture:sign_test_rsa_cert.pem",
+            Some("document_signing".to_string()),
+        )
+        .unwrap();
+    assert_eq!(trust_store.anchors().len(), 1);
+    assert_eq!(
+        trust_store.anchors()[0].origin,
+        "fixture:sign_test_rsa_cert.pem"
+    );
+
+    let mut intermediates = IntermediateStore::new();
+    intermediates.add_der(&signer_der).unwrap();
+    assert_eq!(intermediates.certificates_der().len(), 1);
+
+    let options = VerifyOptions::default()
+        .with_trust_store(&trust_store)
+        .with_intermediate_store(&intermediates);
+    let engine = ContentEngine::open_bytes(sign_minimal_with_signer(&signer)).unwrap();
+    let accepted = &engine.verify_signatures_with_options(&options).unwrap()[0];
+    assert_eq!(accepted.trust, SignatureTrust::Trusted, "{accepted:#?}");
+
+    let denied_options = options
+        .clone()
+        .with_distrusted_certificate_sha256(&sha256_hex(&signer_der))
+        .unwrap();
+    let denied = &engine
+        .verify_signatures_with_options(&denied_options)
+        .unwrap()[0];
+    assert_ne!(denied.trust, SignatureTrust::Trusted, "{denied:#?}");
+    assert_eq!(
+        denied.prompt24.policy.distrust_entry_count, 1,
+        "the report must identify that a deny-list policy was in force"
+    );
+    assert!(
+        denied
+            .prompt24
+            .path
+            .validation_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("distrusted"),
+        "{denied:#?}"
+    );
+}
+
+#[test]
+fn prompt24_option_json_drives_real_trust_validation() {
+    let signer = test_signer();
+    let anchor_hex = hex(&signer.signer_certificate_der().unwrap());
+    let options_json = format!(
+        r#"{{
+            "trust_anchors_der_hex": ["{anchor_hex}"],
+            "validation_time_unix": 1782086400,
+            "policy_profile": "offline_strict",
+            "revocation": "not_checked",
+            "online": false,
+            "max_chain_depth": 4,
+            "max_path_candidates": 16
+        }}"#
+    );
+    let options = verify_options_from_json(&options_json).unwrap();
+
+    assert_eq!(options.trust_anchors_der.len(), 1);
+    assert_eq!(
+        options.policy_profile,
+        SignatureValidationPolicyProfile::OfflineStrict
+    );
+    assert_eq!(options.revocation_mode, SignatureRevocationMode::NotChecked);
+    assert_eq!(options.validation_time_unix, Some(1782086400));
+    assert!(!options.allow_online_retrieval);
+    assert_eq!(options.max_chain_depth, 4);
+    assert_eq!(options.max_path_candidates, 16);
+
+    let engine = ContentEngine::open_bytes(sign_minimal_with_signer(&signer)).unwrap();
+    let r = &engine.verify_signatures_with_options(&options).unwrap()[0];
+    assert_eq!(r.validity, SignatureValidity::Valid);
+    assert_eq!(r.trust, SignatureTrust::Trusted);
+    assert_eq!(r.status, SignatureStatus::Trusted);
+    assert_eq!(r.prompt24.policy.trust_anchor_count, 1);
+    assert_eq!(r.prompt24.policy.validation_time_unix, 1782086400);
+    assert_eq!(
+        r.prompt24.network.ocsp_fetching,
+        SignatureValidationState::NetworkDisabled
+    );
+}
+
+#[test]
+fn named_online_policy_profiles_enable_real_revocation_semantics() {
+    let strict = verify_options_from_json(r#"{"policy_profile":"online_strict"}"#).unwrap();
+    assert_eq!(
+        strict.revocation_mode,
+        SignatureRevocationMode::OnlineStrict
+    );
+    assert!(strict.allow_online_retrieval);
+    assert!(strict.retrieval_policy.enabled);
+
+    let best = verify_options_from_json(r#"{"policy_profile":"online_best_evidence"}"#).unwrap();
+    assert_eq!(
+        best.revocation_mode,
+        SignatureRevocationMode::OnlineBestEffort
+    );
+    assert!(best.allow_online_retrieval);
+    assert!(best.retrieval_policy.enabled);
+
+    // The fixture has no online revocation endpoint. A strict online profile
+    // must remain indeterminate instead of making a path trusted merely
+    // because its signature and certificate chain are valid.
+    let signer = test_signer();
+    let options = VerifyOptions::default()
+        .with_trust_anchor_der(signer.signer_certificate_der().unwrap())
+        .with_online_revocation_strict()
+        .with_validation_time_unix(1_782_086_400);
+    let engine = ContentEngine::open_bytes(sign_minimal_with_signer(&signer)).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+    assert_eq!(
+        report.prompt24.revocation.status,
+        SignatureValidationState::EvidenceMissing,
+        "{report:#?}"
+    );
+    assert_ne!(report.trust, SignatureTrust::Trusted, "{report:#?}");
+    assert_eq!(
+        report.prompt24.overall,
+        SignatureValidationState::Indeterminate,
+        "{report:#?}"
+    );
+    assert_eq!(
+        report.prompt24.indication,
+        SignatureValidationIndication::Indeterminate
+    );
+    assert_eq!(
+        report.prompt24.subindication,
+        SignatureValidationSubindication::ValidationIndeterminate
+    );
+}
+
+#[test]
+fn json_algorithm_policy_rejects_a_recognized_signature_scheme() {
+    let signer = test_signer();
+    let anchor_hex = hex(&signer.signer_certificate_der().unwrap());
+    let options = verify_options_from_json(&format!(
+        r#"{{
+            "trust_anchors_der_hex": ["{anchor_hex}"],
+            "algorithm_policy": {{"allow_rsa_pkcs1v15": false}},
+            "validation_time_unix": 1782086400
+        }}"#
+    ))
+    .unwrap();
+    let engine = ContentEngine::open_bytes(sign_minimal_with_test_signer()).unwrap();
+    let report = &engine.verify_signatures_with_options(&options).unwrap()[0];
+    assert_eq!(report.validity, SignatureValidity::UnsupportedAlgorithm);
+    assert_eq!(
+        report.prompt24.cms.status,
+        SignatureValidationState::UnsupportedAlgorithm
+    );
+    assert_ne!(report.status, SignatureStatus::Trusted);
 }
 
 #[test]
@@ -331,12 +1073,17 @@ fn signature_with_unrelated_trust_anchor_is_not_trusted() {
         "signer does not chain to the unrelated anchor"
     );
     assert_eq!(r.status, SignatureStatus::ValidUntrusted);
+    assert!(matches!(
+        r.prompt24.path.status,
+        SignatureValidationState::PathNotFound | SignatureValidationState::PathInvalid
+    ));
+    assert_ne!(r.prompt24.overall, SignatureValidationState::Valid);
 }
 
 #[test]
 fn modified_after_signing_is_never_trusted_even_with_anchor() {
     let signer = test_signer();
-    let mut signed = sign_minimal_with_test_signer();
+    let mut signed = sign_minimal_with_signer(&signer);
     signed.extend_from_slice(b"\n% appended after signing\n9 0 obj<<>>endobj\n");
 
     let engine = ContentEngine::open_bytes(signed).unwrap();
@@ -435,6 +1182,22 @@ fn unsigned_document_reports_no_signatures() {
         reports.is_empty(),
         "unsigned document must report no signatures"
     );
+}
+
+#[test]
+fn pre_cancelled_signature_validation_returns_cancelled() {
+    let engine = ContentEngine::open_bytes(fixture_bytes("sig_valid.pdf")).unwrap();
+    let cancellation = CancelToken::new();
+    cancellation.cancel();
+    let error = engine
+        .verify_signatures_with_options(
+            &VerifyOptions::default().with_cancellation_token(cancellation),
+        )
+        .expect_err("pre-cancelled validation must not inspect the PDF");
+    assert_eq!(error.code(), "cancelled");
+    assert!(error
+        .to_string()
+        .contains("signature-validation-before-discovery"));
 }
 
 #[test]

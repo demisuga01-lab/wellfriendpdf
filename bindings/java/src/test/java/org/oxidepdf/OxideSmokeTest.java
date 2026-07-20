@@ -79,6 +79,47 @@ public final class OxideSmokeTest {
                 reports.put("prompt20b_range_edit", rangeEdited.reportJson());
             }
             assertTrue(reports.get("feature").contains("feature_report"), "feature report");
+            assertTrue(
+                "[]".equals(doc.signatureReportWithOptionsJson("{\"policy_profile\":\"offline_strict\"}")),
+                "signature report with offline options");
+            try (Oxide.SignatureValidationOptions signatureOptions = new Oxide.SignatureValidationOptions()) {
+                signatureOptions.setRevocationMode(1);
+                signatureOptions.setRevocationMode(3);
+                signatureOptions.setRevocationMode(4);
+                signatureOptions.setAlgorithmPolicyJson("{\"allow_rsa_pkcs1v15\":false}");
+                signatureOptions.setPathLimits(8, 128);
+                signatureOptions.addDistrustedCertificateSha256("0".repeat(64));
+                assertTrue("[]".equals(doc.signatureValidationReport(signatureOptions)),
+                    "signature report with native options handle");
+                assertTrue(doc.signatureValidationWithEvidence(signatureOptions).contains("evidence_bundle"),
+                    "signature evidence outcome with native options handle");
+            }
+            try (
+                Oxide.SignatureTrustStore trust = new Oxide.SignatureTrustStore();
+                Oxide.SignatureIntermediateStore intermediates = new Oxide.SignatureIntermediateStore();
+                Oxide.SignatureEvidenceStore evidence = new Oxide.SignatureEvidenceStore();
+                Oxide.SignatureRetrievalPolicy retrieval = new Oxide.SignatureRetrievalPolicy();
+                Oxide.SignatureValidationCancellation cancellation =
+                    new Oxide.SignatureValidationCancellation();
+                Oxide.SignatureValidationOptions signatureOptions = new Oxide.SignatureValidationOptions()
+            ) {
+                evidence.addOcspDer("untrusted-ocsp".getBytes(StandardCharsets.US_ASCII));
+                evidence.addCrlDer("untrusted-crl".getBytes(StandardCharsets.US_ASCII));
+                retrieval.setJson("{\"enabled\":false}");
+                signatureOptions.applyTrustStore(trust);
+                signatureOptions.applyIntermediateStore(intermediates);
+                signatureOptions.applyEvidenceStore(evidence);
+                signatureOptions.applyRetrievalPolicy(retrieval);
+                signatureOptions.setCancellation(cancellation);
+                cancellation.cancel();
+                boolean cancelled = false;
+                try {
+                    doc.signatureValidationReport(signatureOptions);
+                } catch (Oxide.OxideException expected) {
+                    cancelled = expected.getMessage().contains("operation cancelled");
+                }
+                assertTrue(cancelled, "signature component handles observe cancellation");
+            }
             assertTrue(!Oxide.engineVersion().isBlank(), "engine version");
             assertTrue(Oxide.abiVersion() >= 1, "abi version");
             for (Map.Entry<String, String> entry : reports.entrySet()) {

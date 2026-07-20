@@ -17,14 +17,14 @@
                      "Gradle JAR runtime smoke"
                  ],
     "jar_contents":  {
-                         "entry_count":  11,
+                         "entry_count":  17,
                          "required_entries_present":  true,
                          "forbidden_entries_absent":  true,
                          "native_libraries_in_jar":  [
 
                                                      ],
                          "tests_in_jar":  [
-
+                                              "org/oxidepdf/Oxide$SignatureIntermediateStore.class"
                                           ]
                      },
     "runtime_smoke":  {

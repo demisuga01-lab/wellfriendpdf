@@ -770,6 +770,25 @@ impl PdfReader {
         }
     }
 
+    /// Return the original byte range containing an uncompressed indirect
+    /// object. This is intentionally unavailable for object-stream members:
+    /// callers that need a raw-byte binding (for example PDF signature
+    /// `/Contents` versus `/ByteRange`) must not guess a synthetic source
+    /// range for compressed objects.
+    pub fn uncompressed_object_range(
+        &self,
+        number: u32,
+        generation: u16,
+    ) -> Option<std::ops::Range<usize>> {
+        let XrefEntry::Uncompressed { offset } = self.xref.get(&(number, generation))? else {
+            return None;
+        };
+        let end = self
+            .next_object_boundary(*offset)
+            .unwrap_or_else(|| self.source.len());
+        (*offset < end && end <= self.source.len()).then_some(*offset..end)
+    }
+
     pub(crate) fn content_stream_range(
         &self,
         number: u32,

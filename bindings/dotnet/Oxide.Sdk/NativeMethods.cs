@@ -109,6 +109,90 @@ internal static partial class NativeMethods
         }
     }
 
+    internal sealed class SignatureValidationOptionsHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private SignatureValidationOptionsHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            oxide_signature_validation_options_free(handle);
+            return true;
+        }
+    }
+
+    internal sealed class SignatureTrustStoreHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private SignatureTrustStoreHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            oxide_signature_trust_store_free(handle);
+            return true;
+        }
+    }
+
+    internal sealed class SignatureIntermediateStoreHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private SignatureIntermediateStoreHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            oxide_signature_intermediate_store_free(handle);
+            return true;
+        }
+    }
+
+    internal sealed class SignatureEvidenceStoreHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private SignatureEvidenceStoreHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            oxide_signature_evidence_store_free(handle);
+            return true;
+        }
+    }
+
+    internal sealed class SignatureRetrievalPolicyHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private SignatureRetrievalPolicyHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            oxide_signature_retrieval_policy_free(handle);
+            return true;
+        }
+    }
+
+    internal sealed class SignatureValidationCancellationHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private SignatureValidationCancellationHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            oxide_signature_validation_cancellation_free(handle);
+            return true;
+        }
+    }
+
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern DocumentHandle oxide_document_open_from_bytes(
         byte[] data,
@@ -373,6 +457,165 @@ internal static partial class NativeMethods
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_prompt23_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_signatures_with_options_json(
+        DocumentHandle document, IntPtr optionsJson, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_signature_validation_with_evidence_json(
+        DocumentHandle document, IntPtr optionsJson, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern SignatureValidationOptionsHandle oxide_signature_validation_options_new(
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void oxide_signature_validation_options_free(IntPtr options);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern SignatureTrustStoreHandle oxide_signature_trust_store_new(
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void oxide_signature_trust_store_free(IntPtr store);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_trust_store_add_anchor_der(
+        SignatureTrustStoreHandle store, byte[] data, UIntPtr len, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_trust_store_add_distrusted_certificate_sha256(
+        SignatureTrustStoreHandle store, IntPtr fingerprint, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern SignatureIntermediateStoreHandle oxide_signature_intermediate_store_new(
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void oxide_signature_intermediate_store_free(IntPtr store);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_intermediate_store_add_der(
+        SignatureIntermediateStoreHandle store, byte[] data, UIntPtr len, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern SignatureEvidenceStoreHandle oxide_signature_evidence_store_new(
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void oxide_signature_evidence_store_free(IntPtr store);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_evidence_store_add_ocsp_der(
+        SignatureEvidenceStoreHandle store, byte[] data, UIntPtr len, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_evidence_store_add_crl_der(
+        SignatureEvidenceStoreHandle store, byte[] data, UIntPtr len, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_evidence_store_set_bundle_json(
+        SignatureEvidenceStoreHandle store, IntPtr bundleJson, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern SignatureRetrievalPolicyHandle oxide_signature_retrieval_policy_new(
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void oxide_signature_retrieval_policy_free(IntPtr policy);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_retrieval_policy_set_json(
+        SignatureRetrievalPolicyHandle policy, IntPtr policyJson, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern SignatureValidationCancellationHandle oxide_signature_validation_cancellation_new(
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_cancellation_cancel(
+        SignatureValidationCancellationHandle cancellation, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void oxide_signature_validation_cancellation_free(IntPtr cancellation);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_apply_trust_store(
+        SignatureValidationOptionsHandle options, SignatureTrustStoreHandle store, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_apply_intermediate_store(
+        SignatureValidationOptionsHandle options, SignatureIntermediateStoreHandle store, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_apply_evidence_store(
+        SignatureValidationOptionsHandle options, SignatureEvidenceStoreHandle store, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_apply_retrieval_policy(
+        SignatureValidationOptionsHandle options, SignatureRetrievalPolicyHandle policy, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_set_cancellation(
+        SignatureValidationOptionsHandle options, SignatureValidationCancellationHandle cancellation, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_add_trust_anchor_der(
+        SignatureValidationOptionsHandle options, byte[] data, UIntPtr len, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_add_intermediate_der(
+        SignatureValidationOptionsHandle options, byte[] data, UIntPtr len, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_add_distrusted_certificate_sha256(
+        SignatureValidationOptionsHandle options, IntPtr fingerprint, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_add_ocsp_der(
+        SignatureValidationOptionsHandle options, byte[] data, UIntPtr len, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_add_crl_der(
+        SignatureValidationOptionsHandle options, byte[] data, UIntPtr len, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_set_validation_time_unix(
+        SignatureValidationOptionsHandle options, ulong validationTimeUnix, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_clear_validation_time(
+        SignatureValidationOptionsHandle options, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_set_revocation_mode(
+        SignatureValidationOptionsHandle options, int mode, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_set_retrieval_policy_json(
+        SignatureValidationOptionsHandle options, IntPtr policyJson, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_set_algorithm_policy_json(
+        SignatureValidationOptionsHandle options, IntPtr policyJson, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_set_evidence_bundle_json(
+        SignatureValidationOptionsHandle options, IntPtr bundleJson, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_signature_validation_options_set_path_limits(
+        SignatureValidationOptionsHandle options, UIntPtr maxChainDepth, UIntPtr maxPathCandidates,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_signatures_with_options_handle(
+        DocumentHandle document, SignatureValidationOptionsHandle options, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_signature_validation_with_evidence_handle(
+        DocumentHandle document, SignatureValidationOptionsHandle options, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_writer_determinism_audit_json(

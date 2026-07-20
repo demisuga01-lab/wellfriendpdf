@@ -848,6 +848,43 @@ pub fn signature_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<St
     envelope("signature_report", &engine.verify_signatures()?)
 }
 
+/// Prompt 24 signature report with explicit trust/evidence options.
+///
+/// `options_json` is parsed by [`crate::signature::verify_options_from_json`].
+/// The report remains deterministic for the same bytes, options, trust anchors,
+/// evidence, and validation time. Network retrieval remains disabled unless the
+/// options explicitly enable the bounded shared retrieval policy.
+pub fn signature_report_with_options_json(
+    bytes: &[u8],
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let options = crate::signature::verify_options_from_json(options_json)?;
+    envelope(
+        "signature_report",
+        &engine.verify_signatures_with_options(&options)?,
+    )
+}
+
+/// Prompt 24 signature validation plus an explicit, portable evidence bundle.
+///
+/// This is deliberately separate from [`signature_report_with_options_json`]:
+/// normal reports expose only evidence hashes and provenance, while this
+/// opt-in surface includes the bounded raw DER needed for offline replay.
+pub fn signature_validation_with_evidence_json(
+    bytes: &[u8],
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    let options = crate::signature::verify_options_from_json(options_json)?;
+    envelope(
+        "signature_validation_outcome",
+        &engine.verify_signatures_with_options_and_evidence(&options)?,
+    )
+}
+
 /// Font inventory (pdffonts-equivalent): name, type, embedding status,
 /// subsetting, encoding.
 pub fn font_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
@@ -3048,6 +3085,7 @@ pub fn feature_report_json() -> Result<String> {
         "prompt22_zopfli_dedup_office_to_pdf_benchmark": crate::prompt22::prompt22_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt22b_resource_dedup_office_benchmark_closure": crate::prompt22::prompt22b_feature_report_value(REPORT_ENVELOPE_VERSION),
         "prompt23_deterministic_writer_pubsec_aesgcm": crate::prompt23::prompt23_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "prompt24_certificate_trust_pades_ocsp_crl_validation": crate::signature::prompt24_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -3082,6 +3120,7 @@ pub fn feature_report_json() -> Result<String> {
             "prompt23_report", "writer_determinism_audit", "writer_external_diff",
             "writer_closeout_report", "pubsec_report", "aes_gcm_report",
             "pdf_mac_report", "pdf_mac_verify", "crypto_tamper_test",
+            "signature_validation", "signature_validation_with_evidence",
         ],
         "progress": {
             "status": "engine_tile_progressive_resume_supported",
@@ -3835,6 +3874,11 @@ mod tests {
             &signature_report_json(&bytes, None).unwrap(),
             "signature_report",
         );
+        let outcome = assert_envelope(
+            &signature_validation_with_evidence_json(&bytes, "{}", None).unwrap(),
+            "signature_validation_outcome",
+        );
+        assert!(outcome["report"]["evidence_bundle"].is_object());
         assert_envelope(
             &decode_budget_report_json("DCTDecode", 100, 100, 3).unwrap(),
             "decode_budget_report",
@@ -4223,6 +4267,20 @@ mod tests {
         assert_eq!(
             prompt23["aes_gcm_decrypt_status"],
             "implemented_with_limits"
+        );
+        let prompt24 = &v["report"]["prompt24_certificate_trust_pades_ocsp_crl_validation"];
+        assert_eq!(
+            prompt24["status"],
+            "implemented_with_limits_not_release_attested"
+        );
+        assert_eq!(
+            prompt24["signer_certificate_resolution"],
+            "implemented_exact_match_no_arbitrary_fallback"
+        );
+        assert_eq!(prompt24["retrieval"]["default"], "offline");
+        assert_eq!(
+            prompt24["release_attestation"]["final_closure_commit"],
+            "absent"
         );
         assert_envelope(
             &prompt09_renderer_report_json().unwrap(),

@@ -14,14 +14,14 @@
                      "JAR runtime smoke"
                  ],
     "jar_contents":  {
-                         "entry_count":  16,
+                         "entry_count":  22,
                          "required_entries_present":  true,
                          "forbidden_entries_absent":  true,
                          "native_libraries_in_jar":  [
 
                                                      ],
                          "tests_in_jar":  [
-
+                                              "org/oxidepdf/Oxide$SignatureIntermediateStore.class"
                                           ]
                      },
     "native_loading":  "JAR smoke ran from target/prompt02b-package-smoke/run with OXIDE_NATIVE_LIBRARY unset and oxide_capi copied to bindings/java/target/runtimes/win-x64/native.",

@@ -26,6 +26,12 @@ enum {
 };
 
 typedef struct OxideDocument OxideDocument;
+typedef struct OxideSignatureValidationOptions OxideSignatureValidationOptions;
+typedef struct OxideSignatureTrustStore OxideSignatureTrustStore;
+typedef struct OxideSignatureIntermediateStore OxideSignatureIntermediateStore;
+typedef struct OxideSignatureEvidenceStore OxideSignatureEvidenceStore;
+typedef struct OxideSignatureRetrievalPolicy OxideSignatureRetrievalPolicy;
+typedef struct OxideSignatureValidationCancellation OxideSignatureValidationCancellation;
 
 typedef struct OxideBuffer {
   uint8_t *data;
@@ -302,6 +308,162 @@ OXIDE_API int oxide_document_fonts_json(
 
 OXIDE_API int oxide_document_signatures_json(
     const OxideDocument *document,
+    char **out_json,
+    char **error_out);
+
+/* Prompt 24 signature-validation handles. All stores are owned and explicit:
+ * only an OxideSignatureTrustStore grants anchor trust; intermediate and
+ * evidence stores remain untrusted inputs until the shared validator proves
+ * their applicability. All byte inputs are copied during the call; no caller
+ * buffers are retained. Retrieval policy starts offline. */
+OXIDE_API OxideSignatureTrustStore *oxide_signature_trust_store_new(
+    char **error_out);
+OXIDE_API void oxide_signature_trust_store_free(
+    OxideSignatureTrustStore *store);
+OXIDE_API int oxide_signature_trust_store_add_anchor_der(
+    OxideSignatureTrustStore *store,
+    const uint8_t *data,
+    size_t len,
+    char **error_out);
+OXIDE_API int oxide_signature_trust_store_add_distrusted_certificate_sha256(
+    OxideSignatureTrustStore *store,
+    const char *fingerprint,
+    char **error_out);
+
+OXIDE_API OxideSignatureIntermediateStore *oxide_signature_intermediate_store_new(
+    char **error_out);
+OXIDE_API void oxide_signature_intermediate_store_free(
+    OxideSignatureIntermediateStore *store);
+OXIDE_API int oxide_signature_intermediate_store_add_der(
+    OxideSignatureIntermediateStore *store,
+    const uint8_t *data,
+    size_t len,
+    char **error_out);
+
+OXIDE_API OxideSignatureEvidenceStore *oxide_signature_evidence_store_new(
+    char **error_out);
+OXIDE_API void oxide_signature_evidence_store_free(
+    OxideSignatureEvidenceStore *store);
+OXIDE_API int oxide_signature_evidence_store_add_ocsp_der(
+    OxideSignatureEvidenceStore *store,
+    const uint8_t *data,
+    size_t len,
+    char **error_out);
+OXIDE_API int oxide_signature_evidence_store_add_crl_der(
+    OxideSignatureEvidenceStore *store,
+    const uint8_t *data,
+    size_t len,
+    char **error_out);
+OXIDE_API int oxide_signature_evidence_store_set_bundle_json(
+    OxideSignatureEvidenceStore *store,
+    const char *bundle_json,
+    char **error_out);
+
+OXIDE_API OxideSignatureRetrievalPolicy *oxide_signature_retrieval_policy_new(
+    char **error_out);
+OXIDE_API void oxide_signature_retrieval_policy_free(
+    OxideSignatureRetrievalPolicy *policy);
+OXIDE_API int oxide_signature_retrieval_policy_set_json(
+    OxideSignatureRetrievalPolicy *policy,
+    const char *policy_json,
+    char **error_out);
+
+OXIDE_API OxideSignatureValidationCancellation *oxide_signature_validation_cancellation_new(
+    char **error_out);
+OXIDE_API int oxide_signature_validation_cancellation_cancel(
+    const OxideSignatureValidationCancellation *cancellation,
+    char **error_out);
+OXIDE_API void oxide_signature_validation_cancellation_free(
+    OxideSignatureValidationCancellation *cancellation);
+
+OXIDE_API OxideSignatureValidationOptions *oxide_signature_validation_options_new(
+    char **error_out);
+OXIDE_API void oxide_signature_validation_options_free(
+    OxideSignatureValidationOptions *options);
+OXIDE_API int oxide_signature_validation_options_apply_trust_store(
+    OxideSignatureValidationOptions *options,
+    const OxideSignatureTrustStore *store,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_apply_intermediate_store(
+    OxideSignatureValidationOptions *options,
+    const OxideSignatureIntermediateStore *store,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_apply_evidence_store(
+    OxideSignatureValidationOptions *options,
+    const OxideSignatureEvidenceStore *store,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_apply_retrieval_policy(
+    OxideSignatureValidationOptions *options,
+    const OxideSignatureRetrievalPolicy *policy,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_set_cancellation(
+    OxideSignatureValidationOptions *options,
+    const OxideSignatureValidationCancellation *cancellation,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_add_trust_anchor_der(
+    OxideSignatureValidationOptions *options,
+    const uint8_t *data,
+    size_t len,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_add_intermediate_der(
+    OxideSignatureValidationOptions *options,
+    const uint8_t *data,
+    size_t len,
+    char **error_out);
+/* Adds a SHA-256 certificate fingerprint to the selected-path deny list. */
+OXIDE_API int oxide_signature_validation_options_add_distrusted_certificate_sha256(
+    OxideSignatureValidationOptions *options,
+    const char *fingerprint,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_add_ocsp_der(
+    OxideSignatureValidationOptions *options,
+    const uint8_t *data,
+    size_t len,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_add_crl_der(
+    OxideSignatureValidationOptions *options,
+    const uint8_t *data,
+    size_t len,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_set_validation_time_unix(
+    OxideSignatureValidationOptions *options,
+    uint64_t validation_time_unix,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_clear_validation_time(
+    OxideSignatureValidationOptions *options,
+    char **error_out);
+/* mode: 0 = not checked, 1 = offline strict, 2 = offline best effort,
+ * 3 = online strict, 4 = online best effort. Online modes still require an
+ * explicit bounded retrieval policy and never enable network access alone. */
+OXIDE_API int oxide_signature_validation_options_set_revocation_mode(
+    OxideSignatureValidationOptions *options,
+    int mode,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_set_retrieval_policy_json(
+    OxideSignatureValidationOptions *options,
+    const char *policy_json,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_set_algorithm_policy_json(
+    OxideSignatureValidationOptions *options,
+    const char *policy_json,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_set_evidence_bundle_json(
+    OxideSignatureValidationOptions *options,
+    const char *bundle_json,
+    char **error_out);
+OXIDE_API int oxide_signature_validation_options_set_path_limits(
+    OxideSignatureValidationOptions *options,
+    size_t max_chain_depth,
+    size_t max_path_candidates,
+    char **error_out);
+OXIDE_API int oxide_document_signatures_with_options_handle(
+    const OxideDocument *document,
+    const OxideSignatureValidationOptions *options,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_signature_validation_with_evidence_handle(
+    const OxideDocument *document,
+    const OxideSignatureValidationOptions *options,
     char **out_json,
     char **error_out);
 

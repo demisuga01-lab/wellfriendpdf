@@ -1,5 +1,8 @@
-use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::OnceLock;
 
+use der::asn1::GeneralizedTime;
+use der::{DateTime, Encode};
 use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
 use oxide_engine::structural::{encrypt, linearize};
 use oxide_engine::{
@@ -7,32 +10,61 @@ use oxide_engine::{
     EditMode, ExtractOptions, ImageRect, PdfAProfile, PdfBuilder, PdfDocument, PdfEditor,
     PdfSigner, RedactionOptions, SignatureOptions, SignatureValidity, StandardFont, TextStyle,
 };
-
-fn fixture(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("fixtures")
-        .join(name)
-}
-
-fn fixture_pem(name: &str) -> String {
-    let raw = std::fs::read_to_string(fixture(name)).expect("PEM fixture present");
-    let mut pem = raw
-        .lines()
-        .filter(|line| !line.trim_start().starts_with('#'))
-        .collect::<Vec<_>>()
-        .join("\n");
-    pem.push('\n');
-    pem
-}
+use rsa::pkcs1v15::SigningKey as RsaSigningKey;
+use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+use rsa::rand_core::OsRng;
+use rsa::{RsaPrivateKey, RsaPublicKey};
+use sha2::Sha256;
+use spki::SubjectPublicKeyInfoOwned;
+use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+use x509_cert::name::Name;
+use x509_cert::serial_number::SerialNumber;
+use x509_cert::time::{Time, Validity};
 
 fn test_signer() -> PdfSigner {
-    PdfSigner::from_pem(
-        &fixture_pem("sign_test_rsa_key.pem"),
-        &fixture_pem("sign_test_rsa_cert.pem"),
-        &[],
-    )
-    .expect("test signer parses")
+    static MATERIAL: OnceLock<(Vec<u8>, Vec<u8>)> = OnceLock::new();
+    let (key_der, cert_der) = MATERIAL.get_or_init(|| {
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("RSA key");
+        let signing_key = RsaSigningKey::<Sha256>::new(private_key.clone());
+        let public_key = RsaPublicKey::from(&private_key);
+        let spki_der = public_key.to_public_key_der().expect("SPKI DER");
+        let spki = SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("SPKI parse");
+        let subject = Name::from_str("CN=Oxide Capstone Test Signer,O=Oxide,C=US").expect("name");
+        let validity = Validity {
+            not_before: Time::GeneralTime(GeneralizedTime::from_date_time(
+                DateTime::new(2026, 1, 1, 0, 0, 0).unwrap(),
+            )),
+            not_after: Time::GeneralTime(GeneralizedTime::from_date_time(
+                DateTime::new(2036, 1, 1, 0, 0, 0).unwrap(),
+            )),
+        };
+        let builder = CertificateBuilder::new(
+            Profile::Leaf {
+                issuer: subject.clone(),
+                enable_key_agreement: false,
+                enable_key_encipherment: false,
+            },
+            SerialNumber::from(0x2402u32),
+            validity,
+            subject,
+            spki,
+            &signing_key,
+        )
+        .expect("cert builder");
+        let cert = builder
+            .build::<rsa::pkcs1v15::Signature>()
+            .expect("cert build");
+        (
+            private_key
+                .to_pkcs8_der()
+                .expect("private key DER")
+                .as_bytes()
+                .to_vec(),
+            cert.to_der().expect("certificate DER"),
+        )
+    });
+    PdfSigner::from_der(key_der, cert_der, &[]).expect("runtime test signer parses")
 }
 
 #[test]

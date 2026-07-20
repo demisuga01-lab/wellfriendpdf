@@ -176,6 +176,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "signature_evidence"
+path = "fuzz_targets/signature_evidence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "structured_pdf"
 path = "fuzz_targets/structured_pdf.rs"
 test = false

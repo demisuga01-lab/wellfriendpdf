@@ -5,8 +5,8 @@
     "gradle_artifact":  "E:\\wellpdfsdk\\bindings\\java\\build\\libs\\oxide-sdk-0.1.0.jar",
     "class_list":  {
                        "match":  true,
-                       "maven_count":  7,
-                       "gradle_count":  7,
+                       "maven_count":  13,
+                       "gradle_count":  13,
                        "only_maven":  [
 
                                       ],

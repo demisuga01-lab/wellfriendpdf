@@ -29,6 +29,10 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::parser::PdfParser;
 use crate::parser_report::{parser_report_bytes, ParserMode};
 use crate::reader::PdfReader;
+use crate::signature::verify_options_from_json;
+use crate::signature_evidence::{
+    validate_retrieval_uri_syntax, EvidenceBundle, EvidenceStore, RetrievalPolicy,
+};
 use crate::writer::{
     rewrite_document_with_mode, serialize_object, OutputObject, PdfWriter, WriterMode,
 };
@@ -402,6 +406,28 @@ pub fn fuzz_signature_validation(data: &[u8]) {
         return;
     };
     let _ = std::hint::black_box(engine.verify_signatures());
+}
+
+/// Fuzz Prompt 24 evidence import and the no-network portion of retrieval
+/// policy. This intentionally never constructs a transport session, so a
+/// fuzzing run cannot make a network request or create a caller-selected cache
+/// directory from attacker-controlled JSON.
+pub fn fuzz_signature_evidence(data: &[u8]) {
+    const MAX_INPUT: usize = 256 * 1024;
+    const MAX_TEXT: usize = 8 * 1024;
+    let bounded = &data[..data.len().min(MAX_INPUT)];
+
+    if let Ok(bundle) = serde_json::from_slice::<EvidenceBundle>(bounded) {
+        let _ = std::hint::black_box(bundle.validate(32, MAX_INPUT));
+        let _ = std::hint::black_box(EvidenceStore::import_bundle(&bundle, 32, MAX_INPUT));
+    }
+
+    let text = String::from_utf8_lossy(&bounded[..bounded.len().min(MAX_TEXT)]);
+    let _ = std::hint::black_box(verify_options_from_json(&text));
+    if let Ok(policy) = serde_json::from_str::<RetrievalPolicy>(&text) {
+        let _ = std::hint::black_box(policy.validate());
+        let _ = std::hint::black_box(validate_retrieval_uri_syntax(&policy, &text));
+    }
 }
 
 /// Generate structurally valid PDFs with adversarial-but-bounded content and

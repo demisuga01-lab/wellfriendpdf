@@ -586,6 +586,50 @@ fn verify_sig_runs() {
 }
 
 #[test]
+fn signature_verify_json_does_not_hide_an_untrusted_result() {
+    let out = run(&[
+        "signature-verify",
+        fx("sig_valid.pdf").to_str().unwrap(),
+        "--json",
+    ]);
+    assert_eq!(
+        out.status.code(),
+        Some(11),
+        "signature-verify must return the documented untrusted exit code: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&out.stdout)
+        .expect("failed verification must still emit a machine-readable report");
+    assert!(report.is_array());
+    assert!(String::from_utf8_lossy(&out.stderr).contains("signature untrusted"));
+}
+
+#[test]
+fn prompt24_evidence_commands_are_exposed() {
+    for command in [
+        "evidence-fetch",
+        "evidence-export",
+        "evidence-verify",
+        "evidence-replay",
+    ] {
+        let out = run(&[command, "--help"]);
+        assert_ok(&out, command);
+        assert!(String::from_utf8_lossy(&out.stdout).contains("evidence"));
+    }
+    for command in ["certificate-path-build", "certificate-path-verify"] {
+        let out = run(&[command, "--help"]);
+        assert_ok(&out, command);
+        assert!(String::from_utf8_lossy(&out.stdout).contains("certificate"));
+    }
+    for (command, needle) in [("ocsp-check", "OCSP"), ("crl-check", "CRL")] {
+        let out = run(&[command, "--help"]);
+        assert_ok(&out, command);
+        assert!(String::from_utf8_lossy(&out.stdout).contains(needle));
+    }
+}
+
+#[test]
 fn password_flag_accepted_by_render_and_images() {
     // render + extract-images accept --password (an encrypted fixture that
     // unlocks with the empty password).

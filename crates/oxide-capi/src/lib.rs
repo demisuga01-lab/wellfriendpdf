@@ -29,6 +29,57 @@ pub struct OxideDocument {
     ocr: Option<Arc<dyn oxide_engine::OcrEngine>>,
 }
 
+/// Opaque, owned Prompt 24 signature-validation configuration.
+///
+/// The handle contains only public certificates, revocation evidence, and
+/// policy metadata. It never stores private keys. Callers must synchronize
+/// concurrent mutation themselves and must free the handle with
+/// `oxide_signature_validation_options_free`.
+#[repr(C)]
+pub struct OxideSignatureValidationOptions {
+    options: oxide_engine::VerifyOptions,
+}
+
+/// Opaque explicit trust-anchor collection for Prompt 24 validation. This is
+/// deliberately separate from untrusted intermediates and evidence: adding a
+/// certificate here is the only C ABI operation that grants anchor trust.
+#[repr(C)]
+pub struct OxideSignatureTrustStore {
+    store: oxide_engine::TrustStore,
+    distrusted_certificate_sha256: Vec<String>,
+}
+
+/// Opaque untrusted intermediate-certificate collection. Certificates in this
+/// store can help path construction but are never promoted to trust anchors.
+#[repr(C)]
+pub struct OxideSignatureIntermediateStore {
+    store: oxide_engine::IntermediateStore,
+}
+
+/// Opaque caller-supplied/replayed revocation-evidence collection. Every item
+/// remains untrusted until the shared engine validates its signature, scope,
+/// freshness, and binding to a selected certificate path.
+#[repr(C)]
+pub struct OxideSignatureEvidenceStore {
+    ocsp_responses_der: Vec<Vec<u8>>,
+    crls_der: Vec<Vec<u8>>,
+    bundle: Option<oxide_engine::EvidenceBundle>,
+}
+
+/// Opaque bounded retrieval policy. Constructed policies start offline; an
+/// explicit JSON policy with `enabled: true` is required before network I/O.
+#[repr(C)]
+pub struct OxideSignatureRetrievalPolicy {
+    policy: oxide_engine::RetrievalPolicy,
+}
+
+/// Opaque cooperative cancellation source. It can be freed immediately after
+/// attaching it to options because options retain an owned clone of the token.
+#[repr(C)]
+pub struct OxideSignatureValidationCancellation {
+    token: oxide_engine::CancelToken,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct OxideBuffer {
@@ -1192,6 +1243,1039 @@ pub unsafe extern "C" fn oxide_document_signatures_json(
         }
         let reports = oxide(doc.engine.verify_signatures())?;
         let json = serde_json::to_string(&reports).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Returns Prompt 24 signature verification reports with explicit options JSON.
+///
+/// `options_json` may be NULL for defaults. When non-NULL it must be a
+/// NUL-terminated UTF-8 JSON object accepted by
+/// `oxide_engine::verify_options_from_json`.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_json` must be writable and freed with
+/// `oxide_string_free`. `options_json`, if non-null, must be a valid
+/// NUL-terminated UTF-8 string. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_signatures_with_options_json(
+    document: *const OxideDocument,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let options_json = if options_json.is_null() {
+            "{}".to_string()
+        } else {
+            unsafe { required_c_string(options_json, "options_json") }?
+        };
+        let options = oxide(oxide_engine::verify_options_from_json(&options_json))?;
+        let reports = oxide(doc.engine.verify_signatures_with_options(&options))?;
+        let json = serde_json::to_string(&reports).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Returns Prompt 24 signature validation reports together with the explicit
+/// content-addressed evidence bundle accepted by the shared engine pipeline.
+///
+/// This opt-in function can include bounded DER evidence in the returned JSON;
+/// callers must treat it as sensitive validation material and free it with
+/// `oxide_string_free`.
+///
+/// # Safety
+///
+/// `document` must be valid. `out_json` must be writable and freed with
+/// `oxide_string_free`. `options_json`, if non-null, must be a valid
+/// NUL-terminated UTF-8 string. `error_out`, if non-null, must be writable.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_signature_validation_with_evidence_json(
+    document: *const OxideDocument,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let options_json = if options_json.is_null() {
+            "{}".to_string()
+        } else {
+            unsafe { required_c_string(options_json, "options_json") }?
+        };
+        let options = oxide(oxide_engine::verify_options_from_json(&options_json))?;
+        let outcome = oxide(
+            doc.engine
+                .verify_signatures_with_options_and_evidence(&options),
+        )?;
+        let json = serde_json::to_string(&outcome).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Allocates an opaque Prompt 24 signature-validation options handle.
+///
+/// The handle starts offline with no implicit trust anchors. Use the explicit
+/// add/set functions below to load certificates, evidence, validation time,
+/// revocation mode, retrieval policy, and replay bundle.
+///
+/// # Safety
+///
+/// `error_out`, if non-null, must be writable and any returned string must be
+/// freed with `oxide_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_new(
+    error_out: *mut *mut c_char,
+) -> *mut OxideSignatureValidationOptions {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        Box::into_raw(Box::new(OxideSignatureValidationOptions {
+            options: oxide_engine::VerifyOptions::default(),
+        }))
+    })) {
+        Ok(options) => options,
+        Err(_) => {
+            set_error(
+                error_out,
+                "panic while creating signature validation options",
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Frees a handle returned by `oxide_signature_validation_options_new`.
+///
+/// # Safety
+///
+/// `options` must be null or a live handle returned by the constructor and
+/// not already freed.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_free(
+    options: *mut OxideSignatureValidationOptions,
+) {
+    if !options.is_null() {
+        let _ = unsafe { Box::from_raw(options) };
+    }
+}
+
+/// Allocates an explicit Prompt 24 trust-anchor store. It begins empty and
+/// never reads the platform trust store.
+///
+/// # Safety
+///
+/// `error_out` may be null or must point to writable storage for an error
+/// string allocated by this library.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_trust_store_new(
+    error_out: *mut *mut c_char,
+) -> *mut OxideSignatureTrustStore {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        Box::into_raw(Box::new(OxideSignatureTrustStore {
+            store: oxide_engine::TrustStore::new(),
+            distrusted_certificate_sha256: Vec::new(),
+        }))
+    })) {
+        Ok(store) => store,
+        Err(_) => {
+            set_error(error_out, "panic while creating signature trust store");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Frees a trust store returned by `oxide_signature_trust_store_new`.
+///
+/// # Safety
+///
+/// `store` must be null or a live handle returned by
+/// `oxide_signature_trust_store_new` and not already freed.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_trust_store_free(store: *mut OxideSignatureTrustStore) {
+    if !store.is_null() {
+        let _ = unsafe { Box::from_raw(store) };
+    }
+}
+
+/// Adds an explicit DER trust anchor. The input is parsed and canonicalized at
+/// insertion time, so malformed bytes never enter the selected-anchor pool.
+///
+/// # Safety
+///
+/// `store` must be a live trust-store handle. `data` must point to `len`
+/// readable bytes when `len` is nonzero. `error_out` follows the library error
+/// ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_trust_store_add_anchor_der(
+    store: *mut OxideSignatureTrustStore,
+    data: *const u8,
+    len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let store = checked_signature_trust_store_mut(store)?;
+        let der = unsafe { read_input_bytes(data, len, "trust anchor") }?;
+        if der.is_empty() {
+            return Err("trust anchor DER must not be empty".to_string());
+        }
+        oxide(store.store.add_der(der, "c_abi", None))?;
+        Ok(())
+    })
+}
+
+/// Adds a SHA-256 certificate fingerprint to the store's deny overlay. The
+/// normalized value is applied whenever the store is attached to options.
+///
+/// # Safety
+///
+/// `store` must be a live trust-store handle. `fingerprint` must be a valid
+/// NUL-terminated UTF-8 C string. `error_out` follows the library error
+/// ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_trust_store_add_distrusted_certificate_sha256(
+    store: *mut OxideSignatureTrustStore,
+    fingerprint: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let store = checked_signature_trust_store_mut(store)?;
+        let fingerprint = unsafe { required_c_string(fingerprint, "fingerprint") }?;
+        let normalized = oxide(
+            oxide_engine::VerifyOptions::default().with_distrusted_certificate_sha256(&fingerprint),
+        )?
+        .distrusted_certificate_sha256
+        .into_iter()
+        .next()
+        .ok_or_else(|| "normalized distrust fingerprint was missing".to_string())?;
+        if !store
+            .distrusted_certificate_sha256
+            .iter()
+            .any(|existing| existing == &normalized)
+        {
+            store.distrusted_certificate_sha256.push(normalized);
+            store.distrusted_certificate_sha256.sort();
+        }
+        Ok(())
+    })
+}
+
+/// Allocates an opaque untrusted intermediate store.
+///
+/// # Safety
+///
+/// `error_out` may be null or must point to writable storage for an error
+/// string allocated by this library.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_intermediate_store_new(
+    error_out: *mut *mut c_char,
+) -> *mut OxideSignatureIntermediateStore {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        Box::into_raw(Box::new(OxideSignatureIntermediateStore {
+            store: oxide_engine::IntermediateStore::new(),
+        }))
+    })) {
+        Ok(store) => store,
+        Err(_) => {
+            set_error(
+                error_out,
+                "panic while creating signature intermediate store",
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Frees an intermediate store returned by
+/// `oxide_signature_intermediate_store_new`.
+///
+/// # Safety
+///
+/// `store` must be null or a live handle returned by
+/// `oxide_signature_intermediate_store_new` and not already freed.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_intermediate_store_free(
+    store: *mut OxideSignatureIntermediateStore,
+) {
+    if !store.is_null() {
+        let _ = unsafe { Box::from_raw(store) };
+    }
+}
+
+/// Adds a DER intermediate certificate. This parses and canonicalizes the
+/// certificate but does not confer trust.
+///
+/// # Safety
+///
+/// `store` must be a live intermediate-store handle. `data` must point to
+/// `len` readable bytes when `len` is nonzero. `error_out` follows the library
+/// error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_intermediate_store_add_der(
+    store: *mut OxideSignatureIntermediateStore,
+    data: *const u8,
+    len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let store = checked_signature_intermediate_store_mut(store)?;
+        let der = unsafe { read_input_bytes(data, len, "intermediate") }?;
+        if der.is_empty() {
+            return Err("intermediate DER must not be empty".to_string());
+        }
+        oxide(store.store.add_der(der))?;
+        Ok(())
+    })
+}
+
+/// Allocates an opaque supplied/replayed evidence store.
+///
+/// # Safety
+///
+/// `error_out` may be null or must point to writable storage for an error
+/// string allocated by this library.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_evidence_store_new(
+    error_out: *mut *mut c_char,
+) -> *mut OxideSignatureEvidenceStore {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        Box::into_raw(Box::new(OxideSignatureEvidenceStore {
+            ocsp_responses_der: Vec::new(),
+            crls_der: Vec::new(),
+            bundle: None,
+        }))
+    })) {
+        Ok(store) => store,
+        Err(_) => {
+            set_error(error_out, "panic while creating signature evidence store");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Frees an evidence store returned by `oxide_signature_evidence_store_new`.
+///
+/// # Safety
+///
+/// `store` must be null or a live handle returned by
+/// `oxide_signature_evidence_store_new` and not already freed.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_evidence_store_free(
+    store: *mut OxideSignatureEvidenceStore,
+) {
+    if !store.is_null() {
+        let _ = unsafe { Box::from_raw(store) };
+    }
+}
+
+/// Adds DER OCSP bytes as caller-supplied evidence. Parsing and authorization
+/// happen later against the selected path; this call only copies bounded input.
+///
+/// # Safety
+///
+/// `store` must be a live evidence-store handle. `data` must point to `len`
+/// readable bytes when `len` is nonzero. `error_out` follows the library error
+/// ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_evidence_store_add_ocsp_der(
+    store: *mut OxideSignatureEvidenceStore,
+    data: *const u8,
+    len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let store = checked_signature_evidence_store_mut(store)?;
+        let der = unsafe { read_input_bytes(data, len, "OCSP response") }?.to_vec();
+        if der.is_empty() {
+            return Err("OCSP response DER must not be empty".to_string());
+        }
+        store.ocsp_responses_der.push(der);
+        Ok(())
+    })
+}
+
+/// Adds DER CRL bytes as caller-supplied evidence. A CRL remains untrusted
+/// until issuer, signature, scope, freshness, and policy are validated.
+///
+/// # Safety
+///
+/// `store` must be a live evidence-store handle. `data` must point to `len`
+/// readable bytes when `len` is nonzero. `error_out` follows the library error
+/// ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_evidence_store_add_crl_der(
+    store: *mut OxideSignatureEvidenceStore,
+    data: *const u8,
+    len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let store = checked_signature_evidence_store_mut(store)?;
+        let der = unsafe { read_input_bytes(data, len, "CRL") }?.to_vec();
+        if der.is_empty() {
+            return Err("CRL DER must not be empty".to_string());
+        }
+        store.crls_der.push(der);
+        Ok(())
+    })
+}
+
+/// Imports a portable evidence bundle into the opaque evidence store. Bundle
+/// schema, hashes, duplicates, entry counts, and byte limits are checked here;
+/// its contents are revalidated on every signature validation use.
+///
+/// # Safety
+///
+/// `store` must be a live evidence-store handle. `bundle_json` must be a valid
+/// NUL-terminated UTF-8 C string. `error_out` follows the library error
+/// ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_evidence_store_set_bundle_json(
+    store: *mut OxideSignatureEvidenceStore,
+    bundle_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let store = checked_signature_evidence_store_mut(store)?;
+        let bundle_json = unsafe { required_c_string(bundle_json, "bundle_json") }?;
+        let bundle: oxide_engine::EvidenceBundle = serde_json::from_str(&bundle_json)
+            .map_err(|error| format!("evidence bundle JSON: {error}"))?;
+        let budget = oxide_engine::NetworkBudget::default();
+        oxide_engine::EvidenceStore::import_bundle(
+            &bundle,
+            budget.max_cache_entries,
+            budget.max_cache_bytes,
+        )
+        .map_err(|error| format!("evidence bundle: {error}"))?;
+        store.bundle = Some(bundle);
+        Ok(())
+    })
+}
+
+/// Allocates a bounded retrieval-policy handle. It starts offline.
+///
+/// # Safety
+///
+/// `error_out` may be null or must point to writable storage for an error
+/// string allocated by this library.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_retrieval_policy_new(
+    error_out: *mut *mut c_char,
+) -> *mut OxideSignatureRetrievalPolicy {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        Box::into_raw(Box::new(OxideSignatureRetrievalPolicy {
+            policy: oxide_engine::RetrievalPolicy::offline(),
+        }))
+    })) {
+        Ok(policy) => policy,
+        Err(_) => {
+            set_error(error_out, "panic while creating signature retrieval policy");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Frees a retrieval-policy handle.
+///
+/// # Safety
+///
+/// `policy` must be null or a live handle returned by
+/// `oxide_signature_retrieval_policy_new` and not already freed.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_retrieval_policy_free(
+    policy: *mut OxideSignatureRetrievalPolicy,
+) {
+    if !policy.is_null() {
+        let _ = unsafe { Box::from_raw(policy) };
+    }
+}
+
+/// Replaces a retrieval policy from a complete JSON object. Online I/O remains
+/// disabled unless the object explicitly sets `enabled` to true.
+///
+/// # Safety
+///
+/// `policy` must be a live retrieval-policy handle. `policy_json` must be a
+/// valid NUL-terminated UTF-8 C string. `error_out` follows the library error
+/// ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_retrieval_policy_set_json(
+    policy: *mut OxideSignatureRetrievalPolicy,
+    policy_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let policy = checked_signature_retrieval_policy_mut(policy)?;
+        let policy_json = unsafe { required_c_string(policy_json, "policy_json") }?;
+        let parsed: oxide_engine::RetrievalPolicy = serde_json::from_str(&policy_json)
+            .map_err(|error| format!("retrieval policy JSON: {error}"))?;
+        parsed
+            .validate()
+            .map_err(|error| format!("retrieval policy: {error}"))?;
+        policy.policy = parsed;
+        Ok(())
+    })
+}
+
+/// Allocates a cooperative cancellation source for signature validation.
+///
+/// # Safety
+///
+/// `error_out` may be null or must point to writable storage for an error
+/// string allocated by this library.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_cancellation_new(
+    error_out: *mut *mut c_char,
+) -> *mut OxideSignatureValidationCancellation {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        Box::into_raw(Box::new(OxideSignatureValidationCancellation {
+            token: oxide_engine::CancelToken::new(),
+        }))
+    })) {
+        Ok(cancellation) => cancellation,
+        Err(_) => {
+            set_error(
+                error_out,
+                "panic while creating signature validation cancellation",
+            );
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Signal cancellation. It is safe to call from another native thread while a
+/// validation call is running with an attached clone.
+///
+/// # Safety
+///
+/// `cancellation` must be a live cancellation handle. `error_out` follows the
+/// library error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_cancellation_cancel(
+    cancellation: *const OxideSignatureValidationCancellation,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let cancellation = checked_signature_validation_cancellation(cancellation)?;
+        cancellation.token.cancel();
+        Ok(())
+    })
+}
+
+/// Frees a cancellation source. Attached option handles keep their own token
+/// clone, so freeing this pointer does not invalidate an in-flight validation.
+///
+/// # Safety
+///
+/// `cancellation` must be null or a live handle returned by
+/// `oxide_signature_validation_cancellation_new` and not already freed.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_cancellation_free(
+    cancellation: *mut OxideSignatureValidationCancellation,
+) {
+    if !cancellation.is_null() {
+        let _ = unsafe { Box::from_raw(cancellation) };
+    }
+}
+
+/// Copies an explicit trust store and its deny overlay into validation options.
+///
+/// # Safety
+///
+/// `options` and `store` must be live handles. `error_out` follows the library
+/// error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_apply_trust_store(
+    options: *mut OxideSignatureValidationOptions,
+    store: *const OxideSignatureTrustStore,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let store = checked_signature_trust_store(store)?;
+        let options = checked_signature_validation_options_mut(options)?;
+        let mut updated = options.options.clone().with_trust_store(&store.store);
+        for fingerprint in &store.distrusted_certificate_sha256 {
+            updated = oxide(updated.with_distrusted_certificate_sha256(fingerprint))?;
+        }
+        options.options = updated;
+        Ok(())
+    })
+}
+
+/// Copies untrusted intermediate candidates into validation options.
+///
+/// # Safety
+///
+/// `options` and `store` must be live handles. `error_out` follows the library
+/// error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_apply_intermediate_store(
+    options: *mut OxideSignatureValidationOptions,
+    store: *const OxideSignatureIntermediateStore,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let store = checked_signature_intermediate_store(store)?;
+        let options = checked_signature_validation_options_mut(options)?;
+        options.options = options
+            .options
+            .clone()
+            .with_intermediate_store(&store.store);
+        Ok(())
+    })
+}
+
+/// Copies supplied/replayed evidence into validation options. This does not
+/// change trust-anchor configuration or enable online retrieval.
+///
+/// # Safety
+///
+/// `options` and `store` must be live handles. `error_out` follows the library
+/// error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_apply_evidence_store(
+    options: *mut OxideSignatureValidationOptions,
+    store: *const OxideSignatureEvidenceStore,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let store = checked_signature_evidence_store(store)?;
+        let options = checked_signature_validation_options_mut(options)?;
+        let mut updated = options.options.clone();
+        updated
+            .ocsp_responses_der
+            .extend(store.ocsp_responses_der.iter().cloned());
+        updated.crls_der.extend(store.crls_der.iter().cloned());
+        if let Some(bundle) = &store.bundle {
+            updated = oxide(updated.with_evidence_bundle(bundle.clone()))?;
+        }
+        options.options = updated;
+        Ok(())
+    })
+}
+
+/// Copies a bounded retrieval policy into validation options.
+///
+/// # Safety
+///
+/// `options` and `policy` must be live handles. `error_out` follows the
+/// library error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_apply_retrieval_policy(
+    options: *mut OxideSignatureValidationOptions,
+    policy: *const OxideSignatureRetrievalPolicy,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let policy = checked_signature_retrieval_policy(policy)?;
+        let options = checked_signature_validation_options_mut(options)?;
+        options.options = oxide(
+            options
+                .options
+                .clone()
+                .with_retrieval_policy(policy.policy.clone()),
+        )?;
+        Ok(())
+    })
+}
+
+/// Attaches a clone of a cooperative cancellation source to validation options.
+///
+/// # Safety
+///
+/// `options` and `cancellation` must be live handles. `error_out` follows the
+/// library error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_set_cancellation(
+    options: *mut OxideSignatureValidationOptions,
+    cancellation: *const OxideSignatureValidationCancellation,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let cancellation = checked_signature_validation_cancellation(cancellation)?;
+        let options = checked_signature_validation_options_mut(options)?;
+        options.options = options
+            .options
+            .clone()
+            .with_cancellation_token(cancellation.token.clone());
+        Ok(())
+    })
+}
+
+/// Adds DER trust-anchor certificate bytes to an opaque validation handle.
+///
+/// # Safety
+///
+/// `options` must be valid. `data` must address `len` readable bytes when
+/// `len` is nonzero.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_add_trust_anchor_der(
+    options: *mut OxideSignatureValidationOptions,
+    data: *const u8,
+    len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        let der = unsafe { read_input_bytes(data, len, "trust anchor") }?.to_vec();
+        if der.is_empty() {
+            return Err("trust anchor DER must not be empty".to_string());
+        }
+        options.options.trust_anchors_der.push(der);
+        Ok(())
+    })
+}
+
+/// Adds an untrusted DER intermediate certificate to an opaque validation handle.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `data` must point to
+/// `len` readable bytes when `len` is nonzero. `error_out` follows the library
+/// error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_add_intermediate_der(
+    options: *mut OxideSignatureValidationOptions,
+    data: *const u8,
+    len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        let der = unsafe { read_input_bytes(data, len, "intermediate") }?.to_vec();
+        if der.is_empty() {
+            return Err("intermediate DER must not be empty".to_string());
+        }
+        options.options.intermediates_der.push(der);
+        Ok(())
+    })
+}
+
+/// Adds a SHA-256 certificate fingerprint to the path deny list. The entry is
+/// normalized by the Rust engine and is enforced during candidate and anchor
+/// selection; it is not merely report metadata.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `fingerprint` must be
+/// a valid NUL-terminated UTF-8 C string. `error_out` follows the library
+/// error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_add_distrusted_certificate_sha256(
+    options: *mut OxideSignatureValidationOptions,
+    fingerprint: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        let fingerprint = unsafe { required_c_string(fingerprint, "fingerprint") }?;
+        options.options = oxide(
+            options
+                .options
+                .clone()
+                .with_distrusted_certificate_sha256(&fingerprint),
+        )?;
+        Ok(())
+    })
+}
+
+/// Adds a caller-supplied DER OCSP response to an opaque validation handle.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `data` must point to
+/// `len` readable bytes when `len` is nonzero. `error_out` follows the library
+/// error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_add_ocsp_der(
+    options: *mut OxideSignatureValidationOptions,
+    data: *const u8,
+    len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        let der = unsafe { read_input_bytes(data, len, "OCSP response") }?.to_vec();
+        if der.is_empty() {
+            return Err("OCSP response DER must not be empty".to_string());
+        }
+        options.options.ocsp_responses_der.push(der);
+        Ok(())
+    })
+}
+
+/// Adds a caller-supplied DER CRL to an opaque validation handle.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `data` must point to
+/// `len` readable bytes when `len` is nonzero. `error_out` follows the library
+/// error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_add_crl_der(
+    options: *mut OxideSignatureValidationOptions,
+    data: *const u8,
+    len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        let der = unsafe { read_input_bytes(data, len, "CRL") }?.to_vec();
+        if der.is_empty() {
+            return Err("CRL DER must not be empty".to_string());
+        }
+        options.options.crls_der.push(der);
+        Ok(())
+    })
+}
+
+/// Sets an explicit Unix validation time. Use
+/// `oxide_signature_validation_options_clear_validation_time` to return to
+/// the system clock.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `error_out` follows
+/// the library error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_set_validation_time_unix(
+    options: *mut OxideSignatureValidationOptions,
+    validation_time_unix: u64,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        options.options.validation_time_unix = Some(validation_time_unix);
+        Ok(())
+    })
+}
+
+/// Clears a caller-selected validation time so the engine uses its injected
+/// system clock source.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `error_out` follows
+/// the library error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_clear_validation_time(
+    options: *mut OxideSignatureValidationOptions,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        options.options.validation_time_unix = None;
+        Ok(())
+    })
+}
+
+/// Selects a revocation mode: 0 = not checked, 1 = offline strict,
+/// 2 = offline best effort, 3 = online strict, 4 = online best effort.
+/// Online modes still require an explicit bounded retrieval policy; selecting
+/// a numeric mode alone never enables network access.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `error_out` follows
+/// the library error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_set_revocation_mode(
+    options: *mut OxideSignatureValidationOptions,
+    mode: c_int,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        options.options.revocation_mode = match mode {
+            0 => oxide_engine::SignatureRevocationMode::NotChecked,
+            1 => oxide_engine::SignatureRevocationMode::OfflineStrict,
+            2 => oxide_engine::SignatureRevocationMode::OfflineBestEffort,
+            3 => oxide_engine::SignatureRevocationMode::OnlineStrict,
+            4 => oxide_engine::SignatureRevocationMode::OnlineBestEffort,
+            _ => return Err("unknown signature revocation mode".to_string()),
+        };
+        Ok(())
+    })
+}
+
+/// Applies a complete bounded retrieval policy JSON object to an opaque
+/// validation handle. Network retrieval remains disabled unless the policy's
+/// explicit `enabled` field is true.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `policy_json` must be a
+/// valid NUL-terminated UTF-8 C string. `error_out` follows the library error
+/// ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_set_retrieval_policy_json(
+    options: *mut OxideSignatureValidationOptions,
+    policy_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        let policy_json = unsafe { required_c_string(policy_json, "policy_json") }?;
+        let policy: oxide_engine::RetrievalPolicy = serde_json::from_str(&policy_json)
+            .map_err(|error| format!("retrieval policy JSON: {error}"))?;
+        options.options = oxide(options.options.clone().with_retrieval_policy(policy))?;
+        Ok(())
+    })
+}
+
+/// Applies an explicit CMS/PKIX algorithm-policy JSON object to an opaque
+/// validation handle. A recognized legacy algorithm is still rejected when
+/// this policy forbids it.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `policy_json` must be a
+/// valid NUL-terminated UTF-8 C string. `error_out` follows the library error
+/// ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_set_algorithm_policy_json(
+    options: *mut OxideSignatureValidationOptions,
+    policy_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        let policy_json = unsafe { required_c_string(policy_json, "policy_json") }?;
+        let policy: oxide_engine::SignatureAlgorithmPolicy = serde_json::from_str(&policy_json)
+            .map_err(|error| format!("algorithm policy JSON: {error}"))?;
+        options.options = oxide(options.options.clone().with_algorithm_policy(policy))?;
+        Ok(())
+    })
+}
+
+/// Applies a replayable evidence-bundle JSON object to an opaque validation
+/// handle. Imported certificates remain intermediates and all OCSP/CRL bytes
+/// are revalidated by the engine.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `bundle_json` must be a
+/// valid NUL-terminated UTF-8 C string. `error_out` follows the library error
+/// ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_set_evidence_bundle_json(
+    options: *mut OxideSignatureValidationOptions,
+    bundle_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let options = checked_signature_validation_options_mut(options)?;
+        let bundle_json = unsafe { required_c_string(bundle_json, "bundle_json") }?;
+        let bundle: oxide_engine::EvidenceBundle = serde_json::from_str(&bundle_json)
+            .map_err(|error| format!("evidence bundle JSON: {error}"))?;
+        options.options = oxide(options.options.clone().with_evidence_bundle(bundle))?;
+        Ok(())
+    })
+}
+
+/// Sets bounded certificate-path search limits on an opaque validation handle.
+///
+/// # Safety
+///
+/// `options` must be a live validation-options handle. `error_out` follows
+/// the library error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_signature_validation_options_set_path_limits(
+    options: *mut OxideSignatureValidationOptions,
+    max_chain_depth: usize,
+    max_path_candidates: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if max_chain_depth == 0 || max_path_candidates == 0 {
+            return Err("path limits must be greater than zero".to_string());
+        }
+        let options = checked_signature_validation_options_mut(options)?;
+        options.options.max_chain_depth = max_chain_depth;
+        options.options.max_path_candidates = max_path_candidates;
+        Ok(())
+    })
+}
+
+/// Validates signatures using an opaque options handle and returns the normal
+/// structured report JSON. The configuration handle remains caller-owned.
+///
+/// # Safety
+///
+/// `document` and `options` must be live handles. `out_json` must point to
+/// writable storage for a string allocated by this library, which the caller
+/// must free with the exported string-free function. `error_out` follows the
+/// library error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_signatures_with_options_handle(
+    document: *const OxideDocument,
+    options: *const OxideSignatureValidationOptions,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let options = checked_signature_validation_options(options)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".to_string());
+        }
+        let reports = oxide(doc.engine.verify_signatures_with_options(&options.options))?;
+        let json = serde_json::to_string(&reports).map_err(|error| error.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Validates signatures using an opaque options handle and returns the report
+/// plus exportable accepted evidence. The configuration handle is not consumed.
+///
+/// # Safety
+///
+/// `document` and `options` must be live handles. `out_json` must point to
+/// writable storage for a string allocated by this library, which the caller
+/// must free with the exported string-free function. `error_out` follows the
+/// library error ownership contract.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_signature_validation_with_evidence_handle(
+    document: *const OxideDocument,
+    options: *const OxideSignatureValidationOptions,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        let options = checked_signature_validation_options(options)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".to_string());
+        }
+        let outcome = oxide(
+            doc.engine
+                .verify_signatures_with_options_and_evidence(&options.options),
+        )?;
+        let json = serde_json::to_string(&outcome).map_err(|error| error.to_string())?;
         unsafe {
             *out_json = into_c_string(json);
         }
@@ -2893,6 +3977,116 @@ fn checked_doc<'a>(document: *const OxideDocument) -> Result<&'a OxideDocument, 
     }
 }
 
+fn checked_signature_validation_options<'a>(
+    options: *const OxideSignatureValidationOptions,
+) -> Result<&'a OxideSignatureValidationOptions, String> {
+    if options.is_null() {
+        Err("signature validation options pointer is null".to_string())
+    } else {
+        Ok(unsafe { &*options })
+    }
+}
+
+fn checked_signature_validation_options_mut<'a>(
+    options: *mut OxideSignatureValidationOptions,
+) -> Result<&'a mut OxideSignatureValidationOptions, String> {
+    if options.is_null() {
+        Err("signature validation options pointer is null".to_string())
+    } else {
+        Ok(unsafe { &mut *options })
+    }
+}
+
+fn checked_signature_trust_store<'a>(
+    store: *const OxideSignatureTrustStore,
+) -> Result<&'a OxideSignatureTrustStore, String> {
+    if store.is_null() {
+        Err("signature trust store pointer is null".to_string())
+    } else {
+        Ok(unsafe { &*store })
+    }
+}
+
+fn checked_signature_trust_store_mut<'a>(
+    store: *mut OxideSignatureTrustStore,
+) -> Result<&'a mut OxideSignatureTrustStore, String> {
+    if store.is_null() {
+        Err("signature trust store pointer is null".to_string())
+    } else {
+        Ok(unsafe { &mut *store })
+    }
+}
+
+fn checked_signature_intermediate_store<'a>(
+    store: *const OxideSignatureIntermediateStore,
+) -> Result<&'a OxideSignatureIntermediateStore, String> {
+    if store.is_null() {
+        Err("signature intermediate store pointer is null".to_string())
+    } else {
+        Ok(unsafe { &*store })
+    }
+}
+
+fn checked_signature_intermediate_store_mut<'a>(
+    store: *mut OxideSignatureIntermediateStore,
+) -> Result<&'a mut OxideSignatureIntermediateStore, String> {
+    if store.is_null() {
+        Err("signature intermediate store pointer is null".to_string())
+    } else {
+        Ok(unsafe { &mut *store })
+    }
+}
+
+fn checked_signature_evidence_store<'a>(
+    store: *const OxideSignatureEvidenceStore,
+) -> Result<&'a OxideSignatureEvidenceStore, String> {
+    if store.is_null() {
+        Err("signature evidence store pointer is null".to_string())
+    } else {
+        Ok(unsafe { &*store })
+    }
+}
+
+fn checked_signature_evidence_store_mut<'a>(
+    store: *mut OxideSignatureEvidenceStore,
+) -> Result<&'a mut OxideSignatureEvidenceStore, String> {
+    if store.is_null() {
+        Err("signature evidence store pointer is null".to_string())
+    } else {
+        Ok(unsafe { &mut *store })
+    }
+}
+
+fn checked_signature_retrieval_policy<'a>(
+    policy: *const OxideSignatureRetrievalPolicy,
+) -> Result<&'a OxideSignatureRetrievalPolicy, String> {
+    if policy.is_null() {
+        Err("signature retrieval policy pointer is null".to_string())
+    } else {
+        Ok(unsafe { &*policy })
+    }
+}
+
+fn checked_signature_retrieval_policy_mut<'a>(
+    policy: *mut OxideSignatureRetrievalPolicy,
+) -> Result<&'a mut OxideSignatureRetrievalPolicy, String> {
+    if policy.is_null() {
+        Err("signature retrieval policy pointer is null".to_string())
+    } else {
+        Ok(unsafe { &mut *policy })
+    }
+}
+
+fn checked_signature_validation_cancellation<'a>(
+    cancellation: *const OxideSignatureValidationCancellation,
+) -> Result<&'a OxideSignatureValidationCancellation, String> {
+    if cancellation.is_null() {
+        Err("signature validation cancellation pointer is null".to_string())
+    } else {
+        Ok(unsafe { &*cancellation })
+    }
+}
+
 unsafe fn read_pages(pages: *const usize, pages_len: usize) -> Result<Vec<usize>, String> {
     if pages_len == 0 {
         return Ok(Vec::new());
@@ -3276,6 +4470,291 @@ mod tests {
         unsafe { oxide_string_free(fields) };
 
         unsafe { oxide_document_free(doc) };
+    }
+
+    #[test]
+    fn capi_signature_options_json_returns_owned_report_and_rejects_bad_options() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc = unsafe { oxide_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+
+        let options =
+            CString::new(r#"{"policy_profile":"offline_strict","online":false}"#).unwrap();
+        let mut json = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_signatures_with_options_json(
+                doc,
+                options.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(text, "[]");
+        unsafe { oxide_string_free(json) };
+
+        let mut outcome_json = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_signature_validation_with_evidence_json(
+                doc,
+                options.as_ptr(),
+                &mut outcome_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let outcome = unsafe { CStr::from_ptr(outcome_json) }
+            .to_string_lossy()
+            .into_owned();
+        assert!(outcome.contains("evidence_bundle"), "outcome: {outcome}");
+        unsafe { oxide_string_free(outcome_json) };
+
+        let bad = CString::new(r#"{"trust_anchors_der_hex":["not hex"]}"#).unwrap();
+        let mut bad_json = std::ptr::null_mut();
+        let mut bad_error = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_signatures_with_options_json(
+                doc,
+                bad.as_ptr(),
+                &mut bad_json,
+                &mut bad_error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_ERROR);
+        assert!(bad_json.is_null());
+        assert!(!bad_error.is_null());
+        let message = unsafe { CStr::from_ptr(bad_error) }.to_string_lossy();
+        assert!(message.contains("not valid hex DER"), "message: {message}");
+        unsafe {
+            oxide_error_free(bad_error);
+            oxide_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_signature_validation_options_handle_has_owned_lifecycle_and_reports() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc = unsafe { oxide_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        assert!(error.is_null());
+
+        for _ in 0..16 {
+            let options = unsafe { oxide_signature_validation_options_new(&mut error) };
+            assert!(!options.is_null());
+            assert!(error.is_null());
+
+            let status = unsafe {
+                oxide_signature_validation_options_set_path_limits(options, 0, 1, &mut error)
+            };
+            assert_eq!(status, OXIDE_STATUS_ERROR);
+            assert!(!error.is_null());
+            unsafe { oxide_error_free(error) };
+            error = std::ptr::null_mut();
+
+            let status = unsafe {
+                oxide_signature_validation_options_add_trust_anchor_der(
+                    options,
+                    std::ptr::null(),
+                    1,
+                    &mut error,
+                )
+            };
+            assert_eq!(status, OXIDE_STATUS_ERROR);
+            assert!(!error.is_null());
+            unsafe { oxide_error_free(error) };
+            error = std::ptr::null_mut();
+
+            let status = unsafe {
+                oxide_signature_validation_options_set_revocation_mode(options, 1, &mut error)
+            };
+            assert_eq!(status, OXIDE_STATUS_OK);
+            assert!(error.is_null());
+
+            let status = unsafe {
+                oxide_signature_validation_options_set_revocation_mode(options, 3, &mut error)
+            };
+            assert_eq!(status, OXIDE_STATUS_OK);
+            assert!(error.is_null());
+
+            let status = unsafe {
+                oxide_signature_validation_options_set_revocation_mode(options, 4, &mut error)
+            };
+            assert_eq!(status, OXIDE_STATUS_OK);
+            assert!(error.is_null());
+
+            let algorithm_policy = CString::new(r#"{"allow_rsa_pkcs1v15":false}"#).unwrap();
+            let status = unsafe {
+                oxide_signature_validation_options_set_algorithm_policy_json(
+                    options,
+                    algorithm_policy.as_ptr(),
+                    &mut error,
+                )
+            };
+            assert_eq!(status, OXIDE_STATUS_OK);
+            assert!(error.is_null());
+
+            let denied = CString::new("00".repeat(32)).unwrap();
+            let status = unsafe {
+                oxide_signature_validation_options_add_distrusted_certificate_sha256(
+                    options,
+                    denied.as_ptr(),
+                    &mut error,
+                )
+            };
+            assert_eq!(status, OXIDE_STATUS_OK);
+            assert!(error.is_null());
+
+            let mut report = std::ptr::null_mut();
+            let status = unsafe {
+                oxide_document_signatures_with_options_handle(doc, options, &mut report, &mut error)
+            };
+            assert_eq!(status, OXIDE_STATUS_OK);
+            assert_eq!(unsafe { CStr::from_ptr(report) }.to_bytes(), b"[]");
+            unsafe { oxide_string_free(report) };
+
+            let mut outcome = std::ptr::null_mut();
+            let status = unsafe {
+                oxide_document_signature_validation_with_evidence_handle(
+                    doc,
+                    options,
+                    &mut outcome,
+                    &mut error,
+                )
+            };
+            assert_eq!(status, OXIDE_STATUS_OK);
+            assert!(unsafe { CStr::from_ptr(outcome) }
+                .to_string_lossy()
+                .contains("evidence_bundle"));
+            unsafe {
+                oxide_string_free(outcome);
+                oxide_signature_validation_options_free(options);
+            }
+        }
+        unsafe { oxide_document_free(doc) };
+    }
+
+    #[test]
+    fn capi_signature_component_handles_are_owned_and_cancellation_is_observed() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc = unsafe { oxide_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        assert!(error.is_null());
+
+        let trust = unsafe { oxide_signature_trust_store_new(&mut error) };
+        let intermediates = unsafe { oxide_signature_intermediate_store_new(&mut error) };
+        let evidence = unsafe { oxide_signature_evidence_store_new(&mut error) };
+        let retrieval = unsafe { oxide_signature_retrieval_policy_new(&mut error) };
+        let cancellation = unsafe { oxide_signature_validation_cancellation_new(&mut error) };
+        let options = unsafe { oxide_signature_validation_options_new(&mut error) };
+        assert!(!trust.is_null());
+        assert!(!intermediates.is_null());
+        assert!(!evidence.is_null());
+        assert!(!retrieval.is_null());
+        assert!(!cancellation.is_null());
+        assert!(!options.is_null());
+        assert!(error.is_null());
+
+        let status = unsafe {
+            oxide_signature_trust_store_add_anchor_der(
+                trust,
+                b"not-a-certificate".as_ptr(),
+                b"not-a-certificate".len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_ERROR);
+        assert!(!error.is_null());
+        unsafe { oxide_error_free(error) };
+        error = std::ptr::null_mut();
+
+        let status = unsafe {
+            oxide_signature_evidence_store_add_ocsp_der(
+                evidence,
+                b"untrusted-ocsp".as_ptr(),
+                b"untrusted-ocsp".len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let status = unsafe {
+            oxide_signature_evidence_store_add_crl_der(
+                evidence,
+                b"untrusted-crl".as_ptr(),
+                b"untrusted-crl".len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let offline = CString::new(r#"{"enabled":false}"#).unwrap();
+        let status = unsafe {
+            oxide_signature_retrieval_policy_set_json(retrieval, offline.as_ptr(), &mut error)
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+
+        for status in [
+            unsafe {
+                oxide_signature_validation_options_apply_trust_store(options, trust, &mut error)
+            },
+            unsafe {
+                oxide_signature_validation_options_apply_intermediate_store(
+                    options,
+                    intermediates,
+                    &mut error,
+                )
+            },
+            unsafe {
+                oxide_signature_validation_options_apply_evidence_store(
+                    options, evidence, &mut error,
+                )
+            },
+            unsafe {
+                oxide_signature_validation_options_apply_retrieval_policy(
+                    options, retrieval, &mut error,
+                )
+            },
+            unsafe {
+                oxide_signature_validation_options_set_cancellation(
+                    options,
+                    cancellation,
+                    &mut error,
+                )
+            },
+        ] {
+            assert_eq!(status, OXIDE_STATUS_OK);
+            assert!(error.is_null());
+        }
+
+        let status =
+            unsafe { oxide_signature_validation_cancellation_cancel(cancellation, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let mut report = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_signatures_with_options_handle(doc, options, &mut report, &mut error)
+        };
+        assert_eq!(status, OXIDE_STATUS_ERROR);
+        assert!(report.is_null());
+        let message = unsafe { CStr::from_ptr(error) }.to_string_lossy();
+        assert!(
+            message.contains("operation cancelled"),
+            "message: {message}"
+        );
+
+        unsafe {
+            oxide_error_free(error);
+            oxide_signature_validation_options_free(options);
+            oxide_signature_validation_cancellation_free(cancellation);
+            oxide_signature_retrieval_policy_free(retrieval);
+            oxide_signature_evidence_store_free(evidence);
+            oxide_signature_intermediate_store_free(intermediates);
+            oxide_signature_trust_store_free(trust);
+            oxide_document_free(doc);
+        }
     }
 
     #[test]

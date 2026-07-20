@@ -56,6 +56,19 @@ enum CliExitCode {
     Io = 3,
     Input = 4,
     Unsupported = 5,
+    /// A parsed signature failed its mathematical/CMS integrity checks.
+    SignatureInvalid = 10,
+    /// The signature was mathematically valid but did not establish trust
+    /// under the caller-selected policy.
+    Untrusted = 11,
+    /// Authenticated revocation evidence reported a revoked certificate.
+    Revoked = 12,
+    /// Required validation evidence was missing, stale, malformed, or
+    /// otherwise could not establish a policy decision.
+    Indeterminate = 13,
+    /// Controlled retrieval was allowed but failed before required evidence
+    /// could be established.
+    Network = 14,
 }
 
 impl CliExitCode {
@@ -71,6 +84,11 @@ impl CliExitCode {
             Self::Io => "I/O error",
             Self::Input => "parse/format error",
             Self::Unsupported => "unsupported feature",
+            Self::SignatureInvalid => "signature invalid",
+            Self::Untrusted => "signature untrusted",
+            Self::Revoked => "certificate revoked",
+            Self::Indeterminate => "signature validation indeterminate",
+            Self::Network => "signature evidence network failure",
         }
     }
 }
@@ -432,6 +450,30 @@ enum Commands {
     ToHtml(ToHtmlArgs),
     /// Verify digital signatures in a PDF (pdfsig-equivalent)
     VerifySig(VerifySigArgs),
+    /// List PDF signature fields and Prompt 24 validation state
+    SignatureList(VerifySigArgs),
+    /// Validate PDF detached signatures with Prompt 24 policy inputs
+    SignatureVerify(VerifySigArgs),
+    /// Validate PAdES baseline posture with Prompt 24 policy inputs
+    PadesVerify(VerifySigArgs),
+    /// Build signer certificate paths for PDF signatures with Prompt 24 inputs
+    CertificatePathBuild(VerifySigArgs),
+    /// Validate signer certificate paths against explicit Prompt 24 trust anchors
+    CertificatePathVerify(VerifySigArgs),
+    /// Validate OCSP evidence for PDF signature certificate paths
+    OcspCheck(VerifySigArgs),
+    /// Validate CRL evidence for PDF signature certificate paths
+    CrlCheck(VerifySigArgs),
+    /// Evaluate supplied revocation evidence for PDF signatures
+    RevocationCheck(VerifySigArgs),
+    /// Fetch bounded AIA/OCSP/CRL evidence and export a replay bundle
+    EvidenceFetch(VerifySigArgs),
+    /// Validate signatures and export only accepted evidence for later replay
+    EvidenceExport(VerifySigArgs),
+    /// Verify a signature using an imported evidence bundle with network disabled
+    EvidenceVerify(VerifySigArgs),
+    /// Replay an exported evidence bundle with network retrieval disabled
+    EvidenceReplay(VerifySigArgs),
     /// Emit encryption, signature, and active-content security diagnostics
     SecurityReport(SecurityReportArgs),
     /// Alias for verify-sig with Prompt 09 signature status fields
@@ -2626,6 +2668,60 @@ struct VerifySigArgs {
     /// Emit machine-readable JSON
     #[arg(long)]
     json: bool,
+    /// DER or PEM certificate to trust as a root or pinned signer. Repeatable.
+    #[arg(long = "trust-anchor")]
+    trust_anchors: Vec<PathBuf>,
+    /// DER or PEM untrusted intermediate certificate. Repeatable.
+    #[arg(long = "intermediate")]
+    intermediates: Vec<PathBuf>,
+    /// SHA-256 fingerprint of a certificate that must not appear in a selected
+    /// signer, intermediate, or trust-anchor path. Repeatable.
+    #[arg(long = "distrust-certificate-sha256", value_name = "SHA256")]
+    distrust_certificate_sha256: Vec<String>,
+    /// DER OCSP response supplied for offline revocation evaluation. Repeatable.
+    #[arg(long = "ocsp")]
+    ocsp_responses: Vec<PathBuf>,
+    /// DER CRL supplied for offline revocation evaluation. Repeatable.
+    #[arg(long = "crl")]
+    crls: Vec<PathBuf>,
+    /// Validation time as Unix seconds. Defaults to the system clock.
+    #[arg(long)]
+    validation_time_unix: Option<u64>,
+    /// Revocation mode: not-checked, offline-strict, offline-best-effort,
+    /// online-strict, or online-best-effort. Online modes require --online
+    /// unless supplied/replayed evidence already establishes the decision.
+    #[arg(long, default_value = "not-checked")]
+    revocation: String,
+    /// JSON file containing the shared SignatureAlgorithmPolicy object.
+    #[arg(long = "algorithm-policy", value_name = "JSON")]
+    algorithm_policy: Option<PathBuf>,
+    /// Import a content-addressed Prompt 24 evidence bundle for offline replay.
+    #[arg(long = "evidence-in", value_name = "JSON")]
+    evidence_in: Option<PathBuf>,
+    /// Export cryptographically accepted path/revocation evidence to a new
+    /// content-addressed bundle. This never enables network retrieval by itself.
+    #[arg(long = "evidence-out", value_name = "JSON")]
+    evidence_out: Option<PathBuf>,
+    /// Opt in to bounded HTTP/HTTPS AIA, OCSP, and CRL retrieval.
+    #[arg(long)]
+    online: bool,
+    /// Allow only these evidence hosts when --online is set. Repeatable.
+    #[arg(long = "network-allow-host", value_name = "HOST")]
+    network_allow_hosts: Vec<String>,
+    /// Per-request total network deadline in milliseconds when --online is set.
+    #[arg(long = "network-timeout-ms", value_name = "MS")]
+    network_timeout_ms: Option<u64>,
+    /// Maximum bytes accepted from one network evidence response when --online is set.
+    #[arg(long = "network-max-response-bytes", value_name = "BYTES")]
+    network_max_response_bytes: Option<usize>,
+    /// Directory for an atomic cache of cryptographically accepted AIA/OCSP/CRL
+    /// evidence. Requires --online and is never enabled implicitly.
+    #[arg(long = "cache-dir", value_name = "DIR")]
+    cache_dir: Option<PathBuf>,
+    /// Require a fresh OCSP nonce and reject responses that do not echo it.
+    /// This is an explicit online-only policy because many responders omit nonces.
+    #[arg(long = "ocsp-require-nonce")]
+    ocsp_require_nonce: bool,
     /// Password for an encrypted PDF (the empty user password is tried automatically)
     #[arg(long)]
     password: Option<String>,
@@ -2890,9 +2986,25 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Fonts(args) => run_fonts(args),
         Commands::Detach(args) => run_detach(args),
         Commands::ToHtml(args) => run_to_html(args),
-        Commands::VerifySig(args) => run_verify_sig(args),
+        Commands::VerifySig(args) => run_verify_sig(args, SignatureCliMode::LegacyInspect),
+        Commands::SignatureList(args) => run_verify_sig(args, SignatureCliMode::List),
+        Commands::SignatureVerify(args) => run_verify_sig(args, SignatureCliMode::SignatureVerify),
+        Commands::PadesVerify(args) => run_verify_sig(args, SignatureCliMode::PadesVerify),
+        Commands::CertificatePathBuild(args) => {
+            run_verify_sig(args, SignatureCliMode::CertificatePathBuild)
+        }
+        Commands::CertificatePathVerify(args) => {
+            run_verify_sig(args, SignatureCliMode::CertificatePathVerify)
+        }
+        Commands::OcspCheck(args) => run_verify_sig(args, SignatureCliMode::OcspCheck),
+        Commands::CrlCheck(args) => run_verify_sig(args, SignatureCliMode::CrlCheck),
+        Commands::RevocationCheck(args) => run_verify_sig(args, SignatureCliMode::RevocationCheck),
+        Commands::EvidenceFetch(args) => run_evidence_fetch(args),
+        Commands::EvidenceExport(args) => run_evidence_export(args),
+        Commands::EvidenceVerify(args) => run_evidence_replay(args),
+        Commands::EvidenceReplay(args) => run_evidence_replay(args),
         Commands::SecurityReport(args) => run_security_report(args),
-        Commands::SignatureReport(args) => run_verify_sig(args),
+        Commands::SignatureReport(args) => run_verify_sig(args, SignatureCliMode::LegacyInspect),
         Commands::Sanitize(args) => run_sanitize(args),
         Commands::Validate(args) => run_validate(args),
         Commands::Canonicalize(args) => run_canonicalize(args),
@@ -7054,22 +7166,45 @@ fn run_to_html(args: ToHtmlArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_verify_sig(args: VerifySigArgs) -> Result<(), Box<dyn Error>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignatureCliMode {
+    /// Historical `verify-sig` behavior remains an inspection command so
+    /// existing scripts can inventory mathematically valid but untrusted PDFs.
+    LegacyInspect,
+    /// `signature-list` reports inventory only and does not assert policy.
+    List,
+    SignatureVerify,
+    PadesVerify,
+    CertificatePathBuild,
+    CertificatePathVerify,
+    OcspCheck,
+    CrlCheck,
+    RevocationCheck,
+}
+
+fn run_verify_sig(args: VerifySigArgs, mode: SignatureCliMode) -> Result<(), Box<dyn Error>> {
     use oxide_engine::{
         Coverage, PadesLevel, RevocationStatus, SignatureStatus, SignatureTrust, SignatureValidity,
     };
 
     let engine = open_engine(&args.pdf, &args.password)?;
-    let reports = engine.verify_signatures()?;
+    let options = verify_options_from_args(&args)?;
+    let reports = if let Some(path) = &args.evidence_out {
+        let outcome = engine.verify_signatures_with_options_and_evidence(&options)?;
+        write_evidence_bundle(path, &outcome.evidence_bundle, &options)?;
+        outcome.reports
+    } else {
+        engine.verify_signatures_with_options(&options)?
+    };
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&reports)?);
-        return Ok(());
+        return finish_signature_cli_validation(&reports, mode);
     }
 
     if reports.is_empty() {
         println!("No digital signatures found.");
-        return Ok(());
+        return finish_signature_cli_validation(&reports, mode);
     }
 
     println!("{} signature(s) found.\n", reports.len());
@@ -7085,6 +7220,7 @@ fn run_verify_sig(args: VerifySigArgs) -> Result<(), Box<dyn Error>> {
             SignatureStatus::ValidUntrusted => {
                 "VALID but UNTRUSTED (cryptographically valid; signer not trusted)"
             }
+            SignatureStatus::Revoked => "REVOKED (validated revocation evidence)",
             SignatureStatus::ValidButModified => "VALID but document MODIFIED after signing",
             SignatureStatus::Invalid => "INVALID",
             SignatureStatus::UnsupportedAlgorithm => "UNSUPPORTED algorithm",
@@ -7174,7 +7310,407 @@ fn run_verify_sig(args: VerifySigArgs) -> Result<(), Box<dyn Error>> {
         println!("  - Note: {}", r.note);
         println!();
     }
+    finish_signature_cli_validation(&reports, mode)
+}
+
+fn run_evidence_export(args: VerifySigArgs) -> Result<(), Box<dyn Error>> {
+    if args.evidence_out.is_none() {
+        return Err(usage_error(
+            "evidence-export requires --evidence-out <bundle.json>",
+        ));
+    }
+    run_verify_sig(args, SignatureCliMode::SignatureVerify)
+}
+
+fn run_evidence_fetch(args: VerifySigArgs) -> Result<(), Box<dyn Error>> {
+    if args.evidence_out.is_none() {
+        return Err(usage_error(
+            "evidence-fetch requires --evidence-out <bundle.json>",
+        ));
+    }
+    if !args.online {
+        return Err(usage_error(
+            "evidence-fetch requires explicit --online bounded retrieval opt-in",
+        ));
+    }
+    run_verify_sig(args, SignatureCliMode::SignatureVerify)
+}
+
+fn run_evidence_replay(args: VerifySigArgs) -> Result<(), Box<dyn Error>> {
+    if args.evidence_in.is_none() {
+        return Err(usage_error(
+            "evidence-verify/evidence-replay requires --evidence-in <bundle.json>",
+        ));
+    }
+    if args.online {
+        return Err(usage_error(
+            "evidence-verify/evidence-replay is offline-only; omit --online",
+        ));
+    }
+    run_verify_sig(args, SignatureCliMode::SignatureVerify)
+}
+
+fn finish_signature_cli_validation(
+    reports: &[oxide_engine::SignatureReport],
+    mode: SignatureCliMode,
+) -> Result<(), Box<dyn Error>> {
+    use oxide_engine::{
+        SignatureStatus, SignatureTrust, SignatureValidationState, SignatureValidity,
+    };
+
+    if matches!(
+        mode,
+        SignatureCliMode::LegacyInspect | SignatureCliMode::List
+    ) {
+        return Ok(());
+    }
+    if reports.is_empty() {
+        return Err(Box::new(CliError::new(
+            CliExitCode::Indeterminate,
+            "no digital signatures were available for policy validation",
+        )));
+    }
+
+    if reports.iter().any(|report| {
+        matches!(
+            report.validity,
+            SignatureValidity::Invalid | SignatureValidity::Error
+        )
+    }) {
+        return Err(Box::new(CliError::new(
+            CliExitCode::SignatureInvalid,
+            "at least one signature did not pass PDF/CMS cryptographic validation",
+        )));
+    }
+    if reports
+        .iter()
+        .any(|report| report.validity == SignatureValidity::UnsupportedAlgorithm)
+    {
+        return Err(Box::new(CliError::new(
+            CliExitCode::Unsupported,
+            "at least one signature uses an unsupported or policy-forbidden algorithm",
+        )));
+    }
+    if reports
+        .iter()
+        .any(|report| report.trust == SignatureTrust::Revoked)
+    {
+        return Err(Box::new(CliError::new(
+            CliExitCode::Revoked,
+            "authenticated revocation evidence reports at least one certificate revoked",
+        )));
+    }
+    if reports.iter().any(|report| {
+        report.prompt24.network.status == SignatureValidationState::NetworkFailure
+            || report.prompt24.revocation.status == SignatureValidationState::NetworkFailure
+    }) {
+        return Err(Box::new(CliError::new(
+            CliExitCode::Network,
+            "controlled evidence retrieval failed before policy validation completed",
+        )));
+    }
+
+    match mode {
+        SignatureCliMode::SignatureVerify => {
+            if reports
+                .iter()
+                .all(|report| report.status == SignatureStatus::Trusted)
+            {
+                Ok(())
+            } else if reports.iter().any(|report| {
+                matches!(
+                    report.trust,
+                    SignatureTrust::NotVerified
+                        | SignatureTrust::Untrusted
+                        | SignatureTrust::Expired
+                )
+            }) {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Untrusted,
+                    "signature math passed but explicit trust-anchor validation did not establish trusted validity",
+                )))
+            } else {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Indeterminate,
+                    "signature validation did not establish current-file trusted validity",
+                )))
+            }
+        }
+        SignatureCliMode::PadesVerify => {
+            if reports.iter().all(|report| {
+                report.status == SignatureStatus::Trusted
+                    && report.prompt24.pades.status == SignatureValidationState::Valid
+            }) {
+                Ok(())
+            } else if reports.iter().any(|report| {
+                matches!(
+                    report.prompt24.pades.status,
+                    SignatureValidationState::UnsupportedProfile
+                        | SignatureValidationState::DeferredToLaterPrompt
+                        | SignatureValidationState::UnsupportedAlgorithm
+                )
+            }) {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Unsupported,
+                    "PAdES baseline requirements were not supported or are deferred to Prompt 25",
+                )))
+            } else {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Indeterminate,
+                    "PAdES baseline did not establish trusted whole-document conformance",
+                )))
+            }
+        }
+        SignatureCliMode::CertificatePathBuild => {
+            if reports
+                .iter()
+                .all(|report| !report.prompt24.path.selected_path_subjects.is_empty())
+            {
+                Ok(())
+            } else if reports
+                .iter()
+                .any(|report| report.prompt24.path.status == SignatureValidationState::PathNotFound)
+            {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Indeterminate,
+                    "certificate path construction did not find a bounded candidate path",
+                )))
+            } else {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Untrusted,
+                    "certificate path construction did not produce a usable signer path",
+                )))
+            }
+        }
+        SignatureCliMode::CertificatePathVerify => {
+            if reports
+                .iter()
+                .all(|report| report.prompt24.path.status == SignatureValidationState::Valid)
+            {
+                Ok(())
+            } else if reports.iter().any(|report| {
+                matches!(
+                    report.prompt24.path.status,
+                    SignatureValidationState::Untrusted
+                        | SignatureValidationState::PathNotFound
+                        | SignatureValidationState::NotChecked
+                )
+            }) {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Untrusted,
+                    "certificate path validation did not terminate at an explicit trusted anchor",
+                )))
+            } else {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Indeterminate,
+                    "certificate path validation did not establish a valid RFC 5280 path",
+                )))
+            }
+        }
+        SignatureCliMode::OcspCheck => finish_revocation_evidence_cli(reports, "ocsp", "OCSP"),
+        SignatureCliMode::CrlCheck => finish_revocation_evidence_cli(reports, "crl", "CRL"),
+        SignatureCliMode::RevocationCheck => {
+            if reports
+                .iter()
+                .all(|report| report.prompt24.revocation.status == SignatureValidationState::Valid)
+            {
+                Ok(())
+            } else {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Indeterminate,
+                    "revocation evidence did not establish fresh good status for every required certificate",
+                )))
+            }
+        }
+        SignatureCliMode::LegacyInspect | SignatureCliMode::List => Ok(()),
+    }
+}
+
+fn finish_revocation_evidence_cli(
+    reports: &[oxide_engine::SignatureReport],
+    evidence_prefix: &str,
+    label: &str,
+) -> Result<(), Box<dyn Error>> {
+    if reports.iter().any(|report| {
+        report.prompt24.revocation.status == oxide_engine::SignatureValidationState::Revoked
+    }) {
+        return Err(Box::new(CliError::new(
+            CliExitCode::Revoked,
+            format!("{label} revocation evidence reports a revoked certificate"),
+        )));
+    }
+    if reports.iter().all(|report| {
+        report.prompt24.revocation.status == oxide_engine::SignatureValidationState::Valid
+            && report
+                .prompt24
+                .revocation
+                .certificate_decisions
+                .iter()
+                .any(|decision| {
+                    decision
+                        .evidence_type
+                        .as_deref()
+                        .is_some_and(|evidence_type| evidence_type.starts_with(evidence_prefix))
+                })
+    }) {
+        Ok(())
+    } else {
+        Err(Box::new(CliError::new(
+            CliExitCode::Indeterminate,
+            format!("{label} evidence did not establish fresh good status for every required certificate"),
+        )))
+    }
+}
+
+fn verify_options_from_args(
+    args: &VerifySigArgs,
+) -> Result<oxide_engine::VerifyOptions, Box<dyn Error>> {
+    let mut options = oxide_engine::VerifyOptions::default();
+    let mut trust_store = oxide_engine::TrustStore::new();
+    for path in &args.trust_anchors {
+        let bytes = std::fs::read(path)?;
+        if certificate_input_is_pem(&bytes) {
+            trust_store.add_pem(&bytes, path.display().to_string(), None)?;
+        } else {
+            trust_store.add_der(&bytes, path.display().to_string(), None)?;
+        }
+    }
+    options = options.with_trust_store(&trust_store);
+
+    let mut intermediate_store = oxide_engine::IntermediateStore::new();
+    for path in &args.intermediates {
+        let bytes = std::fs::read(path)?;
+        if certificate_input_is_pem(&bytes) {
+            intermediate_store.add_pem(&bytes)?;
+        } else {
+            intermediate_store.add_der(&bytes)?;
+        }
+    }
+    options = options.with_intermediate_store(&intermediate_store);
+    for fingerprint in &args.distrust_certificate_sha256 {
+        options = options.with_distrusted_certificate_sha256(fingerprint)?;
+    }
+    for path in &args.ocsp_responses {
+        options = options.with_ocsp_response_der(std::fs::read(path)?);
+    }
+    for path in &args.crls {
+        options = options.with_crl_der(std::fs::read(path)?);
+    }
+    if args.online {
+        let mut policy = oxide_engine::RetrievalPolicy::online();
+        if let Some(timeout_ms) = args.network_timeout_ms {
+            if timeout_ms == 0 {
+                return Err(usage_error(
+                    "--network-timeout-ms must be greater than zero",
+                ));
+            }
+            policy.budget.total_timeout_ms = timeout_ms;
+            policy.budget.connect_timeout_ms = policy.budget.connect_timeout_ms.min(timeout_ms);
+            policy.budget.max_total_time_ms = timeout_ms;
+        }
+        if let Some(max_bytes) = args.network_max_response_bytes {
+            if max_bytes == 0 || max_bytes > policy.budget.max_response_bytes {
+                return Err(usage_error(format!(
+                    "--network-max-response-bytes must be between 1 and {}",
+                    policy.budget.max_response_bytes
+                )));
+            }
+            policy.budget.max_response_bytes = max_bytes;
+        }
+        if let Some(cache_dir) = &args.cache_dir {
+            policy.cache_directory = Some(cache_dir.to_string_lossy().to_string());
+        }
+        policy.allowed_hosts = args.network_allow_hosts.clone();
+        if args.ocsp_require_nonce {
+            policy.ocsp_nonce_policy = oxide_engine::OcspNoncePolicy::Required;
+        }
+        options = options.with_retrieval_policy(policy)?;
+    } else if !args.network_allow_hosts.is_empty()
+        || args.network_timeout_ms.is_some()
+        || args.network_max_response_bytes.is_some()
+        || args.cache_dir.is_some()
+        || args.ocsp_require_nonce
+    {
+        return Err(usage_error(
+            "network policy flags require explicit --online opt-in",
+        ));
+    }
+    if let Some(path) = &args.evidence_in {
+        let bytes = std::fs::read(path)?;
+        let bundle: oxide_engine::EvidenceBundle = serde_json::from_slice(&bytes)
+            .map_err(|error| usage_error(format!("invalid --evidence-in bundle: {error}")))?;
+        options = options.with_evidence_bundle(bundle)?;
+    }
+    if let Some(path) = &args.algorithm_policy {
+        let bytes = std::fs::read(path)?;
+        let policy: oxide_engine::SignatureAlgorithmPolicy = serde_json::from_slice(&bytes)
+            .map_err(|error| usage_error(format!("invalid --algorithm-policy JSON: {error}")))?;
+        options = options.with_algorithm_policy(policy)?;
+    }
+    if let Some(unix) = args.validation_time_unix {
+        options = options.with_validation_time_unix(unix);
+    }
+    options.revocation_mode = parse_signature_revocation_mode(&args.revocation)?;
+    Ok(options)
+}
+
+fn certificate_input_is_pem(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes)
+        .map(|text| text.trim_start().starts_with("-----BEGIN"))
+        .unwrap_or(false)
+}
+
+fn write_evidence_bundle(
+    path: &Path,
+    bundle: &oxide_engine::EvidenceBundle,
+    options: &oxide_engine::VerifyOptions,
+) -> Result<(), Box<dyn Error>> {
+    let budget = &options.retrieval_policy.budget;
+    let store = oxide_engine::EvidenceStore::import_bundle(
+        bundle,
+        budget.max_cache_entries,
+        budget.max_cache_bytes,
+    )
+    .map_err(|error| {
+        usage_error(format!(
+            "refusing to export invalid evidence bundle: {error}"
+        ))
+    })?;
+    store
+        .write_bundle_atomically(
+            path,
+            bundle.source_document_sha256.clone(),
+            bundle.signature_identifier.clone(),
+            bundle.validation_time_unix,
+            bundle.policy_sha256.clone(),
+        )
+        .map_err(|error| usage_error(format!("evidence export: {error}")))?;
     Ok(())
+}
+
+fn parse_signature_revocation_mode(
+    value: &str,
+) -> Result<oxide_engine::SignatureRevocationMode, Box<dyn Error>> {
+    match value {
+        "not-checked" | "not_checked" => Ok(oxide_engine::SignatureRevocationMode::NotChecked),
+        "offline-strict" | "offline_strict" => {
+            Ok(oxide_engine::SignatureRevocationMode::OfflineStrict)
+        }
+        "offline-best-effort" | "offline_best_effort" => {
+            Ok(oxide_engine::SignatureRevocationMode::OfflineBestEffort)
+        }
+        "online-strict" | "online_strict" | "online-hard-fail" | "online_hard_fail" => {
+            Ok(oxide_engine::SignatureRevocationMode::OnlineStrict)
+        }
+        "online-best-effort"
+        | "online_best_effort"
+        | "online-best-evidence"
+        | "online_best_evidence" => Ok(oxide_engine::SignatureRevocationMode::OnlineBestEffort),
+        other => Err(format!(
+            "unknown revocation mode '{other}'; use not-checked, offline-strict, offline-best-effort, online-strict, or online-best-effort"
+        )
+        .into()),
+    }
 }
 
 fn run_security_report(args: SecurityReportArgs) -> Result<(), Box<dyn Error>> {
@@ -8093,8 +8629,8 @@ fn parse_profile_cli(name: &str) -> Result<oxide_engine::ExtractionProfile, Box<
 #[cfg(test)]
 mod tests {
     use super::{
-        expand_split_pattern, parse_page_range_cli, parse_page_selection_ordered,
-        parse_profile_cli, parse_region_cli, Cli, Commands,
+        certificate_input_is_pem, expand_split_pattern, parse_page_range_cli,
+        parse_page_selection_ordered, parse_profile_cli, parse_region_cli, Cli, Commands,
     };
     use clap::Parser;
     use std::path::PathBuf;
@@ -8212,5 +8748,13 @@ mod tests {
         assert!(args.advanced);
         assert_eq!(args.mode, "cjk");
         assert_eq!(args.overlap, 0);
+    }
+
+    #[test]
+    fn prompt24_certificate_inputs_accept_pem_detection_without_misclassifying_der() {
+        assert!(certificate_input_is_pem(
+            b"\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+        ));
+        assert!(!certificate_input_is_pem(&[0x30, 0x82, 0x01, 0x00]));
     }
 }

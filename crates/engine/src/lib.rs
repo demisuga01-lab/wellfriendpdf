@@ -130,6 +130,7 @@ pub mod semantic;
 pub mod semantic_binding;
 pub mod semantic_intelligence;
 pub mod signature;
+pub mod signature_evidence;
 pub mod standards;
 pub mod structural;
 pub mod table_intelligence;
@@ -434,10 +435,21 @@ pub use semantic_intelligence::{
     SemanticEvidenceKind,
 };
 pub use signature::{
-    add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options, CertInfo,
-    Coverage, LtvMaterial, LtvReport, PadesLevel, PdfSigner, RevocationStatus,
-    SignatureCheckDetails, SignatureOptions, SignatureReport, SignatureStatus, SignatureTrust,
-    SignatureValidity, VerifyOptions,
+    add_ltv_material, sign_document, verify_options_from_json, verify_signatures,
+    verify_signatures_with_options, verify_signatures_with_options_and_evidence, CertInfo,
+    CertificatePathValidationReport, CertificateRevocationDecision, ConfiguredTrustAnchor,
+    Coverage, IntermediateStore, LtvMaterial, LtvReport, NetworkEvidenceReport,
+    NetworkValidationReport, PadesLevel, PadesValidationReport, PdfSigner,
+    Prompt24SignatureValidationReport, RevocationStatus, RevocationValidationReport,
+    SignatureAlgorithmPolicy, SignatureCheckDetails, SignatureOptions, SignatureReport,
+    SignatureRevocationMode, SignatureStatus, SignatureTrust, SignatureValidationIndication,
+    SignatureValidationOutcome, SignatureValidationPolicyProfile, SignatureValidationPolicyReport,
+    SignatureValidationState, SignatureValidationSubindication, SignatureValidity, TrustStore,
+    VerifyOptions, PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION,
+};
+pub use signature_evidence::{
+    EvidenceBundle, EvidenceKind, EvidenceRecord, EvidenceStore, NetworkBudget, OcspNoncePolicy,
+    RetrievalKind, RetrievalMethod, RetrievalPolicy, RetrievalTrace,
 };
 pub use standards::{
     validate_standards_profile, StandardsProfile, StandardsValidationReport, ValidationRuleResult,
@@ -614,10 +626,17 @@ pub mod prelude {
         PROMPT23_ARTIFACT_ROOT, PROMPT23_SCHEMA_VERSION,
     };
     pub use crate::signature::{
-        add_ltv_material, sign_document, verify_signatures, verify_signatures_with_options,
-        CertInfo, Coverage, LtvMaterial, LtvReport, PadesLevel, PdfSigner, RevocationStatus,
-        SignatureOptions, SignatureReport, SignatureStatus, SignatureTrust, SignatureValidity,
-        VerifyOptions,
+        add_ltv_material, sign_document, verify_options_from_json, verify_signatures,
+        verify_signatures_with_options, verify_signatures_with_options_and_evidence, CertInfo,
+        CertificatePathValidationReport, CertificateRevocationDecision, ConfiguredTrustAnchor,
+        Coverage, IntermediateStore, LtvMaterial, LtvReport, NetworkValidationReport, PadesLevel,
+        PadesValidationReport, PdfSigner, Prompt24SignatureValidationReport, RevocationStatus,
+        RevocationValidationReport, SignatureAlgorithmPolicy, SignatureOptions, SignatureReport,
+        SignatureRevocationMode, SignatureStatus, SignatureTrust, SignatureValidationIndication,
+        SignatureValidationOutcome, SignatureValidationPolicyProfile,
+        SignatureValidationPolicyReport, SignatureValidationState,
+        SignatureValidationSubindication, SignatureValidity, TrustStore, VerifyOptions,
+        PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION,
     };
     pub use crate::writer::{build_merged, build_subset};
     pub use crate::ENGINE_VERSION;

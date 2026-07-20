@@ -429,6 +429,46 @@ public sealed class OxideDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string SignatureReportWithOptionsJson(string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        return ReportWithString(optionsJson, NativeMethods.oxide_document_signatures_with_options_json);
+    }
+
+    public string SignatureValidationWithEvidenceJson(string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        return ReportWithString(optionsJson, NativeMethods.oxide_document_signature_validation_with_evidence_json);
+    }
+
+    /// <summary>
+    /// Validates signatures with an owned Prompt 24 configuration handle.
+    /// The handle exposes explicit trust anchors, intermediates, evidence, and
+    /// bounded retrieval policy without requiring callers to assemble a raw
+    /// options JSON payload.
+    /// </summary>
+    public string SignatureValidationReport(SignatureValidationOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_signatures_with_options_handle(
+            _handle, options.Handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    /// <summary>
+    /// Validates signatures with an owned Prompt 24 configuration handle and
+    /// returns the report plus a portable accepted-evidence bundle.
+    /// </summary>
+    public string SignatureValidationWithEvidence(SignatureValidationOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_signature_validation_with_evidence_handle(
+            _handle, options.Handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
     public string WriterDeterminismAuditJson()
     {
         ThrowIfDisposed();
