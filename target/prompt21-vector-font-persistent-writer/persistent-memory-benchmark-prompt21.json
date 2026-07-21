@@ -4,6 +4,6 @@
   "edit_count": 1000,
   "memory_per_edit_bytes_estimate": 85,
   "redo_latency_ms": 0,
-  "snapshot_latency_ms": 17,
+  "snapshot_latency_ms": 13,
   "undo_latency_ms": 0
 }

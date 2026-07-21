@@ -120,6 +120,24 @@ public final class OxideSmokeTest {
                 }
                 assertTrue(cancelled, "signature component handles observe cancellation");
             }
+            String timestamp = Oxide.timestampTokenValidationJson(
+                "not-a-rfc3161-token".getBytes(StandardCharsets.US_ASCII),
+                "cms-signature-value".getBytes(StandardCharsets.US_ASCII));
+            assertTrue(timestamp.contains("\"kind\":\"timestamp_token_validation\""),
+                "Prompt25 timestamp report kind");
+            assertTrue(timestamp.contains("\"token_type\":\"signature_timestamp\""),
+                "Prompt25 timestamp token type");
+            assertTrue(timestamp.contains("\"status\":\"malformed\""),
+                "Prompt25 malformed timestamp status");
+            try (Oxide.Document form = Oxide.Document.open(locateFixture("form_160f.pdf"))) {
+                String plan = form.signaturePreservingFormPlanJson("name", "Prompt25", "{}");
+                assertTrue(plan.contains("\"kind\":\"signature_preserving_edit_plan\""),
+                    "Prompt25 signature-preserving plan kind");
+                assertTrue(plan.contains("prompt25.tsa-dss-ltv-mdp-signature-edits.v1"),
+                    "Prompt25 signature-preserving plan schema");
+                assertTrue(plan.contains("\"prefix_preservation_required\":true"),
+                    "Prompt25 prefix preservation requirement");
+            }
             assertTrue(!Oxide.engineVersion().isBlank(), "engine version");
             assertTrue(Oxide.abiVersion() >= 1, "abi version");
             for (Map.Entry<String, String> entry : reports.entrySet()) {

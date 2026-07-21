@@ -467,6 +467,11 @@ internal static partial class NativeMethods
         DocumentHandle document, IntPtr optionsJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_timestamp_token_validation_json(
+        byte[] token, UIntPtr tokenLen, byte[] signatureValue, UIntPtr signatureValueLen,
+        IntPtr optionsJson, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern SignatureValidationOptionsHandle oxide_signature_validation_options_new(
         out IntPtr errorOut);
 
@@ -843,6 +848,17 @@ internal static partial class NativeMethods
     internal static extern int oxide_document_incremental_form_edit_json(
         DocumentHandle document, IntPtr fieldName, IntPtr value,
         [MarshalAs(UnmanagedType.I1)] bool signaturePolicyOverride,
+        out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_signature_preserving_form_plan_json(
+        DocumentHandle document, IntPtr fieldName, IntPtr value, IntPtr optionsJson,
+        out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_signature_preserving_form_edit_json(
+        DocumentHandle document, IntPtr fieldName, IntPtr value, IntPtr optionsJson,
+        [MarshalAs(UnmanagedType.I1)] bool explicitInvalidationOverride,
         out OxideBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]

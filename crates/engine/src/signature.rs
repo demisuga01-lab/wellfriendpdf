@@ -19,15 +19,17 @@
 //! anchor-based PKIX validation, caller-supplied and opt-in controlled
 //! AIA/OCSP/CRL evidence, and replayable validated evidence bundles. RSA
 //! PKCS#1 v1.5, RSA-PSS, and the supported ECDSA curves are verified with exact
-//! algorithm parameters. Trusted timestamp authority validation, DSS/VRI LTV
-//! validation, and DocMDP/FieldMDP enforcement remain deferred to Prompt 25.
+//! algorithm parameters. Prompt 25 extends the same validation pipeline with
+//! RFC 3161 signature timestamp validation, DSS/VRI evidence replay, B-T/B-LT
+//! level reporting, and signature-preserving edit policy hooks without creating
+//! a second signature engine.
 
 use cms::builder::{create_signing_time_attribute, SignedDataBuilder, SignerInfoBuilder};
 use cms::cert::{x509::Certificate, CertificateChoices, IssuerAndSerialNumber};
 use cms::content_info::ContentInfo;
 use cms::signed_data::{EncapsulatedContentInfo, SignedData, SignerIdentifier, SignerInfo};
 use const_oid::ObjectIdentifier;
-use der::asn1::SetOfVec;
+use der::asn1::{GeneralizedTime, SetOfVec};
 use der::{Decode, DecodePem, Encode, Sequence};
 use pkix_path::{DefaultVerifier, TrustAnchor, ValidationPolicy};
 use pkix_path_builder::{CertPool, PathBuilderConfig};
@@ -45,7 +47,9 @@ use x509_cert::attr::{Attribute, AttributeValue};
 use x509_cert::crl::CertificateList;
 use x509_cert::ext::pkix::crl::IssuingDistributionPoint;
 use x509_cert::ext::pkix::name::{DistributionPointName, GeneralName};
-use x509_cert::ext::pkix::{AuthorityInfoAccessSyntax, CrlDistributionPoints, KeyUsage};
+use x509_cert::ext::pkix::{
+    AuthorityInfoAccessSyntax, CrlDistributionPoints, ExtendedKeyUsage, KeyUsage,
+};
 use x509_ocsp::builder::OcspRequestBuilder;
 use x509_ocsp::ext::Nonce as OcspNonce;
 use x509_ocsp::{BasicOcspResponse, OcspResponse, OcspResponseStatus, Request as OcspRequest};
@@ -79,6 +83,8 @@ const OID_ECDSA_SHA384: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840
 const OID_ECDSA_SHA512: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.10045.4.3.4");
 const OID_ID_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.1");
 const OID_ID_SIGNED_DATA: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.2.840.113549.1.7.2");
+const OID_ID_CT_TST_INFO: ObjectIdentifier =
+    ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.16.1.4");
 const OID_SHA1: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.14.3.2.26");
 const OID_SHA256: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.1");
 const OID_SHA384: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.16.840.1.101.3.4.2.2");
@@ -87,6 +93,7 @@ const OID_SIGNATURE_TIMESTAMP_TOKEN: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.2.840.113549.1.9.16.2.14");
 const OID_AD_OCSP: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.48.1");
 const OID_AD_CA_ISSUERS: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.48.2");
+const OID_KP_TIME_STAMPING: ObjectIdentifier = ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.3.8");
 const OID_OCSP_BASIC_RESPONSE: ObjectIdentifier =
     ObjectIdentifier::new_unwrap("1.3.6.1.5.5.7.48.1.1");
 const OID_DELTA_CRL_INDICATOR: ObjectIdentifier = ObjectIdentifier::new_unwrap("2.5.29.27");
@@ -98,6 +105,8 @@ const MAX_BYTE_RANGE_FIELD: u64 = 9_999_999_999;
 const DEFAULT_CONTENTS_RESERVED_BYTES: usize = 16 * 1024;
 pub const PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION: &str =
     "prompt24.certificate-trust-pades-ocsp-crl-validation.v1";
+pub const PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION: &str =
+    "prompt25.tsa-dss-ltv-mdp-signature-edits.v1";
 
 /// Additive public capability report for the Prompt 24 validation pipeline.
 ///
@@ -150,9 +159,10 @@ pub(crate) fn prompt24_feature_report_value(envelope_version: u32) -> Value {
         },
         "pades": {
             "baseline": "implemented_with_explicit_path_and_revocation_policy_result",
-            "trusted_timestamps": "deferred_to_prompt25",
-            "dss_vri_ltv": "deferred_to_prompt25",
-            "docmdp_fieldmdp_enforcement": "deferred_to_prompt25"
+            "signature_timestamps": "implemented_prompt25_rfc3161_signature_timestamp_validation",
+            "dss_vri_ltv": "implemented_prompt25_dss_vri_replay_and_blt_evidence_status",
+            "docmdp_fieldmdp_enforcement": "implemented_prompt25_structural_policy_for_supported_signature_preserving_edits",
+            "archive_timestamps_blta": "not_claimed_without_archive_timestamp_validation"
         },
         "binding_runtime_surfaces": {
             "rust": "implemented",
@@ -170,11 +180,11 @@ pub(crate) fn prompt24_feature_report_value(envelope_version: u32) -> Value {
             "final_closure_commit": "absent"
         },
         "exact_remaining_limits": [
-            "Prompt 25 trusted timestamp, DSS/VRI, LTV, DocMDP, and FieldMDP features are deferred.",
+            "Prompt 25 does not claim B-LTA/archive timestamp validation, general public signing, or viewer-specific certification UI behavior.",
             "Platform trust stores are never implicit and remain an optional provider integration.",
             "Only the supported signature algorithms are accepted; all others are explicit unsupported results.",
             "Online retrieval is unavailable to WASM without a host-controlled transport.",
-            "This capability report does not attest final Prompt 24 release gates."
+            "This capability report does not attest final Prompt 25 release gates."
         ]
     })
 }
@@ -277,8 +287,8 @@ pub struct SignatureOptions {
     ///
     /// The core signer does not contact a TSA. Callers that need PAdES-B-T
     /// obtain a token from their TSA/policy layer and pass the DER token here.
-    /// Verification reports the token's presence and parseability; imprint and
-    /// TSA trust validation are intentionally left to the caller's trust policy.
+    /// Verification validates the token imprint and TSA signer/path when the
+    /// caller supplies the applicable Prompt 25 trust and revocation policy.
     pub timestamp_token_der: Option<Vec<u8>>,
     /// Reserved CMS size in bytes. The DER CMS must fit in this placeholder.
     pub contents_reserved_bytes: usize,
@@ -1253,9 +1263,9 @@ pub struct PadesValidationReport {
     /// updates: an earlier PAdES signature can remain conformant for its own
     /// revision even when the current file has changed.
     pub signed_revision_coverage_status: SignatureValidationState,
-    /// Whether the current file still equals the signed revision. Prompt 24
-    /// reports a later revision but deliberately does not enforce DocMDP or
-    /// FieldMDP permissions; that policy is deferred to Prompt 25.
+    /// Whether the current file still equals the signed revision. Prompt 25
+    /// policy/edit surfaces apply DocMDP and FieldMDP decisions separately so
+    /// this field remains a revision-integrity result, not a permission result.
     pub current_document_status: SignatureValidationState,
     /// Format-level path state. It is intentionally separate from baseline
     /// conformance: a PAdES B-B signature can be structurally conformant while
@@ -1506,6 +1516,160 @@ impl Default for LtvReport {
     }
 }
 
+/// Where a timestamp token was discovered.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TimestampTokenType {
+    SignatureTimestamp,
+    DocumentTimestamp,
+    DssVriTimestamp,
+    ArchiveTimestamp,
+    Unsupported,
+}
+
+/// RFC 3161 token validation for one discovered timestamp token.
+#[derive(Debug, Clone, Serialize)]
+pub struct TimestampValidationReport {
+    pub token_type: TimestampTokenType,
+    pub location: String,
+    pub status: SignatureValidationState,
+    pub raw_token_sha256: String,
+    pub token_bytes: usize,
+    pub content_info_status: SignatureValidationState,
+    pub signed_data_status: SignatureValidationState,
+    pub tst_info_status: SignatureValidationState,
+    pub message_imprint_status: SignatureValidationState,
+    pub cms_signature_status: SignatureValidationState,
+    pub tsa_certificate_status: SignatureValidationState,
+    pub tsa_path_status: SignatureValidationState,
+    pub tsa_eku_status: SignatureValidationState,
+    pub policy_oid: Option<String>,
+    pub serial_hex: Option<String>,
+    pub gen_time_unix: Option<u64>,
+    pub gen_time: Option<String>,
+    pub hash_algorithm: Option<String>,
+    pub message_imprint_digest_hex: Option<String>,
+    pub expected_imprint_digest_hex: Option<String>,
+    pub tsa_subject: Option<String>,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl TimestampValidationReport {
+    fn new(token_type: TimestampTokenType, location: String, der: &[u8]) -> Self {
+        Self {
+            token_type,
+            location,
+            status: SignatureValidationState::NotChecked,
+            raw_token_sha256: hex_lower(&Sha256::digest(der)),
+            token_bytes: der.len(),
+            content_info_status: SignatureValidationState::NotChecked,
+            signed_data_status: SignatureValidationState::NotChecked,
+            tst_info_status: SignatureValidationState::NotChecked,
+            message_imprint_status: SignatureValidationState::NotChecked,
+            cms_signature_status: SignatureValidationState::NotChecked,
+            tsa_certificate_status: SignatureValidationState::NotChecked,
+            tsa_path_status: SignatureValidationState::NotChecked,
+            tsa_eku_status: SignatureValidationState::NotChecked,
+            policy_oid: None,
+            serial_hex: None,
+            gen_time_unix: None,
+            gen_time: None,
+            hash_algorithm: None,
+            message_imprint_digest_hex: None,
+            expected_imprint_digest_hex: None,
+            tsa_subject: None,
+            errors: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    fn is_valid(&self) -> bool {
+        self.status == SignatureValidationState::Valid
+    }
+}
+
+/// DSS/VRI inventory and Prompt 25 validation posture for one signature.
+#[derive(Debug, Clone, Serialize)]
+pub struct DssValidationReport {
+    pub status: SignatureValidationState,
+    pub dss_present: bool,
+    pub vri_key: Option<String>,
+    pub vri_matched: bool,
+    pub global_cert_count: usize,
+    pub global_ocsp_count: usize,
+    pub global_crl_count: usize,
+    pub matched_cert_count: usize,
+    pub matched_ocsp_count: usize,
+    pub matched_crl_count: usize,
+    pub evidence_replayable_offline: bool,
+    pub validation_material_status: SignatureValidationState,
+    pub warnings: Vec<String>,
+}
+
+impl Default for DssValidationReport {
+    fn default() -> Self {
+        Self {
+            status: SignatureValidationState::NotChecked,
+            dss_present: false,
+            vri_key: None,
+            vri_matched: false,
+            global_cert_count: 0,
+            global_ocsp_count: 0,
+            global_crl_count: 0,
+            matched_cert_count: 0,
+            matched_ocsp_count: 0,
+            matched_crl_count: 0,
+            evidence_replayable_offline: false,
+            validation_material_status: SignatureValidationState::NotChecked,
+            warnings: Vec::new(),
+        }
+    }
+}
+
+/// Prompt 25 extension report attached to every canonical signature result.
+#[derive(Debug, Clone, Serialize)]
+pub struct Prompt25SignatureLtvEditReport {
+    pub schema_version: &'static str,
+    pub timestamp_tokens: Vec<TimestampValidationReport>,
+    pub signature_timestamp_status: SignatureValidationState,
+    pub dss: DssValidationReport,
+    pub ltv_status: SignatureValidationState,
+    pub achieved_pades_level: PadesLevel,
+    pub validation_indication: SignatureValidationIndication,
+    pub validation_subindication: SignatureValidationSubindication,
+    pub docmdp_status: SignatureValidationState,
+    pub fieldmdp_status: SignatureValidationState,
+    pub post_signature_modification_status: SignatureValidationState,
+    pub signature_preserving_edit_status: SignatureValidationState,
+    pub remaining_deferrals: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+impl Default for Prompt25SignatureLtvEditReport {
+    fn default() -> Self {
+        Self {
+            schema_version: PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+            timestamp_tokens: Vec::new(),
+            signature_timestamp_status: SignatureValidationState::NotChecked,
+            dss: DssValidationReport::default(),
+            ltv_status: SignatureValidationState::NotChecked,
+            achieved_pades_level: PadesLevel::BaselineB,
+            validation_indication: SignatureValidationIndication::NotEvaluated,
+            validation_subindication: SignatureValidationSubindication::NotEvaluated,
+            docmdp_status: SignatureValidationState::NotChecked,
+            fieldmdp_status: SignatureValidationState::NotChecked,
+            post_signature_modification_status: SignatureValidationState::NotChecked,
+            signature_preserving_edit_status: SignatureValidationState::NotChecked,
+            remaining_deferrals: vec![
+                "PAdES B-LTA archive timestamp validation is classified but not promoted without a validated archive timestamp chain".to_string(),
+                "DocMDP/FieldMDP enforcement is evaluated by the Prompt 25 modification classifier before signature-preserving edits".to_string(),
+            ],
+            warnings: Vec::new(),
+        }
+    }
+}
+
 /// Signer certificate details (reported, not trust-validated).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CertInfo {
@@ -1618,6 +1782,10 @@ pub struct SignatureReport {
     /// Prompt 24 structured validation report. This keeps PDF container,
     /// CMS math, path trust, revocation, PAdES, and network posture separate.
     pub prompt24: Prompt24SignatureValidationReport,
+    /// Prompt 25 timestamp, DSS/VRI/LTV, permission, and edit-preservation
+    /// layer. It is derived from the same canonical PDF/CMS/PKIX/revocation
+    /// pipeline and does not replace Prompt 24 trust decisions.
+    pub prompt25: Prompt25SignatureLtvEditReport,
     /// Machine-readable check separation for security/enterprise reports.
     pub checks: SignatureCheckDetails,
     /// Human-readable note on what was/wasn't checked.
@@ -1728,6 +1896,32 @@ pub fn verify_signatures_with_options_and_evidence(
             Some(validation_policy_fingerprint(options)),
         ),
     })
+}
+
+/// Validate one RFC 3161 signature timestamp token against the exact CMS
+/// signature value bytes it claims to timestamp.
+///
+/// The token is not accepted from structure alone: this verifies the
+/// `messageImprint`, token CMS signature, TSA certificate EKU, and TSA path at
+/// `genTime` using the same explicit trust and revocation options as PDF
+/// signature validation. No network retrieval occurs unless `options`
+/// explicitly enables the bounded Prompt 24 evidence transport.
+pub fn verify_signature_timestamp_token_der(
+    token_der: &[u8],
+    signature_value: &[u8],
+    options: &VerifyOptions,
+) -> Result<TimestampValidationReport> {
+    options.algorithm_policy.validate()?;
+    options
+        .cancellation
+        .check("timestamp-validation-before-parse")?;
+    Ok(validate_signature_timestamp_token(
+        token_der,
+        "caller_supplied_signature_timestamp_token".to_string(),
+        signature_value,
+        options,
+        &options.algorithm_policy,
+    ))
 }
 
 /// A portable evidence bundle is scoped to the source PDF when its producer
@@ -2389,8 +2583,7 @@ fn build_ltv_report(
     cms: &CmsResult,
     cert: Option<&CertInfo>,
 ) -> LtvReport {
-    let vri_key = signature_vri_key(contents);
-    let vri_entry = dss.vri.get(&vri_key);
+    let (vri_key, vri_entry) = dss_vri_entry_for_signature(contents, dss);
     let (embedded_certs, embedded_ocsp, embedded_crls, crl_bytes) = if let Some(entry) = vri_entry {
         (
             entry.certs.len(),
@@ -2408,36 +2601,41 @@ fn build_ltv_report(
     };
 
     let revocation_status = revocation_status_from_crls(crl_bytes, cert);
-    let has_timestamp = cms.timestamp_token_count > 0;
+    let has_valid_timestamp = cms
+        .timestamp_reports
+        .iter()
+        .any(TimestampValidationReport::is_valid);
     let has_validation_material =
         embedded_certs > 0 && (embedded_ocsp > 0 || embedded_crls > 0) && vri_entry.is_some();
-    let pades_level = if has_timestamp && has_validation_material {
-        PadesLevel::BaselineLT
-    } else if has_timestamp {
+    let pades_level = if has_valid_timestamp {
         PadesLevel::BaselineT
     } else {
         PadesLevel::BaselineB
     };
 
-    let note = match pades_level {
-        PadesLevel::BaselineLT => {
-            "PAdES B-LT material present: timestamp token plus matching DSS VRI cert/revocation streams; embedded CRLs are checked for signer serial, but trust-chain/OCSP policy/TSA imprint validation is caller policy".to_string()
-        }
-        PadesLevel::BaselineT => {
-            "PAdES B-T material present: CMS has a parseable signature timestamp token; timestamp imprint and TSA trust are not validated here".to_string()
-        }
-        PadesLevel::BaselineB if dss.present => {
-            if vri_entry.is_some() {
-                "DSS VRI material present, but no parseable CMS timestamp token; not promoted beyond PAdES B-B by this verifier".to_string()
-            } else {
-                "DSS present but no VRI entry matched this signature's /Contents hash".to_string()
+    let note = if has_valid_timestamp && has_validation_material {
+        "PAdES B-T timestamp validated and matching DSS/VRI evidence is present; Prompt 25 report determines whether embedded evidence is sufficient for B-LT".to_string()
+    } else {
+        match pades_level {
+            PadesLevel::BaselineLT => {
+                "PAdES B-LT material validated by Prompt 25".to_string()
             }
-        }
-        PadesLevel::BaselineB => {
-            "no parseable CMS timestamp token or matching DSS validation material found".to_string()
-        }
-        PadesLevel::BaselineLTA => {
-            "PAdES B-LTA document timestamp material detected".to_string()
+            PadesLevel::BaselineT => {
+                "PAdES B-T material validated: RFC 3161 signature timestamp imprint, token CMS signature, TSA EKU, and TSA path checks passed under the configured policy".to_string()
+            }
+            PadesLevel::BaselineB if dss.present => {
+                if vri_entry.is_some() {
+                    "DSS VRI material present, but no validated signature timestamp token; not promoted beyond PAdES B-B".to_string()
+                } else {
+                    "DSS present but no VRI entry matched this signature's /Contents hash".to_string()
+                }
+            }
+            PadesLevel::BaselineB => {
+                "no validated RFC 3161 signature timestamp token or matching DSS validation material found".to_string()
+            }
+            PadesLevel::BaselineLTA => {
+                "PAdES B-LTA document timestamp material detected".to_string()
+            }
         }
     };
 
@@ -2454,6 +2652,223 @@ fn build_ltv_report(
         revocation_status,
         note,
     }
+}
+
+struct DssVriMaterial<'a> {
+    vri_key: String,
+    vri_entry: Option<&'a DssVriEntry>,
+    certs: &'a [Vec<u8>],
+    ocsp: &'a [Vec<u8>],
+    crls: &'a [Vec<u8>],
+}
+
+fn dss_vri_material_for_signature<'a>(contents: &[u8], dss: &'a DssIndex) -> DssVriMaterial<'a> {
+    let (vri_key, vri_entry) = dss_vri_entry_for_signature(contents, dss);
+    if let Some(entry) = vri_entry {
+        DssVriMaterial {
+            vri_key,
+            vri_entry: Some(entry),
+            certs: &entry.certs,
+            ocsp: &entry.ocsp,
+            crls: &entry.crls,
+        }
+    } else {
+        DssVriMaterial {
+            vri_key,
+            vri_entry: None,
+            certs: &dss.certs,
+            ocsp: &dss.ocsp,
+            crls: &dss.crls,
+        }
+    }
+}
+
+fn options_with_dss_evidence(
+    options: &VerifyOptions,
+    contents: &[u8],
+    dss: &DssIndex,
+) -> VerifyOptions {
+    let mut effective = options.clone();
+    if !dss.present {
+        return effective;
+    }
+    let material = dss_vri_material_for_signature(contents, dss);
+    for cert in material.certs {
+        push_unique_bytes(&mut effective.intermediates_der, cert.clone());
+    }
+    for response in material.ocsp {
+        push_unique_bytes(&mut effective.ocsp_responses_der, response.clone());
+    }
+    for crl in material.crls {
+        push_unique_bytes(&mut effective.crls_der, crl.clone());
+    }
+    effective
+}
+
+fn build_dss_validation_report(
+    contents: &[u8],
+    dss: &DssIndex,
+    prompt24: &Prompt24SignatureValidationReport,
+) -> DssValidationReport {
+    let material = dss_vri_material_for_signature(contents, dss);
+    let evidence_present =
+        !material.certs.is_empty() || !material.ocsp.is_empty() || !material.crls.is_empty();
+    let replayable = dss.present
+        && material.vri_entry.is_some()
+        && !material.certs.is_empty()
+        && (!material.ocsp.is_empty() || !material.crls.is_empty());
+    let validation_material_status = if replayable {
+        match prompt24.revocation.status {
+            SignatureValidationState::Valid => {
+                if prompt24.path.status == SignatureValidationState::Valid {
+                    SignatureValidationState::Valid
+                } else {
+                    SignatureValidationState::Indeterminate
+                }
+            }
+            SignatureValidationState::Revoked => SignatureValidationState::Revoked,
+            SignatureValidationState::EvidenceStale => SignatureValidationState::EvidenceStale,
+            SignatureValidationState::EvidenceMissing => SignatureValidationState::EvidenceMissing,
+            SignatureValidationState::NetworkDisabled => SignatureValidationState::NetworkDisabled,
+            SignatureValidationState::NetworkFailure => SignatureValidationState::NetworkFailure,
+            SignatureValidationState::UnsupportedAlgorithm => {
+                SignatureValidationState::UnsupportedAlgorithm
+            }
+            SignatureValidationState::NotChecked if evidence_present => {
+                SignatureValidationState::Indeterminate
+            }
+            SignatureValidationState::NotChecked => SignatureValidationState::NotChecked,
+            _ => SignatureValidationState::Indeterminate,
+        }
+    } else if evidence_present {
+        SignatureValidationState::Indeterminate
+    } else {
+        SignatureValidationState::NotChecked
+    };
+    let status = if !dss.present {
+        SignatureValidationState::NotChecked
+    } else if material.vri_entry.is_none() {
+        SignatureValidationState::EvidenceMissing
+    } else if replayable {
+        validation_material_status.clone()
+    } else {
+        SignatureValidationState::EvidenceMissing
+    };
+    let mut warnings = Vec::new();
+    if dss.present && material.vri_entry.is_none() {
+        warnings.push(
+            "DSS exists but no VRI key matched this signature's supported /Contents digest forms"
+                .to_string(),
+        );
+    }
+    if dss.present && material.vri_entry.is_some() && !replayable {
+        warnings.push(
+            "matched VRI entry lacks either certificate evidence or revocation evidence"
+                .to_string(),
+        );
+    }
+    DssValidationReport {
+        status,
+        dss_present: dss.present,
+        vri_key: Some(material.vri_key),
+        vri_matched: material.vri_entry.is_some(),
+        global_cert_count: dss.certs.len(),
+        global_ocsp_count: dss.ocsp.len(),
+        global_crl_count: dss.crls.len(),
+        matched_cert_count: material.certs.len(),
+        matched_ocsp_count: material.ocsp.len(),
+        matched_crl_count: material.crls.len(),
+        evidence_replayable_offline: replayable,
+        validation_material_status,
+        warnings,
+    }
+}
+
+fn build_prompt25_report(
+    contents: &[u8],
+    dss: &DssIndex,
+    cms: &CmsResult,
+    _ltv: &LtvReport,
+    coverage: &Coverage,
+    prompt24: &Prompt24SignatureValidationReport,
+) -> Prompt25SignatureLtvEditReport {
+    let timestamp_tokens = cms.timestamp_reports.clone();
+    let signature_timestamp_status = if timestamp_tokens.is_empty() {
+        SignatureValidationState::NotChecked
+    } else if timestamp_tokens
+        .iter()
+        .any(TimestampValidationReport::is_valid)
+    {
+        SignatureValidationState::Valid
+    } else if timestamp_tokens
+        .iter()
+        .any(|report| report.status == SignatureValidationState::UnsupportedAlgorithm)
+    {
+        SignatureValidationState::UnsupportedAlgorithm
+    } else {
+        SignatureValidationState::Invalid
+    };
+    let dss_report = build_dss_validation_report(contents, dss, prompt24);
+    let lt_ready = signature_timestamp_status == SignatureValidationState::Valid
+        && dss_report.dss_present
+        && dss_report.vri_matched
+        && dss_report.evidence_replayable_offline
+        && prompt24.path.status == SignatureValidationState::Valid
+        && prompt24.revocation.status == SignatureValidationState::Valid;
+    let ltv_status = if lt_ready {
+        SignatureValidationState::Valid
+    } else if dss_report.dss_present
+        || signature_timestamp_status == SignatureValidationState::Valid
+    {
+        SignatureValidationState::Indeterminate
+    } else {
+        SignatureValidationState::NotChecked
+    };
+    let achieved_pades_level = if lt_ready {
+        PadesLevel::BaselineLT
+    } else if signature_timestamp_status == SignatureValidationState::Valid {
+        PadesLevel::BaselineT
+    } else {
+        PadesLevel::BaselineB
+    };
+    let (validation_indication, validation_subindication) = match ltv_status {
+        SignatureValidationState::Valid => (
+            SignatureValidationIndication::Passed,
+            SignatureValidationSubindication::None,
+        ),
+        SignatureValidationState::NotChecked => (
+            SignatureValidationIndication::NotEvaluated,
+            SignatureValidationSubindication::NotEvaluated,
+        ),
+        SignatureValidationState::Revoked => (
+            SignatureValidationIndication::Failed,
+            SignatureValidationSubindication::CertificateRevoked,
+        ),
+        SignatureValidationState::UnsupportedAlgorithm => (
+            SignatureValidationIndication::Indeterminate,
+            SignatureValidationSubindication::UnsupportedAlgorithm,
+        ),
+        _ => (
+            SignatureValidationIndication::Indeterminate,
+            SignatureValidationSubindication::ValidationIndeterminate,
+        ),
+    };
+    let mut report = Prompt25SignatureLtvEditReport {
+        timestamp_tokens,
+        signature_timestamp_status,
+        dss: dss_report,
+        ltv_status,
+        achieved_pades_level,
+        validation_indication,
+        validation_subindication,
+        post_signature_modification_status: match coverage {
+            Coverage::WholeFile => SignatureValidationState::Valid,
+            Coverage::ModifiedAfterSigning => SignatureValidationState::ModifiedAfterSigning,
+        },
+        ..Prompt25SignatureLtvEditReport::default()
+    };
+    report.warnings.extend(report.dss.warnings.clone());
+    report
 }
 
 fn revocation_status_from_crls(crls: &[Vec<u8>], cert: Option<&CertInfo>) -> RevocationStatus {
@@ -2595,6 +3010,47 @@ fn signature_vri_key(contents: &[u8]) -> String {
     hex_upper(&digest)
 }
 
+fn signature_vri_key_candidates(contents: &[u8]) -> Vec<String> {
+    let cms = exact_cms_der_object(contents).unwrap_or(contents);
+    let mut keys = vec![signature_vri_key(contents)];
+
+    // pyHanko's DSS writer follows the common PAdES convention of hashing the
+    // ASCII hex representation of the PDF signature contents. Accept both the
+    // trimmed DER object and the full padded `/Contents` string as alternate
+    // bindings while retaining the raw-CMS key for existing Oxide DSS output
+    // and malformed inventory paths.
+    let hex_contents = hex_lower(cms);
+    let hex_key = hex_upper(&Sha1::digest(hex_contents.as_bytes()));
+    if !keys.iter().any(|key| key == &hex_key) {
+        keys.push(hex_key);
+    }
+    let padded_hex_contents = hex_lower(contents);
+    let padded_hex_key = hex_upper(&Sha1::digest(padded_hex_contents.as_bytes()));
+    if !keys.iter().any(|key| key == &padded_hex_key) {
+        keys.push(padded_hex_key);
+    }
+    keys
+}
+
+fn dss_vri_entry_for_signature<'a>(
+    contents: &[u8],
+    dss: &'a DssIndex,
+) -> (String, Option<&'a DssVriEntry>) {
+    let mut candidates = signature_vri_key_candidates(contents).into_iter();
+    let fallback = candidates
+        .next()
+        .unwrap_or_else(|| signature_vri_key(contents));
+    if let Some(entry) = dss.vri.get(&fallback) {
+        return (fallback, Some(entry));
+    }
+    for key in candidates {
+        if let Some(entry) = dss.vri.get(&key) {
+            return (key, Some(entry));
+        }
+    }
+    (fallback, None)
+}
+
 struct VerifyOneOutcome {
     reports: Vec<SignatureReport>,
     evidence_records: Vec<EvidenceRecord>,
@@ -2651,6 +3107,7 @@ fn verify_one_with_evidence(
         certificate: None,
         ltv: LtvReport::default(),
         prompt24: Prompt24SignatureValidationReport::default(),
+        prompt25: Prompt25SignatureLtvEditReport::default(),
         checks: SignatureCheckDetails::default(),
         note: String::new(),
     };
@@ -2790,7 +3247,7 @@ fn verify_one_with_evidence(
     }
     report.checks.byte_range_contents_gap_matches = true;
 
-    match verify_cms(&contents, &signed_data_bytes, &options.algorithm_policy) {
+    match verify_cms(&contents, &signed_data_bytes, options) {
         Ok(results) => {
             let signer_count = results.len();
             let mut reports = Vec::with_capacity(signer_count);
@@ -2799,11 +3256,12 @@ fn verify_one_with_evidence(
                 let mut signer_report = report.clone();
                 signer_report.cms_signer_index = Some(signer_index + 1);
                 signer_report.cms_signer_count = signer_count;
+                let effective_options = options_with_dss_evidence(options, &contents, dss);
                 let ltv = build_ltv_report(&contents, dss, &result, result.certificate.as_ref());
                 let validation = evaluate_prompt24_validation(Prompt24ValidationInput {
                     signer: result.signer_cert.as_ref(),
                     chain: &result.chain,
-                    options,
+                    options: &effective_options,
                     ltv: &ltv,
                     cms: &result.cms,
                     sub_filter: signer_report.sub_filter.as_deref(),
@@ -2811,14 +3269,23 @@ fn verify_one_with_evidence(
                     coverage: &signer_report.coverage,
                     validity: &result.validity,
                 });
-                signer_report.validity = result.validity;
-                signer_report.digest_algorithm = result.digest_algorithm;
-                signer_report.certificate = result.certificate;
+                signer_report.validity = result.validity.clone();
+                signer_report.digest_algorithm = result.digest_algorithm.clone();
+                signer_report.certificate = result.certificate.clone();
                 evidence_records.extend(validation.evidence_records);
                 signer_report.trust = validation.trust;
                 signer_report.ltv = ltv;
                 let mut prompt24 = validation.report;
                 set_validation_indication(&mut prompt24);
+                signer_report.prompt25 = build_prompt25_report(
+                    &contents,
+                    dss,
+                    &result,
+                    &signer_report.ltv,
+                    &signer_report.coverage,
+                    &prompt24,
+                );
+                signer_report.ltv.pades_level = signer_report.prompt25.achieved_pades_level.clone();
                 signer_report.prompt24 = prompt24;
                 signer_report.status = overall_status(
                     &signer_report.validity,
@@ -2831,17 +3298,19 @@ fn verify_one_with_evidence(
                     signer_report.validity == SignatureValidity::Valid;
                 signer_report.checks.chain_verified =
                     signer_report.trust == SignatureTrust::Trusted;
-                signer_report.checks.revocation_checked =
-                    signer_report.ltv.revocation_status != RevocationStatus::NotChecked;
+                signer_report.checks.revocation_checked = signer_report.prompt24.revocation.status
+                    != SignatureValidationState::NotChecked;
                 signer_report.checks.timestamp_present =
                     signer_report.ltv.timestamp_token_count > 0;
-                signer_report.checks.timestamp_verified = false;
+                signer_report.checks.timestamp_verified =
+                    signer_report.prompt25.signature_timestamp_status
+                        == SignatureValidationState::Valid;
                 signer_report.checks.ltv_material_present = signer_report.ltv.dss_present
                     || signer_report.ltv.embedded_certs > 0
                     || signer_report.ltv.embedded_ocsp_responses > 0
                     || signer_report.ltv.embedded_crls > 0;
-                signer_report.checks.ltv_verified = signer_report.ltv.vri_matched
-                    && signer_report.ltv.revocation_status == RevocationStatus::GoodFromEmbeddedCrl;
+                signer_report.checks.ltv_verified =
+                    signer_report.prompt25.ltv_status == SignatureValidationState::Valid;
                 signer_report.note = format!(
                     "CMS SignerInfo {}/{}. {}. {}",
                     signer_index + 1,
@@ -4732,7 +5201,7 @@ fn pades_prompt24_report(
     let sub_filter = sub_filter.unwrap_or_default();
     let detected_profile = match sub_filter {
         "ETSI.CAdES.detached" => "pades_baseline_b_candidate".to_string(),
-        "ETSI.RFC3161" => "pades_document_timestamp_deferred_to_prompt25".to_string(),
+        "ETSI.RFC3161" => "pades_document_timestamp_prompt25_classified".to_string(),
         "adbe.pkcs7.detached" | "adbe.pkcs7.sha1" => "generic_pdf_cms_detached".to_string(),
         "" => "missing_pdf_signature_subfilter".to_string(),
         _ => format!("unsupported_pdf_signature_subfilter:{sub_filter}"),
@@ -4805,7 +5274,18 @@ fn pades_prompt24_report(
         structural_status,
         detected_profile,
         validated_level: if sub_filter == "ETSI.CAdES.detached" {
-            "pades_baseline_b_pdf_cms_ess_conformance".to_string()
+            match ltv.pades_level {
+                PadesLevel::BaselineLT => {
+                    "pades_baseline_lt_with_validated_timestamp_and_replayable_evidence".to_string()
+                }
+                PadesLevel::BaselineT => {
+                    "pades_baseline_t_with_validated_signature_timestamp".to_string()
+                }
+                PadesLevel::BaselineLTA => {
+                    "pades_baseline_lta_archive_timestamp_classified".to_string()
+                }
+                PadesLevel::BaselineB => "pades_baseline_b_pdf_cms_ess_conformance".to_string(),
+            }
         } else {
             "none".to_string()
         },
@@ -4818,7 +5298,11 @@ fn pades_prompt24_report(
         revocation_status,
         higher_level_evidence_present: higher_level,
         higher_level_evidence_status: if higher_level {
-            SignatureValidationState::DeferredToLaterPrompt
+            match ltv.pades_level {
+                PadesLevel::BaselineT | PadesLevel::BaselineLT => SignatureValidationState::Valid,
+                PadesLevel::BaselineLTA => SignatureValidationState::DeferredToLaterPrompt,
+                PadesLevel::BaselineB => SignatureValidationState::Indeterminate,
+            }
         } else {
             SignatureValidationState::NotChecked
         },
@@ -4850,15 +5334,15 @@ fn effective_retrieval_policy(options: &VerifyOptions) -> RetrievalPolicy {
 
 fn deferred_prompt24_evidence(ltv: &LtvReport) -> Vec<String> {
     let mut deferred = Vec::new();
-    if ltv.timestamp_token_count > 0 || ltv.invalid_timestamp_token_count > 0 {
+    if ltv.invalid_timestamp_token_count > 0 {
         deferred
-            .push("RFC 3161 timestamp-token trust validation is deferred to Prompt 25".to_string());
+            .push("one or more RFC 3161 timestamp tokens failed Prompt 25 validation".to_string());
     }
-    if ltv.dss_present {
-        deferred
-            .push("DSS/VRI long-term-validation semantics are deferred to Prompt 25".to_string());
+    if ltv.dss_present && !ltv.vri_matched {
+        deferred.push(
+            "DSS is present but no matching VRI entry was bound to this signature".to_string(),
+        );
     }
-    deferred.push("DocMDP and FieldMDP transform enforcement is deferred to Prompt 25".to_string());
     deferred
 }
 
@@ -4902,6 +5386,7 @@ struct CmsResult {
     signer_cert: Option<Certificate>,
     /// All certificates embedded in the CMS (the candidate chain).
     chain: Vec<Certificate>,
+    timestamp_reports: Vec<TimestampValidationReport>,
     timestamp_token_count: usize,
     invalid_timestamp_token_count: usize,
 }
@@ -4942,7 +5427,7 @@ fn collect_chain(signed: &SignedData) -> Vec<Certificate> {
 fn verify_cms(
     der: &[u8],
     content: &[u8],
-    algorithm_policy: &SignatureAlgorithmPolicy,
+    options: &VerifyOptions,
 ) -> std::result::Result<Vec<CmsResult>, String> {
     // PDF writers commonly reserve a larger /Contents slot and pad it with
     // zero bytes. Never remove zero bytes heuristically: a valid DER CMS
@@ -4973,15 +5458,7 @@ fn verify_cms(
     let signer_info_count = signer_infos.len();
     signer_infos
         .iter()
-        .map(|signer| {
-            verify_cms_signer(
-                &signed,
-                signer,
-                content,
-                signer_info_count,
-                algorithm_policy,
-            )
-        })
+        .map(|signer| verify_cms_signer(&signed, signer, content, signer_info_count, options))
         .collect()
 }
 
@@ -4990,11 +5467,25 @@ fn verify_cms_signer(
     signer: &SignerInfo,
     content: &[u8],
     signer_info_count: usize,
-    algorithm_policy: &SignatureAlgorithmPolicy,
+    options: &VerifyOptions,
 ) -> std::result::Result<CmsResult, String> {
+    let algorithm_policy = &options.algorithm_policy;
     let digest_oid = signer.digest_alg.oid;
     let digest_name = digest_oid_name(&digest_oid);
-    let (timestamp_token_count, invalid_timestamp_token_count) = cms_timestamp_token_counts(signer);
+    let timestamp_reports = cms_signature_timestamp_reports(
+        signer,
+        options,
+        algorithm_policy,
+        signer.signature.as_bytes(),
+    );
+    let timestamp_token_count = timestamp_reports
+        .iter()
+        .filter(|report| report.is_valid())
+        .count();
+    let invalid_timestamp_token_count = timestamp_reports
+        .iter()
+        .filter(|report| !report.is_valid())
+        .count();
     let mut cms = CmsValidationReport {
         content_info: SignatureValidationState::Valid,
         detached_content: SignatureValidationState::Valid,
@@ -5016,6 +5507,7 @@ fn verify_cms_signer(
             signer_resolution: SignerCertResolution::Missing,
             signer_cert: None,
             chain: collect_chain(signed),
+            timestamp_reports: timestamp_reports.clone(),
             timestamp_token_count,
             invalid_timestamp_token_count,
         });
@@ -5039,6 +5531,7 @@ fn verify_cms_signer(
             signer_resolution: selection.resolution,
             signer_cert,
             chain,
+            timestamp_reports: timestamp_reports.clone(),
             timestamp_token_count,
             invalid_timestamp_token_count,
         });
@@ -5057,6 +5550,7 @@ fn verify_cms_signer(
                 signer_resolution: selection.resolution,
                 signer_cert: signer_cert.clone(),
                 chain: chain.clone(),
+                timestamp_reports: timestamp_reports.clone(),
                 timestamp_token_count,
                 invalid_timestamp_token_count,
             });
@@ -5088,6 +5582,7 @@ fn verify_cms_signer(
                         signer_resolution: selection.resolution,
                         signer_cert,
                         chain,
+                        timestamp_reports: timestamp_reports.clone(),
                         timestamp_token_count,
                         invalid_timestamp_token_count,
                     });
@@ -5112,6 +5607,7 @@ fn verify_cms_signer(
             signer_resolution: selection.resolution,
             signer_cert: signer_cert.clone(),
             chain: chain.clone(),
+            timestamp_reports: timestamp_reports.clone(),
             timestamp_token_count,
             invalid_timestamp_token_count,
         });
@@ -5137,6 +5633,7 @@ fn verify_cms_signer(
                     signer_resolution: selection.resolution,
                     signer_cert: signer_cert.clone(),
                     chain: chain.clone(),
+                    timestamp_reports: timestamp_reports.clone(),
                     timestamp_token_count,
                     invalid_timestamp_token_count,
                 });
@@ -5170,6 +5667,7 @@ fn verify_cms_signer(
             signer_resolution: selection.resolution,
             signer_cert,
             chain,
+            timestamp_reports: timestamp_reports.clone(),
             timestamp_token_count,
             invalid_timestamp_token_count,
         });
@@ -5208,6 +5706,7 @@ fn verify_cms_signer(
         signer_resolution: selection.resolution,
         signer_cert,
         chain,
+        timestamp_reports,
         timestamp_token_count,
         invalid_timestamp_token_count,
     })
@@ -5922,29 +6421,411 @@ fn signed_attr_message_digest(attrs: &x509_cert::attr::Attributes) -> Option<Vec
     None
 }
 
-fn cms_timestamp_token_counts(signer: &SignerInfo) -> (usize, usize) {
-    let mut valid = 0usize;
-    let mut invalid = 0usize;
+#[derive(Debug, Clone)]
+struct ParsedTstInfo {
+    policy_oid: ObjectIdentifier,
+    serial_hex: String,
+    gen_time_unix: u64,
+    gen_time: String,
+    hash_algorithm: AlgorithmIdentifierOwned,
+    message_imprint: Vec<u8>,
+}
+
+fn cms_signature_timestamp_reports(
+    signer: &SignerInfo,
+    options: &VerifyOptions,
+    algorithm_policy: &SignatureAlgorithmPolicy,
+    signature_value: &[u8],
+) -> Vec<TimestampValidationReport> {
+    let mut reports = Vec::new();
     let Some(attrs) = &signer.unsigned_attrs else {
-        return (valid, invalid);
+        return reports;
     };
+    let mut attribute_index = 0usize;
     for attr in attrs.iter() {
         if attr.oid != OID_SIGNATURE_TIMESTAMP_TOKEN {
             continue;
         }
+        attribute_index += 1;
         for value in attr.values.iter() {
             let Ok(der) = value.to_der() else {
-                invalid += 1;
+                let mut report = TimestampValidationReport::new(
+                    TimestampTokenType::SignatureTimestamp,
+                    format!("cms_unsigned_attribute:{attribute_index}"),
+                    &[],
+                );
+                report.status = SignatureValidationState::Malformed;
+                report.errors.push(
+                    "timestamp-token unsigned attribute value was not DER encodable".to_string(),
+                );
+                reports.push(report);
                 continue;
             };
-            if ContentInfo::from_der(&der).is_ok() {
-                valid += 1;
-            } else {
-                invalid += 1;
-            }
+            reports.push(validate_signature_timestamp_token(
+                &der,
+                format!("cms_unsigned_attribute:{attribute_index}"),
+                signature_value,
+                options,
+                algorithm_policy,
+            ));
         }
     }
-    (valid, invalid)
+    reports
+}
+
+fn validate_signature_timestamp_token(
+    token_der: &[u8],
+    location: String,
+    signature_value: &[u8],
+    options: &VerifyOptions,
+    algorithm_policy: &SignatureAlgorithmPolicy,
+) -> TimestampValidationReport {
+    let mut report =
+        TimestampValidationReport::new(TimestampTokenType::SignatureTimestamp, location, token_der);
+    let ci = match ContentInfo::from_der(token_der) {
+        Ok(ci) => {
+            report.content_info_status = SignatureValidationState::Valid;
+            ci
+        }
+        Err(error) => {
+            report.content_info_status = SignatureValidationState::Malformed;
+            report.status = SignatureValidationState::Malformed;
+            report
+                .errors
+                .push(format!("timestamp ContentInfo parse failed: {error}"));
+            return report;
+        }
+    };
+    if ci.content_type != OID_ID_SIGNED_DATA {
+        report.content_info_status = SignatureValidationState::UnsupportedProfile;
+        report.status = SignatureValidationState::UnsupportedProfile;
+        report.errors.push(format!(
+            "timestamp ContentInfo type was {}, expected id-signedData",
+            ci.content_type
+        ));
+        return report;
+    }
+    let signed: SignedData = match ci.content.decode_as() {
+        Ok(signed) => {
+            report.signed_data_status = SignatureValidationState::Valid;
+            signed
+        }
+        Err(error) => {
+            report.signed_data_status = SignatureValidationState::Malformed;
+            report.status = SignatureValidationState::Malformed;
+            report
+                .errors
+                .push(format!("timestamp SignedData decode failed: {error}"));
+            return report;
+        }
+    };
+    if signed.encap_content_info.econtent_type != OID_ID_CT_TST_INFO {
+        report.signed_data_status = SignatureValidationState::UnsupportedProfile;
+        report.status = SignatureValidationState::UnsupportedProfile;
+        report.errors.push(format!(
+            "timestamp encapsulated content type was {}, expected id-ct-TSTInfo",
+            signed.encap_content_info.econtent_type
+        ));
+        return report;
+    }
+    let Some(tst_info_any) = signed.encap_content_info.econtent.as_ref() else {
+        report.signed_data_status = SignatureValidationState::EvidenceMissing;
+        report.status = SignatureValidationState::Malformed;
+        report
+            .errors
+            .push("timestamp SignedData did not embed TSTInfo".to_string());
+        return report;
+    };
+    let tst_info_der = tst_info_any.value();
+    let tst_info = match parse_tst_info(tst_info_der) {
+        Ok(tst_info) => {
+            report.tst_info_status = SignatureValidationState::Valid;
+            report.policy_oid = Some(tst_info.policy_oid.to_string());
+            report.serial_hex = Some(tst_info.serial_hex.clone());
+            report.gen_time_unix = Some(tst_info.gen_time_unix);
+            report.gen_time = Some(tst_info.gen_time.clone());
+            report.hash_algorithm = digest_oid_name(&tst_info.hash_algorithm.oid);
+            report.message_imprint_digest_hex = Some(hex_upper(&tst_info.message_imprint));
+            tst_info
+        }
+        Err(error) => {
+            report.tst_info_status = SignatureValidationState::Malformed;
+            report.status = SignatureValidationState::Malformed;
+            report.errors.push(error);
+            return report;
+        }
+    };
+    match digest_bytes(&tst_info.hash_algorithm.oid, signature_value) {
+        Some(expected) => {
+            report.expected_imprint_digest_hex = Some(hex_upper(&expected));
+            if expected == tst_info.message_imprint {
+                report.message_imprint_status = SignatureValidationState::Valid;
+            } else {
+                report.message_imprint_status = SignatureValidationState::DigestMismatch;
+                report.status = SignatureValidationState::DigestMismatch;
+                report.errors.push(
+                    "timestamp messageImprint does not match the CMS signature value".to_string(),
+                );
+                return report;
+            }
+        }
+        None => {
+            report.message_imprint_status = SignatureValidationState::UnsupportedAlgorithm;
+            report.status = SignatureValidationState::UnsupportedAlgorithm;
+            report.errors.push(format!(
+                "timestamp messageImprint hash algorithm {} is unsupported",
+                tst_info.hash_algorithm.oid
+            ));
+            return report;
+        }
+    }
+
+    let signer_infos = signed.signer_infos.0.as_slice();
+    if signer_infos.len() != 1 {
+        report.cms_signature_status = SignatureValidationState::SignerCertificateAmbiguous;
+        report.status = SignatureValidationState::SignerCertificateAmbiguous;
+        report.errors.push(format!(
+            "timestamp token must contain exactly one SignerInfo, found {}",
+            signer_infos.len()
+        ));
+        return report;
+    }
+    let token_signer = &signer_infos[0];
+    let mut cms = CmsValidationReport {
+        content_info: SignatureValidationState::Valid,
+        detached_content: SignatureValidationState::Valid,
+        signer_info_count: 1,
+        ..CmsValidationReport::default()
+    };
+    if !signed
+        .digest_algorithms
+        .iter()
+        .any(|algorithm| algorithm.oid == token_signer.digest_alg.oid)
+    {
+        report.cms_signature_status = SignatureValidationState::Invalid;
+        report.status = SignatureValidationState::Invalid;
+        report
+            .errors
+            .push("timestamp SignerInfo digestAlgorithm was absent from SignedData".to_string());
+        return report;
+    }
+    cms.digest_algorithm_declared = SignatureValidationState::Valid;
+    if !algorithm_policy.allows_digest(&token_signer.digest_alg.oid) {
+        report.cms_signature_status = SignatureValidationState::UnsupportedAlgorithm;
+        report.status = SignatureValidationState::UnsupportedAlgorithm;
+        report.errors.push(format!(
+            "timestamp digest algorithm {} is rejected by policy",
+            token_signer.digest_alg.oid
+        ));
+        return report;
+    }
+    let token_digest = match digest_bytes(&token_signer.digest_alg.oid, tst_info_der) {
+        Some(digest) => digest,
+        None => {
+            report.cms_signature_status = SignatureValidationState::UnsupportedAlgorithm;
+            report.status = SignatureValidationState::UnsupportedAlgorithm;
+            report.errors.push(format!(
+                "timestamp signer digest algorithm {} is unsupported",
+                token_signer.digest_alg.oid
+            ));
+            return report;
+        }
+    };
+    let signed_payload = match token_signer.signed_attrs.as_ref() {
+        Some(attrs) => match validate_signed_attributes(
+            attrs,
+            &token_digest,
+            &OID_ID_CT_TST_INFO,
+            token_signer,
+            find_signer_cert(&signed, token_signer).cert.as_ref(),
+            &mut cms,
+        ) {
+            Ok(payload) => payload,
+            Err(error) => {
+                report.cms_signature_status = SignatureValidationState::Invalid;
+                report.status = SignatureValidationState::Invalid;
+                report.errors.push(format!(
+                    "timestamp signed attributes failed validation: {error}"
+                ));
+                return report;
+            }
+        },
+        None => {
+            report.cms_signature_status = SignatureValidationState::EvidenceMissing;
+            report.status = SignatureValidationState::Malformed;
+            report
+                .errors
+                .push("timestamp token signer is missing signed attributes".to_string());
+            return report;
+        }
+    };
+    let selection = find_signer_cert(&signed, token_signer);
+    let Some(tsa_cert) = selection.cert else {
+        report.tsa_certificate_status = signer_resolution_state(selection.resolution);
+        report.status = report.tsa_certificate_status.clone();
+        report.errors.push(
+            "timestamp SignerInfo did not resolve to exactly one TSA certificate".to_string(),
+        );
+        return report;
+    };
+    report.tsa_subject = Some(tsa_cert.tbs_certificate.subject.to_string());
+    match verify_signature_algorithm(
+        &tsa_cert,
+        &token_signer.digest_alg.oid,
+        token_signer,
+        &signed_payload,
+        algorithm_policy,
+    ) {
+        Ok(true) => {
+            report.cms_signature_status = SignatureValidationState::Valid;
+        }
+        Ok(false) => {
+            report.cms_signature_status = SignatureValidationState::SignatureMathInvalid;
+            report.status = SignatureValidationState::SignatureMathInvalid;
+            report
+                .errors
+                .push("timestamp token CMS signature did not verify".to_string());
+            return report;
+        }
+        Err(error) if error.starts_with("unsupported algorithm:") => {
+            report.cms_signature_status = SignatureValidationState::UnsupportedAlgorithm;
+            report.status = SignatureValidationState::UnsupportedAlgorithm;
+            report.errors.push(error);
+            return report;
+        }
+        Err(error) => {
+            report.cms_signature_status = SignatureValidationState::Invalid;
+            report.status = SignatureValidationState::Invalid;
+            report.errors.push(error);
+            return report;
+        }
+    }
+
+    match validate_tsa_certificate_usage(&tsa_cert) {
+        Ok(()) => {
+            report.tsa_certificate_status = SignatureValidationState::Valid;
+            report.tsa_eku_status = SignatureValidationState::Valid;
+        }
+        Err(error) => {
+            report.tsa_certificate_status = SignatureValidationState::PolicyRejected;
+            report.tsa_eku_status = SignatureValidationState::PolicyRejected;
+            report.status = SignatureValidationState::PolicyRejected;
+            report.errors.push(error);
+            return report;
+        }
+    }
+
+    let (path_status, warnings) =
+        validate_tsa_path_at_gen_time(&tsa_cert, &collect_chain(&signed), options, &cms, &tst_info);
+    report.tsa_path_status = path_status;
+    report.warnings.extend(warnings);
+    report.status = if report.tsa_path_status == SignatureValidationState::Valid {
+        SignatureValidationState::Valid
+    } else {
+        report.tsa_path_status.clone()
+    };
+    report
+}
+
+fn parse_tst_info(der: &[u8]) -> std::result::Result<ParsedTstInfo, String> {
+    let fields = der_sequence_children(der, 16, "TSTInfo")?;
+    if fields.len() < 5 {
+        return Err("TSTInfo is missing mandatory fields".to_string());
+    }
+    if fields[0].tag != 0x02 || fields[0].value != [0x01] {
+        return Err("TSTInfo version is not v1".to_string());
+    }
+    let policy_oid = ObjectIdentifier::from_der(fields[1].encoded)
+        .map_err(|error| format!("TSTInfo policy OID: {error}"))?;
+    if fields[2].tag != 0x30 {
+        return Err("TSTInfo messageImprint is not a SEQUENCE".to_string());
+    }
+    let imprint = der_children(fields[2].value, 2, "TSTInfo messageImprint")?;
+    if imprint.len() != 2 || imprint[1].tag != 0x04 {
+        return Err("TSTInfo messageImprint is malformed".to_string());
+    }
+    let hash_algorithm = AlgorithmIdentifierOwned::from_der(imprint[0].encoded)
+        .map_err(|error| format!("TSTInfo messageImprint hashAlgorithm: {error}"))?;
+    if fields[3].tag != 0x02 {
+        return Err("TSTInfo serialNumber is not an INTEGER".to_string());
+    }
+    let gen_time = GeneralizedTime::from_der(fields[4].encoded)
+        .map_err(|error| format!("TSTInfo genTime: {error}"))?;
+    Ok(ParsedTstInfo {
+        policy_oid,
+        serial_hex: hex_upper(fields[3].value),
+        gen_time_unix: gen_time.to_unix_duration().as_secs(),
+        gen_time: gen_time.to_date_time().to_string(),
+        hash_algorithm,
+        message_imprint: imprint[1].value.to_vec(),
+    })
+}
+
+fn validate_tsa_certificate_usage(cert: &Certificate) -> std::result::Result<(), String> {
+    match cert.tbs_certificate.get::<ExtendedKeyUsage>() {
+        Ok(Some((_critical, eku))) => {
+            if !eku.0.contains(&OID_KP_TIME_STAMPING) {
+                return Err(
+                    "TSA certificate ExtendedKeyUsage does not contain id-kp-timeStamping"
+                        .to_string(),
+                );
+            }
+        }
+        Ok(None) => {
+            return Err(
+                "TSA certificate is missing ExtendedKeyUsage id-kp-timeStamping".to_string(),
+            );
+        }
+        Err(error) => return Err(format!("TSA ExtendedKeyUsage parse failed: {error}")),
+    }
+    match cert.tbs_certificate.get::<KeyUsage>() {
+        Ok(Some((_critical, key_usage))) if !key_usage.digital_signature() => {
+            Err("TSA certificate KeyUsage does not permit digitalSignature".to_string())
+        }
+        Ok(_) => Ok(()),
+        Err(error) => Err(format!("TSA KeyUsage parse failed: {error}")),
+    }
+}
+
+fn validate_tsa_path_at_gen_time(
+    tsa_cert: &Certificate,
+    chain: &[Certificate],
+    options: &VerifyOptions,
+    cms: &CmsValidationReport,
+    tst_info: &ParsedTstInfo,
+) -> (SignatureValidationState, Vec<String>) {
+    let mut tsa_options = options.clone();
+    tsa_options.validation_time_unix = Some(tst_info.gen_time_unix);
+    let ltv = LtvReport::default();
+    let coverage = Coverage::WholeFile;
+    let validity = SignatureValidity::Valid;
+    let evaluation = evaluate_prompt24_validation(Prompt24ValidationInput {
+        signer: Some(tsa_cert),
+        chain,
+        options: &tsa_options,
+        ltv: &ltv,
+        cms,
+        sub_filter: None,
+        signer_resolution: SignerCertResolution::Found,
+        coverage: &coverage,
+        validity: &validity,
+    });
+    let path_status = evaluation.report.path.status.clone();
+    let revocation_status = evaluation.report.revocation.status.clone();
+    let mut warnings = evaluation.report.warnings;
+    warnings.extend(evaluation.report.revocation.errors);
+    let status = if path_status != SignatureValidationState::Valid {
+        path_status
+    } else if revocation_status == SignatureValidationState::Revoked {
+        SignatureValidationState::Revoked
+    } else if tsa_options.revocation_mode.requires_evidence()
+        && revocation_status != SignatureValidationState::Valid
+    {
+        revocation_status
+    } else {
+        SignatureValidationState::Valid
+    };
+    (status, warnings)
 }
 
 /// Re-encode the signed attributes as an explicit `SET OF Attribute` (tag
@@ -6757,13 +7638,65 @@ mod tests {
     }
 
     #[test]
+    fn rfc3161_signature_timestamp_validates_imprint_tsa_eku_and_path() {
+        let tsa = runtime_test_tsa_signer();
+        let signature_value = b"prompt25 cms signature value";
+        let token = build_timestamp_token_for_test(&tsa, signature_value).unwrap();
+        let options =
+            VerifyOptions::default().with_trust_anchor_der(tsa.signer_certificate_der().unwrap());
+
+        let report = validate_signature_timestamp_token(
+            &token,
+            "unit-test".to_string(),
+            signature_value,
+            &options,
+            &SignatureAlgorithmPolicy::default(),
+        );
+
+        assert_eq!(
+            report.status,
+            SignatureValidationState::Valid,
+            "{report:#?}"
+        );
+        assert_eq!(
+            report.message_imprint_status,
+            SignatureValidationState::Valid
+        );
+        assert_eq!(report.tsa_eku_status, SignatureValidationState::Valid);
+        assert_eq!(report.tsa_path_status, SignatureValidationState::Valid);
+    }
+
+    #[test]
+    fn rfc3161_signature_timestamp_rejects_wrong_imprint() {
+        let tsa = runtime_test_tsa_signer();
+        let token = build_timestamp_token_for_test(&tsa, b"other signature").unwrap();
+        let options =
+            VerifyOptions::default().with_trust_anchor_der(tsa.signer_certificate_der().unwrap());
+
+        let report = validate_signature_timestamp_token(
+            &token,
+            "unit-test".to_string(),
+            b"prompt25 cms signature value",
+            &options,
+            &SignatureAlgorithmPolicy::default(),
+        );
+
+        assert_eq!(report.status, SignatureValidationState::DigestMismatch);
+        assert_eq!(
+            report.message_imprint_status,
+            SignatureValidationState::DigestMismatch
+        );
+        assert_ne!(report.tsa_path_status, SignatureValidationState::Valid);
+    }
+
+    #[test]
     fn cms_multiple_signer_infos_are_validated_independently() {
         let signer = runtime_test_signer();
         let content = b"prompt24 multi-signer detached CMS regression";
         let digest = Sha256::digest(content);
         let cms = build_two_signer_cms_for_test(&signer, digest.as_slice()).unwrap();
 
-        let results = verify_cms(&cms, content, &SignatureAlgorithmPolicy::default()).unwrap();
+        let results = verify_cms(&cms, content, &VerifyOptions::default()).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|result| {
             result.validity == SignatureValidity::Valid
@@ -6842,13 +7775,134 @@ mod tests {
             ..SignatureAlgorithmPolicy::default()
         };
 
-        let results = verify_cms(&cms, content, &policy).unwrap();
+        let options = VerifyOptions {
+            algorithm_policy: policy,
+            ..VerifyOptions::default()
+        };
+        let results = verify_cms(&cms, content, &options).unwrap();
         assert_eq!(results.len(), 2);
         assert!(results.iter().all(|result| {
             result.validity == SignatureValidity::UnsupportedAlgorithm
                 && result.cms.status == SignatureValidationState::UnsupportedAlgorithm
         }));
         assert!(!SignatureAlgorithmPolicy::default().allows_digest(&OID_SHA1));
+    }
+
+    fn runtime_test_tsa_signer() -> PdfSigner {
+        use rsa::pkcs8::EncodePublicKey as _;
+        use rsa::rand_core::OsRng;
+        use rsa::RsaPublicKey;
+        use spki::SubjectPublicKeyInfoOwned;
+        use std::str::FromStr;
+        use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+        use x509_cert::name::Name;
+        use x509_cert::serial_number::SerialNumber;
+        use x509_cert::time::{Time, Validity};
+
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("RSA key");
+        let signing_key = SigningKey::<Sha256>::new(private_key.clone());
+        let public_key = RsaPublicKey::from(&private_key);
+        let spki_der = public_key.to_public_key_der().expect("SPKI DER");
+        let spki = SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("SPKI parse");
+        let subject = Name::from_str("CN=Oxide Prompt25 TSA,O=Oxide,C=US").expect("name");
+        let validity = Validity {
+            not_before: Time::from(
+                GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(1_704_067_200))
+                    .expect("notBefore"),
+            ),
+            not_after: Time::from(
+                GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(1_893_456_000))
+                    .expect("notAfter"),
+            ),
+        };
+        let mut builder = CertificateBuilder::new(
+            Profile::Leaf {
+                issuer: subject.clone(),
+                enable_key_agreement: false,
+                enable_key_encipherment: false,
+            },
+            SerialNumber::from(25u32),
+            validity,
+            subject,
+            spki,
+            &signing_key,
+        )
+        .expect("cert builder");
+        builder
+            .add_extension(&ExtendedKeyUsage(vec![OID_KP_TIME_STAMPING]))
+            .expect("timestamping EKU");
+        let cert = builder.build::<rsa::pkcs1v15::Signature>().expect("cert");
+        let key_der = private_key.to_pkcs8_der().expect("private key DER");
+        let cert_der = cert.to_der().expect("certificate DER");
+        PdfSigner::from_der(key_der.as_bytes(), &cert_der, &[]).expect("TSA signer parses")
+    }
+
+    fn build_timestamp_token_for_test(
+        signer: &PdfSigner,
+        imprint_input: &[u8],
+    ) -> std::result::Result<Vec<u8>, String> {
+        let tst_info = build_tst_info_for_test(imprint_input);
+        let content = EncapsulatedContentInfo {
+            econtent_type: OID_ID_CT_TST_INFO,
+            econtent: Some(
+                der::Any::new(der::Tag::OctetString, tst_info.clone())
+                    .map_err(|error| error.to_string())?,
+            ),
+        };
+        let digest_algorithm = AlgorithmIdentifierOwned {
+            oid: OID_SHA256,
+            parameters: None,
+        };
+        let signing_key = SigningKey::<Sha256>::new(signer.private_key.clone());
+        let cert = signer.signer_certificate();
+        let sid = SignerIdentifier::IssuerAndSerialNumber(IssuerAndSerialNumber {
+            issuer: cert.tbs_certificate.issuer.clone(),
+            serial_number: cert.tbs_certificate.serial_number.clone(),
+        });
+        let mut builder = SignedDataBuilder::new(&content);
+        builder
+            .add_digest_algorithm(digest_algorithm.clone())
+            .map_err(|error| error.to_string())?;
+        builder
+            .add_certificate(CertificateChoices::Certificate(cert.clone()))
+            .map_err(|error| error.to_string())?;
+        let signer_info =
+            SignerInfoBuilder::new(&signing_key, sid, digest_algorithm, &content, None)
+                .map_err(|error| error.to_string())?;
+        builder
+            .add_signer_info::<SigningKey<Sha256>, rsa::pkcs1v15::Signature>(signer_info)
+            .map_err(|error| error.to_string())?;
+        builder
+            .build()
+            .map_err(|error| error.to_string())?
+            .to_der()
+            .map_err(|error| error.to_string())
+    }
+
+    fn build_tst_info_for_test(imprint_input: &[u8]) -> Vec<u8> {
+        let digest_algorithm = AlgorithmIdentifierOwned {
+            oid: OID_SHA256,
+            parameters: None,
+        }
+        .to_der()
+        .expect("algorithm DER");
+        let imprint = der_sequence(&[
+            digest_algorithm,
+            der_octet_string(&Sha256::digest(imprint_input)),
+        ]);
+        let gen_time =
+            GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(1_767_225_600))
+                .expect("genTime")
+                .to_der()
+                .expect("genTime DER");
+        der_sequence(&[
+            der_integer(&[0x01]),
+            OID_SHA256.to_der().expect("policy OID"),
+            imprint,
+            der_integer(&[0x25]),
+            gen_time,
+        ])
     }
 
     fn build_two_signer_cms_for_test(
@@ -6933,6 +7987,20 @@ mod tests {
     }
 
     #[test]
+    fn vri_key_candidates_accept_padded_pdf_contents_hash() {
+        let padded = [0x30, 0x03, 0x02, 0x01, 0x00, 0x00, 0x00];
+        let padded_hex_key = hex_upper(&Sha1::digest(hex_lower(&padded).as_bytes()));
+        let candidates = signature_vri_key_candidates(&padded);
+        assert_eq!(candidates[0], signature_vri_key(&padded));
+        assert!(
+            candidates
+                .iter()
+                .any(|candidate| candidate == &padded_hex_key),
+            "pyHanko-compatible padded /Contents VRI key should be accepted"
+        );
+    }
+
+    #[test]
     fn hex_upper_formats() {
         assert_eq!(hex_upper(&[0x0a, 0xff, 0x10]), "0AFF10");
     }
@@ -6949,6 +8017,20 @@ mod tests {
         let mut result = vec![0x04];
         der_length(value.len(), &mut result);
         result.extend_from_slice(value);
+        result
+    }
+
+    fn der_integer(value: &[u8]) -> Vec<u8> {
+        let mut normalized = value.to_vec();
+        while normalized.len() > 1 && normalized[0] == 0 && normalized[1] < 0x80 {
+            normalized.remove(0);
+        }
+        if normalized.first().is_some_and(|byte| byte & 0x80 != 0) {
+            normalized.insert(0, 0);
+        }
+        let mut result = vec![0x02];
+        der_length(normalized.len(), &mut result);
+        result.extend_from_slice(&normalized);
         result
     }
 

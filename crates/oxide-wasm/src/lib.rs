@@ -529,6 +529,21 @@ mod wasm_api {
             sdk::crypto_tamper_test_json().map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = timestampTokenValidationJson)]
+        pub fn timestamp_token_validation_json(
+            token: &[u8],
+            signature_value: &[u8],
+            options_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::timestamp_token_validation_json(
+                token,
+                signature_value,
+                options_json.as_deref().unwrap_or("{}"),
+            )
+            .map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = prompt22OfficeInspectJson)]
         pub fn prompt22_office_inspect_json(bytes: &[u8], format: &str) -> Result<String, JsValue> {
             install_panic_hook();
@@ -953,6 +968,44 @@ mod wasm_api {
                 .verify_signatures_with_options_and_evidence(&options.options)
                 .map_err(js_err)?;
             serde_json::to_string(&outcome).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = signaturePreservingFormPlanJson)]
+        pub fn signature_preserving_form_plan_json(
+            &self,
+            field_name: &str,
+            value: &str,
+            options_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.report(|b| {
+                sdk::signature_preserving_form_plan_json(
+                    b,
+                    field_name,
+                    value,
+                    options_json.as_deref().unwrap_or("{}"),
+                    None,
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = signaturePreservingFormEdit)]
+        pub fn signature_preserving_form_edit(
+            &self,
+            field_name: &str,
+            value: &str,
+            options_json: Option<String>,
+            explicit_invalidation_override: bool,
+        ) -> Result<OxideOutput, JsValue> {
+            self.output(|b| {
+                sdk::signature_preserving_form_edit_json(
+                    b,
+                    field_name,
+                    value,
+                    options_json.as_deref().unwrap_or("{}"),
+                    explicit_invalidation_override,
+                    None,
+                )
+            })
         }
 
         #[wasm_bindgen(js_name = fontReportJson)]

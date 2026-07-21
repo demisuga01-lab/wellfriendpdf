@@ -42,6 +42,24 @@ public final class Oxide {
         return Native.codecIsolationReportJson(filter, encodedBytes, policy);
     }
 
+    /**
+     * Validates a caller-supplied RFC 3161 signature timestamp token against
+     * the exact CMS SignerInfo.signature octets it claims to timestamp.
+     */
+    public static String timestampTokenValidationJson(
+        byte[] tokenDer,
+        byte[] signatureValue,
+        String optionsJson
+    ) {
+        Objects.requireNonNull(tokenDer, "tokenDer");
+        Objects.requireNonNull(signatureValue, "signatureValue");
+        return Native.timestampTokenValidationJson(tokenDer, signatureValue, optionsJson);
+    }
+
+    public static String timestampTokenValidationJson(byte[] tokenDer, byte[] signatureValue) {
+        return timestampTokenValidationJson(tokenDer, signatureValue, "{}");
+    }
+
     public static String engineVersion() {
         return Native.engineVersion();
     }
@@ -883,6 +901,26 @@ public final class Oxide {
             return Native.documentStringReport(handle, Native.EDIT_POLICY_REPORT, operation, "edit_policy_report");
         }
 
+        public String signaturePreservingFormPlanJson(
+            String fieldName,
+            String value,
+            String optionsJson
+        ) {
+            ensureOpen();
+            return Native.signaturePreservingFormPlan(handle, fieldName, value, optionsJson);
+        }
+
+        public BinaryResult signaturePreservingFormEdit(
+            String fieldName,
+            String value,
+            String optionsJson,
+            boolean explicitInvalidationOverride
+        ) {
+            ensureOpen();
+            return Native.signaturePreservingFormEdit(
+                handle, fieldName, value, optionsJson, explicitInvalidationOverride);
+        }
+
         public String annotationAppearanceReportJson(String optionsJson) {
             ensureOpen();
             return Native.documentStringReport(handle, Native.ANNOTATION_APPEARANCE_REPORT, optionsJson, "annotation_appearance_report");
@@ -1494,6 +1532,12 @@ public final class Oxide {
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle TIMESTAMP_TOKEN_VALIDATION = downcall(
+            "oxide_timestamp_token_validation_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
         private static final MethodHandle WRITER_DETERMINISM_AUDIT =
             documentReport("oxide_document_writer_determinism_audit_json");
         private static final MethodHandle WRITER_EXTERNAL_DIFF =
@@ -1563,6 +1607,17 @@ public final class Oxide {
         );
         private static final MethodHandle ASSOCIATED_FILES_REPORT = documentReport("oxide_document_associated_files_report_json");
         private static final MethodHandle EDIT_POLICY_REPORT = documentStringReport("oxide_document_edit_policy_report_json");
+        private static final MethodHandle SIGNATURE_PRESERVING_FORM_PLAN = downcall(
+            "oxide_document_signature_preserving_form_plan_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle SIGNATURE_PRESERVING_FORM_EDIT = downcall(
+            "oxide_document_signature_preserving_form_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle ANNOTATION_APPEARANCE_REPORT = documentStringReport("oxide_document_annotation_appearance_report_json");
         private static final MethodHandle NONAXIS_REDACTION_PLAN = documentStringReport("oxide_document_nonaxis_redaction_plan_json");
         private static final MethodHandle PAGES_REPORT = documentReport("oxide_document_pages_report_json");
@@ -1849,6 +1904,47 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide codec isolation report failed", ex);
+            }
+        }
+
+        private static String timestampTokenValidationJson(
+            byte[] tokenDer,
+            byte[] signatureValue,
+            String optionsJson
+        ) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment token = tokenDer.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(tokenDer.length);
+                if (tokenDer.length > 0) {
+                    token.copyFrom(MemorySegment.ofArray(tokenDer));
+                }
+                MemorySegment signature = signatureValue.length == 0
+                    ? MemorySegment.NULL
+                    : arena.allocate(signatureValue.length);
+                if (signatureValue.length > 0) {
+                    signature.copyFrom(MemorySegment.ofArray(signatureValue));
+                }
+                MemorySegment options = optionsJson == null || optionsJson.isBlank()
+                    ? MemorySegment.NULL
+                    : arena.allocateFrom(optionsJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) TIMESTAMP_TOKEN_VALIDATION.invokeExact(
+                    token,
+                    (long) tokenDer.length,
+                    signature,
+                    (long) signatureValue.length,
+                    options,
+                    jsonOut,
+                    err
+                );
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide timestamp_token_validation failed", ex);
             }
         }
 
@@ -2441,6 +2537,70 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide incremental_form_edit failed", ex);
+            }
+        }
+
+        private static String signaturePreservingFormPlan(
+            MemorySegment handle,
+            String fieldName,
+            String value,
+            String optionsJson
+        ) {
+            Objects.requireNonNull(fieldName, "fieldName");
+            Objects.requireNonNull(value, "value");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment field = arena.allocateFrom(fieldName);
+                MemorySegment text = arena.allocateFrom(value);
+                MemorySegment options = optionsJson == null || optionsJson.isBlank()
+                    ? MemorySegment.NULL
+                    : arena.allocateFrom(optionsJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) SIGNATURE_PRESERVING_FORM_PLAN.invokeExact(
+                    handle, field, text, options, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide signature_preserving_form_plan failed", ex);
+            }
+        }
+
+        private static BinaryResult signaturePreservingFormEdit(
+            MemorySegment handle,
+            String fieldName,
+            String value,
+            String optionsJson,
+            boolean explicitInvalidationOverride
+        ) {
+            Objects.requireNonNull(fieldName, "fieldName");
+            Objects.requireNonNull(value, "value");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment field = arena.allocateFrom(fieldName);
+                MemorySegment text = arena.allocateFrom(value);
+                MemorySegment options = optionsJson == null || optionsJson.isBlank()
+                    ? MemorySegment.NULL
+                    : arena.allocateFrom(optionsJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) SIGNATURE_PRESERVING_FORM_EDIT.invokeExact(
+                    handle,
+                    field,
+                    text,
+                    options,
+                    (byte) (explicitInvalidationOverride ? 1 : 0),
+                    buffer,
+                    jsonOut,
+                    err
+                );
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide signature_preserving_form_edit failed", ex);
             }
         }
 

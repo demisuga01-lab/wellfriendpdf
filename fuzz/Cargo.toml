@@ -28,6 +28,24 @@ debug = 1
 debug-assertions = true
 overflow-checks = true
 
+# Low-memory dev profile for cargo-fuzz `-D`/`--dev` builds. The engine is a
+# single monolithic crate whose non-optional dependency graph (reqwest/tokio,
+# image codecs, rustybuzz, CMS/PKIX) makes an ASan + SanitizerCoverage build
+# blow past a 4 GiB compile cap when LLVM keeps full debug info in few codegen
+# units. Splitting into many small codegen units and dropping debug info keeps
+# per-unit LLVM peak memory well under the cap while preserving coverage
+# instrumentation (proven on Windows/MSVC under a 4096 MiB Job Object cap; see
+# docs/prompt25b_cargo_fuzz_root_cause.md). Keeps debug-assertions/overflow
+# checks on so panics still fire. This block only affects the out-of-workspace
+# fuzz crate's `--dev` builds; it does not touch the workspace or the release
+# fuzz profile the Linux CI gate uses.
+[profile.dev]
+debug = 0
+incremental = false
+codegen-units = 256
+debug-assertions = true
+overflow-checks = true
+
 [[bin]]
 name = "parse_pdf"
 path = "fuzz_targets/parse_pdf.rs"
@@ -178,6 +196,20 @@ bench = false
 [[bin]]
 name = "signature_evidence"
 path = "fuzz_targets/signature_evidence.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "timestamp_token"
+path = "fuzz_targets/timestamp_token.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "signature_preserving_edit_plan"
+path = "fuzz_targets/signature_preserving_edit_plan.rs"
 test = false
 doc = false
 bench = false

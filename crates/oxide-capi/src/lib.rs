@@ -1330,6 +1330,56 @@ pub unsafe extern "C" fn oxide_document_signature_validation_with_evidence_json(
     })
 }
 
+/// Validate a caller-supplied RFC 3161 signature timestamp token.
+///
+/// `signature_value` must be the exact CMS SignerInfo.signature octets that
+/// the token's TSTInfo.messageImprint claims to bind.
+///
+/// # Safety
+///
+/// `token` and `signature_value` must point to readable buffers. `out_json`
+/// must be writable and freed with `oxide_string_free`. `options_json`, if
+/// non-null, must be a valid NUL-terminated UTF-8 VerifyOptions object.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_timestamp_token_validation_json(
+    token: *const u8,
+    token_len: usize,
+    signature_value: *const u8,
+    signature_value_len: usize,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if token.is_null() {
+            return Err("token pointer is null".into());
+        }
+        if signature_value.is_null() {
+            return Err("signature_value pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let options_json = if options_json.is_null() {
+            "{}".to_string()
+        } else {
+            unsafe { required_c_string(options_json, "options_json") }?
+        };
+        let token = unsafe { slice::from_raw_parts(token, token_len) };
+        let signature_value =
+            unsafe { slice::from_raw_parts(signature_value, signature_value_len) };
+        let json = oxide(sdk::timestamp_token_validation_json(
+            token,
+            signature_value,
+            &options_json,
+        ))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
 /// Allocates an opaque Prompt 24 signature-validation options handle.
 ///
 /// The handle starts offline with no implicit trust anchors. Use the explicit
@@ -3683,6 +3733,77 @@ pub unsafe extern "C" fn oxide_document_incremental_form_edit_json(
     }
 }
 
+#[no_mangle]
+/// Plan a Prompt 25 signature-preserving form value update.
+///
+/// # Safety
+/// The document pointer must be valid; string inputs must be NUL-terminated
+/// UTF-8. The returned string must be freed with `oxide_string_free`.
+pub unsafe extern "C" fn oxide_document_signature_preserving_form_plan_json(
+    document: *const OxideDocument,
+    field_name: *const c_char,
+    value: *const c_char,
+    options_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let field_name = unsafe { required_c_string(field_name, "field_name") };
+    let value = unsafe { required_c_string(value, "value") };
+    let options_json = if options_json.is_null() {
+        Ok("{}".to_string())
+    } else {
+        unsafe { required_c_string(options_json, "options_json") }
+    };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::signature_preserving_form_plan_json(
+                bytes,
+                &field_name.map_err(oxide_engine::OxideError::invalid_input)?,
+                &value.map_err(oxide_engine::OxideError::invalid_input)?,
+                &options_json.map_err(oxide_engine::OxideError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+#[no_mangle]
+/// Apply a Prompt 25 signature-preserving form value update.
+///
+/// # Safety
+/// The document and output pointers must be valid; string inputs must be
+/// NUL-terminated UTF-8. The caller owns both output buffer and report string.
+pub unsafe extern "C" fn oxide_document_signature_preserving_form_edit_json(
+    document: *const OxideDocument,
+    field_name: *const c_char,
+    value: *const c_char,
+    options_json: *const c_char,
+    explicit_invalidation_override: bool,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let field_name = unsafe { required_c_string(field_name, "field_name") };
+    let value = unsafe { required_c_string(value, "value") };
+    let options_json = if options_json.is_null() {
+        Ok("{}".to_string())
+    } else {
+        unsafe { required_c_string(options_json, "options_json") }
+    };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::signature_preserving_form_edit_json(
+                bytes,
+                &field_name.map_err(oxide_engine::OxideError::invalid_input)?,
+                &value.map_err(oxide_engine::OxideError::invalid_input)?,
+                &options_json.map_err(oxide_engine::OxideError::invalid_input)?,
+                explicit_invalidation_override,
+                None,
+            )
+        })
+    }
+}
+
 macro_rules! prompt18b_policy_output {
     ($name:ident, $sdk_fn:ident) => {
         /// Apply a Prompt 18B incremental JSON mutation under signature policy.
@@ -5169,6 +5290,73 @@ mod tests {
         unsafe {
             oxide_buffer_free(output);
             oxide_string_free(edit_json);
+            oxide_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_prompt25_timestamp_and_signature_preserving_plan_return_owned_reports() {
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let token = b"not-a-rfc3161-token";
+        let signature_value = b"cms-signature-value";
+        let options = CString::new("{}").unwrap();
+        let status = unsafe {
+            oxide_timestamp_token_validation_json(
+                token.as_ptr(),
+                token.len(),
+                signature_value.as_ptr(),
+                signature_value.len(),
+                options.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "timestamp_token_validation");
+        assert_eq!(
+            value["report"]["token_type"],
+            serde_json::Value::String("signature_timestamp".to_string())
+        );
+        assert_eq!(
+            value["report"]["status"],
+            serde_json::Value::String("malformed".to_string())
+        );
+        unsafe { oxide_string_free(json) };
+
+        let (doc, _pdf) = open_sample();
+        let field = CString::new("Prompt25Field").unwrap();
+        let value_text = CString::new("Prompt25Value").unwrap();
+        let mut plan_json = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_signature_preserving_form_plan_json(
+                doc,
+                field.as_ptr(),
+                value_text.as_ptr(),
+                options.as_ptr(),
+                &mut plan_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(plan_json) }
+            .to_string_lossy()
+            .into_owned();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["kind"], "signature_preserving_edit_plan");
+        assert_eq!(
+            value["report"]["schema_version"],
+            serde_json::Value::String(
+                oxide_engine::PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION.to_string()
+            )
+        );
+        assert_eq!(value["report"]["prefix_preservation_required"], true);
+        unsafe {
+            oxide_string_free(plan_json);
             oxide_document_free(doc);
         }
     }

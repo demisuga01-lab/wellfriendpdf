@@ -885,6 +885,27 @@ pub fn signature_validation_with_evidence_json(
     )
 }
 
+/// Prompt 25 RFC 3161 signature timestamp-token validation.
+///
+/// `signature_value` is the exact CMS `SignerInfo.signature` octet string the
+/// timestamp token claims to bind through TSTInfo.messageImprint. The token is
+/// not considered valid merely because it parses or is signed.
+pub fn timestamp_token_validation_json(
+    token_der: &[u8],
+    signature_value: &[u8],
+    options_json: &str,
+) -> Result<String> {
+    let options = crate::signature::verify_options_from_json(options_json)?;
+    envelope(
+        "timestamp_token_validation",
+        &crate::signature::verify_signature_timestamp_token_der(
+            token_der,
+            signature_value,
+            &options,
+        )?,
+    )
+}
+
 /// Font inventory (pdffonts-equivalent): name, type, embedding status,
 /// subsetting, encoding.
 pub fn font_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
@@ -3448,6 +3469,56 @@ pub fn incremental_form_edit_json(
         signature_policy_override,
     )?;
     Ok((output, envelope("incremental_form_edit_report", &report)?))
+}
+
+/// Prompt 25 signature-preserving form-fill plan.
+///
+/// This is a planning surface only: it parses DocMDP/FieldMDP policy,
+/// validates the current signatures with the supplied trust/evidence options,
+/// and reports whether the form fill can be attempted as an append-only
+/// incremental update without mutating signed bytes.
+pub fn signature_preserving_form_plan_json(
+    bytes: &[u8],
+    field_name: &str,
+    value: &str,
+    options_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let options = crate::signature::verify_options_from_json(options_json)?;
+    envelope(
+        "signature_preserving_edit_plan",
+        &crate::prompt18::plan_signature_preserving_form_fill(&input, field_name, value, &options)?,
+    )
+}
+
+/// Prompt 25 signature-preserving form-fill execution.
+///
+/// The output is produced through the existing incremental writer, then
+/// reopened and revalidated with the same signature options. The report only
+/// claims preservation when the original input is an exact byte prefix and the
+/// original signatures still validate mathematically after the append.
+pub fn signature_preserving_form_edit_json(
+    bytes: &[u8],
+    field_name: &str,
+    value: &str,
+    options_json: &str,
+    explicit_invalidation_override: bool,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let options = crate::signature::verify_options_from_json(options_json)?;
+    let (output, report) = crate::prompt18::apply_signature_preserving_form_fill(
+        &input,
+        field_name,
+        value,
+        &options,
+        explicit_invalidation_override,
+    )?;
+    Ok((
+        output,
+        envelope("signature_preserving_edit_result", &report)?,
+    ))
 }
 
 pub fn incremental_annotation_edit_json(

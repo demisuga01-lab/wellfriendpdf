@@ -29,7 +29,9 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::parser::PdfParser;
 use crate::parser_report::{parser_report_bytes, ParserMode};
 use crate::reader::PdfReader;
-use crate::signature::verify_options_from_json;
+use crate::signature::{
+    verify_options_from_json, verify_signature_timestamp_token_der, VerifyOptions,
+};
 use crate::signature_evidence::{
     validate_retrieval_uri_syntax, EvidenceBundle, EvidenceStore, RetrievalPolicy,
 };
@@ -427,6 +429,67 @@ pub fn fuzz_signature_evidence(data: &[u8]) {
     if let Ok(policy) = serde_json::from_str::<RetrievalPolicy>(&text) {
         let _ = std::hint::black_box(policy.validate());
         let _ = std::hint::black_box(validate_retrieval_uri_syntax(&policy, &text));
+    }
+}
+
+/// Fuzz Prompt 25 RFC 3161 timestamp-token validation directly.
+///
+/// The target splits attacker-controlled bytes into a token and the claimed
+/// CMS SignerInfo.signature value. The verifier must return a structured
+/// malformed/invalid/unsupported report instead of panicking or allocating
+/// unboundedly.
+pub fn fuzz_timestamp_token(data: &[u8]) {
+    const MAX_INPUT: usize = 256 * 1024;
+    let bounded = &data[..data.len().min(MAX_INPUT)];
+    if bounded.is_empty() {
+        return;
+    }
+    let split = 1 + usize::from(bounded[0]) % bounded.len();
+    let (token, signature_value) = bounded.split_at(split);
+    let _ = std::hint::black_box(verify_signature_timestamp_token_der(
+        token,
+        signature_value,
+        &VerifyOptions::default(),
+    ));
+}
+
+/// Fuzz Prompt 25 DocMDP/FieldMDP-aware edit planning over parsed PDFs.
+///
+/// This deliberately plans only; it does not write attacker-selected output
+/// paths. Successfully parsed PDFs drive the transform-reference classifier,
+/// signature inventory, and append-only preservation decision model.
+pub fn fuzz_signature_preserving_edit_plan(data: &[u8]) {
+    const MAX_INPUT: usize = 2 * 1024 * 1024;
+    let bounded = &data[..data.len().min(MAX_INPUT)];
+    if ContentEngine::open_bytes(bounded.to_vec()).is_err() {
+        return;
+    }
+    let field_name = if data.first().is_some_and(|byte| byte & 1 == 0) {
+        "fuzz"
+    } else {
+        "fuzz.field"
+    };
+    let _ = std::hint::black_box(crate::prompt18::plan_signature_preserving_form_fill(
+        bounded,
+        field_name,
+        "value",
+        &VerifyOptions::default(),
+    ));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prompt25_fuzz_entrypoints_accept_hostile_smoke_seeds() {
+        fuzz_timestamp_token(b"not-a-rfc3161-token");
+        fuzz_timestamp_token(&[0, 0x30, 0x82, 0xff, 0xff]);
+
+        fuzz_signature_preserving_edit_plan(b"not-a-pdf");
+        fuzz_signature_preserving_edit_plan(
+            b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF",
+        );
     }
 }
 

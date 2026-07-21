@@ -1126,6 +1126,23 @@ impl PyDocument {
         json_to_py(py, &outcome)
     }
 
+    /// Prompt 25 signature-preserving form-fill plan.
+    #[pyo3(signature = (field_name, value, options_json="{}"))]
+    fn signature_preserving_form_plan<'py>(
+        &self,
+        py: Python<'py>,
+        field_name: &str,
+        value: &str,
+        options_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let field_name = field_name.to_string();
+        let value = value.to_string();
+        let options = options_json.to_string();
+        self.report_json(py, |bytes| {
+            sdk::signature_preserving_form_plan_json(bytes, &field_name, &value, &options, None)
+        })
+    }
+
     /// Font inventory (name, type, embedding status, subsetting, encoding).
     fn font_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::font_report_json(bytes, None))
@@ -1209,6 +1226,35 @@ impl PyDocument {
     }
 
     // ── Output-producing operations (return (bytes, report) tuples) ──────────
+
+    /// Prompt 25 signature-preserving form-fill execution with post-edit validation.
+    #[pyo3(signature = (field_name, value, options_json="{}", explicit_invalidation_override=false, output=None))]
+    fn signature_preserving_form_edit<'py>(
+        &self,
+        py: Python<'py>,
+        field_name: &str,
+        value: &str,
+        options_json: &str,
+        explicit_invalidation_override: bool,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_oxide(|| {
+            sdk::signature_preserving_form_edit_json(
+                &bytes,
+                field_name,
+                value,
+                options_json,
+                explicit_invalidation_override,
+                None,
+            )
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
 
     #[pyo3(signature = (page, old_text, new_text, mode="rtl-reflow", options_json=None, output=None))]
     #[allow(clippy::too_many_arguments)]
@@ -1905,6 +1951,19 @@ fn open(source: &Bound<'_, PyAny>, password: Option<&str>) -> PyResult<PyDocumen
 }
 
 #[pyfunction]
+#[pyo3(signature = (token, signature_value, options_json="{}"))]
+fn timestamp_token_validation<'py>(
+    py: Python<'py>,
+    token: &[u8],
+    signature_value: &[u8],
+    options_json: &str,
+) -> PyResult<Py<PyAny>> {
+    let json =
+        run_oxide(|| sdk::timestamp_token_validation_json(token, signature_value, options_json))?;
+    parse_json_str(py, &json)
+}
+
+#[pyfunction]
 #[pyo3(signature = (inputs, output=None, passwords=None))]
 fn merge_pdfs(
     inputs: Vec<PathBuf>,
@@ -2589,6 +2648,7 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_class::<PyPage>()?;
     module.add_class::<PyRegionPage>()?;
     module.add_function(wrap_pyfunction!(open, module)?)?;
+    module.add_function(wrap_pyfunction!(timestamp_token_validation, module)?)?;
     module.add_function(wrap_pyfunction!(merge_pdfs, module)?)?;
     module.add_function(wrap_pyfunction!(extract_pages, module)?)?;
     module.add_function(wrap_pyfunction!(rotate_pdf, module)?)?;

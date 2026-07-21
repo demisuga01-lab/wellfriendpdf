@@ -456,6 +456,20 @@ enum Commands {
     SignatureVerify(VerifySigArgs),
     /// Validate PAdES baseline posture with Prompt 24 policy inputs
     PadesVerify(VerifySigArgs),
+    /// Plan a Prompt 25 signature-preserving incremental form fill
+    SignaturePreservingPlan(SignaturePreservingFormArgs),
+    /// Apply a Prompt 25 signature-preserving incremental form fill
+    SignaturePreservingEdit(SignaturePreservingFormArgs),
+    /// Validate a caller-supplied RFC 3161 signature timestamp token
+    TimestampVerify(TimestampVerifyArgs),
+    /// List validated signature timestamp tokens for PDF signatures
+    SignatureTimestamps(VerifySigArgs),
+    /// Inspect DSS/VRI evidence and replay posture for PDF signatures
+    DssInspect(VerifySigArgs),
+    /// Verify Prompt 25 PAdES LTV status from timestamp and DSS/VRI evidence
+    LtvVerify(VerifySigArgs),
+    /// Report achieved PAdES baseline/timestamp/LT level for PDF signatures
+    PadesLevelReport(VerifySigArgs),
     /// Build signer certificate paths for PDF signatures with Prompt 24 inputs
     CertificatePathBuild(VerifySigArgs),
     /// Validate signer certificate paths against explicit Prompt 24 trust anchors
@@ -1716,6 +1730,31 @@ struct EditFormArgs {
 }
 
 #[derive(Parser)]
+struct SignaturePreservingFormArgs {
+    pdf: PathBuf,
+    #[arg(long)]
+    field: String,
+    #[arg(long)]
+    value: String,
+    /// JSON VerifyOptions object used for pre/post signature validation.
+    #[arg(long = "signature-options", value_name = "JSON")]
+    signature_options: Option<PathBuf>,
+    /// Policy: enforce or override. Override is an explicit invalidation opt-in.
+    #[arg(long, default_value = "enforce")]
+    signature_policy: String,
+    #[arg(short, long, default_value = "signature-preserving-form-edit.pdf")]
+    output: PathBuf,
+    #[arg(long)]
+    report: Option<PathBuf>,
+    #[arg(long)]
+    json: bool,
+    #[arg(long)]
+    dry_run: bool,
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
 struct EditMutationArgs {
     pdf: PathBuf,
     /// JSON mutation request
@@ -2728,6 +2767,65 @@ struct VerifySigArgs {
 }
 
 #[derive(Parser)]
+struct TimestampVerifyArgs {
+    /// DER-encoded RFC 3161 TimeStampToken
+    token: PathBuf,
+    /// File containing the exact CMS SignerInfo.signature octets being timestamped
+    #[arg(long = "signature-value", value_name = "BYTES")]
+    signature_value: PathBuf,
+    /// Emit machine-readable JSON
+    #[arg(long)]
+    json: bool,
+    /// DER or PEM certificate to trust as a TSA root. Repeatable.
+    #[arg(long = "trust-anchor")]
+    trust_anchors: Vec<PathBuf>,
+    /// DER or PEM untrusted intermediate certificate. Repeatable.
+    #[arg(long = "intermediate")]
+    intermediates: Vec<PathBuf>,
+    /// SHA-256 fingerprint of a certificate that must not appear in a selected TSA path.
+    #[arg(long = "distrust-certificate-sha256", value_name = "SHA256")]
+    distrust_certificate_sha256: Vec<String>,
+    /// DER OCSP response supplied for offline TSA revocation evaluation. Repeatable.
+    #[arg(long = "ocsp")]
+    ocsp_responses: Vec<PathBuf>,
+    /// DER CRL supplied for offline TSA revocation evaluation. Repeatable.
+    #[arg(long = "crl")]
+    crls: Vec<PathBuf>,
+    /// Validation time as Unix seconds for non-timestamp policy metadata.
+    /// The TSA certificate path is evaluated at TSTInfo.genTime.
+    #[arg(long)]
+    validation_time_unix: Option<u64>,
+    /// Revocation mode: not-checked, offline-strict, offline-best-effort,
+    /// online-strict, or online-best-effort.
+    #[arg(long, default_value = "not-checked")]
+    revocation: String,
+    /// JSON file containing the shared SignatureAlgorithmPolicy object.
+    #[arg(long = "algorithm-policy", value_name = "JSON")]
+    algorithm_policy: Option<PathBuf>,
+    /// Import a Prompt 24/25 evidence bundle for offline replay.
+    #[arg(long = "evidence-in", value_name = "JSON")]
+    evidence_in: Option<PathBuf>,
+    /// Opt in to bounded HTTP/HTTPS AIA, OCSP, and CRL retrieval.
+    #[arg(long)]
+    online: bool,
+    /// Allow only these evidence hosts when --online is set. Repeatable.
+    #[arg(long = "network-allow-host", value_name = "HOST")]
+    network_allow_hosts: Vec<String>,
+    /// Per-request total network deadline in milliseconds when --online is set.
+    #[arg(long = "network-timeout-ms", value_name = "MS")]
+    network_timeout_ms: Option<u64>,
+    /// Maximum bytes accepted from one network evidence response when --online is set.
+    #[arg(long = "network-max-response-bytes", value_name = "BYTES")]
+    network_max_response_bytes: Option<usize>,
+    /// Directory for an atomic cache of cryptographically accepted AIA/OCSP/CRL evidence.
+    #[arg(long = "cache-dir", value_name = "DIR")]
+    cache_dir: Option<PathBuf>,
+    /// Require a fresh OCSP nonce and reject responses that do not echo it.
+    #[arg(long = "ocsp-require-nonce")]
+    ocsp_require_nonce: bool,
+}
+
+#[derive(Parser)]
 struct SecurityReportArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -2990,6 +3088,17 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::SignatureList(args) => run_verify_sig(args, SignatureCliMode::List),
         Commands::SignatureVerify(args) => run_verify_sig(args, SignatureCliMode::SignatureVerify),
         Commands::PadesVerify(args) => run_verify_sig(args, SignatureCliMode::PadesVerify),
+        Commands::SignaturePreservingPlan(args) => run_signature_preserving_form(args, true),
+        Commands::SignaturePreservingEdit(args) => run_signature_preserving_form(args, false),
+        Commands::TimestampVerify(args) => run_timestamp_verify(args),
+        Commands::SignatureTimestamps(args) => {
+            run_verify_sig(args, SignatureCliMode::SignatureTimestamps)
+        }
+        Commands::DssInspect(args) => run_verify_sig(args, SignatureCliMode::DssInspect),
+        Commands::LtvVerify(args) => run_verify_sig(args, SignatureCliMode::LtvVerify),
+        Commands::PadesLevelReport(args) => {
+            run_verify_sig(args, SignatureCliMode::PadesLevelReport)
+        }
         Commands::CertificatePathBuild(args) => {
             run_verify_sig(args, SignatureCliMode::CertificatePathBuild)
         }
@@ -4861,6 +4970,52 @@ fn run_edit_form(args: EditFormArgs) -> Result<(), Box<dyn Error>> {
     )?;
     if !args.dry_run {
         std::fs::write(args.output, output)?;
+    }
+    write_xfa_operation_report(&report, args.report.as_ref(), args.json)
+}
+
+fn run_signature_preserving_form(
+    args: SignaturePreservingFormArgs,
+    plan_only: bool,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let options_json = args
+        .signature_options
+        .as_ref()
+        .map(std::fs::read_to_string)
+        .transpose()?
+        .unwrap_or_else(|| "{}".to_string());
+    if plan_only {
+        let report = oxide_engine::sdk::signature_preserving_form_plan_json(
+            &bytes,
+            &args.field,
+            &args.value,
+            &options_json,
+            args.password.as_deref().map(str::as_bytes),
+        )?;
+        if !args.json && args.report.is_none() {
+            println!("{}", pretty_json(&report)?);
+            return Ok(());
+        }
+        return write_xfa_operation_report(&report, args.report.as_ref(), args.json);
+    }
+
+    let (output, report) = oxide_engine::sdk::signature_preserving_form_edit_json(
+        &bytes,
+        &args.field,
+        &args.value,
+        &options_json,
+        signature_policy_override(&args.signature_policy)?,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if !args.dry_run {
+        std::fs::write(&args.output, output)?;
+    }
+    if !args.json && args.report.is_none() {
+        println!(
+            "Wrote signature-preserving form edit to {}",
+            args.output.display()
+        );
     }
     write_xfa_operation_report(&report, args.report.as_ref(), args.json)
 }
@@ -7175,6 +7330,10 @@ enum SignatureCliMode {
     List,
     SignatureVerify,
     PadesVerify,
+    SignatureTimestamps,
+    DssInspect,
+    LtvVerify,
+    PadesLevelReport,
     CertificatePathBuild,
     CertificatePathVerify,
     OcspCheck,
@@ -7300,6 +7459,20 @@ fn run_verify_sig(args: VerifySigArgs, mode: SignatureCliMode) -> Result<(), Box
             "      Material: certs={}, ocsp={}, crls={}, revocation={}",
             r.ltv.embedded_certs, r.ltv.embedded_ocsp_responses, r.ltv.embedded_crls, revocation
         );
+        println!(
+            "  - Prompt 25:   level={:?}, timestamp={:?}, ltv={:?}, indication={:?}/{:?}",
+            r.prompt25.achieved_pades_level,
+            r.prompt25.signature_timestamp_status,
+            r.prompt25.ltv_status,
+            r.prompt25.validation_indication,
+            r.prompt25.validation_subindication
+        );
+        println!(
+            "      DSS/VRI replay: matched={}, replayable={}, status={:?}",
+            r.prompt25.dss.vri_matched,
+            r.prompt25.dss.evidence_replayable_offline,
+            r.prompt25.dss.status
+        );
         if let Some(c) = &r.certificate {
             println!("  - Certificate:");
             println!("      Subject:  {}", c.subject);
@@ -7350,6 +7523,89 @@ fn run_evidence_replay(args: VerifySigArgs) -> Result<(), Box<dyn Error>> {
     run_verify_sig(args, SignatureCliMode::SignatureVerify)
 }
 
+fn run_timestamp_verify(args: TimestampVerifyArgs) -> Result<(), Box<dyn Error>> {
+    let token = std::fs::read(&args.token)?;
+    let signature_value = std::fs::read(&args.signature_value)?;
+    let options = verify_options_from_timestamp_args(&args)?;
+    let report =
+        oxide_engine::verify_signature_timestamp_token_der(&token, &signature_value, &options)?;
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+    } else {
+        println!("Timestamp token");
+        println!("  - Status:       {:?}", report.status);
+        println!("  - Type:         {:?}", report.token_type);
+        println!("  - Location:     {}", report.location);
+        println!("  - SHA-256:      {}", report.raw_token_sha256);
+        if let Some(policy) = &report.policy_oid {
+            println!("  - Policy:       {policy}");
+        }
+        if let Some(serial) = &report.serial_hex {
+            println!("  - Serial:       {serial}");
+        }
+        if let Some(gen_time) = &report.gen_time {
+            println!("  - genTime:      {gen_time}");
+        }
+        if let Some(hash) = &report.hash_algorithm {
+            println!("  - Imprint hash: {hash}");
+        }
+        println!("  - Imprint:      {:?}", report.message_imprint_status);
+        println!("  - CMS math:     {:?}", report.cms_signature_status);
+        println!("  - TSA EKU:      {:?}", report.tsa_eku_status);
+        println!("  - TSA path:     {:?}", report.tsa_path_status);
+        if !report.errors.is_empty() {
+            println!("  - Errors:");
+            for error in &report.errors {
+                println!("      {error}");
+            }
+        }
+        if !report.warnings.is_empty() {
+            println!("  - Warnings:");
+            for warning in &report.warnings {
+                println!("      {warning}");
+            }
+        }
+    }
+
+    finish_timestamp_cli_validation(&report)
+}
+
+fn finish_timestamp_cli_validation(
+    report: &oxide_engine::TimestampValidationReport,
+) -> Result<(), Box<dyn Error>> {
+    use oxide_engine::SignatureValidationState as State;
+
+    if report.status == State::Valid {
+        return Ok(());
+    }
+    let code = match report.status {
+        State::DigestMismatch | State::SignatureMathInvalid | State::Malformed | State::Invalid => {
+            CliExitCode::SignatureInvalid
+        }
+        State::Revoked => CliExitCode::Revoked,
+        State::NetworkDisabled | State::NetworkFailure => CliExitCode::Network,
+        State::UnsupportedAlgorithm | State::UnsupportedProfile => CliExitCode::Unsupported,
+        State::Untrusted
+        | State::Expired
+        | State::NotYetValid
+        | State::PolicyRejected
+        | State::PathInvalid
+        | State::PathNotFound
+        | State::EvidenceMissing
+        | State::SignerCertificateMissing
+        | State::SignerCertificateAmbiguous => CliExitCode::Untrusted,
+        _ => CliExitCode::Indeterminate,
+    };
+    Err(Box::new(CliError::new(
+        code,
+        format!(
+            "timestamp token validation did not establish validity: {:?}",
+            report.status
+        ),
+    )))
+}
+
 fn finish_signature_cli_validation(
     reports: &[oxide_engine::SignatureReport],
     mode: SignatureCliMode,
@@ -7360,7 +7616,11 @@ fn finish_signature_cli_validation(
 
     if matches!(
         mode,
-        SignatureCliMode::LegacyInspect | SignatureCliMode::List
+        SignatureCliMode::LegacyInspect
+            | SignatureCliMode::List
+            | SignatureCliMode::SignatureTimestamps
+            | SignatureCliMode::DssInspect
+            | SignatureCliMode::PadesLevelReport
     ) {
         return Ok(());
     }
@@ -7461,6 +7721,30 @@ fn finish_signature_cli_validation(
                 )))
             }
         }
+        SignatureCliMode::LtvVerify => {
+            if reports
+                .iter()
+                .all(|report| report.prompt25.ltv_status == SignatureValidationState::Valid)
+            {
+                Ok(())
+            } else if reports.iter().any(|report| {
+                matches!(
+                    report.prompt25.ltv_status,
+                    SignatureValidationState::UnsupportedAlgorithm
+                        | SignatureValidationState::UnsupportedProfile
+                )
+            }) {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Unsupported,
+                    "PAdES LTV validation encountered an unsupported timestamp, DSS, or evidence algorithm",
+                )))
+            } else {
+                Err(Box::new(CliError::new(
+                    CliExitCode::Indeterminate,
+                    "PAdES LTV validation did not establish validated timestamp plus replayable DSS/VRI evidence",
+                )))
+            }
+        }
         SignatureCliMode::CertificatePathBuild => {
             if reports
                 .iter()
@@ -7522,7 +7806,11 @@ fn finish_signature_cli_validation(
                 )))
             }
         }
-        SignatureCliMode::LegacyInspect | SignatureCliMode::List => Ok(()),
+        SignatureCliMode::LegacyInspect
+        | SignatureCliMode::List
+        | SignatureCliMode::SignatureTimestamps
+        | SignatureCliMode::DssInspect
+        | SignatureCliMode::PadesLevelReport => Ok(()),
     }
 }
 
@@ -7564,6 +7852,98 @@ fn finish_revocation_evidence_cli(
 
 fn verify_options_from_args(
     args: &VerifySigArgs,
+) -> Result<oxide_engine::VerifyOptions, Box<dyn Error>> {
+    let mut options = oxide_engine::VerifyOptions::default();
+    let mut trust_store = oxide_engine::TrustStore::new();
+    for path in &args.trust_anchors {
+        let bytes = std::fs::read(path)?;
+        if certificate_input_is_pem(&bytes) {
+            trust_store.add_pem(&bytes, path.display().to_string(), None)?;
+        } else {
+            trust_store.add_der(&bytes, path.display().to_string(), None)?;
+        }
+    }
+    options = options.with_trust_store(&trust_store);
+
+    let mut intermediate_store = oxide_engine::IntermediateStore::new();
+    for path in &args.intermediates {
+        let bytes = std::fs::read(path)?;
+        if certificate_input_is_pem(&bytes) {
+            intermediate_store.add_pem(&bytes)?;
+        } else {
+            intermediate_store.add_der(&bytes)?;
+        }
+    }
+    options = options.with_intermediate_store(&intermediate_store);
+    for fingerprint in &args.distrust_certificate_sha256 {
+        options = options.with_distrusted_certificate_sha256(fingerprint)?;
+    }
+    for path in &args.ocsp_responses {
+        options = options.with_ocsp_response_der(std::fs::read(path)?);
+    }
+    for path in &args.crls {
+        options = options.with_crl_der(std::fs::read(path)?);
+    }
+    if args.online {
+        let mut policy = oxide_engine::RetrievalPolicy::online();
+        if let Some(timeout_ms) = args.network_timeout_ms {
+            if timeout_ms == 0 {
+                return Err(usage_error(
+                    "--network-timeout-ms must be greater than zero",
+                ));
+            }
+            policy.budget.total_timeout_ms = timeout_ms;
+            policy.budget.connect_timeout_ms = policy.budget.connect_timeout_ms.min(timeout_ms);
+            policy.budget.max_total_time_ms = timeout_ms;
+        }
+        if let Some(max_bytes) = args.network_max_response_bytes {
+            if max_bytes == 0 || max_bytes > policy.budget.max_response_bytes {
+                return Err(usage_error(format!(
+                    "--network-max-response-bytes must be between 1 and {}",
+                    policy.budget.max_response_bytes
+                )));
+            }
+            policy.budget.max_response_bytes = max_bytes;
+        }
+        if let Some(cache_dir) = &args.cache_dir {
+            policy.cache_directory = Some(cache_dir.to_string_lossy().to_string());
+        }
+        policy.allowed_hosts = args.network_allow_hosts.clone();
+        if args.ocsp_require_nonce {
+            policy.ocsp_nonce_policy = oxide_engine::OcspNoncePolicy::Required;
+        }
+        options = options.with_retrieval_policy(policy)?;
+    } else if !args.network_allow_hosts.is_empty()
+        || args.network_timeout_ms.is_some()
+        || args.network_max_response_bytes.is_some()
+        || args.cache_dir.is_some()
+        || args.ocsp_require_nonce
+    {
+        return Err(usage_error(
+            "network policy flags require explicit --online opt-in",
+        ));
+    }
+    if let Some(path) = &args.evidence_in {
+        let bytes = std::fs::read(path)?;
+        let bundle: oxide_engine::EvidenceBundle = serde_json::from_slice(&bytes)
+            .map_err(|error| usage_error(format!("invalid --evidence-in bundle: {error}")))?;
+        options = options.with_evidence_bundle(bundle)?;
+    }
+    if let Some(path) = &args.algorithm_policy {
+        let bytes = std::fs::read(path)?;
+        let policy: oxide_engine::SignatureAlgorithmPolicy = serde_json::from_slice(&bytes)
+            .map_err(|error| usage_error(format!("invalid --algorithm-policy JSON: {error}")))?;
+        options = options.with_algorithm_policy(policy)?;
+    }
+    if let Some(unix) = args.validation_time_unix {
+        options = options.with_validation_time_unix(unix);
+    }
+    options.revocation_mode = parse_signature_revocation_mode(&args.revocation)?;
+    Ok(options)
+}
+
+fn verify_options_from_timestamp_args(
+    args: &TimestampVerifyArgs,
 ) -> Result<oxide_engine::VerifyOptions, Box<dyn Error>> {
     let mut options = oxide_engine::VerifyOptions::default();
     let mut trust_store = oxide_engine::TrustStore::new();

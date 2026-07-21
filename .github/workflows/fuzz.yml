@@ -47,6 +47,9 @@ jobs:
           - pdfa
           - editing
           - signature_validation
+          - signature_evidence
+          - timestamp_token
+          - signature_preserving_edit_plan
           - structured_pdf
 
     steps:

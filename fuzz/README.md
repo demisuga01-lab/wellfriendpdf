@@ -32,6 +32,8 @@ green. Fuzzing requires a nightly toolchain.
 | `pdfa`              | `oxide_engine::fuzz::fuzz_pdfa`               | PDF/A validation and conversion over parsed untrusted PDFs |
 | `editing`           | `oxide_engine::fuzz::fuzz_editing`            | Additive editing, redaction, form flattening, and full rewrite |
 | `signature_validation` | `oxide_engine::fuzz::fuzz_signature_validation` | Signature/DSS/LTV-like parsing reachable from untrusted signed PDFs |
+| `timestamp_token` | `oxide_engine::fuzz::fuzz_timestamp_token` | Prompt 25 RFC 3161 TimeStampToken parsing, message-imprint binding, and malformed token classification |
+| `signature_preserving_edit_plan` | `oxide_engine::fuzz::fuzz_signature_preserving_edit_plan` | Prompt 25 DocMDP/FieldMDP-aware append-only edit planning over parsed PDFs |
 | `structured_pdf`    | `oxide_engine::fuzz::fuzz_structured_pdf`     | Grammar-aware valid PDFs with adversarial content, then render/text/model/edit/PDF-A/linearize/signature paths |
 
 The `fuzz_*` entry points are gated behind the engine's `fuzzing` feature

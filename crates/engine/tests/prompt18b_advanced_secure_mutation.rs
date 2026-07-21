@@ -3,14 +3,15 @@ use oxide_engine::prompt17::{
     RedactionCoordinateSpace,
 };
 use oxide_engine::prompt18::{
-    analyze_edit_policy_for_target, associated_files_add_pdf, associated_files_inventory,
-    associated_files_remove_owner_pdf, associated_files_update_owner_pdf,
-    incremental_annotation_update_pdf, incremental_form_value_update_pdf,
-    incremental_page_property_update_pdf, AfRelationship, AssociatedFileAddRequest,
+    analyze_edit_policy_for_target, apply_signature_preserving_form_fill, associated_files_add_pdf,
+    associated_files_inventory, associated_files_remove_owner_pdf,
+    associated_files_update_owner_pdf, incremental_annotation_update_pdf,
+    incremental_form_value_update_pdf, incremental_page_property_update_pdf,
+    plan_signature_preserving_form_fill, AfRelationship, AssociatedFileAddRequest,
     AssociatedFileOwnerRemoveRequest, AssociatedFileOwnerType, AssociatedFileOwnerUpdateRequest,
     EditOperation, EditPolicyDecision, IncrementalAnnotationEdit, IncrementalPagePropertyEdit,
 };
-use oxide_engine::{decode_stream_lossless, flate_encode, ContentEngine, PdfObject};
+use oxide_engine::{decode_stream_lossless, flate_encode, ContentEngine, PdfObject, VerifyOptions};
 
 fn export_fixture(name: &str, bytes: &[u8]) {
     let Some(root) = std::env::var_os("OXIDE_PROMPT18B_EXPORT_FIXTURES") else {
@@ -370,6 +371,43 @@ fn signature_policy_executes_allowed_incremental_edits_and_blocks_prohibited_tar
     .unwrap();
     assert!(rotated.starts_with(&unsigned));
     assert!(rotation_report.visible_after_reopen);
+}
+
+#[test]
+fn prompt25_signature_preserving_form_fill_plans_applies_and_revalidates() {
+    let input = signed_mutation_fixture();
+    let options = VerifyOptions::default();
+    let blocked =
+        plan_signature_preserving_form_fill(&input, "Locked", "denied", &options).unwrap();
+    assert!(!blocked.allowed);
+    assert_eq!(
+        blocked.decision,
+        EditPolicyDecision::BlockedBySignaturePolicy
+    );
+
+    let plan = plan_signature_preserving_form_fill(&input, "Open", "allowed", &options).unwrap();
+    assert!(plan.allowed);
+    assert_eq!(plan.decision, EditPolicyDecision::IncrementalWithWarning);
+    assert_eq!(plan.before_signature_count, plan.before_signatures.len());
+
+    let (output, result) =
+        apply_signature_preserving_form_fill(&input, "Open", "allowed", &options, false).unwrap();
+    assert!(output.starts_with(&input));
+    assert!(result.post_edit.original_prefix_preserved);
+    assert_eq!(
+        result.post_edit.before_signature_count,
+        result.plan.before_signature_count
+    );
+    assert_eq!(
+        result.post_edit.after_signature_count,
+        result.post_edit.post_edit_signatures.len()
+    );
+    assert!(
+        !result
+            .post_edit
+            .original_signatures_mathematically_valid_after_edit,
+        "the fixture signature is intentionally non-cryptographic; Prompt 25 must report, not fake, preservation"
+    );
 }
 
 #[test]

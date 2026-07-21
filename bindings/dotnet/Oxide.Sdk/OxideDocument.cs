@@ -441,6 +441,25 @@ public sealed class OxideDocument : IDisposable
         return ReportWithString(optionsJson, NativeMethods.oxide_document_signature_validation_with_evidence_json);
     }
 
+    public static string TimestampTokenValidationJson(
+        byte[] token, byte[] signatureValue, string? optionsJson = null)
+    {
+        ArgumentNullException.ThrowIfNull(token);
+        ArgumentNullException.ThrowIfNull(signatureValue);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_timestamp_token_validation_json(
+                token, (UIntPtr)token.Length, signatureValue, (UIntPtr)signatureValue.Length,
+                optionsPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
     /// <summary>
     /// Validates signatures with an owned Prompt 24 configuration handle.
     /// The handle exposes explicit trust anchors, intermediates, evidence, and
@@ -906,6 +925,50 @@ public sealed class OxideDocument : IDisposable
         {
             if (fieldPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(fieldPtr);
             if (valuePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(valuePtr);
+        }
+    }
+
+    public string SignaturePreservingFormPlan(
+        string fieldName, string value, string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        var fieldPtr = NativeMethods.StringToNativeOrNull(fieldName);
+        var valuePtr = NativeMethods.StringToNativeOrNull(value);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_signature_preserving_form_plan_json(
+                _handle, fieldPtr, valuePtr, optionsPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (fieldPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(fieldPtr);
+            if (valuePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(valuePtr);
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public OxideBinaryResult SignaturePreservingFormEdit(
+        string fieldName, string value, string? optionsJson = null,
+        bool explicitInvalidationOverride = false)
+    {
+        ThrowIfDisposed();
+        var fieldPtr = NativeMethods.StringToNativeOrNull(fieldName);
+        var valuePtr = NativeMethods.StringToNativeOrNull(value);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.oxide_document_signature_preserving_form_edit_json(
+                _handle, fieldPtr, valuePtr, optionsPtr, explicitInvalidationOverride,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (fieldPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(fieldPtr);
+            if (valuePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(valuePtr);
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
         }
     }
 

@@ -19,7 +19,10 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::prompt17::{
     apply_nonaxis_image_redaction_pdf, NonAxisRedactionApplyReport, NonAxisRedactionOptions,
 };
-use crate::signature::{verify_signatures, SignatureReport};
+use crate::signature::{
+    verify_signatures, verify_signatures_with_options, SignatureReport, SignatureValidity,
+    VerifyOptions, PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+};
 use crate::versioning::resource_digest;
 use crate::writer::{
     rewrite_document_objects, write_incremental_update, IncrementalObject, OutputObject, PdfWriter,
@@ -1516,6 +1519,154 @@ pub struct IncrementalMutationReport {
     pub output_sha256: String,
     pub post_save_signature_impact: SignatureImpactSummary,
     pub cryptographic_validity_claimed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SignaturePreservingEditPlan {
+    pub schema_version: &'static str,
+    pub operation: EditOperation,
+    pub allowed: bool,
+    pub decision: EditPolicyDecision,
+    pub reason: String,
+    pub output_must_be_incremental: bool,
+    pub prefix_preservation_required: bool,
+    pub before_signature_count: usize,
+    pub before_signatures: Vec<SignatureReport>,
+    pub policy: EditPolicyReport,
+    pub exact_limits: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PostEditSignatureReport {
+    pub schema_version: &'static str,
+    pub before_signature_count: usize,
+    pub after_signature_count: usize,
+    pub original_prefix_preserved: bool,
+    pub original_signatures_mathematically_valid_after_edit: bool,
+    pub post_edit_signatures: Vec<SignatureReport>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SignaturePreservingEditResult {
+    pub schema_version: &'static str,
+    pub operation: EditOperation,
+    pub plan: SignaturePreservingEditPlan,
+    pub mutation: IncrementalMutationReport,
+    pub post_edit: PostEditSignatureReport,
+}
+
+pub fn plan_signature_preserving_form_fill(
+    input: &[u8],
+    field_name: &str,
+    value: &str,
+    options: &VerifyOptions,
+) -> Result<SignaturePreservingEditPlan> {
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let policy =
+        analyze_edit_policy_for_target(&engine, EditOperation::FormValueUpdate, Some(field_name))?;
+    let before_signatures = verify_signatures_with_options(engine.document(), options)?;
+    let allowed = matches!(
+        policy.decision,
+        EditPolicyDecision::SafeIncremental | EditPolicyDecision::IncrementalWithWarning
+    );
+    let reason = if allowed {
+        format!(
+            "form field '{field_name}' can be written as an append-only incremental update; value bytes are not placed in an existing signed byte range"
+        )
+    } else {
+        format!(
+            "form field '{field_name}' update is blocked by the parsed DocMDP/FieldMDP policy decision {:?}",
+            policy.decision
+        )
+    };
+    Ok(SignaturePreservingEditPlan {
+        schema_version: PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+        operation: EditOperation::FormValueUpdate,
+        allowed,
+        decision: policy.decision,
+        reason,
+        output_must_be_incremental: true,
+        prefix_preservation_required: true,
+        before_signature_count: before_signatures.len(),
+        before_signatures,
+        policy,
+        exact_limits: vec![
+            "Prompt 25 form-fill preservation is append-only and revalidates original signatures after reopen".to_string(),
+            "DocMDP/FieldMDP decisions are enforced from parsed transform policy; unknown or blocked policy denies by default unless explicit invalidation override is selected".to_string(),
+            format!("planned value byte length: {}", value.len()),
+        ],
+    })
+}
+
+pub fn apply_signature_preserving_form_fill(
+    input: &[u8],
+    field_name: &str,
+    value: &str,
+    options: &VerifyOptions,
+    explicit_invalidation_override: bool,
+) -> Result<(Vec<u8>, SignaturePreservingEditResult)> {
+    let plan = plan_signature_preserving_form_fill(input, field_name, value, options)?;
+    if !plan.allowed && !explicit_invalidation_override {
+        return Err(OxideError::UnsupportedFeature(plan.reason.clone()));
+    }
+    let (output, mutation) = incremental_form_value_update_pdf(
+        input,
+        field_name,
+        value,
+        explicit_invalidation_override,
+    )?;
+    let post_edit = validate_after_signature_preserving_edit(input, &output, options)?;
+    if !post_edit.original_prefix_preserved {
+        return Err(OxideError::MalformedPdf(
+            "signature-preserving edit did not preserve the original byte prefix".to_string(),
+        ));
+    }
+    Ok((
+        output,
+        SignaturePreservingEditResult {
+            schema_version: PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+            operation: EditOperation::FormValueUpdate,
+            plan,
+            mutation,
+            post_edit,
+        },
+    ))
+}
+
+pub fn validate_after_signature_preserving_edit(
+    original: &[u8],
+    output: &[u8],
+    options: &VerifyOptions,
+) -> Result<PostEditSignatureReport> {
+    let before_engine = ContentEngine::open_bytes(original.to_vec())?;
+    let after_engine = ContentEngine::open_bytes(output.to_vec())?;
+    let before = verify_signatures_with_options(before_engine.document(), options)?;
+    let after = verify_signatures_with_options(after_engine.document(), options)?;
+    let prefix_preserved = output.starts_with(original);
+    let original_math_valid_after = after
+        .iter()
+        .take(before.len())
+        .all(|report| report.validity == SignatureValidity::Valid);
+    let mut warnings = Vec::new();
+    if after.len() < before.len() {
+        warnings.push("post-edit document reports fewer signatures than the original".to_string());
+    }
+    if !original_math_valid_after {
+        warnings.push(
+            "one or more original signatures failed mathematical validation after the edit"
+                .to_string(),
+        );
+    }
+    Ok(PostEditSignatureReport {
+        schema_version: PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+        before_signature_count: before.len(),
+        after_signature_count: after.len(),
+        original_prefix_preserved: prefix_preserved,
+        original_signatures_mathematically_valid_after_edit: original_math_valid_after,
+        post_edit_signatures: after,
+        warnings,
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -46,6 +46,12 @@ public-benchmark/results/raw/
 large-file-profile/generated/
 large-file-profile/generated-followup/
 large-file-profile/results/
+# Same local-only raw run samples when the harness is invoked from a nested
+# directory (e.g. fuzz/large-file-profile/results/). Anchored patterns above
+# only match at the repo root, so also match these anywhere.
+**/large-file-profile/generated/
+**/large-file-profile/generated-followup/
+**/large-file-profile/results/
 
 # Stray native build artifacts from compiling the C-ABI example locally.
 *.obj

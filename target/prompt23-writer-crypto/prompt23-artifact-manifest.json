@@ -74,7 +74,7 @@
     "prompt23-performance-memory.json",
     "prompt23-limit-denial-results.json"
   ],
-  "generated_at_utc": "2026-07-20T15:05:34.574584+00:00",
+  "generated_at_utc": "2026-07-20T22:39:38.695766+00:00",
   "html_report": "prompt23-html-report/index.html",
   "schema_version": "prompt23.deterministic-writer-pubsec-aesgcm.v1",
   "security_failures": 0,

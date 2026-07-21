@@ -466,6 +466,14 @@ OXIDE_API int oxide_document_signature_validation_with_evidence_handle(
     const OxideSignatureValidationOptions *options,
     char **out_json,
     char **error_out);
+OXIDE_API int oxide_timestamp_token_validation_json(
+    const uint8_t *token,
+    size_t token_len,
+    const uint8_t *signature_value,
+    size_t signature_value_len,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
 
 OXIDE_API int oxide_document_watermark_text_pdf(
     const OxideDocument *document,
@@ -907,6 +915,22 @@ OXIDE_API int oxide_document_incremental_form_edit_json(
     const char *field_name,
     const char *value,
     bool signature_policy_override,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_signature_preserving_form_plan_json(
+    const OxideDocument *document,
+    const char *field_name,
+    const char *value,
+    const char *options_json,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_signature_preserving_form_edit_json(
+    const OxideDocument *document,
+    const char *field_name,
+    const char *value,
+    const char *options_json,
+    bool explicit_invalidation_override,
     OxideBuffer *out_buffer,
     char **out_json,
     char **error_out);

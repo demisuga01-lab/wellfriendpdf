@@ -260,8 +260,17 @@ fn timestamp_and_dss_ltv_material_are_reported_offline() {
     let signed_report = &signed_engine.verify_signatures().unwrap()[0];
     assert_eq!(signed_report.validity, SignatureValidity::Valid);
     assert_eq!(signed_report.coverage, Coverage::WholeFile);
-    assert_eq!(signed_report.ltv.pades_level, PadesLevel::BaselineT);
-    assert_eq!(signed_report.ltv.timestamp_token_count, 1);
+    assert_eq!(signed_report.ltv.pades_level, PadesLevel::BaselineB);
+    assert_eq!(signed_report.ltv.timestamp_token_count, 0);
+    assert_eq!(signed_report.ltv.invalid_timestamp_token_count, 1);
+    assert_eq!(
+        signed_report.prompt25.signature_timestamp_status,
+        SignatureValidationState::Invalid
+    );
+    assert_eq!(
+        signed_report.prompt25.achieved_pades_level,
+        PadesLevel::BaselineB
+    );
 
     // The signer cert serial is 20260801 in the committed fixture.
     let revoked_crl = test_crl_der(&signer, &[0x20, 0x26, 0x08, 0x01]);
@@ -281,7 +290,16 @@ fn timestamp_and_dss_ltv_material_are_reported_offline() {
     let report = &ltv_engine.verify_signatures().unwrap()[0];
     assert_eq!(report.validity, SignatureValidity::Valid);
     assert_eq!(report.coverage, Coverage::ModifiedAfterSigning);
-    assert_eq!(report.ltv.pades_level, PadesLevel::BaselineLT);
+    assert_eq!(report.ltv.pades_level, PadesLevel::BaselineB);
+    assert_eq!(
+        report.prompt25.signature_timestamp_status,
+        SignatureValidationState::Invalid
+    );
+    assert_eq!(
+        report.prompt25.ltv_status,
+        SignatureValidationState::Indeterminate
+    );
+    assert_eq!(report.prompt25.achieved_pades_level, PadesLevel::BaselineB);
     assert!(report.ltv.dss_present);
     assert!(report.ltv.vri_matched);
     assert!(report.ltv.embedded_certs >= 1);

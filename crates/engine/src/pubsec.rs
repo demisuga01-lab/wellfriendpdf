@@ -813,7 +813,7 @@ pub fn recover_pubsec_file_key(
                     };
                 if payload.len() != required {
                     payload.zeroize();
-                    return Err(OxideError::MalformedPdf(format!(
+                    return Err(OxideError::EncryptedPdf(format!(
                         "PubSec CMS payload length {} does not match expected {required}",
                         payload.len()
                     )));

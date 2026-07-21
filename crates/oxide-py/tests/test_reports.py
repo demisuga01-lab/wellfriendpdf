@@ -208,6 +208,23 @@ def test_prompt24_signature_validation_component_handles_and_cancellation():
         oxide.open(SIG).signature_validation(options)
 
 
+def test_prompt25_timestamp_and_signature_preserving_surfaces():
+    timestamp = _envelope(
+        oxide.timestamp_token_validation(b"not-a-rfc3161-token", b"cms-signature-value"),
+        "timestamp_token_validation",
+    )
+    assert timestamp["token_type"] == "signature_timestamp"
+    assert timestamp["status"] == "malformed"
+
+    doc = oxide.open(FORM)
+    plan = _envelope(
+        doc.signature_preserving_form_plan("name", "Prompt25", "{}"),
+        "signature_preserving_edit_plan",
+    )
+    assert plan["schema_version"] == "prompt25.tsa-dss-ltv-mdp-signature-edits.v1"
+    assert plan["prefix_preservation_required"] is True
+
+
 def test_module_level_reports():
     assert hasattr(oxide, "pubsec_decrypt_pdf_pfx")
     assert hasattr(oxide, "pubsec_reencrypt_pdf_pfx")

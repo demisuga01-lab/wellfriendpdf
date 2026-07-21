@@ -168,6 +168,33 @@ public sealed class OxideSmokeTests
     }
 
     [Fact]
+    public void Prompt25TimestampAndSignaturePreservingPlanUseNativeRuntime()
+    {
+        var timestampJson = OxideDocument.TimestampTokenValidationJson(
+            Encoding.ASCII.GetBytes("not-a-rfc3161-token"),
+            Encoding.ASCII.GetBytes("cms-signature-value"));
+        using (var parsed = JsonDocument.Parse(timestampJson))
+        {
+            Assert.Equal("timestamp_token_validation", parsed.RootElement.GetProperty("kind").GetString());
+            var report = parsed.RootElement.GetProperty("report");
+            Assert.Equal("signature_timestamp", report.GetProperty("token_type").GetString());
+            Assert.Equal("malformed", report.GetProperty("status").GetString());
+        }
+
+        using var doc = OxideDocument.Open(FixturePath("form_160f.pdf"));
+        var planJson = doc.SignaturePreservingFormPlan("name", "Prompt25");
+        using (var parsed = JsonDocument.Parse(planJson))
+        {
+            Assert.Equal("signature_preserving_edit_plan", parsed.RootElement.GetProperty("kind").GetString());
+            var report = parsed.RootElement.GetProperty("report");
+            Assert.Equal(
+                "prompt25.tsa-dss-ltv-mdp-signature-edits.v1",
+                report.GetProperty("schema_version").GetString());
+            Assert.True(report.GetProperty("prefix_preservation_required").GetBoolean());
+        }
+    }
+
+    [Fact]
     public void MalformedInputRaisesManagedException()
     {
         var ex = Assert.Throws<OxideException>(() => OxideDocument.Open(new byte[] { 1, 2, 3, 4 }));
