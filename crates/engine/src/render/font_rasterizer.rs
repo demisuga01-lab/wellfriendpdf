@@ -1547,12 +1547,12 @@ impl FontRasterizer {
 
     /// Extract embedded raw font bytes from a PDF font dictionary.
     pub fn extract_font_bytes(font_dict: &PdfDictionary, reader: &PdfReader) -> Option<Vec<u8>> {
-        let descriptor = match font_dict.get("FontDescriptor") {
-            Some(value) => match reader.resolve(value.clone()).ok()? {
+        let descriptor = {
+            let value = font_dict.get("FontDescriptor")?;
+            match reader.resolve(value.clone()).ok()? {
                 PdfObject::Dictionary(dict) => dict,
                 _ => return None,
-            },
-            None => return None,
+            }
         };
 
         for key in ["FontFile3", "FontFile2", "FontFile"] {

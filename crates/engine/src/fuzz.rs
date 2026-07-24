@@ -30,10 +30,17 @@ use crate::parser::PdfParser;
 use crate::parser_report::{parser_report_bytes, ParserMode};
 use crate::reader::PdfReader;
 use crate::signature::{
-    verify_options_from_json, verify_signature_timestamp_token_der, VerifyOptions,
+    plan_signature_placeholder, sign_incremental, verify_options_from_json,
+    verify_signature_timestamp_token_der, CmsSigningRequest, CmsSigningResult, ExternalSigner,
+    IncrementalSigner, IncrementalSigningOptions, PdfSigner, SignatureOptions, SigningIntent,
+    VerifyOptions,
 };
 use crate::signature_evidence::{
     validate_retrieval_uri_syntax, EvidenceBundle, EvidenceStore, RetrievalPolicy,
+};
+use crate::standards_engine::{
+    detect_pdfa, detect_pdfua, detect_pdfx, validate_all_standards, validate_pdfa_profile,
+    validate_pdfua_profile, validate_pdfx_profile, xmp_lookup, StandardsValidationOptions,
 };
 use crate::writer::{
     rewrite_document_with_mode, serialize_object, OutputObject, PdfWriter, WriterMode,
@@ -474,6 +481,267 @@ pub fn fuzz_signature_preserving_edit_plan(data: &[u8]) {
         field_name,
         "value",
         &VerifyOptions::default(),
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Prompt 26: bounded incremental-signing and clause-mapped standards targets.
+// These are deliberately in-engine: no filesystem, host callback, network, or
+// external process is ever selected from fuzz bytes.
+// ---------------------------------------------------------------------------
+
+fn prompt26_fuzz_engine(data: &[u8]) -> Option<ContentEngine> {
+    let seed = if data.is_empty() { &[1u8][..] } else { data };
+    let bytes = authored_adversarial_pdf(seed)?;
+    ContentEngine::open_bytes(bytes).ok()
+}
+
+fn prompt26_signing_options(data: &[u8]) -> IncrementalSigningOptions {
+    IncrementalSigningOptions {
+        signature: SignatureOptions {
+            field_name: "Prompt26Fuzz".to_string(),
+            contents_reserved_bytes: 256 + data.len().min(4096),
+            ..SignatureOptions::default()
+        },
+        intent: if data.first().copied().unwrap_or(0) & 1 == 0 {
+            SigningIntent::Approval
+        } else {
+            SigningIntent::Certification {
+                docmdp_permissions: 1 + data.get(1).copied().unwrap_or(0) % 3,
+            }
+        },
+        retry_larger_placeholder: true,
+        max_placeholder_bytes: 256 * 1024,
+    }
+}
+
+/// Generates a process-local fuzz signer rather than carrying a static private
+/// key in the repository or corpus. This is invoked once per fuzz process.
+fn prompt26_fuzz_signer() -> &'static PdfSigner {
+    static SIGNER: OnceLock<PdfSigner> = OnceLock::new();
+    SIGNER.get_or_init(|| {
+        use der::asn1::GeneralizedTime;
+        use der::Encode;
+        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
+        use rsa::rand_core::OsRng;
+        use rsa::{RsaPrivateKey, RsaPublicKey};
+        use sha2::Sha256;
+        use spki::SubjectPublicKeyInfoOwned;
+        use std::str::FromStr;
+        use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+        use x509_cert::name::Name;
+        use x509_cert::serial_number::SerialNumber;
+        use x509_cert::time::{Time, Validity};
+
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("fuzz RSA key");
+        let signing_key = rsa::pkcs1v15::SigningKey::<Sha256>::new(private_key.clone());
+        let public_key = RsaPublicKey::from(&private_key);
+        let spki_der = public_key.to_public_key_der().expect("fuzz SPKI DER");
+        let spki =
+            SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("fuzz SPKI parse");
+        let subject = Name::from_str("CN=Oxide Prompt26 Fuzz,O=Oxide,C=US").expect("fuzz subject");
+        let validity = Validity {
+            not_before: Time::from(
+                GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(1_704_067_200))
+                    .expect("fuzz notBefore"),
+            ),
+            not_after: Time::from(
+                GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(1_893_456_000))
+                    .expect("fuzz notAfter"),
+            ),
+        };
+        let builder = CertificateBuilder::new(
+            Profile::Leaf {
+                issuer: subject.clone(),
+                enable_key_agreement: false,
+                enable_key_encipherment: false,
+            },
+            SerialNumber::from(26u32),
+            validity,
+            subject,
+            spki,
+            &signing_key,
+        )
+        .expect("fuzz certificate builder");
+        let cert = builder
+            .build::<rsa::pkcs1v15::Signature>()
+            .expect("fuzz certificate");
+        let key_der = private_key.to_pkcs8_der().expect("fuzz key DER");
+        let cert_der = cert.to_der().expect("fuzz certificate DER");
+        PdfSigner::from_der(key_der.as_bytes(), &cert_der, &[]).expect("fuzz signer")
+    })
+}
+
+/// Real placeholder-planning path using a process-local ephemeral signer.
+pub fn fuzz_incremental_signing_plan(data: &[u8]) {
+    let Some(engine) = prompt26_fuzz_engine(data) else {
+        return;
+    };
+    let _ = std::hint::black_box(plan_signature_placeholder(
+        engine.document(),
+        prompt26_fuzz_signer(),
+        &prompt26_signing_options(data),
+    ));
+}
+
+/// Exercises staging/CMS insertion and then a guaranteed signed-byte mutation.
+pub fn fuzz_cms_insertion_boundary(data: &[u8]) {
+    let Some(engine) = prompt26_fuzz_engine(data) else {
+        return;
+    };
+    let Ok(result) = sign_incremental(
+        engine.document(),
+        IncrementalSigner::Local(prompt26_fuzz_signer()),
+        &prompt26_signing_options(data),
+    ) else {
+        return;
+    };
+    let _ = std::hint::black_box(ContentEngine::open_bytes(result.signed_pdf.clone()));
+    let mut changed = result.signed_pdf;
+    if let Some(byte) = changed.first_mut() {
+        *byte ^= 1;
+    }
+    if let Ok(tampered) = ContentEngine::open_bytes(changed) {
+        let _ = std::hint::black_box(tampered.verify_signatures());
+    }
+}
+
+struct FuzzExternalSigner<'a> {
+    data: &'a [u8],
+}
+
+impl ExternalSigner for FuzzExternalSigner<'_> {
+    fn sign_cms(
+        &self,
+        request: &CmsSigningRequest,
+    ) -> std::result::Result<CmsSigningResult, String> {
+        let cms_len = self.data.len().min(64 * 1024);
+        let response_text = String::from_utf8_lossy(&self.data[..self.data.len().min(128)]);
+        Ok(CmsSigningResult {
+            cms_der: self.data[..cms_len].to_vec(),
+            algorithm: if response_text.is_empty() {
+                request.algorithm.clone()
+            } else {
+                response_text.to_string()
+            },
+            signer_certificate_sha256: if self.data.len() > 128 {
+                self.data[128..self.data.len().min(160)]
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect()
+            } else {
+                String::new()
+            },
+        })
+    }
+}
+
+/// Drives the external signer result parser/rejection boundary with arbitrary
+/// CMS bytes, algorithm label, and certificate pin. The signer never executes
+/// attacker code and no callback crosses a process boundary.
+pub fn fuzz_external_signer_response(data: &[u8]) {
+    let Some(engine) = prompt26_fuzz_engine(data) else {
+        return;
+    };
+    let external = FuzzExternalSigner { data };
+    let _ = std::hint::black_box(sign_incremental(
+        engine.document(),
+        IncrementalSigner::ExternalCms {
+            signer: &external,
+            expected_certificate_sha256: None,
+        },
+        &prompt26_signing_options(data),
+    ));
+}
+
+/// Drives the PDF/UA structural validator over a bounded generated PDF.
+pub fn fuzz_pdfua_structure(data: &[u8]) {
+    let Some(engine) = prompt26_fuzz_engine(data) else {
+        return;
+    };
+    let options = StandardsValidationOptions::with_target("PDF/UA-1");
+    let _ = std::hint::black_box(validate_pdfua_profile(&engine, &options));
+}
+
+/// Drives the PDF/X output-intent/font/page-box prepress validator.
+pub fn fuzz_pdfx_prepress(data: &[u8]) {
+    let Some(engine) = prompt26_fuzz_engine(data) else {
+        return;
+    };
+    let options =
+        StandardsValidationOptions::with_target(if data.first().copied().unwrap_or(0) & 1 == 0 {
+            "PDF/X-4"
+        } else {
+            "PDF/X-1A"
+        });
+    let _ = std::hint::black_box(validate_pdfx_profile(&engine, &options));
+}
+
+/// Drives all three standards reports and cross-profile conflict aggregation.
+pub fn fuzz_cross_profile_standards(data: &[u8]) {
+    let Some(engine) = prompt26_fuzz_engine(data) else {
+        return;
+    };
+    let target = match data.first().copied().unwrap_or(0) % 4 {
+        0 => "PDF/A-2B",
+        1 => "PDF/UA-1",
+        2 => "PDF/X-4",
+        _ => "PDF/A-4",
+    };
+    let options = StandardsValidationOptions::with_target(target);
+    let _ = std::hint::black_box(validate_all_standards(&engine, &options));
+    let _ = std::hint::black_box(validate_pdfa_profile(&engine, &options));
+}
+
+/// Exercises XMP identifier tokenization independently of PDF parsing and then
+/// profile detection if the generated PDF opens.
+pub fn fuzz_standards_xmp_identifier(data: &[u8]) {
+    const MAX_TEXT: usize = 16 * 1024;
+    let text = String::from_utf8_lossy(&data[..data.len().min(MAX_TEXT)]);
+    for (prefix, local) in [
+        ("pdfaid", "part"),
+        ("pdfaid", "conformance"),
+        ("pdfuaid", "part"),
+        ("pdfxid", "GTS_PDFXVersion"),
+    ] {
+        let _ = std::hint::black_box(xmp_lookup(&text, prefix, local));
+    }
+    if let Some(engine) = prompt26_fuzz_engine(data) {
+        let _ = std::hint::black_box(detect_pdfa(&engine));
+        let _ = std::hint::black_box(detect_pdfua(&engine));
+        let _ = std::hint::black_box(detect_pdfx(&engine));
+    }
+}
+
+/// Drives DocMDP/FieldMDP policy extraction and form-fill planning without
+/// writing attacker-selected paths or executing JavaScript.
+pub fn fuzz_mdp_permission_parser(data: &[u8]) {
+    let Some(engine) = prompt26_fuzz_engine(data) else {
+        return;
+    };
+    for operation in [
+        crate::prompt18::EditOperation::FormValueUpdate,
+        crate::prompt18::EditOperation::AnnotationUpdate,
+        crate::prompt18::EditOperation::ContentEdit,
+    ] {
+        let _ = std::hint::black_box(crate::prompt18::analyze_edit_policy(&engine, operation));
+    }
+}
+
+/// Classifies arbitrary post-signature-looking PDF mutations through the real
+/// signature verifier and edit-policy analyzer. Successful structural parses
+/// are inspected; malformed updates remain structured errors.
+pub fn fuzz_post_signature_modification(data: &[u8]) {
+    const MAX_INPUT: usize = 2 * 1024 * 1024;
+    let bounded = &data[..data.len().min(MAX_INPUT)];
+    let Ok(engine) = ContentEngine::open_bytes(bounded.to_vec()) else {
+        return;
+    };
+    let _ = std::hint::black_box(engine.verify_signatures());
+    let _ = std::hint::black_box(crate::prompt18::analyze_edit_policy(
+        &engine,
+        crate::prompt18::EditOperation::IncrementalSave,
     ));
 }
 

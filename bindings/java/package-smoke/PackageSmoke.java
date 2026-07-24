@@ -23,6 +23,12 @@ public final class PackageSmoke {
         Oxide.Document.class.getMethod("openPubSecPfx", byte[].class, byte[].class, byte[].class);
         Oxide.Document.class.getMethod("pubsecEncryptPdf", byte[].class);
         Oxide.Document.class.getMethod("pdfMacCreate");
+        Oxide.Document.class.getMethod("validatePdfaStandardsJson", String.class);
+        Oxide.Document.class.getMethod("validatePdfuaStandardsJson", String.class);
+        Oxide.Document.class.getMethod("validatePdfxStandardsJson", String.class);
+        Oxide.Document.class.getMethod("validateAllStandardsJson", String.class);
+        Oxide.Document.class.getMethod("incrementalSigningPlanJson", String.class, String.class, long.class, int.class);
+        Oxide.Document.class.getMethod("signIncremental", String.class, String.class, long.class, int.class, String.class, String.class);
         if (Oxide.engineVersion().isBlank() || Oxide.abiVersion() < 1) {
             throw new AssertionError("version queries failed");
         }
@@ -35,6 +41,12 @@ public final class PackageSmoke {
                 throw new AssertionError("text extraction returned blank");
             }
             String security = doc.securityReportJson();
+            if (!doc.validatePdfaStandardsJson("PDF/A-2B").contains("pdfa_standards_validation")
+                    || !doc.validatePdfuaStandardsJson("PDF/UA-1").contains("pdfua_standards_validation")
+                    || !doc.validatePdfxStandardsJson("PDF/X-4").contains("pdfx_standards_validation")
+                    || !doc.validateAllStandardsJson().contains("standards_all_validation")) {
+                throw new AssertionError("Prompt26 standards runtime surface missing");
+            }
             if (!security.contains("\"schema_version\"")) {
                 throw new AssertionError("security report missing schema_version");
             }

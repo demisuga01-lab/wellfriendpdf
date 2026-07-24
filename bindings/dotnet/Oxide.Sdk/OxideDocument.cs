@@ -229,6 +229,148 @@ public sealed class OxideDocument : IDisposable
         return ReportWithString(profile, NativeMethods.oxide_document_validate_json);
     }
 
+    /// <summary>Returns the clause-mapped PDF/A standards envelope.</summary>
+    public string ValidatePdfaStandardsJson(string? target = null)
+    {
+        ThrowIfDisposed();
+        return ReportWithString(target, NativeMethods.oxide_document_pdfa_standards_json);
+    }
+
+    /// <summary>Returns the clause-mapped PDF/UA standards envelope.</summary>
+    public string ValidatePdfuaStandardsJson(string? target = null)
+    {
+        ThrowIfDisposed();
+        return ReportWithString(target, NativeMethods.oxide_document_pdfua_standards_json);
+    }
+
+    /// <summary>Returns the clause-mapped PDF/X standards envelope.</summary>
+    public string ValidatePdfxStandardsJson(string? target = null)
+    {
+        ThrowIfDisposed();
+        return ReportWithString(target, NativeMethods.oxide_document_pdfx_standards_json);
+    }
+
+    /// <summary>
+    /// Returns the combined PDF/A, PDF/UA, and PDF/X standards envelope,
+    /// including cross-profile conflicts; a pass from one profile never masks
+    /// failures from another profile.
+    /// </summary>
+    public string ValidateAllStandardsJson(string? target = null)
+    {
+        ThrowIfDisposed();
+        return ReportWithString(target, NativeMethods.oxide_document_standards_all_json);
+    }
+
+    /// <summary>Returns the native post-signature cryptographic validation report.</summary>
+    public string SignatureReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.oxide_document_signatures_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    /// <summary>
+    /// Creates an append-only incremental signing placeholder plan. PEM signer
+    /// material is copied into native code for the call and is never logged.
+    /// </summary>
+    public string IncrementalSigningPlanJson(
+        string keyPem,
+        string certPem,
+        int placeholderSize = 16 * 1024,
+        int certify = 0)
+    {
+        ThrowIfDisposed();
+        ValidateSigningInputs(keyPem, certPem, placeholderSize, certify);
+        var keyPtr = NativeMethods.StringToNativeOrNull(keyPem);
+        var certPtr = NativeMethods.StringToNativeOrNull(certPem);
+        try
+        {
+            var status = NativeMethods.oxide_document_sign_plan_json(
+                _handle, keyPtr, certPtr, (UIntPtr)placeholderSize, certify, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(keyPtr);
+            Marshal.FreeCoTaskMem(certPtr);
+        }
+    }
+
+    /// <summary>
+    /// Performs real append-only local PEM signing through the C ABI. The
+    /// native engine reopens and verifies the returned PDF before this method
+    /// returns its owned bytes and IncrementalSignResult JSON report.
+    /// </summary>
+    public OxideBinaryResult SignIncremental(
+        string keyPem,
+        string certPem,
+        int placeholderSize = 16 * 1024,
+        int certify = 0,
+        string? fieldName = null,
+        string? reason = null)
+    {
+        ThrowIfDisposed();
+        ValidateSigningInputs(keyPem, certPem, placeholderSize, certify);
+        var keyPtr = NativeMethods.StringToNativeOrNull(keyPem);
+        var certPtr = NativeMethods.StringToNativeOrNull(certPem);
+        var fieldPtr = NativeMethods.StringToNativeOrNull(fieldName);
+        var reasonPtr = NativeMethods.StringToNativeOrNull(reason);
+        try
+        {
+            var status = NativeMethods.oxide_document_sign_pdf(
+                _handle,
+                keyPtr,
+                certPtr,
+                (UIntPtr)placeholderSize,
+                certify,
+                fieldPtr,
+                reasonPtr,
+                out var buffer,
+                out var json,
+                out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(keyPtr);
+            Marshal.FreeCoTaskMem(certPtr);
+            if (fieldPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(fieldPtr);
+            if (reasonPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(reasonPtr);
+        }
+    }
+
+    /// <summary>
+    /// Returns the existing combined edit-policy report focused on DocMDP
+    /// permissions for the requested operation.
+    /// </summary>
+    public string DocMdpPermissionReportJson(string operation = "form_value_update") =>
+        EditPolicyReportJson(operation);
+
+    /// <summary>
+    /// Returns the existing combined edit-policy report focused on FieldMDP
+    /// permissions for the requested operation.
+    /// </summary>
+    public string FieldMdpPermissionReportJson(string operation = "form_value_update") =>
+        EditPolicyReportJson(operation);
+
+    private static void ValidateSigningInputs(
+        string keyPem,
+        string certPem,
+        int placeholderSize,
+        int certify)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(keyPem);
+        ArgumentException.ThrowIfNullOrWhiteSpace(certPem);
+        if (placeholderSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(placeholderSize), "Placeholder size must be positive.");
+        }
+        if (certify is < 0 or > 3)
+        {
+            throw new ArgumentOutOfRangeException(nameof(certify), "Certification permission must be 0 or 1 through 3.");
+        }
+    }
+
     public string FormsReportJson()
     {
         ThrowIfDisposed();

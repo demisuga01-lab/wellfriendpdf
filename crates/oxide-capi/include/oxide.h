@@ -570,6 +570,58 @@ OXIDE_API int oxide_document_forms_report_json(
     char **out_json,
     char **error_out);
 
+/* Prompt 26 clause-mapped standards validation reports. `target` may be NULL
+ * (detected/claimed profile) or a label such as "PDF/A-2B", "PDF/UA-1",
+ * "PDF/X-4". Each returns a versioned JSON envelope; free with
+ * oxide_string_free. */
+OXIDE_API int oxide_document_pdfa_standards_json(
+    const OxideDocument *document,
+    const char *target,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_pdfua_standards_json(
+    const OxideDocument *document,
+    const char *target,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_pdfx_standards_json(
+    const OxideDocument *document,
+    const char *target,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_standards_all_json(
+    const OxideDocument *document,
+    const char *target,
+    char **out_json,
+    char **error_out);
+
+/* Prompt 26 append-only incremental signing. `key_pem`/`cert_pem` are the
+ * signer material (never logged). `certify` in 1..=3 creates a certification
+ * (DocMDP) signature; any other value creates an approval signature. The plan
+ * function writes no output; the sign function returns the signed PDF via
+ * out_buffer (free with oxide_buffer_free) and an IncrementalSignResult JSON
+ * via out_json (free with oxide_string_free). `field_name`/`reason` may be
+ * NULL. The signed PDF is reopened and validated before it is returned. */
+OXIDE_API int oxide_document_sign_plan_json(
+    const OxideDocument *document,
+    const char *key_pem,
+    const char *cert_pem,
+    size_t placeholder_size,
+    int certify,
+    char **out_json,
+    char **error_out);
+OXIDE_API int oxide_document_sign_pdf(
+    const OxideDocument *document,
+    const char *key_pem,
+    const char *cert_pem,
+    size_t placeholder_size,
+    int certify,
+    const char *field_name,
+    const char *reason,
+    OxideBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+
 /* Prompt 16 bounded XFA packet/static/script/security reports. */
 OXIDE_API int oxide_document_xfa_report_json(
     const OxideDocument *document, char **out_json, char **error_out);

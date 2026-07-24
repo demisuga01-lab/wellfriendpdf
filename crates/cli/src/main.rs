@@ -496,6 +496,18 @@ enum Commands {
     Sanitize(SanitizeArgs),
     /// Validate supported PDF/A, PDF/UA, PDF/X, and security profile subsets
     Validate(ValidateArgs),
+    /// Prompt 26 clause-mapped PDF/A validation (ISO 19005)
+    PdfaValidate(StandardsValidateArgs),
+    /// Prompt 26 clause-mapped PDF/UA validation (ISO 14289-1)
+    PdfuaValidate(StandardsValidateArgs),
+    /// Prompt 26 clause-mapped PDF/X validation (ISO 15930)
+    PdfxValidate(StandardsValidateArgs),
+    /// Prompt 26 combined PDF/A+UA+X clause-mapped validation with cross-profile conflicts
+    StandardsValidate(StandardsValidateArgs),
+    /// Prompt 26 append-only incremental signing (approval or certification)
+    SignatureSign(SignatureSignArgs),
+    /// Prompt 26 signature /Contents placeholder capacity plan (writes no output)
+    SignaturePlanPlaceholder(SignatureSignArgs),
     /// Write a deterministic canonical full-rewrite copy and audit report
     Canonicalize(CanonicalizeArgs),
     /// Encrypt a PDF with a password (RC4-128 / AES-128 / AES-256). AES-256 default.
@@ -2880,6 +2892,69 @@ struct ValidateArgs {
 }
 
 #[derive(Parser)]
+struct StandardsValidateArgs {
+    /// Path to the PDF file
+    pdf: PathBuf,
+    /// Target profile label, e.g. PDF/A-2B, PDF/UA-1, PDF/X-4 (default: detected/claimed)
+    #[arg(long)]
+    target: Option<String>,
+    /// Emit machine-readable JSON
+    #[arg(long)]
+    json: bool,
+    /// Also write the JSON report to this file
+    #[arg(long)]
+    output_json: Option<PathBuf>,
+    /// Exit non-zero at this severity: never, error, or warning
+    #[arg(long, default_value = "never")]
+    fail_on: String,
+    /// Exit non-zero on warning as well as error
+    #[arg(long)]
+    fail_on_warning: bool,
+    /// Password for an encrypted PDF (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct SignatureSignArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Output signed PDF (ignored by signature-plan-placeholder)
+    #[arg(short, long, default_value = "signed.pdf")]
+    output: PathBuf,
+    /// Signer private key (PEM: PKCS#8 or PKCS#1)
+    #[arg(long)]
+    key: PathBuf,
+    /// Signer certificate (PEM)
+    #[arg(long)]
+    cert: PathBuf,
+    /// Additional issuer chain certificate(s) (PEM); repeatable
+    #[arg(long)]
+    chain: Vec<PathBuf>,
+    /// Reserve N bytes for the CMS /Contents placeholder
+    #[arg(long, default_value_t = 16384)]
+    placeholder_size: usize,
+    /// Create a certification (DocMDP) signature with permission level 1, 2, or 3
+    #[arg(long)]
+    certify: Option<u8>,
+    /// Signature field name (/T)
+    #[arg(long)]
+    field_name: Option<String>,
+    /// Signature reason (/Reason)
+    #[arg(long)]
+    reason: Option<String>,
+    /// Emit machine-readable JSON
+    #[arg(long)]
+    json: bool,
+    /// Overwrite the output file if it exists
+    #[arg(long)]
+    force: bool,
+    /// Password for an encrypted PDF (signing encrypted inputs is not supported)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
 struct CanonicalizeArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -3116,6 +3191,12 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::SignatureReport(args) => run_verify_sig(args, SignatureCliMode::LegacyInspect),
         Commands::Sanitize(args) => run_sanitize(args),
         Commands::Validate(args) => run_validate(args),
+        Commands::PdfaValidate(args) => run_standards_validate(args, StandardsKind::PdfA),
+        Commands::PdfuaValidate(args) => run_standards_validate(args, StandardsKind::PdfUa),
+        Commands::PdfxValidate(args) => run_standards_validate(args, StandardsKind::PdfX),
+        Commands::StandardsValidate(args) => run_standards_validate(args, StandardsKind::All),
+        Commands::SignatureSign(args) => run_signature_sign(args, false),
+        Commands::SignaturePlanPlaceholder(args) => run_signature_sign(args, true),
         Commands::Canonicalize(args) => run_canonicalize(args),
         Commands::Encrypt(args) => run_encrypt(args),
         Commands::Decrypt(args) => run_decrypt(args),
@@ -8176,6 +8257,192 @@ fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
             CliExitCode::Input,
             "validation profile reported failing rules",
         )));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum StandardsKind {
+    PdfA,
+    PdfUa,
+    PdfX,
+    All,
+}
+
+fn run_standards_validate(
+    args: StandardsValidateArgs,
+    kind: StandardsKind,
+) -> Result<(), Box<dyn Error>> {
+    let engine = open_engine(&args.pdf, &args.password)?;
+    let options = match &args.target {
+        Some(target) => oxide_engine::StandardsValidationOptions::with_target(target),
+        None => oxide_engine::StandardsValidationOptions::default(),
+    };
+    let (json, conformant, has_fail, has_warn, summary) = match kind {
+        StandardsKind::All => {
+            let report = oxide_engine::validate_all_standards(&engine, &options)?;
+            let has_fail = report.reports.iter().any(|r| {
+                matches!(
+                    r.conformance,
+                    oxide_engine::ConformanceStatus::NonConformant
+                )
+            });
+            let has_warn = report.conflicts.iter().any(|c| {
+                matches!(
+                    c.severity,
+                    oxide_engine::standards_engine::ValidationSeverity::Warning
+                )
+            });
+            let summary = format!(
+                "standards: {} profile report(s), {} conflict(s), overall_pass={}",
+                report.reports.len(),
+                report.conflicts.len(),
+                report.overall_pass
+            );
+            (
+                serde_json::to_string_pretty(&report)?,
+                report.overall_pass,
+                has_fail,
+                has_warn,
+                summary,
+            )
+        }
+        other => {
+            let family = match other {
+                StandardsKind::PdfA => oxide_engine::StandardsFamily::PdfA,
+                StandardsKind::PdfUa => oxide_engine::StandardsFamily::PdfUa,
+                StandardsKind::PdfX => oxide_engine::StandardsFamily::PdfX,
+                StandardsKind::All => unreachable!(),
+            };
+            let report = oxide_engine::validate_standards_family(&engine, family, &options)?;
+            let has_fail = report
+                .rules
+                .iter()
+                .any(|r| matches!(r.status, oxide_engine::RuleStatus::Fail));
+            let has_warn = report
+                .rules
+                .iter()
+                .any(|r| matches!(r.status, oxide_engine::RuleStatus::Warning));
+            let summary = format!(
+                "{}: {:?}, {} rule(s), {} pass / {} fail / {} unsupported / {} deferred",
+                family.as_str(),
+                report.conformance,
+                report.counts.total,
+                report.counts.pass,
+                report.counts.fail,
+                report.counts.unsupported_reported_exact,
+                report.counts.deferred_prompt27_corpus_parity
+            );
+            (
+                serde_json::to_string_pretty(&report)?,
+                report.is_conformant(),
+                has_fail,
+                has_warn,
+                summary,
+            )
+        }
+    };
+
+    if let Some(path) = &args.output_json {
+        std::fs::write(path, json.as_bytes())?;
+    }
+    if args.json {
+        println!("{json}");
+    } else {
+        println!("{summary}");
+        println!("  conformant: {conformant}");
+    }
+
+    let fail_on = parse_validate_fail_on(&args.fail_on, args.fail_on_warning)?;
+    if (fail_on == "error" && has_fail) || (fail_on == "warning" && (has_fail || has_warn)) {
+        return Err(Box::new(CliError::new(
+            CliExitCode::Input,
+            "standards validation reported failing rules",
+        )));
+    }
+    Ok(())
+}
+
+fn run_signature_sign(args: SignatureSignArgs, plan_only: bool) -> Result<(), Box<dyn Error>> {
+    if !plan_only && args.output.exists() && !args.force {
+        return Err(usage_error(format!(
+            "output {} already exists; pass --force to overwrite",
+            args.output.display()
+        )));
+    }
+    let engine = open_engine(&args.pdf, &args.password)?;
+    // Read key/cert material. These bytes are never logged.
+    let key_pem = std::fs::read_to_string(&args.key)?;
+    let cert_pem = std::fs::read_to_string(&args.cert)?;
+    let chain_pem: Vec<String> = args
+        .chain
+        .iter()
+        .map(std::fs::read_to_string)
+        .collect::<std::result::Result<_, _>>()?;
+    let chain_refs: Vec<&str> = chain_pem.iter().map(String::as_str).collect();
+    let signer = oxide_engine::PdfSigner::from_pem(&key_pem, &cert_pem, &chain_refs)?;
+
+    let mut signature = oxide_engine::SignatureOptions {
+        contents_reserved_bytes: args.placeholder_size,
+        ..Default::default()
+    };
+    if let Some(field) = args.field_name.clone() {
+        signature.field_name = field;
+    }
+    signature.reason = args.reason.clone();
+    let intent = match args.certify {
+        Some(p) => oxide_engine::SigningIntent::Certification {
+            docmdp_permissions: p,
+        },
+        None => oxide_engine::SigningIntent::Approval,
+    };
+    let options = oxide_engine::IncrementalSigningOptions {
+        signature,
+        intent,
+        retry_larger_placeholder: true,
+        max_placeholder_bytes: 256 * 1024,
+    };
+
+    if plan_only {
+        let plan = oxide_engine::plan_signature_placeholder(engine.document(), &signer, &options)?;
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&plan)?);
+        } else {
+            println!(
+                "placeholder plan: required={} reserved={} fits={} byte_range={:?}",
+                plan.required_bytes, plan.reserved_bytes, plan.fits, plan.byte_range
+            );
+        }
+        return Ok(());
+    }
+
+    let result = oxide_engine::sign_incremental(
+        engine.document(),
+        oxide_engine::IncrementalSigner::Local(&signer),
+        &options,
+    )?;
+    if !result.post_sign.signature_valid {
+        return Err(Box::new(CliError::new(
+            CliExitCode::Input,
+            "post-sign validation failed; signed output not written",
+        )));
+    }
+    std::fs::write(&args.output, &result.signed_pdf)?;
+    if args.json {
+        // signed_pdf is skip_serializing; the report carries no key material.
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    } else {
+        println!(
+            "Signed {} -> {} (certification={}, reserved={}, cms={} bytes, retried={}, post_sign_valid={}, coverage_whole_file={})",
+            args.pdf.display(),
+            args.output.display(),
+            result.certification,
+            result.reserved_bytes,
+            result.cms_len,
+            result.retried,
+            result.post_sign.signature_valid,
+            result.post_sign.coverage_whole_file
+        );
     }
     Ok(())
 }

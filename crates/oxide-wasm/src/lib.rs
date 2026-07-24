@@ -11,8 +11,9 @@ mod wasm_api {
 
     use oxide_engine::{
         sdk, CancelToken, ChunkOptions, ContentEngine, DocType, EvidenceBundle, ExtractOptions,
-        IntermediateStore, NetworkBudget, ParseOptions, RetrievalPolicy, SignatureRevocationMode,
-        TrustStore, VerifyOptions,
+        IncrementalSigner, IncrementalSigningOptions, IntermediateStore, NetworkBudget,
+        ParseOptions, PdfSigner, RetrievalPolicy, SignatureOptions, SignatureRevocationMode,
+        SigningIntent, TrustStore, VerifyOptions,
     };
 
     #[wasm_bindgen]
@@ -717,6 +718,111 @@ mod wasm_api {
             self.report(|b| sdk::pdfua_validation_json(b, None))
         }
 
+        /// Prompt 26 clause-mapped PDF/A validation. `target` e.g. "PDF/A-2B".
+        #[wasm_bindgen(js_name = validatePdfaStandardsJson)]
+        pub fn validate_pdfa_standards_json(
+            &self,
+            target: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::pdfa_standards_json(b, target.as_deref(), None))
+        }
+
+        /// Prompt 26 clause-mapped PDF/UA validation. `target` e.g. "PDF/UA-1".
+        #[wasm_bindgen(js_name = validatePdfuaStandardsJson)]
+        pub fn validate_pdfua_standards_json(
+            &self,
+            target: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::pdfua_standards_json(b, target.as_deref(), None))
+        }
+
+        /// Prompt 26 clause-mapped PDF/X validation. `target` e.g. "PDF/X-4".
+        #[wasm_bindgen(js_name = validatePdfxStandardsJson)]
+        pub fn validate_pdfx_standards_json(
+            &self,
+            target: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::pdfx_standards_json(b, target.as_deref(), None))
+        }
+
+        /// Prompt 26 combined PDF/A + PDF/UA + PDF/X validation with
+        /// cross-profile conflicts.
+        #[wasm_bindgen(js_name = validateStandardsAllJson)]
+        pub fn validate_standards_all_json(
+            &self,
+            target: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::standards_all_json(b, target.as_deref(), None))
+        }
+
+        /// Exact WASM signing capability posture. In-memory local signing with
+        /// caller-provided PEM key material is supported (pure compute); host
+        /// filesystem key loading, network TSA acquisition, and JS external
+        /// signer callbacks are reported unsupported rather than faked.
+        #[wasm_bindgen(js_name = signingCapabilities)]
+        pub fn signing_capabilities() -> String {
+            r#"{"in_memory_local_signing":"supported","external_signer_callback":"unsupported_reported_exact","host_filesystem_key_load":"unsupported_reported_exact","network_tsa_acquisition":"unsupported_reported_exact","note":"WASM signs only with caller-supplied in-memory PEM key material; no host filesystem, no network TSA, no JS external-signer callback."}"#.to_string()
+        }
+
+        /// Prompt 26 append-only incremental signing plan (in-memory). `certify`
+        /// in 1..=3 plans a certification (DocMDP) signature; else approval.
+        #[wasm_bindgen(js_name = signPlanJson)]
+        pub fn sign_plan_json(
+            &self,
+            key_pem: &str,
+            cert_pem: &str,
+            placeholder_size: usize,
+            certify: i32,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let signer = PdfSigner::from_pem(key_pem, cert_pem, &[]).map_err(js_err)?;
+            let options = incremental_options(placeholder_size, certify);
+            let plan =
+                oxide_engine::plan_signature_placeholder(self.engine.document(), &signer, &options)
+                    .map_err(js_err)?;
+            serde_json::to_string(&plan).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        /// Prompt 26 append-only incremental signing (in-memory). Produces a
+        /// signed PDF whose original bytes are preserved as a prefix, reopened
+        /// and validated before it is returned. `key_pem`/`cert_pem` are the
+        /// caller-supplied in-memory signer material (never logged/persisted).
+        #[wasm_bindgen(js_name = signPdf)]
+        pub fn sign_pdf(
+            &self,
+            key_pem: &str,
+            cert_pem: &str,
+            placeholder_size: usize,
+            certify: i32,
+            field_name: Option<String>,
+            reason: Option<String>,
+        ) -> Result<OxideOutput, JsValue> {
+            self.ensure_open()?;
+            let signer = PdfSigner::from_pem(key_pem, cert_pem, &[]).map_err(js_err)?;
+            let mut options = incremental_options(placeholder_size, certify);
+            if let Some(field) = field_name {
+                options.signature.field_name = field;
+            }
+            options.signature.reason = reason;
+            let result = oxide_engine::sign_incremental(
+                self.engine.document(),
+                IncrementalSigner::Local(&signer),
+                &options,
+            )
+            .map_err(js_err)?;
+            if !result.post_sign.signature_valid {
+                return Err(JsValue::from_str(
+                    "post-sign validation failed; signed output not returned",
+                ));
+            }
+            let report_json = serde_json::to_string(&result)
+                .map_err(|error| JsValue::from_str(&error.to_string()))?;
+            Ok(OxideOutput {
+                bytes: result.signed_pdf,
+                report_json,
+            })
+        }
+
         #[wasm_bindgen(js_name = formsReportJson)]
         pub fn forms_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::forms_report_json(b, None))
@@ -1369,6 +1475,25 @@ mod wasm_api {
 
     fn js_err(err: oxide_engine::OxideError) -> JsValue {
         JsValue::from_str(&err.to_string())
+    }
+
+    fn incremental_options(placeholder_size: usize, certify: i32) -> IncrementalSigningOptions {
+        let intent = if (1..=3).contains(&certify) {
+            SigningIntent::Certification {
+                docmdp_permissions: certify as u8,
+            }
+        } else {
+            SigningIntent::Approval
+        };
+        IncrementalSigningOptions {
+            signature: SignatureOptions {
+                contents_reserved_bytes: placeholder_size.max(1),
+                ..Default::default()
+            },
+            intent,
+            retry_larger_placeholder: true,
+            max_placeholder_bytes: 256 * 1024,
+        }
     }
 
     fn install_panic_hook() {

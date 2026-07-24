@@ -195,6 +195,74 @@ public sealed class OxideSmokeTests
     }
 
     [Fact]
+    public void Prompt26StandardsSigningAndPermissionReportsUseOwnedNativeRuntime()
+    {
+        var sourceBytes = File.ReadAllBytes(FixturePath());
+        using var doc = OxideDocument.Open(sourceBytes);
+
+        static void AssertEnvelope(string json, string kind)
+        {
+            using var parsed = JsonDocument.Parse(json);
+            Assert.Equal(1, parsed.RootElement.GetProperty("schema_version").GetInt32());
+            Assert.Equal(kind, parsed.RootElement.GetProperty("kind").GetString());
+            Assert.True(parsed.RootElement.TryGetProperty("report", out _));
+        }
+
+        AssertEnvelope(doc.ValidatePdfaStandardsJson("PDF/A-2B"), "pdfa_standards_validation");
+        AssertEnvelope(doc.ValidatePdfuaStandardsJson("PDF/UA-1"), "pdfua_standards_validation");
+        AssertEnvelope(doc.ValidatePdfxStandardsJson("PDF/X-4"), "pdfx_standards_validation");
+        AssertEnvelope(doc.ValidateAllStandardsJson(), "standards_all_validation");
+        AssertReport(doc.DocMdpPermissionReportJson());
+        AssertReport(doc.FieldMdpPermissionReportJson());
+
+        using var key = RSA.Create(2048);
+        var request = new System.Security.Cryptography.X509Certificates.CertificateRequest(
+            "CN=Oxide Prompt 26 .NET",
+            key,
+            HashAlgorithmName.SHA256,
+            RSASignaturePadding.Pkcs1);
+        using var certificate = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.AddDays(30));
+        var keyPem = key.ExportPkcs8PrivateKeyPem();
+        var certPem = certificate.ExportCertificatePem();
+
+        var approvalPlan = doc.IncrementalSigningPlanJson(keyPem, certPem, placeholderSize: 4096);
+        using (var parsed = JsonDocument.Parse(approvalPlan))
+        {
+            Assert.True(parsed.RootElement.GetProperty("reserved_bytes").GetInt32() >= 4096);
+            Assert.True(parsed.RootElement.TryGetProperty("byte_range", out _));
+        }
+        var certificationPlan = doc.IncrementalSigningPlanJson(
+            keyPem, certPem, placeholderSize: 4096, certify: 1);
+        Assert.Contains("reserved_bytes", certificationPlan);
+
+        var signed = doc.SignIncremental(
+            keyPem,
+            certPem,
+            placeholderSize: 4096,
+            fieldName: "Prompt26DotNet",
+            reason: "managed runtime smoke");
+        Assert.True(signed.Bytes.Length > sourceBytes.Length);
+        Assert.True(sourceBytes.AsSpan().SequenceEqual(signed.Bytes.AsSpan(0, sourceBytes.Length)));
+        Assert.Contains("post_sign", signed.ReportJson);
+        Assert.Contains("prefix_preserved", signed.ReportJson);
+        using (var signedDocument = OxideDocument.Open(signed.Bytes))
+        {
+            Assert.NotEqual("[]", signedDocument.SignatureReportJson());
+        }
+
+        Assert.Throws<ArgumentNullException>(() =>
+            doc.IncrementalSigningPlanJson(null!, certPem));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            doc.SignIncremental(keyPem, certPem, placeholderSize: 0));
+
+        var disposed = OxideDocument.Open(FixturePath());
+        disposed.Dispose();
+        Assert.Throws<ObjectDisposedException>(() => disposed.ValidateAllStandardsJson());
+    }
+
+    [Fact]
     public void MalformedInputRaisesManagedException()
     {
         var ex = Assert.Throws<OxideException>(() => OxideDocument.Open(new byte[] { 1, 2, 3, 4 }));

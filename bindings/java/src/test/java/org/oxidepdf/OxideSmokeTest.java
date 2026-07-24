@@ -22,6 +22,20 @@ public final class OxideSmokeTest {
             reports.put("parser", doc.parserReportJson("repair"));
             reports.put("color", doc.colorReportJson("generic"));
             reports.put("validate_security", doc.validateJson("security"));
+            reports.put("pdfa_standards", doc.validatePdfaStandardsJson("PDF/A-2B"));
+            reports.put("pdfua_standards", doc.validatePdfuaStandardsJson("PDF/UA-1"));
+            reports.put("pdfx_standards", doc.validatePdfxStandardsJson("PDF/X-4"));
+            reports.put("standards_all", doc.validateAllStandardsJson());
+            reports.put("docmdp_permissions", doc.docMdpPermissionReportJson());
+            reports.put("fieldmdp_permissions", doc.fieldMdpPermissionReportJson());
+            assertTrue(reports.get("pdfa_standards").contains("\"kind\":\"pdfa_standards_validation\""),
+                "Prompt26 PDF/A standards envelope");
+            assertTrue(reports.get("pdfua_standards").contains("\"kind\":\"pdfua_standards_validation\""),
+                "Prompt26 PDF/UA standards envelope");
+            assertTrue(reports.get("pdfx_standards").contains("\"kind\":\"pdfx_standards_validation\""),
+                "Prompt26 PDF/X standards envelope");
+            assertTrue(reports.get("standards_all").contains("\"kind\":\"standards_all_validation\""),
+                "Prompt26 combined standards envelope");
             reports.put("forms", doc.formsReportJson());
             reports.put("xfa", doc.xfaReportJson());
             reports.put("xfa_extract", doc.xfaExtractJson());
@@ -120,6 +134,46 @@ public final class OxideSmokeTest {
                 }
                 assertTrue(cancelled, "signature component handles observe cancellation");
             }
+            String prompt26KeyPath = System.getenv("OXIDE_PROMPT26_SIGNING_KEY_PEM");
+            String prompt26CertPath = System.getenv("OXIDE_PROMPT26_SIGNING_CERT_PEM");
+            if (prompt26KeyPath != null && !prompt26KeyPath.isBlank()
+                    && prompt26CertPath != null && !prompt26CertPath.isBlank()) {
+                String keyPem = Files.readString(Path.of(prompt26KeyPath), StandardCharsets.UTF_8);
+                String certPem = Files.readString(Path.of(prompt26CertPath), StandardCharsets.UTF_8);
+                String approvalPlan = doc.incrementalSigningPlanJson(keyPem, certPem, 4096, 0);
+                String certificationPlan = doc.incrementalSigningPlanJson(keyPem, certPem, 4096, 1);
+                assertTrue(approvalPlan.contains("reserved_bytes"), "Prompt26 approval signing plan");
+                assertTrue(certificationPlan.contains("reserved_bytes"), "Prompt26 certification signing plan");
+                Oxide.BinaryResult signed = doc.signIncremental(
+                    keyPem, certPem, 4096, 0, "Prompt26Java", "Java runtime smoke");
+                assertTrue(signed.bytes().length > Files.size(fixture), "Prompt26 incremental output grew");
+                assertTrue(new String(signed.bytes(), 0, 5, StandardCharsets.US_ASCII).equals("%PDF-"),
+                    "Prompt26 signed PDF prefix");
+                assertTrue(signed.reportJson().contains("post_sign"), "Prompt26 post-sign report");
+                assertTrue(signed.reportJson().contains("prefix_preserved"), "Prompt26 preserved prefix report");
+                try (Oxide.Document signedDocument = Oxide.Document.open(signed.bytes())) {
+                    assertTrue(!"[]".equals(signedDocument.signatureReportJson()),
+                        "Prompt26 post-sign native validation");
+                }
+                boolean invalidSignerInput = false;
+                try {
+                    doc.incrementalSigningPlanJson("", certPem, 4096, 0);
+                } catch (IllegalArgumentException expected) {
+                    invalidSignerInput = true;
+                }
+                assertTrue(invalidSignerInput, "Prompt26 invalid signing input rejected before native call");
+            } else {
+                // Package-only runs deliberately do not store key material. The
+                // final binding harness supplies target-only PEM files and
+                // exercises the branch above for the real signing smoke.
+                assertTrue(Oxide.Document.class.getMethod(
+                    "incrementalSigningPlanJson", String.class, String.class, long.class, int.class) != null,
+                    "Prompt26 signing-plan API");
+                assertTrue(Oxide.Document.class.getMethod(
+                    "signIncremental", String.class, String.class, long.class, int.class, String.class, String.class) != null,
+                    "Prompt26 signing API");
+            }
+
             String timestamp = Oxide.timestampTokenValidationJson(
                 "not-a-rfc3161-token".getBytes(StandardCharsets.US_ASCII),
                 "cms-signature-value".getBytes(StandardCharsets.US_ASCII));
@@ -192,6 +246,18 @@ public final class OxideSmokeTest {
                 "ignored-for-unencrypted")) {
             assertTrue(ignoredPassword.pageCount() >= 1, "password open from bytes");
         }
+        try (Oxide.Document disposed = Oxide.Document.open(fixture)) {
+            disposed.close();
+            disposed.close();
+            boolean closedRejected = false;
+            try {
+                disposed.validateAllStandardsJson();
+            } catch (IllegalStateException expected) {
+                closedRejected = true;
+            }
+            assertTrue(closedRejected, "Prompt26 AutoCloseable close is deterministic and idempotent");
+        }
+
         String feature = Oxide.featureReportJson();
         assertTrue(feature.contains("\"progress\""), "progress feature posture");
         assertTrue(

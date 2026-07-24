@@ -241,3 +241,67 @@ path = "fuzz_targets/renderer_prompt11.rs"
 test = false
 doc = false
 bench = false
+
+
+[[bin]]
+name = "incremental_signing_plan"
+path = "fuzz_targets/incremental_signing_plan.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cms_insertion_boundary"
+path = "fuzz_targets/cms_insertion_boundary.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "external_signer_response"
+path = "fuzz_targets/external_signer_response.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pdfua_structure"
+path = "fuzz_targets/pdfua_structure.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pdfx_prepress"
+path = "fuzz_targets/pdfx_prepress.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cross_profile_standards"
+path = "fuzz_targets/cross_profile_standards.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "standards_xmp_identifier"
+path = "fuzz_targets/standards_xmp_identifier.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mdp_permission_parser"
+path = "fuzz_targets/mdp_permission_parser.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "post_signature_modification"
+path = "fuzz_targets/post_signature_modification.rs"
+test = false
+doc = false
+bench = false

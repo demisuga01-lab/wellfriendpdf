@@ -132,6 +132,7 @@ pub mod semantic_intelligence;
 pub mod signature;
 pub mod signature_evidence;
 pub mod standards;
+pub mod standards_engine;
 pub mod structural;
 pub mod table_intelligence;
 pub mod text;
@@ -437,18 +438,22 @@ pub use semantic_intelligence::{
     SemanticEvidenceKind,
 };
 pub use signature::{
-    add_ltv_material, sign_document, verify_options_from_json,
-    verify_signature_timestamp_token_der, verify_signatures, verify_signatures_with_options,
-    verify_signatures_with_options_and_evidence, CertInfo, CertificatePathValidationReport,
-    CertificateRevocationDecision, ConfiguredTrustAnchor, Coverage, IntermediateStore, LtvMaterial,
-    LtvReport, NetworkEvidenceReport, NetworkValidationReport, PadesLevel, PadesValidationReport,
-    PdfSigner, Prompt24SignatureValidationReport, Prompt25SignatureLtvEditReport, RevocationStatus,
-    RevocationValidationReport, SignatureAlgorithmPolicy, SignatureCheckDetails, SignatureOptions,
+    add_ltv_material, plan_signature_placeholder, sign_document, sign_incremental,
+    verify_options_from_json, verify_signature_timestamp_token_der, verify_signatures,
+    verify_signatures_with_options, verify_signatures_with_options_and_evidence, CertInfo,
+    CertificatePathValidationReport, CertificateRevocationDecision, CmsSigningRequest,
+    CmsSigningResult, ConfiguredTrustAnchor, Coverage, DocumentTimestampStatus, ExternalSigner,
+    IncrementalSignResult, IncrementalSigner, IncrementalSigningOptions, IntermediateStore,
+    LtvMaterial, LtvReport, NetworkEvidenceReport, NetworkValidationReport, PadesLevel,
+    PadesValidationReport, PdfSigner, PostSignValidationReport, Prompt24SignatureValidationReport,
+    Prompt25SignatureLtvEditReport, RevocationStatus, RevocationValidationReport,
+    SignatureAlgorithmPolicy, SignatureCheckDetails, SignatureOptions, SignaturePlaceholderPlan,
     SignatureReport, SignatureRevocationMode, SignatureStatus, SignatureTrust,
     SignatureValidationIndication, SignatureValidationOutcome, SignatureValidationPolicyProfile,
     SignatureValidationPolicyReport, SignatureValidationState, SignatureValidationSubindication,
-    SignatureValidity, TimestampTokenType, TimestampValidationReport, TrustStore, VerifyOptions,
-    PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION, PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+    SignatureValidity, SigningIntent, TimestampTokenType, TimestampValidationReport, TrustStore,
+    VerifyOptions, PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION,
+    PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
 };
 pub use signature_evidence::{
     EvidenceBundle, EvidenceKind, EvidenceRecord, EvidenceStore, NetworkBudget, OcspNoncePolicy,
@@ -457,6 +462,13 @@ pub use signature_evidence::{
 pub use standards::{
     validate_standards_profile, StandardsProfile, StandardsValidationReport, ValidationRuleResult,
     ValidationSeverity, ValidationStatus,
+};
+pub use standards_engine::{
+    validate_all_standards, validate_pdfa_profile, validate_pdfua_profile, validate_pdfx_profile,
+    validate_standards_family, ConformanceStatus, CrossProfileConflict, CrossProfileConflictReport,
+    ProfileDetection, RuleImplementation, RuleStatus, StandardsClauseRef, StandardsFamily,
+    StandardsRuleCounts, StandardsRuleResult, StandardsValidationOptions, ValidationEvidence,
+    STANDARDS_ENGINE_SCHEMA_VERSION,
 };
 pub use structural::{
     crop_pages, encrypt, linearize::linearize, optimize, repair, rotate_pages, OptimizeReport,

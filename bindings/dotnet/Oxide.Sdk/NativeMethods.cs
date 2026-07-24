@@ -351,6 +351,63 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_pdfa_standards_json(
+        DocumentHandle document,
+        IntPtr target,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_pdfua_standards_json(
+        DocumentHandle document,
+        IntPtr target,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_pdfx_standards_json(
+        DocumentHandle document,
+        IntPtr target,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_standards_all_json(
+        DocumentHandle document,
+        IntPtr target,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_signatures_json(
+        DocumentHandle document,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_sign_plan_json(
+        DocumentHandle document,
+        IntPtr keyPem,
+        IntPtr certPem,
+        UIntPtr placeholderSize,
+        int certify,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int oxide_document_sign_pdf(
+        DocumentHandle document,
+        IntPtr keyPem,
+        IntPtr certPem,
+        UIntPtr placeholderSize,
+        int certify,
+        IntPtr fieldName,
+        IntPtr reason,
+        out OxideBuffer buffer,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int oxide_document_forms_report_json(
         DocumentHandle document,
         out IntPtr json,

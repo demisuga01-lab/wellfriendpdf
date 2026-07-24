@@ -762,6 +762,59 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::pdfua_validation_json(bytes, None))
     }
 
+    /// Prompt 26 clause-mapped PDF/A validation. `target` e.g. "PDF/A-2B".
+    #[pyo3(signature = (target=None))]
+    fn validate_pdfa_standards<'py>(
+        &self,
+        py: Python<'py>,
+        target: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let target = target.map(str::to_string);
+        self.report_json(py, |bytes| {
+            sdk::pdfa_standards_json(bytes, target.as_deref(), None)
+        })
+    }
+
+    /// Prompt 26 clause-mapped PDF/UA validation. `target` e.g. "PDF/UA-1".
+    #[pyo3(signature = (target=None))]
+    fn validate_pdfua_standards<'py>(
+        &self,
+        py: Python<'py>,
+        target: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let target = target.map(str::to_string);
+        self.report_json(py, |bytes| {
+            sdk::pdfua_standards_json(bytes, target.as_deref(), None)
+        })
+    }
+
+    /// Prompt 26 clause-mapped PDF/X validation. `target` e.g. "PDF/X-4".
+    #[pyo3(signature = (target=None))]
+    fn validate_pdfx_standards<'py>(
+        &self,
+        py: Python<'py>,
+        target: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let target = target.map(str::to_string);
+        self.report_json(py, |bytes| {
+            sdk::pdfx_standards_json(bytes, target.as_deref(), None)
+        })
+    }
+
+    /// Prompt 26 combined PDF/A + PDF/UA + PDF/X validation with cross-profile
+    /// conflicts. A single profile passing never hides another failing.
+    #[pyo3(signature = (target=None))]
+    fn validate_standards_all<'py>(
+        &self,
+        py: Python<'py>,
+        target: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let target = target.map(str::to_string);
+        self.report_json(py, |bytes| {
+            sdk::standards_all_json(bytes, target.as_deref(), None)
+        })
+    }
+
     /// Standards-profile report. `profile` in pdfa/pdfua/pdfx/security/all.
     #[pyo3(signature = (profile="all"))]
     fn validate<'py>(&self, py: Python<'py>, profile: &str) -> PyResult<Py<PyAny>> {
@@ -2578,6 +2631,70 @@ fn feature_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
     parse_json_str(py, &json)
 }
 
+/// Prompt 26 append-only incremental signing. `key_pem`/`cert_pem` are the
+/// signer material and are never logged. `certify` (1|2|3) creates a DocMDP
+/// certification signature; otherwise an approval signature is produced. The
+/// signed PDF is reopened and validated before it is returned; a signature that
+/// fails post-sign validation raises instead of returning a "signed" file.
+#[pyfunction]
+#[pyo3(signature = (pdf, key_pem, cert_pem, output=None, chain_pem=None, placeholder_size=16384, certify=None, field_name=None, reason=None, password=None))]
+#[allow(clippy::too_many_arguments)]
+fn sign_pdf<'py>(
+    py: Python<'py>,
+    pdf: PathBuf,
+    key_pem: &str,
+    cert_pem: &str,
+    output: Option<PathBuf>,
+    chain_pem: Option<Vec<String>>,
+    placeholder_size: usize,
+    certify: Option<u8>,
+    field_name: Option<String>,
+    reason: Option<String>,
+    password: Option<&str>,
+) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+    let engine = open_engine_path(&pdf, password)?;
+    let chain = chain_pem.unwrap_or_default();
+    let chain_refs: Vec<&str> = chain.iter().map(String::as_str).collect();
+    let signer = run_oxide(|| oxide_engine::PdfSigner::from_pem(key_pem, cert_pem, &chain_refs))?;
+    let mut signature = oxide_engine::SignatureOptions {
+        contents_reserved_bytes: placeholder_size,
+        ..Default::default()
+    };
+    if let Some(field) = field_name {
+        signature.field_name = field;
+    }
+    signature.reason = reason;
+    let intent = match certify {
+        Some(p) => oxide_engine::SigningIntent::Certification {
+            docmdp_permissions: p,
+        },
+        None => oxide_engine::SigningIntent::Approval,
+    };
+    let options = oxide_engine::IncrementalSigningOptions {
+        signature,
+        intent,
+        retry_larger_placeholder: true,
+        max_placeholder_bytes: 256 * 1024,
+    };
+    let result = run_oxide(|| {
+        oxide_engine::sign_incremental(
+            engine.document(),
+            oxide_engine::IncrementalSigner::Local(&signer),
+            &options,
+        )
+    })?;
+    if !result.post_sign.signature_valid {
+        return Err(OxideError::new_err(
+            "post-sign validation failed; signed output not returned",
+        ));
+    }
+    write_optional(&output, &result.signed_pdf)?;
+    let signed = PyBytes::new(py, &result.signed_pdf).unbind();
+    let report_json = serde_json::to_string(&result)
+        .map_err(|err| OxideError::new_err(format!("JSON serialization error: {err}")))?;
+    Ok((signed, parse_json_str(py, &report_json)?))
+}
+
 /// Prompt 21 persistent history store report. No document input.
 #[pyfunction]
 fn prompt21_history_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
@@ -2679,6 +2796,7 @@ fn oxide(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(verify_signatures, module)?)?;
     module.add_function(wrap_pyfunction!(verify_signatures_with_options, module)?)?;
     module.add_function(wrap_pyfunction!(feature_report, module)?)?;
+    module.add_function(wrap_pyfunction!(sign_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(prompt21_history_report, module)?)?;
     module.add_function(wrap_pyfunction!(crypto_tamper_test, module)?)?;
     module.add_function(wrap_pyfunction!(decode_budget_report, module)?)?;

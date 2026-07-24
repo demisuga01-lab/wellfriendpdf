@@ -2245,6 +2245,570 @@ pub fn sign_document(
     Ok(staged)
 }
 
+// ===========================================================================
+// Prompt 26 — append-only incremental signing engine
+// ===========================================================================
+
+/// Signing intent: approval, or a certification (DocMDP) signature with an
+/// exact permission level (1 = no changes, 2 = form fill + signing, 3 =
+/// annotations + form fill + signing).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SigningIntent {
+    Approval,
+    Certification { docmdp_permissions: u8 },
+}
+
+/// Status of an embedded document timestamp for a signing run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DocumentTimestampStatus {
+    /// A caller-supplied RFC 3161 token was embedded as a signature timestamp.
+    EmbeddedFromCaller,
+    /// No timestamp was requested.
+    NotRequested,
+    /// A timestamp was requested but no TSA endpoint/policy is configured; the
+    /// engine never performs a default network TSA call, so this is deferred.
+    DeferredNoTsaConfigured,
+}
+
+/// Options for [`sign_incremental`].
+#[derive(Debug, Clone)]
+pub struct IncrementalSigningOptions {
+    /// Base signature-dictionary options (field name, rect, /M, reserved bytes,
+    /// caller-supplied timestamp token, ...).
+    pub signature: SignatureOptions,
+    /// Signing intent (approval vs certification/DocMDP).
+    pub intent: SigningIntent,
+    /// If the CMS does not fit the reserved placeholder, retry once with a
+    /// larger placeholder instead of failing.
+    pub retry_larger_placeholder: bool,
+    /// Hard cap on placeholder growth during retry.
+    pub max_placeholder_bytes: usize,
+}
+
+impl Default for IncrementalSigningOptions {
+    fn default() -> Self {
+        Self {
+            signature: SignatureOptions::default(),
+            intent: SigningIntent::Approval,
+            retry_larger_placeholder: true,
+            max_placeholder_bytes: 256 * 1024,
+        }
+    }
+}
+
+/// A signing request handed to an [`ExternalSigner`]. It carries only the
+/// digest, algorithm, certificate identity, profile intent, an operation id,
+/// and the placeholder size — never private keys, passwords, or document bytes.
+#[derive(Debug, Clone, Serialize)]
+pub struct CmsSigningRequest {
+    pub algorithm: String,
+    /// Lowercase hex SHA-256 digest of the exact signed bytes.
+    pub digest_sha256_hex: String,
+    /// Expected signer-certificate SHA-256 fingerprint (uppercase hex), if the
+    /// caller pinned one.
+    pub expected_certificate_sha256: Option<String>,
+    /// Profile intent, e.g. `approval`, `certification`, `pades-b-b`.
+    pub profile_intent: String,
+    pub operation_id: String,
+    pub reserved_bytes: usize,
+}
+
+/// An external signer's response. The negotiated mode here is "return complete
+/// detached CMS `ContentInfo` DER"; HSM/KMS adapters commonly produce this.
+#[derive(Debug, Clone)]
+pub struct CmsSigningResult {
+    pub cms_der: Vec<u8>,
+    pub algorithm: String,
+    /// SHA-256 fingerprint (uppercase hex) of the certificate the signer used.
+    pub signer_certificate_sha256: String,
+}
+
+/// External signer callback (HSM/KMS-style). Implementations must not receive
+/// document bytes or private keys through Oxide; they receive a structured
+/// [`CmsSigningRequest`] and return a [`CmsSigningResult`].
+pub trait ExternalSigner {
+    fn sign_cms(
+        &self,
+        request: &CmsSigningRequest,
+    ) -> std::result::Result<CmsSigningResult, String>;
+}
+
+/// Which signer produces the CMS.
+pub enum IncrementalSigner<'a> {
+    /// Local key-provider signing using an in-process [`PdfSigner`].
+    Local(&'a PdfSigner),
+    /// External CMS-producing signer (callback), with an optional pinned
+    /// certificate fingerprint (uppercase hex SHA-256) the response must match.
+    ExternalCms {
+        signer: &'a dyn ExternalSigner,
+        expected_certificate_sha256: Option<String>,
+    },
+}
+
+/// Post-sign validation of a generated signed PDF, produced by reopening the
+/// output and running the Prompt 24/25 validators.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PostSignValidationReport {
+    pub structural_open: bool,
+    pub byte_range_exact: bool,
+    pub cms_parsed: bool,
+    pub signature_valid: bool,
+    pub coverage_whole_file: bool,
+    pub docmdp_evaluated: bool,
+    pub overall_pass: bool,
+    /// Serialized last [`SignatureReport`] for evidence (contains no secrets).
+    pub signature_report_json: String,
+}
+
+/// The result of an incremental signing run.
+#[derive(Debug, Clone, Serialize)]
+pub struct IncrementalSignResult {
+    #[serde(skip_serializing)]
+    pub signed_pdf: Vec<u8>,
+    pub original_len: usize,
+    pub signed_len: usize,
+    pub reserved_bytes: usize,
+    pub cms_len: usize,
+    pub retried: bool,
+    pub certification: bool,
+    pub prefix_preserved: bool,
+    pub timestamp_status: DocumentTimestampStatus,
+    pub post_sign: PostSignValidationReport,
+}
+
+/// A staged, signer-agnostic incremental signature revision: the file bytes
+/// with a patched `/ByteRange` and an empty `/Contents` placeholder, plus the
+/// digest of the exact signed bytes. This is the clean CMS-insertion boundary.
+struct StagedSignature {
+    staged: Vec<u8>,
+    contents_hex_start: usize,
+    digest: Vec<u8>,
+}
+
+fn signature_dictionary_body_ext(
+    options: &SignatureOptions,
+    reserved_bytes: usize,
+    docmdp_p: Option<u8>,
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(b"<<\n");
+    body.extend_from_slice(b"/Type /Sig\n");
+    body.extend_from_slice(b"/Filter /Adobe.PPKLite\n");
+    body.extend_from_slice(b"/SubFilter /adbe.pkcs7.detached\n");
+    body.extend_from_slice(b"/ByteRange ");
+    body.extend_from_slice(BYTE_RANGE_PLACEHOLDER);
+    body.extend_from_slice(b"\n/Contents ");
+    body.extend_from_slice(&contents_placeholder(reserved_bytes));
+    body.extend_from_slice(b"\n");
+    push_optional_pdf_string(&mut body, "Name", options.signer_name.as_deref());
+    push_optional_pdf_string(&mut body, "Reason", options.reason.as_deref());
+    push_optional_pdf_string(&mut body, "Location", options.location.as_deref());
+    push_optional_pdf_string(&mut body, "ContactInfo", options.contact_info.as_deref());
+    push_optional_pdf_string(&mut body, "M", options.signing_time.as_deref());
+    if let Some(p) = docmdp_p {
+        body.extend_from_slice(
+            format!(
+                "/Reference [ << /Type /SigRef /TransformMethod /DocMDP /TransformParams << /Type /TransformParams /P {p} /V /1.2 >> /DigestMethod /SHA256 >> ]\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(b">>");
+    body
+}
+
+/// Stage an append-only signature revision (no CMS yet). Mirrors the approval
+/// [`sign_document`] staging and additionally supports certification (DocMDP)
+/// signatures via `/Reference` + catalog `/Perms /DocMDP`.
+fn stage_signature(
+    doc: &PdfDocument,
+    options: &SignatureOptions,
+    reserved_bytes: usize,
+    docmdp_p: Option<u8>,
+) -> Result<StagedSignature> {
+    let reader = doc.reader();
+    if reader.is_encrypted() {
+        return Err(OxideError::UnsupportedFeature(
+            "digital signing encrypted inputs is not yet supported".to_string(),
+        ));
+    }
+    if reserved_bytes == 0 {
+        return Err(OxideError::MalformedPdf(
+            "signature /Contents placeholder must reserve at least one byte".to_string(),
+        ));
+    }
+    let page_index = options.page.checked_sub(1).ok_or_else(|| {
+        OxideError::MalformedPdf("signature page numbers are 1-based".to_string())
+    })?;
+    let pages = doc.get_pages()?;
+    let page = pages.get(page_index).ok_or_else(|| {
+        OxideError::MalformedPdf(format!(
+            "signature target page {} is out of range",
+            options.page
+        ))
+    })?;
+
+    let (root_number, root_generation) = reader.root_reference().ok_or_else(|| {
+        OxideError::MalformedPdf("signature writer: trailer is missing /Root".to_string())
+    })?;
+    let mut catalog = reader
+        .get_object(root_number, root_generation)?
+        .as_dict()
+        .cloned()
+        .ok_or_else(|| OxideError::MalformedPdf("/Root is not a dictionary".to_string()))?;
+    let mut page_dict = reader
+        .get_object(page.object_number, page.generation_number)?
+        .as_dict()
+        .cloned()
+        .ok_or_else(|| OxideError::MalformedPdf("target page is not a dictionary".to_string()))?;
+
+    let next = next_free_object_number(reader);
+    let sig_number = next;
+    let field_number = next + 1;
+    let appearance_number = options.rect.map(|_| next + 2);
+    let acroform_number = match catalog.get_reference("AcroForm") {
+        Some((number, _)) => number,
+        None => appearance_number.map_or(next + 2, |n| n + 1),
+    };
+
+    let sig_ref = reference(sig_number, 0);
+    let field_ref = reference(field_number, 0);
+    let page_ref = reference(page.object_number, page.generation_number);
+
+    let (mut acroform, acroform_ref) = match catalog.get("AcroForm") {
+        Some(PdfObject::Reference { number, generation }) => {
+            let dict = reader
+                .get_object(*number, *generation)?
+                .as_dict()
+                .cloned()
+                .ok_or_else(|| OxideError::MalformedPdf("/AcroForm is not a dictionary".into()))?;
+            (dict, reference(*number, *generation))
+        }
+        Some(PdfObject::Dictionary(dict)) => (dict.clone(), reference(acroform_number, 0)),
+        Some(_) | None => (PdfDictionary::empty(), reference(acroform_number, 0)),
+    };
+
+    let mut fields = resolve_array(acroform.get("Fields"), reader).unwrap_or_default();
+    fields.push(field_ref.clone());
+    acroform.insert("Fields", PdfObject::Array(fields));
+    acroform.insert("SigFlags", PdfObject::Integer(3));
+    catalog.insert("AcroForm", acroform_ref.clone());
+
+    if docmdp_p.is_some() {
+        // Certification signatures record the modification-detection policy in
+        // the catalog `/Perms /DocMDP` pointing at the signature dictionary.
+        let mut perms = PdfDictionary::empty();
+        perms.insert("DocMDP", sig_ref.clone());
+        catalog.insert("Perms", PdfObject::Dictionary(perms));
+    }
+
+    let mut annots = resolve_array(page_dict.get("Annots"), reader).unwrap_or_default();
+    annots.push(field_ref.clone());
+    page_dict.insert("Annots", PdfObject::Array(annots));
+
+    let rect = options.rect.unwrap_or([0.0, 0.0, 0.0, 0.0]);
+    let mut field = PdfDictionary::empty();
+    field.insert("Type", PdfObject::Name("Annot".to_string()));
+    field.insert("Subtype", PdfObject::Name("Widget".to_string()));
+    field.insert("FT", PdfObject::Name("Sig".to_string()));
+    field.insert(
+        "T",
+        PdfObject::String(options.field_name.as_bytes().to_vec()),
+    );
+    field.insert("F", PdfObject::Integer(132));
+    field.insert("Rect", rect_object(rect));
+    field.insert("P", page_ref);
+    field.insert("V", sig_ref.clone());
+    if let Some(ap_number) = appearance_number {
+        let mut ap = PdfDictionary::empty();
+        ap.insert("N", reference(ap_number, 0));
+        field.insert("AP", PdfObject::Dictionary(ap));
+    }
+
+    let mut raw_objects = vec![
+        raw_object(
+            root_number,
+            root_generation,
+            &PdfObject::Dictionary(catalog),
+        ),
+        raw_object(
+            page.object_number,
+            page.generation_number,
+            &PdfObject::Dictionary(page_dict),
+        ),
+        raw_object(
+            acroform_ref.as_reference().unwrap().0,
+            acroform_ref.as_reference().unwrap().1,
+            &PdfObject::Dictionary(acroform),
+        ),
+        raw_object(field_number, 0, &PdfObject::Dictionary(field)),
+        RawIncrementalObject {
+            number: sig_number,
+            generation: 0,
+            body: signature_dictionary_body_ext(options, reserved_bytes, docmdp_p),
+        },
+    ];
+
+    if let (Some(ap_number), Some(rect)) = (appearance_number, options.rect) {
+        raw_objects.push(raw_object(ap_number, 0, &appearance_stream(options, rect)));
+    }
+
+    let mut staged = write_incremental_update_raw(reader, raw_objects)?;
+    let byte_range_start = find_unique(&staged, BYTE_RANGE_PLACEHOLDER)?;
+    let contents_marker = contents_placeholder(reserved_bytes);
+    let contents_marker_start = find_unique(&staged, &contents_marker)?;
+    let contents_hex_start = contents_marker_start + 1;
+    let contents_after = contents_marker_start + contents_marker.len();
+    let byte_range = ByteRange {
+        a: 0,
+        b: contents_marker_start,
+        c: contents_after,
+        d: staged.len().saturating_sub(contents_after),
+    };
+    patch_byte_range(&mut staged, byte_range_start, &byte_range)?;
+
+    let signed_bytes = extract_signed_bytes(&staged, &byte_range).ok_or_else(|| {
+        OxideError::MalformedPdf("signature writer produced an invalid /ByteRange".to_string())
+    })?;
+    let digest = Sha256::digest(&signed_bytes).to_vec();
+    Ok(StagedSignature {
+        staged,
+        contents_hex_start,
+        digest,
+    })
+}
+
+/// Reopen a generated signed PDF and validate it with the Prompt 24/25 engine.
+fn post_sign_validate(signed: &[u8]) -> PostSignValidationReport {
+    let mut report = PostSignValidationReport::default();
+    let Ok(doc) = crate::document::PdfDocument::open_bytes(signed.to_vec()) else {
+        return report;
+    };
+    report.structural_open = true;
+    let Ok(reports) = verify_signatures(&doc) else {
+        return report;
+    };
+    if let Some(rep) = reports.last() {
+        report.byte_range_exact = rep.checks.byte_range_contents_gap_matches;
+        report.cms_parsed = rep.checks.contents_present;
+        report.signature_valid = matches!(rep.validity, SignatureValidity::Valid);
+        report.coverage_whole_file = matches!(rep.coverage, Coverage::WholeFile);
+        report.docmdp_evaluated = rep.checks.docmdp_evaluated;
+        report.signature_report_json = serde_json::to_string(rep).unwrap_or_default();
+    }
+    report.overall_pass =
+        report.structural_open && report.signature_valid && report.byte_range_exact;
+    report
+}
+
+/// Append-only incremental signing engine entry point.
+///
+/// Produces a signed PDF whose original bytes are preserved as an exact prefix,
+/// with a placeholder-planned `/Contents`, a patched `/ByteRange` computed over
+/// the exact signed bytes, a CMS produced by a local or external signer, and a
+/// mandatory post-sign reopen + validation. A generated signature is only
+/// returned when post-sign validation confirms the CMS is mathematically valid
+/// over the exact signed bytes.
+pub fn sign_incremental(
+    doc: &PdfDocument,
+    signer: IncrementalSigner<'_>,
+    options: &IncrementalSigningOptions,
+) -> Result<IncrementalSignResult> {
+    let original_len = doc.reader().file_bytes().len();
+
+    let docmdp_p = match options.intent {
+        SigningIntent::Approval => None,
+        SigningIntent::Certification { docmdp_permissions } => {
+            if !(1..=3).contains(&docmdp_permissions) {
+                return Err(OxideError::MalformedPdf(format!(
+                    "certification DocMDP permission must be 1, 2, or 3 (got {docmdp_permissions})"
+                )));
+            }
+            Some(docmdp_permissions)
+        }
+    };
+    if let IncrementalSigner::Local(local) = &signer {
+        if local.certificates.is_empty() {
+            return Err(OxideError::MalformedPdf(
+                "digital signing requires a signer certificate".to_string(),
+            ));
+        }
+    }
+
+    let profile_intent = if docmdp_p.is_some() {
+        "certification"
+    } else {
+        "approval"
+    };
+    let timestamp_status = if options.signature.timestamp_token_der.is_some() {
+        DocumentTimestampStatus::EmbeddedFromCaller
+    } else {
+        DocumentTimestampStatus::NotRequested
+    };
+
+    let mut reserved = options.signature.contents_reserved_bytes.max(1);
+    let mut retried = false;
+    loop {
+        let staged = stage_signature(doc, &options.signature, reserved, docmdp_p)?;
+        let operation_id = format!(
+            "op-{}",
+            hex_upper(&staged.digest[..staged.digest.len().min(8)])
+        );
+
+        let cms = match &signer {
+            IncrementalSigner::Local(local) => build_detached_cms(
+                local,
+                &staged.digest,
+                options.signature.timestamp_token_der.as_deref(),
+            )?,
+            IncrementalSigner::ExternalCms {
+                signer,
+                expected_certificate_sha256,
+            } => {
+                let request = CmsSigningRequest {
+                    algorithm: "RSASSA-PKCS1v1_5-SHA256".to_string(),
+                    digest_sha256_hex: hex_lower(&staged.digest),
+                    expected_certificate_sha256: expected_certificate_sha256.clone(),
+                    profile_intent: profile_intent.to_string(),
+                    operation_id,
+                    reserved_bytes: reserved,
+                };
+                let result = signer.sign_cms(&request).map_err(|e| {
+                    OxideError::MalformedPdf(format!("external signer returned an error: {e}"))
+                })?;
+                // Reject a non-CMS / malformed response before inserting it.
+                ContentInfo::from_der(&result.cms_der).map_err(|e| {
+                    OxideError::MalformedPdf(format!(
+                        "external signer response is not a valid CMS ContentInfo: {e}"
+                    ))
+                })?;
+                // Reject a response that used the wrong certificate.
+                if let Some(expected) = expected_certificate_sha256 {
+                    if !result
+                        .signer_certificate_sha256
+                        .eq_ignore_ascii_case(expected)
+                    {
+                        return Err(OxideError::MalformedPdf(
+                            "external signer used a certificate that does not match the pinned fingerprint"
+                                .to_string(),
+                        ));
+                    }
+                }
+                // Reject a wrong-algorithm response.
+                if !result
+                    .algorithm
+                    .eq_ignore_ascii_case("RSASSA-PKCS1v1_5-SHA256")
+                    && !result.algorithm.eq_ignore_ascii_case("RSA-SHA256")
+                    && !result
+                        .algorithm
+                        .eq_ignore_ascii_case("sha256WithRSAEncryption")
+                {
+                    return Err(OxideError::UnsupportedFeature(format!(
+                        "external signer negotiated an unsupported algorithm: {}",
+                        result.algorithm
+                    )));
+                }
+                result.cms_der
+            }
+        };
+
+        if cms.len() > reserved {
+            if options.retry_larger_placeholder && reserved < options.max_placeholder_bytes {
+                let grown = cms.len().saturating_add(512);
+                reserved = grown.min(options.max_placeholder_bytes).max(reserved + 1);
+                retried = true;
+                continue;
+            }
+            return Err(OxideError::ResourceLimit(format!(
+                "CMS signature is {} bytes but /Contents reserved only {} bytes",
+                cms.len(),
+                reserved
+            )));
+        }
+
+        let mut out = staged.staged;
+        patch_contents_hex(&mut out, staged.contents_hex_start, reserved, &cms);
+
+        let prefix_preserved = out
+            .get(..original_len)
+            .map(|prefix| prefix == doc.reader().file_bytes())
+            .unwrap_or(false);
+
+        let post_sign = post_sign_validate(&out);
+        if !post_sign.signature_valid {
+            return Err(OxideError::MalformedPdf(
+                "post-sign validation failed: the generated signature is not mathematically valid over the signed bytes"
+                    .to_string(),
+            ));
+        }
+
+        return Ok(IncrementalSignResult {
+            original_len,
+            signed_len: out.len(),
+            reserved_bytes: reserved,
+            cms_len: cms.len(),
+            retried,
+            certification: docmdp_p.is_some(),
+            prefix_preserved,
+            timestamp_status,
+            post_sign,
+            signed_pdf: out,
+        });
+    }
+}
+
+/// A [`SignaturePlaceholderPlan`] describes the reserved capacity, the required
+/// CMS size for a given signer, and whether it fits. This lets callers size the
+/// `/Contents` placeholder before committing to a signing run.
+#[derive(Debug, Clone, Serialize)]
+pub struct SignaturePlaceholderPlan {
+    pub reserved_bytes: usize,
+    pub required_bytes: usize,
+    pub fits: bool,
+    pub byte_range: [usize; 4],
+    pub signed_digest_sha256_hex: String,
+}
+
+/// Plan the `/Contents` placeholder for a local signer without producing a
+/// final signed document: stages the revision, builds the CMS, and reports the
+/// exact required vs. reserved capacity.
+pub fn plan_signature_placeholder(
+    doc: &PdfDocument,
+    signer: &PdfSigner,
+    options: &IncrementalSigningOptions,
+) -> Result<SignaturePlaceholderPlan> {
+    let docmdp_p = match options.intent {
+        SigningIntent::Approval => None,
+        SigningIntent::Certification { docmdp_permissions } => Some(docmdp_permissions),
+    };
+    let reserved = options.signature.contents_reserved_bytes.max(1);
+    let staged = stage_signature(doc, &options.signature, reserved, docmdp_p)?;
+    let cms = build_detached_cms(
+        signer,
+        &staged.digest,
+        options.signature.timestamp_token_der.as_deref(),
+    )?;
+    // Recover the byte range from the staged bytes for reporting.
+    let contents_marker = contents_placeholder(reserved);
+    let contents_marker_start = find_unique(&staged.staged, &contents_marker)?;
+    let contents_after = contents_marker_start + contents_marker.len();
+    let byte_range = [
+        0,
+        contents_marker_start,
+        contents_after,
+        staged.staged.len().saturating_sub(contents_after),
+    ];
+    Ok(SignaturePlaceholderPlan {
+        reserved_bytes: reserved,
+        required_bytes: cms.len(),
+        fits: cms.len() <= reserved,
+        byte_range,
+        signed_digest_sha256_hex: hex_lower(&staged.digest),
+    })
+}
+
 /// A located signature field with its signature dictionary.
 struct SigField {
     field_name: Option<String>,
@@ -7435,6 +7999,274 @@ mod tests {
         let key_der = private_key.to_pkcs8_der().expect("private key DER");
         let cert_der = cert.to_der().expect("certificate DER");
         PdfSigner::from_der(key_der.as_bytes(), &cert_der, &[]).expect("runtime signer parses")
+    }
+
+    // ---- Prompt 26 incremental signing engine tests ----
+
+    fn signable_pdf() -> Vec<u8> {
+        use crate::authoring::{PageSize, PdfBuilder};
+        let mut builder = PdfBuilder::new();
+        builder.add_page(PageSize::custom(300.0, 300.0));
+        builder.to_bytes().expect("authored signable pdf")
+    }
+
+    fn hex_to_bytes(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).expect("hex"))
+            .collect()
+    }
+
+    fn signer_fingerprint(signer: &PdfSigner) -> String {
+        hex_upper(&Sha256::digest(signer.signer_certificate_der().unwrap()))
+    }
+
+    struct DelegatingExternalSigner {
+        signer: PdfSigner,
+        reported_fingerprint: String,
+        algorithm: String,
+    }
+
+    impl ExternalSigner for DelegatingExternalSigner {
+        fn sign_cms(
+            &self,
+            request: &CmsSigningRequest,
+        ) -> std::result::Result<CmsSigningResult, String> {
+            let digest = hex_to_bytes(&request.digest_sha256_hex);
+            let cms = build_detached_cms(&self.signer, &digest, None).map_err(|e| e.to_string())?;
+            Ok(CmsSigningResult {
+                cms_der: cms,
+                algorithm: self.algorithm.clone(),
+                signer_certificate_sha256: self.reported_fingerprint.clone(),
+            })
+        }
+    }
+
+    struct MalformedExternalSigner;
+    impl ExternalSigner for MalformedExternalSigner {
+        fn sign_cms(
+            &self,
+            _request: &CmsSigningRequest,
+        ) -> std::result::Result<CmsSigningResult, String> {
+            Ok(CmsSigningResult {
+                cms_der: vec![0xDE, 0xAD, 0xBE, 0xEF],
+                algorithm: "RSASSA-PKCS1v1_5-SHA256".to_string(),
+                signer_certificate_sha256: "00".to_string(),
+            })
+        }
+    }
+
+    fn approval_options(reserved: usize) -> IncrementalSigningOptions {
+        IncrementalSigningOptions {
+            signature: SignatureOptions {
+                field_name: "OxideEngineSig".to_string(),
+                signer_name: Some("Oxide Prompt 26".to_string()),
+                reason: Some("engine test".to_string()),
+                contents_reserved_bytes: reserved,
+                ..SignatureOptions::default()
+            },
+            intent: SigningIntent::Approval,
+            retry_larger_placeholder: true,
+            max_placeholder_bytes: 256 * 1024,
+        }
+    }
+
+    #[test]
+    fn incremental_approval_signature_reopens_and_validates() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf.clone()).unwrap();
+        let signer = runtime_test_signer();
+        let result = sign_incremental(
+            &doc,
+            IncrementalSigner::Local(&signer),
+            &approval_options(8192),
+        )
+        .expect("approval signing");
+        assert!(result.prefix_preserved, "original bytes must be a prefix");
+        assert!(result.signed_pdf.starts_with(&pdf));
+        assert!(result.post_sign.structural_open);
+        assert!(result.post_sign.signature_valid);
+        assert!(result.post_sign.byte_range_exact);
+        assert!(result.post_sign.overall_pass);
+        assert!(!result.certification);
+        assert!(!result.retried);
+    }
+
+    #[test]
+    fn incremental_certification_signature_sets_docmdp() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf).unwrap();
+        let signer = runtime_test_signer();
+        let mut options = approval_options(8192);
+        options.intent = SigningIntent::Certification {
+            docmdp_permissions: 2,
+        };
+        let result = sign_incremental(&doc, IncrementalSigner::Local(&signer), &options)
+            .expect("certification signing");
+        assert!(result.certification);
+        assert!(result.post_sign.signature_valid);
+        // The DocMDP transform + catalog /Perms must be present and recognized.
+        let text = String::from_utf8_lossy(&result.signed_pdf);
+        assert!(text.contains("/DocMDP"), "DocMDP transform must be encoded");
+        assert!(text.contains("/Perms"), "catalog /Perms must be encoded");
+        // The Prompt 25/18 permission engine must recognize the created DocMDP.
+        let engine = crate::engine::ContentEngine::open_bytes(result.signed_pdf.clone()).unwrap();
+        let policy = crate::prompt18::analyze_edit_policy(
+            &engine,
+            crate::prompt18::EditOperation::FormValueUpdate,
+        )
+        .unwrap();
+        assert!(
+            policy
+                .structural_policies
+                .iter()
+                .any(|p| p.certification_signature && p.docmdp_p == Some(2)),
+            "Prompt 25 permission engine must recognize the created DocMDP P=2 certification signature"
+        );
+    }
+
+    #[test]
+    fn incremental_certification_rejects_out_of_range_permission() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf).unwrap();
+        let signer = runtime_test_signer();
+        let mut options = approval_options(8192);
+        options.intent = SigningIntent::Certification {
+            docmdp_permissions: 9,
+        };
+        assert!(sign_incremental(&doc, IncrementalSigner::Local(&signer), &options).is_err());
+    }
+
+    #[test]
+    fn external_signer_happy_path_matches_local() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf).unwrap();
+        let signer = runtime_test_signer();
+        let fingerprint = signer_fingerprint(&signer);
+        let external = DelegatingExternalSigner {
+            signer,
+            reported_fingerprint: fingerprint.clone(),
+            algorithm: "RSASSA-PKCS1v1_5-SHA256".to_string(),
+        };
+        let result = sign_incremental(
+            &doc,
+            IncrementalSigner::ExternalCms {
+                signer: &external,
+                expected_certificate_sha256: Some(fingerprint),
+            },
+            &approval_options(8192),
+        )
+        .expect("external signing");
+        assert!(result.post_sign.signature_valid);
+        assert!(result.post_sign.overall_pass);
+    }
+
+    #[test]
+    fn external_signer_wrong_certificate_rejected() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf).unwrap();
+        let signer = runtime_test_signer();
+        let real_fingerprint = signer_fingerprint(&signer);
+        let external = DelegatingExternalSigner {
+            signer,
+            reported_fingerprint: real_fingerprint,
+            algorithm: "RSASSA-PKCS1v1_5-SHA256".to_string(),
+        };
+        // Pin a different fingerprint than the signer reports/uses.
+        let pinned = "AA".repeat(32);
+        let err = sign_incremental(
+            &doc,
+            IncrementalSigner::ExternalCms {
+                signer: &external,
+                expected_certificate_sha256: Some(pinned),
+            },
+            &approval_options(8192),
+        );
+        assert!(err.is_err(), "wrong certificate must be rejected");
+    }
+
+    #[test]
+    fn external_signer_wrong_algorithm_rejected() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf).unwrap();
+        let signer = runtime_test_signer();
+        let fingerprint = signer_fingerprint(&signer);
+        let external = DelegatingExternalSigner {
+            signer,
+            reported_fingerprint: fingerprint.clone(),
+            algorithm: "ECDSA-P521-SHA3-512".to_string(),
+        };
+        let err = sign_incremental(
+            &doc,
+            IncrementalSigner::ExternalCms {
+                signer: &external,
+                expected_certificate_sha256: Some(fingerprint),
+            },
+            &approval_options(8192),
+        );
+        assert!(err.is_err(), "wrong algorithm must be rejected");
+    }
+
+    #[test]
+    fn external_signer_malformed_cms_rejected() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf).unwrap();
+        let external = MalformedExternalSigner;
+        let err = sign_incremental(
+            &doc,
+            IncrementalSigner::ExternalCms {
+                signer: &external,
+                expected_certificate_sha256: None,
+            },
+            &approval_options(8192),
+        );
+        assert!(
+            err.is_err(),
+            "malformed CMS must be rejected before insertion"
+        );
+    }
+
+    #[test]
+    fn placeholder_too_small_retries_and_succeeds() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf).unwrap();
+        let signer = runtime_test_signer();
+        // 8 bytes cannot hold an RSA-2048 CMS; retry must grow the placeholder.
+        let result = sign_incremental(
+            &doc,
+            IncrementalSigner::Local(&signer),
+            &approval_options(8),
+        )
+        .expect("retry signing");
+        assert!(result.retried, "placeholder must have been grown");
+        assert!(result.post_sign.signature_valid);
+    }
+
+    #[test]
+    fn placeholder_too_small_without_retry_fails_before_producing_output() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf).unwrap();
+        let signer = runtime_test_signer();
+        let mut options = approval_options(8);
+        options.retry_larger_placeholder = false;
+        let err = sign_incremental(&doc, IncrementalSigner::Local(&signer), &options);
+        assert!(err.is_err(), "too-small placeholder must fail, not lie");
+    }
+
+    #[test]
+    fn placeholder_plan_reports_required_vs_reserved() {
+        let pdf = signable_pdf();
+        let doc = crate::document::PdfDocument::open_bytes(pdf).unwrap();
+        let signer = runtime_test_signer();
+        let tight = plan_signature_placeholder(&doc, &signer, &approval_options(8)).unwrap();
+        assert!(!tight.fits, "8-byte placeholder cannot fit the CMS");
+        assert!(tight.required_bytes > 8);
+        let roomy = plan_signature_placeholder(&doc, &signer, &approval_options(8192)).unwrap();
+        assert!(roomy.fits);
+        assert_eq!(
+            roomy.byte_range[0], 0,
+            "ByteRange must start at file offset 0"
+        );
     }
 
     #[test]

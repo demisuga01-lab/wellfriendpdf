@@ -54,6 +54,10 @@ use crate::{
         SanitizerOptions,
     },
     standards::{validate_standards_profile, StandardsProfile},
+    standards_engine::{
+        validate_all_standards, validate_pdfa_profile, validate_pdfua_profile,
+        validate_pdfx_profile, StandardsValidationOptions,
+    },
     versioning::resource_dedup_report,
     ContentEngine, DocumentInfo, OxideError, Result, TextQuad, TextSearchOptions,
     TextSemanticOptions,
@@ -170,6 +174,66 @@ pub fn standards_profile_json(
     envelope(
         "standards_profile",
         &validate_standards_profile(&engine, profile)?,
+    )
+}
+
+fn standards_options(target: Option<&str>) -> StandardsValidationOptions {
+    target
+        .map(StandardsValidationOptions::with_target)
+        .unwrap_or_default()
+}
+
+/// Prompt 26 clause-mapped PDF/A validation report. `target` is a profile label
+/// such as `PDF/A-2B` (defaults to the detected/claimed profile or `PDF/A-2B`).
+pub fn pdfa_standards_json(
+    bytes: &[u8],
+    target: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "pdfa_standards_validation",
+        &validate_pdfa_profile(&engine, &standards_options(target))?,
+    )
+}
+
+/// Prompt 26 clause-mapped PDF/UA validation report.
+pub fn pdfua_standards_json(
+    bytes: &[u8],
+    target: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "pdfua_standards_validation",
+        &validate_pdfua_profile(&engine, &standards_options(target))?,
+    )
+}
+
+/// Prompt 26 clause-mapped PDF/X validation report. `target` e.g. `PDF/X-4`.
+pub fn pdfx_standards_json(
+    bytes: &[u8],
+    target: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "pdfx_standards_validation",
+        &validate_pdfx_profile(&engine, &standards_options(target))?,
+    )
+}
+
+/// Prompt 26 combined PDF/A + PDF/UA + PDF/X validation with cross-profile
+/// conflicts. A single profile passing never hides another failing.
+pub fn standards_all_json(
+    bytes: &[u8],
+    target: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let engine = open(bytes, password)?;
+    envelope(
+        "standards_all_validation",
+        &validate_all_standards(&engine, &standards_options(target))?,
     )
 }
 

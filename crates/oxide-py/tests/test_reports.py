@@ -60,6 +60,10 @@ def test_read_only_report_envelopes():
     _envelope(doc.validate(profile="pdfa"), "standards_profile")
     _envelope(doc.validate_pdfa(), "pdfa_validation")
     _envelope(doc.validate_pdfua(), "pdfua_validation")
+    _envelope(doc.validate_pdfa_standards(target="PDF/A-2B"), "pdfa_standards_validation")
+    _envelope(doc.validate_pdfua_standards(), "pdfua_standards_validation")
+    _envelope(doc.validate_pdfx_standards(target="PDF/X-4"), "pdfx_standards_validation")
+    _envelope(doc.validate_standards_all(), "standards_all_validation")
     _envelope(doc.chunks(), "chunk_set")
     advanced = _envelope(doc.advanced_chunks(), "advanced_rag_chunk_set")
     assert advanced["schema_version"] == "prompt15.rag_chunk.v1"
@@ -508,6 +512,54 @@ def test_redact_strict_missing_term_raises():
 def test_invalid_pdf_bytes_raise():
     with pytest.raises(oxide.OxideError):
         oxide.open(b"%PDF- broken not really")
+
+
+def test_prompt26_incremental_signing(tmp_path):
+    """Real append-only incremental signing through the Python binding: the
+    signed output reopens and validates, and the original bytes are preserved."""
+    crypto = pytest.importorskip("cryptography")
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from cryptography.x509.oid import NameOID
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    key_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Oxide Py Prompt26 Test")])
+    cert = (
+        x509.CertificateBuilder()
+        .subject_name(name)
+        .issuer_name(name)
+        .public_key(key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.datetime(2020, 1, 1))
+        .not_valid_after(datetime.datetime(2040, 1, 1))
+        .sign(key, hashes.SHA256())
+    )
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+
+    out, report = oxide.sign_pdf(
+        str(FIXTURE),
+        key_pem,
+        cert_pem,
+        output=tmp_path / "signed.pdf",
+        placeholder_size=16384,
+    )
+    assert bytes(out).startswith(b"%PDF-")
+    assert report["post_sign"]["signature_valid"] is True
+    assert report["prefix_preserved"] is True
+    assert report["certification"] is False
+
+    # Reopen the signed output and confirm the signature is discovered/valid.
+    signed = oxide.open(bytes(out))
+    sigs = signed.signature_report()["report"]
+    assert isinstance(sigs, list) and len(sigs) >= 1
 
 
 def test_cross_surface_parity_smoke(tmp_path):

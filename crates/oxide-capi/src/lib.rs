@@ -2664,6 +2664,228 @@ pub unsafe extern "C" fn oxide_document_forms_report_json(
     }
 }
 
+/// Prompt 26 clause-mapped PDF/A validation report JSON. `target` may be NULL
+/// or a profile label such as `PDF/A-2B`.
+///
+/// # Safety
+/// See `oxide_document_security_report_json`; `target` may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_pdfa_standards_json(
+    document: *const OxideDocument,
+    target: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let target = unsafe { optional_c_string(target) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            let target = target.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::pdfa_standards_json(b, target.as_deref(), None)
+        })
+    }
+}
+
+/// Prompt 26 clause-mapped PDF/UA validation report JSON. `target` may be NULL
+/// or `PDF/UA-1`.
+///
+/// # Safety
+/// See `oxide_document_security_report_json`; `target` may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_pdfua_standards_json(
+    document: *const OxideDocument,
+    target: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let target = unsafe { optional_c_string(target) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            let target = target.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::pdfua_standards_json(b, target.as_deref(), None)
+        })
+    }
+}
+
+/// Prompt 26 clause-mapped PDF/X validation report JSON. `target` may be NULL
+/// or a profile label such as `PDF/X-4`.
+///
+/// # Safety
+/// See `oxide_document_security_report_json`; `target` may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_pdfx_standards_json(
+    document: *const OxideDocument,
+    target: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let target = unsafe { optional_c_string(target) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            let target = target.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::pdfx_standards_json(b, target.as_deref(), None)
+        })
+    }
+}
+
+/// Prompt 26 combined PDF/A + PDF/UA + PDF/X validation report JSON with
+/// cross-profile conflicts. A single profile passing never hides another
+/// failing. `target` may be NULL.
+///
+/// # Safety
+/// See `oxide_document_security_report_json`; `target` may be NULL.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_standards_all_json(
+    document: *const OxideDocument,
+    target: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let target = unsafe { optional_c_string(target) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |b| {
+            let target = target.map_err(oxide_engine::OxideError::invalid_input)?;
+            sdk::standards_all_json(b, target.as_deref(), None)
+        })
+    }
+}
+
+/// Prompt 26 append-only incremental signing plan. `key_pem`/`cert_pem` are the
+/// signer material (never logged). `certify` in 1..=3 plans a certification
+/// (DocMDP) signature; any other value plans an approval signature. Returns the
+/// placeholder capacity plan JSON (required vs. reserved bytes, fit, ByteRange).
+///
+/// # Safety
+/// `document` must be a live handle. `key_pem`/`cert_pem` must be
+/// NUL-terminated UTF-8. `out_json`/`error_out` must be writable; free the
+/// returned string with `oxide_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_sign_plan_json(
+    document: *const OxideDocument,
+    key_pem: *const c_char,
+    cert_pem: *const c_char,
+    placeholder_size: usize,
+    certify: c_int,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let key = unsafe { required_c_string(key_pem, "key_pem") };
+    let cert = unsafe { required_c_string(cert_pem, "cert_pem") };
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let key = key.clone()?;
+        let cert = cert.clone()?;
+        let signer = oxide(oxide_engine::PdfSigner::from_pem(&key, &cert, &[]))?;
+        let intent = if (1..=3).contains(&certify) {
+            oxide_engine::SigningIntent::Certification {
+                docmdp_permissions: certify as u8,
+            }
+        } else {
+            oxide_engine::SigningIntent::Approval
+        };
+        let options = oxide_engine::IncrementalSigningOptions {
+            signature: oxide_engine::SignatureOptions {
+                contents_reserved_bytes: placeholder_size.max(1),
+                ..Default::default()
+            },
+            intent,
+            retry_larger_placeholder: true,
+            max_placeholder_bytes: 256 * 1024,
+        };
+        let plan = oxide(oxide_engine::plan_signature_placeholder(
+            doc.engine.document(),
+            &signer,
+            &options,
+        ))?;
+        let json = serde_json::to_string(&plan).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Prompt 26 append-only incremental signing. Produces a signed PDF whose
+/// original bytes are preserved as a prefix, reopened and validated before it
+/// is returned. `key_pem`/`cert_pem` are the signer material (never logged).
+/// `certify` in 1..=3 creates a certification (DocMDP) signature; otherwise an
+/// approval signature. `field_name`/`reason` may be NULL. Returns the signed
+/// PDF via `out_buffer` and an `IncrementalSignResult` JSON via `out_json`.
+///
+/// # Safety
+/// `document` must be a live handle. `key_pem`/`cert_pem` must be
+/// NUL-terminated UTF-8; `field_name`/`reason` may be NULL. `out_buffer` must
+/// be freed with `oxide_buffer_free` and `out_json` with `oxide_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn oxide_document_sign_pdf(
+    document: *const OxideDocument,
+    key_pem: *const c_char,
+    cert_pem: *const c_char,
+    placeholder_size: usize,
+    certify: c_int,
+    field_name: *const c_char,
+    reason: *const c_char,
+    out_buffer: *mut OxideBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let key = unsafe { required_c_string(key_pem, "key_pem") };
+    let cert = unsafe { required_c_string(cert_pem, "cert_pem") };
+    let field = unsafe { optional_c_string(field_name) };
+    let reason = unsafe { optional_c_string(reason) };
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let key = key.clone()?;
+        let cert = cert.clone()?;
+        let field = field.clone()?;
+        let reason = reason.clone()?;
+        let signer = oxide(oxide_engine::PdfSigner::from_pem(&key, &cert, &[]))?;
+        let mut signature = oxide_engine::SignatureOptions {
+            contents_reserved_bytes: placeholder_size.max(1),
+            ..Default::default()
+        };
+        if let Some(field) = field {
+            signature.field_name = field;
+        }
+        signature.reason = reason;
+        let intent = if (1..=3).contains(&certify) {
+            oxide_engine::SigningIntent::Certification {
+                docmdp_permissions: certify as u8,
+            }
+        } else {
+            oxide_engine::SigningIntent::Approval
+        };
+        let options = oxide_engine::IncrementalSigningOptions {
+            signature,
+            intent,
+            retry_larger_placeholder: true,
+            max_placeholder_bytes: 256 * 1024,
+        };
+        let result = oxide(oxide_engine::sign_incremental(
+            doc.engine.document(),
+            oxide_engine::IncrementalSigner::Local(&signer),
+            &options,
+        ))?;
+        if !result.post_sign.signature_valid {
+            return Err("post-sign validation failed; signed output not written".into());
+        }
+        let json = serde_json::to_string(&result).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_buffer = into_buffer(result.signed_pdf);
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
 macro_rules! xfa_document_report {
     ($name:ident, $sdk_fn:ident) => {
         /// Returns an owned Prompt 16 XFA JSON report.
@@ -5905,5 +6127,240 @@ mod tests {
         assert!(json.is_null());
         assert!(!error.is_null());
         unsafe { oxide_error_free(error) };
+    }
+
+    // ── Prompt 26 clause-mapped standards + incremental signing ───────────────
+
+    /// Generate an ephemeral RSA-2048 key + self-signed leaf certificate as PEM
+    /// strings for the C-ABI signing tests.
+    fn ephemeral_signer_pem() -> (String, String) {
+        use der::asn1::GeneralizedTime;
+        use der::{DateTime, EncodePem};
+        use rand_core::OsRng;
+        use rsa::pkcs1v15::SigningKey as RsaSigningKey;
+        use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey, LineEnding};
+        use rsa::{RsaPrivateKey, RsaPublicKey};
+        use sha2::Sha256;
+        use spki::SubjectPublicKeyInfoOwned;
+        use std::str::FromStr;
+        use x509_cert::builder::{Builder, CertificateBuilder, Profile};
+        use x509_cert::name::Name;
+        use x509_cert::serial_number::SerialNumber;
+        use x509_cert::time::{Time, Validity};
+
+        let mut rng = OsRng;
+        let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("rsa key");
+        let signing_key = RsaSigningKey::<Sha256>::new(private_key.clone());
+        let public_key = RsaPublicKey::from(&private_key);
+        let spki_der = public_key.to_public_key_der().expect("spki der");
+        let spki = SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("spki");
+        let subject = Name::from_str("CN=Oxide C-ABI Prompt26 Test,O=Oxide Test,C=US").unwrap();
+        let validity = Validity {
+            not_before: Time::GeneralTime(GeneralizedTime::from_date_time(
+                DateTime::new(2020, 1, 1, 0, 0, 0).unwrap(),
+            )),
+            not_after: Time::GeneralTime(GeneralizedTime::from_date_time(
+                DateTime::new(2040, 1, 1, 0, 0, 0).unwrap(),
+            )),
+        };
+        let builder = CertificateBuilder::new(
+            Profile::Leaf {
+                issuer: subject.clone(),
+                enable_key_agreement: false,
+                enable_key_encipherment: false,
+            },
+            SerialNumber::from(0x2026_0801u32),
+            validity,
+            subject,
+            spki,
+            &signing_key,
+        )
+        .expect("cert builder");
+        let cert = builder
+            .build::<rsa::pkcs1v15::Signature>()
+            .expect("cert build");
+        let key_pem = private_key
+            .to_pkcs8_pem(LineEnding::LF)
+            .expect("key pem")
+            .to_string();
+        let cert_pem = cert.to_pem(LineEnding::LF).expect("cert pem");
+        (key_pem, cert_pem)
+    }
+
+    #[test]
+    fn capi_standards_report_envelopes() {
+        let (doc, _pdf) = open_sample();
+        let mut error = std::ptr::null_mut();
+        for (name, f) in [
+            (
+                "pdfa_standards_validation",
+                oxide_document_pdfa_standards_json
+                    as unsafe extern "C" fn(
+                        *const OxideDocument,
+                        *const c_char,
+                        *mut *mut c_char,
+                        *mut *mut c_char,
+                    ) -> c_int,
+            ),
+            (
+                "pdfua_standards_validation",
+                oxide_document_pdfua_standards_json,
+            ),
+            (
+                "pdfx_standards_validation",
+                oxide_document_pdfx_standards_json,
+            ),
+            (
+                "standards_all_validation",
+                oxide_document_standards_all_json,
+            ),
+        ] {
+            let mut json = std::ptr::null_mut();
+            let status = unsafe { f(doc, std::ptr::null(), &mut json, &mut error) };
+            assert_eq!(status, OXIDE_STATUS_OK, "{name} returned error");
+            let text = unsafe { CStr::from_ptr(json) }
+                .to_string_lossy()
+                .into_owned();
+            let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(value["schema_version"], 1);
+            assert_eq!(value["kind"], name);
+            assert!(value.get("report").is_some());
+            unsafe { oxide_string_free(json) };
+        }
+        unsafe { oxide_document_free(doc) };
+    }
+
+    #[test]
+    fn capi_sign_plan_and_sign_pdf_real_runtime() {
+        let (key_pem, cert_pem) = ephemeral_signer_pem();
+        let key = CString::new(key_pem).unwrap();
+        let cert = CString::new(cert_pem).unwrap();
+        let (doc, pdf) = open_sample();
+        let mut error = std::ptr::null_mut();
+
+        // Plan: a tiny placeholder cannot fit an RSA-2048 CMS.
+        let mut plan_json = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_sign_plan_json(
+                doc,
+                key.as_ptr(),
+                cert.as_ptr(),
+                8,
+                0,
+                &mut plan_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let plan = unsafe { CStr::from_ptr(plan_json) }
+            .to_string_lossy()
+            .into_owned();
+        let plan_value: serde_json::Value = serde_json::from_str(&plan).unwrap();
+        assert_eq!(plan_value["fits"], false);
+        assert!(plan_value["required_bytes"].as_u64().unwrap() > 8);
+        unsafe { oxide_string_free(plan_json) };
+
+        // Sign: real append-only signature; output reopens and validates.
+        let mut buf = OxideBuffer::empty();
+        let mut json = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_sign_pdf(
+                doc,
+                key.as_ptr(),
+                cert.as_ptr(),
+                16384,
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut buf,
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let signed = unsafe { slice::from_raw_parts(buf.data, buf.len) };
+        assert!(signed.starts_with(b"%PDF-"));
+        assert!(signed.starts_with(&pdf), "original bytes must be a prefix");
+        let report = unsafe { CStr::from_ptr(json) }
+            .to_string_lossy()
+            .into_owned();
+        let report_value: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(report_value["post_sign"]["signature_valid"], true);
+        assert_eq!(report_value["prefix_preserved"], true);
+
+        // Reopen the produced bytes through the C ABI and validate the signature.
+        let signed_vec = signed.to_vec();
+        let reopened = unsafe {
+            oxide_document_open_from_bytes(signed_vec.as_ptr(), signed_vec.len(), &mut error)
+        };
+        assert!(!reopened.is_null());
+        let mut sig_json = std::ptr::null_mut();
+        let status = unsafe { oxide_document_signatures_json(reopened, &mut sig_json, &mut error) };
+        assert_eq!(status, OXIDE_STATUS_OK);
+        let sigs = unsafe { CStr::from_ptr(sig_json) }
+            .to_string_lossy()
+            .into_owned();
+        let sigs_value: serde_json::Value = serde_json::from_str(&sigs).unwrap();
+        assert!(!sigs_value.as_array().unwrap().is_empty());
+        unsafe {
+            oxide_string_free(sig_json);
+            oxide_document_free(reopened);
+            oxide_buffer_free(buf);
+            oxide_string_free(json);
+            oxide_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_sign_null_and_malformed_are_errors_not_panics() {
+        // Null document → error.
+        let key =
+            CString::new("-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----").unwrap();
+        let cert =
+            CString::new("-----BEGIN CERTIFICATE-----\nnope\n-----END CERTIFICATE-----").unwrap();
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_sign_plan_json(
+                std::ptr::null(),
+                key.as_ptr(),
+                cert.as_ptr(),
+                16384,
+                0,
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_ERROR);
+        assert!(json.is_null());
+        assert!(!error.is_null());
+        unsafe { oxide_error_free(error) };
+
+        // Malformed key on a valid document → error, no panic.
+        let (doc, _pdf) = open_sample();
+        let mut error = std::ptr::null_mut();
+        let mut buf = OxideBuffer::empty();
+        let mut sjson = std::ptr::null_mut();
+        let status = unsafe {
+            oxide_document_sign_pdf(
+                doc,
+                key.as_ptr(),
+                cert.as_ptr(),
+                16384,
+                0,
+                std::ptr::null(),
+                std::ptr::null(),
+                &mut buf,
+                &mut sjson,
+                &mut error,
+            )
+        };
+        assert_eq!(status, OXIDE_STATUS_ERROR);
+        assert!(sjson.is_null());
+        assert!(!error.is_null());
+        unsafe {
+            oxide_error_free(error);
+            oxide_document_free(doc);
+        }
     }
 }

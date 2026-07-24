@@ -646,6 +646,111 @@ public final class Oxide {
             return Native.documentStringReport(handle, Native.VALIDATE, profile, "validate");
         }
 
+        /** Clause-mapped PDF/A envelope; {@code target} may be null for detection. */
+        public String validatePdfaStandardsJson(String target) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PDFA_STANDARDS, target, "pdfa_standards_validation");
+        }
+
+        public String validatePdfaStandardsJson() {
+            return validatePdfaStandardsJson(null);
+        }
+
+        /** Clause-mapped PDF/UA envelope; {@code target} may be null for detection. */
+        public String validatePdfuaStandardsJson(String target) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PDFUA_STANDARDS, target, "pdfua_standards_validation");
+        }
+
+        public String validatePdfuaStandardsJson() {
+            return validatePdfuaStandardsJson(null);
+        }
+
+        /** Clause-mapped PDF/X envelope; {@code target} may be null for detection. */
+        public String validatePdfxStandardsJson(String target) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PDFX_STANDARDS, target, "pdfx_standards_validation");
+        }
+
+        public String validatePdfxStandardsJson() {
+            return validatePdfxStandardsJson(null);
+        }
+
+        /** Combined standards envelope including cross-profile conflicts. */
+        public String validateAllStandardsJson(String target) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.STANDARDS_ALL, target, "standards_all_validation");
+        }
+
+        public String validateAllStandardsJson() {
+            return validateAllStandardsJson(null);
+        }
+
+        /** Native post-signature cryptographic validation for this document. */
+        public String signatureReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.SIGNATURE_REPORT, "signature_report");
+        }
+
+        /**
+         * Plans a real append-only local PEM signature. PEM material is copied
+         * for the native call and never logged or retained by this Java object.
+         */
+        public String incrementalSigningPlanJson(
+            String keyPem, String certPem, long placeholderSize, int certify
+        ) {
+            ensureOpen();
+            return Native.incrementalSigningPlan(handle, keyPem, certPem, placeholderSize, certify);
+        }
+
+        public String incrementalSigningPlanJson(String keyPem, String certPem) {
+            return incrementalSigningPlanJson(keyPem, certPem, 16 * 1024L, 0);
+        }
+
+        /**
+         * Produces a true append-only signed PDF. Native code validates the
+         * result after reopening it; returned bytes and JSON are both owned by
+         * the Java result object after native buffers are freed.
+         */
+        public BinaryResult signIncremental(
+            String keyPem,
+            String certPem,
+            long placeholderSize,
+            int certify,
+            String fieldName,
+            String reason
+        ) {
+            ensureOpen();
+            return Native.signIncremental(
+                handle, keyPem, certPem, placeholderSize, certify, fieldName, reason);
+        }
+
+        public BinaryResult signIncremental(String keyPem, String certPem) {
+            return signIncremental(keyPem, certPem, 16 * 1024L, 0, null, null);
+        }
+
+        /** Existing combined edit-policy report, named for DocMDP callers. */
+        public String docMdpPermissionReportJson(String operation) {
+            return editPolicyReportJson(operation);
+        }
+
+        public String docMdpPermissionReportJson() {
+            return docMdpPermissionReportJson("form_value_update");
+        }
+
+        /** Existing combined edit-policy report, named for FieldMDP callers. */
+        public String fieldMdpPermissionReportJson(String operation) {
+            return editPolicyReportJson(operation);
+        }
+
+        public String fieldMdpPermissionReportJson() {
+            return fieldMdpPermissionReportJson("form_value_update");
+        }
+
         public String formsReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.FORMS_REPORT, "forms_report");
@@ -1303,6 +1408,29 @@ public final class Oxide {
         private static final MethodHandle PARSER_REPORT = documentStringReport("oxide_document_parser_report_json");
         private static final MethodHandle COLOR_REPORT = documentStringReport("oxide_document_color_report_json");
         private static final MethodHandle VALIDATE = documentStringReport("oxide_document_validate_json");
+        private static final MethodHandle PDFA_STANDARDS =
+            documentStringReport("oxide_document_pdfa_standards_json");
+        private static final MethodHandle PDFUA_STANDARDS =
+            documentStringReport("oxide_document_pdfua_standards_json");
+        private static final MethodHandle PDFX_STANDARDS =
+            documentStringReport("oxide_document_pdfx_standards_json");
+        private static final MethodHandle STANDARDS_ALL =
+            documentStringReport("oxide_document_standards_all_json");
+        private static final MethodHandle SIGNATURE_REPORT =
+            documentReport("oxide_document_signatures_json");
+        private static final MethodHandle INCREMENTAL_SIGNING_PLAN = downcall(
+            "oxide_document_sign_plan_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle INCREMENTAL_SIGN = downcall(
+            "oxide_document_sign_pdf",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.JAVA_INT,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle FORMS_REPORT = documentReport("oxide_document_forms_report_json");
         private static final MethodHandle XFA_REPORT = documentReport("oxide_document_xfa_report_json");
         private static final MethodHandle XFA_EXTRACT = documentReport("oxide_document_xfa_extract_json");
@@ -2161,6 +2289,74 @@ public final class Oxide {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Oxide " + operation + " failed", ex);
+            }
+        }
+
+        private static String incrementalSigningPlan(
+            MemorySegment handle, String keyPem, String certPem, long placeholderSize, int certify
+        ) {
+            validateIncrementalSigningArguments(keyPem, certPem, placeholderSize, certify);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment key = arena.allocateFrom(keyPem);
+                MemorySegment cert = arena.allocateFrom(certPem);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) INCREMENTAL_SIGNING_PLAN.invokeExact(
+                    handle, key, cert, placeholderSize, certify, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide incremental signing plan failed", ex);
+            }
+        }
+
+        private static BinaryResult signIncremental(
+            MemorySegment handle,
+            String keyPem,
+            String certPem,
+            long placeholderSize,
+            int certify,
+            String fieldName,
+            String reason
+        ) {
+            validateIncrementalSigningArguments(keyPem, certPem, placeholderSize, certify);
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment key = arena.allocateFrom(keyPem);
+                MemorySegment cert = arena.allocateFrom(certPem);
+                MemorySegment field = fieldName == null || fieldName.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(fieldName);
+                MemorySegment reasonValue = reason == null || reason.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(reason);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) INCREMENTAL_SIGN.invokeExact(
+                    handle, key, cert, placeholderSize, certify, field, reasonValue,
+                    buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (OxideException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Oxide incremental signing failed", ex);
+            }
+        }
+
+        private static void validateIncrementalSigningArguments(
+            String keyPem, String certPem, long placeholderSize, int certify
+        ) {
+            Objects.requireNonNull(keyPem, "keyPem");
+            Objects.requireNonNull(certPem, "certPem");
+            if (keyPem.isBlank() || certPem.isBlank()) {
+                throw new IllegalArgumentException("keyPem and certPem must not be blank");
+            }
+            if (placeholderSize <= 0) {
+                throw new IllegalArgumentException("placeholderSize must be positive");
+            }
+            if (certify < 0 || certify > 3) {
+                throw new IllegalArgumentException("certify must be 0 or 1 through 3");
             }
         }
 
