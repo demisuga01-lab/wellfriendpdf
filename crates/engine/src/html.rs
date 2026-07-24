@@ -231,7 +231,7 @@ impl HtmlExporter {
 
 const HTML_HEADER: &str = "<!DOCTYPE html>\n<html>\n<head>\n\
     <meta charset=\"UTF-8\"/>\n\
-    <meta name=\"generator\" content=\"oxide\"/>\n";
+    <meta name=\"generator\" content=\"wellfriendpdf\"/>\n";
 
 const COMPLEX_CSS: &str = "body{margin:0;background:#888;}\n\
     .page{position:relative;background:#fff;margin:8px auto;overflow:hidden;}\n\

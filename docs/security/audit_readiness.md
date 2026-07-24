@@ -1,6 +1,6 @@
 # Security Audit Readiness
 
-Oxide is prepared for a third-party security audit with the following materials.
+Wellfriend is prepared for a third-party security audit with the following materials.
 
 ## Auditor Packet
 

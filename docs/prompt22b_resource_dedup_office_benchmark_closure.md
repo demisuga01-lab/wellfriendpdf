@@ -14,7 +14,7 @@ Prompt 22B closes the evidence gap left after Prompt 22 by making resource-famil
 deduplication explicit and by publishing benchmark, binding-runtime, reference,
 and historical-gate artifacts under `target\prompt22-writer-office-benchmark`.
 
-The production Office conversion path remains Oxide's native OOXML inspection
+The production Office conversion path remains Wellfriend's native OOXML inspection
 and shared model/PDF writer path. Microsoft Office, LibreOffice, Poppler,
 PDFium, MuPDF, and qpdf are reference tools only. Reference availability is
 recorded separately from pass status.

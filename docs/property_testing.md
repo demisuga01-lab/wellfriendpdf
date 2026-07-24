@@ -32,14 +32,14 @@ no-panic structural guarantee.
 Fast local run:
 
 ```powershell
-cargo test -p oxide-engine --test property_invariants
+cargo test -p wellfriendpdf-engine --test property_invariants
 ```
 
 Heavier local run:
 
 ```powershell
 $env:PROPTEST_CASES = "512"
-cargo test -p oxide-engine --test property_invariants -- --nocapture
+cargo test -p wellfriendpdf-engine --test property_invariants -- --nocapture
 ```
 
 When a property fails, proptest writes a shrunk failing case. Diagnose the

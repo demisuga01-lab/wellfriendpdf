@@ -3,7 +3,7 @@ use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{BlendMode, ColorSpace, GraphicsState, LineCap, LineJoin};
 use crate::decode_scheduler::{DecodeMemoryBudget, DecodeMemoryToken};
 use crate::engine::{ContentEngine, PageResources};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::DecodeLimits;
 use crate::fonts::resolver::{detect_font_subtype, get_descendant_font, FontSubtype};
 use crate::fonts::variations::VariationRequest;
@@ -414,7 +414,7 @@ impl RenderDecodeScheduler {
             if let Ok(mut state) = self.state.lock() {
                 state.cancelled_before_decode += 1;
             }
-            return Err(OxideError::Cancelled(context.to_string()));
+            return Err(WellfriendError::Cancelled(context.to_string()));
         }
         let token = match self.budget.acquire(estimated_bytes.max(1)) {
             Ok(token) => token,
@@ -449,7 +449,7 @@ impl RenderDecodeScheduler {
             if let Ok(mut state) = self.state.lock() {
                 state.cancelled_before_decode += 1;
             }
-            return Err(OxideError::Cancelled(context.to_string()));
+            return Err(WellfriendError::Cancelled(context.to_string()));
         }
         match self.budget.acquire(estimated_bytes.max(1)) {
             Ok(token) => Ok(token),
@@ -552,7 +552,7 @@ impl<'a> RenderState<'a> {
         // expensive (e.g. full-page fills) the wall-clock gap between checks
         // stays short, so cancellation is observed promptly. When the token
         // trips we stop executing immediately; the entry point converts the
-        // early exit into an OxideError::Cancelled.
+        // early exit into an WellfriendError::Cancelled.
         const CANCEL_CHECK_INTERVAL: usize = 64;
         for (i, op) in ops.iter().enumerate() {
             if i % CANCEL_CHECK_INTERVAL == 0 && self.cancel.is_cancelled() {
@@ -4375,7 +4375,7 @@ fn inline_decode_params(
     match value {
         Operand::Dictionary(entries) => {
             if filter_count == 0 {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "inline DecodeParms present without Filter".to_string(),
                 ));
             }
@@ -4387,16 +4387,16 @@ fn inline_decode_params(
             .iter()
             .map(|item| match item {
                 Operand::Dictionary(entries) => Ok(Some(inline_operand_dictionary(entries)?)),
-                _ => Err(OxideError::MalformedPdf(
+                _ => Err(WellfriendError::MalformedPdf(
                     "inline DecodeParms array contains a non-dictionary".to_string(),
                 )),
             })
             .collect(),
-        Operand::Array(items) => Err(OxideError::MalformedPdf(format!(
+        Operand::Array(items) => Err(WellfriendError::MalformedPdf(format!(
             "inline DecodeParms count {} does not match Filter count {filter_count}",
             items.len()
         ))),
-        _ => Err(OxideError::MalformedPdf(
+        _ => Err(WellfriendError::MalformedPdf(
             "inline DecodeParms is not a dictionary or matching array".to_string(),
         )),
     }
@@ -4406,7 +4406,7 @@ fn inline_operand_dictionary(entries: &[(String, Operand)]) -> Result<PdfDiction
     let mut dict = PdfDictionary::empty();
     for (key, value) in entries {
         let object = inline_operand_object(value).ok_or_else(|| {
-            OxideError::MalformedPdf(format!(
+            WellfriendError::MalformedPdf(format!(
                 "inline DecodeParms /{key} contains an unsupported object"
             ))
         })?;
@@ -4676,20 +4676,18 @@ fn estimated_image_channels(color_space: &str, is_mask: bool) -> u64 {
 
 fn crop_buffer(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
     if tile.width == 0 || tile.height == 0 {
-        return Err(OxideError::ResourceLimit(
+        return Err(WellfriendError::ResourceLimit(
             "render tile must have non-zero width and height".to_string(),
         ));
     }
-    let end_x = tile
-        .x
-        .checked_add(tile.width)
-        .ok_or_else(|| OxideError::ResourceLimit("render tile x range overflows".to_string()))?;
-    let end_y = tile
-        .y
-        .checked_add(tile.height)
-        .ok_or_else(|| OxideError::ResourceLimit("render tile y range overflows".to_string()))?;
+    let end_x = tile.x.checked_add(tile.width).ok_or_else(|| {
+        WellfriendError::ResourceLimit("render tile x range overflows".to_string())
+    })?;
+    let end_y = tile.y.checked_add(tile.height).ok_or_else(|| {
+        WellfriendError::ResourceLimit("render tile y range overflows".to_string())
+    })?;
     if end_x > buf.width || end_y > buf.height {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "render tile {}x{} at {},{} exceeds page buffer {}x{}",
             tile.width, tile.height, tile.x, tile.y, buf.width, buf.height
         )));
@@ -6249,7 +6247,7 @@ mod tests {
         let err = state
             .scheduled_decode_inline_image(&[0], 1, 1, 8, "DeviceGray", &[], &[])
             .expect_err("pre-cancelled decode should fail");
-        assert!(matches!(err, OxideError::Cancelled(_)));
+        assert!(matches!(err, WellfriendError::Cancelled(_)));
         let metrics = state.decode_scheduler.metrics();
         assert_eq!(metrics.jobs, 1);
         assert_eq!(metrics.cancelled_before_decode, 1);
@@ -6810,7 +6808,7 @@ mod tests {
             RenderMode::Compat,
         )
         .expect_err("pre-cancelled replay should fail");
-        assert!(matches!(err, OxideError::Cancelled(_)));
+        assert!(matches!(err, WellfriendError::Cancelled(_)));
     }
 
     #[test]

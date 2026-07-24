@@ -7,10 +7,10 @@ Prompt 03 isolates the narrow lossless filter path first. These filters are cent
 ## Components
 
 - Parent API: `crates/engine/src/codec_isolation.rs`.
-- Worker binary: `crates/engine/src/bin/oxide-codec-worker.rs`.
-- CLI report: `oxide codec-isolation-report`.
+- Worker binary: `crates/engine/src/bin/wellfriendpdf-codec-worker.rs`.
+- CLI report: `wellfriendpdf codec-isolation-report`.
 - Shared SDK envelope: `sdk::codec_isolation_report_json`.
-- Binding surfaces: Python `oxide.codec_isolation_report`, C ABI `oxide_codec_isolation_report_json`, WASM `OxidePdf.codecIsolationReportJson`, .NET `OxideDocument.CodecIsolationReportJson`, Java `Oxide.codecIsolationReportJson`.
+- Binding surfaces: Python `wellfriendpdf.codec_isolation_report`, C ABI `wellfriendpdf_codec_isolation_report_json`, WASM `WellfriendPdf.codecIsolationReportJson`, .NET `WellfriendDocument.CodecIsolationReportJson`, Java `WellfriendPdf.codecIsolationReportJson`.
 
 ## Protocol
 

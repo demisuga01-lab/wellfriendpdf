@@ -1,5 +1,5 @@
 [package]
-name = "oxide-fuzz"
+name = "wellfriendpdf-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -16,7 +16,7 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 
-[dependencies.oxide-engine]
+[dependencies.wellfriendpdf-engine]
 path = "../crates/engine"
 # Exposes the internal decoder entry points (fuzz_decode_filter, etc.).
 features = ["fuzzing"]

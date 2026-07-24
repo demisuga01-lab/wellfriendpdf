@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     AnnotationOptions, AuthorPageSize as PageSize, Color, ContentEngine, EditMode, EditRectStyle,
     EditTextStyle, ExtractOptions, HeaderFooterOptions, ImageRect, ImageRedactionPolicy,
     ImageStampOptions, OverlayLayer, PdfBuilder, PdfDocument, PdfEditor, RedactionOptions,
@@ -353,7 +353,7 @@ fn annotations_add_edit_and_delete_roundtrip() {
             1,
             ImageRect::new(250.0, 700.0, 20.0, 20.0),
             "review",
-            AnnotationOptions::default().author("Oxide"),
+            AnnotationOptions::default().author("Wellfriend"),
         )
         .unwrap()
         .add_stamp_annotation(

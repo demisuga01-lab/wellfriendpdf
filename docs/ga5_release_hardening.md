@@ -58,7 +58,7 @@ All exited cleanly. No new crashers, hangs, or OOM cases were found in this GA5
 pass.
 
 The normal cargo-fuzz runs use the nightly libFuzzer/instrumented build path.
-A separate broad `cargo +nightly test -p oxide-engine --features fuzzing
+A separate broad `cargo +nightly test -p wellfriendpdf-engine --features fuzzing
 --no-run` attempt with `RUSTFLAGS=-Zsanitizer=address` did not complete within
 the local Windows command timebox and left cargo coordinator processes after
 rustc finished, so no standalone workspace-wide ASan result is claimed here.
@@ -71,7 +71,7 @@ isolated subprocesses with a per-operation timeout:
 ```powershell
 python scripts\ga5_corpus_hardening.py `
   --manifest renderer-benchmark\corpus\manifest.json `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --output-dir target\ga5-corpus-hardening-60s `
   --limit 265 `
   --timeout-sec 60 `
@@ -142,7 +142,7 @@ adding new runtime behavior:
 - malformed documents returned clean CLI errors rather than panics;
 - signature validation over unsigned or malformed PDFs returned structured
   reports/errors;
-- active-content fixtures are parsed as inert PDF structure; Oxide still has no
+- active-content fixtures are parsed as inert PDF structure; Wellfriend still has no
   JavaScript or Launch execution path.
 
 Server endpoint resource enforcement remains covered by the existing server
@@ -174,7 +174,7 @@ cargo +nightly fuzz run editing -- -max_total_time=20
 
 python scripts\ga5_corpus_hardening.py `
   --manifest renderer-benchmark\corpus\manifest.json `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --output-dir target\ga5-corpus-hardening-60s `
   --limit 265 `
   --timeout-sec 60 `

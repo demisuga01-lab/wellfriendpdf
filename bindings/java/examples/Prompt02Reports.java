@@ -1,8 +1,8 @@
-package org.oxidepdf.examples;
+package io.wellfriendpdf.examples;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
-import org.oxidepdf.Oxide;
+import io.wellfriendpdf.Wellfriend;
 
 public final class Prompt02Reports {
     private Prompt02Reports() {
@@ -15,9 +15,9 @@ public final class Prompt02Reports {
         }
 
         Path input = Path.of(args[0]);
-        try (Oxide.Document doc = Oxide.Document.open(input)) {
+        try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(input)) {
             System.out.println(doc.securityReportJson());
-            Oxide.BinaryResult sanitized = doc.sanitize("balanced");
+            WellfriendPdf.BinaryResult sanitized = doc.sanitize("balanced");
             Files.write(input.resolveSibling(input.getFileName() + ".sanitized.pdf"), sanitized.bytes());
             System.out.println(sanitized.reportJson());
         }

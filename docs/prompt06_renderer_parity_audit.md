@@ -1,6 +1,6 @@
 # Combined Prompt 06 Renderer Parity Audit
 
-Prompt 06 establishes the first renderer-parity campaign surface for Oxide after
+Prompt 06 establishes the first renderer-parity campaign surface for Wellfriend after
 the codec scheduler and fuzz closeout work. The implementation inspected and
 uses these real modules:
 
@@ -45,19 +45,19 @@ RTL placeholder text, CJK/CID text, Image XObject, generated inline image,
 Form XObject, nested Form XObject, annotation appearance, tiling pattern,
 shading, transparency, and malformed-renderable coverage.
 
-Prompt 06B reuses that same 13-page corpus across Oxide, Poppler, PDFium, and
-MuPDF. For each page it records Oxide-vs-Poppler, Oxide-vs-PDFium,
-Oxide-vs-MuPDF, Poppler-vs-PDFium, Poppler-vs-MuPDF, and PDFium-vs-MuPDF
-metrics. Pages are classified as reference agreement, Oxide mismatch, reference
-disagreement with Oxide matching a specific reference, dimension mismatch,
-reference-tool failure, Oxide render failure, or manual-review/later-owned
+Prompt 06B reuses that same 13-page corpus across Wellfriend, Poppler, PDFium, and
+MuPDF. For each page it records Wellfriend-vs-Poppler, Wellfriend-vs-PDFium,
+Wellfriend-vs-MuPDF, Poppler-vs-PDFium, Poppler-vs-MuPDF, and PDFium-vs-MuPDF
+metrics. Pages are classified as reference agreement, Wellfriend mismatch, reference
+disagreement with Wellfriend matching a specific reference, dimension mismatch,
+reference-tool failure, Wellfriend render failure, or manual-review/later-owned
 renderer work.
 
 The Prompt 06B closure run rendered all 13 pages with all four renderers and
 produced 78 pairwise comparisons. It classified 10 pages as
-`all_references_agree_oxide_pass` and 3 pages as
-`references_disagree_oxide_between_references`: annotation appearance, tiling
-pattern, and shading. No reference-tool failure, Oxide render failure, or
+`all_references_agree_wellfriendpdf_pass` and 3 pages as
+`references_disagree_wellfriendpdf_between_references`: annotation appearance, tiling
+pattern, and shading. No reference-tool failure, Wellfriend render failure, or
 dimension mismatch was recorded in that run.
 
 Baseline is recorded as a Prompt 05 policy model: high-level text/image/form

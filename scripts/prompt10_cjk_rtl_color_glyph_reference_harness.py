@@ -18,7 +18,7 @@ OUT_DIR = Path("target/prompt10-cjk-rtl-color-glyph-reference")
 RENDER_DIR = OUT_DIR / "renders"
 DIFF_DIR = OUT_DIR / "diffs"
 LOG_DIR = OUT_DIR / "logs"
-OXIDE_REPORT_DIR = OUT_DIR / "oxide-render-reports"
+WELLFRIENDPDF_REPORT_DIR = OUT_DIR / "wellfriendpdf-render-reports"
 HTML_REPORT = OUT_DIR / "html-report" / "index.html"
 
 TOOL_MANIFEST = OUT_DIR / "reference-tool-manifest-prompt10.json"
@@ -31,9 +31,9 @@ PUBLIC_FEATURE_REPORT = OUT_DIR / "public-feature-report-prompt10.json"
 BINDING_PARITY = OUT_DIR / "binding-report-parity-prompt10.json"
 
 PAIR_NAMES = [
-    ("oxide", "poppler"),
-    ("oxide", "pdfium"),
-    ("oxide", "mupdf"),
+    ("wellfriendpdf", "poppler"),
+    ("wellfriendpdf", "pdfium"),
+    ("wellfriendpdf", "mupdf"),
     ("poppler", "pdfium"),
     ("poppler", "mupdf"),
     ("pdfium", "mupdf"),
@@ -103,9 +103,9 @@ def load_prompt06b() -> Any:
     module.RENDER_DIR = RENDER_DIR
     module.DIFF_DIR = DIFF_DIR
     module.LOG_DIR = LOG_DIR
-    module.OXIDE_REPORT_DIR = OXIDE_REPORT_DIR
+    module.WELLFRIENDPDF_REPORT_DIR = WELLFRIENDPDF_REPORT_DIR
     module.HTML_REPORT = HTML_REPORT
-    for path in [RENDER_DIR, DIFF_DIR, LOG_DIR, OXIDE_REPORT_DIR, HTML_REPORT.parent]:
+    for path in [RENDER_DIR, DIFF_DIR, LOG_DIR, WELLFRIENDPDF_REPORT_DIR, HTML_REPORT.parent]:
         path.mkdir(parents=True, exist_ok=True)
     return module
 
@@ -372,13 +372,13 @@ def bootstrap_reference_manifest(dpi: int, timeout: int, allow_missing: bool) ->
 def render_compare(
     entries: list[dict[str, Any]],
     manifest: dict[str, Any],
-    oxide_bin: str | None,
+    wellfriendpdf_bin: str | None,
     dpi: int,
     timeout: int,
     limit: int,
 ) -> dict[str, Any]:
     p06 = load_prompt06b()
-    base = p06.oxide_base_command(oxide_bin)
+    base = p06.wellfriendpdf_base_command(wellfriendpdf_bin)
     available = [entry for entry in entries if entry["available"]]
     if limit > 0:
         available = available[:limit]
@@ -390,7 +390,7 @@ def render_compare(
 
     for entry in available:
         renders = {
-            "oxide": p06.render_oxide(base, entry, dpi, timeout),
+            "wellfriendpdf": p06.render_wellfriendpdf(base, entry, dpi, timeout),
             "poppler": p06.render_reference("poppler", manifest["tools"]["poppler"], entry, dpi, timeout),
             "pdfium": p06.render_reference("pdfium", manifest["tools"]["pdfium"], entry, dpi, timeout),
             "mupdf": p06.render_reference("mupdf", manifest["tools"]["mupdf"], entry, dpi, timeout),
@@ -420,7 +420,7 @@ def render_compare(
             "prompt10_classification": prompt10,
             "renders": renders,
             "pair_metrics": pair_metrics,
-            "native_replay_counters": renders["oxide"].get("native_replay_counters", {}),
+            "native_replay_counters": renders["wellfriendpdf"].get("native_replay_counters", {}),
         }
         pages.append(page)
         metrics_pages.append({"id": entry["id"], "category": entry["category"], "pairs": pair_metrics})
@@ -449,7 +449,7 @@ def render_compare(
         "policy_row_count": len(policy_rows),
         "classification_counts": prompt10_counts,
         "raw_prompt06b_classification_counts": raw_counts,
-        "oxide_outlier_failures": count_outliers(pages),
+        "wellfriendpdf_outlier_failures": count_outliers(pages),
         "unclassified_failures": count_unclassified(pages),
         "reference_disagreements": [
             {
@@ -458,7 +458,7 @@ def render_compare(
                 "prompt10_classification": page["prompt10_classification"],
             }
             for page in pages
-            if page["prompt10_classification"] != "all_references_agree_oxide_pass"
+            if page["prompt10_classification"] != "all_references_agree_wellfriendpdf_pass"
         ],
         "policy_rows": policy_rows,
     }
@@ -483,14 +483,14 @@ def render_compare(
 
 def classify_prompt10(raw: str, entry: dict[str, Any], pair_metrics: dict[str, Any]) -> str:
     if raw.startswith("references_disagree"):
-        return "reference_disagreement_oxide_inside_or_between_cluster"
-    if raw == "all_references_agree_oxide_pass":
+        return "reference_disagreement_wellfriendpdf_inside_or_between_cluster"
+    if raw == "all_references_agree_wellfriendpdf_pass":
         return raw
     if entry["expected_prompt10_classification"] == "unsupported_policy_accepted":
         return "unsupported_policy_accepted"
-    if raw == "all_references_agree_oxide_mismatch" and oxide_reference_match_count(pair_metrics) >= 2:
-        return "reference_cluster_accepted_oxide_matches_two_references"
-    if raw == "all_references_agree_oxide_mismatch" and raster_threshold_accepted(entry, pair_metrics):
+    if raw == "all_references_agree_wellfriendpdf_mismatch" and wellfriendpdf_reference_match_count(pair_metrics) >= 2:
+        return "reference_cluster_accepted_wellfriendpdf_matches_two_references"
+    if raw == "all_references_agree_wellfriendpdf_mismatch" and raster_threshold_accepted(entry, pair_metrics):
         return "cjk_rtl_raster_threshold_accepted"
     if entry["expected_prompt10_classification"] in {
         "unsupported_policy_accepted",
@@ -500,10 +500,10 @@ def classify_prompt10(raw: str, entry: dict[str, Any], pair_metrics: dict[str, A
     return raw
 
 
-def oxide_reference_match_count(pair_metrics: dict[str, Any]) -> int:
+def wellfriendpdf_reference_match_count(pair_metrics: dict[str, Any]) -> int:
     return sum(
         1
-        for pair in ["oxide_vs_poppler", "oxide_vs_pdfium", "oxide_vs_mupdf"]
+        for pair in ["wellfriendpdf_vs_poppler", "wellfriendpdf_vs_pdfium", "wellfriendpdf_vs_mupdf"]
         if pair_metrics[pair].get("threshold_pass")
     )
 
@@ -513,11 +513,11 @@ def raster_threshold_accepted(entry: dict[str, Any], pair_metrics: dict[str, Any
         return False
     if "text_clipping" in entry["category"]:
         return False
-    oxide_pairs = [pair_metrics[pair] for pair in ["oxide_vs_poppler", "oxide_vs_pdfium", "oxide_vs_mupdf"]]
-    if any(pair.get("status") != "computed" for pair in oxide_pairs):
+    wellfriendpdf_pairs = [pair_metrics[pair] for pair in ["wellfriendpdf_vs_poppler", "wellfriendpdf_vs_pdfium", "wellfriendpdf_vs_mupdf"]]
+    if any(pair.get("status") != "computed" for pair in wellfriendpdf_pairs):
         return False
-    max_mean = max(float(pair.get("mean_abs_error", 999.0)) for pair in oxide_pairs)
-    max_changed8 = max(float(pair.get("changed_pixel_threshold8_percentage", 1.0)) for pair in oxide_pairs)
+    max_mean = max(float(pair.get("mean_abs_error", 999.0)) for pair in wellfriendpdf_pairs)
+    max_changed8 = max(float(pair.get("changed_pixel_threshold8_percentage", 1.0)) for pair in wellfriendpdf_pairs)
     return max_mean <= 6.0 and max_changed8 <= 0.07
 
 
@@ -526,7 +526,7 @@ def count_outliers(pages: list[dict[str, Any]]) -> int:
         1
         for page in pages
         if page["prompt10_classification"]
-        in {"all_references_agree_oxide_mismatch", "oxide_render_failure", "dimension_mismatch"}
+        in {"all_references_agree_wellfriendpdf_mismatch", "wellfriendpdf_render_failure", "dimension_mismatch"}
     )
 
 
@@ -548,13 +548,13 @@ def render_html(pages: list[dict[str, Any]], summary: dict[str, Any]) -> None:
             f"<td>{html.escape(page['category'])}</td>"
             f"<td>{html.escape(page['prompt10_classification'])}</td>"
             f"<td>{html.escape(page['raw_prompt06b_classification'])}</td>"
-            f"<td>{html.escape(page['renders']['oxide']['status'])}</td>"
+            f"<td>{html.escape(page['renders']['wellfriendpdf']['status'])}</td>"
             f"<td>{html.escape(page['renders']['poppler']['status'])}</td>"
             f"<td>{html.escape(page['renders']['pdfium']['status'])}</td>"
             f"<td>{html.escape(page['renders']['mupdf']['status'])}</td>"
-            f"<td>{pairs['oxide_vs_poppler'].get('changed_pixel_threshold8_percentage', '')}</td>"
-            f"<td>{pairs['oxide_vs_pdfium'].get('changed_pixel_threshold8_percentage', '')}</td>"
-            f"<td>{pairs['oxide_vs_mupdf'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_poppler'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_pdfium'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_mupdf'].get('changed_pixel_threshold8_percentage', '')}</td>"
             "</tr>"
         )
     policy_rows = [
@@ -575,12 +575,12 @@ def render_html(pages: list[dict[str, Any]], summary: dict[str, Any]) -> None:
         "th{background:#f1f5f9;text-align:left}</style>"
         "<h1>Prompt 10 CJK/RTL/Color Glyph Reference Harness</h1>"
         f"<p>Rendered pages: {summary['page_count']}. Policy rows: {summary['policy_row_count']}. "
-        f"Oxide outliers: {summary['oxide_outlier_failures']}. "
+        f"Wellfriend outliers: {summary['wellfriendpdf_outlier_failures']}. "
         f"Unclassified: {summary['unclassified_failures']}.</p>"
         "<h2>Classification Counts</h2><pre>"
         f"{html.escape(json.dumps(summary['classification_counts'], indent=2, sort_keys=True))}</pre>"
         "<h2>Pages</h2><table><tr><th>Fixture</th><th>Category</th><th>Prompt 10</th>"
-        "<th>Raw</th><th>Oxide</th><th>Poppler</th><th>PDFium</th><th>MuPDF</th>"
+        "<th>Raw</th><th>Wellfriend</th><th>Poppler</th><th>PDFium</th><th>MuPDF</th>"
         "<th>Ox/Pop changed8</th><th>Ox/PDFium changed8</th><th>Ox/MuPDF changed8</th></tr>"
         + "\n".join(rows + policy_rows)
         + "</table>",
@@ -593,7 +593,7 @@ def run_feature_report(timeout: int) -> dict[str, Any]:
         "cargo",
         "run",
         "-p",
-        "oxide-cli",
+        "wellfriendpdf-cli",
         "--quiet",
         "--",
         "feature-report",
@@ -623,17 +623,17 @@ def write_binding_parity(feature_report: dict[str, Any] | None) -> None:
         {
             "schema_version": 1,
             "kind": "prompt10_binding_report_parity",
-            "shared_report_surface": "oxide_engine::sdk::feature_report_json",
+            "shared_report_surface": "wellfriendpdf_engine::sdk::feature_report_json",
             "feature_report": feature_report or {"status": "skipped"},
             "bindings": {
                 "rust_sdk": "shared facade",
-                "cli": "oxide feature-report",
-                "python": "oxide.feature_report()",
-                "c_abi": "oxide_feature_report_json",
+                "cli": "wellfriendpdf feature-report",
+                "python": "wellfriendpdf.feature_report()",
+                "c_abi": "wellfriendpdf_feature_report_json",
                 "wasm": "feature_report_json",
-                "dotnet": "OxideDocument.FeatureReportJson",
-                "java_maven": "Oxide.featureReportJson",
-                "java_gradle": "Oxide.featureReportJson",
+                "dotnet": "WellfriendDocument.FeatureReportJson",
+                "java_maven": "WellfriendPdf.featureReportJson",
+                "java_gradle": "WellfriendPdf.featureReportJson",
             },
         },
     )
@@ -641,7 +641,7 @@ def write_binding_parity(feature_report: dict[str, Any] | None) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--limit", type=int, default=0, help="Limit rendered available corpus pages; 0 renders all.")
@@ -657,19 +657,19 @@ def main() -> int:
     render_payload: dict[str, Any] | None = None
     if not args.skip_render:
         manifest = bootstrap_reference_manifest(args.dpi, args.timeout, args.allow_missing_reference_tools)
-        render_payload = render_compare(entries, manifest, args.oxide_bin, args.dpi, args.timeout, args.limit)
+        render_payload = render_compare(entries, manifest, args.wellfriendpdf_bin, args.dpi, args.timeout, args.limit)
 
     feature_payload = None if args.skip_feature_report else run_feature_report(args.timeout)
     write_binding_parity(feature_payload)
     write_capability_matrix(entries, render_payload["summary"] if render_payload else None)
 
     summary = render_payload["summary"] if render_payload else {
-        "oxide_outlier_failures": None,
+        "wellfriendpdf_outlier_failures": None,
         "unclassified_failures": None,
         "classification_counts": {},
     }
     status = "passed"
-    if render_payload and (summary["oxide_outlier_failures"] or summary["unclassified_failures"]):
+    if render_payload and (summary["wellfriendpdf_outlier_failures"] or summary["unclassified_failures"]):
         status = "failed"
     if feature_payload and feature_payload["status"] != "passed":
         status = "failed"
@@ -680,7 +680,7 @@ def main() -> int:
                 "status": status,
                 "available_pages": sum(1 for entry in entries if entry["available"]),
                 "policy_rows": sum(1 for entry in entries if not entry["available"]),
-                "oxide_outlier_failures": summary["oxide_outlier_failures"],
+                "wellfriendpdf_outlier_failures": summary["wellfriendpdf_outlier_failures"],
                 "unclassified_failures": summary["unclassified_failures"],
                 "artifacts": {
                     "corpus": rel(CORPUS_MANIFEST),

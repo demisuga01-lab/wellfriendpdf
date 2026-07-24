@@ -1,0 +1,22 @@
+[build-system]
+requires = ["maturin>=1.14,<2"]
+build-backend = "maturin"
+
+[project]
+name = "wellfriendpdf"
+version = "0.1.0"
+description = "Python bindings for the Wellfriend PDF SDK engine"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT OR Apache-2.0"
+authors = [{ name = "Wellfriend PDF SDK" }]
+keywords = ["pdf", "parser", "extraction", "rendering"]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "Topic :: Text Processing",
+]
+
+[tool.maturin]
+module-name = "wellfriendpdf"
+features = ["pyo3/extension-module"]

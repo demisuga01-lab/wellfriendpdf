@@ -1,7 +1,7 @@
 {
   "tools": {
-    "oxide": true,
-    "oxide_ocr": true,
+    "wellfriendpdf": true,
+    "wellfriendpdf_ocr": true,
     "pymupdf": true,
     "pdftotext": true,
     "qpdf": true,
@@ -13,7 +13,7 @@
       "doc_type": "generic",
       "mode": "digital",
       "tools": {
-        "oxide_text": {
+        "wellfriendpdf_text": {
           "time_s": 0.0273,
           "cer": 0.4019607843137255,
           "char_accuracy": 0.5980392156862745,
@@ -35,7 +35,7 @@
           "wer": 0.0,
           "word_accuracy": 1.0
         },
-        "oxide_structure": {
+        "wellfriendpdf_structure": {
           "block_type_accuracy": 0.75
         }
       }
@@ -44,7 +44,7 @@
       "doc_type": "invoice",
       "mode": "digital",
       "tools": {
-        "oxide_tables": {
+        "wellfriendpdf_tables": {
           "time_s": 0.0252,
           "table_cell_f1": 1.0,
           "table_teds": 1.0
@@ -54,7 +54,7 @@
           "table_cell_f1": 0.0,
           "table_teds": 0.0
         },
-        "oxide_fields": {
+        "wellfriendpdf_fields": {
           "time_s": 0.0185,
           "field_precision": 1.0,
           "field_recall": 1.0,
@@ -66,7 +66,7 @@
       "doc_type": "invoice",
       "mode": "scanned",
       "tools": {
-        "oxide_tables": {
+        "wellfriendpdf_tables": {
           "time_s": 3.565,
           "table_cell_f1": 1.0,
           "table_teds": 1.0
@@ -76,7 +76,7 @@
           "table_cell_f1": 0.0,
           "table_teds": 0.0
         },
-        "oxide_fields": {
+        "wellfriendpdf_fields": {
           "time_s": 3.5164,
           "field_precision": 0.8571428571428571,
           "field_recall": 0.8571428571428571,
@@ -88,7 +88,7 @@
       "doc_type": "generic",
       "mode": "digital",
       "tools": {
-        "oxide_text": {
+        "wellfriendpdf_text": {
           "time_s": 0.0271,
           "cer": 0.006993006993006993,
           "char_accuracy": 0.993006993006993,
@@ -110,7 +110,7 @@
           "wer": 0.0,
           "word_accuracy": 1.0
         },
-        "oxide_structure": {
+        "wellfriendpdf_structure": {
           "block_type_accuracy": 0.2222222222222222
         }
       }
@@ -119,7 +119,7 @@
       "doc_type": "generic",
       "mode": "scanned",
       "tools": {
-        "oxide_text": {
+        "wellfriendpdf_text": {
           "time_s": 3.5897,
           "cer": 0.05827505827505827,
           "char_accuracy": 0.9417249417249417,
@@ -141,7 +141,7 @@
           "wer": 1.0,
           "word_accuracy": 0.0
         },
-        "oxide_structure": {
+        "wellfriendpdf_structure": {
           "block_type_accuracy": 0.0
         }
       }
@@ -150,7 +150,7 @@
       "doc_type": "receipt",
       "mode": "digital",
       "tools": {
-        "oxide_fields": {
+        "wellfriendpdf_fields": {
           "time_s": 0.0264,
           "field_precision": 0.8,
           "field_recall": 0.8,
@@ -162,7 +162,7 @@
       "doc_type": "generic",
       "mode": "digital",
       "tools": {
-        "oxide_text": {
+        "wellfriendpdf_text": {
           "time_s": 0.0258,
           "cer": 0.39490445859872614,
           "char_accuracy": 0.6050955414012739,
@@ -184,7 +184,7 @@
           "wer": 0.5471698113207547,
           "word_accuracy": 0.4528301886792453
         },
-        "oxide_structure": {
+        "wellfriendpdf_structure": {
           "block_type_accuracy": 0.0
         }
       }
@@ -193,7 +193,7 @@
       "doc_type": "generic",
       "mode": "digital",
       "tools": {
-        "oxide_text": {
+        "wellfriendpdf_text": {
           "time_s": 0.0265,
           "cer": 0.0,
           "char_accuracy": 1.0,
@@ -215,7 +215,7 @@
           "wer": 0.0,
           "word_accuracy": 1.0
         },
-        "oxide_tables": {
+        "wellfriendpdf_tables": {
           "time_s": 0.0156,
           "table_cell_f1": 1.0,
           "table_teds": 1.0
@@ -225,7 +225,7 @@
           "table_cell_f1": 1.0,
           "table_teds": 1.0
         },
-        "oxide_structure": {
+        "wellfriendpdf_structure": {
           "block_type_accuracy": 0.5
         }
       }
@@ -234,7 +234,7 @@
       "doc_type": "generic",
       "mode": "scanned",
       "tools": {
-        "oxide_text": {
+        "wellfriendpdf_text": {
           "time_s": 3.5034,
           "cer": 0.3508771929824561,
           "char_accuracy": 0.6491228070175439,
@@ -256,7 +256,7 @@
           "wer": 1.0,
           "word_accuracy": 0.0
         },
-        "oxide_tables": {
+        "wellfriendpdf_tables": {
           "time_s": 3.799,
           "table_cell_f1": 1.0,
           "table_teds": 1.0
@@ -266,23 +266,23 @@
           "table_cell_f1": 0.0,
           "table_teds": 0.0
         },
-        "oxide_structure": {
+        "wellfriendpdf_structure": {
           "block_type_accuracy": 0.0
         }
       }
     }
   },
   "structural_ops": {
-    "oxide_info_time_s": 0.0247,
-    "oxide_page_count": 14,
+    "wellfriendpdf_info_time_s": 0.0247,
+    "wellfriendpdf_page_count": 14,
     "qpdf_linearize_ok": true,
     "qpdf_linearize_time_s": 0.1395,
     "qpdf_check_linearized_ok": true,
     "qpdf_page_count": 14,
     "page_count_agree": true,
-    "oxide_split_ok": true,
-    "oxide_split_time_s": 0.0643,
-    "oxide_split_parts": 14,
-    "qpdf_validated_oxide_parts_of_5": 5
+    "wellfriendpdf_split_ok": true,
+    "wellfriendpdf_split_time_s": 0.0643,
+    "wellfriendpdf_split_parts": 14,
+    "qpdf_validated_wellfriendpdf_parts_of_5": 5
   }
 }

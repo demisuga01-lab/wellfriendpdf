@@ -11,8 +11,8 @@ pub async fn readiness() -> axum::Json<serde_json::Value> {
 
 pub async fn version() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({
-        "product": "Oxide",
+        "product": "Wellfriend",
         "version": env!("CARGO_PKG_VERSION"),
-        "engine": oxide_engine::ENGINE_VERSION,
+        "engine": wellfriendpdf_engine::ENGINE_VERSION,
     }))
 }

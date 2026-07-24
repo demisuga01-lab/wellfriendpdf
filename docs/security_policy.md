@@ -25,7 +25,7 @@ Fuzz targets should compile on every release candidate. Long fuzz runs are expec
 
 ## Sandboxing
 
-Oxide does not execute PDF active content. Integrators running untrusted files at scale should still combine Oxide with process/container sandboxing, CPU/memory/time limits, and storage isolation.
+Wellfriend does not execute PDF active content. Integrators running untrusted files at scale should still combine Wellfriend with process/container sandboxing, CPU/memory/time limits, and storage isolation.
 
 Prompt 03 adds optional codec subprocess isolation for bounded lossless filter
 decode work. This contains worker crashes, timeouts, malformed worker responses,

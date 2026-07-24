@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{XfaDiagnostic, XfaLimits};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 
 #[derive(Debug, Clone)]
 pub(crate) struct XmlAttribute {
@@ -111,11 +111,12 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
             limits.max_xml_bytes
         )));
     }
-    let input = std::str::from_utf8(bytes)
-        .map_err(|err| OxideError::MalformedPdf(format!("XFA XML is not valid UTF-8: {err}")))?;
+    let input = std::str::from_utf8(bytes).map_err(|err| {
+        WellfriendError::MalformedPdf(format!("XFA XML is not valid UTF-8: {err}"))
+    })?;
     let lower = input.to_ascii_lowercase();
     if lower.contains("<!doctype") || lower.contains("<!entity") {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "XFA XML DTD/entity declarations are forbidden".to_string(),
         ));
     }
@@ -145,7 +146,7 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
                 if let Some(current) = stack.last_mut() {
                     current.node.text.push_str(&text);
                 } else {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "XFA XML has non-whitespace text outside the root".to_string(),
                     ));
                 }
@@ -158,7 +159,9 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
             let end = input[pos + 4..]
                 .find("-->")
                 .map(|offset| pos + 4 + offset + 3)
-                .ok_or_else(|| OxideError::MalformedPdf("unterminated XFA XML comment".into()))?;
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf("unterminated XFA XML comment".into())
+                })?;
             pos = end;
             continue;
         }
@@ -167,7 +170,9 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
                 .find("?>")
                 .map(|offset| pos + 2 + offset + 2)
                 .ok_or_else(|| {
-                    OxideError::MalformedPdf("unterminated XFA XML processing instruction".into())
+                    WellfriendError::MalformedPdf(
+                        "unterminated XFA XML processing instruction".into(),
+                    )
                 })?;
             pos = end;
             continue;
@@ -176,7 +181,9 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
             let end_start = input[pos + 9..]
                 .find("]]>")
                 .map(|offset| pos + 9 + offset)
-                .ok_or_else(|| OxideError::MalformedPdf("unterminated XFA XML CDATA".into()))?;
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf("unterminated XFA XML CDATA".into())
+                })?;
             let text = &input[pos + 9..end_start];
             if text.len() > limits.max_text_node_bytes {
                 return Err(resource_limit(format!(
@@ -186,14 +193,14 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
             }
             metrics.text_bytes = metrics.text_bytes.saturating_add(text.len());
             let current = stack.last_mut().ok_or_else(|| {
-                OxideError::MalformedPdf("XFA XML CDATA appears outside the root".into())
+                WellfriendError::MalformedPdf("XFA XML CDATA appears outside the root".into())
             })?;
             current.node.text.push_str(text);
             pos = end_start + 3;
             continue;
         }
         if input[pos..].starts_with("<!") {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "unsupported XFA XML declaration; DTD/entity expansion is disabled".to_string(),
             ));
         }
@@ -201,16 +208,20 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
             let close = input[pos + 2..]
                 .find('>')
                 .map(|offset| pos + 2 + offset)
-                .ok_or_else(|| OxideError::MalformedPdf("unterminated XFA XML end tag".into()))?;
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf("unterminated XFA XML end tag".into())
+                })?;
             let name = input[pos + 2..close].trim();
             if name.is_empty() || name.chars().any(char::is_whitespace) {
-                return Err(OxideError::MalformedPdf("invalid XFA XML end tag".into()));
+                return Err(WellfriendError::MalformedPdf(
+                    "invalid XFA XML end tag".into(),
+                ));
             }
             let mut finished = stack.pop().ok_or_else(|| {
-                OxideError::MalformedPdf(format!("unexpected XFA XML end tag </{name}>"))
+                WellfriendError::MalformedPdf(format!("unexpected XFA XML end tag </{name}>"))
             })?;
             if finished.node.name != name {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "mismatched XFA XML end tag: expected </{}>, found </{name}>",
                     finished.node.name
                 )));
@@ -271,13 +282,13 @@ pub(crate) fn parse_xml(bytes: &[u8], limits: &XfaLimits) -> Result<ParsedXml> {
     }
 
     if let Some(open) = stack.last() {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "unterminated XFA XML element <{}>",
             open.node.name
         )));
     }
     let root =
-        root.ok_or_else(|| OxideError::MalformedPdf("XFA XML has no root element".into()))?;
+        root.ok_or_else(|| WellfriendError::MalformedPdf("XFA XML has no root element".into()))?;
     diagnostics.push(XfaDiagnostic::info(
         "xfa.xml.external_access_disabled",
         "external entities, DTD retrieval, network, and filesystem access are disabled",
@@ -304,7 +315,9 @@ fn parse_start_tag(
         pos += 1;
     }
     if pos == name_start {
-        return Err(OxideError::MalformedPdf("invalid XFA XML start tag".into()));
+        return Err(WellfriendError::MalformedPdf(
+            "invalid XFA XML start tag".into(),
+        ));
     }
     let name = input[name_start..pos].to_string();
     let mut attributes = Vec::new();
@@ -314,7 +327,7 @@ fn parse_start_tag(
     loop {
         skip_ws(bytes, &mut pos);
         if pos >= bytes.len() {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "unterminated XFA XML start tag".into(),
             ));
         }
@@ -332,29 +345,29 @@ fn parse_start_tag(
             pos += 1;
         }
         if pos == attr_start {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "invalid attribute in XFA XML element <{name}>"
             )));
         }
         let attr_name = input[attr_start..pos].to_string();
         if !seen.insert(attr_name.clone()) {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "duplicate XFA XML attribute {attr_name}"
             )));
         }
         skip_ws(bytes, &mut pos);
         if bytes.get(pos) != Some(&b'=') {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "XFA XML attribute {attr_name} has no value"
             )));
         }
         pos += 1;
         skip_ws(bytes, &mut pos);
         let quote = *bytes.get(pos).ok_or_else(|| {
-            OxideError::MalformedPdf(format!("XFA XML attribute {attr_name} has no quote"))
+            WellfriendError::MalformedPdf(format!("XFA XML attribute {attr_name} has no quote"))
         })?;
         if quote != b'\'' && quote != b'"' {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "XFA XML attribute {attr_name} must be quoted"
             )));
         }
@@ -364,7 +377,7 @@ fn parse_start_tag(
             pos += 1;
         }
         if pos >= bytes.len() {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "unterminated XFA XML attribute {attr_name}"
             )));
         }
@@ -409,7 +422,7 @@ fn attach_finished(
     if let Some(parent) = stack.last_mut() {
         parent.node.children.push(node);
     } else if root.replace(node).is_some() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "XFA XML contains multiple root elements".to_string(),
         ));
     }
@@ -429,7 +442,7 @@ fn decode_entities(raw: &str, limits: &XfaLimits, metrics: &mut XmlMetrics) -> R
             .find(';')
             .map(|offset| amp + 1 + offset)
             .ok_or_else(|| {
-                OxideError::MalformedPdf("unterminated XFA XML entity reference".into())
+                WellfriendError::MalformedPdf("unterminated XFA XML entity reference".into())
             })?;
         metrics.entity_references = metrics.entity_references.saturating_add(1);
         if metrics.entity_references > limits.max_entity_references {
@@ -452,7 +465,7 @@ fn decode_entities(raw: &str, limits: &XfaLimits, metrics: &mut XmlMetrics) -> R
                 push_numeric_entity(&mut out, &numeric[1..], 10)?
             }
             _ => {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "unsupported XFA XML entity reference &{entity};"
                 )))
             }
@@ -465,10 +478,10 @@ fn decode_entities(raw: &str, limits: &XfaLimits, metrics: &mut XmlMetrics) -> R
 
 fn push_numeric_entity(out: &mut String, digits: &str, radix: u32) -> Result<()> {
     let value = u32::from_str_radix(digits, radix)
-        .map_err(|_| OxideError::MalformedPdf("invalid XFA XML numeric entity".into()))?;
+        .map_err(|_| WellfriendError::MalformedPdf("invalid XFA XML numeric entity".into()))?;
     let ch = char::from_u32(value)
         .filter(|ch| !matches!(*ch as u32, 0xD800..=0xDFFF))
-        .ok_or_else(|| OxideError::MalformedPdf("invalid XFA XML code point".into()))?;
+        .ok_or_else(|| WellfriendError::MalformedPdf("invalid XFA XML code point".into()))?;
     out.push(ch);
     Ok(())
 }
@@ -493,8 +506,8 @@ fn local_name(name: &str) -> &str {
         .unwrap_or(name)
 }
 
-fn resource_limit(message: String) -> OxideError {
-    OxideError::ResourceLimit(message)
+fn resource_limit(message: String) -> WellfriendError {
+    WellfriendError::ResourceLimit(message)
 }
 
 pub(crate) fn serialize_sanitized(

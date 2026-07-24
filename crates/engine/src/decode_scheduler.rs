@@ -5,7 +5,7 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::cancel::CancelToken;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::DecodeLimits;
 use crate::images::locator::ImageReference;
 use crate::object::{PdfDictionary, PdfObject};
@@ -151,18 +151,20 @@ impl DecodeMemoryBudget {
     pub fn acquire(self: &Arc<Self>, requested: u64) -> Result<DecodeMemoryToken> {
         let requested = requested.max(1);
         if requested > self.limit {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "decode job requested {requested} bytes, exceeding scheduler budget {}",
                 self.limit
             )));
         }
         let mut state = self.state.lock().map_err(|_| {
-            OxideError::ParseError("decode scheduler memory budget lock poisoned".to_string())
+            WellfriendError::ParseError("decode scheduler memory budget lock poisoned".to_string())
         })?;
         while state.reserved + requested > self.limit {
             state.waits += 1;
             state = self.available.wait(state).map_err(|_| {
-                OxideError::ParseError("decode scheduler memory budget lock poisoned".to_string())
+                WellfriendError::ParseError(
+                    "decode scheduler memory budget lock poisoned".to_string(),
+                )
             })?;
         }
         state.reserved += requested;
@@ -375,7 +377,7 @@ mod tests {
             ..DecodeLimits::default()
         };
         let jobs = vec![ScheduledDecodeJob::new(0, 8, || {
-            Ok::<_, OxideError>(b"nope")
+            Ok::<_, WellfriendError>(b"nope")
         })];
         let (results, _) = run_scheduled_decode_jobs(jobs, &limits);
         assert!(results[0].is_err());

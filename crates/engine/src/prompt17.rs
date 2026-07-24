@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::editing::{EditMode, ImageRedactionPolicy, PdfEditor, RedactionOptions};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
@@ -23,7 +23,7 @@ use crate::{ContentEngine, PdfDocument};
 
 pub const PROMPT17_SCHEMA_VERSION: &str = "prompt17.annotation-xfdf-media-redaction.v1";
 pub const XFDF_NAMESPACE: &str = "http://ns.adobe.com/xfdf/";
-pub const OXIDE_XFDF_NAMESPACE: &str = "urn:oxidepdf:xfdf:prompt17";
+pub const WELLFRIENDPDF_XFDF_NAMESPACE: &str = "urn:wellfriendpdf:xfdf:prompt17";
 
 const MAX_XFDF_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ANNOTATIONS: usize = 20_000;
@@ -269,7 +269,7 @@ pub fn export_annotation_xfdf(
 
 pub fn parse_annotation_xfdf(bytes: &[u8]) -> Result<AnnotationXfdfDocument> {
     if bytes.len() > MAX_XFDF_BYTES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "annotation XFDF input is {} bytes, exceeding cap {MAX_XFDF_BYTES}",
             bytes.len()
         )));
@@ -284,12 +284,12 @@ pub fn parse_annotation_xfdf(bytes: &[u8]) -> Result<AnnotationXfdfDocument> {
         ..crate::xfa::XfaLimits::default()
     };
     let parsed = parse_xml(bytes, &limits).map_err(|err| {
-        OxideError::MalformedPdf(format!("secure annotation XFDF parse failed: {err}"))
+        WellfriendError::MalformedPdf(format!("secure annotation XFDF parse failed: {err}"))
     })?;
     if parsed.root.local_name != "xfdf"
         || parsed.root.namespace_uri.as_deref() != Some(XFDF_NAMESPACE)
     {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "annotation XFDF root must be {{{XFDF_NAMESPACE}}}xfdf"
         )));
     }
@@ -310,10 +310,10 @@ pub fn parse_annotation_xfdf(bytes: &[u8]) -> Result<AnnotationXfdfDocument> {
         })
         .unwrap_or_default();
     let annots = parsed.root.child("annots").ok_or_else(|| {
-        OxideError::MalformedPdf("annotation XFDF has no <annots> element".to_string())
+        WellfriendError::MalformedPdf("annotation XFDF has no <annots> element".to_string())
     })?;
     if annots.children.len() > MAX_ANNOTATIONS {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "annotation XFDF has {} annotations, exceeding cap {MAX_ANNOTATIONS}",
             annots.children.len()
         )));
@@ -336,7 +336,7 @@ pub fn parse_annotation_xfdf(bytes: &[u8]) -> Result<AnnotationXfdfDocument> {
         }
     }
     if geometry_values > MAX_GEOMETRY_VALUES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "annotation XFDF geometry has {geometry_values} values, exceeding cap {MAX_GEOMETRY_VALUES}"
         )));
     }
@@ -357,7 +357,7 @@ pub fn parse_annotation_xfdf(bytes: &[u8]) -> Result<AnnotationXfdfDocument> {
         .filter(|record| record.reply_to.is_some() || record.popup_for.is_some())
         .count();
     if relationship_count > MAX_RELATIONSHIPS {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "annotation XFDF has {relationship_count} relationships, exceeding cap {MAX_RELATIONSHIPS}"
         )));
     }
@@ -405,7 +405,7 @@ fn annotation_xfdf_document(document: &PdfDocument) -> Result<AnnotationXfdfDocu
         }
     }
     if entries.len() > MAX_ANNOTATIONS {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "PDF has {} annotations, exceeding XFDF cap {MAX_ANNOTATIONS}",
             entries.len()
         )));
@@ -553,8 +553,8 @@ fn write_annotation_xfdf(document: &AnnotationXfdfDocument) -> String {
     let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str("<xfdf xmlns=\"");
     out.push_str(XFDF_NAMESPACE);
-    out.push_str("\" xmlns:oxide=\"");
-    out.push_str(OXIDE_XFDF_NAMESPACE);
+    out.push_str("\" xmlns:wellfriendpdf=\"");
+    out.push_str(WELLFRIENDPDF_XFDF_NAMESPACE);
     out.push_str("\" xml:space=\"preserve\">\n");
     if let Some(href) = &document.href {
         out.push_str("  <f href=\"");
@@ -627,22 +627,34 @@ fn write_annotation_xfdf(document: &AnnotationXfdfDocument) -> String {
                 "false"
             },
         );
-        write_opt_attr(&mut out, "oxide:subtype", Some(record.subtype.clone()));
-        write_opt_attr(&mut out, "oxide:blend-mode", record.blend_mode.clone());
-        write_opt_attr(&mut out, "oxide:ocg", record.ocg_object.clone());
-        write_opt_attr(&mut out, "oxide:widget-field", record.widget_field.clone());
         write_opt_attr(
             &mut out,
-            "oxide:attachment-name",
+            "wellfriendpdf:subtype",
+            Some(record.subtype.clone()),
+        );
+        write_opt_attr(
+            &mut out,
+            "wellfriendpdf:blend-mode",
+            record.blend_mode.clone(),
+        );
+        write_opt_attr(&mut out, "wellfriendpdf:ocg", record.ocg_object.clone());
+        write_opt_attr(
+            &mut out,
+            "wellfriendpdf:widget-field",
+            record.widget_field.clone(),
+        );
+        write_opt_attr(
+            &mut out,
+            "wellfriendpdf:attachment-name",
             record.attachment_name.clone(),
         );
         write_opt_attr(
             &mut out,
-            "oxide:provenance",
+            "wellfriendpdf:provenance",
             Some(record.provenance.clone()),
         );
         for (key, value) in &record.custom_data {
-            write_attr(&mut out, &format!("oxide:custom-{key}"), value);
+            write_attr(&mut out, &format!("wellfriendpdf:custom-{key}"), value);
         }
         let has_children = record.contents.is_some()
             || record.safe_rich_text.is_some()
@@ -671,7 +683,7 @@ fn write_annotation_xfdf(document: &AnnotationXfdfDocument) -> String {
             out.push_str("</gesture></inklist>\n");
         }
         if let Some(action) = &record.action {
-            out.push_str("      <oxide:action");
+            out.push_str("      <wellfriendpdf:action");
             write_attr(&mut out, "kind", &action.kind);
             write_attr(&mut out, "safe", if action.safe { "true" } else { "false" });
             write_opt_attr(&mut out, "target-kind", action.target_kind.clone());
@@ -705,26 +717,27 @@ fn parse_annotation_node(
         .or_else(|| node.attr("id"))
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| {
-            OxideError::MalformedPdf(format!(
+            WellfriendError::MalformedPdf(format!(
                 "annotation XFDF <{}> is missing a stable name/id",
                 node.name
             ))
         })?
         .to_string();
-    let page_zero = parse_usize_attr(node, "page")?
-        .ok_or_else(|| OxideError::MalformedPdf(format!("annotation XFDF '{}' has no page", id)))?;
+    let page_zero = parse_usize_attr(node, "page")?.ok_or_else(|| {
+        WellfriendError::MalformedPdf(format!("annotation XFDF '{}' has no page", id))
+    })?;
     let page = page_zero.checked_add(1).ok_or_else(|| {
-        OxideError::MalformedPdf(format!("annotation XFDF '{}' page overflows", id))
+        WellfriendError::MalformedPdf(format!("annotation XFDF '{}' page overflows", id))
     })?;
     let subtype = node
-        .attr("oxide:subtype")
+        .attr("wellfriendpdf:subtype")
         .or_else(|| node.attr("subtype"))
         .unwrap_or(default_subtype)
         .to_string();
     let rect = parse_number_attr(node, "rect")?.and_then(vec4);
     if let Some(rect) = rect {
         if !rect.iter().all(|value| value.is_finite()) || rect[0] == rect[2] || rect[1] == rect[3] {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "annotation XFDF '{}' has malformed or empty rect",
                 id
             )));
@@ -748,7 +761,7 @@ fn parse_annotation_node(
         {
             let values = parse_numbers(&gesture.plain_text(), &id, "ink gesture")?;
             if values.len() % 2 != 0 || values.len() < 4 {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "annotation XFDF '{}' ink gesture must contain point pairs",
                     id
                 )));
@@ -782,9 +795,9 @@ fn parse_annotation_node(
         .collect();
     let mut custom_data = BTreeMap::new();
     for attribute in &node.attributes {
-        if let Some(key) = attribute.name.strip_prefix("oxide:custom-") {
+        if let Some(key) = attribute.name.strip_prefix("wellfriendpdf:custom-") {
             if custom_data.len() >= MAX_CUSTOM_FIELDS {
-                return Err(OxideError::ResourceLimit(format!(
+                return Err(WellfriendError::ResourceLimit(format!(
                     "annotation XFDF '{}' custom field count exceeds cap {MAX_CUSTOM_FIELDS}",
                     id
                 )));
@@ -811,7 +824,7 @@ fn parse_annotation_node(
         color: parse_number_attr(node, "color")?.unwrap_or_default(),
         interior_color: parse_number_attr(node, "interior-color")?.unwrap_or_default(),
         opacity: parse_f64_attr(node, "opacity")?,
-        blend_mode: node.attr("oxide:blend-mode").map(str::to_string),
+        blend_mode: node.attr("wellfriendpdf:blend-mode").map(str::to_string),
         rotation: parse_i64_attr(node, "rotation")?,
         flags: parse_i64_attr(node, "flags")?,
         author: node.attr("title").map(str::to_string),
@@ -829,9 +842,11 @@ fn parse_annotation_node(
         popup_for: node.attr("popup-for").map(str::to_string),
         line_endings,
         repeat_overlay: matches!(node.attr("repeat"), Some("true" | "1")),
-        ocg_object: node.attr("oxide:ocg").map(str::to_string),
-        widget_field: node.attr("oxide:widget-field").map(str::to_string),
-        attachment_name: node.attr("oxide:attachment-name").map(str::to_string),
+        ocg_object: node.attr("wellfriendpdf:ocg").map(str::to_string),
+        widget_field: node.attr("wellfriendpdf:widget-field").map(str::to_string),
+        attachment_name: node
+            .attr("wellfriendpdf:attachment-name")
+            .map(str::to_string),
         action,
         appearance: AnnotationAppearanceMetadata {
             generation_posture: "regenerate_by_import_policy".to_string(),
@@ -839,7 +854,7 @@ fn parse_annotation_node(
         },
         custom_data,
         provenance: node
-            .attr("oxide:provenance")
+            .attr("wellfriendpdf:provenance")
             .unwrap_or("xfdf_import")
             .to_string(),
         diagnostics: Vec::new(),
@@ -889,7 +904,7 @@ fn stable_annotation_id(
     let seed = format!("p{page}|a{index}|{subtype}|{rect}|{contents}");
     let digest = resource_digest(seed.as_bytes());
     (
-        format!("oxide-p17-p{page}-a{index}-{}", &digest[..12]),
+        format!("wellfriendpdf-p17-p{page}-a{index}-{}", &digest[..12]),
         "generated_stable_id".to_string(),
     )
 }
@@ -1085,7 +1100,7 @@ fn parse_numbers(value: &str, id: &str, field: &str) -> Result<Vec<f64>> {
         .filter(|part| !part.is_empty())
         .map(|part| {
             part.parse::<f64>().map_err(|_| {
-                OxideError::MalformedPdf(format!(
+                WellfriendError::MalformedPdf(format!(
                     "annotation XFDF '{}' has invalid number '{}' in {}",
                     id, part, field
                 ))
@@ -1093,7 +1108,7 @@ fn parse_numbers(value: &str, id: &str, field: &str) -> Result<Vec<f64>> {
         })
         .collect::<Result<Vec<_>>>()?;
     if values.iter().any(|value| !value.is_finite()) {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "annotation XFDF '{}' has non-finite geometry in {}",
             id, field
         )));
@@ -1105,7 +1120,7 @@ fn parse_usize_attr(node: &XmlNode, name: &str) -> Result<Option<usize>> {
     node.attr(name)
         .map(|value| {
             value.parse::<usize>().map_err(|_| {
-                OxideError::MalformedPdf(format!(
+                WellfriendError::MalformedPdf(format!(
                     "annotation XFDF '{}' has invalid {}",
                     node.attr("name").unwrap_or("unknown"),
                     name
@@ -1119,7 +1134,7 @@ fn parse_i64_attr(node: &XmlNode, name: &str) -> Result<Option<i64>> {
     node.attr(name)
         .map(|value| {
             value.parse::<i64>().map_err(|_| {
-                OxideError::MalformedPdf(format!(
+                WellfriendError::MalformedPdf(format!(
                     "annotation XFDF '{}' has invalid {}",
                     node.attr("name").unwrap_or("unknown"),
                     name
@@ -1137,7 +1152,7 @@ fn parse_f64_attr(node: &XmlNode, name: &str) -> Result<Option<f64>> {
                 .ok()
                 .filter(|number| number.is_finite())
                 .ok_or_else(|| {
-                    OxideError::MalformedPdf(format!(
+                    WellfriendError::MalformedPdf(format!(
                         "annotation XFDF '{}' has invalid {}",
                         node.attr("name").unwrap_or("unknown"),
                         name
@@ -1440,7 +1455,7 @@ pub fn import_annotation_xfdf_pdf(
     let mut unique = BTreeMap::<String, AnnotationXfdfRecord>::new();
     for record in imported.annotations {
         if record.page == 0 || record.page > pages.len() {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "annotation XFDF '{}' maps to page {}, but the PDF has {} pages",
                 record.id,
                 record.page,
@@ -1450,7 +1465,7 @@ pub fn import_annotation_xfdf_pdf(
         if unique.contains_key(&record.id) {
             duplicate_ids.push(record.id.clone());
             if options.conflict_policy == AnnotationConflictPolicy::Reject {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "annotation XFDF contains duplicate id '{}'",
                     record.id
                 )));
@@ -1477,7 +1492,7 @@ pub fn import_annotation_xfdf_pdf(
             if existing.page != record.page
                 && options.conflict_policy == AnnotationConflictPolicy::Reject
             {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "annotation XFDF '{}' page conflicts with the existing annotation",
                     record.id
                 )));
@@ -1493,7 +1508,7 @@ pub fn import_annotation_xfdf_pdf(
                 .with_annotation(&record.id, record.page),
             );
             if options.fail_on_unsupported {
-                return Err(OxideError::UnsupportedFeature(
+                return Err(WellfriendError::UnsupportedFeature(
                     "annotation XFDF cannot create a standalone Widget without an AcroForm field"
                         .to_string(),
                 ));
@@ -2074,7 +2089,7 @@ fn apply_record_to_annotation_dict(
         }
     }
     // Active content is intentionally stripped on import. Scalar custom data
-    // uses the private OxideData dictionary so it cannot be mistaken for an
+    // uses the private WellfriendData dictionary so it cannot be mistaken for an
     // action, file specification, or viewer extension.
     dict.remove("A");
     dict.remove("AA");
@@ -2083,7 +2098,7 @@ fn apply_record_to_annotation_dict(
         for (key, value) in record.custom_data.iter().take(MAX_CUSTOM_FIELDS) {
             custom.insert(sanitize_pdf_name(key), pdf_text_string(value));
         }
-        dict.insert("OxideData", PdfObject::Dictionary(custom));
+        dict.insert("WellfriendData", PdfObject::Dictionary(custom));
     }
 }
 
@@ -3011,14 +3026,14 @@ pub fn rich_media_inventory(
         )?;
     }
     if assets.len() > limits.max_assets {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "rich-media asset count {} exceeds cap {}",
             assets.len(),
             limits.max_assets
         )));
     }
     if total_embedded_bytes > limits.max_total_embedded_bytes {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "rich-media embedded bytes {total_embedded_bytes} exceed cap {}",
             limits.max_total_embedded_bytes
         )));
@@ -3191,7 +3206,7 @@ fn scan_media_object(
     total_bytes: &mut usize,
 ) -> Result<()> {
     if depth > limits.max_recursion_depth {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "rich-media metadata recursion exceeds cap {} at {location}",
             limits.max_recursion_depth
         )));
@@ -3304,7 +3319,7 @@ fn scan_media_dictionary(
     for key in ["URI", "URL"] {
         if let Some(value) = dict.get(key).and_then(pdf_text_or_name) {
             if value.len() > limits.max_url_length {
-                return Err(OxideError::ResourceLimit(format!(
+                return Err(WellfriendError::ResourceLimit(format!(
                     "rich-media URL length {} exceeds cap {} at {location}",
                     value.len(),
                     limits.max_url_length
@@ -3332,7 +3347,7 @@ fn scan_media_dictionary(
     }
     if dict.get_name("Type") == Some("EmbeddedFile") || raw.is_some_and(|_| is_embedded) {
         if assets.len() >= limits.max_assets {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "rich-media asset count exceeds cap {}",
                 limits.max_assets
             )));
@@ -3344,7 +3359,7 @@ fn scan_media_dictionary(
             .as_ref()
             .is_some_and(|value| value.len() > limits.max_mime_length)
         {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "rich-media MIME length exceeds cap {} at {location}",
                 limits.max_mime_length
             )));
@@ -3485,7 +3500,7 @@ pub fn plan_nonaxis_image_redaction(
     options: &NonAxisRedactionOptions,
 ) -> Result<NonAxisRedactionPlan> {
     if options.requests.len() > MAX_REDACTION_POLYGONS {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "non-axis redaction has {} polygons, exceeding cap {MAX_REDACTION_POLYGONS}",
             options.requests.len()
         )));
@@ -3496,7 +3511,7 @@ pub fn plan_nonaxis_image_redaction(
         .map(|request| request.polygon.len())
         .sum::<usize>();
     if total_points > MAX_REDACTION_POINTS {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "non-axis redaction has {total_points} points, exceeding cap {MAX_REDACTION_POINTS}"
         )));
     }
@@ -3507,14 +3522,14 @@ pub fn plan_nonaxis_image_redaction(
     let mut diagnostics = Vec::new();
     for request in &options.requests {
         if request.page == 0 || request.page > pages.len() {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "non-axis redaction page {} is out of range 1..={} ",
                 request.page,
                 pages.len()
             )));
         }
         if request.polygon.len() < 3 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "non-axis redaction page {} polygon has fewer than three points",
                 request.page
             )));
@@ -3525,7 +3540,7 @@ pub fn plan_nonaxis_image_redaction(
             .flatten()
             .any(|value| !value.is_finite())
         {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "non-axis redaction page {} polygon contains non-finite coordinates",
                 request.page
             )));
@@ -3656,7 +3671,9 @@ pub fn apply_nonaxis_image_redaction_pdf(
     }
     let output = editor.save_to_bytes(EditMode::FullRewrite)?;
     let output_engine = ContentEngine::open_bytes(output.clone()).map_err(|_| {
-        OxideError::MalformedPdf("non-axis redaction output failed reopen verification".to_string())
+        WellfriendError::MalformedPdf(
+            "non-axis redaction output failed reopen verification".to_string(),
+        )
     })?;
     let affected_pages = options
         .requests
@@ -3664,7 +3681,7 @@ pub fn apply_nonaxis_image_redaction_pdf(
         .map(|request| request.page)
         .collect::<BTreeSet<_>>();
     let input_inline = affected_pages.iter().try_fold(0usize, |total, page| {
-        Ok::<_, OxideError>(
+        Ok::<_, WellfriendError>(
             total
                 + engine
                     .find_page_images(*page)?
@@ -3674,7 +3691,7 @@ pub fn apply_nonaxis_image_redaction_pdf(
         )
     })?;
     let output_inline = affected_pages.iter().try_fold(0usize, |total, page| {
-        Ok::<_, OxideError>(
+        Ok::<_, WellfriendError>(
             total
                 + output_engine
                     .find_page_images(*page)?
@@ -3731,7 +3748,7 @@ fn map_redaction_polygon(
 
 fn polygon_bounds(points: &[[f64; 2]]) -> Result<[f64; 4]> {
     if points.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "redaction polygon is empty".to_string(),
         ));
     }
@@ -3746,7 +3763,7 @@ fn polygon_bounds(points: &[[f64; 2]]) -> Result<[f64; 4]> {
         max_y = max_y.max(point[1]);
     }
     if !min_x.is_finite() || min_x >= max_x || min_y >= max_y {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "redaction polygon has a non-finite or empty bounding box".to_string(),
         ));
     }
@@ -3771,13 +3788,13 @@ pub(crate) fn prompt17_feature_report_value(envelope_version: u32) -> serde_json
             "unsupported_image_rewrite": "secure_instance_removal_or_explicit_fail"
         },
         "audit": {
-            "reference_engines": ["Oxide", "Poppler", "PDFium", "MuPDF"],
+            "reference_engines": ["Wellfriend", "Poppler", "PDFium", "MuPDF"],
             "structure_tools": ["qpdf", "PDFBox"],
             "memory_cap_mb": 4096,
             "validation_concurrency": "serial",
             "unclassified_failures": 0,
             "security_proof_failures": 0,
-            "oxide_outliers_supported_rows": 0
+            "wellfriendpdf_outliers_supported_rows": 0
         },
         "policy": {
             "rich_media_modes": ["inventory_only", "preserve_inert", "remove_active_content", "remove_all_media", "flatten_static_poster", "custom"],

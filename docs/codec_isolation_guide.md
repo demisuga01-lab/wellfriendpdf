@@ -1,6 +1,6 @@
 # Codec Isolation Guide
 
-Oxide's codec isolation posture is layered:
+Wellfriend's codec isolation posture is layered:
 
 - Pure-Rust decoders remain the default for in-process decode.
 - Lossless stream decoding is bounded by `DecodeLimits`.
@@ -15,8 +15,8 @@ Oxide's codec isolation posture is layered:
 
 Prompt 05 public artifacts:
 
-- `oxide feature-report --pretty`
-- `oxide parser-report input.pdf --include-decode --json`
+- `wellfriendpdf feature-report --pretty`
+- `wellfriendpdf parser-report input.pdf --include-decode --json`
 - `target/prompt05-codec-closeout/codec-coverage-matrix.json`
 - `target/prompt05-codec-closeout/closeout-verdict.json`
 

@@ -3,7 +3,7 @@
 This is a **measurement + integration + verdict checkpoint**, not a positioning
 rewrite and not a new-feature plan. It records what was *freshly verified this
 session* against the final commit, what was *not re-run and why*, and an honest
-verdict about where Oxide stands and what the genuine next step is.
+verdict about where Wellfriend stands and what the genuine next step is.
 
 > **Scope decision for this checkpoint.** The best-in-class positioning push
 > (Prompts 1–5) is **held**: it improved the README front door, scanned-OCR
@@ -55,12 +55,12 @@ invariants.)
 
 ### 3.1 Extraction quality **[fresh]** — vs PyMuPDF, Poppler `pdftotext`
 
-Scored with the in-repo pure-Rust `oxide eval-score` metrics over the
+Scored with the in-repo pure-Rust `wellfriendpdf eval-score` metrics over the
 ground-truth corpus. Competitors detected at runtime; **Docling absent → cleanly
 skipped, no Docling number reported.** Char-accuracy = `1 − CER`; reading order =
 normalized Kendall-tau.
 
-| Doc | Mode | Oxide char-acc | PyMuPDF | pdftotext | Oxide reading-order |
+| Doc | Mode | Wellfriend char-acc | PyMuPDF | pdftotext | Wellfriend reading-order |
 | --- | --- | ---: | ---: | ---: | ---: |
 | figure | digital | 0.598 | **0.990** | 0.931 | 1.000 |
 | paper | digital | 0.993 | **0.998** | 0.951 | 1.000 |
@@ -72,7 +72,7 @@ normalized Kendall-tau.
 Structure (cell-F1 / TEDS, and KV field-F1 — capabilities PyMuPDF/Poppler do not
 offer):
 
-| Doc | Mode | Oxide cell-F1 / TEDS | PyMuPDF cell-F1 | Oxide field-F1 |
+| Doc | Mode | Wellfriend cell-F1 / TEDS | PyMuPDF cell-F1 | Wellfriend field-F1 |
 | --- | --- | ---: | ---: | ---: |
 | invoice | digital | 1.000 / 1.000 | 0.000 | **1.000** |
 | tables | digital | 1.000 / 1.000 | 1.000 | — |
@@ -81,13 +81,13 @@ offer):
 | tables_scanned | scanned | 1.000 / 1.000 | 0.000 | — |
 
 **Honest reading of these numbers:**
-- Oxide's real edge is **structure**: perfect reading-order, table cell-F1/TEDS,
+- Wellfriend's real edge is **structure**: perfect reading-order, table cell-F1/TEDS,
   and KV fields — things the comparators don't do at all.
-- On **raw character accuracy of plain/graphic text**, Oxide **trails** PyMuPDF
+- On **raw character accuracy of plain/graphic text**, Wellfriend **trails** PyMuPDF
   (figure 0.598 vs 0.990; multi-column 0.605 vs 0.669) and only ties on clean
   prose (paper 0.993 ≈ 0.998). "Leads on digital extraction" is true for
   *structure*, **not** for raw text fidelity.
-- On **scans**, Oxide recovers content where PyMuPDF/Poppler recover **nothing**.
+- On **scans**, Wellfriend recovers content where PyMuPDF/Poppler recover **nothing**.
   The scanned numbers **improved** from the figures still printed in the README
   (invoice_scanned field-F1 **0.400 → 0.857**; scanned-table cell-F1 the README
   calls "0" now scores 1.000 *on the synthetic fixture*). The README extraction
@@ -107,7 +107,7 @@ already PDFium-absent / Poppler-only when recorded).
 
 - Weighted score **91.82** (up from the ~86.12 pre-Prompt-3 baseline), visual
   pass **86.94%**, hostile crash/timeout/memory-safety **100%/100%/100%**,
-  determinism 24/24, median Poppler/Oxide speed ratio 1.91×.
+  determinism 24/24, median Poppler/Wellfriend speed ratio 1.91×.
 - Weakest categories (honest): RTL 40%, scanned 44%, multi-column 47%, forms
   57%, CJK 62%. The renderer is **preview/OCR-grade, not pixel-proof**, and
   trails Poppler/PDFium for visual fidelity. The report itself carries a
@@ -123,7 +123,7 @@ qpdf:
 | `optimize` | `qpdf --check` | Clean — "No syntax or stream encoding errors found" |
 | `linearize` | `qpdf --check` | "File is linearized", clean |
 | `encrypt --user-pw` | `qpdf --check --password` | R=6, AESv3 (stream/string/file), opens + clean |
-| `merge a a` | `oxide info` + `qpdf --check` | 2 pages (1+1), clean |
+| `merge a a` | `wellfriendpdf info` + `qpdf --check` | 2 pages (1+1), clean |
 
 ### 3.4 Performance **[recorded — not re-run this session]**
 
@@ -135,7 +135,7 @@ release rebuild + the cold-start/footprint harness). The honest summary:
   for Python+PyMuPDF import; ~12.8 MB static binary vs a Python+C-extension
   stack; lower per-op peak memory; faster on `info`, single-page text, and
   image extraction (image extraction ~10× Poppler in the recorded run).
-- **Losses (be honest):** Oxide is **slower than Poppler** on *full-document
+- **Losses (be honest):** Wellfriend is **slower than Poppler** on *full-document
   rendering* (render_all ratios ≈ 0.47–0.81×) and on *large-document full-text
   extraction* (≈ 0.10–0.59×). A blanket "fastest-in-class" claim is **not**
   supported by the numbers; "smallest footprint / fastest cold start / faster on
@@ -197,7 +197,7 @@ as the tracked known-issues record, and `posture.md` now points to it.
 
 ## 5. Verdict
 
-### Where Oxide is genuinely best-in-class (on its real strengths)
+### Where Wellfriend is genuinely best-in-class (on its real strengths)
 - **Pure-Rust, memory-safe, single static binary, self-hostable, four embed
   surfaces, permissive (MIT/Apache-2.0), one canonical `Document` model** — this
   breadth-in-one-safe-core with no Python/C++ runtime is a real, defensible

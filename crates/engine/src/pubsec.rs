@@ -32,7 +32,7 @@ use x509_cert::Certificate;
 use zeroize::Zeroize;
 
 use crate::crypto::{secret_bytes, CryptMethod, SecretBytes};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::writer::{rewrite_document_objects, PdfWriter, PdfWriterCustomEncryption, WriterMode};
@@ -88,24 +88,24 @@ impl PubSecRecipientCertificate {
     /// Build a recipient from a DER-encoded X.509 certificate.
     pub fn from_der(certificate_der: &[u8]) -> Result<Self> {
         let certificate = Certificate::from_der(certificate_der)
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate DER: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate DER: {e}")))?;
         Self::from_certificate_and_der(certificate, certificate_der.to_vec())
     }
 
     /// Build a recipient from a PEM-encoded X.509 certificate.
     pub fn from_pem(certificate_pem: &str) -> Result<Self> {
         let certificate = Certificate::from_pem(certificate_pem.as_bytes())
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate PEM: {e}")))?;
-        let der = certificate
-            .to_der()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate encode: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate PEM: {e}")))?;
+        let der = certificate.to_der().map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec certificate encode: {e}"))
+        })?;
         Self::from_certificate_and_der(certificate, der)
     }
 
     pub fn from_certificate(certificate: Certificate) -> Result<Self> {
-        let der = certificate
-            .to_der()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate encode: {e}")))?;
+        let der = certificate.to_der().map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec certificate encode: {e}"))
+        })?;
         Self::from_certificate_and_der(certificate, der)
     }
 
@@ -119,11 +119,11 @@ impl PubSecRecipientCertificate {
                 .subject_public_key_info
                 .to_der()
                 .map_err(|e| {
-                    OxideError::MalformedPdf(format!("PubSec certificate SPKI encode: {e}"))
+                    WellfriendError::MalformedPdf(format!("PubSec certificate SPKI encode: {e}"))
                 })?,
         )
         .map_err(|e| {
-            OxideError::UnsupportedFeature(format!(
+            WellfriendError::UnsupportedFeature(format!(
                 "PubSec recipient certificate public key is not supported RSA: {e}"
             ))
         })?;
@@ -133,7 +133,7 @@ impl PubSecRecipientCertificate {
         let subject_key_identifier = certificate
             .tbs_certificate
             .get::<SubjectKeyIdentifier>()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate SKI: {e}")))?
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate SKI: {e}")))?
             .map(|(_, ski)| ski.0.as_bytes().to_vec());
         Ok(Self {
             certificate,
@@ -207,11 +207,11 @@ impl PubSecIdentity {
     /// non-RSA keys are rejected with exact unsupported diagnostics.
     pub fn from_der(certificate_der: &[u8], private_key_der: &[u8]) -> Result<Self> {
         let certificate = Certificate::from_der(certificate_der)
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate DER: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate DER: {e}")))?;
         let private_key = RsaPrivateKey::from_pkcs8_der(private_key_der)
             .or_else(|_| RsaPrivateKey::from_pkcs1_der(private_key_der))
             .map_err(|e| {
-                OxideError::UnsupportedFeature(format!(
+                WellfriendError::UnsupportedFeature(format!(
                     "PubSec RSA private key parse failed or encrypted key unsupported: {e}"
                 ))
             })?;
@@ -227,11 +227,11 @@ impl PubSecIdentity {
         password: &[u8],
     ) -> Result<Self> {
         let certificate = Certificate::from_der(certificate_der)
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate DER: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate DER: {e}")))?;
         let private_key =
             RsaPrivateKey::from_pkcs8_encrypted_der(encrypted_private_key_der, password).map_err(
                 |e| {
-                    OxideError::EncryptedPdf(format!(
+                    WellfriendError::EncryptedPdf(format!(
                         "PubSec encrypted PKCS#8 private key could not be decrypted or parsed: {e}"
                     ))
                 },
@@ -242,14 +242,14 @@ impl PubSecIdentity {
     /// Build an identity from PEM certificate and RSA private key text.
     pub fn from_pem(certificate_pem: &str, private_key_pem: &str) -> Result<Self> {
         let certificate = Certificate::from_pem(certificate_pem.as_bytes())
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate PEM: {e}")))?;
-        let certificate_der = certificate
-            .to_der()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate encode: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate PEM: {e}")))?;
+        let certificate_der = certificate.to_der().map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec certificate encode: {e}"))
+        })?;
         let private_key = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
             .or_else(|_| RsaPrivateKey::from_pkcs1_pem(private_key_pem))
             .map_err(|e| {
-                OxideError::UnsupportedFeature(format!(
+                WellfriendError::UnsupportedFeature(format!(
                     "PubSec RSA private key PEM parse failed or encrypted key unsupported: {e}"
                 ))
             })?;
@@ -264,14 +264,14 @@ impl PubSecIdentity {
         password: &[u8],
     ) -> Result<Self> {
         let certificate = Certificate::from_pem(certificate_pem.as_bytes())
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate PEM: {e}")))?;
-        let certificate_der = certificate
-            .to_der()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate encode: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate PEM: {e}")))?;
+        let certificate_der = certificate.to_der().map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec certificate encode: {e}"))
+        })?;
         let private_key =
             RsaPrivateKey::from_pkcs8_encrypted_pem(encrypted_private_key_pem, password).map_err(
                 |e| {
-                    OxideError::EncryptedPdf(format!(
+                    WellfriendError::EncryptedPdf(format!(
                 "PubSec encrypted PKCS#8 private key PEM could not be decrypted or parsed: {e}"
             ))
                 },
@@ -286,58 +286,58 @@ impl PubSecIdentity {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_pkcs12_der(pfx_der: &[u8], password: &[u8]) -> Result<Self> {
         if pfx_der.is_empty() {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "PubSec PKCS#12/PFX input is empty".to_string(),
             ));
         }
         if pfx_der.len() > MAX_PFX_BYTES {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "PubSec PKCS#12/PFX input exceeds {MAX_PFX_BYTES} bytes"
             )));
         }
         if password.len() > MAX_PFX_PASSWORD_BYTES {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "PubSec PKCS#12/PFX password exceeds {MAX_PFX_PASSWORD_BYTES} bytes"
             )));
         }
         let password_str = std::str::from_utf8(password).map_err(|_| {
-            OxideError::UnsupportedFeature(
+            WellfriendError::UnsupportedFeature(
                 "PubSec PKCS#12/PFX provider currently requires a UTF-8 password".to_string(),
             )
         })?;
         let pfx = p12::PFX::parse(pfx_der).map_err(|e| {
-            OxideError::MalformedPdf(format!("PubSec PKCS#12/PFX parse failed: {e}"))
+            WellfriendError::MalformedPdf(format!("PubSec PKCS#12/PFX parse failed: {e}"))
         })?;
         if !pfx.verify_mac(password_str) {
-            return Err(OxideError::EncryptedPdf(
+            return Err(WellfriendError::EncryptedPdf(
                 "PubSec PKCS#12/PFX password or MAC verification failed".to_string(),
             ));
         }
         let certs = pfx.cert_x509_bags(password_str).map_err(|e| {
-            OxideError::MalformedPdf(format!(
+            WellfriendError::MalformedPdf(format!(
                 "PubSec PKCS#12/PFX certificate extraction failed: {e}"
             ))
         })?;
         let mut keys = pfx.key_bags(password_str).map_err(|e| {
-            OxideError::MalformedPdf(format!(
+            WellfriendError::MalformedPdf(format!(
                 "PubSec PKCS#12/PFX private-key extraction failed: {e}"
             ))
         })?;
         if certs.is_empty() || keys.is_empty() {
             zeroize_key_bags(&mut keys);
-            return Err(OxideError::EncryptedPdf(
+            return Err(WellfriendError::EncryptedPdf(
                 "PubSec PKCS#12/PFX contains no supported certificate/private-key pair".to_string(),
             ));
         }
         if certs.len() > MAX_PFX_CERTS {
             zeroize_key_bags(&mut keys);
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "PubSec PKCS#12/PFX certificate count exceeds {MAX_PFX_CERTS}"
             )));
         }
         if keys.len() > MAX_PFX_KEYS {
             zeroize_key_bags(&mut keys);
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "PubSec PKCS#12/PFX private-key count exceeds {MAX_PFX_KEYS}"
             )));
         }
@@ -358,12 +358,12 @@ impl PubSecIdentity {
         }
         zeroize_key_bags(&mut keys);
         match matches.len() {
-            0 => Err(OxideError::EncryptedPdf(
+            0 => Err(WellfriendError::EncryptedPdf(
                 "PubSec PKCS#12/PFX did not contain an unambiguous matching RSA identity"
                     .to_string(),
             )),
             1 => Ok(matches.remove(0)),
-            _ => Err(OxideError::MalformedPdf(
+            _ => Err(WellfriendError::MalformedPdf(
                 "PubSec PKCS#12/PFX contains multiple matching identities; provide explicit certificate/private key to avoid ambiguity".to_string(),
             )),
         }
@@ -371,7 +371,7 @@ impl PubSecIdentity {
 
     #[cfg(target_arch = "wasm32")]
     pub fn from_pkcs12_der(_pfx_der: &[u8], _password: &[u8]) -> Result<Self> {
-        Err(OxideError::UnsupportedFeature(
+        Err(WellfriendError::UnsupportedFeature(
             "PubSec PKCS#12/PFX provider is unavailable in WASM builds".to_string(),
         ))
     }
@@ -382,9 +382,9 @@ impl PubSecIdentity {
         certificate: Certificate,
         private_key: RsaPrivateKey,
     ) -> Result<Self> {
-        let certificate_der = certificate
-            .to_der()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate encode: {e}")))?;
+        let certificate_der = certificate.to_der().map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec certificate encode: {e}"))
+        })?;
         Self::from_parts(certificate, &certificate_der, private_key)
     }
 
@@ -401,14 +401,14 @@ impl PubSecIdentity {
         if certificate_public_key.n() != private_public_key.n()
             || certificate_public_key.e() != private_public_key.e()
         {
-            return Err(OxideError::EncryptedPdf(
+            return Err(WellfriendError::EncryptedPdf(
                 "PubSec certificate and RSA private key do not match".to_string(),
             ));
         }
         let subject_key_identifier = certificate
             .tbs_certificate
             .get::<SubjectKeyIdentifier>()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate SKI: {e}")))?
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate SKI: {e}")))?
             .map(|(_, ski)| ski.0.as_bytes().to_vec());
         Ok(Self {
             certificate,
@@ -445,11 +445,11 @@ fn certificate_rsa_public_key(certificate: &Certificate) -> Result<RsaPublicKey>
             .subject_public_key_info
             .to_der()
             .map_err(|e| {
-                OxideError::MalformedPdf(format!("PubSec certificate SPKI encode: {e}"))
+                WellfriendError::MalformedPdf(format!("PubSec certificate SPKI encode: {e}"))
             })?,
     )
     .map_err(|e| {
-        OxideError::UnsupportedFeature(format!(
+        WellfriendError::UnsupportedFeature(format!(
             "PubSec certificate public key is not supported RSA: {e}"
         ))
     })
@@ -464,29 +464,31 @@ fn zeroize_key_bags(keys: &mut [Vec<u8>]) {
 
 fn parse_certificate_bytes(bytes: &[u8]) -> Result<(Certificate, Vec<u8>)> {
     if looks_like_pem(bytes) {
-        let pem = std::str::from_utf8(bytes)
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate PEM UTF-8: {e}")))?;
+        let pem = std::str::from_utf8(bytes).map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec certificate PEM UTF-8: {e}"))
+        })?;
         let certificate = Certificate::from_pem(pem.as_bytes())
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate PEM: {e}")))?;
-        let der = certificate
-            .to_der()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate encode: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate PEM: {e}")))?;
+        let der = certificate.to_der().map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec certificate encode: {e}"))
+        })?;
         Ok((certificate, der))
     } else {
         let certificate = Certificate::from_der(bytes)
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec certificate DER: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec certificate DER: {e}")))?;
         Ok((certificate, bytes.to_vec()))
     }
 }
 
 fn parse_rsa_private_key_bytes(bytes: &[u8]) -> Result<RsaPrivateKey> {
     if looks_like_pem(bytes) {
-        let pem = std::str::from_utf8(bytes)
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec private-key PEM UTF-8: {e}")))?;
+        let pem = std::str::from_utf8(bytes).map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec private-key PEM UTF-8: {e}"))
+        })?;
         RsaPrivateKey::from_pkcs8_pem(pem)
             .or_else(|_| RsaPrivateKey::from_pkcs1_pem(pem))
             .map_err(|e| {
-                OxideError::UnsupportedFeature(format!(
+                WellfriendError::UnsupportedFeature(format!(
                     "PubSec RSA private key PEM parse failed or encrypted key unsupported: {e}"
                 ))
             })
@@ -494,7 +496,7 @@ fn parse_rsa_private_key_bytes(bytes: &[u8]) -> Result<RsaPrivateKey> {
         RsaPrivateKey::from_pkcs8_der(bytes)
             .or_else(|_| RsaPrivateKey::from_pkcs1_der(bytes))
             .map_err(|e| {
-                OxideError::UnsupportedFeature(format!(
+                WellfriendError::UnsupportedFeature(format!(
                     "PubSec RSA private key DER parse failed or encrypted key unsupported: {e}"
                 ))
             })
@@ -521,12 +523,12 @@ pub struct PubSecKeyProvider {
 impl PubSecKeyProvider {
     pub fn new(identities: Vec<PubSecIdentity>) -> Result<Self> {
         if identities.is_empty() {
-            return Err(OxideError::EncryptedPdf(
+            return Err(WellfriendError::EncryptedPdf(
                 "PubSec key provider has no candidate identities".to_string(),
             ));
         }
         if identities.len() > MAX_RECIPIENTS {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "PubSec key provider candidate count exceeds {MAX_RECIPIENTS}"
             )));
         }
@@ -586,18 +588,18 @@ pub struct PubSecRecoveredKey {
 pub fn parse_pubsec_encryption_info(dict: &PdfDictionary) -> Result<PubSecEncryptionInfo> {
     let filter = dict.get_name("Filter").unwrap_or("");
     if filter != "Adobe.PubSec" {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec parser requires /Filter /Adobe.PubSec, got /{filter}"
         )));
     }
     let subfilter = dict
         .get_name("SubFilter")
-        .ok_or_else(|| OxideError::MalformedPdf("PubSec /SubFilter is required".to_string()))?
+        .ok_or_else(|| WellfriendError::MalformedPdf("PubSec /SubFilter is required".to_string()))?
         .to_string();
     let v = dict.get_integer("V").unwrap_or(0) as u8;
     let key_length = dict.get_integer("Length").unwrap_or(128) as usize;
     if key_length != 128 && key_length != 256 {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec /Length {key_length} unsupported; supported lengths are 128 and 256 bits"
         )));
     }
@@ -640,7 +642,7 @@ pub fn parse_pubsec_encryption_info(dict: &PdfDictionary) -> Result<PubSecEncryp
         "adbe.pkcs7.s5" => {
             let (stream_name, string_name, embedded_name) = crypt_filter_names(dict);
             let cf = dict.get_dict("CF").ok_or_else(|| {
-                OxideError::MalformedPdf("PubSec adbe.pkcs7.s5 requires /CF".to_string())
+                WellfriendError::MalformedPdf("PubSec adbe.pkcs7.s5 requires /CF".to_string())
             })?;
             let stream_method = parse_pubsec_filter(
                 cf,
@@ -667,7 +669,7 @@ pub fn parse_pubsec_encryption_info(dict: &PdfDictionary) -> Result<PubSecEncryp
                 &mut recipient_sets,
             )?;
             if recipient_sets.is_empty() {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "PubSec adbe.pkcs7.s5 contains no document-level recipient set".to_string(),
                 ));
             }
@@ -683,7 +685,7 @@ pub fn parse_pubsec_encryption_info(dict: &PdfDictionary) -> Result<PubSecEncryp
                 recipient_sets,
             })
         }
-        other => Err(OxideError::UnsupportedFeature(format!(
+        other => Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec /SubFilter /{other} is not supported"
         ))),
     }
@@ -709,25 +711,25 @@ fn parse_pubsec_filter(
         return Ok(CryptMethod::None);
     }
     let filter = cf.get_dict(name).ok_or_else(|| {
-        OxideError::MalformedPdf(format!("PubSec crypt filter /{name} is missing"))
+        WellfriendError::MalformedPdf(format!("PubSec crypt filter /{name} is missing"))
     })?;
     let method = match filter.get_name("CFM") {
         Some("V2") | None => CryptMethod::V2,
         Some("AESV2") => CryptMethod::AesV2,
         Some("AESV3") => CryptMethod::AesV3,
         Some(other) => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "PubSec crypt filter /{name} has unsupported /CFM /{other}"
             )));
         }
     };
     if matches!(method, CryptMethod::AesV3) && key_length != 256 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PubSec /CFM /AESV3 requires 256-bit /Length, got {key_length}"
         )));
     }
     if !matches!(method, CryptMethod::AesV3) && key_length != 128 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PubSec /CFM /V2 or /AESV2 requires 128-bit /Length, got {key_length}"
         )));
     }
@@ -753,10 +755,12 @@ fn recipient_array(dict: &PdfDictionary, key: &str) -> Result<Vec<Vec<u8>>> {
     match dict.get(key) {
         Some(PdfObject::Array(items)) => {
             if items.is_empty() {
-                return Err(OxideError::MalformedPdf(format!("PubSec /{key} is empty")));
+                return Err(WellfriendError::MalformedPdf(format!(
+                    "PubSec /{key} is empty"
+                )));
             }
             if items.len() > MAX_RECIPIENTS {
-                return Err(OxideError::ResourceLimit(format!(
+                return Err(WellfriendError::ResourceLimit(format!(
                     "PubSec /{key} recipient count exceeds {MAX_RECIPIENTS}"
                 )));
             }
@@ -765,13 +769,13 @@ fn recipient_array(dict: &PdfDictionary, key: &str) -> Result<Vec<Vec<u8>>> {
                 .map(|item| match item {
                     PdfObject::String(bytes) => {
                         if bytes.len() > MAX_CMS_BYTES {
-                            return Err(OxideError::ResourceLimit(format!(
+                            return Err(WellfriendError::ResourceLimit(format!(
                                 "PubSec CMS recipient object exceeds {MAX_CMS_BYTES} bytes"
                             )));
                         }
                         Ok(bytes.clone())
                     }
-                    other => Err(OxideError::MalformedPdf(format!(
+                    other => Err(WellfriendError::MalformedPdf(format!(
                         "PubSec /{key} entry must be a CMS byte string, got {}",
                         other.variant_name()
                     ))),
@@ -780,17 +784,17 @@ fn recipient_array(dict: &PdfDictionary, key: &str) -> Result<Vec<Vec<u8>>> {
         }
         Some(PdfObject::String(bytes)) => {
             if bytes.len() > MAX_CMS_BYTES {
-                return Err(OxideError::ResourceLimit(format!(
+                return Err(WellfriendError::ResourceLimit(format!(
                     "PubSec CMS recipient object exceeds {MAX_CMS_BYTES} bytes"
                 )));
             }
             Ok(vec![bytes.clone()])
         }
-        Some(other) => Err(OxideError::MalformedPdf(format!(
+        Some(other) => Err(WellfriendError::MalformedPdf(format!(
             "PubSec /{key} must be an array or string, got {}",
             other.variant_name()
         ))),
-        None => Err(OxideError::MalformedPdf(format!(
+        None => Err(WellfriendError::MalformedPdf(format!(
             "PubSec /{key} is required"
         ))),
     }
@@ -813,7 +817,7 @@ pub fn recover_pubsec_file_key(
                     };
                 if payload.len() != required {
                     payload.zeroize();
-                    return Err(OxideError::EncryptedPdf(format!(
+                    return Err(WellfriendError::EncryptedPdf(format!(
                         "PubSec CMS payload length {} does not match expected {required}",
                         payload.len()
                     )));
@@ -859,12 +863,12 @@ pub fn recover_pubsec_file_key(
         }
     }
     if !unsupported.is_empty() {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec CMS recipient unsupported: {}",
             unsupported.join("; ")
         )));
     }
-    Err(OxideError::EncryptedPdf(
+    Err(WellfriendError::EncryptedPdf(
         "PubSec recipient not found for supplied key provider".to_string(),
     ))
 }
@@ -912,12 +916,12 @@ fn build_pubsec_writer_encryption(
     options: &PubSecEncryptOptions,
 ) -> Result<PdfWriterCustomEncryption> {
     if options.recipients.is_empty() {
-        return Err(OxideError::EncryptedPdf(
+        return Err(WellfriendError::EncryptedPdf(
             "PubSec encryption requires at least one recipient certificate".to_string(),
         ));
     }
     if options.recipients.len() > MAX_RECIPIENTS {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "PubSec recipient count exceeds {MAX_RECIPIENTS}"
         )));
     }
@@ -925,7 +929,7 @@ fn build_pubsec_writer_encryption(
         CryptMethod::AesV2 => ("AESV2", 128usize, 16usize),
         CryptMethod::AesV3 => ("AESV3", 256usize, 32usize),
         _ => {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "PubSec writer supports only AESV2 and AESV3 crypt filters".to_string(),
             ));
         }
@@ -934,7 +938,7 @@ fn build_pubsec_writer_encryption(
     let mut seen = std::collections::BTreeSet::new();
     for recipient in &options.recipients {
         if !seen.insert(recipient.certificate_der_sha256) {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "PubSec recipient list contains duplicate certificate fingerprints".to_string(),
             ));
         }
@@ -943,7 +947,7 @@ fn build_pubsec_writer_encryption(
             PubSecRecipientIdMode::SubjectKeyIdentifier
         ) && recipient.subject_key_identifier.is_none()
         {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "PubSec SKI recipient mode requires every certificate to contain a subjectKeyIdentifier".to_string(),
             ));
         }
@@ -1032,13 +1036,14 @@ fn build_cms_enveloped_data_for_recipient(
         }
         PubSecRecipientIdMode::SubjectKeyIdentifier => {
             let ski = recipient.subject_key_identifier.as_ref().ok_or_else(|| {
-                OxideError::MalformedPdf(
+                WellfriendError::MalformedPdf(
                     "PubSec recipient certificate has no subjectKeyIdentifier".to_string(),
                 )
             })?;
             RecipientIdentifier::SubjectKeyIdentifier(SubjectKeyIdentifier(
-                OctetString::new(ski.clone())
-                    .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS SKI encode: {e}")))?,
+                OctetString::new(ski.clone()).map_err(|e| {
+                    WellfriendError::MalformedPdf(format!("PubSec CMS SKI encode: {e}"))
+                })?,
             ))
         }
     };
@@ -1048,27 +1053,27 @@ fn build_cms_enveloped_data_for_recipient(
         KeyEncryptionInfo::Rsa(recipient.public_key.clone()),
         &mut recipient_rng,
     )
-    .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS recipient builder: {e}")))?;
+    .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS recipient builder: {e}")))?;
     let mut builder = EnvelopedDataBuilder::new(None, payload, content_alg, None)
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS builder: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS builder: {e}")))?;
     builder
         .add_recipient_info(recipient_info)
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS add recipient: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS add recipient: {e}")))?;
     let mut content_rng = OsRng;
     let enveloped = builder
         .build_with_rng(&mut content_rng)
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS build: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS build: {e}")))?;
     let enveloped_der = enveloped
         .to_der()
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS DER: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS DER: {e}")))?;
     let content = AnyRef::try_from(enveloped_der.as_slice())
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS ContentInfo Any: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS ContentInfo Any: {e}")))?;
     let ci = ContentInfo {
         content_type: const_oid::db::rfc5911::ID_ENVELOPED_DATA,
         content: Any::from(content),
     };
     ci.to_der()
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS ContentInfo DER: {e}")))
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS ContentInfo DER: {e}")))
 }
 
 fn derive_pubsec_file_key(
@@ -1078,7 +1083,7 @@ fn derive_pubsec_file_key(
     encrypt_metadata: bool,
 ) -> Result<SecretBytes> {
     if seed.len() != PUBSEC_SEED_LEN {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PubSec seed must be {PUBSEC_SEED_LEN} bytes, got {}",
             seed.len()
         )));
@@ -1108,7 +1113,7 @@ fn derive_pubsec_file_key(
             h.finalize().to_vec()
         }
         other => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "PubSec file key length {other} is unsupported"
             )));
         }
@@ -1119,14 +1124,14 @@ fn derive_pubsec_file_key(
 
 fn recover_cms_enveloped_payload(cms_der: &[u8], provider: &PubSecKeyProvider) -> Result<Vec<u8>> {
     if cms_der.len() > MAX_CMS_BYTES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "PubSec CMS object exceeds {MAX_CMS_BYTES} bytes"
         )));
     }
     let ci = ContentInfo::from_der(cms_der)
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS ContentInfo: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS ContentInfo: {e}")))?;
     if ci.content_type != const_oid::db::rfc5911::ID_ENVELOPED_DATA {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec CMS content type {} is not EnvelopedData",
             ci.content_type
         )));
@@ -1134,17 +1139,17 @@ fn recover_cms_enveloped_payload(cms_der: &[u8], provider: &PubSecKeyProvider) -
     let enveloped_der = ci
         .content
         .to_der()
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS content DER: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS content DER: {e}")))?;
     let enveloped = EnvelopedData::from_der(&enveloped_der)
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS EnvelopedData: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS EnvelopedData: {e}")))?;
     if enveloped.encrypted_content.content_type != const_oid::db::rfc5911::ID_DATA {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec CMS encrypted content type {} is unsupported",
             enveloped.encrypted_content.content_type
         )));
     }
     if enveloped.recip_infos.0.len() > MAX_RECIPIENTS {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "PubSec CMS recipient count exceeds {MAX_RECIPIENTS}"
         )));
     }
@@ -1154,7 +1159,7 @@ fn recover_cms_enveloped_payload(cms_der: &[u8], provider: &PubSecKeyProvider) -
         .encrypted_content
         .as_ref()
         .ok_or_else(|| {
-            OxideError::MalformedPdf("PubSec CMS encrypted content is absent".to_string())
+            WellfriendError::MalformedPdf("PubSec CMS encrypted content is absent".to_string())
         })?;
 
     let mut unsupported = Vec::new();
@@ -1184,12 +1189,12 @@ fn recover_cms_enveloped_payload(cms_der: &[u8], provider: &PubSecKeyProvider) -
             .iter()
             .all(|ri| !matches!(ri, RecipientInfo::Ktri(_)))
     {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec CMS unsupported recipient types: {}",
             unsupported.join(", ")
         )));
     }
-    Err(OxideError::EncryptedPdf(
+    Err(WellfriendError::EncryptedPdf(
         "PubSec no matching CMS recipient".to_string(),
     ))
 }
@@ -1210,7 +1215,7 @@ fn decrypt_key_transport(
 ) -> Result<Vec<u8>> {
     let encrypted_key = ktri.enc_key.as_bytes();
     if encrypted_key.len() != identity.private_key.size() {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PubSec RSA encrypted key length {} does not match private key size {}",
             encrypted_key.len(),
             identity.private_key.size()
@@ -1221,7 +1226,9 @@ fn decrypt_key_transport(
         return identity
             .private_key
             .decrypt_blinded(&mut rng, Pkcs1v15Encrypt, encrypted_key)
-            .map_err(|_| OxideError::EncryptedPdf("PubSec RSA key transport failed".to_string()));
+            .map_err(|_| {
+                WellfriendError::EncryptedPdf("PubSec RSA key transport failed".to_string())
+            });
     }
     if ktri.key_enc_alg.oid == const_oid::db::rfc5912::ID_RSAES_OAEP {
         let padding = oaep_padding_from_params(&ktri.key_enc_alg)?;
@@ -1229,10 +1236,10 @@ fn decrypt_key_transport(
             .private_key
             .decrypt_blinded(&mut rng, padding, encrypted_key)
             .map_err(|_| {
-                OxideError::EncryptedPdf("PubSec RSA-OAEP key transport failed".to_string())
+                WellfriendError::EncryptedPdf("PubSec RSA-OAEP key transport failed".to_string())
             });
     }
-    Err(OxideError::UnsupportedFeature(format!(
+    Err(WellfriendError::UnsupportedFeature(format!(
         "PubSec key transport algorithm {} is unsupported",
         ktri.key_enc_alg.oid
     )))
@@ -1265,12 +1272,12 @@ fn oaep_padding_from_params(alg: &AlgorithmIdentifierOwned) -> Result<Oaep> {
         },
         Some(params) if params.tag() == der::Tag::Sequence => {
             RsaesOaepParams::from_der(&params.to_der().map_err(|e| {
-                OxideError::MalformedPdf(format!("PubSec RSA-OAEP params DER: {e}"))
+                WellfriendError::MalformedPdf(format!("PubSec RSA-OAEP params DER: {e}"))
             })?)
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec RSA-OAEP params: {e}")))?
+            .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec RSA-OAEP params: {e}")))?
         }
         Some(params) => {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "PubSec RSA-OAEP parameters must be SEQUENCE, got {:?}",
                 params.tag()
             )));
@@ -1306,7 +1313,7 @@ fn parse_oaep_hash_algorithm(
     } else if alg.oid == const_oid::db::rfc5912::ID_SHA_512 {
         Ok(OaepDigest::Sha512)
     } else {
-        Err(OxideError::UnsupportedFeature(format!(
+        Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec RSA-OAEP {field} digest {} is unsupported",
             alg.oid
         )))
@@ -1315,22 +1322,21 @@ fn parse_oaep_hash_algorithm(
 
 fn parse_mgf1_hash_algorithm(alg: &AlgorithmIdentifierOwned) -> Result<OaepDigest> {
     if alg.oid != const_oid::db::rfc5912::ID_MGF_1 {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec RSA-OAEP maskGenAlgorithm {} is unsupported; only id-mgf1 is supported",
             alg.oid
         )));
     }
     let Some(params) = alg.parameters.as_ref() else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "PubSec RSA-OAEP id-mgf1 parameters must contain a hash AlgorithmIdentifier"
                 .to_string(),
         ));
     };
-    let hash_alg =
-        AlgorithmIdentifierOwned::from_der(&params.to_der().map_err(|e| {
-            OxideError::MalformedPdf(format!("PubSec RSA-OAEP MGF1 params DER: {e}"))
-        })?)
-        .map_err(|e| OxideError::MalformedPdf(format!("PubSec RSA-OAEP MGF1 hash params: {e}")))?;
+    let hash_alg = AlgorithmIdentifierOwned::from_der(&params.to_der().map_err(|e| {
+        WellfriendError::MalformedPdf(format!("PubSec RSA-OAEP MGF1 params DER: {e}"))
+    })?)
+    .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec RSA-OAEP MGF1 hash params: {e}")))?;
     parse_oaep_hash_algorithm(&hash_alg, "maskGenAlgorithm parameters")
 }
 
@@ -1339,30 +1345,29 @@ fn validate_oaep_p_source(alg: Option<&AlgorithmIdentifierOwned>) -> Result<()> 
         return Ok(());
     };
     if alg.oid != const_oid::db::rfc5912::ID_P_SPECIFIED {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "PubSec RSA-OAEP pSourceAlgorithm {} is unsupported; only id-pSpecified is supported",
             alg.oid
         )));
     }
     let Some(params) = alg.parameters.as_ref() else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "PubSec RSA-OAEP id-pSpecified parameters are missing".to_string(),
         ));
     };
     if params.tag() != der::Tag::OctetString {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PubSec RSA-OAEP pSpecified parameters must be OCTET STRING, got {:?}",
             params.tag()
         )));
     }
-    let label = OctetString::from_der(
-        &params
-            .to_der()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec RSA-OAEP label DER: {e}")))?,
-    )
-    .map_err(|e| OxideError::MalformedPdf(format!("PubSec RSA-OAEP label: {e}")))?;
+    let label =
+        OctetString::from_der(&params.to_der().map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec RSA-OAEP label DER: {e}"))
+        })?)
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec RSA-OAEP label: {e}")))?;
     if !label.as_bytes().is_empty() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "PubSec RSA-OAEP non-empty pSpecified labels are unsupported".to_string(),
         ));
     }
@@ -1376,7 +1381,7 @@ fn validate_absent_or_null_params(
     match alg.parameters.as_ref() {
         None => Ok(()),
         Some(params) if params.tag() == der::Tag::Null && params.value().is_empty() => Ok(()),
-        Some(params) => Err(OxideError::MalformedPdf(format!(
+        Some(params) => Err(WellfriendError::MalformedPdf(format!(
             "PubSec RSA-OAEP {field} digest parameters must be absent or NULL, got {:?}",
             params.tag()
         ))),
@@ -1407,7 +1412,7 @@ fn decrypt_cms_content(
     if alg.oid == const_oid::db::rfc5911::ID_AES_256_CBC {
         return decrypt_aes_cbc::<aes::Aes256>(content_key, &iv, ciphertext, 32, "AES-256-CBC");
     }
-    Err(OxideError::UnsupportedFeature(format!(
+    Err(WellfriendError::UnsupportedFeature(format!(
         "PubSec CMS content-encryption algorithm {} is unsupported",
         alg.oid
     )))
@@ -1415,24 +1420,23 @@ fn decrypt_cms_content(
 
 fn cms_algorithm_iv(alg: &AlgorithmIdentifierOwned) -> Result<Vec<u8>> {
     let Some(params) = alg.parameters.as_ref() else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "PubSec CMS AES-CBC parameters are missing".to_string(),
         ));
     };
     if params.tag() != der::Tag::OctetString {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PubSec CMS AES-CBC parameters must be OCTET STRING, got {:?}",
             params.tag()
         )));
     }
-    let iv = OctetString::from_der(
-        &params
-            .to_der()
-            .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS AES-CBC IV DER: {e}")))?,
-    )
-    .map_err(|e| OxideError::MalformedPdf(format!("PubSec CMS AES-CBC IV: {e}")))?;
+    let iv =
+        OctetString::from_der(&params.to_der().map_err(|e| {
+            WellfriendError::MalformedPdf(format!("PubSec CMS AES-CBC IV DER: {e}"))
+        })?)
+        .map_err(|e| WellfriendError::MalformedPdf(format!("PubSec CMS AES-CBC IV: {e}")))?;
     if iv.as_bytes().len() != 16 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PubSec CMS AES-CBC IV must be 16 bytes, got {}",
             iv.as_bytes().len()
         )));
@@ -1452,23 +1456,24 @@ where
 {
     use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
     if content_key.len() != expected_key_len {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PubSec CMS {label} content key must be {expected_key_len} bytes, got {}",
             content_key.len()
         )));
     }
     if ciphertext.is_empty() || !ciphertext.len().is_multiple_of(16) {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PubSec CMS {label} ciphertext length is invalid"
         )));
     }
     let mut buf = ciphertext.to_vec();
-    let decryptor = cbc::Decryptor::<C>::new_from_slices(content_key, iv)
-        .map_err(|_| OxideError::MalformedPdf(format!("PubSec CMS {label} invalid key or IV")))?;
+    let decryptor = cbc::Decryptor::<C>::new_from_slices(content_key, iv).map_err(|_| {
+        WellfriendError::MalformedPdf(format!("PubSec CMS {label} invalid key or IV"))
+    })?;
     let plaintext = decryptor
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
         .map_err(|_| {
-            OxideError::EncryptedPdf(format!("PubSec CMS {label} content decryption failed"))
+            WellfriendError::EncryptedPdf(format!("PubSec CMS {label} content decryption failed"))
         })?
         .to_vec();
     Ok(plaintext)
@@ -1506,7 +1511,7 @@ pub(crate) mod test_support {
         let public_key = RsaPublicKey::from(&private_key);
         let spki_der = public_key.to_public_key_der().expect("SPKI DER");
         let spki = SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("SPKI parse");
-        let subject = Name::from_str("CN=Oxide PubSec Test,O=Oxide,C=US").expect("name");
+        let subject = Name::from_str("CN=Wellfriend PubSec Test,O=Wellfriend,C=US").expect("name");
         let validity = Validity::from_now(Duration::from_secs(3600)).expect("validity");
         let builder = CertificateBuilder::new(
             Profile::Leaf {
@@ -1793,7 +1798,7 @@ mod tests {
             key_der.as_bytes(),
             None,
             password,
-            "oxide-pubsec",
+            "wellfriendpdf-pubsec",
         )
         .unwrap()
         .to_der();

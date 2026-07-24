@@ -1,6 +1,6 @@
 # Arlington Validation
 
-Oxide consumes the Arlington PDF Model through generated Rust tables. Runtime
+Wellfriend consumes the Arlington PDF Model through generated Rust tables. Runtime
 validation does not parse TSV files.
 
 Source:

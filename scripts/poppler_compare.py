@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare Oxide CLI output against Poppler for a tagged PDF corpus."""
+"""Compare Wellfriend CLI output against Poppler for a tagged PDF corpus."""
 
 from __future__ import annotations
 
@@ -126,14 +126,14 @@ def find_executable(name: str, bin_dir: Path | None) -> str | None:
     return None
 
 
-def resolve_oxide_bin(args: argparse.Namespace) -> str:
-    if args.oxide_bin:
-        oxide = Path(args.oxide_bin)
-        if not oxide.exists():
-            raise SystemExit(f"oxide binary not found: {oxide}")
-        return str(oxide)
+def resolve_wellfriendpdf_bin(args: argparse.Namespace) -> str:
+    if args.wellfriendpdf_bin:
+        wellfriendpdf = Path(args.wellfriendpdf_bin)
+        if not wellfriendpdf.exists():
+            raise SystemExit(f"wellfriendpdf binary not found: {wellfriendpdf}")
+        return str(wellfriendpdf)
 
-    target_name = executable_name("oxide")
+    target_name = executable_name("wellfriendpdf")
     debug_bin = REPO_ROOT / "target" / "debug" / target_name
     release_bin = REPO_ROOT / "target" / "release" / target_name
     if release_bin.exists():
@@ -143,15 +143,15 @@ def resolve_oxide_bin(args: argparse.Namespace) -> str:
 
     if args.no_build:
         raise SystemExit(
-            "oxide binary was not found. Build it first or omit --no-build.\n"
-            "Expected target/debug/oxide(.exe) or target/release/oxide(.exe)."
+            "wellfriendpdf binary was not found. Build it first or omit --no-build.\n"
+            "Expected target/debug/wellfriendpdf(.exe) or target/release/wellfriendpdf(.exe)."
         )
 
-    print("Building oxide CLI with `cargo build -p oxide-cli`...", file=sys.stderr)
-    build = run_command(["cargo", "build", "-p", "oxide-cli"], timeout=args.build_timeout)
+    print("Building wellfriendpdf CLI with `cargo build -p wellfriendpdf-cli`...", file=sys.stderr)
+    build = run_command(["cargo", "build", "-p", "wellfriendpdf-cli"], timeout=args.build_timeout)
     if not build.ok:
         raise SystemExit(
-            "failed to build oxide CLI\n"
+            "failed to build wellfriendpdf CLI\n"
             + trim_text(build.stdout)
             + "\n"
             + trim_text(build.stderr)
@@ -239,21 +239,21 @@ def tokenize_text(text: str) -> list[str]:
     return re.findall(r"\w+|[^\w\s]", normalize_text(text).lower(), flags=re.UNICODE)
 
 
-def text_similarity(poppler_text: str, oxide_text: str) -> dict[str, float]:
+def text_similarity(poppler_text: str, wellfriendpdf_text: str) -> dict[str, float]:
     poppler_norm = normalize_text(poppler_text)
-    oxide_norm = normalize_text(oxide_text)
-    if not poppler_norm and not oxide_norm:
+    wellfriendpdf_norm = normalize_text(wellfriendpdf_text)
+    if not poppler_norm and not wellfriendpdf_norm:
         return {"word_ratio": 1.0, "char_ratio": 1.0}
     poppler_tokens = tokenize_text(poppler_norm)
-    oxide_tokens = tokenize_text(oxide_norm)
-    if max(len(poppler_tokens), len(oxide_tokens)) > 5000:
-        word_ratio = token_dice_similarity(poppler_tokens, oxide_tokens)
+    wellfriendpdf_tokens = tokenize_text(wellfriendpdf_norm)
+    if max(len(poppler_tokens), len(wellfriendpdf_tokens)) > 5000:
+        word_ratio = token_dice_similarity(poppler_tokens, wellfriendpdf_tokens)
     else:
-        word_ratio = difflib.SequenceMatcher(None, poppler_tokens, oxide_tokens).ratio()
-    if max(len(poppler_norm), len(oxide_norm)) > 20000:
+        word_ratio = difflib.SequenceMatcher(None, poppler_tokens, wellfriendpdf_tokens).ratio()
+    if max(len(poppler_norm), len(wellfriendpdf_norm)) > 20000:
         char_ratio = word_ratio
     else:
-        char_ratio = difflib.SequenceMatcher(None, poppler_norm, oxide_norm).ratio()
+        char_ratio = difflib.SequenceMatcher(None, poppler_norm, wellfriendpdf_norm).ratio()
     return {"word_ratio": word_ratio, "char_ratio": char_ratio}
 
 
@@ -465,12 +465,12 @@ def compare_text(
     pdf: Path,
     work_dir: Path,
     poppler: dict[str, str],
-    oxide_bin: str,
+    wellfriendpdf_bin: str,
     timeout: int,
 ) -> dict[str, Any]:
     work_dir.mkdir(parents=True, exist_ok=True)
     poppler_out = work_dir / "poppler.txt"
-    oxide_out = work_dir / "oxide.txt"
+    wellfriendpdf_out = work_dir / "wellfriendpdf.txt"
     password = entry.get("password")
 
     poppler_cmd = [poppler["pdftotext"], "-enc", "UTF-8", "-nopgbrk"]
@@ -478,26 +478,26 @@ def compare_text(
         poppler_cmd.extend(["-upw", str(password)])
     poppler_cmd.extend([str(pdf), str(poppler_out)])
 
-    oxide_cmd = [oxide_bin, "extract-text", str(pdf), "--output", str(oxide_out)]
+    wellfriendpdf_cmd = [wellfriendpdf_bin, "extract-text", str(pdf), "--output", str(wellfriendpdf_out)]
     if password:
-        oxide_cmd.extend(["--password", str(password)])
+        wellfriendpdf_cmd.extend(["--password", str(password)])
 
     poppler_result = run_command(poppler_cmd, timeout=timeout)
-    oxide_result = run_command(oxide_cmd, timeout=timeout)
+    wellfriendpdf_result = run_command(wellfriendpdf_cmd, timeout=timeout)
     result: dict[str, Any] = {
         "poppler": poppler_result.compact(),
-        "oxide": oxide_result.compact(),
+        "wellfriendpdf": wellfriendpdf_result.compact(),
         "similarity": None,
         "poppler_chars": 0,
-        "oxide_chars": 0,
+        "wellfriendpdf_chars": 0,
     }
-    if poppler_result.ok and oxide_result.ok:
+    if poppler_result.ok and wellfriendpdf_result.ok:
         poppler_text = read_text(poppler_out)
-        oxide_text = read_text(oxide_out)
-        sim = text_similarity(poppler_text, oxide_text)
+        wellfriendpdf_text = read_text(wellfriendpdf_out)
+        sim = text_similarity(poppler_text, wellfriendpdf_text)
         result["similarity"] = sim
         result["poppler_chars"] = len(normalize_text(poppler_text))
-        result["oxide_chars"] = len(normalize_text(oxide_text))
+        result["wellfriendpdf_chars"] = len(normalize_text(wellfriendpdf_text))
     return result
 
 
@@ -506,14 +506,14 @@ def compare_render(
     pdf: Path,
     work_dir: Path,
     poppler: dict[str, str],
-    oxide_bin: str,
+    wellfriendpdf_bin: str,
     dpi: int,
     max_render_pages: int | None,
     timeout: int,
 ) -> dict[str, Any]:
     work_dir.mkdir(parents=True, exist_ok=True)
     poppler_prefix = work_dir / "poppler_page"
-    oxide_zip = work_dir / "oxide_pages.zip"
+    wellfriendpdf_zip = work_dir / "wellfriendpdf_pages.zip"
     password = entry.get("password")
 
     poppler_cmd = [poppler["pdftoppm"], "-r", str(dpi)]
@@ -523,62 +523,62 @@ def compare_render(
         poppler_cmd.extend(["-upw", str(password)])
     poppler_cmd.extend([str(pdf), str(poppler_prefix)])
 
-    oxide_cmd = [
-        oxide_bin,
+    wellfriendpdf_cmd = [
+        wellfriendpdf_bin,
         "render",
         str(pdf),
         "--output",
-        str(oxide_zip),
+        str(wellfriendpdf_zip),
         "--dpi",
         str(dpi),
         "--format",
         "png",
     ]
     if max_render_pages:
-        oxide_cmd.extend(["--pages", f"1-{max_render_pages}"])
+        wellfriendpdf_cmd.extend(["--pages", f"1-{max_render_pages}"])
 
     poppler_result = run_command(poppler_cmd, timeout=timeout)
-    oxide_result = run_command(oxide_cmd, timeout=timeout)
+    wellfriendpdf_result = run_command(wellfriendpdf_cmd, timeout=timeout)
     result: dict[str, Any] = {
         "poppler": poppler_result.compact(),
-        "oxide": oxide_result.compact(),
+        "wellfriendpdf": wellfriendpdf_result.compact(),
         "pages": [],
         "average_psnr": None,
     }
-    if not (poppler_result.ok and oxide_result.ok):
+    if not (poppler_result.ok and wellfriendpdf_result.ok):
         return result
 
     poppler_pages = sorted_page_files(list(work_dir.glob("poppler_page-*.ppm")))
-    oxide_pages: list[tuple[str, RGBImage]] = []
+    wellfriendpdf_pages: list[tuple[str, RGBImage]] = []
     try:
-        with zipfile.ZipFile(oxide_zip) as archive:
+        with zipfile.ZipFile(wellfriendpdf_zip) as archive:
             for name in sorted(archive.namelist()):
                 if name.lower().endswith(".png"):
-                    oxide_pages.append((name, parse_png_bytes(archive.read(name))))
+                    wellfriendpdf_pages.append((name, parse_png_bytes(archive.read(name))))
     except Exception as err:  # noqa: BLE001
-        result["oxide_zip_error"] = str(err)
+        result["wellfriendpdf_zip_error"] = str(err)
         return result
 
-    page_count = min(len(poppler_pages), len(oxide_pages))
+    page_count = min(len(poppler_pages), len(wellfriendpdf_pages))
     psnrs: list[float] = []
     for idx in range(page_count):
         page_result: dict[str, Any] = {
             "page_index": idx + 1,
             "poppler_image": poppler_pages[idx].name,
-            "oxide_image": oxide_pages[idx][0],
+            "wellfriendpdf_image": wellfriendpdf_pages[idx][0],
             "psnr": None,
             "error": None,
         }
         try:
             poppler_img = parse_ppm(poppler_pages[idx])
-            oxide_img = oxide_pages[idx][1]
+            wellfriendpdf_img = wellfriendpdf_pages[idx][1]
             page_result["poppler_size"] = [poppler_img.width, poppler_img.height]
-            page_result["oxide_size"] = [oxide_img.width, oxide_img.height]
-            if poppler_img.width == oxide_img.width and poppler_img.height == oxide_img.height:
-                value = psnr(poppler_img, oxide_img)
+            page_result["wellfriendpdf_size"] = [wellfriendpdf_img.width, wellfriendpdf_img.height]
+            if poppler_img.width == wellfriendpdf_img.width and poppler_img.height == wellfriendpdf_img.height:
+                value = psnr(poppler_img, wellfriendpdf_img)
                 page_result["compared_size"] = [poppler_img.width, poppler_img.height]
             else:
-                value, width, height = psnr_overlapping_crop(poppler_img, oxide_img)
+                value, width, height = psnr_overlapping_crop(poppler_img, wellfriendpdf_img)
                 page_result["dimension_mismatch"] = True
                 page_result["compared_size"] = [width, height]
             page_result["psnr"] = "inf" if math.isinf(value) else round(value, 3)
@@ -586,10 +586,10 @@ def compare_render(
         except Exception as err:  # noqa: BLE001
             page_result["error"] = str(err)
         result["pages"].append(page_result)
-    if len(poppler_pages) != len(oxide_pages):
+    if len(poppler_pages) != len(wellfriendpdf_pages):
         result["page_count_mismatch"] = {
             "poppler": len(poppler_pages),
-            "oxide": len(oxide_pages),
+            "wellfriendpdf": len(wellfriendpdf_pages),
         }
     if psnrs:
         result["average_psnr"] = round(sum(psnrs) / len(psnrs), 3)
@@ -599,11 +599,11 @@ def compare_render(
 def run_analyze(
     entry: dict[str, Any],
     pdf: Path,
-    oxide_bin: str,
+    wellfriendpdf_bin: str,
     timeout: int,
 ) -> dict[str, Any]:
     password = entry.get("password")
-    cmd = [oxide_bin, "analyze", str(pdf), "--pretty"]
+    cmd = [wellfriendpdf_bin, "analyze", str(pdf), "--pretty"]
     if password:
         # The current CLI has no password option for analyze. Record the real behavior.
         pass
@@ -621,13 +621,13 @@ def run_extract_images(
     entry: dict[str, Any],
     pdf: Path,
     work_dir: Path,
-    oxide_bin: str,
+    wellfriendpdf_bin: str,
     timeout: int,
 ) -> dict[str, Any]:
     work_dir.mkdir(parents=True, exist_ok=True)
     output_zip = work_dir / "images.zip"
     cmd = [
-        oxide_bin,
+        wellfriendpdf_bin,
         "extract-images",
         str(pdf),
         "--output",
@@ -698,7 +698,7 @@ def group_notes(items: list[dict[str, Any]], limit: int = 3) -> str:
         failures = [
             item["id"]
             for item in items
-            if not item.get(phase, {}).get("command", item.get(phase, {}).get("oxide", {})).get("ok", True)
+            if not item.get(phase, {}).get("command", item.get(phase, {}).get("wellfriendpdf", {})).get("ok", True)
         ]
         if failures:
             notes.append(f"{phase} failed: {', '.join(failures[:limit])}")
@@ -763,10 +763,10 @@ def write_csv(path: Path, results: list[dict[str, Any]]) -> None:
                 "category",
                 "text_similarity",
                 "text_poppler_ok",
-                "text_oxide_ok",
+                "text_wellfriendpdf_ok",
                 "render_psnr",
                 "render_poppler_ok",
-                "render_oxide_ok",
+                "render_wellfriendpdf_ok",
                 "analyze_ok",
                 "extract_images_ok",
                 "image_count",
@@ -784,10 +784,10 @@ def write_csv(path: Path, results: list[dict[str, Any]]) -> None:
                     if isinstance(similarity, dict)
                     else None,
                     "text_poppler_ok": item.get("text", {}).get("poppler", {}).get("ok"),
-                    "text_oxide_ok": item.get("text", {}).get("oxide", {}).get("ok"),
+                    "text_wellfriendpdf_ok": item.get("text", {}).get("wellfriendpdf", {}).get("ok"),
                     "render_psnr": item.get("render", {}).get("average_psnr"),
                     "render_poppler_ok": item.get("render", {}).get("poppler", {}).get("ok"),
-                    "render_oxide_ok": item.get("render", {}).get("oxide", {}).get("ok"),
+                    "render_wellfriendpdf_ok": item.get("render", {}).get("wellfriendpdf", {}).get("ok"),
                     "analyze_ok": item.get("analyze", {}).get("command", {}).get("ok"),
                     "extract_images_ok": item.get("extract_images", {})
                     .get("command", {})
@@ -812,7 +812,7 @@ def render_markdown_summary(payload: dict[str, Any]) -> str:
         f"- Render page cap: {settings['max_render_pages'] or 'all pages'}",
         f"- Poppler pdftotext: `{settings['pdftotext']}`",
         f"- Poppler pdftoppm: `{settings['pdftoppm']}`",
-        f"- Oxide CLI: `{settings['oxide_bin']}`",
+        f"- Wellfriend CLI: `{settings['wellfriendpdf_bin']}`",
         "",
         "## Headline Numbers",
         "",
@@ -890,8 +890,8 @@ def render_markdown_summary(payload: dict[str, Any]) -> str:
             "",
             "- Text similarity is a normalized word-token SequenceMatcher ratio against Poppler pdftotext output; very large token streams use a linear token Dice score.",
             "- Render quality is PSNR against Poppler pdftoppm PPM output. Infinite PSNR pages are capped at 100 dB for averages.",
-            "- If Poppler and Oxide render dimensions differ, PSNR is computed over the overlapping crop and the mismatch is recorded per page.",
-            "- A failed Oxide or Poppler command is recorded as data and does not stop the run.",
+            "- If Poppler and Wellfriend render dimensions differ, PSNR is computed over the overlapping crop and the mismatch is recorded per page.",
+            "- A failed Wellfriend or Poppler command is recorded as data and does not stop the run.",
             "- The harness output directory contains results.json and results.csv with per-file command status, stderr snippets, and page-level PSNR values.",
             "",
         ]
@@ -916,7 +916,7 @@ def failure_details(results: list[dict[str, Any]]) -> tuple[list[str], int, int]
     for item in results:
         failures: list[str] = []
         text = item.get("text", {})
-        for tool in ["poppler", "oxide"]:
+        for tool in ["poppler", "wellfriendpdf"]:
             command = text.get(tool, {})
             if command:
                 panic_count += 1 if command_has_panic(command) else 0
@@ -924,7 +924,7 @@ def failure_details(results: list[dict[str, Any]]) -> tuple[list[str], int, int]
                 if not command.get("ok"):
                     failures.append(f"text/{tool}: {excerpt(command)}")
         render = item.get("render", {})
-        for tool in ["poppler", "oxide"]:
+        for tool in ["poppler", "wellfriendpdf"]:
             command = render.get(tool, {})
             if command:
                 panic_count += 1 if command_has_panic(command) else 0
@@ -937,7 +937,7 @@ def failure_details(results: list[dict[str, Any]]) -> tuple[list[str], int, int]
                 panic_count += 1 if command_has_panic(command) else 0
                 timeout_count += 1 if command.get("timed_out") else 0
                 if not command.get("ok"):
-                    failures.append(f"{phase}/oxide: {excerpt(command)}")
+                    failures.append(f"{phase}/wellfriendpdf: {excerpt(command)}")
         if failures:
             lines.append(
                 f"- `{item['id']}` ({item['category']}): " + "; ".join(failures)
@@ -959,7 +959,7 @@ def run_harness(args: argparse.Namespace) -> int:
             "macOS: brew install poppler. Debian/Ubuntu: sudo apt-get install poppler-utils."
         )
         raise SystemExit(install)
-    oxide_bin = resolve_oxide_bin(args)
+    wellfriendpdf_bin = resolve_wellfriendpdf_bin(args)
     manifest, entries = load_entries(args)
     if not entries:
         raise SystemExit("no PDF entries matched the requested filters")
@@ -976,7 +976,7 @@ def run_harness(args: argparse.Namespace) -> int:
         "max_render_pages": max_render_pages,
         "pdftotext": pdftotext,
         "pdftoppm": pdftoppm,
-        "oxide_bin": oxide_bin,
+        "wellfriendpdf_bin": wellfriendpdf_bin,
         "command_timeout": args.timeout,
         "render_timeout": args.render_timeout,
     }
@@ -1014,7 +1014,7 @@ def run_harness(args: argparse.Namespace) -> int:
             "license": entry.get("license"),
             "notes": entry.get("notes"),
             "size_bytes": pdf.stat().st_size,
-            "text": compare_text(entry, pdf, file_work / "text", poppler, oxide_bin, args.timeout),
+            "text": compare_text(entry, pdf, file_work / "text", poppler, wellfriendpdf_bin, args.timeout),
         }
         (file_work / "render").mkdir(parents=True, exist_ok=True)
         result["render"] = compare_render(
@@ -1022,14 +1022,14 @@ def run_harness(args: argparse.Namespace) -> int:
             pdf,
             file_work / "render",
             poppler,
-            oxide_bin,
+            wellfriendpdf_bin,
             args.dpi,
             max_render_pages,
             args.render_timeout,
         )
-        result["analyze"] = run_analyze(entry, pdf, oxide_bin, args.timeout)
+        result["analyze"] = run_analyze(entry, pdf, wellfriendpdf_bin, args.timeout)
         result["extract_images"] = run_extract_images(
-            entry, pdf, file_work / "images", oxide_bin, args.timeout
+            entry, pdf, file_work / "images", wellfriendpdf_bin, args.timeout
         )
         results.append(result)
 
@@ -1056,7 +1056,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--output-dir")
     parser.add_argument("--report-path")
     parser.add_argument("--poppler-bin-dir")
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--build-timeout", type=int, default=180)
     parser.add_argument("--timeout", type=int, default=60)

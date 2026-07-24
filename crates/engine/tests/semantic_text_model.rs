@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     text::build_text_semantic_page, CjkSegmentationMode, ContentEngine, FontDecodeSource,
     TextMappingSource, TextRole, TextRoleSource, TextSearchOptions, TextSemanticOptions,
 };
@@ -222,7 +222,7 @@ fn semantic_text_model_reports_duplicate_structtree_mcid() {
 
 #[test]
 fn semantic_model_records_char_mapping_source_provenance() {
-    let chunk = oxide_engine::TextChunk {
+    let chunk = wellfriendpdf_engine::TextChunk {
         text: "AB".to_string(),
         x: 10.0,
         y: 100.0,
@@ -253,7 +253,7 @@ fn semantic_model_records_char_mapping_source_provenance() {
 
 #[test]
 fn cjk_simple_segmentation_groups_bounded_runs_and_preserves_search_quads() {
-    let chunk = oxide_engine::TextChunk {
+    let chunk = wellfriendpdf_engine::TextChunk {
         text: "東京大学ABC、京都".to_string(),
         x: 10.0,
         y: 100.0,
@@ -293,7 +293,7 @@ fn cjk_simple_segmentation_groups_bounded_runs_and_preserves_search_quads() {
 #[test]
 fn cjk_simple_segmentation_respects_max_run_cap() {
     let text = "東京大学京都";
-    let chunk = oxide_engine::TextChunk {
+    let chunk = wellfriendpdf_engine::TextChunk {
         text: text.to_string(),
         x: 10.0,
         y: 100.0,

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Oxide performance benchmark harness (Mega-Prompt 10, Part A).
+"""Wellfriend performance benchmark harness (Mega-Prompt 10, Part A).
 
-Measures, for the release-build `oxide` CLI:
+Measures, for the release-build `wellfriendpdf` CLI:
   * THROUGHPUT  — best-of-N wall-clock time per (command, file, thread-count).
   * PEAK MEMORY — maximum resident/working set during the run.
 
@@ -144,12 +144,12 @@ else:
 # Benchmark cases
 # ----------------------------------------------------------------------------
 
-def oxide_bin():
-    name = "oxide.exe" if IS_WINDOWS else "oxide"
+def wellfriendpdf_bin():
+    name = "wellfriendpdf.exe" if IS_WINDOWS else "wellfriendpdf"
     p = REPO_ROOT / "target" / "release" / name
     if not p.exists():
         sys.exit(f"release binary not found: {p}\n"
-                 f"build it first: cargo build --release -p oxide-cli")
+                 f"build it first: cargo build --release -p wellfriendpdf-cli")
     return str(p)
 
 
@@ -194,7 +194,7 @@ def bench_one(binary, subcmd, pdf, extra_args, threads, repeats, temp_root):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Oxide perf benchmark")
+    ap = argparse.ArgumentParser(description="Wellfriend perf benchmark")
     ap.add_argument("--label", default="run",
                     help="label for output file (e.g. before/after)")
     ap.add_argument("--repeats", type=int, default=5,
@@ -208,7 +208,7 @@ def main():
                     help="workspace temp root for per-run output files")
     args = ap.parse_args()
 
-    binary = oxide_bin()
+    binary = wellfriendpdf_bin()
     thread_counts = sorted({1, args.max_threads})
 
     results = {
@@ -225,7 +225,7 @@ def main():
     if not selected:
         sys.exit(f"no matching cases; available: {[c[0] for c in CASES]}")
 
-    print(f"# Oxide perf benchmark — label={args.label}")
+    print(f"# Wellfriend perf benchmark — label={args.label}")
     print(f"platform={platform.platform()} cpus={os.cpu_count()} "
           f"dpi={args.dpi} repeats={args.repeats} (best time, max peak)\n")
     header = (f"{'case':<14}{'op':<14}{'threads':>8}"

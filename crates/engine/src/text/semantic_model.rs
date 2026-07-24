@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::analysis::layout::{analyze_page, BBox, LayoutConfig, PageLayout};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::fonts::FontDecodeSource;
 use crate::text::{MarkedTextChunk, ReadingOrderReconstructor, TextChunk};
 
@@ -279,7 +279,7 @@ pub struct CjkDictionaryProvider {
     max_token_chars: usize,
 }
 
-const BUILTIN_CJK_DICTIONARY_NAME: &str = "oxide-prompt14-synthetic-cjk-test-dictionary";
+const BUILTIN_CJK_DICTIONARY_NAME: &str = "wellfriendpdf-prompt14-synthetic-cjk-test-dictionary";
 const BUILTIN_CJK_DICTIONARY_VERSION: &str = "2026-07-09";
 const BUILTIN_CJK_DICTIONARY_LICENSE: &str = "CC0-1.0 synthetic fixture terms";
 
@@ -394,7 +394,7 @@ impl CjkDictionaryProvider {
         limits: CjkDictionaryProviderLimits,
     ) -> Result<Self> {
         if manifest_paths.is_empty() {
-            return Err(OxideError::invalid_input(
+            return Err(WellfriendError::invalid_input(
                 "at least one CJK dictionary manifest path is required",
             ));
         }
@@ -408,19 +408,19 @@ impl CjkDictionaryProvider {
             let manifest_bytes = fs::read(manifest_path)?;
             let manifest: CjkDictionaryPackManifest = serde_json::from_slice(&manifest_bytes)
                 .map_err(|err| {
-                    OxideError::invalid_input(format!(
+                    WellfriendError::invalid_input(format!(
                         "invalid CJK dictionary manifest {}: {err}",
                         manifest_path.display()
                     ))
                 })?;
             if manifest.entry_count > limits.max_entries {
-                return Err(OxideError::ResourceLimit(format!(
+                return Err(WellfriendError::ResourceLimit(format!(
                     "CJK dictionary pack {} declares {} entries above cap {}",
                     manifest.pack_id, manifest.entry_count, limits.max_entries
                 )));
             }
             if manifest.expected_memory_footprint_bytes > limits.memory_cap_bytes {
-                return Err(OxideError::ResourceLimit(format!(
+                return Err(WellfriendError::ResourceLimit(format!(
                     "CJK dictionary pack {} declares {} bytes above cap {}",
                     manifest.pack_id,
                     manifest.expected_memory_footprint_bytes,
@@ -432,7 +432,7 @@ impl CjkDictionaryProvider {
             let entries_bytes = fs::read(&entries_path)?;
             let actual_hash = sha256_digest(&entries_bytes);
             if !manifest.hash.is_empty() && manifest.hash != actual_hash {
-                return Err(OxideError::invalid_input(format!(
+                return Err(WellfriendError::invalid_input(format!(
                     "CJK dictionary pack {} hash mismatch: expected {}, got {}",
                     manifest.pack_id, manifest.hash, actual_hash
                 )));
@@ -446,7 +446,7 @@ impl CjkDictionaryProvider {
                 &mut pack_malformed,
             )?;
             if pack_malformed > 0 {
-                return Err(OxideError::invalid_input(format!(
+                return Err(WellfriendError::invalid_input(format!(
                     "CJK dictionary pack {} contains {} malformed TSV entries",
                     manifest.pack_id, pack_malformed
                 )));
@@ -456,7 +456,7 @@ impl CjkDictionaryProvider {
                 .map(|entry| entry.term.len() + entry.language.len() + entry.source.len() + 16)
                 .sum::<usize>();
             if memory_footprint_bytes > limits.memory_cap_bytes {
-                return Err(OxideError::ResourceLimit(format!(
+                return Err(WellfriendError::ResourceLimit(format!(
                     "CJK dictionary memory estimate {} exceeded cap {}",
                     memory_footprint_bytes, limits.memory_cap_bytes
                 )));
@@ -487,7 +487,7 @@ impl CjkDictionaryProvider {
         }
 
         if raw_entries.len() > limits.max_entries {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "CJK dictionary loaded {} entries above cap {}",
                 raw_entries.len(),
                 limits.max_entries
@@ -496,7 +496,7 @@ impl CjkDictionaryProvider {
 
         let (entries, duplicate_entries) = dedupe_and_order_dictionary_entries(raw_entries);
         if entries.is_empty() {
-            return Err(OxideError::invalid_input(
+            return Err(WellfriendError::invalid_input(
                 "CJK dictionary provider loaded no valid entries",
             ));
         }
@@ -2230,7 +2230,7 @@ fn parse_dictionary_tsv_entries(
     malformed: &mut usize,
 ) -> Result<Vec<IndexedCjkDictionaryEntry>> {
     let text = std::str::from_utf8(entries_bytes).map_err(|err| {
-        OxideError::invalid_input(format!(
+        WellfriendError::invalid_input(format!(
             "CJK dictionary pack {} entries are not UTF-8: {err}",
             manifest.pack_id
         ))
@@ -2281,7 +2281,7 @@ fn parse_dictionary_tsv_entries(
     }
     let parsed_count = entries.len();
     if parsed_count != manifest.entry_count {
-        return Err(OxideError::invalid_input(format!(
+        return Err(WellfriendError::invalid_input(format!(
             "CJK dictionary pack {} manifest entry_count {} does not match parsed valid entry count {}",
             manifest.pack_id, manifest.entry_count, parsed_count
         )));

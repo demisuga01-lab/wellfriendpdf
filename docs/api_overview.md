@@ -1,7 +1,7 @@
-# Oxide Public API Overview
+# Wellfriend Public API Overview
 
 This is the supported entry-point map for integrators. Prefer
-`oxide_engine::prelude::*` for application code. The crate root still re-exports
+`wellfriendpdf_engine::prelude::*` for application code. The crate root still re-exports
 low-level building blocks for advanced consumers, but those are a wider surface
 and may move while the crate is `0.x`.
 
@@ -24,13 +24,13 @@ and may move while the crate is `0.x`.
 | Page overlays | `watermark_text_pdf`, `watermark_image_pdf`, `add_page_numbers_pdf` |
 | PDF/A and PDF/UA | `validate_pdfa`, `convert_to_pdfa`, `convert_to_pdfa_checked`, `validate_pdfua`, `PdfAProfile::{PdfA1B,PdfA2B,PdfA2A,PdfA3B,PdfA3A}` |
 | Signatures | `ContentEngine::sign`, `ContentEngine::add_ltv_material`, `sign_document`, `add_ltv_material`, `PdfSigner`, `verify_signatures` |
-| Errors | `Result<T>`, `OxideError`, `ErrorKind`, `OxideError::code()` |
+| Errors | `Result<T>`, `WellfriendError`, `ErrorKind`, `WellfriendError::code()` |
 
 ## Bindings
 
 | Surface | Status | Docs |
 | --- | --- | --- |
-| CLI | Stable command names for common operations | `oxide --help`, README |
+| CLI | Stable command names for common operations | `wellfriendpdf --help`, README |
 | Python | PyO3 module with `Document` plus module-level structural/conversion helpers | `docs/python_binding.md`, `docs/bindings.md` |
 | C ABI | Stable exported C symbols in committed header | `docs/bindings.md` |
 | .NET | P/Invoke binding over the C ABI with `SafeHandle` cleanup | `docs/dotnet_binding.md` |
@@ -49,13 +49,13 @@ Use them when you need PDF internals. For application integrations, start with
 
 ## Error Handling
 
-Every public operation returns `oxide_engine::Result<T>`. For programmatic
+Every public operation returns `wellfriendpdf_engine::Result<T>`. For programmatic
 handling:
 
 ```rust
-use oxide_engine::{ErrorKind, OxideError};
+use wellfriendpdf_engine::{ErrorKind, WellfriendError};
 
-fn classify(err: &OxideError) -> &'static str {
+fn classify(err: &WellfriendError) -> &'static str {
     match err.kind() {
         ErrorKind::Encrypted => "ask for a password",
         ErrorKind::UnsupportedFeature => "show an unsupported-feature message",
@@ -65,6 +65,6 @@ fn classify(err: &OxideError) -> &'static str {
 }
 ```
 
-Library code should return `OxideError` rather than panicking on malformed input.
+Library code should return `WellfriendError` rather than panicking on malformed input.
 Panic catching at C/server boundaries is documented in `docs/bindings.md` and
 `docs/security.md`.

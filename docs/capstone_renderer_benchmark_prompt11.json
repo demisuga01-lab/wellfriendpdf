@@ -5,7 +5,7 @@
   "max_pages_per_file": 3,
   "threshold_profile": "renderer",
   "backends": {
-    "oxide_bin": "target\\release\\oxide.exe",
+    "wellfriendpdf_bin": "target\\release\\wellfriendpdf.exe",
     "poppler": {
       "pdfinfo": "pdfinfo version 26.02.0\nCopyright 2005-2026 The Poppler Developers - http://poppler.freedesktop.org\nCopyright 1996-2011, 2022 Glyph & Cog, LLC",
       "pdftoppm": "pdftoppm version 26.02.0\nCopyright 2005-2026 The Poppler Developers - http://poppler.freedesktop.org\nCopyright 1996-2011, 2022 Glyph & Cog, LLC"
@@ -16,11 +16,11 @@
       "version": null
     }
   },
-  "oxide_cli_reconciliation": {
-    "info": "adapted existing `oxide info --json`",
-    "render": "adapted existing `oxide render --format png` ZIP output; no product CLI change",
+  "wellfriendpdf_cli_reconciliation": {
+    "info": "adapted existing `wellfriendpdf info --json`",
+    "render": "adapted existing `wellfriendpdf render --format png` ZIP output; no product CLI change",
     "timeout_memory": "enforced by benchmark subprocess monitor, not product CLI flags",
-    "disable_javascript": "Oxide has no JavaScript execution path; active content fixtures are rendered as inert PDF objects"
+    "disable_javascript": "Wellfriend has no JavaScript execution path; active content fixtures are rendered as inert PDF objects"
   },
   "scale": {
     "files": 265,
@@ -29,7 +29,7 @@
     "real_world_files": 75,
     "visual_pages_compared": 245,
     "visual_pages_passed": 192,
-    "oxide_rendered_pages": 277,
+    "wellfriendpdf_rendered_pages": 277,
     "poppler_rendered_pages": 287,
     "total_backend_page_images": 564,
     "full_spec_real_world_files": 1000,
@@ -44,9 +44,9 @@
       "hostile_memory_bounded_percent": 100.0
     },
     "performance": {
-      "median_oxide_speed_ratio_vs_poppler": 2.7069,
-      "ratio_definition": "poppler_total_ms / oxide_total_ms; >1 means Oxide faster",
-      "peak_oxide_memory_mb_max": 66.0
+      "median_wellfriendpdf_speed_ratio_vs_poppler": 2.7069,
+      "ratio_definition": "poppler_total_ms / wellfriendpdf_total_ms; >1 means Wellfriend faster",
+      "peak_wellfriendpdf_memory_mb_max": 66.0
     },
     "determinism": {
       "sampled_files": 24,
@@ -66,7 +66,7 @@
       "page:low_ssim": 5,
       "large_region_difference": 4,
       "poppler_render_failed": 4,
-      "oxide_render_failed": 2,
+      "wellfriendpdf_render_failed": 2,
       "page:rendered_page_missing": 2,
       "rendered_page_missing": 2,
       "edge_or_text_shift": 1,

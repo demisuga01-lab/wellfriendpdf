@@ -3,18 +3,18 @@
 Two pure **reporting** tools that surface data the engine already parses —
 they never transform the PDF.
 
-- `oxide info` — document metadata and structural facts (`pdfinfo`-equivalent).
-- `oxide fonts` — every font used in the document (`pdffonts`-equivalent).
+- `wellfriendpdf info` — document metadata and structural facts (`pdfinfo`-equivalent).
+- `wellfriendpdf fonts` — every font used in the document (`pdffonts`-equivalent).
 
 Both accept `--json` for machine-readable output and `--password` for encrypted
 inputs (encrypted PDFs are decrypted on open).
 
-## `oxide info`
+## `wellfriendpdf info`
 
 ```
-oxide info report.pdf
-oxide info report.pdf --json
-oxide info secret.pdf --password hunter2
+wellfriendpdf info report.pdf
+wellfriendpdf info report.pdf --json
+wellfriendpdf info secret.pdf --password hunter2
 ```
 
 ### Fields reported
@@ -62,7 +62,7 @@ Producer, …) match. On the AES-256 fixtures `empty_protected.pdf` /
 
 **One deliberate formatting difference:** dates. Poppler converts the stored
 date to the *local machine* timezone (e.g. showing India Standard Time on this
-host); Oxide preserves the document's own recorded local time and UTC offset
+host); Wellfriend preserves the document's own recorded local time and UTC offset
 (`-07'00'`). Both denote the same instant; preserving the document's value is
 the more faithful choice for a reporting tool.
 
@@ -74,11 +74,11 @@ was AES-decrypting them and corrupting the 16-byte `/Perms` to empty, making
 Fixed by reading `/Encrypt` straight from the file bytes without decryption
 (`PdfReader::encrypt_dictionary`).
 
-## `oxide fonts`
+## `wellfriendpdf fonts`
 
 ```
-oxide fonts report.pdf
-oxide fonts report.pdf --json
+wellfriendpdf fonts report.pdf
+wellfriendpdf fonts report.pdf --json
 ```
 
 ### Columns
@@ -119,7 +119,7 @@ object ids is identical**, and per font the **name, type, encoding, emb, sub,
 and uni** columns agree.
 
 **A real missing-font bug this cross-check surfaced and fixed:** on
-`form_160f.pdf`, Poppler listed an `Arial` font (object 403) that Oxide initially
+`form_160f.pdf`, Poppler listed an `Arial` font (object 403) that Wellfriend initially
 missed — it lives in a form field's **annotation appearance stream** (a Form
 XObject reached via the page `/Annots`, not the page `/Resources`). Adding the
 `/Annots` appearance-stream walk fixed it. (A first over-correction also walked

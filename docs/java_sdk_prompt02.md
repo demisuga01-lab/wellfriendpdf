@@ -6,8 +6,8 @@ JDK 25 preview FFM on Windows x64.
 
 ## Package Shape
 
-- Source: `bindings/java/src/main/java/org/oxidepdf/Oxide.java`
-- Smoke test: `bindings/java/src/test/java/org/oxidepdf/OxideSmokeTest.java`
+- Source: `bindings/java/src/main/java/io/wellfriendpdf/WellfriendPdf.java`
+- Smoke test: `bindings/java/src/test/java/io/wellfriendpdf/WellfriendPdfSmokeTest.java`
 - Example: `bindings/java/examples/Prompt02Reports.java`
 - Maven metadata: `bindings/java/pom.xml`
 - Gradle metadata: `bindings/java/settings.gradle`, `bindings/java/build.gradle`,
@@ -17,17 +17,17 @@ JDK 25 preview FFM on Windows x64.
 
 Lifecycle:
 
-- `Oxide.Document.open(Path)`
-- `Oxide.Document.open(byte[])`
-- `Oxide.Document.open(Path, String password)`
-- `Oxide.Document.open(byte[], String password)`
+- `WellfriendPdf.Document.open(Path)`
+- `WellfriendPdf.Document.open(byte[])`
+- `WellfriendPdf.Document.open(Path, String password)`
+- `WellfriendPdf.Document.open(byte[], String password)`
 - `close()` via `AutoCloseable`
 - `pageCount`, `page(n)`, `pages`, `extractText`
 
 Reports:
 
-- `Oxide.featureReportJson()`
-- `Oxide.engineVersion()`, `Oxide.abiVersion()`
+- `WellfriendPdf.featureReportJson()`
+- `WellfriendPdf.engineVersion()`, `WellfriendPdf.abiVersion()`
 - `securityReportJson`
 - `parserReportJson`
 - `colorReportJson`
@@ -44,16 +44,16 @@ Outputs:
 - `canonicalize`
 - `redactTerms`
 - `toDocx`, `toXlsx`, `toPptx`
-- `Oxide.Office.docxToPdf`, `xlsxToPdf`, `pptxToPdf`
+- `WellfriendPdf.Office.docxToPdf`, `xlsxToPdf`, `pptxToPdf`
 
 ## Native Loading and Ownership
 
-The FFM loader checks `OXIDE_NATIVE_LIBRARY`, the current directory, local
+The FFM loader checks `WELLFRIENDPDF_NATIVE_LIBRARY`, the current directory, local
 `target/debug` and `target/release`, and `runtimes/<rid>/native` under both the
 current directory and the JAR/package directory. Native output buffers are copied into Java `byte[]` values and released with
-`oxide_buffer_free`. Native strings are released with `oxide_string_free` or
-`oxide_error_free`. C ABI status and error text are preserved in
-`OxideException`.
+`wellfriendpdf_buffer_free`. Native strings are released with `wellfriendpdf_string_free` or
+`wellfriendpdf_error_free`. C ABI status and error text are preserved in
+`WellfriendPdfException`.
 
 ## Limits
 
@@ -66,16 +66,16 @@ input errors do not echo the supplied password.
 Maven and Gradle are both real Java package surfaces.
 
 Maven: `bindings/java/pom.xml` compiles with JDK 25 preview FFM flags, binds
-`OxideSmokeTest` into `mvn test`, and produces
-`bindings/java/target/oxide-sdk-0.1.0.jar`. The Prompt 02B package script
+`WellfriendPdfSmokeTest` into `mvn test`, and produces
+`bindings/java/target/wellfriendpdf-sdk-0.1.0.jar`. The Prompt 02B package script
 (`scripts/prompt02b_java_package_smoke.ps1`) downloads Maven 3.9.9 into
 `target/prompt02b-tools` if no host `mvn` exists, runs `mvn clean test` and
 `mvn package`, inspects the JAR, and runs `PackageSmoke` from the packaged JAR
 with native loading through `runtimes/<rid>/native`.
 
 Gradle: `bindings/java/build.gradle` uses the same JDK 25 preview FFM policy,
-runs the existing `OxideSmokeTest` from the Gradle `test` task, and produces
-`bindings/java/build/libs/oxide-sdk-0.1.0.jar`. The Prompt 02C package script
+runs the existing `WellfriendPdfSmokeTest` from the Gradle `test` task, and produces
+`bindings/java/build/libs/wellfriendpdf-sdk-0.1.0.jar`. The Prompt 02C package script
 (`scripts/prompt02c_gradle_package_smoke.ps1`) downloads pinned Gradle 9.6.1
 into `target/prompt02c-tools` if no host `gradle` exists, verifies the archive
 checksum, runs Gradle `clean test`, `jar`, and `build`, inspects the Gradle JAR,
@@ -91,7 +91,7 @@ gradle --no-daemon -p bindings/java build
 ```
 
 The Gradle `test` task uses a test-scope JUnit wrapper that invokes the same
-dependency-free `OxideSmokeTest` main class used by the direct Java smoke path.
+dependency-free `WellfriendPdfSmokeTest` main class used by the direct Java smoke path.
 
 Maven and Gradle JARs are not required to be byte-identical because build-tool
 manifest fields can differ. Prompt 02C requires public class/API equivalence,
@@ -100,6 +100,6 @@ smokes for both artifacts.
 
 Progress and cancellation are not exposed because the current Prompt 02
 report/output facade calls do not observe binding-level tokens. Query
-`Oxide.featureReportJson()` for the machine-readable
+`WellfriendPdf.featureReportJson()` for the machine-readable
 `progress_not_supported` and
 `cancellation_not_supported_for_prompt02_bindings` statuses.

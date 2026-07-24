@@ -1,7 +1,7 @@
 """Capability probe: do the 200 slice PDFs actually contain AcroForm form fields?
 
 If they do not, then AcroForm-reading competitors (pypdf get_fields, pymupdf
-widgets, pdf_oxide form-fill) recover nothing by corpus construction -- the
+widgets, pdf_wellfriendpdf form-fill) recover nothing by corpus construction -- the
 ground-truth 'fields' are rendered key-value TEXT, not interactive widgets.
 That is a capability/source mismatch, not a quality loss, and this probe makes
 the claim evidence-based rather than asserted. Reads only the 200 slice files.

@@ -1,16 +1,16 @@
 # PDF Authoring
 
-Oxide can create new PDFs from scratch with `PdfBuilder`. The authoring layer
+Wellfriend can create new PDFs from scratch with `PdfBuilder`. The authoring layer
 builds a normal PDF object graph and serializes it through the existing writer,
 so authored output uses the same xref-stream/object-stream machinery as the
 structural writer.
 
 ```rust
-use oxide_engine::authoring::{PageSize, PdfBuilder};
-use oxide_engine::{Color, GraphicsStyle, StandardFont, TextStyle};
+use wellfriendpdf_engine::authoring::{PageSize, PdfBuilder};
+use wellfriendpdf_engine::{Color, GraphicsStyle, StandardFont, TextStyle};
 
 let mut doc = PdfBuilder::new();
-doc.set_title("Report").set_author("Oxide");
+doc.set_title("Report").set_author("Wellfriend");
 
 let page = doc.add_page(PageSize::LETTER);
 page.draw_text(
@@ -32,7 +32,7 @@ page.draw_rect(
 );
 
 doc.save("report.pdf")?;
-# Ok::<(), oxide_engine::OxideError>(())
+# Ok::<(), wellfriendpdf_engine::WellfriendError>(())
 ```
 
 ## Coordinates
@@ -90,7 +90,7 @@ doc.add_page(PageSize::LETTER).draw_text(
     720.0,
     &TextStyle::new(serif, 12.0),
 )?;
-# Ok::<(), oxide_engine::OxideError>(())
+# Ok::<(), wellfriendpdf_engine::WellfriendError>(())
 ```
 
 Custom font subsetting is intentionally deferred. Current output is correct but
@@ -123,7 +123,7 @@ let rgba = doc.add_rgba_image(2, 2, vec![
 let page = doc.add_page(PageSize::LETTER);
 page.draw_image(jpeg, 72.0, 560.0, 144.0, 96.0);
 page.draw_image(rgba, 240.0, 560.0, 96.0, 96.0);
-# Ok::<(), oxide_engine::OxideError>(())
+# Ok::<(), wellfriendpdf_engine::WellfriendError>(())
 ```
 
 ## Tables
@@ -134,7 +134,7 @@ draws a table at an explicit top-left anchor; `FlowDocument::add_table` handles
 page breaks and repeats the header row on continuation pages.
 
 ```rust
-use oxide_engine::{TableBuilder, TableColumn, TextAlign};
+use wellfriendpdf_engine::{TableBuilder, TableColumn, TextAlign};
 
 let mut table = TableBuilder::new(vec![
     TableColumn::new(96.0),
@@ -151,7 +151,7 @@ cursor, wraps paragraphs, inserts headings, lists, images, tables, spacers, and
 creates new pages automatically when content reaches the bottom margin.
 
 ```rust
-use oxide_engine::{FlowDocument, Margins};
+use wellfriendpdf_engine::{FlowDocument, Margins};
 
 let mut flow = FlowDocument::new(PageSize::LETTER, Margins::all(72.0));
 flow.add_heading("Report", 1)?;
@@ -162,5 +162,5 @@ flow.add_paragraph(
 )?;
 flow.add_table(&table)?;
 flow.save("flow-report.pdf")?;
-# Ok::<(), oxide_engine::OxideError>(())
+# Ok::<(), wellfriendpdf_engine::WellfriendError>(())
 ```

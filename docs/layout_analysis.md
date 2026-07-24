@@ -1,19 +1,19 @@
 # Geometric Layout Analysis & Structured Extraction
 
-`oxide extract-text --structured` recovers **document structure** (columns,
+`wellfriendpdf extract-text --structured` recovers **document structure** (columns,
 blocks, reading order) from a page's positioned text, rather than dumping text
 top-to-bottom. This is a capability Poppler's CLIs largely lack: `pdftotext`
 (even `-layout`) does spatial text placement but does **not** segment a page
 into a logical structure or recover reading order across columns.
 
 ```
-oxide extract-text in.pdf --structured                 # reading-order text
-oxide extract-text in.pdf --structured --format json   # block tree + bboxes
-oxide extract-text in.pdf -p 1-3 --structured          # a page range
-oxide extract-text in.pdf --region 0,396,306,792       # top-left quarter
+wellfriendpdf extract-text in.pdf --structured                 # reading-order text
+wellfriendpdf extract-text in.pdf --structured --format json   # block tree + bboxes
+wellfriendpdf extract-text in.pdf -p 1-3 --structured          # a page range
+wellfriendpdf extract-text in.pdf --region 0,396,306,792       # top-left quarter
 ```
 
-This is **additive**. The default `oxide extract-text` path is byte-for-byte
+This is **additive**. The default `wellfriendpdf extract-text` path is byte-for-byte
 unchanged, so the parity-harness numbers (which compare against plain
 `pdftotext`) are unaffected.
 
@@ -106,7 +106,7 @@ C2, then C3 — the correct order. Single-column pages are unchanged.
 ## Honest limitations
 
 - **Not a substitute for tagged-PDF structure.** This is geometric inference.
-  Use `oxide extract-text --semantic` to prefer `/StructTreeRoot` when present
+  Use `wellfriendpdf extract-text --semantic` to prefer `/StructTreeRoot` when present
   and fall back to this analyzer when absent.
 - **Tables inside text** are segmented as blocks, not parsed as tables, by the
   layout pass — table *parsing* is the separate `extract-tables` tool

@@ -5,7 +5,7 @@ Default portability remains the packaging rule:
 - default builds use the portable fallback CMM posture
 - WASM must not pull native LittleCMS
 - native LittleCMS code remains behind `native-cmm-lcms2`
-- `oxide-engine` stays free of unsafe code
+- `wellfriendpdf-engine` stays free of unsafe code
 - unsafe/native integration remains isolated in dependency crates
 
 Prompt 12B reports native and fallback behavior through the same additive public

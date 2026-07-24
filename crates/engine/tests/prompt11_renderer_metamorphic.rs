@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     CancelToken, ContentEngine, PixelBuffer, RenderCache, RenderMode, RenderTile, WHITE,
 };
 

@@ -47,8 +47,8 @@ def run(args: list[str], *, check: bool = True) -> dict:
     }
 
 
-def oxide(*args: str, check: bool = True) -> dict:
-    return run(["cargo", "run", "-q", "-p", "oxide-cli", "--", *args], check=check)
+def wellfriendpdf(*args: str, check: bool = True) -> dict:
+    return run(["cargo", "run", "-q", "-p", "wellfriendpdf-cli", "--", *args], check=check)
 
 
 def write_json(name: str, value) -> None:
@@ -122,12 +122,12 @@ def main() -> int:
     packed_pdf = OUT / "prompt21-object-stream-packed.pdf"
     packed_report = OUT / "object-stream-pack-report-prompt21.json"
 
-    oxide("prompt21-report", str(MAIN_PDF), "--output", str(combined_path))
-    oxide("raster-vector-report", str(IMAGE_PDF), "--page", "1", "--output", str(raster_path))
-    oxide("font-reconstruction-report", str(MAIN_PDF), "--output", str(font_path))
-    oxide("history-report", "--output", str(history_path))
-    oxide("object-stream-report", str(MAIN_PDF), "--output", str(object_path))
-    oxide(
+    wellfriendpdf("prompt21-report", str(MAIN_PDF), "--output", str(combined_path))
+    wellfriendpdf("raster-vector-report", str(IMAGE_PDF), "--page", "1", "--output", str(raster_path))
+    wellfriendpdf("font-reconstruction-report", str(MAIN_PDF), "--output", str(font_path))
+    wellfriendpdf("history-report", "--output", str(history_path))
+    wellfriendpdf("object-stream-report", str(MAIN_PDF), "--output", str(object_path))
+    wellfriendpdf(
         "save-object-streams",
         str(MAIN_PDF),
         "--output",

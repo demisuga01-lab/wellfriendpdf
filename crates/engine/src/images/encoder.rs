@@ -1,4 +1,4 @@
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::images::decoder::RawImage;
 use crate::images::locator::{ImageLocator, ImageReference};
 use crate::reader::PdfReader;
@@ -44,7 +44,7 @@ impl ImageEncoder {
             3 => ColorType::Rgb,
             4 => ColorType::Rgba,
             n => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "PNG encoding: unsupported channel count {n}"
                 )))
             }
@@ -58,10 +58,10 @@ impl ImageEncoder {
             encoder.set_compression(png::Compression::Default);
             let mut writer = encoder
                 .write_header()
-                .map_err(|e| OxideError::MalformedPdf(format!("PNG header error: {e}")))?;
+                .map_err(|e| WellfriendError::MalformedPdf(format!("PNG header error: {e}")))?;
             writer
                 .write_image_data(&image.pixels)
-                .map_err(|e| OxideError::MalformedPdf(format!("PNG encode error: {e}")))?;
+                .map_err(|e| WellfriendError::MalformedPdf(format!("PNG encode error: {e}")))?;
         }
         Ok(out)
     }
@@ -75,7 +75,7 @@ impl ImageEncoder {
             3 => ColorType::Rgb,
             4 => ColorType::Rgba,
             n => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "PNG fast encode: unsupported channel count {n}"
                 )))
             }
@@ -87,12 +87,12 @@ impl ImageEncoder {
             encoder.set_color(color_type);
             encoder.set_depth(BitDepth::Eight);
             encoder.set_compression(Compression::Fast);
-            let mut writer = encoder
-                .write_header()
-                .map_err(|e| OxideError::MalformedPdf(format!("PNG fast encode header: {e}")))?;
+            let mut writer = encoder.write_header().map_err(|e| {
+                WellfriendError::MalformedPdf(format!("PNG fast encode header: {e}"))
+            })?;
             writer
                 .write_image_data(&image.pixels)
-                .map_err(|e| OxideError::MalformedPdf(format!("PNG fast encode data: {e}")))?;
+                .map_err(|e| WellfriendError::MalformedPdf(format!("PNG fast encode data: {e}")))?;
         }
         Ok(out)
     }
@@ -106,19 +106,19 @@ impl ImageEncoder {
             1 => ColorType::Luma,
             3 => ColorType::Rgb,
             n => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "JPEG encoding: unsupported channel count {n} (convert to RGB first)"
                 )))
             }
         };
         let width = u16::try_from(image.width).map_err(|_| {
-            OxideError::UnsupportedFeature(format!(
+            WellfriendError::UnsupportedFeature(format!(
                 "JPEG encoding: image width {} exceeds u16::MAX",
                 image.width
             ))
         })?;
         let height = u16::try_from(image.height).map_err(|_| {
-            OxideError::UnsupportedFeature(format!(
+            WellfriendError::UnsupportedFeature(format!(
                 "JPEG encoding: image height {} exceeds u16::MAX",
                 image.height
             ))
@@ -128,7 +128,7 @@ impl ImageEncoder {
         let encoder = Encoder::new(&mut output, quality);
         encoder
             .encode(&image.pixels, width, height, color_type)
-            .map_err(|e| OxideError::MalformedPdf(format!("JPEG encode error: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("JPEG encode error: {e}")))?;
         Ok(output)
     }
 
@@ -147,7 +147,7 @@ impl ImageEncoder {
             3 => ColorType::Rgb8,
             4 => ColorType::Rgba8,
             n => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "WebP encoding: unsupported channel count {n}"
                 )))
             }
@@ -157,7 +157,7 @@ impl ImageEncoder {
         let encoder = WebPEncoder::new(&mut out);
         encoder
             .encode(&image.pixels, image.width, image.height, color_type)
-            .map_err(|e| OxideError::MalformedPdf(format!("WebP encode error: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("WebP encode error: {e}")))?;
         Ok(out)
     }
 
@@ -360,7 +360,7 @@ mod tests {
         };
         assert!(matches!(
             ImageEncoder::encode_webp(&img, 80),
-            Err(OxideError::UnsupportedFeature(_))
+            Err(WellfriendError::UnsupportedFeature(_))
         ));
     }
 

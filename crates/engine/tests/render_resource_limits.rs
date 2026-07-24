@@ -1,7 +1,7 @@
 //! Regression tests for Renderer Benchmark 0A fixes.
 //!
 //! Part B: a hostile page declaring a giant `/MediaBox` must be rejected with a
-//! clean [`OxideError::ResourceLimit`] BEFORE any pixel buffer is allocated —
+//! clean [`WellfriendError::ResourceLimit`] BEFORE any pixel buffer is allocated —
 //! never a multi-hundred-gigabyte allocation that aborts the process.
 //!
 //! Part C: the effective page box used for sizing is the CropBox (MediaBox ∩
@@ -10,7 +10,7 @@
 //! to box selection cannot silently regress the benchmark's apples-to-apples
 //! comparison.
 
-use oxide_engine::{ContentEngine, OxideError};
+use wellfriendpdf_engine::{ContentEngine, WellfriendError};
 
 /// Build a single-page PDF with the given page-dictionary box/rotate entries and
 /// a trivial content stream. `extra` is spliced into the `/Page` dictionary
@@ -63,7 +63,7 @@ fn huge_mediabox_is_rejected_cleanly_not_aborted() {
         .render_page(1, 144)
         .expect_err("a 640 GB page must be rejected, not rendered");
     match err {
-        OxideError::ResourceLimit(msg) => {
+        WellfriendError::ResourceLimit(msg) => {
             assert!(
                 msg.contains("pixels") && msg.contains("exceeding the limit"),
                 "unexpected message: {msg}"
@@ -88,7 +88,7 @@ fn huge_mediabox_rejected_at_viewport_before_allocation() {
     let engine = ContentEngine::open_bytes(pdf).expect("open");
     assert!(matches!(
         engine.page_viewport(1, 144),
-        Err(OxideError::ResourceLimit(_))
+        Err(WellfriendError::ResourceLimit(_))
     ));
 }
 
@@ -101,7 +101,7 @@ fn extreme_dpi_on_normal_page_is_capped() {
     let engine = ContentEngine::open_bytes(pdf).expect("open");
     assert!(matches!(
         engine.page_viewport(1, 50_000),
-        Err(OxideError::ResourceLimit(_))
+        Err(WellfriendError::ResourceLimit(_))
     ));
 }
 
@@ -114,13 +114,13 @@ fn oversized_real_world_page_is_capped_at_default_limit() {
     let engine = ContentEngine::open_bytes(pdf).expect("open");
     assert!(matches!(
         engine.page_viewport(1, 72),
-        Err(OxideError::ResourceLimit(_))
+        Err(WellfriendError::ResourceLimit(_))
     ));
 }
 
 #[test]
 fn cropbox_drives_page_dimensions_matching_poppler_cropbox() {
-    // bug1802506-class file: MediaBox 612x792, CropBox 267.75x145.5. Oxide
+    // bug1802506-class file: MediaBox 612x792, CropBox 267.75x145.5. Wellfriend
     // renders the CropBox (= pdftoppm -cropbox), which at 144 DPI is
     // 267.75*2 = 535.5 -> 536 wide, 145.5*2 = 291 tall.
     let pdf = one_page_pdf("/MediaBox [0 0 612 792] /CropBox [110.25 472.5 378 618]");

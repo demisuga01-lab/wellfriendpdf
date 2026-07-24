@@ -7,7 +7,7 @@
 //! shadings, color spaces, and transfer functions.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::fuzz::fuzz_functions;
+use wellfriendpdf_engine::fuzz::fuzz_functions;
 
 fuzz_target!(|data: &[u8]| {
     fuzz_functions(data);

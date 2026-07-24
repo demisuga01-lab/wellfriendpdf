@@ -1,6 +1,6 @@
 """Part A diagnostic harness for table over-detection.
 
-Measurement + diagnosis only. Runs `oxide extract-tables` on the SAME
+Measurement + diagnosis only. Runs `wellfriendpdf extract-tables` on the SAME
 deterministic first-200 has-tables slice (via cb.load_entries), reproduces the
 baseline predicted-vs-truth table counts and macro metrics with cb.table_score
 (the UNCHANGED scorer), then classifies every over-detected file's extra tables
@@ -37,9 +37,9 @@ MATCH_THRESHOLD = 0.5  # min fraction of a predicted table's cells explained by 
 _lock = threading.Lock()
 
 
-def args_for(oxide_bin: Path) -> SimpleNamespace:
+def args_for(wellfriendpdf_bin: Path) -> SimpleNamespace:
     return SimpleNamespace(
-        oxide_bin=str(oxide_bin), timeout=60, max_memory_mb=2048,
+        wellfriendpdf_bin=str(wellfriendpdf_bin), timeout=60, max_memory_mb=2048,
         poll_interval_ms=50,
     )
 
@@ -136,10 +136,10 @@ def prose_like(grid) -> bool:
     return (prose_cells / text_cells) >= 0.45 and (code_cells / text_cells) < 0.35
 
 
-def run_one(entry, oxide_bin: Path):
+def run_one(entry, wellfriendpdf_bin: Path):
     pdf = entry["pdf"]
     out = WORK / f"{entry['id']}.tables.json"
-    r = cb.monitored(cb.oxide_tables(pdf, out, args_for(oxide_bin)), args_for(oxide_bin))
+    r = cb.monitored(cb.wellfriendpdf_tables(pdf, out, args_for(wellfriendpdf_bin)), args_for(wellfriendpdf_bin))
     pred_tables = []  # list of {page, source, conf, rows, shape, ncells}
     if r.ok and out.exists():
         payload = cb.read_json(out)
@@ -276,9 +276,9 @@ def append_ckpt(rec):
 
 def main():
     fresh = "--resume" not in sys.argv
-    oxide_bin = cb.REPO / "target" / "release" / cb.exe("oxide")
-    if not oxide_bin.exists():
-        print(f"FATAL: missing {oxide_bin}", file=sys.stderr)
+    wellfriendpdf_bin = cb.REPO / "target" / "release" / cb.exe("wellfriendpdf")
+    if not wellfriendpdf_bin.exists():
+        print(f"FATAL: missing {wellfriendpdf_bin}", file=sys.stderr)
         sys.exit(2)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     WORK.mkdir(parents=True, exist_ok=True)
@@ -292,11 +292,11 @@ def main():
 
     done = load_done()
     todo = [e for e in entries if e["id"] not in done]
-    print(f"slice={len(entries)} done={len(done)} todo={len(todo)} bin={oxide_bin.name}")
+    print(f"slice={len(entries)} done={len(done)} todo={len(todo)} bin={wellfriendpdf_bin.name}")
 
     results = list(done.values())
     with ThreadPoolExecutor(max_workers=4) as ex:
-        futs = {ex.submit(run_one, e, oxide_bin): e["id"] for e in todo}
+        futs = {ex.submit(run_one, e, wellfriendpdf_bin): e["id"] for e in todo}
         for i, fut in enumerate(as_completed(futs), 1):
             rec = fut.result()
             append_ckpt(rec)

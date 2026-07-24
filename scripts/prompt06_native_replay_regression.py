@@ -52,14 +52,14 @@ def run_command(cmd: list[str], timeout: int = 120) -> dict[str, Any]:
         }
 
 
-def oxide_base_command(args: argparse.Namespace) -> list[str]:
-    if args.oxide_bin:
-        return [str(Path(args.oxide_bin))]
+def wellfriendpdf_base_command(args: argparse.Namespace) -> list[str]:
+    if args.wellfriendpdf_bin:
+        return [str(Path(args.wellfriendpdf_bin))]
     suffix = ".exe" if os.name == "nt" else ""
-    for candidate in [Path("target/debug") / f"oxide{suffix}", Path("target/release") / f"oxide{suffix}"]:
+    for candidate in [Path("target/debug") / f"wellfriendpdf{suffix}", Path("target/release") / f"wellfriendpdf{suffix}"]:
         if candidate.exists():
             return [str(candidate)]
-    return ["cargo", "run", "-p", "oxide-cli", "--quiet", "--"]
+    return ["cargo", "run", "-p", "wellfriendpdf-cli", "--quiet", "--"]
 
 
 def write_inline_image_fixture(path: Path) -> None:
@@ -172,9 +172,9 @@ def run_case(base: list[str], case: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--oxide-bin", help="Path to oxide executable; defaults to target binary or cargo run")
+    parser.add_argument("--wellfriendpdf-bin", help="Path to wellfriendpdf executable; defaults to target binary or cargo run")
     args = parser.parse_args()
-    base = oxide_base_command(args)
+    base = wellfriendpdf_base_command(args)
     cases = fixture_cases()
     results = [run_case(base, case) for case in cases]
     report = {

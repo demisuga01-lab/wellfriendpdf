@@ -264,7 +264,7 @@ def create_corpus() -> list[dict[str, Any]]:
 
 
 def feature_report(timeout: int) -> dict[str, Any]:
-    cmd = ["cargo", "run", "-p", "oxide-cli", "--quiet", "--", "feature-report"]
+    cmd = ["cargo", "run", "-p", "wellfriendpdf-cli", "--quiet", "--", "feature-report"]
     result = run_command(cmd, timeout)
     parsed: Any = None
     if result["exit_status"] == 0:
@@ -415,7 +415,7 @@ def make_matrix(
             .get("report", {})
             .get("prompt13_full_overprint_prepress_closeout")
         ),
-        "oxide_outlier_failures": 0,
+        "wellfriendpdf_outlier_failures": 0,
         "unclassified_failures": 0,
         "reference_status": references,
         "rows": rows,
@@ -503,8 +503,8 @@ def write_all_artifacts(fixtures: list[dict[str, Any]], feature: dict[str, Any],
     write_json(OUT_DIR / "shading-pattern-plate-output-prompt13.json", {"plate_names": ["Cyan", "SpotOrange", "SpotGreen"], "plate_hashes": sorted({row["plate_output_hash"] for row in benchmark})})
     write_json(OUT_DIR / "shading-pattern-cache-equivalence-prompt13.json", {"status": "matched", "mismatches": 0, "cache_key_fields": base_overprint["cache_identity"]})
 
-    write_json(OUT_DIR / "prepress-benchmark-results-prompt13.json", {"rows": benchmark, "oxide_outlier_failures": 0, "unclassified_failures": 0})
-    write_json(OUT_DIR / "prepress-reference-diff-metrics-prompt13.json", {"references": references, "oxide_outlier_failures": 0, "unclassified_failures": 0, "diff_rows": []})
+    write_json(OUT_DIR / "prepress-benchmark-results-prompt13.json", {"rows": benchmark, "wellfriendpdf_outlier_failures": 0, "unclassified_failures": 0})
+    write_json(OUT_DIR / "prepress-reference-diff-metrics-prompt13.json", {"references": references, "wellfriendpdf_outlier_failures": 0, "unclassified_failures": 0, "diff_rows": []})
     write_json(OUT_DIR / "prepress-reference-disagreement-summary-prompt13.json", {"classified_reference_disagreements": [], "unsupported_exact": unsupported, "policy": "missing reference tools are unavailable_exact, not passed"})
     write_json(OUT_DIR / "advanced-cmm-prepress-scorecard.json", feature.get("parsed", {}).get("report", {}).get("prompt13_full_overprint_prepress_closeout", {}))
     write_json(OUT_DIR / "prepress-tile-band-equivalence-prompt13.json", {"full_vs_tile": "matched", "full_vs_band": "matched", "mismatches": 0})
@@ -520,7 +520,7 @@ def write_all_artifacts(fixtures: list[dict[str, Any]], feature: dict[str, Any],
         HTML_REPORT,
         "<!doctype html><meta charset='utf-8'><title>Prompt 13 Prepress Benchmark</title>"
         "<h1>Prompt 13 Prepress Benchmark</h1>"
-        "<p>Oxide outliers: 0. Unclassified failures: 0.</p>"
+        "<p>Wellfriend outliers: 0. Unclassified failures: 0.</p>"
         "<table><thead><tr><th>Fixture</th><th>Plate hash</th><th>Equivalence</th></tr></thead>"
         f"<tbody>{rows}</tbody></table>",
     )
@@ -541,7 +541,7 @@ def main() -> int:
         "fixture_count": len(fixtures),
         "reference_status": {key: value["status"] for key, value in references.items()},
         "feature_report_exit_status": feature["run"]["exit_status"],
-        "oxide_outlier_failures": 0,
+        "wellfriendpdf_outlier_failures": 0,
         "unclassified_failures": 0,
     }
     write_json(OUT_DIR / "prompt13-benchmark-summary.json", summary)

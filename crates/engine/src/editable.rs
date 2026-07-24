@@ -1,7 +1,7 @@
 //! Shared editable document model for Prompt 08 conversion and editing.
 //!
 //! PDF content is fixed-position drawing instructions. This model is the
-//! conservative bridge between Oxide's semantic extraction/document model and
+//! conservative bridge between Wellfriend's semantic extraction/document model and
 //! outputs that need editable structure such as DOCX, PPTX, XLSX, HTML,
 //! Markdown, JSON, and safe edit planning.
 
@@ -394,7 +394,7 @@ impl EditableDocument {
     }
 
     pub fn to_semantic_html(&self) -> String {
-        let mut out = String::from("<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Oxide Editable Model</title></head><body>\n");
+        let mut out = String::from("<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Wellfriend Editable Model</title></head><body>\n");
         for block in &self.blocks {
             match block.role {
                 EditableRole::Title => {

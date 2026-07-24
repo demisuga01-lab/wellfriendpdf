@@ -15,7 +15,7 @@ The full-rewrite garbage collector then drops unreachable embedded-file streams.
 CLI:
 
 ```powershell
-oxide redact input.pdf --text SECRET --attachments remove-all --out redacted.pdf --strict
+wellfriendpdf redact input.pdf --text SECRET --attachments remove-all --out redacted.pdf --strict
 ```
 
 ## Limits

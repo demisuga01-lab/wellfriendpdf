@@ -1,6 +1,6 @@
 # Parser Foundation
 
-Oxide's parser foundation covers the early PDF pipeline: bytes, lexical/COS
+Wellfriend's parser foundation covers the early PDF pipeline: bytes, lexical/COS
 object parsing, xref and object resolution, lazy source access, incremental
 revision inspection, linearization metadata validation, repair scanning, and
 structured parser diagnostics. This is not a claim of complete PDF-spec
@@ -41,7 +41,7 @@ scripts, bounded corpus execution, and structure-aware fuzz seed generation.
 Rust exposes `ParserReport` and `ParserDiagnostic`; CLI exposes:
 
 ```text
-oxide parser-report input.pdf --mode audit --json
+wellfriendpdf parser-report input.pdf --mode audit --json
 ```
 
 Each diagnostic includes severity, category, stable code, message, optional
@@ -147,7 +147,7 @@ model.
 Use:
 
 ```text
-python scripts/parser_differential.py tests --oxide target/debug/oxide.exe --limit 25 --json-out target/parser-diff/results.jsonl --markdown-out target/parser-diff/results.md
+python scripts/parser_differential.py tests --wellfriendpdf target/debug/wellfriendpdf.exe --limit 25 --json-out target/parser-diff/results.jsonl --markdown-out target/parser-diff/results.md
 ```
 
 The harness compares shallow, stable parser facts against available external
@@ -160,7 +160,7 @@ External corpora are not vendored. Point the runner at a SafeDocs checkout or
 any local PDF directory:
 
 ```text
-python scripts/parser_corpus_runner.py --input PATH_TO_CORPUS --oxide-bin target/debug/oxide.exe --output target/parser-corpus/audit.jsonl --summary docs/parser_corpus_results.md --mode audit --limit 200 --max-total-bytes 1073741824 --timeout 30
+python scripts/parser_corpus_runner.py --input PATH_TO_CORPUS --wellfriendpdf-bin target/debug/wellfriendpdf.exe --output target/parser-corpus/audit.jsonl --summary docs/parser_corpus_results.md --mode audit --limit 200 --max-total-bytes 1073741824 --timeout 30
 ```
 
 The runner preserves directory-derived categories, supports bounded file/byte

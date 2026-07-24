@@ -21,8 +21,8 @@ Unsupported bit depths/decoders, singular transforms, inline images, and unprove
 ```
 
 ```text
-oxide redact-image-nonaxis input.pdf plan.json --dry-run
-oxide redact-image-nonaxis input.pdf plan.json --output redacted.pdf --json
+wellfriendpdf redact-image-nonaxis input.pdf plan.json --dry-run
+wellfriendpdf redact-image-nonaxis input.pdf plan.json --output redacted.pdf --json
 ```
 
 Full rewrite removes prior revision bytes. An unaffected reuse may intentionally keep the original source image reachable; the redacted invocation no longer references those samples.

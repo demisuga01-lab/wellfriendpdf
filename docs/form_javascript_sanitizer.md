@@ -20,7 +20,7 @@ GoToR, GoToE, submit/import, media, and JavaScript are removed.
 Example:
 
 ```text
-oxide form-js-sanitize input.pdf --policy preserve_safe_navigation_only \
+wellfriendpdf form-js-sanitize input.pdf --policy preserve_safe_navigation_only \
   --output sanitized.pdf --report sanitizer.json
 ```
 

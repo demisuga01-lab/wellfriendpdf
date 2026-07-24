@@ -21,7 +21,7 @@ The Hebrew fixture is generated with an embedded Noto Sans Hebrew font. It
 covers an explicitly positioned RTL Hebrew run and a mixed LTR/RTL boundary.
 Existing PDF glyph streams are painted in PDF-specified glyph order and are not
 blindly reshaped. Shaping remains limited to generated/fallback text paths where
-Oxide owns Unicode-to-glyph layout.
+Wellfriend owns Unicode-to-glyph layout.
 
 Evidence:
 
@@ -31,5 +31,5 @@ Evidence:
 
 ## Reference Outcome
 
-The Prompt 10B multi-reference audit records zero Oxide outlier failures and
+The Prompt 10B multi-reference audit records zero Wellfriend outlier failures and
 zero unclassified failures for the Korean and Hebrew fixture pages.

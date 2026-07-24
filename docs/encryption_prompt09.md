@@ -1,6 +1,6 @@
 # Prompt 09 Encryption
 
-Oxide's standard security-handler implementation supports legacy RC4, AES-128, and AES-256 document encryption through the pure-Rust crypto path. Prompt 09 does not weaken the existing behavior; it adds enterprise-facing reporting and tests so integrators can see exactly which handler is in use.
+Wellfriend's standard security-handler implementation supports legacy RC4, AES-128, and AES-256 document encryption through the pure-Rust crypto path. Prompt 09 does not weaken the existing behavior; it adds enterprise-facing reporting and tests so integrators can see exactly which handler is in use.
 
 ## Supported
 

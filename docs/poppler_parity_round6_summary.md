@@ -9,7 +9,7 @@ Generated: 2026-06-14T11:09:39.945909+00:00
 - Render page cap: 1
 - Poppler pdftotext: `E:\wellpdfsdk\target\tools\poppler\poppler-26.02.0\Library\bin\pdftotext.exe`
 - Poppler pdftoppm: `E:\wellpdfsdk\target\tools\poppler\poppler-26.02.0\Library\bin\pdftoppm.exe`
-- Oxide CLI: `target\release\oxide.exe`
+- Wellfriend CLI: `target\release\wellfriendpdf.exe`
 
 ## Headline Numbers
 
@@ -40,11 +40,11 @@ Generated: 2026-06-14T11:09:39.945909+00:00
 
 ## Failure Details
 
-- `pdfjs_empty_protected` (encrypted): text/oxide: Error: document is encrypted; render/oxide: Error: document is encrypted; analyze/oxide: Error: document is encrypted; extract_images/oxide: Error: document is encrypted
-- `pdfjs_encrypted-attachment` (encrypted): text/oxide: Error: parse error: indirect object header is missing obj keyword; render/oxide: Error: parse error: indirect object header is missing obj keyword; analyze/oxide: Error: parse error: indirect object header is missing obj keyword; extract_images/oxide: Error: parse error: indirect object header is missing obj keyword
-- `pdfjs_issue15893_reduced` (encrypted): text/oxide: Error: parse error: expected numeric token; render/oxide: Error: parse error: expected numeric token; analyze/oxide: Error: parse error: expected numeric token; extract_images/oxide: Error: parse error: expected numeric token
-- `pdfjs_print_protection` (encrypted): text/poppler: Command Line Error: Incorrect password; text/oxide: Error: document is encrypted; render/poppler: Command Line Error: Incorrect password; render/oxide: Error: document is encrypted; analyze/oxide: Error: document is encrypted; extract_images/oxide: Error: document is encrypted
-- `pdfjs_secHandler` (encrypted): text/oxide: Error: document is encrypted; render/oxide: Error: document is encrypted; analyze/oxide: Error: document is encrypted; extract_images/oxide: Error: document is encrypted
+- `pdfjs_empty_protected` (encrypted): text/wellfriendpdf: Error: document is encrypted; render/wellfriendpdf: Error: document is encrypted; analyze/wellfriendpdf: Error: document is encrypted; extract_images/wellfriendpdf: Error: document is encrypted
+- `pdfjs_encrypted-attachment` (encrypted): text/wellfriendpdf: Error: parse error: indirect object header is missing obj keyword; render/wellfriendpdf: Error: parse error: indirect object header is missing obj keyword; analyze/wellfriendpdf: Error: parse error: indirect object header is missing obj keyword; extract_images/wellfriendpdf: Error: parse error: indirect object header is missing obj keyword
+- `pdfjs_issue15893_reduced` (encrypted): text/wellfriendpdf: Error: parse error: expected numeric token; render/wellfriendpdf: Error: parse error: expected numeric token; analyze/wellfriendpdf: Error: parse error: expected numeric token; extract_images/wellfriendpdf: Error: parse error: expected numeric token
+- `pdfjs_print_protection` (encrypted): text/poppler: Command Line Error: Incorrect password; text/wellfriendpdf: Error: document is encrypted; render/poppler: Command Line Error: Incorrect password; render/wellfriendpdf: Error: document is encrypted; analyze/wellfriendpdf: Error: document is encrypted; extract_images/wellfriendpdf: Error: document is encrypted
+- `pdfjs_secHandler` (encrypted): text/wellfriendpdf: Error: document is encrypted; render/wellfriendpdf: Error: document is encrypted; analyze/wellfriendpdf: Error: document is encrypted; extract_images/wellfriendpdf: Error: document is encrypted
 - Rust panic signatures recorded: 0
 - Command timeouts recorded: 0
 
@@ -52,6 +52,6 @@ Generated: 2026-06-14T11:09:39.945909+00:00
 
 - Text similarity is a normalized word-token SequenceMatcher ratio against Poppler pdftotext output; very large token streams use a linear token Dice score.
 - Render quality is PSNR against Poppler pdftoppm PPM output. Infinite PSNR pages are capped at 100 dB for averages.
-- If Poppler and Oxide render dimensions differ, PSNR is computed over the overlapping crop and the mismatch is recorded per page.
-- A failed Oxide or Poppler command is recorded as data and does not stop the run.
+- If Poppler and Wellfriend render dimensions differ, PSNR is computed over the overlapping crop and the mismatch is recorded per page.
+- A failed Wellfriend or Poppler command is recorded as data and does not stop the run.
 - The harness output directory contains results.json and results.csv with per-file command status, stderr snippets, and page-level PSNR values.

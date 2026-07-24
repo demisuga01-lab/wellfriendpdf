@@ -1,4 +1,4 @@
-use oxide_engine::{
+use wellfriendpdf_engine::{
     convert_to_pdfa, convert_to_pdfa_checked, get_fallback_font, improve_pdfua_best_effort,
     validate_pdfa, validate_pdfua, AuthorPageSize as PageSize, ComplianceSeverity, ContentEngine,
     PdfAProfile, PdfBuilder, PdfDocument, StandardFont, TextStyle,
@@ -22,7 +22,7 @@ fn embedded_font_pdf() -> Vec<u8> {
     let mut doc = PdfBuilder::new();
     doc.set_title("Embedded font source");
     doc.set_author("Archive Team");
-    doc.set_creator("oxide-engine compliance test");
+    doc.set_creator("wellfriendpdf-engine compliance test");
     let font = doc
         .register_truetype_font_bytes(
             "LiberationSans",
@@ -92,7 +92,7 @@ fn pdfa_conversion_adds_xmp_output_intent_and_validates_clean() {
     let xmp = String::from_utf8_lossy(xmp);
     assert!(xmp.contains("Embedded font source"));
     assert!(xmp.contains("Archive Team"));
-    assert!(xmp.contains("oxide-engine compliance test"));
+    assert!(xmp.contains("wellfriendpdf-engine compliance test"));
     assert!(ContentEngine::open_bytes(bytes)
         .unwrap()
         .get_page_text(1)

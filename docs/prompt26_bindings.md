@@ -10,9 +10,9 @@ place of validation or signing.
   supported by the command style.
 - Python builds an ABI3 wheel and exposes standards envelopes plus `sign_pdf`.
 - C ABI returns owned JSON/binary buffers with paired frees, null/malformed guards, and header
-  declarations in `oxide.h`.
+  declarations in `wellfriendpdf.h`.
 - WASM provides in-memory standards routes and exact unsupported capability reporting.
-- .NET uses SafeHandle-backed ownership and `OXIDE_NATIVE_LIBRARY` resolution for tests.
+- .NET uses SafeHandle-backed ownership and `WELLFRIENDPDF_NATIVE_LIBRARY` resolution for tests.
 - Java uses `AutoCloseable` native ownership and is built/tested through Maven and Gradle.
 
 Tests cover validation envelopes, null/invalid inputs, ownership lifetimes, signing plan/report

@@ -1,4 +1,4 @@
-use oxide_engine::{
+use wellfriendpdf_engine::{
     decode_filter_with_isolation, flate_encode, CodecIsolationConfig, CodecIsolationPolicy,
 };
 
@@ -9,7 +9,7 @@ fn main() {
         .and_then(CodecIsolationPolicy::parse)
         .unwrap_or(CodecIsolationPolicy::InProcess);
 
-    let input = flate_encode(b"hello oxide", 6);
+    let input = flate_encode(b"hello wellfriendpdf", 6);
     let config = CodecIsolationConfig::with_policy(policy);
     let result = decode_filter_with_isolation("FlateDecode", &input, &config);
 

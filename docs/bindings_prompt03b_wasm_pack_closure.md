@@ -24,11 +24,11 @@ No binary archive is downloaded directly, so there is no external archive checks
 The gate builds both package forms:
 
 ```powershell
-target\prompt03-tools\wasm-pack-0.13.1\bin\wasm-pack.exe build crates/oxide-wasm --target web --out-dir target\prompt03-packaging-codec-isolation\wasm-pack\web-pkg
-target\prompt03-tools\wasm-pack-0.13.1\bin\wasm-pack.exe build crates/oxide-wasm --target nodejs --out-dir target\prompt03-packaging-codec-isolation\wasm-pack\node-pkg
+target\prompt03-tools\wasm-pack-0.13.1\bin\wasm-pack.exe build crates/wellfriendpdf-wasm --target web --out-dir target\prompt03-packaging-codec-isolation\wasm-pack\web-pkg
+target\prompt03-tools\wasm-pack-0.13.1\bin\wasm-pack.exe build crates/wellfriendpdf-wasm --target nodejs --out-dir target\prompt03-packaging-codec-isolation\wasm-pack\node-pkg
 ```
 
-Each package contains `oxide_wasm_bg.wasm`, JS glue, generated `.d.ts`, package metadata, and the WASM README.
+Each package contains `wellfriendpdf_wasm_bg.wasm`, JS glue, generated `.d.ts`, package metadata, and the WASM README.
 
 ## Inspection
 

@@ -6,7 +6,7 @@
 //! finder, so it must exactly match the scalar candidate set for every input.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::{scan_pdf_markers_accelerated, scan_pdf_markers_scalar};
+use wellfriendpdf_engine::{scan_pdf_markers_accelerated, scan_pdf_markers_scalar};
 
 fuzz_target!(|data: &[u8]| {
     let scalar = scan_pdf_markers_scalar(data).candidates;

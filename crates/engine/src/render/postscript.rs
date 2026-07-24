@@ -146,7 +146,7 @@ fn rasterized_page(
 pub fn assemble_ps_document(pages: &[PsPage]) -> String {
     let mut out = String::new();
     out.push_str("%!PS-Adobe-3.0\n");
-    out.push_str("%%Creator: Oxide PDF Toolkit\n");
+    out.push_str("%%Creator: Wellfriend PDF SDK Toolkit\n");
     out.push_str("%%LanguageLevel: 2\n");
     // The bounding box of a multi-page document is the union; DSC permits the
     // largest page. We report the max width/height across pages.
@@ -191,7 +191,7 @@ pub fn assemble_ps_document(pages: &[PsPage]) -> String {
 pub fn assemble_eps_document(page: &PsPage) -> String {
     let mut out = String::new();
     out.push_str("%!PS-Adobe-3.0 EPSF-3.0\n");
-    out.push_str("%%Creator: Oxide PDF Toolkit\n");
+    out.push_str("%%Creator: Wellfriend PDF SDK Toolkit\n");
     out.push_str("%%LanguageLevel: 2\n");
     out.push_str(&format!(
         "%%BoundingBox: 0 0 {} {}\n",

@@ -1,0 +1,21 @@
+[package]
+name = "wellfriendpdf-py"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+description = "Python bindings for the Wellfriend PDF SDK engine."
+
+[lib]
+name = "wellfriendpdf"
+crate-type = ["cdylib"]
+
+[dependencies]
+wellfriendpdf-engine = { path = "../engine" }
+pyo3 = { version = "0.29", features = ["extension-module", "abi3-py39"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+default = []
+native-cmm-lcms2 = ["wellfriendpdf-engine/native-cmm-lcms2"]

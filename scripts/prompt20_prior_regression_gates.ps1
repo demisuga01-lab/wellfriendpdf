@@ -46,7 +46,7 @@ $Gates = @(
     @{ id = "prompt17"; kind = "python"; path = "scripts/prompt17_interactive_redaction_audit.py" },
     @{ id = "prompt18"; kind = "python"; path = "scripts/prompt18_secure_mutation_audit.py" },
     @{ id = "prompt18b"; kind = "python"; path = "scripts/prompt18b_advanced_secure_mutation_audit.py" },
-    @{ id = "prompt19"; kind = "cargo"; path = "cargo"; args = @("test", "-p", "oxide-engine", "--test", "prompt19_interactive_docx", "--jobs", "1") }
+    @{ id = "prompt19"; kind = "cargo"; path = "cargo"; args = @("test", "-p", "wellfriendpdf-engine", "--test", "prompt19_interactive_docx", "--jobs", "1") }
 )
 
 if ($Only -ne "") {

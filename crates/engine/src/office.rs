@@ -19,7 +19,7 @@ use crate::authoring::{
 };
 use crate::editable::{EditableBuildOptions, EditableDocument};
 use crate::engine::{ContentEngine, ExtractionProfile};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::images::encoder::ImageOutputFormat;
 use crate::parse::{Block, BlockKind, Document, InlineSpan, InlineText, ParseOptions};
 use crate::versioning::resource_digest;
@@ -455,7 +455,7 @@ fn enforce_office_package_security(bytes: &[u8], format: OfficeFormat) -> Result
     if report.safe_for_conversion {
         return Ok(());
     }
-    Err(OxideError::UnsupportedFeature(format!(
+    Err(WellfriendError::UnsupportedFeature(format!(
         "unsafe {} package blocked by security policy: {}",
         format.as_str(),
         report
@@ -787,21 +787,21 @@ pub fn pdf_to_docx(engine: &ContentEngine, options: &DocxOptions) -> Result<Vec<
     write_docx(engine, &document, options)
 }
 
-/// Convert DOCX bytes to PDF using Oxide's native authoring path.
+/// Convert DOCX bytes to PDF using Wellfriend's native authoring path.
 pub fn docx_to_pdf(bytes: &[u8], options: &OfficeToPdfOptions) -> Result<Vec<u8>> {
     enforce_office_package_security(bytes, OfficeFormat::Docx)?;
     let blocks = parse_docx_blocks(bytes)?;
     office_blocks_to_pdf(&blocks, options)
 }
 
-/// Convert XLSX bytes to PDF using Oxide's native authoring path.
+/// Convert XLSX bytes to PDF using Wellfriend's native authoring path.
 pub fn xlsx_to_pdf(bytes: &[u8], options: &OfficeToPdfOptions) -> Result<Vec<u8>> {
     enforce_office_package_security(bytes, OfficeFormat::Xlsx)?;
     let sheets = parse_xlsx_sheets(bytes)?;
     xlsx_sheets_to_pdf(&sheets, options)
 }
 
-/// Convert PPTX bytes to PDF using Oxide's native authoring path.
+/// Convert PPTX bytes to PDF using Wellfriend's native authoring path.
 pub fn pptx_to_pdf(bytes: &[u8], _options: &OfficeToPdfOptions) -> Result<Vec<u8>> {
     enforce_office_package_security(bytes, OfficeFormat::Pptx)?;
     let slides = parse_pptx_slides(bytes)?;
@@ -944,8 +944,8 @@ fn zip_bytes<W: Write + Seek>(
     Ok(())
 }
 
-fn zip_err(err: zip::result::ZipError) -> OxideError {
-    OxideError::Io(std::io::Error::other(err.to_string()))
+fn zip_err(err: zip::result::ZipError) -> WellfriendError {
+    WellfriendError::Io(std::io::Error::other(err.to_string()))
 }
 
 fn deterministic_zip_options() -> SimpleFileOptions {
@@ -1462,7 +1462,7 @@ fn docx_textbox_anchor_xml(
     content_xml: &str,
 ) -> String {
     format!(
-        r#"<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr><w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="{anchor_id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>{x_emu}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>{y_emu}</wp:posOffset></wp:positionV><wp:extent cx="{width_emu}" cy="{height_emu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="{anchor_id}" name="OxideBlock{anchor_id}" descr="PDF positioned text block"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri="{WPS_NS}"><wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{width_emu}" cy="{height_emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></wps:spPr><wps:txbx><w:txbxContent>{content_xml}</w:txbxContent></wps:txbx><wps:bodyPr lIns="0" tIns="0" rIns="0" bIns="0" wrap="none"/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#
+        r#"<w:p><w:pPr><w:spacing w:before="0" w:after="0"/></w:pPr><w:r><w:drawing><wp:anchor distT="0" distB="0" distL="0" distR="0" simplePos="0" relativeHeight="{anchor_id}" behindDoc="0" locked="0" layoutInCell="1" allowOverlap="1"><wp:simplePos x="0" y="0"/><wp:positionH relativeFrom="page"><wp:posOffset>{x_emu}</wp:posOffset></wp:positionH><wp:positionV relativeFrom="page"><wp:posOffset>{y_emu}</wp:posOffset></wp:positionV><wp:extent cx="{width_emu}" cy="{height_emu}"/><wp:effectExtent l="0" t="0" r="0" b="0"/><wp:wrapNone/><wp:docPr id="{anchor_id}" name="WellfriendBlock{anchor_id}" descr="PDF positioned text block"/><wp:cNvGraphicFramePr><a:graphicFrameLocks noChangeAspect="1"/></wp:cNvGraphicFramePr><a:graphic><a:graphicData uri="{WPS_NS}"><wps:wsp><wps:cNvSpPr txBox="1"/><wps:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="{width_emu}" cy="{height_emu}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/><a:ln><a:noFill/></a:ln></wps:spPr><wps:txbx><w:txbxContent>{content_xml}</w:txbxContent></wps:txbx><wps:bodyPr lIns="0" tIns="0" rIns="0" bIns="0" wrap="none"/></wps:wsp></a:graphicData></a:graphic></wp:anchor></w:drawing></w:r></w:p>"#
     )
 }
 
@@ -1671,11 +1671,11 @@ const DOCX_SETTINGS: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="
 
 const DOCX_CORE_PROPERTIES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-<dc:title>Oxide PDF conversion</dc:title><dc:creator>Oxide PDF SDK</dc:creator><cp:lastModifiedBy>Oxide PDF SDK</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">1980-01-01T00:00:00Z</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">1980-01-01T00:00:00Z</dcterms:modified><cp:revision>1</cp:revision>
+<dc:title>Wellfriend PDF SDK conversion</dc:title><dc:creator>Wellfriend PDF SDK</dc:creator><cp:lastModifiedBy>Wellfriend PDF SDK</cp:lastModifiedBy><dcterms:created xsi:type="dcterms:W3CDTF">1980-01-01T00:00:00Z</dcterms:created><dcterms:modified xsi:type="dcterms:W3CDTF">1980-01-01T00:00:00Z</dcterms:modified><cp:revision>1</cp:revision>
 </cp:coreProperties>"#;
 
 const DOCX_APP_PROPERTIES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Oxide PDF SDK</Application><AppVersion>1.0</AppVersion></Properties>"#;
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Wellfriend PDF SDK</Application><AppVersion>1.0</AppVersion></Properties>"#;
 
 fn xlsx_content_types(sheet_count: usize) -> String {
     let mut out = String::from(
@@ -2024,7 +2024,7 @@ fn pptx_presentation_rels(slide_count: usize) -> String {
 }
 
 const PPTX_THEME: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Oxide"><a:themeElements><a:clrScheme name="Oxide"><a:dk1><a:srgbClr val="111111"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F2937"/></a:dk2><a:lt2><a:srgbClr val="F8FAFC"/></a:lt2><a:accent1><a:srgbClr val="2563EB"/></a:accent1><a:accent2><a:srgbClr val="16A34A"/></a:accent2><a:accent3><a:srgbClr val="DC2626"/></a:accent3><a:accent4><a:srgbClr val="9333EA"/></a:accent4><a:accent5><a:srgbClr val="EA580C"/></a:accent5><a:accent6><a:srgbClr val="0891B2"/></a:accent6><a:hlink><a:srgbClr val="2563EB"/></a:hlink><a:folHlink><a:srgbClr val="9333EA"/></a:folHlink></a:clrScheme><a:fontScheme name="Oxide"><a:majorFont><a:latin typeface="Arial"/></a:majorFont><a:minorFont><a:latin typeface="Arial"/></a:minorFont></a:fontScheme><a:fmtScheme name="Oxide"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#;
+<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Wellfriend"><a:themeElements><a:clrScheme name="Wellfriend"><a:dk1><a:srgbClr val="111111"/></a:dk1><a:lt1><a:srgbClr val="FFFFFF"/></a:lt1><a:dk2><a:srgbClr val="1F2937"/></a:dk2><a:lt2><a:srgbClr val="F8FAFC"/></a:lt2><a:accent1><a:srgbClr val="2563EB"/></a:accent1><a:accent2><a:srgbClr val="16A34A"/></a:accent2><a:accent3><a:srgbClr val="DC2626"/></a:accent3><a:accent4><a:srgbClr val="9333EA"/></a:accent4><a:accent5><a:srgbClr val="EA580C"/></a:accent5><a:accent6><a:srgbClr val="0891B2"/></a:accent6><a:hlink><a:srgbClr val="2563EB"/></a:hlink><a:folHlink><a:srgbClr val="9333EA"/></a:folHlink></a:clrScheme><a:fontScheme name="Wellfriend"><a:majorFont><a:latin typeface="Arial"/></a:majorFont><a:minorFont><a:latin typeface="Arial"/></a:minorFont></a:fontScheme><a:fmtScheme name="Wellfriend"><a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst><a:lnStyleLst><a:ln w="9525"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst><a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst><a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst></a:fmtScheme></a:themeElements></a:theme>"#;
 
 const PPTX_MASTER: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"><p:cSld><p:bg><p:bgPr><a:solidFill><a:srgbClr val="FFFFFF"/></a:solidFill></p:bgPr></p:bg><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/></p:spTree></p:cSld><p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/><p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst><p:txStyles><p:titleStyle/><p:bodyStyle/><p:otherStyle/></p:txStyles></p:sldMaster>"#;
@@ -2664,8 +2664,9 @@ fn register_office_image(
 }
 
 fn parse_docx_blocks(bytes: &[u8]) -> Result<Vec<OfficeBlock>> {
-    let xml = zip_entry_string(bytes, "word/document.xml")?
-        .ok_or_else(|| OxideError::MalformedPdf("docx: missing word/document.xml".to_string()))?;
+    let xml = zip_entry_string(bytes, "word/document.xml")?.ok_or_else(|| {
+        WellfriendError::MalformedPdf("docx: missing word/document.xml".to_string())
+    })?;
     let rels = zip_entry_string(bytes, "word/_rels/document.xml.rels")?.unwrap_or_default();
     let rel_map = parse_relationships(&rels);
     let mut blocks = Vec::new();
@@ -3089,7 +3090,7 @@ fn zip_entry_string(bytes: &[u8], name: &str) -> Result<Option<String>> {
     };
     String::from_utf8(entry)
         .map(Some)
-        .map_err(|err| OxideError::MalformedPdf(format!("{name}: XML is not UTF-8: {err}")))
+        .map_err(|err| WellfriendError::MalformedPdf(format!("{name}: XML is not UTF-8: {err}")))
 }
 
 fn zip_entry_names(bytes: &[u8]) -> Result<Vec<String>> {

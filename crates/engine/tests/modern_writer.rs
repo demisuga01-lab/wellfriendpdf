@@ -1,11 +1,11 @@
 //! Modern writer tests: cross-reference streams + object streams (PDF 1.5+).
-//! Each mode must round-trip through Oxide's own reader (which already parses
+//! Each mode must round-trip through Wellfriend's own reader (which already parses
 //! xref/object streams) with identical content; qpdf/Poppler validation lives
 //! in the CLI smoke (they aren't cargo deps).
 
 use std::path::PathBuf;
 
-use oxide_engine::{rewrite_document_with_mode, ContentEngine, WriterMode};
+use wellfriendpdf_engine::{rewrite_document_with_mode, ContentEngine, WriterMode};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -87,11 +87,13 @@ fn objstm_output_declares_objstm_and_is_smaller() {
 fn encrypted_objstm_roundtrips() {
     // The Bucket-2 interaction: an encrypted file whose objects are packed into
     // object streams. The ObjStm is encrypted as a WHOLE stream; the inner
-    // objects must NOT be double-encrypted. Round-trip through Oxide's reader
+    // objects must NOT be double-encrypted. Round-trip through Wellfriend's reader
     // (which knows not to separately decrypt ObjStm members) must recover the
     // exact content.
-    use oxide_engine::crypto::{build_encryption, secret_bytes, EncryptAlgorithm, EncryptParams};
-    use oxide_engine::{rewrite_document_objects, PdfObject, PdfWriter, WriterMode};
+    use wellfriendpdf_engine::crypto::{
+        build_encryption, secret_bytes, EncryptAlgorithm, EncryptParams,
+    };
+    use wellfriendpdf_engine::{rewrite_document_objects, PdfObject, PdfWriter, WriterMode};
 
     let engine = ContentEngine::open_path(fixture("tracemonkey.pdf")).expect("open");
     let plain_text = engine.get_page_text(1).unwrap();

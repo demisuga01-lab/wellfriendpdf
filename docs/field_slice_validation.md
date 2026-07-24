@@ -20,11 +20,11 @@ Prompt 3 field work landed. Nothing else is re-tested here.
 | --- | --- |
 | date | 2026-06-27 |
 | commit | `01c592b718f17513083d32556c5b206e9159454d` |
-| oxide | `oxide 0.1.0` (release build, `target/release/oxide.exe`) |
+| wellfriendpdf | `wellfriendpdf 0.1.0` (release build, `target/release/wellfriendpdf.exe`) |
 | python | 3.14.3 |
 | platform | win32 |
 | harness | `extraction-benchmark/scripts/competitive_benchmark.py` |
-| run args | `--category has-fields --limit 200 --tasks fields --tools oxide,pypdf --max-workers 4 --timeout 60 --max-memory-mb 2048` |
+| run args | `--category has-fields --limit 200 --tasks fields --tools wellfriendpdf,pypdf --max-workers 4 --timeout 60 --max-memory-mb 2048` |
 | concurrency | ≤4 workers, per-(tool,file) subprocess isolation |
 | safety | 60 s timeout + 2048 MB RSS cap per child, `taskkill /T /F` tree-kill, per-record flush+fsync checkpoint, `WinError 1450` detection with checkpoint-and-stop |
 | pass definition | subprocess exits 0 before timeout/memory cap and writes the expected JSON artifact |
@@ -66,7 +66,7 @@ whitespace-collapsed; structured values prefer `iso`/`text`/`amount`/`number`).
 
 | rank | tool | scored | strict field-F1 | recall | precision | value-only F1 | pass % | mean s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | **oxide** | 200 | **0.725** | 0.845 | 0.692 | 0.814 | 100.0 | 0.160 |
+| 1 | **wellfriendpdf** | 200 | **0.725** | 0.845 | 0.692 | 0.814 | 100.0 | 0.160 |
 | 2 | pypdf | 200 | 0.000 | 0.000 | 0.000 | 0.000 | 100.0 | 0.332 |
 
 Tools noted as a capability gap rather than scored as a silent 0:
@@ -75,11 +75,11 @@ Tools noted as a capability gap rather than scored as a silent 0:
 | --- | --- | --- |
 | pypdf 6.14.2 | ran, scored 0.0 | AcroForm form-field reader (`get_fields`). **0 / 200** slice PDFs contain AcroForm widgets, so it recovers nothing. Source/capability mismatch, not a quality loss. |
 | pymupdf 1.27.2.3 | capability probe only | AcroForm widget reader; probe found **0 / 200** files with widgets. Same mismatch as pypdf — not scored to avoid implying a head-to-head loss. |
-| pdf_oxide 0.3.67 | capability gap | Its "form field" support is AcroForm fill/read, not heuristic rendered-KV extraction; nothing to recover on this rendered-text corpus. |
+| pdf_wellfriendpdf 0.3.67 | capability gap | Its "form field" support is AcroForm fill/read, not heuristic rendered-KV extraction; nothing to recover on this rendered-text corpus. |
 | docling | NOT-RUN | Not importable in the benchmark venv (`ModuleNotFoundError: No module named 'docling'`). It also exposes no comparable key-value field API. No number is fabricated. |
 
 The corpus `fields` are **rendered key-value text** (e.g. `Bill To: Atlas Office
-Group`, `Account: AC-183031`), not interactive form fields. Oxide's
+Group`, `Account: AC-183031`), not interactive form fields. Wellfriend's
 `extract-fields` is a heuristic/template rendered-KV extractor — the capability
 actually under test. AcroForm-only tools are doing a different job that this
 corpus gives them nothing to do.
@@ -107,7 +107,7 @@ so the field work is intact and has not regressed.
 Strict F1 is `0.725`, not ~`1.0`. The gap is **not** value-extraction failure;
 it is **key naming and over-prediction**. Evidence from a re-run that recomputed
 the same metrics three ways (summary.json, recompute-from-records, and an
-independent oxide re-run — all `0.72503`):
+independent wellfriendpdf re-run — all `0.72503`):
 
 1. **Key-alias / schema-mapping (the dominant strict miss).** The value is
    extracted correctly but filed under a different key name than the benchmark's
@@ -116,7 +116,7 @@ independent oxide re-run — all `0.72503`):
    all 25 `from`, all 25 `to` — ≥209 truth values that are correct but
    mis-keyed. This is exactly why **value-only F1 (0.814) ≫ strict F1 (0.725)**.
 
-2. **Over-prediction (the dominant precision drag).** Oxide emits 3650 predicted
+2. **Over-prediction (the dominant precision drag).** Wellfriend emits 3650 predicted
    pairs against 1942 truth pairs (1.88×), because its document-type profile
    emits a fixed key set per detected doc type even when a given file's ground
    truth lists only a subset. As a result the **pooled/micro precision is 0.459**,
@@ -142,13 +142,13 @@ score.
 # 1) Field-only run on the deterministic first-200 has-fields slice (crash-safe).
 .\.venv-public-benchmark\Scripts\python.exe extraction-benchmark\scripts\competitive_benchmark.py `
   --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 `
-  --tasks fields --tools oxide,pypdf `
+  --tasks fields --tools wellfriendpdf,pypdf `
   --output-dir target\competitive-benchmark\fieldslice-validation `
   --report target\competitive-benchmark\fieldslice-validation.md `
   --max-workers 4 --timeout 60 --max-memory-mb 2048
 
 # 2) Independent verification: recompute metrics from records.jsonl AND re-run
-#    oxide on the same 200 files for the key-level failure breakdown.
+#    wellfriendpdf on the same 200 files for the key-level failure breakdown.
 .\.venv-public-benchmark\Scripts\python.exe extraction-benchmark\scripts\verify_fieldslice.py
 
 # 3) Capability proof: confirm the slice has no AcroForm widgets.

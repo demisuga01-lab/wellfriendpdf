@@ -1,7 +1,7 @@
 {
   "version": 1,
   "generated_at": "2026-06-14T01:04:01.118189+00:00",
-  "description": "Tagged corpus for Poppler-vs-Oxide parity measurements.",
+  "description": "Tagged corpus for Poppler-vs-Wellfriend parity measurements.",
   "sources": {
     "existing-engine-fixture": {
       "path": "crates/engine/tests/fixtures",

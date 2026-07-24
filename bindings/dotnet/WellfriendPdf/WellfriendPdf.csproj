@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackageId>WellfriendPdf</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Wellfriend</Authors>
+    <Description>Idiomatic .NET binding for the Wellfriend PDF SDK.</Description>
+    <RepositoryUrl>https://github.com/demisuga01-lab/wellfriendpdf-sdk</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <PackageTags>pdf;wellfriendpdf;sdk;native;documents</PackageTags>
+    <PackageProjectUrl>https://github.com/demisuga01-lab/wellfriendpdf-sdk</PackageProjectUrl>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);1591</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+</Project>

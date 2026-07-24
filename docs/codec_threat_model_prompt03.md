@@ -1,12 +1,12 @@
 # Prompt 03 Codec Threat Model
 
-This threat model is specific to Oxide's current decode architecture. It covers hostile PDF stream data that reaches `crates/engine/src/filters.rs`, image decode modules, encrypted streams, inline images, and binding-facing report surfaces.
+This threat model is specific to Wellfriend's current decode architecture. It covers hostile PDF stream data that reaches `crates/engine/src/filters.rs`, image decode modules, encrypted streams, inline images, and binding-facing report surfaces.
 
 ## Trust Boundaries
 
 - Untrusted input: PDF bytes, stream dictionaries, `/Filter` arrays, `/DecodeParms`, image dimensions, inline image payloads, encrypted stream bytes after decryption, and package-consumer byte arrays passed to codec reports.
 - Trusted parent: API policy selection, decode limits, timeout limits, worker path, request IDs, response validation, and deterministic JSON envelopes.
-- Less-trusted child: `oxide-codec-worker`, which decodes a single bounded request and returns JSON to the parent.
+- Less-trusted child: `wellfriendpdf-codec-worker`, which decodes a single bounded request and returns JSON to the parent.
 - Binding boundary: Rust, CLI, Python, C ABI, WASM, .NET, and Java must receive stable reports and must not observe parent crashes from worker failures.
 
 ## Codec Families

@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use crate::crypto::{build_encryption, EncryptAlgorithm, EncryptParams};
 use crate::editing::ImageRect;
 use crate::engine::ContentEngine;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::object::PdfObject;
 use crate::writer::{
     rewrite_document, rewrite_document_objects, rewrite_document_with_mode, PdfWriter, WriterMode,
@@ -72,7 +72,7 @@ pub fn rotate_pages(
         p
     };
     if targets.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "rotate: no valid pages selected".to_string(),
         ));
     }
@@ -121,7 +121,7 @@ pub fn crop_pages(engine: &ContentEngine, pages: &[usize], crop: ImageRect) -> R
         || crop.width <= 0.0
         || crop.height <= 0.0
     {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "crop: rectangle must be positive finite points".to_string(),
         ));
     }
@@ -139,7 +139,7 @@ pub fn crop_pages(engine: &ContentEngine, pages: &[usize], crop: ImageRect) -> R
         p
     };
     if targets.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "crop: no valid pages selected".to_string(),
         ));
     }
@@ -274,7 +274,7 @@ pub fn encrypt_with_pdf_mac(
     params: &EncryptParams,
 ) -> Result<(Vec<u8>, crate::pdf_mac::PdfMacWriteReport)> {
     if params.algorithm != EncryptAlgorithm::Aes256Gcm {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "PDF-MAC writer is implemented for AESV4/AES-256-GCM full rewrite only".to_string(),
         ));
     }
@@ -283,7 +283,7 @@ pub fn encrypt_with_pdf_mac(
     let state = build_encryption(params, &file_id)?;
     let file_key = state.file_key.clone();
     let kdf_salt = state.info.kdf_salt.clone().ok_or_else(|| {
-        OxideError::MalformedPdf("PDF-MAC AESV4 writer did not generate /KDFSalt".to_string())
+        WellfriendError::MalformedPdf("PDF-MAC AESV4 writer did not generate /KDFSalt".to_string())
     })?;
     let mut noop = |_n: u32, _o: &mut PdfObject| {};
     let (objects, new_root, info_number) = rewrite_document_objects(reader, &mut noop)?;

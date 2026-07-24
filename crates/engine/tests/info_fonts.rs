@@ -2,14 +2,14 @@
 //! (pdffonts-equivalent) reporting tools.
 //!
 //! Where a Poppler install is available (bundled under `target/tools/poppler`
-//! or on PATH), the tests cross-check Oxide's report against `pdfinfo` /
+//! or on PATH), the tests cross-check Wellfriend's report against `pdfinfo` /
 //! `pdffonts` — the strongest correctness signal. Without Poppler they fall
 //! back to asserting against values read directly from the fixtures.
 
 use std::path::PathBuf;
 use std::process::Command;
 
-use oxide_engine::{ContentEngine, PdfDocument};
+use wellfriendpdf_engine::{ContentEngine, PdfDocument};
 
 fn fixture_path(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

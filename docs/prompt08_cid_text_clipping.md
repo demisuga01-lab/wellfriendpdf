@@ -30,10 +30,10 @@ Diagnostics:
 
 Evidence:
 
-- `cargo test -p oxide-engine --test prompt08b_type3_cid_tensor --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test prompt08b_type3_cid_tensor --jobs 1`
 - `target/prompt08b-type3-cid-tensor/prompt08b-cid-clip-matrix.json`
 - `target/prompt08b-type3-cid-tensor/prompt08b-reference-disagreement-summary.json`
 
 The Prompt 08B audit has five CID/CMap clipping fixtures in the
-`all_references_agree_oxide_passes` classification and one missing-outline
+`all_references_agree_wellfriendpdf_passes` classification and one missing-outline
 fixture in `unsupported_reported_expected`.

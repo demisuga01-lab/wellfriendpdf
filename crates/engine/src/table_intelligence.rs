@@ -863,7 +863,7 @@ pub fn mock_tableformer_proposal_set(page: usize) -> TableProposalSet {
         input_page_ids: vec![page],
         input_payload_type: LayoutInputPayloadKind::RenderedImage,
         preprocessing: TablePreprocessingMetadata {
-            renderer: "oxide_renderer".to_string(),
+            renderer: "wellfriendpdf_renderer".to_string(),
             color_space: "srgb".to_string(),
             resize_policy: "fit_within_2048".to_string(),
             normalization: "none_mock_fixture".to_string(),

@@ -10,10 +10,10 @@ use axum::{
     body::{to_bytes, Body},
     http::{Request, StatusCode},
 };
-use oxide_server::config::ServerConfig;
 use serde_json::Value;
 use std::path::Path;
 use tower::util::ServiceExt;
+use wellfriendpdf_server::config::ServerConfig;
 
 fn fixture_pdf(name: &str) -> Vec<u8> {
     let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -23,7 +23,7 @@ fn fixture_pdf(name: &str) -> Vec<u8> {
 }
 
 fn make_multipart(filename: &str, pdf: &[u8], extra: &[(&str, &str)]) -> (String, Vec<u8>) {
-    let boundary = "oxide-security-boundary";
+    let boundary = "wellfriendpdf-security-boundary";
     let mut body: Vec<u8> = Vec::new();
     body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
     body.extend_from_slice(
@@ -103,7 +103,8 @@ fn validate_allows_when_keys_present() {
 async fn data_endpoints_reject_missing_key_with_401() {
     let pdf = fixture_pdf("flate.pdf");
     for path in DATA_ENDPOINTS {
-        let app = oxide_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
+        let app =
+            wellfriendpdf_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
         let (ct, body) = make_multipart("test.pdf", &pdf, &[("dpi", "72")]);
         let response = app
             .oneshot(
@@ -127,7 +128,8 @@ async fn data_endpoints_reject_missing_key_with_401() {
 async fn data_endpoints_reject_wrong_key_with_401() {
     let pdf = fixture_pdf("flate.pdf");
     for path in DATA_ENDPOINTS {
-        let app = oxide_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
+        let app =
+            wellfriendpdf_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
         let (ct, body) = make_multipart("test.pdf", &pdf, &[("dpi", "72")]);
         let response = app
             .oneshot(
@@ -152,7 +154,8 @@ async fn data_endpoints_reject_wrong_key_with_401() {
 async fn data_endpoints_accept_correct_key() {
     let pdf = fixture_pdf("flate.pdf");
     for path in DATA_ENDPOINTS {
-        let app = oxide_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
+        let app =
+            wellfriendpdf_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
         let (ct, body) = make_multipart("test.pdf", &pdf, &[("dpi", "72")]);
         let response = app
             .oneshot(
@@ -176,7 +179,7 @@ async fn data_endpoints_accept_correct_key() {
 #[tokio::test]
 async fn correct_key_via_bearer_header_is_accepted() {
     let pdf = fixture_pdf("flate.pdf");
-    let app = oxide_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
+    let app = wellfriendpdf_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
     let (ct, body) = make_multipart("test.pdf", &pdf, &[]);
     let response = app
         .oneshot(
@@ -193,7 +196,7 @@ async fn correct_key_via_bearer_header_is_accepted() {
 
 #[tokio::test]
 async fn health_is_reachable_without_a_key_when_auth_enforced() {
-    let app = oxide_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
+    let app = wellfriendpdf_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
     let response = app
         .oneshot(Request::get("/health").body(Body::empty()).unwrap())
         .await
@@ -208,7 +211,8 @@ async fn health_is_reachable_without_a_key_when_auth_enforced() {
 #[tokio::test]
 async fn readiness_and_version_reachable_without_key() {
     for path in ["/readiness", "/api/v1/health", "/api/v1/readiness"] {
-        let app = oxide_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
+        let app =
+            wellfriendpdf_server::app::create_app_with_config(config_with_keys(&["secret-key"]));
         let response = app
             .oneshot(Request::get(path).body(Body::empty()).unwrap())
             .await
@@ -237,8 +241,10 @@ fn cors_config(origins: &[&str], allow_any: bool) -> ServerConfig {
 
 #[tokio::test]
 async fn cors_allows_listed_origin() {
-    let app =
-        oxide_server::app::create_app_with_config(cors_config(&["https://app.example.com"], false));
+    let app = wellfriendpdf_server::app::create_app_with_config(cors_config(
+        &["https://app.example.com"],
+        false,
+    ));
     let response = app
         .oneshot(
             Request::builder()
@@ -260,8 +266,10 @@ async fn cors_allows_listed_origin() {
 
 #[tokio::test]
 async fn cors_denies_unlisted_origin() {
-    let app =
-        oxide_server::app::create_app_with_config(cors_config(&["https://app.example.com"], false));
+    let app = wellfriendpdf_server::app::create_app_with_config(cors_config(
+        &["https://app.example.com"],
+        false,
+    ));
     let response = app
         .oneshot(
             Request::builder()
@@ -286,7 +294,7 @@ async fn cors_denies_unlisted_origin() {
 #[tokio::test]
 async fn cors_default_is_restrictive() {
     // No origins configured => no cross-origin grant.
-    let app = oxide_server::app::create_app_with_config(cors_config(&[], false));
+    let app = wellfriendpdf_server::app::create_app_with_config(cors_config(&[], false));
     let response = app
         .oneshot(
             Request::builder()
@@ -310,7 +318,7 @@ async fn cors_default_is_restrictive() {
 
 #[tokio::test]
 async fn cors_allow_any_optin_echoes_any_origin() {
-    let app = oxide_server::app::create_app_with_config(cors_config(&[], true));
+    let app = wellfriendpdf_server::app::create_app_with_config(cors_config(&[], true));
     let response = app
         .oneshot(
             Request::builder()
@@ -342,7 +350,7 @@ async fn cors_allow_any_optin_echoes_any_origin() {
 async fn malformed_pdf_returns_safe_422_not_500() {
     let garbage = b"%PDF-1.4 not actually a pdf";
     let (ct, body) = make_multipart("bad.pdf", garbage, &[]);
-    let app = oxide_server::app::create_app_with_config(cors_config(&[], false));
+    let app = wellfriendpdf_server::app::create_app_with_config(cors_config(&[], false));
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -364,7 +372,7 @@ async fn malformed_pdf_returns_safe_422_not_500() {
 async fn password_protected_returns_specific_safe_422() {
     let pdf = build_password_protected_pdf();
     let (ct, body) = make_multipart("protected.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app_with_config(cors_config(&[], false));
+    let app = wellfriendpdf_server::app::create_app_with_config(cors_config(&[], false));
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -389,8 +397,9 @@ fn internal_error_body_is_generic_and_carries_reference() {
     use axum::response::IntoResponse;
     // Directly exercise the IntoResponse mapping for the generic 500 path: the
     // body must NOT contain the internal detail, and MUST contain a reference id.
-    let secret = "C:/oxide/secret/path/leak.rs line 42 panic detail";
-    let resp = oxide_server::error::ServerError::Internal(secret.to_string()).into_response();
+    let secret = "C:/wellfriendpdf/secret/path/leak.rs line 42 panic detail";
+    let resp =
+        wellfriendpdf_server::error::ServerError::Internal(secret.to_string()).into_response();
     assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
 
     let fut = to_bytes(resp.into_body(), 8192);
@@ -465,7 +474,7 @@ async fn rate_limit_returns_429_after_exceeding_limit() {
         rate_limit_per_min: 3,
         ..ServerConfig::default()
     };
-    let app = oxide_server::app::create_app_with_config(cfg);
+    let app = wellfriendpdf_server::app::create_app_with_config(cfg);
 
     // The limiter keys anonymous (no api key) requests under "anonymous"; fire
     // 3 allowed then expect the 4th to be limited. Use analyze on a valid PDF.
@@ -495,9 +504,9 @@ async fn rate_limit_returns_429_after_exceeding_limit() {
 
 #[tokio::test]
 async fn spawned_cleanup_task_shrinks_the_map_on_schedule() {
-    use oxide_server::rate_limit::RateLimiter;
     use std::sync::Arc;
     use std::time::Duration;
+    use wellfriendpdf_server::rate_limit::RateLimiter;
 
     // Real-time interval cleanup with a real (system) clock. We use a short
     // window proxy by populating then waiting just over the 60s window is too
@@ -526,9 +535,9 @@ async fn spawned_cleanup_task_shrinks_the_map_on_schedule() {
 
 #[tokio::test]
 async fn dropping_limiter_stops_cleanup_task() {
-    use oxide_server::rate_limit::RateLimiter;
     use std::sync::Arc;
     use std::time::Duration;
+    use wellfriendpdf_server::rate_limit::RateLimiter;
 
     let limiter = Arc::new(RateLimiter::new(100));
     let handle = limiter.spawn_cleanup(Duration::from_millis(20));

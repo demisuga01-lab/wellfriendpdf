@@ -24,8 +24,8 @@ Use `-ContinueOnFailure` only when collecting diagnostics from a partially confi
 ## Artifacts Checked
 
 - Rust crate package contents and examples.
-- CLI binary `oxide`.
-- Codec worker binary `oxide-codec-worker`.
+- CLI binary `wellfriendpdf`.
+- Codec worker binary `wellfriendpdf-codec-worker`.
 - C ABI dynamic/static library and public header.
 - Python wheel when maturin is available.
 - WASM target build, wasm-pack web package, wasm-pack Node package, package

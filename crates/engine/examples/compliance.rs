@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     convert_to_pdfa_checked, get_fallback_font, improve_pdfua_best_effort, validate_pdfa,
     validate_pdfua, AuthorPageSize as PageSize, ContentEngine, PdfAProfile, PdfBuilder,
     PdfDocument, TextStyle,
 };
 
-fn main() -> oxide_engine::Result<()> {
+fn main() -> wellfriendpdf_engine::Result<()> {
     let out_dir = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
@@ -83,11 +83,11 @@ fn main() -> oxide_engine::Result<()> {
     Ok(())
 }
 
-fn embedded_source_pdf() -> oxide_engine::Result<Vec<u8>> {
+fn embedded_source_pdf() -> wellfriendpdf_engine::Result<Vec<u8>> {
     let mut doc = PdfBuilder::new();
     doc.set_title("Compliance example")
-        .set_author("Oxide PDF SDK")
-        .set_creator("oxide-engine examples/compliance.rs");
+        .set_author("Wellfriend PDF SDK")
+        .set_creator("wellfriendpdf-engine examples/compliance.rs");
     let font = doc.register_truetype_font_bytes(
         "LiberationSans",
         get_fallback_font("Helvetica")

@@ -1829,7 +1829,7 @@ pub fn build_document_model(engine: &ContentEngine, pages: &[usize]) -> Result<D
     };
     for &p in &page_list {
         if p == 0 || p > total {
-            return Err(crate::error::OxideError::MalformedPdf(format!(
+            return Err(crate::error::WellfriendError::MalformedPdf(format!(
                 "page {p} out of range (document has {total})"
             )));
         }

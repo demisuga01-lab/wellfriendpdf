@@ -13,6 +13,6 @@ Release posture:
 | Persistent HAMT/RRB store | `implemented_with_limits` |
 | Object-stream/xref-stream packing | `implemented` for opt-in full rewrite |
 | Public bindings | `implemented_with_limits` |
-| Reference evidence | Oxide and qpdf evidence present; unavailable tools not counted as passed |
+| Reference evidence | Wellfriend and qpdf evidence present; unavailable tools not counted as passed |
 
 Combined Prompt 22 can begin only with the known limits in `docs/prompt21_known_limits.md` carried forward.

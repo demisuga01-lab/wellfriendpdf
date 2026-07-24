@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the Prompt 06 corpus through Oxide, Poppler, PDFium, and MuPDF."""
+"""Run the Prompt 06 corpus through Wellfriend, Poppler, PDFium, and MuPDF."""
 
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ OUT_DIR = Path("target/prompt06-renderer-native-replay")
 RENDER_DIR = OUT_DIR / "prompt06b-renders"
 DIFF_DIR = OUT_DIR / "prompt06b-diffs"
 LOG_DIR = OUT_DIR / "prompt06b-logs"
-OXIDE_REPORT_DIR = OUT_DIR / "prompt06b-oxide-reports"
+WELLFRIENDPDF_REPORT_DIR = OUT_DIR / "prompt06b-wellfriendpdf-reports"
 
 TOOL_MANIFEST = OUT_DIR / "reference-tool-manifest-prompt06b.json"
 CORPUS_MANIFEST = OUT_DIR / "multi-reference-corpus-manifest-prompt06b.json"
@@ -32,15 +32,15 @@ TAXONOMY = OUT_DIR / "renderer-parity-taxonomy-prompt06b.json"
 HTML_REPORT = OUT_DIR / "prompt06b-html-report" / "index.html"
 
 PAIR_NAMES = [
-    ("oxide", "poppler"),
-    ("oxide", "pdfium"),
-    ("oxide", "mupdf"),
+    ("wellfriendpdf", "poppler"),
+    ("wellfriendpdf", "pdfium"),
+    ("wellfriendpdf", "mupdf"),
     ("poppler", "pdfium"),
     ("poppler", "mupdf"),
     ("pdfium", "mupdf"),
 ]
 REFERENCE_PAIRS = [("poppler", "pdfium"), ("poppler", "mupdf"), ("pdfium", "mupdf")]
-OXIDE_PAIRS = [("oxide", "poppler"), ("oxide", "pdfium"), ("oxide", "mupdf")]
+WELLFRIENDPDF_PAIRS = [("wellfriendpdf", "poppler"), ("wellfriendpdf", "pdfium"), ("wellfriendpdf", "mupdf")]
 LATER_OWNED_CATEGORIES = {"pattern/later", "shading/later", "transparency/later"}
 
 
@@ -116,22 +116,22 @@ def load_manifest(path: Path) -> dict[str, Any]:
     return payload
 
 
-def oxide_base_command(oxide_bin: str | None) -> list[str]:
-    if oxide_bin:
-        return [str(Path(oxide_bin))]
+def wellfriendpdf_base_command(wellfriendpdf_bin: str | None) -> list[str]:
+    if wellfriendpdf_bin:
+        return [str(Path(wellfriendpdf_bin))]
     suffix = ".exe" if os.name == "nt" else ""
-    for candidate in [Path("target/debug") / f"oxide{suffix}", Path("target/release") / f"oxide{suffix}"]:
+    for candidate in [Path("target/debug") / f"wellfriendpdf{suffix}", Path("target/release") / f"wellfriendpdf{suffix}"]:
         if candidate.exists():
             return [str(candidate)]
-    return ["cargo", "run", "-p", "oxide-cli", "--quiet", "--"]
+    return ["cargo", "run", "-p", "wellfriendpdf-cli", "--quiet", "--"]
 
 
-def render_oxide(base: list[str], entry: dict[str, Any], dpi: int, timeout: int) -> dict[str, Any]:
-    render_dir = RENDER_DIR / "oxide"
+def render_wellfriendpdf(base: list[str], entry: dict[str, Any], dpi: int, timeout: int) -> dict[str, Any]:
+    render_dir = RENDER_DIR / "wellfriendpdf"
     render_dir.mkdir(parents=True, exist_ok=True)
     zip_path = render_dir / f"{entry['id']}-p{entry['page']}.zip"
     png_path = render_dir / f"{entry['id']}-p{entry['page']}.png"
-    report_path = OXIDE_REPORT_DIR / f"{entry['id']}-p{entry['page']}.json"
+    report_path = WELLFRIENDPDF_REPORT_DIR / f"{entry['id']}-p{entry['page']}.json"
     for path in [zip_path, png_path, report_path]:
         if path.exists():
             path.unlink()
@@ -174,7 +174,7 @@ def render_oxide(base: list[str], entry: dict[str, Any], dpi: int, timeout: int)
     if render_result["timed_out"] or compare_result["timed_out"]:
         status = "render_timeout"
     elif render_result["exit_status"] != 0 or not zip_path.exists():
-        status = "oxide_render_failure"
+        status = "wellfriendpdf_render_failure"
     else:
         try:
             with zipfile.ZipFile(zip_path) as zf:
@@ -184,7 +184,7 @@ def render_oxide(base: list[str], entry: dict[str, Any], dpi: int, timeout: int)
                 else:
                     png_path.write_bytes(zf.read(names[0]))
         except zipfile.BadZipFile:
-            status = "oxide_render_failure"
+            status = "wellfriendpdf_render_failure"
     return {
         "status": status,
         "artifact": rel(png_path) if png_path.exists() else None,
@@ -355,8 +355,8 @@ def image_metrics(a_name: str, a_path: str | None, b_name: str, b_path: str | No
 
 
 def classify_page(category: str, renders: dict[str, Any], metrics: dict[str, Any]) -> str:
-    if renders["oxide"]["status"] != "rendered":
-        return "oxide_render_failure"
+    if renders["wellfriendpdf"]["status"] != "rendered":
+        return "wellfriendpdf_render_failure"
     if any(renders[name]["status"] != "rendered" for name in ["poppler", "pdfium", "mupdf"]):
         return "reference_tool_failure"
     if any(metric.get("status") == "dimension_mismatch" for metric in metrics.values()):
@@ -366,17 +366,17 @@ def classify_page(category: str, renders: dict[str, Any], metrics: dict[str, Any
         return bool(metrics[f"{a}_vs_{b}"].get("threshold_pass"))
 
     references_agree = all(pair_pass(a, b) for a, b in REFERENCE_PAIRS)
-    oxide_matches = [b for a, b in OXIDE_PAIRS if pair_pass(a, b)]
+    wellfriendpdf_matches = [b for a, b in WELLFRIENDPDF_PAIRS if pair_pass(a, b)]
     later_owned = category in LATER_OWNED_CATEGORIES
     if references_agree:
-        if len(oxide_matches) == 3:
-            return "all_references_agree_oxide_pass"
-        return "needs_manual_review" if later_owned else "all_references_agree_oxide_mismatch"
-    if len(oxide_matches) == 1:
-        return f"references_disagree_oxide_matches_{oxide_matches[0]}"
-    if len(oxide_matches) > 1:
-        return "references_disagree_oxide_between_references"
-    return "needs_manual_review" if later_owned else "references_disagree_oxide_between_references"
+        if len(wellfriendpdf_matches) == 3:
+            return "all_references_agree_wellfriendpdf_pass"
+        return "needs_manual_review" if later_owned else "all_references_agree_wellfriendpdf_mismatch"
+    if len(wellfriendpdf_matches) == 1:
+        return f"references_disagree_wellfriendpdf_matches_{wellfriendpdf_matches[0]}"
+    if len(wellfriendpdf_matches) > 1:
+        return "references_disagree_wellfriendpdf_between_references"
+    return "needs_manual_review" if later_owned else "references_disagree_wellfriendpdf_between_references"
 
 
 def pair_summary(metrics_pages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -410,9 +410,9 @@ def render_html(results: dict[str, Any], summary: dict[str, Any]) -> None:
             f"<td>{html.escape(page['renders']['poppler']['status'])}</td>"
             f"<td>{html.escape(page['renders']['pdfium']['status'])}</td>"
             f"<td>{html.escape(page['renders']['mupdf']['status'])}</td>"
-            f"<td>{pairs['oxide_vs_poppler'].get('changed_pixel_threshold8_percentage', '')}</td>"
-            f"<td>{pairs['oxide_vs_pdfium'].get('changed_pixel_threshold8_percentage', '')}</td>"
-            f"<td>{pairs['oxide_vs_mupdf'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_poppler'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_pdfium'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_mupdf'].get('changed_pixel_threshold8_percentage', '')}</td>"
             "</tr>"
         )
     HTML_REPORT.write_text(
@@ -437,7 +437,7 @@ def render_html(results: dict[str, Any], summary: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=TOOL_MANIFEST)
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
@@ -461,7 +461,7 @@ def main() -> int:
         },
     )
 
-    base = oxide_base_command(args.oxide_bin)
+    base = wellfriendpdf_base_command(args.wellfriendpdf_bin)
     pages: list[dict[str, Any]] = []
     metrics_pages: list[dict[str, Any]] = []
     classification_counts: dict[str, int] = {}
@@ -469,7 +469,7 @@ def main() -> int:
 
     for entry in available_corpus:
         renders = {
-            "oxide": render_oxide(base, entry, args.dpi, args.timeout),
+            "wellfriendpdf": render_wellfriendpdf(base, entry, args.dpi, args.timeout),
             "poppler": render_reference("poppler", manifest["tools"]["poppler"], entry, args.dpi, args.timeout),
             "pdfium": render_reference("pdfium", manifest["tools"]["pdfium"], entry, args.dpi, args.timeout),
             "mupdf": render_reference("mupdf", manifest["tools"]["mupdf"], entry, args.dpi, args.timeout),
@@ -497,7 +497,7 @@ def main() -> int:
             "later_owned_renderer_category": entry["category"] in LATER_OWNED_CATEGORIES,
             "renders": renders,
             "pair_metrics": pair_metrics,
-            "native_replay_counters": renders["oxide"].get("native_replay_counters", {}),
+            "native_replay_counters": renders["wellfriendpdf"].get("native_replay_counters", {}),
         }
         pages.append(page)
         metrics_pages.append({"id": entry["id"], "category": entry["category"], "pairs": pair_metrics})
@@ -520,7 +520,7 @@ def main() -> int:
                 "classification": page["classification"],
             }
             for page in pages
-            if page["classification"] != "all_references_agree_oxide_pass"
+            if page["classification"] != "all_references_agree_wellfriendpdf_pass"
         ][:10],
     }
     results = {
@@ -537,14 +537,14 @@ def main() -> int:
         "schema_version": 1,
         "kind": "prompt06b_renderer_parity_taxonomy",
         "classification_categories": [
-            "all_references_agree_oxide_pass",
-            "all_references_agree_oxide_mismatch",
-            "references_disagree_oxide_matches_poppler",
-            "references_disagree_oxide_matches_pdfium",
-            "references_disagree_oxide_matches_mupdf",
-            "references_disagree_oxide_between_references",
+            "all_references_agree_wellfriendpdf_pass",
+            "all_references_agree_wellfriendpdf_mismatch",
+            "references_disagree_wellfriendpdf_matches_poppler",
+            "references_disagree_wellfriendpdf_matches_pdfium",
+            "references_disagree_wellfriendpdf_matches_mupdf",
+            "references_disagree_wellfriendpdf_between_references",
             "reference_tool_failure",
-            "oxide_render_failure",
+            "wellfriendpdf_render_failure",
             "dimension_mismatch",
             "needs_manual_review",
         ],
@@ -568,7 +568,7 @@ def main() -> int:
     closure_failures = [
         page
         for page in pages
-        if page["classification"] in {"reference_tool_failure", "oxide_render_failure"}
+        if page["classification"] in {"reference_tool_failure", "wellfriendpdf_render_failure"}
     ]
     print(
         json.dumps(

@@ -1,24 +1,24 @@
 # Python SDK — Prompt 01 Report Surfaces
 
-The `oxide` Python module (crate `oxide-py`, built with maturin/pyo3) gains the
-full report surface in Prompt 01, backed by the shared `oxide_engine::sdk`
+The `wellfriendpdf` Python module (crate `wellfriendpdf-py`, built with maturin/pyo3) gains the
+full report surface in Prompt 01, backed by the shared `wellfriendpdf_engine::sdk`
 facade. Every report method returns a **native Python dict** parsed from the
 facade's versioned-JSON envelope `{"schema_version", "kind", "report"}`.
 
 ## Lifecycle
 
 ```python
-import oxide
+import wellfriendpdf
 
-doc = oxide.open("in.pdf")          # path (os.PathLike) or bytes
-doc = oxide.open(data)              # bytes
-doc = oxide.Document.from_bytes(data, password="secret")
+doc = wellfriendpdf.open("in.pdf")          # path (os.PathLike) or bytes
+doc = wellfriendpdf.open(data)              # bytes
+doc = wellfriendpdf.Document.from_bytes(data, password="secret")
 n = doc.page_count
 text = doc.page(1).text
 ```
 
 `Document` holds an `Arc<ContentEngine>`; page/region objects share it safely.
-Invalid input raises `oxide.OxideError`; out-of-range pages raise `IndexError`.
+Invalid input raises `wellfriendpdf.WellfriendError`; out-of-range pages raise `IndexError`.
 
 ## Report methods (return dict)
 
@@ -45,9 +45,9 @@ Module-level (no document):
 
 | Function | Envelope kind |
 | --- | --- |
-| `oxide.feature_report()` | `feature_report` |
-| `oxide.decode_budget_report(filter, width, height, components=3)` | `decode_budget_report` |
-| `oxide.resource_dedup_report([b"..", ...])` | `resource_dedup_report` |
+| `wellfriendpdf.feature_report()` | `feature_report` |
+| `wellfriendpdf.decode_budget_report(filter, width, height, components=3)` | `decode_budget_report` |
+| `wellfriendpdf.resource_dedup_report([b"..", ...])` | `resource_dedup_report` |
 
 ## Output-producing methods (return `(bytes, dict)`)
 
@@ -66,7 +66,7 @@ is the parsed envelope dict (`sanitize_report`, `canonicalize_report`,
 - Report methods copy the document bytes out of the reader once per call, run the
   facade, and return a fresh dict — no borrowed Rust memory escapes into Python.
 - Output methods return an owned `bytes`; the dict is plain JSON-loaded data.
-- All work runs under `catch_unwind`; a Rust panic surfaces as `OxideError`, not
+- All work runs under `catch_unwind`; a Rust panic surfaces as `WellfriendError`, not
   a process crash. Objects remain safe after the document goes out of scope.
 
 ## Honesty about limits
@@ -80,22 +80,22 @@ is the parsed envelope dict (`sanitize_report`, `canonicalize_report`,
 ## Version markers
 
 ```python
-oxide.__version__                    # crate version
-oxide.__report_envelope_version__    # report envelope version (== 1)
-oxide.feature_report()["report"]["capabilities"]   # compiled features
+wellfriendpdf.__version__                    # crate version
+wellfriendpdf.__report_envelope_version__    # report envelope version (== 1)
+wellfriendpdf.feature_report()["report"]["capabilities"]   # compiled features
 ```
 
 ## Tests & example
 
-- `crates/oxide-py/tests/test_reports.py` — 12 tests (envelopes, fields, invalid
+- `crates/wellfriendpdf-py/tests/test_reports.py` — 12 tests (envelopes, fields, invalid
   input, deterministic canonicalize, redaction removal + verification, parity).
-- `crates/oxide-py/tests/test_smoke.py` — pre-existing 6 tests still green.
-- `crates/oxide-py/examples/sdk_reports.py` — runnable demo / smoke generator.
+- `crates/wellfriendpdf-py/tests/test_smoke.py` — pre-existing 6 tests still green.
+- `crates/wellfriendpdf-py/examples/sdk_reports.py` — runnable demo / smoke generator.
 
 Build & test:
 
 ```sh
-cd crates/oxide-py
+cd crates/wellfriendpdf-py
 python -m venv .venv && .venv/Scripts/python -m pip install maturin pytest
 .venv/Scripts/python -m maturin develop --release
 .venv/Scripts/python -m pytest tests/

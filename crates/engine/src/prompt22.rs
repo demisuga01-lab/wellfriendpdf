@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_from_dict_with_limits, flate_encode, DecodeLimits};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::office::{
@@ -424,7 +424,7 @@ pub(crate) fn prompt22_feature_report_value(envelope_version: u32) -> serde_json
             "status": "implemented_with_limits",
             "formats": ["docx", "pptx", "xlsx"],
             "production_external_converter_invoked": false,
-            "shared_model": "oxide_office_parse_to_authoring_flow_document_or_pdf_builder",
+            "shared_model": "wellfriendpdf_office_parse_to_authoring_flow_document_or_pdf_builder",
             "secure_package_reader": "implemented_with_limits"
         },
         "benchmark": {
@@ -533,7 +533,7 @@ pub fn optimize_pdf(
         None => PdfDocument::open_bytes(bytes.to_vec())?,
     };
     if document.reader().is_encrypted() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt22 optimize refuses encrypted inputs because rewriting decrypted streams would not preserve encryption"
                 .to_string(),
         ));
@@ -617,7 +617,7 @@ pub fn office_to_pdf_with_report(
     let package_security =
         inspect_office_package(bytes, format, &OfficePackageSecurityLimits::default())?;
     if !package_security.safe_for_conversion {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt22 {} conversion blocked by package security policy: {}",
             format.as_str(),
             package_security
@@ -735,7 +735,7 @@ fn encode_deflate(
                         Prompt22CompressionMode::Best.flate_level(),
                     ));
                 }
-                return Err(OxideError::ResourceLimit(format!(
+                return Err(WellfriendError::ResourceLimit(format!(
                     "zopfli input {} exceeds max_input_bytes {}",
                     decoded.len(),
                     options.max_input_bytes
@@ -759,7 +759,7 @@ fn encode_deflate(
                 Cursor::new(decoded),
                 &mut out,
             )
-            .map_err(|err| OxideError::UnsupportedFeature(format!("zopfli failed: {err}")))?;
+            .map_err(|err| WellfriendError::UnsupportedFeature(format!("zopfli failed: {err}")))?;
             report.zopfli_invocations += 1;
             Ok(out)
         }
@@ -1053,7 +1053,7 @@ fn direct_filter_names(dict: &PdfDictionary) -> Result<Vec<String>> {
                 match item {
                     PdfObject::Name(name) => out.push(name.clone()),
                     other => {
-                        return Err(OxideError::MalformedPdf(format!(
+                        return Err(WellfriendError::MalformedPdf(format!(
                             "non-name filter entry {}",
                             other.variant_name()
                         )))
@@ -1062,7 +1062,7 @@ fn direct_filter_names(dict: &PdfDictionary) -> Result<Vec<String>> {
             }
             Ok(out)
         }
-        Some(other) => Err(OxideError::MalformedPdf(format!(
+        Some(other) => Err(WellfriendError::MalformedPdf(format!(
             "unsupported Filter object {}",
             other.variant_name()
         ))),
@@ -1237,13 +1237,13 @@ fn prompt22_feature_matrix() -> Vec<Prompt22FeatureMatrixRow> {
                 compression_mode: "fast,balanced,best,zopfli,zopfli_bounded".to_string(),
                 dedup_eligibility: dedup_eligibility.to_string(),
                 office_format: office_format.to_string(),
-                rust_api: "oxide_engine::prompt22".to_string(),
-                cli: "oxide prompt22-report / prompt22-optimize / prompt22-office-inspect / prompt22-office-to-pdf".to_string(),
-                python: "oxide prompt22 module bindings".to_string(),
-                c_abi: "oxide_prompt22_*".to_string(),
+                rust_api: "wellfriendpdf_engine::prompt22".to_string(),
+                cli: "wellfriendpdf prompt22-report / prompt22-optimize / prompt22-office-inspect / prompt22-office-to-pdf".to_string(),
+                python: "wellfriendpdf prompt22 module bindings".to_string(),
+                c_abi: "wellfriendpdf_prompt22_*".to_string(),
                 wasm: "prompt22*".to_string(),
-                dotnet: "OxideDocument.Prompt22* and OfficeConverters".to_string(),
-                java: "Oxide.prompt22*".to_string(),
+                dotnet: "WellfriendDocument.Prompt22* and OfficeConverters".to_string(),
+                java: "WellfriendPdf.prompt22*".to_string(),
                 fixture: "generated deterministic fixtures".to_string(),
                 test: test.to_string(),
                 artifact: artifact.to_string(),

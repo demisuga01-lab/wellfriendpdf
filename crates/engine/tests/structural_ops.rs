@@ -1,16 +1,16 @@
 //! Integration tests for the structural-write ops (rotate / optimize / repair /
-//! encrypt). Each op's output is re-parsed by Oxide and checked for content/
+//! encrypt). Each op's output is re-parsed by Wellfriend and checked for content/
 //! structure preservation; qpdf cross-validation lives in the benchmark harness
 //! and the CLI smoke (qpdf isn't a cargo dependency).
 
 use std::path::PathBuf;
 use std::process::Command;
 
-use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
-use oxide_engine::structural::{
+use wellfriendpdf_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+use wellfriendpdf_engine::structural::{
     crop_pages, encrypt, linearize, optimize, repair, rotate_pages, Rotation,
 };
-use oxide_engine::{ContentEngine, ImageRect, NUpOptions, ScalePagesOptions};
+use wellfriendpdf_engine::{ContentEngine, ImageRect, NUpOptions, ScalePagesOptions};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -111,7 +111,7 @@ fn crop_pages_persists_crop_box_and_preserves_text() {
 #[test]
 fn visual_scale_and_nup_outputs_reopen() {
     let engine = open("minimal.pdf");
-    let scaled = oxide_engine::scale_pdf_pages(
+    let scaled = wellfriendpdf_engine::scale_pdf_pages(
         &engine,
         ScalePagesOptions {
             pages: Some(vec![1]),
@@ -124,7 +124,7 @@ fn visual_scale_and_nup_outputs_reopen() {
     assert_eq!(scaled_engine.page_count().unwrap(), 1);
     assert!(scaled_engine.render_page_png_fast(1, 72).is_ok());
 
-    let nup = oxide_engine::n_up_pdf(
+    let nup = wellfriendpdf_engine::n_up_pdf(
         &engine,
         &[1],
         NUpOptions {
@@ -314,7 +314,7 @@ fn linearize_outputs_are_qpdf_clean_when_available() {
         );
 
         let temp = std::env::temp_dir().join(format!(
-            "oxide_linearize_qpdf_{}_{}.pdf",
+            "wellfriendpdf_linearize_qpdf_{}_{}.pdf",
             std::process::id(),
             name.replace('.', "_")
         ));

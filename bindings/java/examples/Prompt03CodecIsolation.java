@@ -1,4 +1,4 @@
-import org.oxidepdf.Oxide;
+import io.wellfriendpdf.Wellfriend;
 
 public final class Prompt03CodecIsolation {
     public static void main(String[] args) {
@@ -9,7 +9,7 @@ public final class Prompt03CodecIsolation {
             (byte) 0x49, (byte) 0x05, (byte) 0x00, (byte) 0x19,
             (byte) 0xdd, (byte) 0x04, (byte) 0x4e
         };
-        String json = Oxide.codecIsolationReportJson("FlateDecode", encoded, "in_process");
+        String json = WellfriendPdf.codecIsolationReportJson("FlateDecode", encoded, "in_process");
         System.out.println(json);
         if (!json.contains("\"status\":\"success\"")
                 && !json.contains("\"status\": \"success\"")) {

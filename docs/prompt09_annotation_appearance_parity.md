@@ -25,13 +25,13 @@ Prompt 09B classifies 25 subtype/style rows:
 
 ## Reference Evidence
 
-Prompt 09B annotation visual fixtures are rendered with Oxide, Poppler, PDFium, and MuPDF. Artifacts:
+Prompt 09B annotation visual fixtures are rendered with Wellfriend, Poppler, PDFium, and MuPDF. Artifacts:
 
 - `annotation-reference-results-prompt09b.json`
 - `annotation-diff-metrics-prompt09b.json`
 - `annotation-reference-disagreements-prompt09b.json`
 
-Known reference disagreement is classified: PDFium does not paint the focused widget AP stream in the same cluster as Poppler/MuPDF/Oxide. Oxide is inside the Poppler/MuPDF cluster and is not an outlier.
+Known reference disagreement is classified: PDFium does not paint the focused widget AP stream in the same cluster as Poppler/MuPDF/WellfriendPdf. Wellfriend is inside the Poppler/MuPDF cluster and is not an outlier.
 
 ## Remaining Limits
 

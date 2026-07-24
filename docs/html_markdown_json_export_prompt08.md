@@ -6,10 +6,10 @@ pdftohtml-style surfaces.
 New CLI surfaces:
 
 ```powershell
-oxide pdf-to-html input.pdf --out output.html
-oxide pdf-to-markdown input.pdf --out output.md
-oxide pdf-to-json input.pdf --out output.json
-oxide export-editable-model input.pdf --out editable-model.json
+wellfriendpdf pdf-to-html input.pdf --out output.html
+wellfriendpdf pdf-to-markdown input.pdf --out output.md
+wellfriendpdf pdf-to-json input.pdf --out output.json
+wellfriendpdf export-editable-model input.pdf --out editable-model.json
 ```
 
 HTML:

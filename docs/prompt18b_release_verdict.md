@@ -5,7 +5,7 @@ serial workspace gates, binding/package smokes, historical Prompt 03-18 gates,
 and target-local audit bundle passed under the 4 GiB posture.
 
 The audit records zero blocked rows, zero unclassified failures, zero
-security-proof failures, and zero supported-row Oxide outliers. Oxide, Poppler,
+security-proof failures, and zero supported-row Wellfriend outliers. Wellfriend, Poppler,
 PDFium, and MuPDF produce identical direct-rewrite versus promoted-XObject
 renders, and qpdf accepts both outputs. PDFBox is recorded as unavailable
 because no PDFBox application JAR is installed; Java availability alone is not

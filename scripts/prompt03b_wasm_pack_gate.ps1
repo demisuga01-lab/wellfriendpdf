@@ -170,14 +170,14 @@ Clear-TargetDir $NodePackage
 $previousCargoTarget = $env:CARGO_TARGET_DIR
 $env:CARGO_TARGET_DIR = $WasmCargoTarget
 try {
-    Invoke-Logged "wasm-pack web build" $WasmPack @("build", "crates/oxide-wasm", "--target", "web", "--out-dir", $WebPackage) (Join-Path $EvidenceDir "wasm-pack-web-build-log.txt")
-    Invoke-Logged "wasm-pack node build" $WasmPack @("build", "crates/oxide-wasm", "--target", "nodejs", "--out-dir", $NodePackage) (Join-Path $EvidenceDir "wasm-pack-node-build-log.txt")
+    Invoke-Logged "wasm-pack web build" $WasmPack @("build", "crates/wellfriendpdf-wasm", "--target", "web", "--out-dir", $WebPackage) (Join-Path $EvidenceDir "wasm-pack-web-build-log.txt")
+    Invoke-Logged "wasm-pack node build" $WasmPack @("build", "crates/wellfriendpdf-wasm", "--target", "nodejs", "--out-dir", $NodePackage) (Join-Path $EvidenceDir "wasm-pack-node-build-log.txt")
 } finally {
     $env:CARGO_TARGET_DIR = $previousCargoTarget
 }
 
 foreach ($pkg in @($WebPackage, $NodePackage)) {
-    Copy-Item -LiteralPath (Join-Path $Repo "crates/oxide-wasm/README.md") -Destination (Join-Path $pkg "README.md") -Force
+    Copy-Item -LiteralPath (Join-Path $Repo "crates/wellfriendpdf-wasm/README.md") -Destination (Join-Path $pkg "README.md") -Force
 }
 
 $webInspection = Inspect-WasmPackage "web" $WebPackage

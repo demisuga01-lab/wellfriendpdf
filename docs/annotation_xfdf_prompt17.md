@@ -9,8 +9,8 @@ The parser rejects invalid UTF-8, wrong namespaces, malformed structure/geometry
 Success:
 
 ```text
-oxide annotation-xfdf-export input.pdf --output annotations.xfdf --json
-oxide annotation-xfdf-import input.pdf annotations.xfdf --output imported.pdf --json
+wellfriendpdf annotation-xfdf-export input.pdf --output annotations.xfdf --json
+wellfriendpdf annotation-xfdf-import input.pdf annotations.xfdf --output imported.pdf --json
 ```
 
 Failure example: an XFDF document containing `<!DOCTYPE ... SYSTEM "file:///...">` returns a malformed-input error before any annotation transaction begins.

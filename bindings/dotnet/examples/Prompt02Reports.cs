@@ -1,4 +1,4 @@
-using Oxide.Sdk;
+using WellfriendPdf;
 
 if (args.Length != 1)
 {
@@ -6,7 +6,7 @@ if (args.Length != 1)
     return 2;
 }
 
-using var doc = OxideDocument.Open(args[0]);
+using var doc = WellfriendDocument.Open(args[0]);
 Console.WriteLine(doc.SecurityReportJson());
 
 var sanitized = doc.Sanitize("balanced");

@@ -27,7 +27,7 @@ Covered renderer paths:
 
 Decode memory estimates are conservative reservations based on declared image dimensions or capped stream raw-size expansion estimates. Existing image dimension and decoded-output caps remain the hard allocation guards.
 
-If a token cannot be acquired, decode fails closed with a scheduler budget error. If the render `CancelToken` is already cancelled, decode returns `OxideError::Cancelled` before entering decoder work.
+If a token cannot be acquired, decode fails closed with a scheduler budget error. If the render `CancelToken` is already cancelled, decode returns `WellfriendError::Cancelled` before entering decoder work.
 
 ## Determinism
 

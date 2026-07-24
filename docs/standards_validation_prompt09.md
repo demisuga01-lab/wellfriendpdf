@@ -16,4 +16,4 @@ Generated Arlington tables are included in every standards report as an informat
 
 ## Certification Boundary
 
-`certification_claimed` is always `false` in Prompt 09 reports. Oxide provides standards-aware diagnostics and supported-subset gates, not legal certification.
+`certification_claimed` is always `false` in Prompt 09 reports. Wellfriend provides standards-aware diagnostics and supported-subset gates, not legal certification.

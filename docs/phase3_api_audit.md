@@ -11,7 +11,7 @@ Status legend:
   shape expected by the surface.
 - Missing: no public surface entry point found.
 - N/A: not generally exposed on that surface because it requires provider or
-  key material outside Oxide's self-hosted contract.
+  key material outside Wellfriend's self-hosted contract.
 
 | Operation | Rust API | CLI | Python | C ABI | Notes / Phase 3 action |
 | --- | --- | --- | --- | --- | --- |
@@ -29,7 +29,7 @@ Status legend:
 | detach | Present: attachment list/extract | Present: `detach` | Missing | Missing | Add read-only JSON list wrapper where cheap; extraction remains CLI/Rust. |
 | optimize | Present: `optimize` | Present: `optimize` | Missing | Missing | Add thin wrappers. |
 | to-html | Present | Present: `to-html` | Present: `Document.to_html()` | Missing | Add C ABI HTML string wrapper. |
-| info | Present: `document_info` | Present: `info` | Present: `Document.metadata` | Present: `oxide_document_info_json` | Already API-clean. |
+| info | Present: `document_info` | Present: `info` | Present: `Document.metadata` | Present: `wellfriendpdf_document_info_json` | Already API-clean. |
 | fonts | Present: `list_fonts` | Present: `fonts` | Missing | Missing | Add JSON wrappers. |
 | render page | Present: PNG and renderer pixel buffer | Present: `render` ZIP | Present: PNG bytes | Present: single-page PNG | Add file-export PDF-to-JPG/PNG utility using existing renderer. |
 

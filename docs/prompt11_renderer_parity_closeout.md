@@ -6,18 +6,18 @@ and writes a close-out bundle under
 
 ## Reference Policy
 
-The close-out bundle tracks Poppler, PDFium, MuPDF, and Oxide. If a reference
-renderer disagrees with another reference renderer, Oxide is classified relative
+The close-out bundle tracks Poppler, PDFium, MuPDF, and WellfriendPdf. If a reference
+renderer disagrees with another reference renderer, Wellfriend is classified relative
 to the reference cluster rather than treated as automatically wrong.
 
 Classifications are:
 
-- all-reference Oxide pass
-- reference-disagreement Oxide-inside-cluster
-- reference-disagreement Oxide-outside-cluster
+- all-reference Wellfriend pass
+- reference-disagreement Wellfriend-inside-cluster
+- reference-disagreement Wellfriend-outside-cluster
 - unsupported-reported expected
 - malformed/reference failure
-- Oxide outlier
+- Wellfriend outlier
 - unclassified failure
 
 ## Required Artifacts
@@ -32,6 +32,6 @@ Classifications are:
 
 ## Close-Out Rule
 
-Renderer parity can be called closed only when Oxide outlier failures and
+Renderer parity can be called closed only when Wellfriend outlier failures and
 unclassified failures are zero, or the final Prompt 11 status is partial. Every
 unsupported row must name an exact feature and later owner.

@@ -9,7 +9,7 @@ Prompt 08B adds `DocxLayout`:
 CLI:
 
 ```powershell
-oxide pdf-to-docx input.pdf --layout page-faithful --out output.docx --json
+wellfriendpdf pdf-to-docx input.pdf --layout page-faithful --out output.docx --json
 ```
 
 Implementation:

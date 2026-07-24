@@ -1,4 +1,4 @@
-use oxide_engine::prompt17::{
+use wellfriendpdf_engine::prompt17::{
     apply_nonaxis_image_redaction_pdf, apply_rich_media_policy_pdf, export_annotation_xfdf,
     generate_annotation_appearances_pdf, import_annotation_xfdf_pdf, parse_annotation_xfdf,
     plan_nonaxis_image_redaction, rich_media_inventory, AnnotationAppearanceOptions,
@@ -6,7 +6,7 @@ use oxide_engine::prompt17::{
     NonAxisRedactionFallbackPolicy, NonAxisRedactionOptions, NonAxisRedactionRequest,
     RedactionCoordinateSpace, RichMediaCustomPolicy, RichMediaLimits, RichMediaPolicyMode,
 };
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::ContentEngine;
 
 struct PdfFixtureBuilder {
     objects: Vec<Vec<u8>>,
@@ -358,20 +358,22 @@ fn rotated_crop_coordinate_mapping_is_bounded() {
 #[test]
 fn prompt17_sdk_envelopes_and_feature_report_are_additive() {
     let input = fixture_pdf();
-    let rich: serde_json::Value =
-        serde_json::from_str(&oxide_engine::sdk::rich_media_report_json(&input, None).unwrap())
-            .unwrap();
+    let rich: serde_json::Value = serde_json::from_str(
+        &wellfriendpdf_engine::sdk::rich_media_report_json(&input, None).unwrap(),
+    )
+    .unwrap();
     assert_eq!(rich["kind"], "rich_media_report");
     assert_eq!(
         rich["report"]["schema_version"],
         "prompt17.annotation-xfdf-media-redaction.v1"
     );
-    let prompt17: serde_json::Value =
-        serde_json::from_str(&oxide_engine::sdk::prompt17_report_json(&input, None).unwrap())
-            .unwrap();
+    let prompt17: serde_json::Value = serde_json::from_str(
+        &wellfriendpdf_engine::sdk::prompt17_report_json(&input, None).unwrap(),
+    )
+    .unwrap();
     assert_eq!(prompt17["kind"], "prompt17_report");
     let feature: serde_json::Value =
-        serde_json::from_str(&oxide_engine::sdk::feature_report_json().unwrap()).unwrap();
+        serde_json::from_str(&wellfriendpdf_engine::sdk::feature_report_json().unwrap()).unwrap();
     let section = &feature["report"]["prompt17_annotation_xfdf_media_nonaxis_redaction"];
     assert_eq!(section["status"], "complete_bounded_foundation");
     assert_eq!(section["failure"]["blocked"], 0);

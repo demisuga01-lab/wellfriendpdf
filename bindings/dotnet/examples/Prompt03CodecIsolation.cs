@@ -1,12 +1,12 @@
 using System;
-using Oxide.Sdk;
+using WellfriendPdf;
 
 public static class Prompt03CodecIsolation
 {
     public static int Main()
     {
         byte[] encoded = Convert.FromHexString("789ccb48cdc9c957c8afc84c49050019dd044e");
-        string json = OxideDocument.CodecIsolationReportJson(
+        string json = WellfriendDocument.CodecIsolationReportJson(
             "FlateDecode",
             encoded,
             "in_process");

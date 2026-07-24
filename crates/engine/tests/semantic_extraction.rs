@@ -1,6 +1,6 @@
 //! Tagged-PDF semantic extraction validation.
 
-use oxide_engine::{ContentEngine, SemanticSource};
+use wellfriendpdf_engine::{ContentEngine, SemanticSource};
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,

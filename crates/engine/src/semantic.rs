@@ -13,7 +13,7 @@ use serde::Serialize;
 use crate::analysis::layout::{LayoutBlock, LayoutConfig};
 use crate::analysis::tables::Table;
 use crate::engine::ContentEngine;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
@@ -121,7 +121,7 @@ pub fn extract_semantic_document(
     };
     for &page in &page_list {
         if page == 0 || page > total {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "page {page} out of range (document has {total})"
             )));
         }
@@ -362,7 +362,7 @@ impl<'a> StructParser<'a> {
         depth: usize,
     ) -> Result<()> {
         if depth > MAX_STRUCT_DEPTH {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "structure tree exceeded depth limit".to_string(),
             ));
         }
@@ -400,7 +400,7 @@ impl<'a> StructParser<'a> {
         depth: usize,
     ) -> Result<SemanticElement> {
         if depth > MAX_STRUCT_DEPTH {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "structure tree exceeded depth limit".to_string(),
             ));
         }
@@ -454,7 +454,7 @@ impl<'a> StructParser<'a> {
         depth: usize,
     ) -> Result<()> {
         if depth > MAX_STRUCT_DEPTH {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "structure tree exceeded depth limit".to_string(),
             ));
         }

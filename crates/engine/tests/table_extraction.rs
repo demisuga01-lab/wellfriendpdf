@@ -6,8 +6,8 @@
 //! strategies — ruled (drawn grid lines) and borderless (alignment-only) — and
 //! confirm prose is not falsely detected as a table.
 
-use oxide_engine::analysis::tables::{Table, TableSource};
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::analysis::tables::{Table, TableSource};
+use wellfriendpdf_engine::ContentEngine;
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,

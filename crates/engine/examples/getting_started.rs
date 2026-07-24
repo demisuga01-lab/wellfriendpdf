@@ -1,7 +1,7 @@
-//! Getting-started example for embedding `oxide-engine` as a library.
+//! Getting-started example for embedding `wellfriendpdf-engine` as a library.
 //!
 //! Demonstrates the common operations through the single `ContentEngine` entry
-//! point — the library equivalent of what the `oxide` CLI does.
+//! point — the library equivalent of what the `wellfriendpdf` CLI does.
 //!
 //! Run with a PDF path:
 //!     cargo run --example getting_started -- path/to/input.pdf
@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use oxide_engine::{build_subset, ContentEngine, HtmlOptions, PdfDocument};
+use wellfriendpdf_engine::{build_subset, ContentEngine, HtmlOptions, PdfDocument};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pick the input: a CLI arg, else a bundled fixture.

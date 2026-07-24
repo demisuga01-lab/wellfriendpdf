@@ -7,8 +7,8 @@ use axum::{
     http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
 };
-use oxide_engine::{ContentEngine, ImageEncoder, ImageOutputFormat};
 use rayon::prelude::*;
+use wellfriendpdf_engine::{ContentEngine, ImageEncoder, ImageOutputFormat};
 use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
 use crate::{

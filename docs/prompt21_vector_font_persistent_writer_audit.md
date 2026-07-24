@@ -12,7 +12,7 @@ Canonical paths reused:
 | Raster inventory/decode | `crates/engine/src/images/locator.rs`, `crates/engine/src/images/decoder.rs` |
 | Font inventory | `crates/engine/src/fonts_report.rs` |
 | Writer object/xref streams | `crates/engine/src/writer.rs` |
-| C ABI / Python / WASM | `crates/oxide-capi`, `crates/oxide-py`, `crates/oxide-wasm` |
+| C ABI / Python / WASM | `crates/wellfriendpdf-capi`, `crates/wellfriendpdf-py`, `crates/wellfriendpdf-wasm` |
 | .NET / Java | `bindings/dotnet`, `bindings/java` |
 
 The audit harness is `scripts/prompt21_vector_font_persistent_writer_audit.py`. It emits the feature matrix, raster/font/persistent/object-stream reports, reference-tool results, metamorphic results, performance/limit files, and HTML index under `target/prompt21-vector-font-persistent-writer/`.

@@ -2,9 +2,9 @@
 
 ## Verdict
 
-RLBox/WASM codec sandboxing is hard-blocked for Prompt 04. Oxide must not claim RLBox support from documentation alone.
+RLBox/WASM codec sandboxing is hard-blocked for Prompt 04. Wellfriend must not claim RLBox support from documentation alone.
 
-The practical sandbox boundary remains the Prompt 03 `oxide-codec-worker` subprocess protocol with input caps, output caps, timeout handling, worker crash containment, and fail-closed policy modes.
+The practical sandbox boundary remains the Prompt 03 `wellfriendpdf-codec-worker` subprocess protocol with input caps, output caps, timeout handling, worker crash containment, and fail-closed policy modes.
 
 ## Evidence
 
@@ -26,7 +26,7 @@ A minimal RLBox/WASM codec stub would need a reproducible C/C++ to WASM toolchai
 
 ## Future Path
 
-Future work should be isolated from `oxide-engine`:
+Future work should be isolated from `wellfriendpdf-engine`:
 
 - create a separate optional experiment crate;
 - compile a no-op C codec stub to WASM;

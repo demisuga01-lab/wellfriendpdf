@@ -3,14 +3,14 @@
 Generated for Phase 7 on 2026-07-02.
 
 This is a renderer-fidelity campaign baseline, not a Poppler/PDFium-equivalence
-claim. Oxide is still Tier 0 on this stress-weighted slice; the work here
+claim. Wellfriend is still Tier 0 on this stress-weighted slice; the work here
 establishes repeatable measurement and closes two small, general mechanisms.
 
 ## Method
 
 Reference renderer: Poppler `pdftoppm` 26.02.0.
 
-Oxide binary: `target\release\oxide.exe`, rebuilt before both runs.
+Wellfriend binary: `target\release\wellfriendpdf.exe`, rebuilt before both runs.
 
 Run profile:
 
@@ -23,17 +23,17 @@ Run profile:
 Commands:
 
 ```powershell
-cargo build --release -p oxide-cli
+cargo build --release -p wellfriendpdf-cli
 python renderer-benchmark\scripts\renderer_benchmark.py `
   --manifest target\phase7-rendering-corpus-manifest.json `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --dpi 144 --timeout-sec 20 --max-memory-mb 1024 `
   --max-pages-per-file 3 --determinism-sample 12 `
   --output-dir renderer-benchmark\results\phase7-baseline-200
 
 python renderer-benchmark\scripts\renderer_benchmark.py `
   --manifest target\phase7-rendering-corpus-manifest.json `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --dpi 144 --timeout-sec 20 --max-memory-mb 1024 `
   --max-pages-per-file 3 --determinism-sample 12 `
   --output-dir renderer-benchmark\results\phase7-after-final-200
@@ -83,13 +83,13 @@ Gallery artifacts are intentionally under `target\`:
 | visual pass percent | 60.73% | 62.77% |
 | file pass percent | 64.5% | 65.5% |
 | weighted score | 52.93 | 54.11 |
-| peak Oxide memory | 99.7 MB | 128.59 MB |
+| peak Wellfriend memory | 99.7 MB | 128.59 MB |
 | determinism | 12/12 stable | 12/12 stable |
 
 No comparable category pass rate regressed on this slice. One malformed JPX
 fixture (`real_pdfjs_bug_jpx`) remained unscored in the final after-run because
 Poppler exited while rendering the reference page; the same file rendered in
-Oxide and was not part of the code-change improvement claim.
+Wellfriend and was not part of the code-change improvement claim.
 
 | category | baseline visual pass | after visual pass |
 | --- | ---: | ---: |
@@ -153,10 +153,10 @@ Commands run after the renderer changes:
 
 - `cargo test --workspace --quiet`
 - `cargo clippy --workspace --all-targets -- -D warnings`
-- `cargo build -p oxide-capi`
-- `cargo build -p oxide-wasm --target wasm32-unknown-unknown`
-- `python -m maturin build --manifest-path crates/oxide-py/Cargo.toml`
-- `dotnet test bindings\dotnet\Oxide.Sdk.Tests\Oxide.Sdk.Tests.csproj --nologo`
+- `cargo build -p wellfriendpdf-capi`
+- `cargo build -p wellfriendpdf-wasm --target wasm32-unknown-unknown`
+- `python -m maturin build --manifest-path crates/wellfriendpdf-py/Cargo.toml`
+- `dotnet test bindings\dotnet\WellfriendPdf.Tests\WellfriendPdf.Tests.csproj --nologo`
 - Java FFM smoke with `javac --release 25` and `java --enable-native-access=ALL-UNNAMED`
 
 Extraction slices were unchanged:
@@ -167,9 +167,9 @@ Extraction slices were unchanged:
 - text word-F1: `1.0`
 
 Large-file rendering stayed bounded: the `large-files` category was 24/24
-visual pages passed with peak Oxide memory 128.59 MB in the full final run.
+visual pages passed with peak Wellfriend memory 128.59 MB in the full final run.
 The hostile-render spot check over 60 malformed/active-content fixtures was
-100% crash-free, timeout-safe, and memory-bounded, with peak Oxide memory
+100% crash-free, timeout-safe, and memory-bounded, with peak Wellfriend memory
 9.07 MB.
 
 ## Remaining Gap
@@ -226,7 +226,7 @@ full Phase 7 stress corpus:
 | determinism | 2/2 stable | 2/2 stable |
 
 The architectural win is replayability and pixel-equivalence for supported
-vector pages, verified by unit tests. It is not a new claim that Oxide is
+vector pages, verified by unit tests. It is not a new claim that Wellfriend is
 Poppler/PDFium/MuPDF-class.
 
 ## Prompt 03B Expanded Renderer Slice
@@ -241,7 +241,7 @@ reported as skipped by the benchmark harness.
 Command:
 
 ```powershell
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt03b-renderer-slice-manifest.json --oxide-bin target\debug\oxide.exe --dpi 72 --timeout-sec 30 --max-memory-mb 1024 --max-pages-per-file 1 --limit 50 --determinism-sample 5 --threshold-profile renderer --output-dir target\prompt03b-renderer-benchmark
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt03b-renderer-slice-manifest.json --wellfriendpdf-bin target\debug\wellfriendpdf.exe --dpi 72 --timeout-sec 30 --max-memory-mb 1024 --max-pages-per-file 1 --limit 50 --determinism-sample 5 --threshold-profile renderer --output-dir target\prompt03b-renderer-benchmark
 ```
 
 Results:
@@ -277,8 +277,8 @@ file at 72 DPI. The release CLI was rebuilt first.
 Command:
 
 ```powershell
-cargo build --release -p oxide-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04b-font-render-benchmark --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+cargo build --release -p wellfriendpdf-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04b-font-render-benchmark --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Results:
@@ -290,14 +290,14 @@ Results:
 | visual pages passed | 11 | 11 |
 | visual pass | 45.83% | 45.83% |
 | weighted score | 45.21 | 45.21 |
-| peak Oxide memory | 11.72 MB | 11.28 MB |
+| peak Wellfriend memory | 11.72 MB | 11.28 MB |
 | determinism | 5/5 stable | 5/5 stable |
 
 Prompt 04B improved the font subsystem's authoring, reporting, CMap, vertical
 advance, and explicit fallback behavior, but it did not improve this visual
 slice. The remaining failing files are still dominated by glyph rasterizer,
 font-substitution, hinting, and text-shape differences against Poppler. The
-`real_pdfjs_vertical` artifact is specifically not a score target: Oxide renders
+`real_pdfjs_vertical` artifact is specifically not a score target: Wellfriend renders
 visible vertical text, while the Poppler reference image in this harness is
 effectively blank for that fixture.
 
@@ -310,8 +310,8 @@ non-CID `.notdef`/control-glyph paint guard.
 Command:
 
 ```powershell
-cargo build --release -p oxide-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04c-font-render-benchmark-v2 --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+cargo build --release -p wellfriendpdf-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04c-font-render-benchmark-v2 --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Results:
@@ -323,7 +323,7 @@ Results:
 | visual pages passed | 11 | 11 |
 | visual pass | 45.83% | 45.83% |
 | weighted score | 45.21 | 45.21 |
-| peak Oxide memory | 11.28 MB | 11.54 MB |
+| peak Wellfriend memory | 11.28 MB | 11.54 MB |
 
 Local metrics moved in the Standard14/font-edge bucket
 (`pdfjs_full_standard_fonts` exact match 89.0344 -> 89.4102), but not enough to
@@ -344,8 +344,8 @@ did not compose the base/accent outlines.
 Command:
 
 ```powershell
-cargo build --release -p oxide-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04d-font-after-cff-seac --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+cargo build --release -p wellfriendpdf-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04d-font-after-cff-seac --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Results:
@@ -374,8 +374,8 @@ and Standard14 deterministic substitution.
 Command:
 
 ```powershell
-cargo build --release -p oxide-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04e-font-after-audit --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+cargo build --release -p wellfriendpdf-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04e-font-after-audit --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Results:
@@ -387,7 +387,7 @@ Results:
 | visual pages passed | 12 | 12 |
 | visual pass | 50.0% | 50.0% |
 | weighted score | 47.5 | 47.5 |
-| peak Oxide memory | 11.99 MB | 11.55 MB |
+| peak Wellfriend memory | 11.99 MB | 11.55 MB |
 | determinism | 5/5 stable | 5/5 stable |
 
 The aggregate score did not move beyond Prompt 04D, but no files regressed and
@@ -407,8 +407,8 @@ samples, CMYK JPEG, shadings, and tiling patterns.
 Command:
 
 ```powershell
-cargo build --release -p oxide-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt05-color-baseline-manifest.json --oxide-bin target\release\oxide.exe --dpi 96 --timeout-sec 30 --max-memory-mb 2048 --max-pages-per-file 1 --output-dir target\prompt05-color-after --determinism-sample 4 --threshold-profile renderer
+cargo build --release -p wellfriendpdf-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt05-color-baseline-manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --dpi 96 --timeout-sec 30 --max-memory-mb 2048 --max-pages-per-file 1 --output-dir target\prompt05-color-after --determinism-sample 4 --threshold-profile renderer
 ```
 
 Results:
@@ -420,7 +420,7 @@ Results:
 | visual pass | 60.87% | 60.87% |
 | file pass | 58.33% | 58.33% |
 | weighted score | 59.0 | 59.0 |
-| peak Oxide memory | 19.69 MB | 19.68 MB |
+| peak Wellfriend memory | 19.69 MB | 19.68 MB |
 | determinism | 4/4 stable | 4/4 stable |
 
 Prompt 05 did not target new raster fidelity for mesh/pattern/image edge cases,
@@ -437,7 +437,7 @@ Prompt 05B reran the same anchor before and after color/prepress closure work:
 | visual pass | 60.87% | 60.87% |
 | file pass | 58.33% | 58.33% |
 | weighted score | 59.0 | 59.0 |
-| peak Oxide memory | 19.48 MB | 19.47 MB |
+| peak Wellfriend memory | 19.48 MB | 19.47 MB |
 | determinism | 4/4 stable | 4/4 stable |
 
 Prompt 05B adds qcms transform-cache/fidelity reporting, stronger
@@ -452,9 +452,9 @@ gate was rerun before and after the additive semantic text model to prove no
 text drift:
 
 ```powershell
-cargo build --release -p oxide-cli
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools oxide --tasks text --output-dir target\competitive-benchmark\prompt06-text-before --report target\competitive-benchmark\prompt06-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools oxide --tasks text --output-dir target\competitive-benchmark\prompt06-text-after --report target\competitive-benchmark\prompt06-text-after.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+cargo build --release -p wellfriendpdf-cli
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\prompt06-text-before --report target\competitive-benchmark\prompt06-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\prompt06-text-after --report target\competitive-benchmark\prompt06-text-after.md --max-workers 4 --timeout 60 --max-memory-mb 2048
 ```
 
 | metric | before | after |
@@ -503,10 +503,10 @@ redaction. The baseline gates before code changes were rerun with the same
 competitive benchmark harness:
 
 ```powershell
-cargo build --release -p oxide-cli
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-tables --limit 200 --tools oxide --tasks tables --output-dir target\competitive-benchmark\prompt07-tables-before --report target\competitive-benchmark\prompt07-tables-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools oxide --tasks fields --output-dir target\competitive-benchmark\prompt07-fields-before --report target\competitive-benchmark\prompt07-fields-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools oxide --tasks text --output-dir target\competitive-benchmark\prompt07-text-before --report target\competitive-benchmark\prompt07-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+cargo build --release -p wellfriendpdf-cli
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-tables --limit 200 --tools wellfriendpdf --tasks tables --output-dir target\competitive-benchmark\prompt07-tables-before --report target\competitive-benchmark\prompt07-tables-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools wellfriendpdf --tasks fields --output-dir target\competitive-benchmark\prompt07-fields-before --report target\competitive-benchmark\prompt07-fields-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\prompt07-text-before --report target\competitive-benchmark\prompt07-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
 ```
 
 | metric | Prompt 07 before | Prompt 07 after |

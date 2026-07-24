@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 
-use oxide_engine::authoring::{PageSize, PdfBuilder};
-use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
-use oxide_engine::structural::{encrypt, optimize};
-use oxide_engine::{ContentEngine, StandardFont, TextStyle, WriterMode};
 use proptest::collection::vec;
 use proptest::prelude::*;
 use proptest::string::string_regex;
 use proptest::test_runner::{Config as ProptestConfig, TestCaseResult};
+use wellfriendpdf_engine::authoring::{PageSize, PdfBuilder};
+use wellfriendpdf_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+use wellfriendpdf_engine::structural::{encrypt, optimize};
+use wellfriendpdf_engine::{ContentEngine, StandardFont, TextStyle, WriterMode};
 
 fn property_config() -> ProptestConfig {
     let cases = std::env::var("PROPTEST_CASES")

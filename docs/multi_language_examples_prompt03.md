@@ -6,11 +6,11 @@ The example suite uses public SDK surfaces only. Existing Prompt 01/02 examples 
 
 | Surface | General workflow example | Prompt 03 codec example | Package context |
 | --- | --- | --- | --- |
-| Rust | `crates/engine/examples/sdk_reports.rs` | `crates/engine/examples/prompt03_codec_isolation.rs` | `cargo package -p oxide-engine --allow-dirty` |
-| CLI | CLI subcommands and help examples | `examples/cli/codec_isolation_report.ps1` | `target/debug/oxide codec-isolation-report ...` |
-| Python | `crates/oxide-py/examples/sdk_reports.py` | `crates/oxide-py/examples/codec_isolation_report.py` | maturin wheel when available |
-| C ABI | `crates/oxide-capi/examples/sdk_reports.c` | `crates/oxide-capi/examples/codec_isolation_report.c` | built `oxide_capi` header/lib |
-| WASM | `crates/oxide-wasm/examples/browser` | `codec_isolation_report.mjs` | `scripts/prompt03b_wasm_pack_gate.ps1` wasm-pack web/Node packages |
+| Rust | `crates/engine/examples/sdk_reports.rs` | `crates/engine/examples/prompt03_codec_isolation.rs` | `cargo package -p wellfriendpdf-engine --allow-dirty` |
+| CLI | CLI subcommands and help examples | `examples/cli/codec_isolation_report.ps1` | `target/debug/wellfriendpdf codec-isolation-report ...` |
+| Python | `crates/wellfriendpdf-py/examples/sdk_reports.py` | `crates/wellfriendpdf-py/examples/codec_isolation_report.py` | maturin wheel when available |
+| C ABI | `crates/wellfriendpdf-capi/examples/sdk_reports.c` | `crates/wellfriendpdf-capi/examples/codec_isolation_report.c` | built `wellfriendpdf_capi` header/lib |
+| WASM | `crates/wellfriendpdf-wasm/examples/browser` | `codec_isolation_report.mjs` | `scripts/prompt03b_wasm_pack_gate.ps1` wasm-pack web/Node packages |
 | .NET | `bindings/dotnet/examples/Prompt02Reports.cs` | `Prompt03CodecIsolation.cs` | `dotnet pack` artifact |
 | Java | `bindings/java/examples/Prompt02Reports.java` | `Prompt03CodecIsolation.java` | Maven and Gradle JARs |
 
@@ -25,27 +25,27 @@ Unsupported or partial workflows are represented as stable report envelopes rath
 Rust:
 
 ```powershell
-cargo run -p oxide-engine --example prompt03_codec_isolation -- in_process
+cargo run -p wellfriendpdf-engine --example prompt03_codec_isolation -- in_process
 ```
 
 CLI:
 
 ```powershell
-cargo build -p oxide-cli -p oxide-engine --bin oxide-codec-worker
-target\debug\oxide.exe codec-isolation-report --filter FlateDecode --sample-text "hello oxide" --policy isolated_required --worker target\debug\oxide-codec-worker.exe
+cargo build -p wellfriendpdf-cli -p wellfriendpdf-engine --bin wellfriendpdf-codec-worker
+target\debug\wellfriendpdf.exe codec-isolation-report --filter FlateDecode --sample-text "hello wellfriendpdf" --policy isolated_required --worker target\debug\wellfriendpdf-codec-worker.exe
 ```
 
 Python:
 
 ```powershell
-python crates\oxide-py\examples\codec_isolation_report.py in_process
+python crates\wellfriendpdf-py\examples\codec_isolation_report.py in_process
 ```
 
 C ABI:
 
 ```powershell
-cargo build -p oxide-capi
-cl /I crates\oxide-capi\include crates\oxide-capi\examples\codec_isolation_report.c target\debug\oxide_capi.dll.lib
+cargo build -p wellfriendpdf-capi
+cl /I crates\wellfriendpdf-capi\include crates\wellfriendpdf-capi\examples\codec_isolation_report.c target\debug\wellfriendpdf_capi.dll.lib
 ```
 
 WASM:

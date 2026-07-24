@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate Oxide's compact Arlington validation tables from upstream TSVs.
+"""Generate Wellfriend's compact Arlington validation tables from upstream TSVs.
 
 This is a developer-run generator. Runtime validation consumes the generated
 Rust tables and never parses Arlington TSV files on the hot parser path.

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::images::decoder::RawImage;
 use crate::images::locator::ImageReference;
 use crate::object::PdfObject;
@@ -410,7 +410,7 @@ pub struct ObjectStreamGroupingPolicy {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReopenVerification {
-    pub oxide_reopened: bool,
+    pub wellfriendpdf_reopened: bool,
     pub input_pages: usize,
     pub output_pages: usize,
     pub text_digest_match: bool,
@@ -445,7 +445,7 @@ pub struct Prompt21ValidationManifest {
     pub reference_results: &'static str,
     pub metamorphic_results: &'static str,
     pub html_report: &'static str,
-    pub oxide_outlier_failures: usize,
+    pub wellfriendpdf_outlier_failures: usize,
     pub unclassified_failures: usize,
     pub security_failures: usize,
 }
@@ -521,7 +521,7 @@ pub fn prompt21_report(engine: &ContentEngine) -> Result<Prompt21Report> {
                 "target/prompt21-vector-font-persistent-writer/prompt21-metamorphic-results.json",
             html_report:
                 "target/prompt21-vector-font-persistent-writer/prompt21-html-report/index.html",
-            oxide_outlier_failures: 0,
+            wellfriendpdf_outlier_failures: 0,
             unclassified_failures: 0,
             security_failures: 0,
         },
@@ -580,7 +580,7 @@ pub(crate) fn prompt21_feature_report_value(envelope_version: u32) -> serde_json
             "deterministic": true,
             "default_for_save": false
         },
-        "compatibility_audit_status": "oxide_reopen_and_external_tool_scripted",
+        "compatibility_audit_status": "wellfriendpdf_reopen_and_external_tool_scripted",
         "outlier_count": 0,
         "unclassified_failure_count": 0,
         "exact_limits": prompt21_exact_limits()
@@ -593,7 +593,7 @@ pub fn raster_vectorization_report(
     options: RasterVectorizationOptions,
 ) -> Result<RasterVectorizationReport> {
     if page == 0 || page > engine.page_count()? {
-        return Err(OxideError::invalid_input(format!(
+        return Err(WellfriendError::invalid_input(format!(
             "raster-vector report page {page} is outside document page range"
         )));
     }
@@ -1213,7 +1213,7 @@ pub fn object_stream_packing_report(reader: &PdfReader) -> Result<ObjectStreamPa
         input_sha256: sha256_hex(input),
         packed_sha256: sha256_hex(&packed),
         reopen: ReopenVerification {
-            oxide_reopened: true,
+            wellfriendpdf_reopened: true,
             input_pages,
             output_pages,
             text_digest_match,
@@ -1274,7 +1274,7 @@ pub fn object_stream_packing_report(reader: &PdfReader) -> Result<ObjectStreamPa
             "signature-preserving incremental updates do not repack existing objects".to_string(),
         compatibility: vec![
             ReferenceToolResult {
-                tool: "Oxide parser".to_string(),
+                tool: "Wellfriend parser".to_string(),
                 status: Prompt21Status::Implemented,
                 evidence: "packed output reopened and object ids enumerated".to_string(),
             },
@@ -1993,19 +1993,19 @@ fn prompt21_feature_matrix() -> Vec<Prompt21FeatureMatrixRow> {
             deterministic_status: "stable ordering and sha256 evidence".to_string(),
             security_status: "bounded caps with exact unsupported rows".to_string(),
             signature_impact: "full rewrite invalidates prior cryptographic signatures unless incremental path is used".to_string(),
-            rust_api: "oxide_engine::prompt21".to_string(),
+            rust_api: "wellfriendpdf_engine::prompt21".to_string(),
             cli: "prompt21-report and focused prompt21 subcommands".to_string(),
             python: "PyDocument prompt21_* methods".to_string(),
-            c_abi: "oxide_document_prompt21_* functions".to_string(),
+            c_abi: "wellfriendpdf_document_prompt21_* functions".to_string(),
             wasm: "prompt21*Json methods".to_string(),
-            dotnet: "OxideDocument Prompt21*Json methods".to_string(),
-            java: "Oxide.Document prompt21*Json methods".to_string(),
+            dotnet: "WellfriendDocument Prompt21*Json methods".to_string(),
+            java: "WellfriendPdf.Document prompt21*Json methods".to_string(),
             fixture: "prompt21 corpus fixtures and synthetic unit fixtures".to_string(),
             test: (*test).to_string(),
             artifact: format!("{PROMPT21_ARTIFACT_ROOT}/{artifact}"),
-            reference_status: "Oxide required; external tools recorded when available".to_string(),
+            reference_status: "Wellfriend required; external tools recorded when available".to_string(),
             remaining_exact_limit: "advanced ambiguous reconstruction remains explicit unsupported/report-only".to_string(),
-            future_owner: "oxide-engine".to_string(),
+            future_owner: "wellfriendpdf-engine".to_string(),
         })
         .collect()
 }
@@ -2169,7 +2169,7 @@ mod tests {
         let pdf = tiny_pdf();
         let reader = PdfReader::from_bytes(pdf).expect("reader");
         let report = object_stream_packing_report(&reader).expect("object stream report");
-        assert!(report.reopen.oxide_reopened);
+        assert!(report.reopen.wellfriendpdf_reopened);
         assert!(report.reopen.xref_stream_marker_present);
         assert!(report.object_stream_count > 0);
         assert!(report.deterministic);

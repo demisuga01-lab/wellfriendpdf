@@ -5,11 +5,11 @@ covered text clipping, shadings, mesh/patch shadings, and tiling patterns.
 
 Prompt 08B audit classifications:
 
-- `all_references_agree_oxide_passes`: Poppler, PDFium, and MuPDF agree and
-  Oxide is within the reference cluster.
-- `references_disagree_oxide_within_cluster`: references disagree and Oxide is
+- `all_references_agree_wellfriendpdf_passes`: Poppler, PDFium, and MuPDF agree and
+  Wellfriend is within the reference cluster.
+- `references_disagree_wellfriendpdf_within_cluster`: references disagree and Wellfriend is
   within the measured cluster.
-- `oxide_outlier_failure`: Oxide differs from the usable reference cluster.
+- `wellfriendpdf_outlier_failure`: Wellfriend differs from the usable reference cluster.
 - `unsupported_reported_expected`: the fixture is malformed, limit-oriented, or
   exposes a reference/feature limitation that is expected and documented.
 - `malformed_reference_failure`: one or more reference engines cannot produce a

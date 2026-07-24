@@ -1,7 +1,7 @@
-# Oxide
+# Wellfriend
 
 <p align="center">
-  <img src="docs/assets/oxide-github-hero.svg" alt="Oxide — pure-Rust PDF engine" width="100%" />
+  <img src="docs/assets/wellfriendpdf-github-hero.svg" alt="Wellfriend — pure-Rust PDF engine" width="100%" />
 </p>
 
 **A pure-Rust PDF engine.** Parse PDFs into structured Markdown, JSON, semantic HTML, RAG chunks, and key-value fields — and author, edit, sign, structurally transform, and validate them in the same engine. One static binary. Four embed surfaces. No Python runtime, no C++ render stack, no per-page API.
@@ -15,13 +15,13 @@
         validate─► PDF/A-1b/2b/2a/3b/3a · PDF/UA (best-effort)
 ```
 
-Oxide is built for teams that need a **self-hostable, memory-safe, embeddable** PDF stack — extraction, transformation, and governance in one Rust core, with no per-page cloud fees and no Python interpreter to ship alongside.
+Wellfriend is built for teams that need a **self-hostable, memory-safe, embeddable** PDF stack — extraction, transformation, and governance in one Rust core, with no per-page cloud fees and no Python interpreter to ship alongside.
 
 ## By the numbers
 
-Provenance: [`docs/oxide_sdk.md`](docs/oxide_sdk.md) (capstone, 2026-06-22, Windows 11, 20-core), [`docs/parser_benchmark.md`](docs/parser_benchmark.md), [`docs/security/posture.md`](docs/security/posture.md). Every figure is reproducible from `extraction-benchmark/`, `renderer-benchmark/`, and `scripts/`.
+Provenance: [`docs/wellfriendpdf_sdk.md`](docs/wellfriendpdf_sdk.md) (capstone, 2026-06-22, Windows 11, 20-core), [`docs/parser_benchmark.md`](docs/parser_benchmark.md), [`docs/security/posture.md`](docs/security/posture.md). Every figure is reproducible from `extraction-benchmark/`, `renderer-benchmark/`, and `scripts/`.
 
-| Metric | Oxide | Reference | Source |
+| Metric | Wellfriend | Reference | Source |
 | --- | ---: | --- | --- |
 | Process cold start | **~7.5 ms** | 158.7 ms (Python + PyMuPDF import) | capstone |
 | Static binary size | **~12.8 MB** | Python runtime + C-extensions | capstone |
@@ -35,14 +35,14 @@ Provenance: [`docs/oxide_sdk.md`](docs/oxide_sdk.md) (capstone, 2026-06-22, Wind
 
 The renderer is preview/OCR-grade — fast and crash-safe, but it does not match Poppler/PDFium pixel fidelity. See [What it's not (yet)](#what-its-not-yet).
 
-## Why Oxide
+## Why Wellfriend
 
 - **Pure-Rust core, single static binary.** Memory-safe against the buffer-overflow / use-after-free / type-confusion classes; no Python, no torch stack, no native C++ rendering dependency. One ~12.8 MB binary, ~7.5 ms cold start, zero runtime.
 - **One canonical model, every surface.** `parse` produces a schema-versioned `Document` (headings, paragraphs, lists, tables, figures, captions in recovered reading order, with per-page geometry and provenance). The **CLI, Rust library, C ABI, WASM, and HTTP server emit the same schema** — byte-identical extraction across all four surfaces on the same page (see [Surface consistency](#surface-consistency)). Parse once, consume anywhere.
 - **Structured extraction, not text dumps.** Markdown for RAG, JSON for lossless round-trip, semantic HTML, structure-aware RAG chunks (target token size, overlap, heading context), and key-value fields (invoice / receipt / form, with line items). Optional Tesseract OCR via an injected `OcrEngine` — OCR'd text flows through the same model.
-- **qpdf-class structural operations.** Merge, split, extract-pages, rotate, encrypt (AES-256 default), optimize, repair, and qpdf-clean linearization for the supported subset. `qpdf --check` cross-validates Oxide's split output and page counts agree.
+- **qpdf-class structural operations.** Merge, split, extract-pages, rotate, encrypt (AES-256 default), optimize, repair, and qpdf-clean linearization for the supported subset. `qpdf --check` cross-validates Wellfriend's split output and page counts agree.
 - **Compliance and signatures.** PDF/A-1b / 2b / 2a / 3b / 3a validation and conversion (veraPDF 1.30.2 PASS); RSA / SHA-256 signing with ByteRange coverage and incremental update; offline PAdES B-T / B-LT substrate (DSS, VRI, CRL, OCSP, timestamp tokens).
-- **Embeddable four ways.** Rust library (`oxide-engine`), CLI (`oxide`), C ABI (`oxide-capi`), WebAssembly (`oxide-wasm`, digital-born in the browser), self-hostable HTTP server (`oxide-server`).
+- **Embeddable four ways.** Rust library (`wellfriendpdf-engine`), CLI (`wellfriendpdf`), C ABI (`wellfriendpdf-capi`), WebAssembly (`wellfriendpdf-wasm`, digital-born in the browser), self-hostable HTTP server (`wellfriendpdf-server`).
 - **Self-hostable and private.** Documents never leave your hardware — no per-page cloud fees and no Python runtime to ship alongside. See [`docs/self_hosting.md`](docs/self_hosting.md).
 - **MIT OR Apache-2.0.** Permissive, non-copyleft — drop-in for commercial products, no GPL-family contagion.
 
@@ -66,31 +66,31 @@ The renderer is preview/OCR-grade — fast and crash-safe, but it does not match
 
 ```sh
 # Build the single-binary CLI (add --features full for OCR):
-cargo build --release -p oxide-cli
+cargo build --release -p wellfriendpdf-cli
 
 # Digital-born document → clean Markdown / JSON for RAG or automation:
-oxide parse input.pdf --format markdown > input.md
-oxide parse input.pdf --format json --output input.json
+wellfriendpdf parse input.pdf --format markdown > input.md
+wellfriendpdf parse input.pdf --format json --output input.json
 
 # RAG-ready structure-aware chunks; structured key-value fields:
-oxide chunk input.pdf --target-tokens 512 --output chunks.json
-oxide extract-fields input.pdf --type invoice --output fields.json
+wellfriendpdf chunk input.pdf --target-tokens 512 --output chunks.json
+wellfriendpdf extract-fields input.pdf --type invoice --output fields.json
 
 # Tables, text, images, metadata, layout:
-oxide extract-tables input.pdf --format csv
-oxide extract-text input.pdf --structured --format json
-oxide extract-images input.pdf --output images.zip
-oxide info input.pdf
-oxide fonts input.pdf
-oxide analyze input.pdf                    # has text layer? scanned?
+wellfriendpdf extract-tables input.pdf --format csv
+wellfriendpdf extract-text input.pdf --structured --format json
+wellfriendpdf extract-images input.pdf --output images.zip
+wellfriendpdf info input.pdf
+wellfriendpdf fonts input.pdf
+wellfriendpdf analyze input.pdf                    # has text layer? scanned?
 
 # Structural and compliance operations (qpdf-validated):
-oxide optimize input.pdf -o optimized.pdf
-oxide linearize input.pdf -o fast-web-view.pdf
-oxide encrypt input.pdf -o encrypted.pdf --user-pw change-me   # AES-256 default
-oxide verify-sig signed.pdf
-oxide merge a.pdf b.pdf -o merged.pdf
-oxide split input.pdf -o page-%d.pdf
+wellfriendpdf optimize input.pdf -o optimized.pdf
+wellfriendpdf linearize input.pdf -o fast-web-view.pdf
+wellfriendpdf encrypt input.pdf -o encrypted.pdf --user-pw change-me   # AES-256 default
+wellfriendpdf verify-sig signed.pdf
+wellfriendpdf merge a.pdf b.pdf -o merged.pdf
+wellfriendpdf split input.pdf -o page-%d.pdf
 ```
 
 For scripts, use `--json` or `--format json` where available. Stable CLI exit
@@ -108,11 +108,11 @@ verapdf --format text compliant.pdf
 ```toml
 # Cargo.toml
 [dependencies]
-oxide-engine = "0.1"
+wellfriendpdf-engine = "0.1"
 ```
 
 ```rust
-use oxide_engine::prelude::*;
+use wellfriendpdf_engine::prelude::*;
 
 fn main() -> Result<()> {
     // Open + parse to the canonical Document model.
@@ -146,20 +146,20 @@ cargo run --example sign_document -- \
 cargo run --example compliance -- target
 ```
 
-> The authoring and signing surfaces are library-first — there is intentionally no `oxide create` / `oxide sign` CLI command. Embedding keeps the API expressive and the binary small; the CLI is for the ops a human or a cron job actually runs.
+> The authoring and signing surfaces are library-first — there is intentionally no `wellfriendpdf create` / `wellfriendpdf sign` CLI command. Embedding keeps the API expressive and the binary small; the CLI is for the ops a human or a cron job actually runs.
 
 ### C ABI, WebAssembly, HTTP server
 
-- **C ABI** — `oxide-capi` (cdylib + staticlib). Stable exported symbols in the committed header. See [`docs/bindings.md`](docs/bindings.md).
-- **WebAssembly** — `oxide-wasm` (wasm-bindgen). In-browser `parseMarkdown()` / `parseJson()` / `chunk()` / `extractFieldsJson()` for digital-born PDFs. OCR is not in the browser build.
-- **HTTP server** — `oxide-server` (axum). Self-hostable `POST /api/v1/parse` / `/chunk` / `/extract-fields` / `/info`, with fail-closed API-key auth, rate limits, resource caps, and an async job queue. See [`docs/self_hosting.md`](docs/self_hosting.md) and [`docs/jobs.md`](docs/jobs.md).
+- **C ABI** — `wellfriendpdf-capi` (cdylib + staticlib). Stable exported symbols in the committed header. See [`docs/bindings.md`](docs/bindings.md).
+- **WebAssembly** — `wellfriendpdf-wasm` (wasm-bindgen). In-browser `parseMarkdown()` / `parseJson()` / `chunk()` / `extractFieldsJson()` for digital-born PDFs. OCR is not in the browser build.
+- **HTTP server** — `wellfriendpdf-server` (axum). Self-hostable `POST /api/v1/parse` / `/chunk` / `/extract-fields` / `/info`, with fail-closed API-key auth, rate limits, resource caps, and an async job queue. See [`docs/self_hosting.md`](docs/self_hosting.md) and [`docs/jobs.md`](docs/jobs.md).
 
 ## Use cases
 
 - **RAG and LLM ingestion.** Clean Markdown + token-sized, heading-aware chunks, run locally with no per-page cloud fees. The same `Document` feeds chunkers, fields, and downstream agents.
 - **Document automation.** Invoices, receipts, forms → JSON (field-F1 1.0 on the digital invoice, honest 0.4 on the scanned variant). Line items extracted as a first-class structure, not text matching.
 - **Embedding into Rust, C, or browser apps.** One engine, four surfaces, one schema, no Python/torch runtime to ship alongside.
-- **Compliance pipelines.** Generate, validate, and convert PDF/A-1b/2b/2a/3b/3a; pair Oxide's `validate_pdfa` with veraPDF for an independent check.
+- **Compliance pipelines.** Generate, validate, and convert PDF/A-1b/2b/2a/3b/3a; pair Wellfriend's `validate_pdfa` with veraPDF for an independent check.
 - **Self-hosted privacy.** Invoices, contracts, medical records, legal discovery — documents never leave your hardware, no per-document API fees.
 - **Long-term signed archives.** RSA / SHA-256 signing with offline PAdES B-T / B-LT substrate (DSS, VRI, CRL, OCSP, timestamp tokens); signer and verifier both pure-Rust.
 
@@ -167,9 +167,9 @@ cargo run --example compliance -- target
 
 ### Extraction quality — vs PyMuPDF, pdftotext
 
-Char-accuracy = `1 − CER`; reading order = normalized Kendall-tau (1.0 = perfect). Scanned rows use Oxide's OCR path; PyMuPDF / Poppler have no OCR and recover nothing.
+Char-accuracy = `1 − CER`; reading order = normalized Kendall-tau (1.0 = perfect). Scanned rows use Wellfriend's OCR path; PyMuPDF / Poppler have no OCR and recover nothing.
 
-| Document | Mode | Oxide char-acc | PyMuPDF | pdftotext | Oxide order |
+| Document | Mode | Wellfriend char-acc | PyMuPDF | pdftotext | Wellfriend order |
 | --- | --- | ---: | ---: | ---: | ---: |
 | figure | digital | 0.598 | 0.990 | 0.833 | 1.000 |
 | paper | digital | 0.993 | 0.998 | 0.956 | 1.000 |
@@ -178,15 +178,15 @@ Char-accuracy = `1 − CER`; reading order = normalized Kendall-tau (1.0 = perfe
 | tables | digital | **1.000** | 0.877 | 0.088 | 1.000 |
 | tables_scanned | scanned | 0.632 | 0.000 | 0.000 | 1.000 |
 
-Key-value field-F1 (PyMuPDF / Poppler do not do KV extraction — Oxide-only capability):
+Key-value field-F1 (PyMuPDF / Poppler do not do KV extraction — Wellfriend-only capability):
 
-| Document | Mode | Oxide F1 | Precision | Recall |
+| Document | Mode | Wellfriend F1 | Precision | Recall |
 | --- | --- | ---: | ---: | ---: |
 | invoice | digital | **1.000** | 1.000 | 1.000 |
 | invoice_scanned | scanned | 0.400 | 0.375 | 0.429 |
 | receipt | digital | 0.750 | 1.000 | 0.600 |
 
-`qpdf` cross-validates Oxide's structural output: split parts pass `qpdf --check`, page counts agree, linearized output passes `qpdf --check` and `qpdf --show-linearization`.
+`qpdf` cross-validates Wellfriend's structural output: split parts pass `qpdf --check`, page counts agree, linearized output passes `qpdf --check` and `qpdf --show-linearization`.
 
 ### Renderer fidelity (Prompt 3, 265-file slice)
 
@@ -197,8 +197,8 @@ Key-value field-F1 (PyMuPDF / Poppler do not do KV extraction — Oxide-only cap
 | File pass | 88.68% |
 | Hostile crash / timeout / memory safety | **100% / 100% / 100%** |
 | Determinism sample (24/24 stable) | 100% |
-| Peak Oxide memory | 98.44 MB |
-| Median Poppler / Oxide speed ratio | 1.91x |
+| Peak Wellfriend memory | 98.44 MB |
+| Median Poppler / Wellfriend speed ratio | 1.91x |
 
 Weakest real-world categories (honest disclosure, not polished away): RTL 40.00%, scanned 44.44%, multi-column 47.06%, forms 57.14%, CJK 61.54%, complex vector 80.00%.
 
@@ -240,36 +240,36 @@ These are smoke operation benchmarks, not statistically rigorous throughput clai
 | AES-256 encrypted | `qpdf --check` | Clean (AESv3) |
 | Linearized | `qpdf --check`, `--show-linearization` | Clean |
 | Optimized | `qpdf --check` | Clean |
-| Signed (RSA / SHA-256) | `qpdf --check`, Oxide `verify-sig` | Cryptographically valid, whole-file coverage |
+| Signed (RSA / SHA-256) | `qpdf --check`, Wellfriend `verify-sig` | Cryptographically valid, whole-file coverage |
 | Authored | `qpdf --check`, Poppler render/extract | Clean |
 
 Reproduce with `python renderer-benchmark/scripts/renderer_benchmark.py` and `python extraction-benchmark/scripts/extraction_benchmark.py`.
 
 ## Surface consistency
 
-`parse` is the same operation whether you call it from the Rust library, the CLI, the C ABI, or the HTTP server. The capstone integration test hashes the extracted text of `basicapi.pdf` page 1 across all four surfaces; the SHA-256 matches in every case. See the [Surface consistency table](docs/oxide_sdk.md#integration-results) in the capstone.
+`parse` is the same operation whether you call it from the Rust library, the CLI, the C ABI, or the HTTP server. The capstone integration test hashes the extracted text of `basicapi.pdf` page 1 across all four surfaces; the SHA-256 matches in every case. See the [Surface consistency table](docs/wellfriendpdf_sdk.md#integration-results) in the capstone.
 
 ## What it's not (yet)
 
-Honesty is the product. Oxide is a credible v1 candidate; it is not a panacea, and pretending otherwise would burn the trust of every serious evaluator.
+Honesty is the product. Wellfriend is a credible v1 candidate; it is not a panacea, and pretending otherwise would burn the trust of every serious evaluator.
 
-- **Renderer is preview / OCR-grade, not pixel-proof.** Prompt 3 reaches a 91.82 weighted score and 86.94% visual pass on the 265-file hostile slice, with 100% hostile crash/timeout/memory safety. It still trails Poppler / MuPDF / PDFium for visual fidelity. The renderer exists to feed OCR, previews, and regression checks; if you need a pixel-perfect "this PDF will print exactly as displayed" guarantee, render with Poppler / PDFium and use Oxide for everything else.
+- **Renderer is preview / OCR-grade, not pixel-proof.** Prompt 3 reaches a 91.82 weighted score and 86.94% visual pass on the 265-file hostile slice, with 100% hostile crash/timeout/memory safety. It still trails Poppler / MuPDF / PDFium for visual fidelity. The renderer exists to feed OCR, previews, and regression checks; if you need a pixel-perfect "this PDF will print exactly as displayed" guarantee, render with Poppler / PDFium and use Wellfriend for everything else.
 - **OCR is Tesseract, not an ML layout model.** Bounded by the Tesseract engine and scan quality. Scanned tables don't reconstruct as clean cell grids (cell-F1 0 on `tables_scanned`); the OCR path emits prose blocks, and the grid detector needs ruling-line graphics it can't see on a scan. For scanned tabular data, use `extract-fields --ocr` to recover values and line items. Docling's ML layout would likely do better on messy scans; Docling is not benchmarked locally and is not part of this binary.
 - **No external security audit yet.** Continuous fuzzing, differential checks, property tests, grammar-aware deep fuzzing, dependency auditing, and a cross-pillar hostile sweep are all live and green — but a paid third-party audit is the next trust-builder, especially for the signature and encryption surfaces. See [`docs/security/posture.md`](docs/security/posture.md).
 - **Signature LTV is offline-first.** Core signing + offline timestamp / DSS / CRL substrate works. Live TSA / OCSP fetching, system trust-store policy, PAdES-B-LTA archive-timestamp refresh, and ECDSA breadth remain deployment-sensitive follow-ups.
 - **PDF/UA is best-effort.** Assistive tagging is emitted, but full accessibility certification still requires manual semantic review.
-- **Per-call CLI latency** includes process spawn; for many-small-doc throughput in a long-lived process, embed the `oxide-engine` library to erase the spawn cost.
+- **Per-call CLI latency** includes process spawn; for many-small-doc throughput in a long-lived process, embed the `wellfriendpdf-engine` library to erase the spawn cost.
 
 ## Architecture
 
 | Crate | Role |
 | --- | --- |
-| `oxide-engine` | The Rust core: parse, extract, author, edit, render, sign, validate. |
-| `oxide-cli` | The `oxide` binary — every command is a thin adapter over the engine. |
-| `oxide-server` | Self-hostable axum HTTP server with auth, rate limits, resource caps, async jobs. |
-| `oxide-capi` | C ABI wrapper (`cdylib` + `staticlib`). |
-| `oxide-wasm` | `wasm-bindgen` wrapper for in-browser digital-born extraction. |
-| `oxide-ocr-tesseract` | Tesseract OCR backend (drives the external `tesseract` process, no linked C). |
+| `wellfriendpdf-engine` | The Rust core: parse, extract, author, edit, render, sign, validate. |
+| `wellfriendpdf-cli` | The `wellfriendpdf` binary — every command is a thin adapter over the engine. |
+| `wellfriendpdf-server` | Self-hostable axum HTTP server with auth, rate limits, resource caps, async jobs. |
+| `wellfriendpdf-capi` | C ABI wrapper (`cdylib` + `staticlib`). |
+| `wellfriendpdf-wasm` | `wasm-bindgen` wrapper for in-browser digital-born extraction. |
+| `wellfriendpdf-ocr-tesseract` | Tesseract OCR backend (drives the external `tesseract` process, no linked C). |
 
 One `Document` model flows through every surface. The server is intentionally **non-mutating** unless a route explicitly documents otherwise — a real safety property for a service ingesting untrusted PDFs.
 
@@ -282,21 +282,21 @@ workspace crate; see [docs/stability.md](docs/stability.md).
 rustup update stable
 
 # Engine (the library):
-cargo build --release -p oxide-engine
+cargo build --release -p wellfriendpdf-engine
 
 # CLI (digital-born, no OCR):
-cargo build --release -p oxide-cli
+cargo build --release -p wellfriendpdf-cli
 
 # CLI with OCR (Tesseract must be installed and on PATH):
-cargo build --release -p oxide-cli --features full   # CLI's `full` = ["ocr"]
+cargo build --release -p wellfriendpdf-cli --features full   # CLI's `full` = ["ocr"]
 
 # Server, C ABI, WASM:
-cargo build --release -p oxide-server
-cargo build --release -p oxide-capi
-cargo build --release -p oxide-wasm
+cargo build --release -p wellfriendpdf-server
+cargo build --release -p wellfriendpdf-capi
+cargo build --release -p wellfriendpdf-wasm
 ```
 
-### Engine feature flags (`oxide-engine`)
+### Engine feature flags (`wellfriendpdf-engine`)
 
 `default = ["parse", "render", "structural"]`; `full` enables everything.
 
@@ -326,7 +326,7 @@ Pull only what you need. The default build gives you parse + render + structural
 - Cross-pillar hostile sweep: 265 files, 1,590 operations, 0 crashes, 0 timeouts.
 - **Redaction is true removal, not masking.** Glyphs are deleted from the content stream using the resolved font's real `/Widths`//W` metrics (failing closed — dropping the whole show-string — when metrics are unavailable), and the redacted text is also scrubbed from `/ActualText`//Alt marked content, the structure tree, XMP `/Metadata`, and embedded files. Verified by extract-back tests.
 - **Signature `valid` ≠ trusted.** Verification reports cryptographic *integrity* (the CMS signature over the `/ByteRange`), *trust* (does the signer chain to a caller-configured anchor, in validity, not revoked), and *coverage* (whole-file vs modified-after-signing) as **distinct** properties. The overall verdict is `Trusted` only when all three hold; with no anchors configured a cryptographically valid self-signed signature is reported `ValidUntrusted`, never trusted.
-- **Untrusted input is bounded end-to-end.** Both the render layer (`OXIDE_MAX_RENDER_PIXELS`) and the image-decode layer (`OXIDE_MAX_DECODE_PIXELS`) cap pixels before allocation, with output ceilings on the Flate/LZW/RunLength filters, so a hostile dimension header or decompression bomb is a clean error rather than an OOM.
+- **Untrusted input is bounded end-to-end.** Both the render layer (`WELLFRIENDPDF_MAX_RENDER_PIXELS`) and the image-decode layer (`WELLFRIENDPDF_MAX_DECODE_PIXELS`) cap pixels before allocation, with output ceilings on the Flate/LZW/RunLength filters, so a hostile dimension header or decompression bomb is a clean error rather than an OOM.
 - PDF encryption secrets use zeroizing wrappers; the engine crate enforces `#![forbid(unsafe_code)]`.
 - Linux sanitizer CI covers ASan/TSan/Rust UB checks for C-ABI/crypto tests plus ASan fuzz corpus replay.
 - `cargo audit` and `cargo deny` clean against the documented `RUSTSEC-2023-0071` (RustCrypto `rsa 0.9.10`) advisory exception.
@@ -337,7 +337,7 @@ Full evidence and residual-risk list: [`docs/security/posture.md`](docs/security
 
 | Doc | What it covers |
 | --- | --- |
-| [`docs/oxide_sdk.md`](docs/oxide_sdk.md) | Capstone: integration, benchmarks, capability matrix, release-readiness verdict. |
+| [`docs/wellfriendpdf_sdk.md`](docs/wellfriendpdf_sdk.md) | Capstone: integration, benchmarks, capability matrix, release-readiness verdict. |
 | [`docs/api_overview.md`](docs/api_overview.md) | Stable Rust API entry points and capability map. |
 | [`docs/parser_benchmark.md`](docs/parser_benchmark.md) | The reproducible extraction-quality benchmark + numbers. |
 | [`docs/parser_positioning.md`](docs/parser_positioning.md) | Measured capability boundaries, current strengths, positioning. |
@@ -351,7 +351,7 @@ Full evidence and residual-risk list: [`docs/security/posture.md`](docs/security
 | [`docs/packaging.md`](docs/packaging.md) | Feature flags, publishing dry-runs, license audit, release checklist. |
 | [`docs/stability.md`](docs/stability.md) | SemVer, MSRV, stable-vs-experimental policy. |
 | [`docs/security/posture.md`](docs/security/posture.md) | Consolidated hardening posture + residual risk. |
-| [`.env.example`](.env.example) | The complete `OXIDE_*` server configuration reference. |
+| [`.env.example`](.env.example) | The complete `WELLFRIENDPDF_*` server configuration reference. |
 | [`CHANGELOG.md`](CHANGELOG.md) | Release notes and notable API changes. |
 
 ## License

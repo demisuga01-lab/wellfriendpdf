@@ -6,7 +6,7 @@
 //! - `POST /api/v1/extract-fields` → structured key-value fields (JSON).
 //! - `POST /api/v1/info`           → document metadata (pdfinfo-style, JSON).
 //!
-//! These mirror the CLI (`oxide parse`/`chunk`/`extract-fields`/`info`) and the
+//! These mirror the CLI (`wellfriendpdf parse`/`chunk`/`extract-fields`/`info`) and the
 //! C-ABI / WASM parser bindings, and emit the **same** canonical schema so a
 //! consumer gets identical structure regardless of surface. Each handler runs
 //! the CPU-bound engine work on the blocking pool under the configured
@@ -24,7 +24,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use bytes::Bytes;
-use oxide_engine::{
+use wellfriendpdf_engine::{
     ChunkOptions, ContentEngine, DocType, ExtractOptions, ParseOptions, SerializeOptions,
 };
 

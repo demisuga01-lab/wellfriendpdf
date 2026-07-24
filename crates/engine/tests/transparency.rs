@@ -5,7 +5,7 @@
 //! so the reader parses it), renders it at a known DPI, and asserts the pixel
 //! color at a known point matches a hand-computed expected blend.
 
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::ContentEngine;
 
 /// A tiny PDF builder that appends numbered objects and writes a valid xref.
 struct PdfBuilder {

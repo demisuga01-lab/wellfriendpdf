@@ -1,6 +1,6 @@
-# Oxide fuzz targets
+# Wellfriend fuzz targets
 
-Coverage-guided fuzzing of Oxide's untrusted-input parsing paths, using
+Coverage-guided fuzzing of Wellfriend's untrusted-input parsing paths, using
 [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) + libFuzzer.
 
 This crate is **deliberately excluded from the root workspace** (see the empty
@@ -13,31 +13,31 @@ green. Fuzzing requires a nightly toolchain.
 | Target              | Entry point                                   | What it exercises |
 |---------------------|-----------------------------------------------|-------------------|
 | `parse_pdf`         | `ContentEngine::open_bytes`                   | Header, xref/trailer, object streams, recursive object parser |
-| `filters`           | `oxide_engine::filters::fuzz_decode_filter`   | Flate / LZW / ASCIIHex / ASCII85 / RunLength decoders (selector byte picks one) |
-| `predictor`         | `oxide_engine::filters::fuzz_apply_predictor` | PNG/TIFF predictor with attacker-controlled Columns/Colors/BitsPerComponent and row geometry caps |
+| `filters`           | `wellfriendpdf_engine::filters::fuzz_decode_filter`   | Flate / LZW / ASCIIHex / ASCII85 / RunLength decoders (selector byte picks one) |
+| `predictor`         | `wellfriendpdf_engine::filters::fuzz_apply_predictor` | PNG/TIFF predictor with attacker-controlled Columns/Colors/BitsPerComponent and row geometry caps |
 | `content_tokenizer` | `ContentParser::parse`                        | Content-stream tokenizer + inline-image state machine + operand stack |
-| `image_decoders`    | `oxide_engine::fuzz::fuzz_decode_image`       | CCITT / JBIG2 / JPX / DCT image decoders |
-| `cos_object`        | `oxide_engine::fuzz::fuzz_cos_object`         | COS object parser entry point |
-| `parser_report`     | `oxide_engine::fuzz::fuzz_parser_report`      | Strict/repair/audit parser-report open path |
-| `xref_stream`       | `oxide_engine::fuzz::fuzz_xref_stream`        | XRef stream parsing through filtered stream decode |
-| `object_stream`     | `oxide_engine::fuzz::fuzz_object_stream`      | Object stream parsing through filtered stream decode |
-| `fonts`             | `oxide_engine::fuzz::fuzz_parse_font`         | TrueType / CFF / OpenType / bare-CFF font parsers through outline extraction |
-| `font_mapping`      | `oxide_engine::fuzz::fuzz_font_mapping`       | Glyph-name recovery, bundled font-provider matching, and generated-text shaping |
-| `cmap`              | `oxide_engine::fuzz::fuzz_parse_cmap`         | ToUnicode CMap parsing and lookup |
-| `crypto`            | `oxide_engine::fuzz::fuzz_crypto`             | Encryption dictionary parsing, password verification, key derivation, decrypt primitives |
-| `functions`         | `oxide_engine::fuzz::fuzz_functions`          | Function Types 0/2/3/4, sampled-function bit reader, Type 4 PostScript calculator |
-| `writer`            | `oxide_engine::fuzz::fuzz_writer`             | Object serialization, string/name/stream escaping, tiny output PDF generation |
-| `document_rewrite`  | `oxide_engine::fuzz::fuzz_document_rewrite`   | Full-document rewrite through classic xref, xref stream, and object stream writer modes |
-| `linearize`         | `oxide_engine::fuzz::fuzz_linearize`          | Linearized output layout from successfully parsed untrusted PDFs |
-| `pdfa`              | `oxide_engine::fuzz::fuzz_pdfa`               | PDF/A validation and conversion over parsed untrusted PDFs |
-| `editing`           | `oxide_engine::fuzz::fuzz_editing`            | Additive editing, redaction, form flattening, and full rewrite |
-| `signature_validation` | `oxide_engine::fuzz::fuzz_signature_validation` | Signature/DSS/LTV-like parsing reachable from untrusted signed PDFs |
-| `timestamp_token` | `oxide_engine::fuzz::fuzz_timestamp_token` | Prompt 25 RFC 3161 TimeStampToken parsing, message-imprint binding, and malformed token classification |
-| `signature_preserving_edit_plan` | `oxide_engine::fuzz::fuzz_signature_preserving_edit_plan` | Prompt 25 DocMDP/FieldMDP-aware append-only edit planning over parsed PDFs |
-| `structured_pdf`    | `oxide_engine::fuzz::fuzz_structured_pdf`     | Grammar-aware valid PDFs with adversarial content, then render/text/model/edit/PDF-A/linearize/signature paths |
+| `image_decoders`    | `wellfriendpdf_engine::fuzz::fuzz_decode_image`       | CCITT / JBIG2 / JPX / DCT image decoders |
+| `cos_object`        | `wellfriendpdf_engine::fuzz::fuzz_cos_object`         | COS object parser entry point |
+| `parser_report`     | `wellfriendpdf_engine::fuzz::fuzz_parser_report`      | Strict/repair/audit parser-report open path |
+| `xref_stream`       | `wellfriendpdf_engine::fuzz::fuzz_xref_stream`        | XRef stream parsing through filtered stream decode |
+| `object_stream`     | `wellfriendpdf_engine::fuzz::fuzz_object_stream`      | Object stream parsing through filtered stream decode |
+| `fonts`             | `wellfriendpdf_engine::fuzz::fuzz_parse_font`         | TrueType / CFF / OpenType / bare-CFF font parsers through outline extraction |
+| `font_mapping`      | `wellfriendpdf_engine::fuzz::fuzz_font_mapping`       | Glyph-name recovery, bundled font-provider matching, and generated-text shaping |
+| `cmap`              | `wellfriendpdf_engine::fuzz::fuzz_parse_cmap`         | ToUnicode CMap parsing and lookup |
+| `crypto`            | `wellfriendpdf_engine::fuzz::fuzz_crypto`             | Encryption dictionary parsing, password verification, key derivation, decrypt primitives |
+| `functions`         | `wellfriendpdf_engine::fuzz::fuzz_functions`          | Function Types 0/2/3/4, sampled-function bit reader, Type 4 PostScript calculator |
+| `writer`            | `wellfriendpdf_engine::fuzz::fuzz_writer`             | Object serialization, string/name/stream escaping, tiny output PDF generation |
+| `document_rewrite`  | `wellfriendpdf_engine::fuzz::fuzz_document_rewrite`   | Full-document rewrite through classic xref, xref stream, and object stream writer modes |
+| `linearize`         | `wellfriendpdf_engine::fuzz::fuzz_linearize`          | Linearized output layout from successfully parsed untrusted PDFs |
+| `pdfa`              | `wellfriendpdf_engine::fuzz::fuzz_pdfa`               | PDF/A validation and conversion over parsed untrusted PDFs |
+| `editing`           | `wellfriendpdf_engine::fuzz::fuzz_editing`            | Additive editing, redaction, form flattening, and full rewrite |
+| `signature_validation` | `wellfriendpdf_engine::fuzz::fuzz_signature_validation` | Signature/DSS/LTV-like parsing reachable from untrusted signed PDFs |
+| `timestamp_token` | `wellfriendpdf_engine::fuzz::fuzz_timestamp_token` | Prompt 25 RFC 3161 TimeStampToken parsing, message-imprint binding, and malformed token classification |
+| `signature_preserving_edit_plan` | `wellfriendpdf_engine::fuzz::fuzz_signature_preserving_edit_plan` | Prompt 25 DocMDP/FieldMDP-aware append-only edit planning over parsed PDFs |
+| `structured_pdf`    | `wellfriendpdf_engine::fuzz::fuzz_structured_pdf`     | Grammar-aware valid PDFs with adversarial content, then render/text/model/edit/PDF-A/linearize/signature paths |
 
 The `fuzz_*` entry points are gated behind the engine's `fuzzing` feature
-(enabled here via the `oxide-engine` dependency) so they are not part of the
+(enabled here via the `wellfriendpdf-engine` dependency) so they are not part of the
 normal public API.
 
 ## Prerequisites

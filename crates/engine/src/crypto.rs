@@ -22,7 +22,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -106,13 +106,13 @@ impl Rc4 {
 /// exactly 16 bytes. The remaining ciphertext is PKCS#7 padded.
 pub fn aes128_cbc_decrypt(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
     if key.len() != 16 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-128: key must be 16 bytes, got {}",
             key.len()
         )));
     }
     if ciphertext.len() < 16 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "AES-128: ciphertext shorter than IV (16 bytes)".to_string(),
         ));
     }
@@ -136,12 +136,14 @@ fn decrypt_aes128_cbc_pkcs7(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8
 
     let mut buf = data.to_vec();
     let decryptor = Aes128CbcDec::new_from_slices(key, iv).map_err(|_| {
-        OxideError::MalformedPdf("AES-128-CBC: invalid key or IV length".to_string())
+        WellfriendError::MalformedPdf("AES-128-CBC: invalid key or IV length".to_string())
     })?;
     let result = decryptor
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
         .map_err(|_| {
-            OxideError::MalformedPdf("AES-128-CBC: padding error during decryption".to_string())
+            WellfriendError::MalformedPdf(
+                "AES-128-CBC: padding error during decryption".to_string(),
+            )
         })?;
     Ok(result.to_vec())
 }
@@ -152,12 +154,12 @@ fn decrypt_aes128_cbc_no_pad(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u
 
     let mut buf = data.to_vec();
     let decryptor = Aes128CbcDec::new_from_slices(key, iv).map_err(|_| {
-        OxideError::MalformedPdf("AES-128-CBC: invalid key or IV length".to_string())
+        WellfriendError::MalformedPdf("AES-128-CBC: invalid key or IV length".to_string())
     })?;
     let result = decryptor
         .decrypt_padded_mut::<NoPadding>(&mut buf)
         .map_err(|_| {
-            OxideError::MalformedPdf("AES-128-CBC: block decryption failed".to_string())
+            WellfriendError::MalformedPdf("AES-128-CBC: block decryption failed".to_string())
         })?;
     Ok(result.to_vec())
 }
@@ -172,13 +174,13 @@ fn decrypt_aes128_cbc_no_pad(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u
 /// PKCS#7-padded ciphertext. `key` must be exactly 32 bytes.
 pub fn aes256_cbc_decrypt(key: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>> {
     if key.len() != 32 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-256: key must be 32 bytes, got {}",
             key.len()
         )));
     }
     if ciphertext.len() < 16 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "AES-256: ciphertext shorter than IV (16 bytes)".to_string(),
         ));
     }
@@ -201,12 +203,14 @@ fn aes256_cbc_pkcs7(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>> {
 
     let mut buf = data.to_vec();
     let decryptor = Aes256CbcDec::new_from_slices(key, iv).map_err(|_| {
-        OxideError::MalformedPdf("AES-256-CBC: invalid key or IV length".to_string())
+        WellfriendError::MalformedPdf("AES-256-CBC: invalid key or IV length".to_string())
     })?;
     let result = decryptor
         .decrypt_padded_mut::<Pkcs7>(&mut buf)
         .map_err(|_| {
-            OxideError::MalformedPdf("AES-256-CBC: padding error during decryption".to_string())
+            WellfriendError::MalformedPdf(
+                "AES-256-CBC: padding error during decryption".to_string(),
+            )
         })?;
     Ok(result.to_vec())
 }
@@ -217,12 +221,12 @@ fn aes256_cbc_no_pad(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>> {
 
     let mut buf = data.to_vec();
     let decryptor = Aes256CbcDec::new_from_slices(key, iv).map_err(|_| {
-        OxideError::MalformedPdf("AES-256-CBC: invalid key or IV length".to_string())
+        WellfriendError::MalformedPdf("AES-256-CBC: invalid key or IV length".to_string())
     })?;
     let result = decryptor
         .decrypt_padded_mut::<NoPadding>(&mut buf)
         .map_err(|_| {
-            OxideError::MalformedPdf("AES-256-CBC: block decryption failed".to_string())
+            WellfriendError::MalformedPdf("AES-256-CBC: block decryption failed".to_string())
         })?;
     Ok(result.to_vec())
 }
@@ -234,19 +238,19 @@ fn aes256_ecb_decrypt_block(key: &[u8], block: &[u8]) -> Result<[u8; 16]> {
     use aes::cipher::KeyInit;
 
     if key.len() != 32 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-256-ECB: key must be 32 bytes, got {}",
             key.len()
         )));
     }
     if block.len() != 16 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-256-ECB: block must be 16 bytes, got {}",
             block.len()
         )));
     }
     let cipher = aes::Aes256::new_from_slice(key)
-        .map_err(|_| OxideError::MalformedPdf("AES-256-ECB: invalid key".to_string()))?;
+        .map_err(|_| WellfriendError::MalformedPdf("AES-256-ECB: invalid key".to_string()))?;
     let mut out = aes::Block::clone_from_slice(block);
     cipher.decrypt_block(&mut out);
     Ok(out.into())
@@ -259,19 +263,19 @@ fn aes128_ecb_encrypt_block(key: &[u8], block: &[u8]) -> Result<[u8; 16]> {
     use aes::cipher::KeyInit;
 
     if key.len() != 16 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-128-ECB: key must be 16 bytes, got {}",
             key.len()
         )));
     }
     if block.len() != 16 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-128-ECB: block must be 16 bytes, got {}",
             block.len()
         )));
     }
     let cipher = aes::Aes128::new_from_slice(key)
-        .map_err(|_| OxideError::MalformedPdf("AES-128-ECB: invalid key".to_string()))?;
+        .map_err(|_| WellfriendError::MalformedPdf("AES-128-ECB: invalid key".to_string()))?;
     let mut out = aes::Block::clone_from_slice(block);
     cipher.encrypt_block(&mut out);
     Ok(out.into())
@@ -492,7 +496,7 @@ impl EncryptionInfo {
     pub fn from_dict(dict: &PdfDictionary) -> Result<Self> {
         let filter = dict.get_name("Filter").unwrap_or("Standard");
         if filter != "Standard" {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "Encryption filter '{filter}' is not supported; only /Standard is implemented"
             )));
         }
@@ -505,7 +509,7 @@ impl EncryptionInfo {
         }
 
         if v == 0 || v > 4 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "Unsupported encryption version V={v}"
             )));
         }
@@ -516,7 +520,7 @@ impl EncryptionInfo {
             dict.get_integer("Length").unwrap_or(128) as usize
         };
         if !(40..=128).contains(&key_length) || key_length % 8 != 0 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "V{v} encryption /Length must be 40..128 bits in 8-bit increments, got {key_length}"
             )));
         }
@@ -559,12 +563,12 @@ impl EncryptionInfo {
         match (v, r) {
             (5, 5 | 6) | (6, 7) => {}
             (5, _) => {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "V=5 requires R=5 or R=6, got R={r}"
                 )));
             }
             (6, _) => {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "V=6 requires R=7, got R={r}"
                 )));
             }
@@ -577,13 +581,13 @@ impl EncryptionInfo {
         // R5/R6 require exactly 48-byte O and U. Some writers pad to 32; be lenient
         // on length but warn, since the structure matters.
         if o.len() < 48 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "V5 /O must be at least 48 bytes, got {}",
                 o.len()
             )));
         }
         if u.len() < 48 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "V5 /U must be at least 48 bytes, got {}",
                 u.len()
             )));
@@ -594,19 +598,19 @@ impl EncryptionInfo {
         let perms = extract_bytes(dict, "Perms")?;
 
         if oe.len() != 32 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "V5 /OE must be 32 bytes, got {}",
                 oe.len()
             )));
         }
         if ue.len() != 32 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "V5 /UE must be 32 bytes, got {}",
                 ue.len()
             )));
         }
         if perms.len() != 16 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "V5 /Perms must be 16 bytes, got {}",
                 perms.len()
             )));
@@ -630,7 +634,7 @@ impl EncryptionInfo {
         let kdf_salt = match dict.get("KDFSalt") {
             Some(PdfObject::String(bytes)) => Some(bytes.clone()),
             Some(other) => {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "V6 /KDFSalt must be a byte string, got {}",
                     other.variant_name()
                 )));
@@ -707,7 +711,7 @@ fn resolve_named_crypt_method(
                 Some("AESV4") => Ok(CryptMethod::AesV4),
                 Some("V2") => Ok(CryptMethod::V2),
                 Some("Identity") | None => Ok(CryptMethod::None),
-                Some(other) => Err(OxideError::UnsupportedFeature(format!(
+                Some(other) => Err(WellfriendError::UnsupportedFeature(format!(
                     "unsupported crypt filter method /CFM /{other}"
                 ))),
             };
@@ -738,7 +742,7 @@ fn collect_crypt_filters(dict: &PdfDictionary) -> Result<HashMap<String, CryptMe
             Some("V2") => CryptMethod::V2,
             Some("Identity") | None => CryptMethod::None,
             Some(other) => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "unsupported crypt filter method /CFM /{other}"
                 )));
             }
@@ -752,11 +756,11 @@ fn collect_crypt_filters(dict: &PdfDictionary) -> Result<HashMap<String, CryptMe
 fn extract_bytes(dict: &PdfDictionary, key: &str) -> Result<Vec<u8>> {
     match dict.get(key) {
         Some(PdfObject::String(bytes)) => Ok(bytes.clone()),
-        Some(other) => Err(OxideError::MalformedPdf(format!(
+        Some(other) => Err(WellfriendError::MalformedPdf(format!(
             "Encryption /{key}: expected string, got {}",
             other.variant_name()
         ))),
-        None => Err(OxideError::MalformedPdf(format!(
+        None => Err(WellfriendError::MalformedPdf(format!(
             "Encryption: missing /{key} entry"
         ))),
     }
@@ -955,7 +959,9 @@ pub fn verify_v5_owner_password(password: &[u8], info: &EncryptionInfo) -> bool 
 /// then file_key = AES-256-CBC-decrypt(key=intermediate_key, iv=zero, data=UE).
 pub fn derive_v5_file_key_from_user(password: &[u8], info: &EncryptionInfo) -> Result<SecretBytes> {
     let v5 = info.v5.as_ref().ok_or_else(|| {
-        OxideError::MalformedPdf("derive_v5_file_key_from_user called on non-V5 info".to_string())
+        WellfriendError::MalformedPdf(
+            "derive_v5_file_key_from_user called on non-V5 info".to_string(),
+        )
     })?;
     let pwd = truncate_v5_password(password);
     // /U layout: [40..48] = key_salt
@@ -987,7 +993,9 @@ pub fn derive_v5_file_key_from_owner(
     info: &EncryptionInfo,
 ) -> Result<SecretBytes> {
     let v5 = info.v5.as_ref().ok_or_else(|| {
-        OxideError::MalformedPdf("derive_v5_file_key_from_owner called on non-V5 info".to_string())
+        WellfriendError::MalformedPdf(
+            "derive_v5_file_key_from_owner called on non-V5 info".to_string(),
+        )
     })?;
     let pwd = truncate_v5_password(password);
     // /O layout: [40..48] = key_salt
@@ -1106,13 +1114,13 @@ pub fn aes256_gcm_decrypt_pdf_object(data: &[u8], key: &[u8]) -> Result<Vec<u8>>
     const IV_LEN: usize = 12;
     const TAG_LEN: usize = 16;
     if key.len() != 32 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-GCM PDF object key must be 32 bytes, got {}",
             key.len()
         )));
     }
     if data.len() < IV_LEN + TAG_LEN {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-GCM PDF object payload must be at least {} bytes, got {}",
             IV_LEN + TAG_LEN,
             data.len()
@@ -1120,10 +1128,12 @@ pub fn aes256_gcm_decrypt_pdf_object(data: &[u8], key: &[u8]) -> Result<Vec<u8>>
     }
     let (iv, encrypted) = data.split_at(IV_LEN);
     let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| OxideError::MalformedPdf("AES-GCM: invalid key length".to_string()))?;
+        .map_err(|_| WellfriendError::MalformedPdf("AES-GCM: invalid key length".to_string()))?;
     cipher
         .decrypt(Nonce::from_slice(iv), encrypted)
-        .map_err(|_| OxideError::AuthenticationFailure("AES-GCM authentication failed".to_string()))
+        .map_err(|_| {
+            WellfriendError::AuthenticationFailure("AES-GCM authentication failed".to_string())
+        })
 }
 
 /// Encrypt one ISO/TS 32003 AESV4 PDF object payload with a fresh production IV.
@@ -1150,7 +1160,7 @@ pub fn aes256_gcm_encrypt_pdf_object_tracked(
             return aes256_gcm_encrypt_pdf_object_with_nonce(data, key, nonce);
         }
     }
-    Err(OxideError::AuthenticationFailure(
+    Err(WellfriendError::AuthenticationFailure(
         "AES-GCM nonce generation produced a repeated IV".to_string(),
     ))
 }
@@ -1165,18 +1175,18 @@ pub fn aes256_gcm_encrypt_pdf_object_with_nonce(
     nonce: [u8; 12],
 ) -> Result<Vec<u8>> {
     if key.len() != 32 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-GCM PDF object key must be 32 bytes, got {}",
             key.len()
         )));
     }
     let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| OxideError::MalformedPdf("AES-GCM: invalid key length".to_string()))?;
+        .map_err(|_| WellfriendError::MalformedPdf("AES-GCM: invalid key length".to_string()))?;
     let mut out = Vec::with_capacity(12 + data.len() + 16);
     out.extend_from_slice(&nonce);
     let mut encrypted = cipher
         .encrypt(Nonce::from_slice(&nonce), data)
-        .map_err(|_| OxideError::MalformedPdf("AES-GCM encryption failed".to_string()))?;
+        .map_err(|_| WellfriendError::MalformedPdf("AES-GCM encryption failed".to_string()))?;
     out.append(&mut encrypted);
     Ok(out)
 }
@@ -1204,19 +1214,19 @@ pub fn random_bytes(len: usize) -> Vec<u8> {
 fn aes256_ecb_encrypt_block(key: &[u8], block: &[u8]) -> Result<[u8; 16]> {
     use aes::cipher::{BlockEncrypt, KeyInit};
     if key.len() != 32 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-256-ECB: key must be 32 bytes, got {}",
             key.len()
         )));
     }
     if block.len() != 16 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "AES-256-ECB: block must be 16 bytes, got {}",
             block.len()
         )));
     }
     let cipher = aes::Aes256::new_from_slice(key)
-        .map_err(|_| OxideError::MalformedPdf("AES-256-ECB: invalid key".to_string()))?;
+        .map_err(|_| WellfriendError::MalformedPdf("AES-256-ECB: invalid key".to_string()))?;
     let mut out = aes::Block::clone_from_slice(block);
     cipher.encrypt_block(&mut out);
     Ok(out.into())
@@ -1227,12 +1237,12 @@ fn aes256_ecb_encrypt_block(key: &[u8], block: &[u8]) -> Result<[u8; 16]> {
 fn aes256_cbc_encrypt_no_pad(key: &[u8], iv: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     use aes::cipher::{BlockEncrypt, KeyInit};
     if key.len() != 32 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "AES-256: key must be 32 bytes".to_string(),
         ));
     }
     let cipher = aes::Aes256::new_from_slice(key)
-        .map_err(|_| OxideError::MalformedPdf("AES-256: invalid key".to_string()))?;
+        .map_err(|_| WellfriendError::MalformedPdf("AES-256: invalid key".to_string()))?;
     let mut out = Vec::with_capacity(data.len());
     let mut prev = [0u8; 16];
     prev.copy_from_slice(&iv[..16]);
@@ -1380,18 +1390,18 @@ impl Default for EncryptParams {
 /// Supported encryption strengths (Standard Security Handler).
 ///
 /// **AES-256 is the recommended default and the only algorithm verified for
-/// cross-reader interop** (qpdf + Poppler decrypt Oxide's AES-256 output with
-/// both the user and owner password, and Oxide reads theirs). The legacy
+/// cross-reader interop** (qpdf + Poppler decrypt Wellfriend's AES-256 output with
+/// both the user and owner password, and Wellfriend reads theirs). The legacy
 /// `Rc4_128` / `Aes128` paths (V2/V4 standard security handler) round-trip
-/// correctly through Oxide's own reader but have a known V4 crypt-filter
+/// correctly through Wellfriend's own reader but have a known V4 crypt-filter
 /// deviation that other readers do not accept — use them only when a consumer
-/// specifically requires legacy encryption and can read Oxide's output. See
+/// specifically requires legacy encryption and can read Wellfriend's output. See
 /// `docs/manipulation.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EncryptAlgorithm {
-    /// RC4 128-bit (V=2, R=3) — legacy/compat; weak; Oxide-read-only interop.
+    /// RC4 128-bit (V=2, R=3) — legacy/compat; weak; Wellfriend-read-only interop.
     Rc4_128,
-    /// AES-128 (V=4, R=4) — legacy/compat; Oxide-read-only interop (see note).
+    /// AES-128 (V=4, R=4) — legacy/compat; Wellfriend-read-only interop (see note).
     Aes128,
     /// AES-256 (V=5, R=6) — the secure, cross-reader-verified default.
     Aes256,
@@ -1953,22 +1963,22 @@ mod tests {
             let mut tampered = encrypted.clone();
             tampered[mutate_at] ^= 0x40;
             let err = aes256_gcm_decrypt_pdf_object(&tampered, &key).unwrap_err();
-            assert!(matches!(err, OxideError::AuthenticationFailure(_)));
+            assert!(matches!(err, WellfriendError::AuthenticationFailure(_)));
             assert!(!err.to_string().contains("authenticated payload"));
         }
 
         let truncated = &encrypted[..encrypted.len() - 1];
         let err = aes256_gcm_decrypt_pdf_object(truncated, &key).unwrap_err();
-        assert!(matches!(err, OxideError::AuthenticationFailure(_)));
+        assert!(matches!(err, WellfriendError::AuthenticationFailure(_)));
     }
 
     #[test]
     fn aes256_gcm_pdf_object_rejects_short_payload_and_wrong_key_size() {
         let err = aes256_gcm_decrypt_pdf_object(b"too short", &[0u8; 32]).unwrap_err();
-        assert!(matches!(err, OxideError::MalformedPdf(_)));
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
         let err =
             aes256_gcm_encrypt_pdf_object_with_nonce(b"data", &[0u8; 16], [0u8; 12]).unwrap_err();
-        assert!(matches!(err, OxideError::MalformedPdf(_)));
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
     }
 
     #[test]
@@ -2293,7 +2303,7 @@ mod tests {
         ]);
         assert!(matches!(
             EncryptionInfo::from_dict(&d),
-            Err(OxideError::UnsupportedFeature(_))
+            Err(WellfriendError::UnsupportedFeature(_))
         ));
     }
 
@@ -2390,7 +2400,7 @@ mod tests {
         ]);
         assert!(matches!(
             EncryptionInfo::from_dict(&d),
-            Err(OxideError::UnsupportedFeature(_))
+            Err(WellfriendError::UnsupportedFeature(_))
         ));
     }
 
@@ -2409,7 +2419,7 @@ mod tests {
         ]);
         assert!(matches!(
             EncryptionInfo::from_dict(&d),
-            Err(OxideError::MalformedPdf(_))
+            Err(WellfriendError::MalformedPdf(_))
         ));
     }
 
@@ -2449,7 +2459,7 @@ mod tests {
 
         assert!(matches!(
             EncryptionInfo::from_dict(&d),
-            Err(OxideError::MalformedPdf(_))
+            Err(WellfriendError::MalformedPdf(_))
         ));
     }
 
@@ -2516,7 +2526,7 @@ mod tests {
         ]);
         assert!(matches!(
             EncryptionInfo::from_dict(&d),
-            Err(OxideError::MalformedPdf(_))
+            Err(WellfriendError::MalformedPdf(_))
         ));
     }
 }

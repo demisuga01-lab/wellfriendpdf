@@ -28,8 +28,8 @@ Rust callers that need production dictionary terms load a manifest+TSV pack with
 CLI model-json callers can pass:
 
 ```powershell
-oxide extract-text --structured --format model-json --cjk-segmentation simple input.pdf
-oxide extract-text --structured --format model-json --cjk-segmentation dictionary input.pdf
+wellfriendpdf extract-text --structured --format model-json --cjk-segmentation simple input.pdf
+wellfriendpdf extract-text --structured --format model-json --cjk-segmentation dictionary input.pdf
 ```
 
 ## Guarantees

@@ -1,6 +1,6 @@
 use std::io::{Cursor, Read};
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::fonts::variations::{self, VariationRequest};
 use crate::images::decoder::{ColorSpaceConverter, ImageDecoder, RawImage};
 use crate::render::buffer::{rgba, PixelColor};
@@ -211,7 +211,7 @@ pub(crate) fn colr_cpal_layers(
     let mut layers = Vec::new();
     for op in ops {
         if !op.clips.is_empty() || op.blend_mode != ColrBlendMode::Normal {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "COLR/CPAL solid layer compatibility path cannot represent glyph {} clips/composites",
                 glyph_id.0
             )));
@@ -223,7 +223,7 @@ pub(crate) fn colr_cpal_layers(
                 transform: op.transform,
             }),
             _ => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "COLR/CPAL solid layer compatibility path cannot represent gradient paint for glyph {}",
                     glyph_id.0
                 )));
@@ -244,7 +244,7 @@ pub(crate) fn colr_cpal_paint_ops(
     variation: &VariationRequest,
 ) -> Result<Option<Vec<ColrPaintOp>>> {
     let mut face = ttf_parser::Face::parse(font_bytes, 0)
-        .map_err(|_| OxideError::UnsupportedFeature("malformed COLR/CPAL font".to_string()))?;
+        .map_err(|_| WellfriendError::UnsupportedFeature("malformed COLR/CPAL font".to_string()))?;
     variations::apply_request(&mut face, variation);
     if !face.is_color_glyph(glyph_id) {
         return Ok(None);
@@ -259,7 +259,7 @@ pub(crate) fn colr_cpal_paint_ops(
         return Ok(None);
     }
     if collector.unsupported {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "COLR/CPAL paint graph contains unsupported operators for glyph {}: {}",
             glyph_id.0,
             collector.unsupported_ops.join(", ")
@@ -293,7 +293,7 @@ pub(crate) fn decode_raster_glyph_image(
         return Ok(None);
     };
     if u32::from(image.width).saturating_mul(u32::from(image.height)) > MAX_COLOR_GLYPH_PIXELS {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "color glyph raster strike too large: glyph={} strike={} dimensions={}x{}",
             glyph_id.0, image.pixels_per_em, image.width, image.height
         )));
@@ -453,7 +453,7 @@ pub(crate) fn svg_static_glyph_paints(
     let svg = decode_svg_document(document.data)?;
     let policy = classify_svg_glyph_document(&svg);
     if policy != SvgGlyphPolicy::StaticSubsetCandidate {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "SVG-in-OpenType color glyph blocked: glyph={} status={} reason={}",
             glyph_id.0,
             policy.status(),
@@ -462,7 +462,7 @@ pub(crate) fn svg_static_glyph_paints(
     }
     let paths = parse_static_svg_paint_paths(&svg, foreground, graphics_alpha)?;
     if paths.is_empty() {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "SVG-in-OpenType color glyph produced no supported static paint paths: glyph={}",
             glyph_id.0
         )));
@@ -958,7 +958,7 @@ fn color_with_alpha(mut color: PixelColor, opacity: f64, graphics_alpha: u8) -> 
 
 fn decode_svg_document(data: &[u8]) -> Result<String> {
     if data.len() > MAX_SVG_BYTES {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "SVG-in-OpenType glyph document too large: {} bytes",
             data.len()
         )));
@@ -970,10 +970,10 @@ fn decode_svg_document(data: &[u8]) -> Result<String> {
             .take((MAX_SVG_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
             .map_err(|e| {
-                OxideError::MalformedPdf(format!("SVG-in-OpenType gzip decode failed: {e}"))
+                WellfriendError::MalformedPdf(format!("SVG-in-OpenType gzip decode failed: {e}"))
             })?;
         if bytes.len() > MAX_SVG_BYTES {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "SVG-in-OpenType decompressed document exceeds static subset cap".to_string(),
             ));
         }
@@ -981,7 +981,7 @@ fn decode_svg_document(data: &[u8]) -> Result<String> {
         bytes.extend_from_slice(data);
     }
     String::from_utf8(bytes).map_err(|e| {
-        OxideError::MalformedPdf(format!("SVG-in-OpenType document is not UTF-8: {e}"))
+        WellfriendError::MalformedPdf(format!("SVG-in-OpenType document is not UTF-8: {e}"))
     })
 }
 
@@ -996,7 +996,7 @@ fn parse_static_svg_paint_paths(
     while let Some(rel_start) = svg[cursor..].find('<') {
         let start = cursor + rel_start;
         let Some(rel_end) = svg[start..].find('>') else {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "SVG-in-OpenType static subset tag is unterminated".to_string(),
             ));
         };
@@ -1028,7 +1028,7 @@ fn parse_static_svg_paint_paths(
             "svg" | "g" => {
                 if !self_closing {
                     if states.len() >= MAX_SVG_GROUP_DEPTH {
-                        return Err(OxideError::UnsupportedFeature(
+                        return Err(WellfriendError::UnsupportedFeature(
                             "SVG-in-OpenType group depth cap exceeded".to_string(),
                         ));
                     }
@@ -1037,7 +1037,9 @@ fn parse_static_svg_paint_paths(
             }
             "path" => {
                 let d = attr(&attrs, "d").ok_or_else(|| {
-                    OxideError::MalformedPdf("SVG path element missing d attribute".to_string())
+                    WellfriendError::MalformedPdf(
+                        "SVG path element missing d attribute".to_string(),
+                    )
                 })?;
                 let path = parse_svg_path_data(d)?;
                 push_svg_paint_path(&mut paths, path, &state, graphics_alpha)?;
@@ -1046,13 +1048,13 @@ fn parse_static_svg_paint_paths(
                 let x = parse_attr_number(&attrs, "x").unwrap_or(0.0);
                 let y = parse_attr_number(&attrs, "y").unwrap_or(0.0);
                 let w = parse_attr_number(&attrs, "width").ok_or_else(|| {
-                    OxideError::MalformedPdf("SVG rect missing width".to_string())
+                    WellfriendError::MalformedPdf("SVG rect missing width".to_string())
                 })?;
                 let h = parse_attr_number(&attrs, "height").ok_or_else(|| {
-                    OxideError::MalformedPdf("SVG rect missing height".to_string())
+                    WellfriendError::MalformedPdf("SVG rect missing height".to_string())
                 })?;
                 if !(w.is_finite() && h.is_finite()) || w < 0.0 || h < 0.0 {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "SVG rect has invalid dimensions".to_string(),
                     ));
                 }
@@ -1063,8 +1065,9 @@ fn parse_static_svg_paint_paths(
             "circle" => {
                 let cx = parse_attr_number(&attrs, "cx").unwrap_or(0.0);
                 let cy = parse_attr_number(&attrs, "cy").unwrap_or(0.0);
-                let r = parse_attr_number(&attrs, "r")
-                    .ok_or_else(|| OxideError::MalformedPdf("SVG circle missing r".to_string()))?;
+                let r = parse_attr_number(&attrs, "r").ok_or_else(|| {
+                    WellfriendError::MalformedPdf("SVG circle missing r".to_string())
+                })?;
                 push_svg_paint_path(
                     &mut paths,
                     ellipse_path(cx, cy, r, r)?,
@@ -1076,10 +1079,10 @@ fn parse_static_svg_paint_paths(
                 let cx = parse_attr_number(&attrs, "cx").unwrap_or(0.0);
                 let cy = parse_attr_number(&attrs, "cy").unwrap_or(0.0);
                 let rx = parse_attr_number(&attrs, "rx").ok_or_else(|| {
-                    OxideError::MalformedPdf("SVG ellipse missing rx".to_string())
+                    WellfriendError::MalformedPdf("SVG ellipse missing rx".to_string())
                 })?;
                 let ry = parse_attr_number(&attrs, "ry").ok_or_else(|| {
-                    OxideError::MalformedPdf("SVG ellipse missing ry".to_string())
+                    WellfriendError::MalformedPdf("SVG ellipse missing ry".to_string())
                 })?;
                 push_svg_paint_path(
                     &mut paths,
@@ -1100,7 +1103,7 @@ fn parse_static_svg_paint_paths(
             }
             "polyline" | "polygon" => {
                 let points = attr(&attrs, "points").ok_or_else(|| {
-                    OxideError::MalformedPdf("SVG polyline/polygon missing points".to_string())
+                    WellfriendError::MalformedPdf("SVG polyline/polygon missing points".to_string())
                 })?;
                 let mut path = points_path(points)?;
                 if name == "polygon" {
@@ -1109,13 +1112,13 @@ fn parse_static_svg_paint_paths(
                 push_svg_paint_path(&mut paths, path, &state, graphics_alpha)?;
             }
             other => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "SVG-in-OpenType static subset element unsupported: <{other}>"
                 )));
             }
         }
         if paths.len() > MAX_SVG_PAINT_PATHS {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "SVG-in-OpenType paint path cap exceeded".to_string(),
             ));
         }
@@ -1133,7 +1136,7 @@ fn push_svg_paint_path(
         return Ok(());
     }
     if !finite_transform(state.transform) || !state.stroke_width.is_finite() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "SVG-in-OpenType static subset contains non-finite transform or stroke width"
                 .to_string(),
         ));
@@ -1190,7 +1193,7 @@ fn parse_svg_attrs(data: &str) -> Result<Vec<(String, String)>> {
             idx += 1;
         }
         if idx >= bytes.len() || bytes[idx] != b'=' {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "SVG-in-OpenType static subset requires quoted attributes: {key}"
             )));
         }
@@ -1199,7 +1202,7 @@ fn parse_svg_attrs(data: &str) -> Result<Vec<(String, String)>> {
             idx += 1;
         }
         if idx >= bytes.len() || (bytes[idx] != b'"' && bytes[idx] != b'\'') {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "SVG-in-OpenType static subset requires quoted attribute values: {key}"
             )));
         }
@@ -1210,7 +1213,7 @@ fn parse_svg_attrs(data: &str) -> Result<Vec<(String, String)>> {
             idx += 1;
         }
         if idx >= bytes.len() {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "SVG-in-OpenType attribute is unterminated: {key}"
             )));
         }
@@ -1270,12 +1273,12 @@ fn apply_svg_paint_attr(
         | "x1" | "y1" | "x2" | "y2" | "points" | "viewbox" | "version" | "xmlns" | "style" => {}
         "stroke-linecap" | "stroke-linejoin" | "stroke-miterlimit" => {}
         other if other.starts_with("on") => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "SVG-in-OpenType event attribute blocked: {other}"
             )));
         }
         other => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "SVG-in-OpenType static subset attribute unsupported: {other}"
             )));
         }
@@ -1335,7 +1338,7 @@ fn parse_svg_color(value: &str, foreground: PixelColor) -> Result<Option<PixelCo
             return Ok(Some(rgba(r, g, b, 255)));
         }
     }
-    Err(OxideError::UnsupportedFeature(format!(
+    Err(WellfriendError::UnsupportedFeature(format!(
         "SVG-in-OpenType static subset color unsupported: {value}"
     )))
 }
@@ -1354,14 +1357,14 @@ fn parse_hex_color(hex: &str) -> Result<PixelColor> {
             let b = u8::from_str_radix(&hex[4..6], 16).map_err(svg_color_err)?;
             Ok(rgba(r, g, b, 255))
         }
-        _ => Err(OxideError::UnsupportedFeature(format!(
+        _ => Err(WellfriendError::UnsupportedFeature(format!(
             "SVG-in-OpenType static subset hex color unsupported: #{hex}"
         ))),
     }
 }
 
-fn svg_color_err(err: std::num::ParseIntError) -> OxideError {
-    OxideError::MalformedPdf(format!("SVG-in-OpenType color parse failed: {err}"))
+fn svg_color_err(err: std::num::ParseIntError) -> WellfriendError {
+    WellfriendError::MalformedPdf(format!("SVG-in-OpenType color parse failed: {err}"))
 }
 
 fn parse_color_component(value: &str) -> Result<u8> {
@@ -1385,12 +1388,12 @@ fn parse_svg_number(value: &str) -> Result<f64> {
         .trim_end_matches("pt")
         .trim_end_matches("em");
     let parsed = value.parse::<f64>().map_err(|e| {
-        OxideError::MalformedPdf(format!("SVG-in-OpenType number parse failed: {e}"))
+        WellfriendError::MalformedPdf(format!("SVG-in-OpenType number parse failed: {e}"))
     })?;
     if parsed.is_finite() {
         Ok(parsed)
     } else {
-        Err(OxideError::UnsupportedFeature(
+        Err(WellfriendError::UnsupportedFeature(
             "SVG-in-OpenType non-finite number blocked".to_string(),
         ))
     }
@@ -1401,13 +1404,13 @@ fn parse_svg_transform(value: &str) -> Result<Transform2D> {
     let mut rest = value.trim();
     while !rest.is_empty() {
         let Some(open) = rest.find('(') else {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "SVG transform missing '(': {rest}"
             )));
         };
         let name = rest[..open].trim().to_ascii_lowercase();
         let Some(close_rel) = rest[open + 1..].find(')') else {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "SVG transform missing ')': {rest}"
             )));
         };
@@ -1436,13 +1439,13 @@ fn parse_svg_transform(value: &str) -> Result<Transform2D> {
             "skewx" if args.len() == 1 => Transform2D::shear(args[0].to_radians().tan(), 0.0),
             "skewy" if args.len() == 1 => Transform2D::shear(0.0, args[0].to_radians().tan()),
             _ => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "SVG-in-OpenType transform unsupported or malformed: {name}"
                 )))
             }
         };
         if !finite_transform(next) {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "SVG-in-OpenType non-finite transform blocked".to_string(),
             ));
         }
@@ -1466,7 +1469,7 @@ fn ellipse_path(cx: f64, cy: f64, rx: f64, ry: f64) -> Result<Path> {
         || rx < 0.0
         || ry < 0.0
     {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "SVG ellipse has invalid geometry".to_string(),
         ));
     }
@@ -1484,7 +1487,7 @@ fn ellipse_path(cx: f64, cy: f64, rx: f64, ry: f64) -> Result<Path> {
 fn points_path(points: &str) -> Result<Path> {
     let numbers = parse_number_list(points)?;
     if numbers.len() < 4 || numbers.len() % 2 != 0 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "SVG points list must contain x/y pairs".to_string(),
         ));
     }
@@ -1566,12 +1569,13 @@ impl<'a> SvgPathParser<'a> {
             }
         }
         if start == self.idx {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "SVG path expected number".to_string(),
             ));
         }
-        let s = std::str::from_utf8(&self.data[start..self.idx])
-            .map_err(|e| OxideError::MalformedPdf(format!("SVG path number is not UTF-8: {e}")))?;
+        let s = std::str::from_utf8(&self.data[start..self.idx]).map_err(|e| {
+            WellfriendError::MalformedPdf(format!("SVG path number is not UTF-8: {e}"))
+        })?;
         parse_svg_number(s)
     }
 }
@@ -1588,13 +1592,13 @@ fn parse_svg_path_data(data: &str) -> Result<Path> {
         if let Some(next) = parser.next_command() {
             command = next;
         } else if command == ' ' {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "SVG path data starts without command".to_string(),
             ));
         }
         commands += 1;
         if commands > MAX_SVG_PATH_COMMANDS {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "SVG-in-OpenType path command cap exceeded".to_string(),
             ));
         }
@@ -1670,7 +1674,7 @@ fn parse_svg_path_data(data: &str) -> Result<Path> {
                 current = subpath_start;
             }
             other => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "SVG-in-OpenType path command unsupported: {other}"
                 )));
             }
@@ -1693,7 +1697,7 @@ fn svg_point(
     if x.is_finite() && y.is_finite() {
         Ok((x, y))
     } else {
-        Err(OxideError::UnsupportedFeature(
+        Err(WellfriendError::UnsupportedFeature(
             "SVG-in-OpenType non-finite path coordinate blocked".to_string(),
         ))
     }
@@ -1800,7 +1804,7 @@ fn decode_sbix_payload(payload: &SbixPayload<'_>) -> Result<RawImage> {
         | ColorBitmapPayloadKind::Pdf
         | ColorBitmapPayloadKind::Mask
         | ColorBitmapPayloadKind::Dupe
-        | ColorBitmapPayloadKind::Other(_) => Err(OxideError::UnsupportedFeature(format!(
+        | ColorBitmapPayloadKind::Other(_) => Err(WellfriendError::UnsupportedFeature(format!(
             "sbix color glyph payload unsupported by safe decoder: payload={}",
             payload.kind.label()
         ))),
@@ -1809,14 +1813,14 @@ fn decode_sbix_payload(payload: &SbixPayload<'_>) -> Result<RawImage> {
 
 fn decode_jpeg(data: &[u8]) -> Result<RawImage> {
     if data.len() > MAX_COLOR_GLYPH_BYTES {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "color glyph JPEG payload too large: {} bytes",
             data.len()
         )));
     }
     let (mut pixels, width, height, channels) = ImageDecoder::decode_jpeg_with_info(data)?;
     if width.saturating_mul(height) > MAX_COLOR_GLYPH_PIXELS {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "color glyph JPEG decoded dimensions too large: {width}x{height}"
         )));
     }
@@ -1866,7 +1870,7 @@ fn decode_raster_image_payload(image: RasterGlyphImage<'_>) -> Result<RawImage> 
 
 fn decode_png(data: &[u8]) -> Result<RawImage> {
     if data.len() > MAX_COLOR_GLYPH_BYTES {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "color glyph PNG payload too large: {} bytes",
             data.len()
         )));
@@ -1876,18 +1880,18 @@ fn decode_png(data: &[u8]) -> Result<RawImage> {
         png::Transformations::normalize_to_color8() | png::Transformations::ALPHA,
     );
     let mut reader = decoder.read_info().map_err(|e| {
-        OxideError::MalformedPdf(format!("color glyph PNG metadata decode failed: {e}"))
+        WellfriendError::MalformedPdf(format!("color glyph PNG metadata decode failed: {e}"))
     })?;
     let size = reader.output_buffer_size();
     if size > MAX_COLOR_GLYPH_BYTES {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "color glyph PNG decoded payload too large: {size} bytes"
         )));
     }
     let mut pixels = vec![0; size];
-    let info = reader
-        .next_frame(&mut pixels)
-        .map_err(|e| OxideError::MalformedPdf(format!("color glyph PNG decode failed: {e}")))?;
+    let info = reader.next_frame(&mut pixels).map_err(|e| {
+        WellfriendError::MalformedPdf(format!("color glyph PNG decode failed: {e}"))
+    })?;
     pixels.truncate(info.buffer_size());
     let channels = match info.color_type {
         png::ColorType::Rgb => 3,
@@ -1898,7 +1902,7 @@ fn decode_png(data: &[u8]) -> Result<RawImage> {
             4
         }
         png::ColorType::Indexed => {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "color glyph indexed PNG did not expand to RGB/RGBA".to_string(),
             ))
         }
@@ -1917,7 +1921,7 @@ fn decode_premul_bgra32(image: RasterGlyphImage<'_>) -> Result<RawImage> {
         .saturating_mul(usize::from(image.height))
         .saturating_mul(4);
     if image.data.len() < expected || expected > MAX_COLOR_GLYPH_BYTES {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "color glyph BGRA payload length {} does not match {}x{}",
             image.data.len(),
             image.width,
@@ -1945,7 +1949,7 @@ fn decode_gray8(image: RasterGlyphImage<'_>) -> Result<RawImage> {
     let row_len = usize::from(image.width);
     let expected = row_len.saturating_mul(usize::from(image.height));
     if image.data.len() < expected || expected > MAX_COLOR_GLYPH_BYTES {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "color glyph gray8 payload is truncated".to_string(),
         ));
     }
@@ -1972,12 +1976,12 @@ fn decode_gray_subbyte(image: RasterGlyphImage<'_>, bits: u8, packed: bool) -> R
         row_bytes.saturating_mul(height)
     };
     if packed && row_bits % 8 != 0 {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "color glyph packed gray rows with non-byte-aligned width are unsupported".to_string(),
         ));
     }
     if image.data.len() < expected || expected > MAX_COLOR_GLYPH_BYTES {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "color glyph gray payload is truncated".to_string(),
         ));
     }
@@ -2013,12 +2017,12 @@ fn decode_mono(image: RasterGlyphImage<'_>, packed: bool) -> Result<RawImage> {
         row_bytes.saturating_mul(height)
     };
     if packed && width % 8 != 0 {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "color glyph packed mono rows with non-byte-aligned width are unsupported".to_string(),
         ));
     }
     if image.data.len() < expected || expected > MAX_COLOR_GLYPH_BYTES {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "color glyph mono payload is truncated".to_string(),
         ));
     }

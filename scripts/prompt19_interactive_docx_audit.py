@@ -25,7 +25,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "target" / "prompt19-interactive-docx"
-CLI = ROOT / "target" / "debug" / ("oxide.exe" if os.name == "nt" else "oxide")
+CLI = ROOT / "target" / "debug" / ("wellfriendpdf.exe" if os.name == "nt" else "wellfriendpdf")
 SCHEMA = "prompt19.form-js-interactive-docx-layout.v1"
 START_HEAD = "6d07aa35695236647c0f918e14ff65798707b313"
 
@@ -459,7 +459,7 @@ def main() -> int:
     if actual_head != START_HEAD:
         raise RuntimeError(f"Prompt 19 checkpoint mismatch: {actual_head}")
 
-    run(["cargo", "build", "-p", "oxide-cli", "--jobs", "1"], timeout=600)
+    run(["cargo", "build", "-p", "wellfriendpdf-cli", "--jobs", "1"], timeout=600)
     if not CLI.exists():
         raise RuntimeError(f"missing CLI after build: {CLI}")
 

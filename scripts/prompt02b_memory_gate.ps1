@@ -3,11 +3,11 @@ $ErrorActionPreference = "Stop"
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $ArtifactDir = Join-Path $Repo "target/prompt02-binding-parity"
 $NativeName = if ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-    "oxide_capi.dll"
+    "wellfriendpdf_capi.dll"
 } elseif ([System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
-    "liboxide_capi.dylib"
+    "libwellfriendpdf_capi.dylib"
 } else {
-    "liboxide_capi.so"
+    "libwellfriendpdf_capi.so"
 }
 $NativePath = Join-Path $Repo "target/debug/$NativeName"
 $JavaClasses = Join-Path $Repo "bindings/java/target/classes"
@@ -38,29 +38,29 @@ function Write-JsonNoBom {
 New-Item -ItemType Directory -Force -Path $ArtifactDir | Out-Null
 
 if (!(Test-Path $NativePath)) {
-    Invoke-Checked "cargo" @("build", "-p", "oxide-capi") "cargo build -p oxide-capi"
+    Invoke-Checked "cargo" @("build", "-p", "wellfriendpdf-capi") "cargo build -p wellfriendpdf-capi"
 }
 
-$env:OXIDE_NATIVE_LIBRARY = $NativePath
+$env:WELLFRIENDPDF_NATIVE_LIBRARY = $NativePath
 
 $commands = New-Object System.Collections.Generic.List[string]
-Invoke-Checked "cargo" @("test", "-p", "oxide-capi", "capi_repeated_open_report_free_stress") "C ABI repeated open/report/free stress"
-$commands.Add("cargo test -p oxide-capi capi_repeated_open_report_free_stress")
+Invoke-Checked "cargo" @("test", "-p", "wellfriendpdf-capi", "capi_repeated_open_report_free_stress") "C ABI repeated open/report/free stress"
+$commands.Add("cargo test -p wellfriendpdf-capi capi_repeated_open_report_free_stress")
 
-Invoke-Checked "dotnet" @("test", (Join-Path $Repo "bindings/dotnet/Oxide.Sdk.Tests/Oxide.Sdk.Tests.csproj"), "--filter", "RepeatedOpenReportAndDisposeStress") ".NET SafeHandle dispose stress"
-$commands.Add("dotnet test bindings/dotnet/Oxide.Sdk.Tests --filter RepeatedOpenReportAndDisposeStress")
+Invoke-Checked "dotnet" @("test", (Join-Path $Repo "bindings/dotnet/WellfriendPdf.Tests/WellfriendPdf.Tests.csproj"), "--filter", "RepeatedOpenReportAndDisposeStress") ".NET SafeHandle dispose stress"
+$commands.Add("dotnet test bindings/dotnet/WellfriendPdf.Tests --filter RepeatedOpenReportAndDisposeStress")
 
 $javaSources = @(
     (Get-ChildItem -LiteralPath (Join-Path $Repo "bindings/java/src/main/java") -Recurse -Filter "*.java").FullName
     (Get-ChildItem -LiteralPath (Join-Path $Repo "bindings/java/src/test/java") -Recurse -Filter "*.java" |
-        Where-Object { $_.Name -ne "OxideJUnitTest.java" }).FullName
+        Where-Object { $_.Name -ne "WellfriendPdfJUnitTest.java" }).FullName
 )
 New-Item -ItemType Directory -Force -Path $JavaClasses | Out-Null
 $javacArgs = @("--enable-preview", "--release", "25", "-d", $JavaClasses) + $javaSources
 Invoke-Checked "javac" $javacArgs "javac Java stress smoke"
 $commands.Add("javac --enable-preview --release 25 Java sources")
-Invoke-Checked "java" @("--enable-preview", "--enable-native-access=ALL-UNNAMED", "-cp", $JavaClasses, "org.oxidepdf.OxideSmokeTest") "Java AutoCloseable stress smoke"
-$commands.Add("java --enable-preview --enable-native-access=ALL-UNNAMED org.oxidepdf.OxideSmokeTest")
+Invoke-Checked "java" @("--enable-preview", "--enable-native-access=ALL-UNNAMED", "-cp", $JavaClasses, "io.wellfriendpdf.WellfriendPdfSmokeTest") "Java AutoCloseable stress smoke"
+$commands.Add("java --enable-preview --enable-native-access=ALL-UNNAMED io.wellfriendpdf.WellfriendPdfSmokeTest")
 
 $payload = [ordered]@{
     schema_version = 1

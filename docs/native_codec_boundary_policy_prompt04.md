@@ -2,7 +2,7 @@
 
 ## Default Policy
 
-Oxide's default codec posture is pure Rust. The engine crate remains `#![forbid(unsafe_code)]`, and no native/C codec dependency is compiled or enabled by default.
+Wellfriend's default codec posture is pure Rust. The engine crate remains `#![forbid(unsafe_code)]`, and no native/C codec dependency is compiled or enabled by default.
 
 Native/C codec backends are denied unless all of the following are true:
 

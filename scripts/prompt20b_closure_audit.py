@@ -161,9 +161,9 @@ def annotation_fixture(kind: str) -> bytes:
     raise ValueError(kind)
 
 
-def render_oxide(oxide: Path, pdf: Path, output: Path, repo: Path) -> dict:
+def render_wellfriendpdf(wellfriendpdf: Path, pdf: Path, output: Path, repo: Path) -> dict:
     archive = output.with_suffix(".zip")
-    result = run([str(oxide), "render", str(pdf), "--pages", "1", "--dpi", "96", "--format", "png", "--output", str(archive)], repo)
+    result = run([str(wellfriendpdf), "render", str(pdf), "--pages", "1", "--dpi", "96", "--format", "png", "--output", str(archive)], repo)
     if result["passed"] and archive.exists():
         with zipfile.ZipFile(archive) as bundle:
             pngs = [name for name in bundle.namelist() if name.lower().endswith(".png")]
@@ -171,7 +171,7 @@ def render_oxide(oxide: Path, pdf: Path, output: Path, repo: Path) -> dict:
                 output.write_bytes(bundle.read(pngs[0]))
             else:
                 result["passed"] = False
-                result["stderr"] += "\nno PNG in Oxide render archive"
+                result["stderr"] += "\nno PNG in Wellfriend render archive"
     return result
 
 
@@ -200,7 +200,7 @@ def image_metrics(left: Path, right: Path) -> dict:
         pixels = diff.get_flattened_data() if hasattr(diff, "get_flattened_data") else diff.getdata()
         changed = sum(1 for pixel in pixels if max(pixel) > 8)
         changed_pct = changed * 100.0 / max(1, lhs.size[0] * lhs.size[1])
-        classification = "within_tolerance" if mean <= 14.0 and changed_pct <= 40.0 else "oxide_outlier"
+        classification = "within_tolerance" if mean <= 14.0 and changed_pct <= 40.0 else "wellfriendpdf_outlier"
         return {
             "classification": classification,
             "mean_absolute_channel_error": round(mean, 6),
@@ -229,7 +229,7 @@ def main() -> int:
     renders = out / "prompt20b-renders"
     corpus.mkdir(parents=True, exist_ok=True)
     renders.mkdir(parents=True, exist_ok=True)
-    oxide = repo / "target" / "debug" / ("oxide.exe" if __import__("os").name == "nt" else "oxide")
+    wellfriendpdf = repo / "target" / "debug" / ("wellfriendpdf.exe" if __import__("os").name == "nt" else "wellfriendpdf")
 
     fixtures = {
         "ltr_multi_run_range": text_fixture(),
@@ -273,7 +273,7 @@ def main() -> int:
         pdf = fixture_paths["ltr_multi_run_range"]
         output = corpus / f"{name}.pdf"
         report = corpus / f"{name}-report.json"
-        result = run([str(oxide), "edit-text-range", str(pdf), "--logical", "--request", str(req_path), "--output", str(output), "--report", str(report)], repo)
+        result = run([str(wellfriendpdf), "edit-text-range", str(pdf), "--logical", "--request", str(req_path), "--output", str(output), "--report", str(report)], repo)
         result["report"] = json.loads(report.read_text(encoding="utf-8")) if report.exists() else None
         operations[name] = result
         if output.exists():
@@ -284,7 +284,7 @@ def main() -> int:
     text_edit("multirun-deletion", 3, 6, "")
 
     analyze_report = corpus / "multirun-range-model.json"
-    operations["multirun-analyze"] = run([str(oxide), "edit-text-range", str(fixture_paths["ltr_multi_run_range"]), "--analyze", "--output", str(corpus / "unused.pdf"), "--report", str(analyze_report)], repo)
+    operations["multirun-analyze"] = run([str(wellfriendpdf), "edit-text-range", str(fixture_paths["ltr_multi_run_range"]), "--analyze", "--output", str(corpus / "unused.pdf"), "--report", str(analyze_report)], repo)
 
     op_path = corpus / "vector-operation.json"
     dump(op_path, {"kind": "set_stroke_width", "width": 5.0})
@@ -293,12 +293,12 @@ def main() -> int:
         pdf = fixture_paths[fixture_name]
         inventory_path = corpus / f"{name}-inventory.json"
         list_cmd = "form-instance-report" if fixture_name.startswith("nested") else "annotation-appearance-shared-report"
-        list_result = run([str(oxide), list_cmd, str(pdf), "--page", "1", "--output", str(inventory_path)], repo)
+        list_result = run([str(wellfriendpdf), list_cmd, str(pdf), "--page", "1", "--output", str(inventory_path)], repo)
         inventory = json.loads(inventory_path.read_text(encoding="utf-8")) if inventory_path.exists() else {}
         stable_id = select_id(inventory, needle) if inventory else ""
         output = corpus / f"{name}.pdf"
         report = corpus / f"{name}-report.json"
-        edit_result = run([str(oxide), command, str(pdf), "--page", "1", "--id", stable_id, "--operation", str(op_path), "--output", str(output), "--report", str(report)], repo)
+        edit_result = run([str(wellfriendpdf), command, str(pdf), "--page", "1", "--id", stable_id, "--operation", str(op_path), "--output", str(output), "--report", str(report)], repo)
         edit_result["inventory"] = list_result
         edit_result["selected_id_present"] = bool(stable_id)
         edit_result["report"] = json.loads(report.read_text(encoding="utf-8")) if report.exists() else None
@@ -321,24 +321,24 @@ def main() -> int:
         "qpdf": shutil.which("qpdf"),
     }
     reference_cases = []
-    oxide_outliers = 0
+    wellfriendpdf_outliers = 0
     unclassified = 0
     for name, pdf in outputs.items():
         case_dir = renders / name
         case_dir.mkdir(parents=True, exist_ok=True)
-        oxide_png = case_dir / "oxide.png"
-        oxide_render = render_oxide(oxide, pdf, oxide_png, repo)
-        renders_for_case = {"oxide": oxide_render}
+        wellfriendpdf_png = case_dir / "wellfriendpdf.png"
+        wellfriendpdf_render = render_wellfriendpdf(wellfriendpdf, pdf, wellfriendpdf_png, repo)
+        renders_for_case = {"wellfriendpdf": wellfriendpdf_render}
         metrics = {}
         for engine, tool in [("poppler", tools["poppler"]), ("pdfium", tools["pdfium"]), ("mupdf", tools["mupdf"])]:
             target = case_dir / f"{engine}.png"
             ref = render_ref(engine, tool, pdf, target, repo)
             renders_for_case[engine] = ref
-            if oxide_render.get("passed") and ref.get("passed") and target.exists():
-                metric = image_metrics(oxide_png, target)
-                metrics[f"oxide_vs_{engine}"] = metric
-                if metric["classification"] == "oxide_outlier":
-                    oxide_outliers += 1
+            if wellfriendpdf_render.get("passed") and ref.get("passed") and target.exists():
+                metric = image_metrics(wellfriendpdf_png, target)
+                metrics[f"wellfriendpdf_vs_{engine}"] = metric
+                if metric["classification"] == "wellfriendpdf_outlier":
+                    wellfriendpdf_outliers += 1
                 elif metric["classification"] != "within_tolerance":
                     unclassified += 1
         qpdf_result = run([tools["qpdf"], "--check", str(pdf)], repo) if tools["qpdf"] else {"status": "unavailable_not_counted_as_pass", "passed": None}
@@ -378,7 +378,7 @@ def main() -> int:
         "operations": operations,
         "tools": tools,
         "pdfbox": "unavailable_not_counted_as_pass",
-        "supported_case_oxide_outliers": oxide_outliers,
+        "supported_case_wellfriendpdf_outliers": wellfriendpdf_outliers,
         "unclassified_failures": unclassified,
         "security_failures": 0,
         "reference_cases": reference_cases,
@@ -416,7 +416,7 @@ def main() -> int:
         "prompt20b-semantic-search-rag-update.json": {"policy": "text edits set semantic/search/RAG invalidation fingerprints; duplicate text is preserved by source-span targeting", **base},
         "prompt20b-corpus-manifest.json": {"fixtures": [{"name": k, "path": str(v.relative_to(repo)), "sha256": sha256(v)} for k, v in fixture_paths.items()], **base},
         "prompt20b-reference-results.json": base,
-        "prompt20b-diff-metrics.json": {"reference_cases": reference_cases, "supported_case_oxide_outliers": oxide_outliers, "unclassified_failures": unclassified},
+        "prompt20b-diff-metrics.json": {"reference_cases": reference_cases, "supported_case_wellfriendpdf_outliers": wellfriendpdf_outliers, "unclassified_failures": unclassified},
         "prompt20b-metamorphic-results.json": {"relations": ["edit_undo_original_digest", "redo_edited_digest", "branch_edit_clears_redo", "clone_one_unaffected_instances", "AP_clone_one_unaffected_annotations", "repeat_execution_deterministic", "logical_selection_alternate_paths"], **base},
         "prompt20b-performance-memory.json": {"recorded_fields": ["range_span_count", "operator_count", "rewritten_stream_bytes", "Form_depth", "cloned_forms", "shared_AP_owners", "AP_streams_cloned", "output_size", "cache_invalidations", "digest"], "memory_limit_bytes": 4096 * 1024 * 1024, **base},
         "prompt20b-limit-denial-results.json": {"limits": ["max_range_spans", "max_operators_per_edit", "max_bidi_runs", "max_vertical_clusters", "max_Form_depth", "max_cloned_objects", "max_appearance_states", "max_output_bytes", "timeout", "scheduler_budget"], **base},
@@ -434,12 +434,12 @@ def main() -> int:
         "<!doctype html><meta charset='utf-8'><title>Prompt 20B closure</title>"
         "<style>body{font:14px system-ui;max-width:1180px;margin:40px auto;color:#17202a}td,th{border:1px solid #ccd1d1;padding:7px}table{border-collapse:collapse;width:100%}th{background:#f4f6f7}</style>"
         f"<h1>Prompt 20B closure audit</h1><p>Schema: {SCHEMA}</p>"
-        f"<p>Outliers: {oxide_outliers}; unclassified failures: {unclassified}; security failures: 0.</p>"
+        f"<p>Outliers: {wellfriendpdf_outliers}; unclassified failures: {unclassified}; security failures: 0.</p>"
         f"<table><thead><tr><th>Row</th><th>Status</th><th>Exact limit</th></tr></thead><tbody>{table}</tbody></table>",
         encoding="utf-8",
     )
-    passed = all(value.get("passed") for value in operations.values()) and oxide_outliers == 0 and unclassified == 0
-    print(json.dumps({"output": str(out), "passed": passed, "operations": len(operations), "outliers": oxide_outliers, "unclassified": unclassified}, indent=2))
+    passed = all(value.get("passed") for value in operations.values()) and wellfriendpdf_outliers == 0 and unclassified == 0
+    print(json.dumps({"output": str(out), "passed": passed, "operations": len(operations), "outliers": wellfriendpdf_outliers, "unclassified": unclassified}, indent=2))
     return 0 if passed else 1
 
 

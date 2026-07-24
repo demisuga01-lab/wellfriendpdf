@@ -286,12 +286,12 @@ pub fn semantic_search_report(
 ) -> Result<SemanticSearchReport> {
     let query = query.trim();
     if query.is_empty() {
-        return Err(crate::OxideError::invalid_input(
+        return Err(crate::WellfriendError::invalid_input(
             "semantic search query must not be empty",
         ));
     }
     if query.chars().count() > 4_096 {
-        return Err(crate::OxideError::invalid_input(
+        return Err(crate::WellfriendError::invalid_input(
             "semantic search query exceeds the 4096-character limit",
         ));
     }
@@ -358,7 +358,7 @@ fn normalized_pages(engine: &ContentEngine, requested: &[usize]) -> Result<Vec<u
     };
     for page in &pages {
         if *page == 0 || *page > count {
-            return Err(crate::OxideError::invalid_input(format!(
+            return Err(crate::WellfriendError::invalid_input(format!(
                 "page {page} out of range for {count}-page document"
             )));
         }

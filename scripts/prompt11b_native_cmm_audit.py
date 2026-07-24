@@ -79,7 +79,7 @@ def run_command(cmd: list[str], timeout: int) -> dict[str, Any]:
 def load_feature_report(native: bool, run_smoke: bool) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not run_smoke:
         return None, None
-    cmd = ["cargo", "run", "-p", "oxide-cli"]
+    cmd = ["cargo", "run", "-p", "wellfriendpdf-cli"]
     if native:
         cmd += ["--features", "native-cmm-lcms2"]
     cmd += ["--quiet", "--", "feature-report"]
@@ -113,7 +113,7 @@ def main() -> int:
     native_report, native_report_cmd = load_feature_report(native=True, run_smoke=args.run_smoke)
     native_test_cmd = (
         run_command(
-            ["cargo", "test", "-p", "oxide-engine", "--features", "native-cmm-lcms2", "native_lcms2", "--jobs", "1"],
+            ["cargo", "test", "-p", "wellfriendpdf-engine", "--features", "native-cmm-lcms2", "native_lcms2", "--jobs", "1"],
             360,
         )
         if args.run_smoke
@@ -136,8 +136,8 @@ def main() -> int:
         "status": "complete",
         "backend": "LittleCMS/lcms2 via Rust lcms2 crate",
         "binding_or_ffi": "lcms2 6.1.1 safe Rust wrapper, lcms2-sys 4.0.7 native boundary",
-        "unsafe_in_oxide_engine": False,
-        "unsafe_boundary": "oxide-engine keeps forbid(unsafe_code); unsafe/native code is in lcms2/lcms2-sys dependencies",
+        "unsafe_in_wellfriendpdf_engine": False,
+        "unsafe_boundary": "wellfriendpdf-engine keeps forbid(unsafe_code); unsafe/native code is in lcms2/lcms2-sys dependencies",
         "license": "lcms2/lcms2-sys MIT; bundled LittleCMS source license recorded by dependency when static fallback is used",
         "native_library": "lcms2",
         "linking": "dynamic discovery through pkg-config/LCMS2_LIB_DIR with lcms2-sys static fallback",
@@ -171,9 +171,9 @@ def main() -> int:
         "native_feature_tests": native_test_cmd,
         "rows": [
             matrix_row("default workspace build without native CMM", "implemented", ["cargo test/cargo clippy default gates"]),
-            matrix_row("oxide-engine native-cmm-lcms2 feature", "implemented", ["cargo test -p oxide-engine --features native-cmm-lcms2 native_lcms2"]),
-            matrix_row("CLI native-cmm-lcms2 report", "implemented", ["cargo run -p oxide-cli --features native-cmm-lcms2 -- feature-report"]),
-            matrix_row("WASM no-native posture", "implemented", ["cargo check -p oxide-wasm --target wasm32-unknown-unknown"]),
+            matrix_row("wellfriendpdf-engine native-cmm-lcms2 feature", "implemented", ["cargo test -p wellfriendpdf-engine --features native-cmm-lcms2 native_lcms2"]),
+            matrix_row("CLI native-cmm-lcms2 report", "implemented", ["cargo run -p wellfriendpdf-cli --features native-cmm-lcms2 -- feature-report"]),
+            matrix_row("WASM no-native posture", "implemented", ["cargo check -p wellfriendpdf-wasm --target wasm32-unknown-unknown"]),
             matrix_row("default report native unavailable", "implemented", ["prompt11b feature report default section"]),
         ],
         "default_section": default_section,
@@ -185,9 +185,9 @@ def main() -> int:
         "policy": "no binding package silently claims or bundles native CMM unless built with native-cmm-lcms2",
         "rows": [
             matrix_row("Rust SDK", "implemented", ["feature_report_json prompt11b section"]),
-            matrix_row("CLI", "implemented", ["oxide feature-report prompt11b section"]),
+            matrix_row("CLI", "implemented", ["wellfriendpdf feature-report prompt11b section"]),
             matrix_row("Python wheel", "implemented_with_limits", ["default wheel reports fallback"], "source/native-feature wheel build required for lcms2"),
-            matrix_row("C ABI", "implemented", ["oxide_feature_report_json prompt11b section"]),
+            matrix_row("C ABI", "implemented", ["wellfriendpdf_feature_report_json prompt11b section"]),
             matrix_row("WASM", "implemented", ["native unavailable posture"]),
             matrix_row(".NET", "implemented", ["smoke asserts prompt11b section"]),
             matrix_row("Java Maven", "implemented", ["JUnit smoke asserts prompt11b section"]),
@@ -286,7 +286,7 @@ def main() -> int:
     })
     write_json(OUT_DIR / "native-cmm-reference-diff-prompt11b.json", {
         "status": "implemented_numeric_transform_reference",
-        "oxide_outliers": 0,
+        "wellfriendpdf_outliers": 0,
         "unclassified_failures": 0,
         "note": "Prompt 11B avoids rerunning renderer parity; native CMM closure uses numeric ICC transform fixtures and Prompt 11 renderer closeout remains the renderer baseline",
     })

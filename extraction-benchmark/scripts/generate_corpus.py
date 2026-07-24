@@ -20,7 +20,7 @@ by rasterizing the digital PDF and re-wrapping the pixels as an image-only PDF.
 Dependencies: reportlab (pure-Python PDF writer — a *writer*, not an extractor,
 so it does not bias the comparison) and PyMuPDF (used only as a rasterizer for
 the scanned variants — a utility role, not under test there). Both are dev
-tooling; Oxide's own side stays pure-Rust.
+tooling; Wellfriend's own side stays pure-Rust.
 
 Sources/licenses: all documents are SYNTHETIC and self-authored for this
 benchmark (no third-party corpus is redistributed), so the corpus is freely

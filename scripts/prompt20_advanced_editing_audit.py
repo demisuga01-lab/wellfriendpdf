@@ -78,7 +78,7 @@ def feature_rows() -> list[dict]:
         ("P20-VECTOR-Z-01", "vector", "bounded page-owned z-order changes", "implemented_with_limits", "vector_z_order", "prompt20::tests::bounded_page_z_order_moves_selected_object_and_reopens", "clipping, marked-content, OCG, and Form-owned z-order changes are rejected exactly"),
         ("P20-VECTOR-GROUP-01", "vector", "bounded contiguous group and ungroup", "implemented_with_limits", "vector_group", "prompt20::tests::bounded_contiguous_group_and_ungroup_round_trip", "cross-stream, non-contiguous, and Form-owned grouping is rejected exactly"),
         ("P20-INK-01", "ink", "deterministic error-bounded cubic curve fitting", "implemented", "raw_plus_fitted", "prompt20::tests::ink_fit_is_deterministic_and_error_bounded", "does not recover pressure, tilt, velocity, timing, or pen dynamics"),
-        ("P20-INK-AP-01", "ink", "Ink annotation fitted appearance and raw-point policy", "implemented_with_limits", "fit_on_appearance_generation", "prompt20::tests::annotation_ink_fit_saves_cubic_appearance_and_raw_points", "PDF InkList remains point-based; cubics stored in OxideFittedInk"),
+        ("P20-INK-AP-01", "ink", "Ink annotation fitted appearance and raw-point policy", "implemented_with_limits", "fit_on_appearance_generation", "prompt20::tests::annotation_ink_fit_saves_cubic_appearance_and_raw_points", "PDF InkList remains point-based; cubics stored in WellfriendFittedInk"),
         ("P20-TX-01", "integration", "incremental patch undo/redo, checkpoints, and branch redo clearing", "implemented_with_limits", "mutation_session", "prompt20::tests::mutation_session_undo_redo_and_branch_clear_use_incremental_patches", "session accepts prefix-preserving Prompt 20 mutations and caps patch count and suffix bytes"),
         ("P20-FORM-CLONE-01", "vector", "shared Form edit-all and clone-edit-one-instance", "implemented_with_limits", "explicit_shared_form_policy", "prompt20::tests::shared_form_edit_all_and_clone_one_are_explicit_and_safe", "clone-edit-one is bounded to top-level page invocations; nested Form instance cloning is rejected exactly"),
         ("P20-VECTOR-AP-01", "vector", "indirect annotation appearance vector inventory and edit", "implemented_with_limits", "annotation_appearance_operation_range", "prompt20::tests::annotation_ink_fit_saves_cubic_appearance_and_raw_points", "appearance streams shared by multiple annotations are diagnosed and rejected pending ownership-specific clone"),
@@ -127,8 +127,8 @@ def main() -> int:
     }
     dump(output / "prompt20-starting-state.json", starting)
 
-    focused = run(repo, ["cargo", "test", "-p", "oxide-engine", "prompt20", "--lib"]) if args.run_focused else {
-        "command": ["cargo", "test", "-p", "oxide-engine", "prompt20", "--lib"],
+    focused = run(repo, ["cargo", "test", "-p", "wellfriendpdf-engine", "prompt20", "--lib"]) if args.run_focused else {
+        "command": ["cargo", "test", "-p", "wellfriendpdf-engine", "prompt20", "--lib"],
         "passed": None,
         "status": "not_run_by_this_invocation",
     }
@@ -179,7 +179,7 @@ def main() -> int:
     prior_gates = load_json(output / "prior-gates" / "prompt20-prior-gates.json")
     release_gate = load_json(repo / "target" / "prompt03-packaging-codec-isolation" / "release-manifest.json")
     reference_execution = load_json(output / "prompt20-reference-execution.json")
-    reference_outliers = int((reference_execution or {}).get("supported_case_oxide_outliers", 0))
+    reference_outliers = int((reference_execution or {}).get("supported_case_wellfriendpdf_outliers", 0))
     reference_unclassified = int((reference_execution or {}).get("unclassified_failures", 0))
     base = {
         "schema_version": SCHEMA,
@@ -188,7 +188,7 @@ def main() -> int:
         "blocked": 0,
         "unclassified_failures": 0,
         "security_failures": 0,
-        "supported_case_oxide_outliers": 0,
+        "supported_case_wellfriendpdf_outliers": 0,
     }
     artifacts: dict[str, object] = {
         "rtl-reflow-matrix-prompt20.json": {**base, "cases": ["arabic", "hebrew", "mixed_arabic_english_numbers", "mixed_hebrew_english_numbers", "combining_marks", "bidi_controls_balanced", "overflow", "missing_glyph_fail_closed"]},
@@ -217,11 +217,11 @@ def main() -> int:
         "ink-simplification-results-prompt20.json": {**base, "pipeline": ["duplicate_filter", "minimum_distance", "collinear_collapse", "bounded_smoothing", "corner_preserving_douglas_peucker"]},
         "ink-cubic-fit-results-prompt20.json": {**base, "pipeline": ["tangent_estimation", "chord_length", "least_squares_cubic", "bounded_newton", "recursive_max_error_split"]},
         "ink-error-metrics-prompt20.json": {**base, "metrics": ["maximum_deviation", "RMS_deviation", "points_before_after", "segments", "compression_ratio", "time", "depth", "hash"]},
-        "ink-appearance-reference-prompt20.json": {**base, "appearance": "cubic Form XObject", "raw_storage": "OxideRawInkList", "fitted_storage": "OxideFittedInk", "tools": tools},
+        "ink-appearance-reference-prompt20.json": {**base, "appearance": "cubic Form XObject", "raw_storage": "WellfriendRawInkList", "fitted_storage": "WellfriendFittedInk", "tools": tools},
         "ink-determinism-prompt20.json": {**base, "digest": "SHA-256 canonical 1e-6 control-point coordinates"},
         "ink-performance-memory-prompt20.json": {**base, "caps": {"points": 1000000, "segments": 100000, "recursion": 32, "newton_iterations": 16}},
         "prompt20-corpus-manifest.json": {**base, "fixtures": ["prompt20_fixture_text_patch_vector", "prompt20_fixture_ink_annotation", "arabic_rtl_generated", "vertical_identity_v_generated", "nonfinite_ink_denial", "excess_recursion_denial", "type3_exact_unsupported", "shared_form_clone_exact_unsupported"]},
-        "prompt20-reference-results.json": {**base, "reference_tools": tools, "execution": reference_execution, "supported_case_oxide_outliers": reference_outliers, "unclassified_failures": reference_unclassified, "note": "availability is recorded independently from execution and never promoted to pass"},
+        "prompt20-reference-results.json": {**base, "reference_tools": tools, "execution": reference_execution, "supported_case_wellfriendpdf_outliers": reference_outliers, "unclassified_failures": reference_unclassified, "note": "availability is recorded independently from execution and never promoted to pass"},
         "prompt20-diff-metrics.json": {**base, "structural": {"reopen_failures": 0, "prefix_failures": 0, "extraction_failures": 0}, "visual_cases": (reference_execution or {}).get("cases", [])},
         "prompt20-reference-disagreements.json": {**base, "classified": [case for case in (reference_execution or {}).get("cases", []) if any(metric.get("classification") != "within_tolerance" for metric in case.get("metrics", {}).values())], "unclassified": [] if reference_unclassified == 0 else ["see prompt20-reference-execution.json"]},
         "prompt20-metamorphic-results.json": {**base, "relations": ["repeat_fit_same_control_points", "repeat_fit_same_hash", "incremental_prefix", "vector_unrelated_prefix_suffix", "reopen_extract_old_absent_new_present", "missing_glyph_fail_closed", "undo_restores_before_digest", "redo_restores_after_digest", "branch_edit_clears_redo", "group_ungroup_marker_round_trip", "shared_form_clone_retains_source_owner"]},

@@ -1,6 +1,6 @@
-# OCR in Oxide
+# OCR in Wellfriend
 
-Oxide is offline by default. The core engine does not bundle a model, phone
+Wellfriend is offline by default. The core engine does not bundle a model, phone
 home, require provider SDKs, or choose a cloud vendor. It owns the PDF side of
 OCR and exposes one backend seam:
 
@@ -16,16 +16,16 @@ model/provider mapping, and keep the same seam contract.
 
 ## The Backend Contract
 
-Rust backends implement `oxide_engine::OcrEngine`:
+Rust backends implement `wellfriendpdf_engine::OcrEngine`:
 
 ```rust
-use oxide_engine::{OcrEngine, OcrImage, OcrOptions, OcrPage, OcrWord};
+use wellfriendpdf_engine::{OcrEngine, OcrImage, OcrOptions, OcrPage, OcrWord};
 
 struct MyBackend;
 
 impl OcrEngine for MyBackend {
     fn recognize(&self, image: &OcrImage, opts: &OcrOptions)
-        -> oxide_engine::Result<OcrPage>
+        -> wellfriendpdf_engine::Result<OcrPage>
     {
         let _ = (image, opts);
         Ok(OcrPage::new(vec![OcrWord {
@@ -57,10 +57,10 @@ Return words with:
 | --- | --- |
 | `text` | Recognized word text. |
 | `bbox` | `[x0, y0, x1, y1]` in the same image-pixel frame, origin top-left, y down. |
-| `confidence` | `0.0..1.0`, clamped by Oxide. |
+| `confidence` | `0.0..1.0`, clamped by WellfriendPdf. |
 | `line_id` | Optional line grouping. Recommended for readable line assembly. |
 
-Do not return PDF points. Do not flip y coordinates. Oxide maps image-pixel
+Do not return PDF points. Do not flip y coordinates. Wellfriend maps image-pixel
 boxes back into page space.
 
 ## Policy And Activation
@@ -77,9 +77,9 @@ OCR is never implicit. Callers choose `OcrPolicy`:
 
 ```rust
 use std::sync::Arc;
-use oxide_engine::{ContentEngine, OcrPolicy, ParseOptions};
+use wellfriendpdf_engine::{ContentEngine, OcrPolicy, ParseOptions};
 
-# fn main() -> oxide_engine::Result<()> {
+# fn main() -> wellfriendpdf_engine::Result<()> {
 # let bytes = Vec::new();
 # let backend = Arc::new(MyBackend);
 let engine = ContentEngine::open_bytes(bytes)?;
@@ -110,10 +110,10 @@ subprocess before the outer engine timeout is needed.
 
 ## Memory And Concurrency
 
-Oxide renders and OCRs pages in a bounded window. Backends must not accumulate
+Wellfriend renders and OCRs pages in a bounded window. Backends must not accumulate
 all page images.
 
-`OcrEngine::max_concurrency()` tells Oxide how many pages may be recognized at
+`OcrEngine::max_concurrency()` tells Wellfriend how many pages may be recognized at
 once:
 
 - Tesseract returns a CPU-tied process count with a sane cap.
@@ -125,7 +125,7 @@ Returning `0` is treated as `1`.
 
 ## Tesseract Backend
 
-The shipped backend lives in `crates/oxide-ocr-tesseract`.
+The shipped backend lives in `crates/wellfriendpdf-ocr-tesseract`.
 
 It drives the external `tesseract` binary as a child process. It links no C
 library. Per page it writes a temporary PGM, invokes Tesseract TSV output, parses
@@ -140,10 +140,10 @@ Rust usage:
 
 ```rust
 use std::sync::Arc;
-use oxide_engine::{ContentEngine, OcrPolicy, ParseOptions};
-use oxide_ocr_tesseract::TesseractEngine;
+use wellfriendpdf_engine::{ContentEngine, OcrPolicy, ParseOptions};
+use wellfriendpdf_ocr_tesseract::TesseractEngine;
 
-# fn main() -> oxide_engine::Result<()> {
+# fn main() -> wellfriendpdf_engine::Result<()> {
 # let bytes = Vec::new();
 let backend = TesseractEngine::new()?
     .with_timeout(std::time::Duration::from_secs(60));
@@ -176,17 +176,17 @@ fabricate recognition results.
 Build the CLI with the OCR feature:
 
 ```sh
-cargo build --release -p oxide-cli --features ocr
+cargo build --release -p wellfriendpdf-cli --features ocr
 ```
 
 Use optional-value `--ocr` flags:
 
 ```sh
-oxide parse scanned.pdf --ocr --ocr-lang eng --ocr-dpi 300
-oxide parse scanned.pdf --ocr force --format html
-oxide extract-text scanned.pdf --ocr auto
-oxide extract-fields invoice-scan.pdf --ocr --type invoice
-oxide chunk scanned.pdf --ocr --target-tokens 512
+wellfriendpdf parse scanned.pdf --ocr --ocr-lang eng --ocr-dpi 300
+wellfriendpdf parse scanned.pdf --ocr force --format html
+wellfriendpdf extract-text scanned.pdf --ocr auto
+wellfriendpdf extract-fields invoice-scan.pdf --ocr --type invoice
+wellfriendpdf chunk scanned.pdf --ocr --target-tokens 512
 ```
 
 `--ocr` alone means `auto`; explicit values are `off`, `auto`, and `force`.
@@ -205,13 +205,13 @@ text and structure.
 The server has one process-wide OCR hook. Build with:
 
 ```sh
-cargo build --release -p oxide-server --features ocr
+cargo build --release -p wellfriendpdf-server --features ocr
 ```
 
 Then set:
 
 ```sh
-OXIDE_OCR=auto
+WELLFRIENDPDF_OCR=auto
 ```
 
 Accepted values are `off`, `auto`, and `force` (`1`, `on`, and `true` map to
@@ -221,7 +221,7 @@ Accepted values are `off`, `auto`, and `force` (`1`, `on`, and `true` map to
 Embedded users can call:
 
 ```rust
-oxide_server::ocr::set_backend(backend, oxide_engine::OcrPolicy::Auto);
+wellfriendpdf_server::ocr::set_backend(backend, wellfriendpdf_engine::OcrPolicy::Auto);
 ```
 
 Do not add a second configuration path. Parser endpoints receive the registered
@@ -241,7 +241,7 @@ def recognize(self, image_bytes: bytes, info: dict) -> list[dict]: ...
 Example:
 
 ```python
-import oxide
+import wellfriendpdf
 
 class MyModel:
     name = "my-local-model"
@@ -254,7 +254,7 @@ class MyModel:
              "confidence": 0.98, "line_id": 0},
         ]
 
-doc = oxide.open("scan.pdf")
+doc = wellfriendpdf.open("scan.pdf")
 markdown = doc.to_markdown(ocr=MyModel(), ocr_lang="eng", ocr_dpi=300)
 print(markdown)
 ```
@@ -262,7 +262,7 @@ print(markdown)
 A runnable local-AI template is provided at:
 
 ```text
-crates/oxide-py/examples/local_ai_ocr_backend.py
+crates/wellfriendpdf-py/examples/local_ai_ocr_backend.py
 ```
 
 The template marks the `YOUR MODEL HERE` boundary and uses real `pytesseract`
@@ -289,13 +289,13 @@ maps the JSON response back to `OcrPage`.
 
 ```rust
 use std::sync::Arc;
-use oxide_engine::{ContentEngine, OcrPolicy, ParseOptions};
+use wellfriendpdf_engine::{ContentEngine, OcrPolicy, ParseOptions};
 
 #[path = "ocr_http_backends.rs"]
 mod ocr_http_backends;
 use ocr_http_backends::LocalHttpOcrBackend;
 
-# fn main() -> oxide_engine::Result<()> {
+# fn main() -> wellfriendpdf_engine::Result<()> {
 # let bytes = Vec::new();
 let backend = LocalHttpOcrBackend::new("http://127.0.0.1:9000/ocr")?
     .with_max_concurrency(1);
@@ -330,7 +330,7 @@ It has no default endpoint, no bundled keys, and no provider SDK.
 ```rust
 use ocr_http_backends::{CloudHttpOcrBackend, CloudHttpOcrConfig};
 
-# fn build() -> oxide_engine::Result<CloudHttpOcrBackend> {
+# fn build() -> wellfriendpdf_engine::Result<CloudHttpOcrBackend> {
 let config = CloudHttpOcrConfig::new("http://127.0.0.1:9000/provider-ocr")
     .with_auth_header("Authorization", "Bearer ${TOKEN}")
     .with_timeout(std::time::Duration::from_secs(20))
@@ -344,7 +344,7 @@ Production providers normally require HTTPS and provider-specific payloads. Keep
 the `OcrEngine` implementation and replace the example's tiny HTTP client with
 your production TLS-capable client and exact request/response mapping.
 
-Privacy note: cloud OCR sends page images outside your machine. Oxide guarantees
+Privacy note: cloud OCR sends page images outside your machine. Wellfriend guarantees
 the plumbing, coordinate merge, and containment. Your provider contract governs
 recognition accuracy, retention, cost, rate limits, and compliance.
 
@@ -356,19 +356,19 @@ The C ABI exposes a function-pointer backend:
 static int my_recognize(void* userdata,
                         const uint8_t* gray, uint32_t width, uint32_t height,
                         uint32_t dpi,
-                        void* sink, OxideOcrEmitWordFn emit) {
+                        void* sink, WellfriendOcrEmitWordFn emit) {
     emit(sink, "Hello", 72.0, 60.0, 140.0, 88.0, 0.98, 0);
     return 0;
 }
 
-OxideOcrBackend backend = {
+WellfriendOcrBackend backend = {
     .userdata = NULL,
     .recognize = my_recognize,
     .max_concurrency = 1,
     .name = "my-c-ocr",
 };
-oxide_document_set_ocr_backend(doc, backend, &err);
-oxide_document_parse_markdown_ocr(doc, &markdown, &err);
+wellfriendpdf_document_set_ocr_backend(doc, backend, &err);
+wellfriendpdf_document_parse_markdown_ocr(doc, &markdown, &err);
 ```
 
 The plain non-OCR C parse functions ignore the backend. Use the `_ocr` variants
@@ -389,14 +389,14 @@ Recovered words flow into the same document model as digital-born text. That
 means Markdown, JSON, HTML, chunking, and field extraction consume OCR text
 through the normal pipeline.
 
-Oxide records OCR source/provenance and propagates confidence. If the mean OCR
-confidence for a page is below `ocr_low_confidence_warn`, Oxide adds a warning
+Wellfriend records OCR source/provenance and propagates confidence. If the mean OCR
+confidence for a page is below `ocr_low_confidence_warn`, Wellfriend adds a warning
 block so consumers can treat the page as unreliable.
 
 Honest limits:
 
 - OCR quality belongs to the backend and the scan.
-- Oxide guarantees bounded rendering, backend dispatch, coordinate merging,
+- Wellfriend guarantees bounded rendering, backend dispatch, coordinate merging,
   confidence propagation, and per-page failure containment.
 - OCR remains additive. With `OcrPolicy::Off`, behavior is byte-identical to no
   backend.

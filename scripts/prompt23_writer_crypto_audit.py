@@ -112,7 +112,7 @@ def feature_rows() -> list[dict[str, object]]:
         "WASM": "implemented",
         ".NET": "implemented",
         "Java": "implemented",
-        "future owner": "oxide",
+        "future owner": "wellfriendpdf",
     }
     rows = [
         {

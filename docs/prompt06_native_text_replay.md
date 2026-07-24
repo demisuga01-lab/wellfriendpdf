@@ -23,7 +23,7 @@ Evidence:
   on `generated_basic_text.pdf`.
 - `target/prompt06-renderer-native-replay/native-replay-counters.json` records
   aggregate text native replay counts.
-- `cargo test -p oxide-engine display_list_replays_text_page_through_native_ops`
+- `cargo test -p wellfriendpdf-engine display_list_replays_text_page_through_native_ops`
   verifies immediate-vs-display-list pixel equivalence for a text fixture.
 
 Remaining limits: advanced shaping, hinting parity, full clipping text, and

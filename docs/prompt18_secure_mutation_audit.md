@@ -20,7 +20,7 @@ Prompt 18 starts from verified commit `d0842aae76b536f8ccc82d26f1a5a8054889ad49`
 - Attachment compatibility API: `crates/engine/src/attachments.rs`.
 - Signature crypto: `crates/engine/src/signature.rs`.
 - Deterministic full/incremental writer: `crates/engine/src/writer.rs`.
-- Public bindings: `crates/oxide-py`, `crates/oxide-capi`, `crates/oxide-wasm`, `bindings/dotnet`, and `bindings/java`.
+- Public bindings: `crates/wellfriendpdf-py`, `crates/wellfriendpdf-capi`, `crates/wellfriendpdf-wasm`, `bindings/dotnet`, and `bindings/java`.
 
 ## Executable proof
 

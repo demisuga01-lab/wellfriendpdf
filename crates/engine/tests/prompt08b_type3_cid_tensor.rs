@@ -1,6 +1,6 @@
 //! Prompt 08B closure fixtures for Type3/CID text clipping and Type 7 posture.
 
-use oxide_engine::{ContentEngine, PixelBuffer};
+use wellfriendpdf_engine::{ContentEngine, PixelBuffer};
 
 const CID_FONT_BYTES: &[u8] = include_bytes!("../fonts/LiberationSans-Regular.ttf");
 

@@ -2,7 +2,7 @@ use axum::extract::Multipart;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use bytes::Bytes;
-use oxide_engine::{
+use wellfriendpdf_engine::{
     ContentEngine, PdfAnalyzer, TextExtractOptions, TextExtractor, TextFormatOptions, TextFormatter,
 };
 

@@ -21,7 +21,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "target" / "prompt16-xfa-runtime"
 CORPUS = OUT / "corpus"
-CLI = ROOT / "target" / "debug" / ("oxide.exe" if sys.platform == "win32" else "oxide")
+CLI = ROOT / "target" / "debug" / ("wellfriendpdf.exe" if sys.platform == "win32" else "wellfriendpdf")
 SCHEMA = "prompt16.xfa.v1"
 
 
@@ -171,7 +171,7 @@ def cli_json(command: str, fixture: Path, *args: str) -> tuple[dict, dict]:
 def main() -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     if not CLI.exists():
-        run(["cargo", "build", "-p", "oxide-cli", "--jobs", "1"])
+        run(["cargo", "build", "-p", "wellfriendpdf-cli", "--jobs", "1"])
     manifest = build_corpus()
     static = CORPUS / "static-fields.pdf"
     single = CORPUS / "single-stream-xdp.pdf"
@@ -216,7 +216,7 @@ def main() -> int:
     reports["sanitize_rescan"], item = cli_json("xfa-script-report", sanitize_pdf)
     evidence.append(item)
 
-    core_test = run(["cargo", "test", "-p", "oxide-engine", "--test", "prompt16_xfa_runtime", "--jobs", "1"])
+    core_test = run(["cargo", "test", "-p", "wellfriendpdf-engine", "--test", "prompt16_xfa_runtime", "--jobs", "1"])
     evidence.append(core_test)
     test_passed = core_test["exit_code"] == 0
     inner = lambda key: reports[key]["report"]
@@ -259,7 +259,7 @@ def main() -> int:
             "remove_xfa_verified": not flatten["reopen_verification"]["xfa_present_after"],
         },
     )
-    write_json("static-xfa-visual-reference-results-prompt16.json", {"schema_version": SCHEMA, "oxide_hashes": flatten["reopen_verification"]["rendered_page_hashes"], "poppler": poppler_result, "pdfium": "unavailable_not_counted_as_pass", "mupdf": "unavailable_not_counted_as_pass"})
+    write_json("static-xfa-visual-reference-results-prompt16.json", {"schema_version": SCHEMA, "wellfriendpdf_hashes": flatten["reopen_verification"]["rendered_page_hashes"], "poppler": poppler_result, "pdfium": "unavailable_not_counted_as_pass", "mupdf": "unavailable_not_counted_as_pass"})
     write_json("dynamic-xfa-runtime-matrix-prompt16.json", {"schema_version": SCHEMA, "supported": dynamic_report["supported_features"], "unsupported": dynamic_report["unsupported_constructs"]})
     write_json("dynamic-xfa-layout-results-prompt16.json", {"schema_version": SCHEMA, "generated_pages": dynamic_report["generated_pages"], "layout_items": dynamic_report["layout_items"]})
     write_json(
@@ -281,7 +281,7 @@ def main() -> int:
         },
     )
     write_json("dynamic-xfa-limit-results-prompt16.json", {"schema_version": SCHEMA, "limits": dynamic_report["limits"], "fail_closed_test_passed": test_passed})
-    write_json("dynamic-xfa-render-reference-results-prompt16.json", {"schema_version": SCHEMA, "posture": "Oxide preview only; installed reference tools do not establish dynamic XFA parity", "unclassified_failures": 0})
+    write_json("dynamic-xfa-render-reference-results-prompt16.json", {"schema_version": SCHEMA, "posture": "Wellfriend preview only; installed reference tools do not establish dynamic XFA parity", "unclassified_failures": 0})
     write_json("xfa-script-inventory-prompt16.json", inner("static_scripts"))
     write_json("xfa-formcalc-sandbox-results-prompt16.json", runtime["sandbox"])
     write_json("xfa-javascript-sandbox-results-prompt16.json", {"schema_version": SCHEMA, "status": "unsupported_reported_security_policy", "executed": 0, "blocked": True, "audit": runtime["sandbox"]["audit_log"]})
@@ -325,7 +325,7 @@ def main() -> int:
     report_dir = OUT / "prompt16-xfa-html-report"
     report_dir.mkdir(exist_ok=True)
     rows = "".join(f"<tr><td>{html.escape(item)}</td><td>{html.escape(status)}</td></tr>" for item, status in statuses)
-    (report_dir / "index.html").write_text(f"<!doctype html><meta charset=utf-8><title>Oxide Prompt 16 XFA audit</title><style>body{{font:16px system-ui;max-width:980px;margin:40px auto;color:#17202a}}table{{border-collapse:collapse;width:100%}}td,th{{padding:8px;border:1px solid #ccd1d1;text-align:left}}code{{background:#f4f6f7;padding:2px 4px}}</style><h1>Oxide Prompt 16 XFA runtime and sandbox</h1><p>Schema <code>{SCHEMA}</code>; {len(manifest)} deterministic fixtures; blocked items: 0. This is a bounded foundation, not Adobe LiveCycle/AEM parity.</p><table><tr><th>Domain</th><th>Status</th></tr>{rows}</table>", encoding="utf-8")
+    (report_dir / "index.html").write_text(f"<!doctype html><meta charset=utf-8><title>Wellfriend Prompt 16 XFA audit</title><style>body{{font:16px system-ui;max-width:980px;margin:40px auto;color:#17202a}}table{{border-collapse:collapse;width:100%}}td,th{{padding:8px;border:1px solid #ccd1d1;text-align:left}}code{{background:#f4f6f7;padding:2px 4px}}</style><h1>Wellfriend Prompt 16 XFA runtime and sandbox</h1><p>Schema <code>{SCHEMA}</code>; {len(manifest)} deterministic fixtures; blocked items: 0. This is a bounded foundation, not Adobe LiveCycle/AEM parity.</p><table><tr><th>Domain</th><th>Status</th></tr>{rows}</table>", encoding="utf-8")
     print(json.dumps({"artifact_root": str(OUT), "fixture_count": len(manifest), "blocked": 0, "core_tests_passed": test_passed, "poppler": bool(poppler)}, indent=2))
     return 0
 

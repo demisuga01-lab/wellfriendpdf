@@ -1,6 +1,6 @@
 # Combined Prompt 16 XFA feasibility audit
 
-Oxide now has a bounded XFA foundation, not an Adobe LiveCycle/AEM Forms emulator. The canonical owner is `crates/engine/src/xfa`; AcroForm coexistence remains in `interactive.rs`, ordinary page rendering and writing remain in the existing renderer/editor/writer, and security surfaces remain in `security.rs` and the shared SDK facade.
+Wellfriend now has a bounded XFA foundation, not an Adobe LiveCycle/AEM Forms emulator. The canonical owner is `crates/engine/src/xfa`; AcroForm coexistence remains in `interactive.rs`, ordinary page rendering and writing remain in the existing renderer/editor/writer, and security surfaces remain in `security.rs` and the shared SDK facade.
 
 ## Feasibility verdict
 

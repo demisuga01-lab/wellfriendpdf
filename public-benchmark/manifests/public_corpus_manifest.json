@@ -7,7 +7,7 @@
   "failure_count": 43,
   "corpus_storage": "public-benchmark/corpus/ is gitignored; do not commit downloaded PDFs.",
   "sources": {
-    "pdf_oxide_comparable": [
+    "pdf_wellfriendpdf_comparable": [
       "veraPDF corpus",
       "Mozilla pdf.js test/pdfs",
       "DARPA SafeDocs"
@@ -51622,7 +51622,7 @@
         "arxiv-physics",
         "digital-born"
       ],
-      "notes": "physics.comp-ph: Spin disorder competing with positional symmetry breaking governs the metal-insulator behavior in oxide paramagnets",
+      "notes": "physics.comp-ph: Spin disorder competing with positional symmetry breaking governs the metal-insulator behavior in wellfriendpdf paramagnets",
       "local_source_path": null,
       "ok": true,
       "sha256": "9f8914fd9bc1ed8b0b8794b8365fbc838c59dcf8d9770246b1239cc9234797d2",
@@ -64738,7 +64738,7 @@
         "arxiv-qbio",
         "digital-born"
       ],
-      "notes": "q-bio.QM: Archetypal Microbiome Profiles as Indicators of Nitrous Oxide Emission States in Activated Sludge",
+      "notes": "q-bio.QM: Archetypal Microbiome Profiles as Indicators of Nitrous Wellfriend Emission States in Activated Sludge",
       "local_source_path": null,
       "ok": true,
       "sha256": "7580fc5c255051c4df0664023b4915a2dff116c32576133d3a2d4c86228aada5",
@@ -65891,7 +65891,7 @@
         "arxiv-physics",
         "digital-born"
       ],
-      "notes": "physics.comp-ph: Bulk Photovoltaic Effect in Two-Dimensional Perovskite Oxides",
+      "notes": "physics.comp-ph: Bulk Photovoltaic Effect in Two-Dimensional Perovskite Wellfriends",
       "local_source_path": null,
       "ok": true,
       "sha256": "3053c4b914b8f22197054e0afd9c7816082fdd5faf20e7eebfcf80107e0f0f40",

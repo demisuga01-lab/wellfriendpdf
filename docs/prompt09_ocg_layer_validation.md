@@ -31,7 +31,7 @@ Prompt 09B reference artifacts:
 - `multi-reference-render-results-prompt09b.json`
 - `reference-disagreement-summary-prompt09b.json`
 
-The OCMD `AllOn` fixture is a classified reference disagreement with Oxide inside the acceptable Prompt 09B policy cluster. There are 0 stale-cache visibility bugs, 0 OCG outliers, and 0 unclassified OCG failures.
+The OCMD `AllOn` fixture is a classified reference disagreement with Wellfriend inside the acceptable Prompt 09B policy cluster. There are 0 stale-cache visibility bugs, 0 OCG outliers, and 0 unclassified OCG failures.
 
 ## Remaining Limits
 

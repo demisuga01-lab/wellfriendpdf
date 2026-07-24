@@ -1,86 +1,86 @@
 # Bindings
 
-Oxide exposes the engine beyond Rust through Python, a native C ABI, and a
+Wellfriend exposes the engine beyond Rust through Python, a native C ABI, and a
 `wasm-bindgen` browser wrapper.
 
 ## C ABI
 
-Crate: `crates/oxide-capi`
+Crate: `crates/wellfriendpdf-capi`
 
 Build:
 
 ```sh
-cargo build -p oxide-capi
+cargo build -p wellfriendpdf-capi
 ```
 
-Header: `crates/oxide-capi/include/oxide.h`
+Header: `crates/wellfriendpdf-capi/include/wellfriendpdf.h`
 
-The C API uses an opaque `OxideDocument *` handle and caller-owned return
+The C API uses an opaque `WellfriendDocument *` handle and caller-owned return
 buffers:
 
-- `oxide_document_open_from_bytes`
-- `oxide_document_open_from_bytes_with_password`
-- `oxide_document_page_count`
-- `oxide_document_extract_text`
-- `oxide_document_parse_markdown` — parse → canonical model → Markdown (RAG-facing)
-- `oxide_document_parse_json` — parse → canonical `Document` JSON (schema 1.1)
-- `oxide_document_extract_fields_json` — key-value fields → JSON (`doc_type`:
+- `wellfriendpdf_document_open_from_bytes`
+- `wellfriendpdf_document_open_from_bytes_with_password`
+- `wellfriendpdf_document_page_count`
+- `wellfriendpdf_document_extract_text`
+- `wellfriendpdf_document_parse_markdown` — parse → canonical model → Markdown (RAG-facing)
+- `wellfriendpdf_document_parse_json` — parse → canonical `Document` JSON (schema 1.1)
+- `wellfriendpdf_document_extract_fields_json` — key-value fields → JSON (`doc_type`:
   null/`auto`/`invoice`/`receipt`/`form`/`generic`)
-- `oxide_document_extract_semantic_json` — **legacy** (older semantic model;
-  prefer `oxide_document_parse_json` for new code)
-- `oxide_document_info_json`
-- `oxide_document_render_page_png`
-- `oxide_document_render_page_jpeg`
-- `oxide_document_extract_pages_pdf` / `oxide_document_organize_pdf`
-- `oxide_document_rotate_pdf`
-- `oxide_document_optimize_pdf`
-- `oxide_document_linearize_pdf`
-- `oxide_document_decrypt_pdf`
-- `oxide_document_encrypt_aes256_pdf`
-- `oxide_document_to_html`
-- `oxide_document_to_xlsx`
-- `oxide_document_to_pptx`
-- `oxide_document_to_docx`
-- `oxide_docx_to_pdf`
-- `oxide_xlsx_to_pdf`
-- `oxide_pptx_to_pdf`
-- `oxide_document_fonts_json`
-- `oxide_document_signatures_json`
-- `oxide_document_watermark_text_pdf`
-- `oxide_document_add_page_numbers_pdf`
-- `oxide_images_to_pdf`
-- `oxide_merge_pdfs_from_bytes`
-- `oxide_document_free`
-- `oxide_string_free` / `oxide_error_free`
-- `oxide_buffer_free`
+- `wellfriendpdf_document_extract_semantic_json` — **legacy** (older semantic model;
+  prefer `wellfriendpdf_document_parse_json` for new code)
+- `wellfriendpdf_document_info_json`
+- `wellfriendpdf_document_render_page_png`
+- `wellfriendpdf_document_render_page_jpeg`
+- `wellfriendpdf_document_extract_pages_pdf` / `wellfriendpdf_document_organize_pdf`
+- `wellfriendpdf_document_rotate_pdf`
+- `wellfriendpdf_document_optimize_pdf`
+- `wellfriendpdf_document_linearize_pdf`
+- `wellfriendpdf_document_decrypt_pdf`
+- `wellfriendpdf_document_encrypt_aes256_pdf`
+- `wellfriendpdf_document_to_html`
+- `wellfriendpdf_document_to_xlsx`
+- `wellfriendpdf_document_to_pptx`
+- `wellfriendpdf_document_to_docx`
+- `wellfriendpdf_docx_to_pdf`
+- `wellfriendpdf_xlsx_to_pdf`
+- `wellfriendpdf_pptx_to_pdf`
+- `wellfriendpdf_document_fonts_json`
+- `wellfriendpdf_document_signatures_json`
+- `wellfriendpdf_document_watermark_text_pdf`
+- `wellfriendpdf_document_add_page_numbers_pdf`
+- `wellfriendpdf_images_to_pdf`
+- `wellfriendpdf_merge_pdfs_from_bytes`
+- `wellfriendpdf_document_free`
+- `wellfriendpdf_string_free` / `wellfriendpdf_error_free`
+- `wellfriendpdf_buffer_free`
 
-`oxide_document_parse_markdown`, `oxide_document_parse_json`, and the WASM
+`wellfriendpdf_document_parse_markdown`, `wellfriendpdf_document_parse_json`, and the WASM
 `parseMarkdown` / `parseJson` bindings all emit the **same canonical `Document`
-schema** the CLI `oxide parse` and the server `POST /api/v1/parse` produce, so
+schema** the CLI `wellfriendpdf parse` and the server `POST /api/v1/parse` produce, so
 output is consistent across every surface. The parser ops over C are
 digital-born only (OCR is not wired through the C ABI). Returned strings are
-freed with `oxide_string_free`.
+freed with `wellfriendpdf_string_free`.
 
-`oxide_document_open_from_bytes_with_password` accepts a UTF-8 password as
+`wellfriendpdf_document_open_from_bytes_with_password` accepts a UTF-8 password as
 pointer plus byte length. `password == NULL && password_len == 0` means no
 password; a non-null pointer with zero length means an explicit empty password.
 The C ABI reads the password only for the open operation and does not log or
-retain it. Existing callers can keep using `oxide_document_open_from_bytes`.
+retain it. Existing callers can keep using `wellfriendpdf_document_open_from_bytes`.
 
 ### Report / version surfaces (Prompt 01)
 
-The C ABI, Python, and Rust `oxide_engine::sdk` facade share one versioned-JSON
+The C ABI, Python, and Rust `wellfriendpdf_engine::sdk` facade share one versioned-JSON
 report layer (envelope `{"schema_version","kind","report"}`). New C functions
-returning owned JSON strings (free with `oxide_string_free`):
-`oxide_document_security_report_json`, `oxide_document_parser_report_json`,
-`oxide_document_color_report_json`, `oxide_document_validate_json`,
-`oxide_document_forms_report_json`, `oxide_document_annotations_report_json`,
-`oxide_document_pages_report_json`, `oxide_document_interactive_report_json`,
-`oxide_document_chunks_json`, plus output ops
-`oxide_document_sanitize_json`, `oxide_document_canonicalize_json`,
-`oxide_document_redact_terms_json` (owned `OxideBuffer` + report), and
-version/capability queries `oxide_feature_report_json`, `oxide_version`,
-`oxide_abi_version`. See [`c_abi_prompt01.md`](c_abi_prompt01.md),
+returning owned JSON strings (free with `wellfriendpdf_string_free`):
+`wellfriendpdf_document_security_report_json`, `wellfriendpdf_document_parser_report_json`,
+`wellfriendpdf_document_color_report_json`, `wellfriendpdf_document_validate_json`,
+`wellfriendpdf_document_forms_report_json`, `wellfriendpdf_document_annotations_report_json`,
+`wellfriendpdf_document_pages_report_json`, `wellfriendpdf_document_interactive_report_json`,
+`wellfriendpdf_document_chunks_json`, plus output ops
+`wellfriendpdf_document_sanitize_json`, `wellfriendpdf_document_canonicalize_json`,
+`wellfriendpdf_document_redact_terms_json` (owned `WellfriendBuffer` + report), and
+version/capability queries `wellfriendpdf_feature_report_json`, `wellfriendpdf_version`,
+`wellfriendpdf_abi_version`. See [`c_abi_prompt01.md`](c_abi_prompt01.md),
 [`python_sdk_prompt01.md`](python_sdk_prompt01.md),
 [`public_api_rust_prompt01.md`](public_api_rust_prompt01.md),
 [`report_schema_versioning_prompt01.md`](report_schema_versioning_prompt01.md),
@@ -89,27 +89,27 @@ and the gap matrix [`bindings_prompt01_gap_matrix.md`](bindings_prompt01_gap_mat
 Every exported function catches Rust panics before the FFI boundary and returns
 one of:
 
-- `OXIDE_STATUS_OK`
-- `OXIDE_STATUS_NULL`
-- `OXIDE_STATUS_ERROR`
-- `OXIDE_STATUS_PANIC`
+- `WELLFRIENDPDF_STATUS_OK`
+- `WELLFRIENDPDF_STATUS_NULL`
+- `WELLFRIENDPDF_STATUS_ERROR`
+- `WELLFRIENDPDF_STATUS_PANIC`
 
-The sample `crates/oxide-capi/examples/extract_text.c` opens a PDF from bytes,
+The sample `crates/wellfriendpdf-capi/examples/extract_text.c` opens a PDF from bytes,
 extracts page 1 text, and frees all returned resources. The sample
-`crates/oxide-capi/examples/parse_document.c` opens a PDF, prints the parsed
+`crates/wellfriendpdf-capi/examples/parse_document.c` opens a PDF, prints the parsed
 Markdown, and prints extracted key-value fields as JSON.
 
 Verified on this host:
 
 ```bat
-cargo test -p oxide-capi
-cargo build -p oxide-capi
+cargo test -p wellfriendpdf-capi
+cargo build -p wellfriendpdf-capi
 call "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\VsDevCmd.bat" -arch=x64 -host_arch=x64
-cl /I crates\oxide-capi\include crates\oxide-capi\examples\extract_text.c /Fe:target\debug\oxide_capi_extract_text_example.exe /link target\debug\oxide_capi.dll.lib
-target\debug\oxide_capi_extract_text_example.exe crates\engine\tests\fixtures\minimal.pdf
+cl /I crates\wellfriendpdf-capi\include crates\wellfriendpdf-capi\examples\extract_text.c /Fe:target\debug\wellfriendpdf_capi_extract_text_example.exe /link target\debug\wellfriendpdf_capi.dll.lib
+target\debug\wellfriendpdf_capi_extract_text_example.exe crates\engine\tests\fixtures\minimal.pdf
 
-cl /I crates\oxide-capi\include crates\oxide-capi\examples\parse_document.c /Fe:target\debug\oxide_capi_parse_example.exe /link target\debug\oxide_capi.dll.lib
-target\debug\oxide_capi_parse_example.exe crates\engine\tests\fixtures\form_160f.pdf
+cl /I crates\wellfriendpdf-capi\include crates\wellfriendpdf-capi\examples\parse_document.c /Fe:target\debug\wellfriendpdf_capi_parse_example.exe /link target\debug\wellfriendpdf_capi.dll.lib
+target\debug\wellfriendpdf_capi_parse_example.exe crates\engine\tests\fixtures\form_160f.pdf
 ```
 
 The `parse_document` example was run on `form_160f.pdf`: `parse_markdown`
@@ -118,24 +118,24 @@ grid) and `extract_fields_json` returned 67 AcroForm fields with
 `"doc_type":"form"` — exercising the full parser surface over the C ABI.
 
 `cbindgen` was not installed on this machine, so the header is committed along
-with `crates/oxide-capi/cbindgen.toml` for regeneration in environments that
+with `crates/wellfriendpdf-capi/cbindgen.toml` for regeneration in environments that
 have `cbindgen`.
 
 ## WASM
 
-Crate: `crates/oxide-wasm`
+Crate: `crates/wellfriendpdf-wasm`
 
 Build verified:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo build -p oxide-wasm --target wasm32-unknown-unknown --release
-wasm-bindgen --target web --out-dir crates/oxide-wasm/examples/browser/pkg target/wasm32-unknown-unknown/release/oxide_wasm.wasm
+cargo build -p wellfriendpdf-wasm --target wasm32-unknown-unknown --release
+wasm-bindgen --target web --out-dir crates/wellfriendpdf-wasm/examples/browser/pkg target/wasm32-unknown-unknown/release/wellfriendpdf_wasm.wasm
 ```
 
 The wrapper exposes a JS class:
 
-- `new OxidePdf(Uint8Array)`
+- `new WellfriendPdf(Uint8Array)`
 - `pageCount()`
 - `extractText(page)`
 - `extractStructuredText(page)`
@@ -150,12 +150,12 @@ feature in the WASM crate; native engine defaults are unchanged. Rayon remains
 in the engine dependency graph, but the WASM wrapper does not expose the
 parallel all-pages extractor.
 
-Browser example: `crates/oxide-wasm/examples/browser/index.html`
+Browser example: `crates/wellfriendpdf-wasm/examples/browser/index.html`
 
 Prompt H browser verification:
 
 ```sh
-cd crates/oxide-wasm/examples/browser
+cd crates/wellfriendpdf-wasm/examples/browser
 py -m http.server 8765
 ```
 
@@ -168,12 +168,12 @@ instead.
 
 ## Python
 
-Crate: `crates/oxide-py`
+Crate: `crates/wellfriendpdf-py`
 
 Build:
 
 ```sh
-maturin build --manifest-path crates/oxide-py/Cargo.toml
+maturin build --manifest-path crates/wellfriendpdf-py/Cargo.toml
 ```
 
 The module exposes a `Document` class:
@@ -206,5 +206,5 @@ Module-level Phase 3/4 helpers mirror the CLI/Rust utility surface:
 - `fonts(pdf, password=None) -> list[dict]`
 - `verify_signatures(pdf, password=None) -> list[dict]`
 
-Errors map to `oxide.OxideError` for engine failures and normal Python
+Errors map to `wellfriendpdf.WellfriendError` for engine failures and normal Python
 `ValueError`/`IndexError` for bad binding-level arguments.

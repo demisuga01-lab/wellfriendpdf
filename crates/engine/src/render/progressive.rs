@@ -2,7 +2,7 @@ use serde::Serialize;
 
 use crate::cancel::CancelToken;
 use crate::engine::ContentEngine;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::optional_content::OptionalContentContext;
 use crate::render::{PageRenderer, PixelBuffer, RenderMode, RenderTile, WHITE};
 
@@ -121,7 +121,7 @@ impl<'a> ProgressiveRenderJob<'a> {
 
     pub fn validate_resume_token(&self, token: &ProgressiveRenderToken) -> Result<()> {
         if !token.resumable {
-            return Err(OxideError::invalid_input(
+            return Err(WellfriendError::invalid_input(
                 "progressive resume token is marked non-resumable",
             ));
         }
@@ -146,7 +146,7 @@ impl<'a> ProgressiveRenderJob<'a> {
         if mismatches.is_empty() {
             Ok(())
         } else {
-            Err(OxideError::invalid_input(format!(
+            Err(WellfriendError::invalid_input(format!(
                 "progressive resume token mismatch: {}",
                 mismatches.join(", ")
             )))

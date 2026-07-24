@@ -7,7 +7,7 @@ PAdES/LTV substrate.
 
 - CMS timestamp-token embedding: callers can pass
   `SignatureOptions::timestamp_token_der`, a DER RFC 3161 `TimeStampToken`
-  (`ContentInfo`), and Oxide embeds it as the CMS
+  (`ContentInfo`), and Wellfriend embeds it as the CMS
   `signatureTimeStampToken` unsigned attribute.
 - DSS append: `ContentEngine::add_ltv_material` / `add_ltv_material` writes a
   catalog `/DSS` dictionary through an incremental update. It emits `/Certs`,
@@ -22,7 +22,7 @@ PAdES/LTV substrate.
 
 ## Validation
 
-- `cargo test -p oxide-engine --test signatures -- --nocapture`
+- `cargo test -p wellfriendpdf-engine --test signatures -- --nocapture`
   - 8 tests passed.
   - The LTV regression signs `basicapi.pdf`, embeds a timestamp token, appends
     a DSS with CRL material, verifies `baseline_lt`, checks the matching VRI,

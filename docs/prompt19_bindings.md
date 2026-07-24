@@ -10,6 +10,6 @@ CLI commands are `form-js-report`, `form-js-sanitize`,
 
 Python, C ABI, WASM, .NET, Java Maven, and Java Gradle call the same `sdk`
 functions. Output operations return owned PDF bytes plus a versioned JSON
-report. C callers free returned strings/buffers with the standard Oxide free
+report. C callers free returned strings/buffers with the standard Wellfriend free
 functions. .NET/Java preserve disposal rules. Existing flowing DOCX methods
 remain source-compatible; explicit-layout overloads are additive.

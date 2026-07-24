@@ -16,7 +16,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{apply_filter_bytes_in_process_with_limits, DecodeLimits};
 
 pub const CODEC_WORKER_PROTOCOL_VERSION: u32 = 1;
@@ -109,7 +109,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     CodecBackendRegistryEntry {
         codec_kind: "FlateDecode",
         aliases: &["Fl"],
-        backend_name: "oxide-rust-flate2",
+        backend_name: "wellfriendpdf-rust-flate2",
         implementation_language: "rust",
         rust_dependency: Some("flate2"),
         native_dependency: None,
@@ -128,7 +128,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     CodecBackendRegistryEntry {
         codec_kind: "ASCIIHexDecode",
         aliases: &["AHx"],
-        backend_name: "oxide-rust-asciihex",
+        backend_name: "wellfriendpdf-rust-asciihex",
         implementation_language: "rust",
         rust_dependency: None,
         native_dependency: None,
@@ -146,7 +146,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     CodecBackendRegistryEntry {
         codec_kind: "ASCII85Decode",
         aliases: &["A85"],
-        backend_name: "oxide-rust-ascii85",
+        backend_name: "wellfriendpdf-rust-ascii85",
         implementation_language: "rust",
         rust_dependency: None,
         native_dependency: None,
@@ -164,7 +164,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     CodecBackendRegistryEntry {
         codec_kind: "RunLengthDecode",
         aliases: &["RL"],
-        backend_name: "oxide-rust-runlength",
+        backend_name: "wellfriendpdf-rust-runlength",
         implementation_language: "rust",
         rust_dependency: None,
         native_dependency: None,
@@ -182,7 +182,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     CodecBackendRegistryEntry {
         codec_kind: "LZWDecode",
         aliases: &["LZW"],
-        backend_name: "oxide-rust-lzw",
+        backend_name: "wellfriendpdf-rust-lzw",
         implementation_language: "rust",
         rust_dependency: None,
         native_dependency: None,
@@ -200,7 +200,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     CodecBackendRegistryEntry {
         codec_kind: "DCTDecode",
         aliases: &["DCT"],
-        backend_name: "oxide-rust-jpeg-decoder",
+        backend_name: "wellfriendpdf-rust-jpeg-decoder",
         implementation_language: "rust",
         rust_dependency: Some("jpeg-decoder"),
         native_dependency: None,
@@ -218,7 +218,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     CodecBackendRegistryEntry {
         codec_kind: "JPXDecode",
         aliases: &[],
-        backend_name: "oxide-rust-hayro-jpeg2000",
+        backend_name: "wellfriendpdf-rust-hayro-jpeg2000",
         implementation_language: "rust",
         rust_dependency: Some("hayro-jpeg2000"),
         native_dependency: None,
@@ -236,7 +236,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     CodecBackendRegistryEntry {
         codec_kind: "CCITTFaxDecode",
         aliases: &["CCF"],
-        backend_name: "oxide-rust-hayro-ccitt",
+        backend_name: "wellfriendpdf-rust-hayro-ccitt",
         implementation_language: "rust",
         rust_dependency: Some("hayro-ccitt"),
         native_dependency: None,
@@ -254,7 +254,7 @@ const CODEC_BACKEND_REGISTRY: &[CodecBackendRegistryEntry] = &[
     CodecBackendRegistryEntry {
         codec_kind: "JBIG2Decode",
         aliases: &[],
-        backend_name: "oxide-rust-hayro-jbig2",
+        backend_name: "wellfriendpdf-rust-hayro-jbig2",
         implementation_language: "rust",
         rust_dependency: Some("hayro-jbig2"),
         native_dependency: None,
@@ -594,7 +594,7 @@ impl CodecIsolationConfig {
     pub fn from_policy_str(policy: Option<&str>) -> Result<Self> {
         let parsed = match policy {
             Some(value) => CodecIsolationPolicy::parse(value).ok_or_else(|| {
-                OxideError::invalid_input(format!(
+                WellfriendError::invalid_input(format!(
                     "unknown codec isolation policy '{value}'; use in_process, isolated_preferred, isolated_required, report_only, or disabled"
                 ))
             })?,
@@ -773,7 +773,7 @@ pub fn platform_supports_process_isolation() -> bool {
 }
 
 pub fn default_worker_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("OXIDE_CODEC_WORKER").map(PathBuf::from) {
+    if let Some(path) = std::env::var_os("WELLFRIENDPDF_CODEC_WORKER").map(PathBuf::from) {
         if path.exists() {
             return Some(path);
         }
@@ -781,9 +781,9 @@ pub fn default_worker_path() -> Option<PathBuf> {
 
     let exe = std::env::current_exe().ok()?;
     let file_name = if cfg!(windows) {
-        "oxide-codec-worker.exe"
+        "wellfriendpdf-codec-worker.exe"
     } else {
-        "oxide-codec-worker"
+        "wellfriendpdf-codec-worker"
     };
     let sibling = exe.parent()?.join(file_name);
     if sibling.exists() {
@@ -1196,7 +1196,8 @@ fn worker_decode(
     let Some(worker_path) = config.worker_path.clone().or_else(default_worker_path) else {
         report.status = "worker_unavailable".to_string();
         report.errors.push(
-            "codec worker binary not found; set OXIDE_CODEC_WORKER or pass worker_path".to_string(),
+            "codec worker binary not found; set WELLFRIENDPDF_CODEC_WORKER or pass worker_path"
+                .to_string(),
         );
         return WorkerAttempt::Failure(report);
     };
@@ -1229,7 +1230,7 @@ fn worker_decode(
     };
 
     let run_dir = std::env::temp_dir();
-    let stem = format!("oxide-codec-{}", request.request_id);
+    let stem = format!("wellfriendpdf-codec-{}", request.request_id);
     let request_path = run_dir.join(format!("{stem}.request.json"));
     let response_path = run_dir.join(format!("{stem}.response.json"));
     let result = run_worker_process(
@@ -1299,7 +1300,7 @@ fn run_worker_process(
         .stderr(Stdio::null())
         .env_clear();
     if let Some(mode) = &config.worker_test_mode {
-        command.env("OXIDE_CODEC_WORKER_SELF_TEST", mode);
+        command.env("WELLFRIENDPDF_CODEC_WORKER_SELF_TEST", mode);
     }
     let mut child = command
         .spawn()

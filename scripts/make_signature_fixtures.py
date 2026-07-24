@@ -37,8 +37,8 @@ BASE_PDF = open(os.path.join(FIX, "minimal.pdf"), "rb").read()
 def make_self_signed():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     name = x509.Name([
-        x509.NameAttribute(NameOID.COMMON_NAME, "Oxide Test Signer"),
-        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Oxide Test CA"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "Wellfriend Test Signer"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Wellfriend Test CA"),
         x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
     ])
     now = datetime.datetime(2024, 1, 1, tzinfo=datetime.timezone.utc)
@@ -59,16 +59,16 @@ def make_signer(key, cert):
     # pyHanko's SimpleSigner wants asn1crypto objects; bridge via a PKCS#12 file
     # built by `cryptography`, which pyHanko loads by path.
     p12 = pkcs12.serialize_key_and_certificates(
-        name=b"oxide",
+        name=b"wellfriendpdf",
         key=key,
         cert=cert,
         cas=None,
-        encryption_algorithm=BestAvailableEncryption(b"oxide"),
+        encryption_algorithm=BestAvailableEncryption(b"wellfriendpdf"),
     )
     p12_path = os.path.join(FIX, "_signer.p12")
     with open(p12_path, "wb") as f:
         f.write(p12)
-    signer = signers.SimpleSigner.load_pkcs12(p12_path, passphrase=b"oxide")
+    signer = signers.SimpleSigner.load_pkcs12(p12_path, passphrase=b"wellfriendpdf")
     os.remove(p12_path)
     return signer
 
@@ -99,7 +99,7 @@ def main():
         f.write(signed2)
     print("wrote sig_two.pdf", len(signed2), "bytes")
 
-    print("cert CN: Oxide Test Signer  serial: 0x1234ABCD")
+    print("cert CN: Wellfriend Test Signer  serial: 0x1234ABCD")
 
 
 if __name__ == "__main__":

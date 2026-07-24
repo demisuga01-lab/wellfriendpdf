@@ -8,7 +8,7 @@
 //! size field.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::filters::fuzz_decode_filter;
+use wellfriendpdf_engine::filters::fuzz_decode_filter;
 
 fuzz_target!(|data: &[u8]| {
     let _ = std::hint::black_box(fuzz_decode_filter(data));

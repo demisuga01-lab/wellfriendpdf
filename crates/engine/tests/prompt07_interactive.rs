@@ -1,4 +1,4 @@
-use oxide_engine::{
+use wellfriendpdf_engine::{
     annotation_report, apply_form_data_pdf, export_form_data, forms_report, page_operations_report,
     parse_form_data, redaction_verification_report, AttachmentRedactionPolicy,
     AuthorPageSize as PageSize, ContentEngine, EditMode, FormDataField, FormDataFormat,
@@ -276,7 +276,7 @@ fn semantic_search_redaction_verifies_terms_are_gone() {
         )
         .unwrap();
     assert_eq!(hits.len(), 1);
-    let bbox = oxide_engine::TextQuad::union(&hits[0].quads).unwrap();
+    let bbox = wellfriendpdf_engine::TextQuad::union(&hits[0].quads).unwrap();
 
     let mut editor = PdfEditor::open_bytes(source).unwrap();
     editor

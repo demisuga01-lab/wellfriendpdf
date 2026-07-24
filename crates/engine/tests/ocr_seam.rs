@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     ContentEngine, OcrEngine, OcrImage, OcrOptions, OcrPage, OcrWord, ParseOptions,
     SerializeOptions, SourceInfo,
 };
@@ -96,7 +96,11 @@ struct MockOcrEngine {
 }
 
 impl OcrEngine for MockOcrEngine {
-    fn recognize(&self, image: &OcrImage, _opts: &OcrOptions) -> oxide_engine::Result<OcrPage> {
+    fn recognize(
+        &self,
+        image: &OcrImage,
+        _opts: &OcrOptions,
+    ) -> wellfriendpdf_engine::Result<OcrPage> {
         // The seam must hand us a valid preprocessed image.
         assert!(
             image.is_valid(),
@@ -190,7 +194,7 @@ fn ocr_words_flow_through_shared_pipeline_to_typed_blocks() {
     assert_eq!(doc.pages.len(), 1);
     assert_eq!(
         doc.pages[0].source,
-        oxide_engine::PageSource::Scanned,
+        wellfriendpdf_engine::PageSource::Scanned,
         "the page was still routed as Scanned"
     );
 
@@ -238,7 +242,7 @@ fn ocr_confidence_is_carried_into_blocks() {
     let text_blocks: Vec<_> = doc
         .body
         .iter()
-        .filter(|b| !matches!(b.kind, oxide_engine::BlockKind::Figure { .. }))
+        .filter(|b| !matches!(b.kind, wellfriendpdf_engine::BlockKind::Figure { .. }))
         .collect();
     assert!(!text_blocks.is_empty(), "should have recovered text blocks");
     for b in &text_blocks {
@@ -278,7 +282,11 @@ fn no_ocr_engine_degrades_to_placeholder() {
 fn empty_ocr_falls_back_to_placeholder() {
     struct EmptyEngine;
     impl OcrEngine for EmptyEngine {
-        fn recognize(&self, _i: &OcrImage, _o: &OcrOptions) -> oxide_engine::Result<OcrPage> {
+        fn recognize(
+            &self,
+            _i: &OcrImage,
+            _o: &OcrOptions,
+        ) -> wellfriendpdf_engine::Result<OcrPage> {
             Ok(OcrPage::new(Vec::new()))
         }
         fn name(&self) -> &str {

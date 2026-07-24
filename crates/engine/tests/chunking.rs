@@ -5,7 +5,7 @@
 //! parse → chunk pipeline on a real multi-section document and confirm sensible,
 //! deterministic, structure-respecting output.
 
-use oxide_engine::{ChunkOptions, ContentEngine, ParseOptions};
+use wellfriendpdf_engine::{ChunkOptions, ContentEngine, ParseOptions};
 
 /// A real, long, multi-section academic paper (17 pages).
 fn tracemonkey() -> ContentEngine {

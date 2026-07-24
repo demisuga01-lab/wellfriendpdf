@@ -1,16 +1,16 @@
 # PDF Manipulation — Writer, Merge, Split, Page Extraction
 
-This round added Oxide's first PDF **output** capability: a pure-Rust
-writer/serializer in `oxide-engine`, and three document-manipulation tools
+This round added Wellfriend's first PDF **output** capability: a pure-Rust
+writer/serializer in `wellfriendpdf-engine`, and three document-manipulation tools
 built on it — **merge** (`pdfunite`-equivalent), **split**
 (`pdfseparate`-equivalent), and **page extraction** (a subset of pages into one
 new PDF).
 
-Until now every Oxide tool produced *non-PDF* output (text, images, raster
-pages, JSON). The writer closes that gap: Oxide can now take its in-memory
+Until now every Wellfriend tool produced *non-PDF* output (text, images, raster
+pages, JSON). The writer closes that gap: Wellfriend can now take its in-memory
 object model and emit a syntactically valid, openable PDF.
 
-## The writer (`oxide_engine::writer`)
+## The writer (`wellfriendpdf_engine::writer`)
 
 ### What it emits
 
@@ -84,32 +84,32 @@ its old ancestor chain. `/CropBox` is only emitted when it differs from
 
 ## Tools
 
-### `oxide merge` (pdfunite-equivalent)
+### `wellfriendpdf merge` (pdfunite-equivalent)
 
 ```
-oxide merge a.pdf b.pdf c.pdf -o merged.pdf
-oxide merge a.pdf b.pdf --passwords secret, -o merged.pdf   # positional passwords
+wellfriendpdf merge a.pdf b.pdf c.pdf -o merged.pdf
+wellfriendpdf merge a.pdf b.pdf --passwords secret, -o merged.pdf   # positional passwords
 ```
 
 Concatenates all pages of each input, in input order. Each page keeps its own
 size/rotation. Encrypted inputs are decrypted on read (output is unencrypted).
 
-### `oxide split` (pdfseparate-equivalent)
+### `wellfriendpdf split` (pdfseparate-equivalent)
 
 ```
-oxide split in.pdf -o "page-%d.pdf"           # all pages
-oxide split in.pdf -o "out-%03d.pdf" -f 2 -l 4  # pages 2..4, zero-padded
+wellfriendpdf split in.pdf -o "page-%d.pdf"           # all pages
+wellfriendpdf split in.pdf -o "out-%03d.pdf" -f 2 -l 4  # pages 2..4, zero-padded
 ```
 
 Writes each page to a pattern-expanded path. `%d` → page number; `%0Nd` →
 zero-padded to width N; a pattern with no `%` gets `-<page>` inserted before the
 extension. `-f`/`-l` bound the range (default: all pages).
 
-### `oxide extract-pages`
+### `wellfriendpdf extract-pages`
 
 ```
-oxide extract-pages in.pdf "1,3,5-9" -o out.pdf
-oxide extract-pages in.pdf "5,1,3" -o out.pdf   # ORDER PRESERVED
+wellfriendpdf extract-pages in.pdf "1,3,5-9" -o out.pdf
+wellfriendpdf extract-pages in.pdf "5,1,3" -o out.pdf   # ORDER PRESERVED
 ```
 
 Builds one PDF containing exactly the selected pages, **in the order given**
@@ -151,7 +151,7 @@ These document-mutating ops build on a **content-preserving** rewrite
 merge/split they **keep** AcroForm fields, outlines, annotations, and the
 structure tree. CLI + library API for each:
 
-### `oxide encrypt` (`oxide_engine::encrypt`)
+### `wellfriendpdf encrypt` (`wellfriendpdf_engine::encrypt`)
 
 Encrypts with the Standard Security Handler, reusing the read-side key-
 derivation primitives in the write direction. `--algo aes256` (V5/R6, the
@@ -159,16 +159,16 @@ secure **default**), `aes128` (V4/R4), or `rc4` (V2/R3); `--user-pw`,
 `--owner-pw`, `--permissions` (signed `/P` bitmask).
 
 - **AES-256 is the verified, interoperable default**: qpdf and Poppler decrypt
-  Oxide's AES-256 output with both the user and owner password, and Oxide reads
+  Wellfriend's AES-256 output with both the user and owner password, and Wellfriend reads
   theirs. Round-trip content is exact.
-- **RC4-128 / AES-128 are legacy/compat** and round-trip through Oxide's own
-  reader, but Oxide's legacy V4 crypt-filter handling has a deviation other
+- **RC4-128 / AES-128 are legacy/compat** and round-trip through Wellfriend's own
+  reader, but Wellfriend's legacy V4 crypt-filter handling has a deviation other
   readers don't accept, so cross-reader interop is **not** guaranteed for the
   legacy algorithms — the CLI warns when one is selected. Prefer AES-256.
 - Encrypted output is **not byte-deterministic** (random IV/salt/file key per
   the spec); the **decrypted content** is deterministic.
 
-### `oxide rotate` (`oxide_engine::rotate_pages`)
+### `wellfriendpdf rotate` (`wellfriendpdf_engine::rotate_pages`)
 
 Sets `/Rotate` (0/90/180/270, normalized) on `--pages` (default all),
 `--angle N` absolute or `--relative` (offset from each page's current effective
@@ -176,7 +176,7 @@ rotation). Written on the leaf page objects; the whole document is otherwise
 preserved. Re-parsing shows the new rotation and the read-side honors it, so
 render/extract stay consistent.
 
-### `oxide optimize` (`oxide_engine::optimize`)
+### `wellfriendpdf optimize` (`wellfriendpdf_engine::optimize`)
 
 Produces a smaller, cleaner PDF **without changing visible content**:
 - garbage-collects objects unreachable from the catalog (the rewrite copies
@@ -193,7 +193,7 @@ Produces a smaller, cleaner PDF **without changing visible content**:
   0B harness is the belt-and-braces check). qpdf `--check` is clean and reports
   the object streams as compressed (type-2) entries.
 
-### Writer modes (`oxide_engine::WriterMode`)
+### Writer modes (`wellfriendpdf_engine::WriterMode`)
 
 The writer can emit three cross-reference structures:
 
@@ -212,10 +212,10 @@ Encryption interaction: an object stream is encrypted as a **whole stream**
 objects packed inside it are **not** individually encrypted, and the `/Encrypt`
 dictionary and the cross-reference stream itself are never encrypted. Validated
 by `tests/modern_writer.rs::encrypted_objstm_roundtrips`. All three modes
-round-trip through Oxide, qpdf `--check`, and Poppler; output is deterministic
+round-trip through Wellfriend, qpdf `--check`, and Poppler; output is deterministic
 per mode.
 
-### `oxide repair` (`oxide_engine::repair`)
+### `wellfriendpdf repair` (`wellfriendpdf_engine::repair`)
 
 Persists the reader's recovery (missing `%%EOF`, stale classic-xref offsets,
 misplaced `xref`, bad/oversized/missing stream `/Length`) as a clean, normalized
@@ -225,7 +225,7 @@ located at all (e.g. `startxref` past EOF, truncated files) currently fail to
 open and so can't be repaired — a from-scratch object scan + trailer synthesis
 is recorded as future work. Repaired output is unencrypted.
 
-### `oxide linearize`
+### `wellfriendpdf linearize`
 
 Produces a qpdf-validated Fast Web View PDF for the supported structural
 subset, including single-page files, realistic multi-page files with shared

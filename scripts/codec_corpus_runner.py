@@ -44,9 +44,9 @@ def iter_files(root: Path, max_bytes: int):
             yield path, size, "candidate"
 
 
-def run_pdf(path: Path, oxide: Path, timeout: int) -> dict:
+def run_pdf(path: Path, wellfriendpdf: Path, timeout: int) -> dict:
     cmd = [
-        str(oxide),
+        str(wellfriendpdf),
         "parser-report",
         str(path),
         "--mode",
@@ -89,7 +89,7 @@ def run_pdf(path: Path, oxide: Path, timeout: int) -> dict:
         return {"status": "timeout", "elapsed_sec": timeout}
 
 
-def process_file(item, oxide: Path, timeout: int) -> dict:
+def process_file(item, wellfriendpdf: Path, timeout: int) -> dict:
     path, size, candidate_status = item
     record = {"path": str(path), "size": size}
     if candidate_status != "candidate":
@@ -99,7 +99,7 @@ def process_file(item, oxide: Path, timeout: int) -> dict:
     kind = detect_kind(path, prefix)
     record["kind"] = kind
     if kind == "pdf":
-        record.update(run_pdf(path, oxide, timeout))
+        record.update(run_pdf(path, wellfriendpdf, timeout))
     elif kind in {"jpeg", "jpx", "jbig2", "ccitt"}:
         record.update(
             {
@@ -128,7 +128,7 @@ def write_markdown(path: Path, records: list[dict]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("root", type=Path)
-    parser.add_argument("--oxide", type=Path, default=Path("target/debug/oxide.exe"))
+    parser.add_argument("--wellfriendpdf", type=Path, default=Path("target/debug/wellfriendpdf.exe"))
     parser.add_argument("--limit", type=int, default=50)
     parser.add_argument("--timeout", type=int, default=30)
     parser.add_argument("--jobs", type=int, default=1)
@@ -140,7 +140,7 @@ def main() -> int:
     files = list(iter_files(args.root, args.max_bytes))[: args.limit]
     records: list[dict] = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
-        futures = [pool.submit(process_file, item, args.oxide, args.timeout) for item in files]
+        futures = [pool.submit(process_file, item, args.wellfriendpdf, args.timeout) for item in files]
         for future in concurrent.futures.as_completed(futures):
             records.append(future.result())
     records.sort(key=lambda item: item["path"])

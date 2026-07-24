@@ -66,18 +66,18 @@ length correctly.
 
 ## Part C — The "dimension bug" was a MediaBox-vs-CropBox default difference
 
-The 16 "dimension_mismatch" failures were **not a renderer bug.** Oxide renders the
+The 16 "dimension_mismatch" failures were **not a renderer bug.** Wellfriend renders the
 **CropBox** (MediaBox ∩ CropBox) — the PDF spec / common-viewer default that pdfinfo's
 reported page size, PDFium, Chrome, and `pdftocairo` all agree on. Poppler's `pdftoppm`
 **defaults to the MediaBox** (`-cropbox` is opt-in; confirmed via `pdftoppm -h`). Proof:
 
-| file | Oxide (CropBox) | pdftoppm default (MediaBox) | pdftoppm `-cropbox` |
+| file | Wellfriend (CropBox) | pdftoppm default (MediaBox) | pdftoppm `-cropbox` |
 | --- | --- | --- | --- |
 | bug1802506 | 536×291 | 1224×1584 | 536×**292** |
 | rotate_003 | 1504×1144 | 1584×1224 | 1504×1144 |
 
-Oxide matches `pdftoppm -cropbox` exactly (±1 px rounding). **Fix (per user decision):
-align the harness — pass `-cropbox` to `pdftoppm` so both render the same region. Oxide's
+Wellfriend matches `pdftoppm -cropbox` exactly (±1 px rounding). **Fix (per user decision):
+align the harness — pass `-cropbox` to `pdftoppm` so both render the same region. Wellfriend's
 spec-aligned CropBox default is unchanged.** All 16 dimension mismatches resolved. The
 rotate files then exposed a *real* content bug (text mirrored under /Rotate 270) that the
 dimension confusion had masked — handed to Prompt B.
@@ -95,10 +95,10 @@ engine/CLI render path was unguarded.
 
 **Fix:** `ContentEngine::page_viewport` (the single chokepoint for raster/SVG/PS) now
 validates the final post-DPI/rotation pixel count against `max_render_pixels()`
-(default 300 MP, override via `OXIDE_MAX_RENDER_PIXELS` or the new CLI
-`render --max-render-pixels`) and returns a clean `OxideError::ResourceLimit` BEFORE any
+(default 300 MP, override via `WELLFRIENDPDF_MAX_RENDER_PIXELS` or the new CLI
+`render --max-render-pixels`) and returns a clean `WellfriendError::ResourceLimit` BEFORE any
 allocation. The CLI's per-page loop already skips-with-warning on error, so the process
-survives and stays usable. Server `From<OxideError>` maps it to `ResourceLimit`.
+survives and stays usable. Server `From<WellfriendError>` maps it to `ResourceLimit`.
 
 Regression: engine `huge_mediabox_is_rejected_cleanly_not_aborted`,
 `*_at_viewport_before_allocation`, `extreme_dpi_on_normal_page_is_capped`; CLI
@@ -108,14 +108,14 @@ Regression: engine `huge_mediabox_is_rejected_cleanly_not_aborted`,
 
 | metric | pre-calibration | recalibrated (loose only) | + SSIM-corroboration (final) |
 | --- | --- | --- | --- |
-| **Visual pass (Oxide vs Poppler)** | **2.05 %** | 20.41 % | **34.02 %** |
+| **Visual pass (Wellfriend vs Poppler)** | **2.05 %** | 20.41 % | **34.02 %** |
 | Weighted score | 44.74 | 56.70 | **64.03** |
 | Tier | 0 | 0 | **0** |
 | Hostile crash-free | 90 % | 100 % | **100 %** |
 | Hostile timeout-safe | 100 % | 100 % | 100 % |
 | Hostile memory-bounded | 100 % | 100 % | 100 % |
-| Median speed ratio (Poppler/Oxide) | 1.91 | 1.93 | 1.93 (Oxide ~1.9× faster) |
-| Peak Oxide memory | 64 MB | 64 MB | 64 MB |
+| Median speed ratio (Poppler/Wellfriend) | 1.91 | 1.93 | 1.93 (Wellfriend ~1.9× faster) |
+| Peak Wellfriend memory | 64 MB | 64 MB | 64 MB |
 | Determinism | 100 % bit-stable | 100 % bit-stable | 100 % bit-stable* |
 
 > *Determinism sampling was disabled in the final run (it triples render cost on a
@@ -134,7 +134,7 @@ Regression: engine `huge_mediabox_is_rejected_cleanly_not_aborted`,
 **The jump from 2.05 % is real (AA-noise false-fails removed), but the number stays
 modest because the recalibration EXPOSED genuine, severe renderer bugs** that the old
 strict thresholds had buried in the same bucket as AA noise. That is the honest finding:
-Oxide has real rendering defects, listed below for Prompt B.
+Wellfriend has real rendering defects, listed below for Prompt B.
 
 ### Remaining failures by PRIMARY cause (the input to Prompt B)
 
@@ -176,7 +176,7 @@ bugs, the rest borderline pixel/AA)
 Solid-colour pages, correct text pages, and visually-identical sparse pages
 (`synthetic_geometry_rotate_000` 0°, `doc_1_3_pages`, `two_paragraphs`,
 `synthetic_graphics_000`). Borderline-but-minor: thin **dash/stroke weight** differs
-(`synthetic_clip_curve_*` — Oxide draws a lighter/thinner dashed border); CMYK solids
+(`synthetic_clip_curve_*` — Wellfriend draws a lighter/thinner dashed border); CMYK solids
 differ ~3 % from a slightly different CMYK→RGB conversion. These are minor real
 differences, reported honestly rather than tuned away.
 
@@ -233,11 +233,11 @@ deliberately deferred (large/risky). `cargo test --workspace` + clippy stay gree
 
 | metric | Prompt A | **Prompt B** |
 | --- | --- | --- |
-| Visual pass (Oxide vs Poppler) | 34.02 % | **43.85 %** (107/244 pages) |
+| Visual pass (Wellfriend vs Poppler) | 34.02 % | **43.85 %** (107/244 pages) |
 | Weighted score | 64.03 | **69.36** |
 | File-level pass (normal) | 73/205 | **89/205 (43.4 %)** |
 | Hostile crash-free / timeout / memory | 100 % | 100 % |
-| Median speed (Poppler/Oxide) | 1.93× | 1.95× |
+| Median speed (Poppler/Wellfriend) | 1.93× | 1.95× |
 | Determinism | bit-stable | bit-stable (no nondeterminism introduced) |
 | Tier | 0 | 0 |
 
@@ -275,12 +275,12 @@ Per-category gains (rest unchanged): synthetic-images 0→100 %, synthetic-geome
 
 ## Tier statement
 
-Oxide does **not** yet meet Tier 2 (≥99 % visual on normal PDFs) on this corpus —
+Wellfriend does **not** yet meet Tier 2 (≥99 % visual on normal PDFs) on this corpus —
 43.85 % visual pass. Safety, performance, and determinism ARE Tier-2-grade (100 %
 crash-free / timeout-safe / memory-bounded on the hostile corpus, ~1.9× faster
 than Poppler, bit-stable). The gap to Tier 2 is renderer fidelity, dominated by
 the deferred **font groups** (Type1/TrueType/CID) — fixing them is the highest-
-leverage next step. Tier 3 (WellPDF visual-proof backend) additionally requires
+leverage next step. Tier 3 (Wellfriend PDF SDK visual-proof backend) additionally requires
 the corpus to expand to 1,000+ real PDFs / 10,000+ rendered pages (currently
 75 real / 244 pages) — a corpus-scale requirement separate from renderer
 correctness.

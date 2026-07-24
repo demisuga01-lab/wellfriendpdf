@@ -24,7 +24,7 @@ signature validity or viewer acceptance.
 CLI example:
 
 ```text
-oxide edit-text input.pdf --query ABC --replacement DEF --mode same-width-patch --output patched.pdf --json
+wellfriendpdf edit-text input.pdf --query ABC --replacement DEF --mode same-width-patch --output patched.pdf --json
 ```
 
 Failure example: substituting Arabic for an LTR WinAnsi string is rejected

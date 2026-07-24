@@ -467,8 +467,8 @@ def write_interop_artifacts() -> None:
 def write_fuzz_artifacts() -> None:
     rows = evidence_rows(FUZZ_RUNS)
     inventory = [
-        {"target": "signature_validation", "entrypoint": "oxide_engine::fuzz::fuzz_signature_validation", "status": "compiled_and_smoked"},
-        {"target": "signature_evidence", "entrypoint": "oxide_engine::fuzz::fuzz_signature_evidence", "status": "compiled_and_smoked"},
+        {"target": "signature_validation", "entrypoint": "wellfriendpdf_engine::fuzz::fuzz_signature_validation", "status": "compiled_and_smoked"},
+        {"target": "signature_evidence", "entrypoint": "wellfriendpdf_engine::fuzz::fuzz_signature_evidence", "status": "compiled_and_smoked"},
         {"target": "parse_pdf", "entrypoint": "existing Prompt 23B fuzz target", "status": "retained"},
         {"target": "cms/content/signer/signature attrs", "entrypoint": "covered through signature_validation and engine tests", "status": "implemented_with_limits"},
         {"target": "OCSP/CRL/evidence bundle", "entrypoint": "signature_evidence plus focused engine tests", "status": "implemented"},

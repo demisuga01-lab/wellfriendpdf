@@ -1,6 +1,6 @@
 # Prompt 15 Semantic Intelligence Close-out
 
-Combined Prompt 15 closes the semantic framework phase. Oxide now has one
+Combined Prompt 15 closes the semantic framework phase. Wellfriend now has one
 binding-neutral semantic export, a table-specialized proposal contract,
 provenance-aware RAG chunks, and an availability-aware benchmark. Deterministic
 PDF extraction remains authoritative throughout.
@@ -8,14 +8,14 @@ PDF extraction remains authoritative throughout.
 ## Delivered Surfaces
 
 - `ContentEngine::semantic_binding_report` returns the typed Rust report.
-- `oxide semantic-export` exports the bundle or focused summary, semantic,
+- `wellfriendpdf semantic-export` exports the bundle or focused summary, semantic,
   table, token, chunk, search, and status views.
 - Python exposes `semantic_bundle`, `advanced_chunks`, `semantic_search`, and
   `table_proposal_status` as dictionaries.
 - C exposes owned versioned JSON through
-  `oxide_document_semantic_bundle_json`,
-  `oxide_document_advanced_chunks_json`, and
-  `oxide_document_semantic_search_json`.
+  `wellfriendpdf_document_semantic_bundle_json`,
+  `wellfriendpdf_document_advanced_chunks_json`, and
+  `wellfriendpdf_document_semantic_search_json`.
 - WASM, .NET, and Java wrap those same canonical SDK envelopes.
 - Java Maven and Gradle package smokes assert the Prompt 15 report section and
   invoke the new document methods.

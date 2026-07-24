@@ -1,6 +1,6 @@
 # Release Process
 
-Oxide releases are tag-driven. A version tag builds verified CLI artifacts,
+Wellfriend releases are tag-driven. A version tag builds verified CLI artifacts,
 runs the full quality gate, and creates a GitHub Release with SHA-256 checksum
 files next to every binary archive.
 
@@ -39,8 +39,8 @@ The pipeline:
 1. Runs the full release gate: formatting, workspace tests, clippy, cargo-audit,
    and cargo-deny.
 2. Runs `cargo publish --dry-run --locked` for publishable crates. The
-   dependent `oxide-cli` and `oxide-server` dry-runs run automatically once the
-   matching `oxide-engine` version exists in crates.io.
+   dependent `wellfriendpdf-cli` and `wellfriendpdf-server` dry-runs run automatically once the
+   matching `wellfriendpdf-engine` version exists in crates.io.
 3. Builds release CLI binaries:
    `x86_64-unknown-linux-musl`, `x86_64-apple-darwin`,
    `aarch64-apple-darwin`, and `x86_64-pc-windows-msvc`.
@@ -57,19 +57,19 @@ publishing that release is intentional.
 The release workflow intentionally does not publish to crates.io. It only runs
 publish dry-runs.
 
-For the first crates.io release, Cargo cannot dry-run `oxide-cli` or
-`oxide-server` until the matching `oxide-engine` version exists in the crates.io
-index. The workflow therefore dry-runs `oxide-engine` first and automatically
-dry-runs `oxide-cli` and `oxide-server` when that engine version is already in
+For the first crates.io release, Cargo cannot dry-run `wellfriendpdf-cli` or
+`wellfriendpdf-server` until the matching `wellfriendpdf-engine` version exists in the crates.io
+index. The workflow therefore dry-runs `wellfriendpdf-engine` first and automatically
+dry-runs `wellfriendpdf-cli` and `wellfriendpdf-server` when that engine version is already in
 the registry. Before that first engine publication, the workflow records a
 summary notice and leaves the dependent dry-runs to the manual publish sequence.
 
 When a real crates.io release is approved, publish manually in dependency order:
 
 ```sh
-cargo publish -p oxide-engine --locked
-cargo publish -p oxide-cli --locked
-cargo publish -p oxide-server --locked
+cargo publish -p wellfriendpdf-engine --locked
+cargo publish -p wellfriendpdf-cli --locked
+cargo publish -p wellfriendpdf-server --locked
 ```
 
 The crates.io token must be stored outside the repository. If a future manual
@@ -84,7 +84,7 @@ server image:
 
 1. Run the workflow manually.
 2. Set `build_docker=true`.
-3. Set `push_docker=true` only when pushing `ghcr.io/<owner>/oxide-server` is
+3. Set `push_docker=true` only when pushing `ghcr.io/<owner>/wellfriendpdf-server` is
    intended.
 
 The Docker path uses `GITHUB_TOKEN` for GHCR authentication. Additional registry

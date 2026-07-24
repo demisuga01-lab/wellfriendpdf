@@ -127,7 +127,7 @@ pub fn bounded_text_parallel_window(selected_pages: usize) -> usize {
     if cfg!(target_arch = "wasm32") {
         return 1;
     }
-    if let Ok(raw) = std::env::var("OXIDE_TEXT_PARALLEL_PAGES") {
+    if let Ok(raw) = std::env::var("WELLFRIENDPDF_TEXT_PARALLEL_PAGES") {
         if let Ok(value) = raw.parse::<usize>() {
             return value.max(1).min(selected_pages);
         }
@@ -136,12 +136,12 @@ pub fn bounded_text_parallel_window(selected_pages: usize) -> usize {
     let workers = std::thread::available_parallelism()
         .map(usize::from)
         .unwrap_or(1);
-    let memory_budget_mb = std::env::var("OXIDE_TEXT_PARALLEL_MEMORY_MB")
+    let memory_budget_mb = std::env::var("WELLFRIENDPDF_TEXT_PARALLEL_MEMORY_MB")
         .ok()
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(DEFAULT_PARALLEL_MEMORY_BUDGET_MB)
         .max(1);
-    let page_budget_mb = std::env::var("OXIDE_TEXT_PARALLEL_PAGE_MB")
+    let page_budget_mb = std::env::var("WELLFRIENDPDF_TEXT_PARALLEL_PAGE_MB")
         .ok()
         .and_then(|raw| raw.parse::<usize>().ok())
         .unwrap_or(DEFAULT_PARALLEL_PAGE_BUDGET_MB)

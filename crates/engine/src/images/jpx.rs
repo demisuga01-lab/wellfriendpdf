@@ -26,13 +26,13 @@
 //! color-space extensions. Color spaces surfaced here are grayscale, RGB, CMYK,
 //! and ICC-based / unknown (handled by channel count). Anything the crate cannot
 //! decode (e.g. progression-order changes inside tile-parts) surfaces as an
-//! [`OxideError`] rather than a panic, matching the CCITT/JBIG2 error contract.
+//! [`WellfriendError`] rather than a panic, matching the CCITT/JBIG2 error contract.
 //!
 //! [`hayro-jpeg2000`]: https://crates.io/crates/hayro-jpeg2000
 
 use hayro_jpeg2000::{ColorSpace, DecodeSettings, Image};
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::images::decoder::{ensure_decode_budget, ColorSpaceConverter, RawImage};
 
 /// Decode a PDF-embedded JPEG 2000 (`JPXDecode`) stream into a `RawImage`.
@@ -45,7 +45,7 @@ use crate::images::decoder::{ensure_decode_budget, ColorSpaceConverter, RawImage
 /// separately by the SMask pipeline), mirroring how the DCTDecode path behaves.
 pub fn decode(data: &[u8]) -> Result<RawImage> {
     let image = Image::new(data, &DecodeSettings::default())
-        .map_err(|err| OxideError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
+        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
 
     let width = image.width();
     let height = image.height();
@@ -54,7 +54,7 @@ pub fn decode(data: &[u8]) -> Result<RawImage> {
     let color_channels = color_space.num_channels();
     let stored_channels = color_channels.saturating_add(u8::from(has_alpha));
     if stored_channels == 0 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "JPXDecode produced an image with zero channels".to_string(),
         ));
     }
@@ -62,7 +62,7 @@ pub fn decode(data: &[u8]) -> Result<RawImage> {
 
     let decoded = image
         .decode()
-        .map_err(|err| OxideError::MalformedPdf(format!("JPXDecode failed: {err}")))?;
+        .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode failed: {err}")))?;
 
     let color_channels = usize::from(color_channels);
     let stored_channels = usize::from(stored_channels);
@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn malformed_codestream_returns_error() {
         let result = decode(b"not a jpeg2000 codestream");
-        assert!(matches!(result, Err(OxideError::MalformedPdf(_))));
+        assert!(matches!(result, Err(WellfriendError::MalformedPdf(_))));
     }
 
     #[test]

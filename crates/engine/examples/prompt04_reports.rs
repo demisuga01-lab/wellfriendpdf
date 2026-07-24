@@ -4,17 +4,17 @@ use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use oxide_engine::codec_isolation::{
+use serde_json::json;
+use wellfriendpdf_engine::codec_isolation::{
     codec_backend_registry, codec_native_boundary_report, native_codec_dependency_allowlist,
     select_codec_backend, validate_codec_registry_policy, CodecBackendPreference,
     CodecIsolationPolicy,
 };
-use oxide_engine::decode_scanner::{
+use wellfriendpdf_engine::decode_scanner::{
     scan_pdf_markers_accelerated, scan_pdf_markers_scalar, scanner_availability_report,
 };
-use oxide_engine::decode_scheduler::renderer_decode_scheduler_adoption_report;
-use oxide_engine::{sdk, ContentEngine};
-use serde_json::json;
+use wellfriendpdf_engine::decode_scheduler::renderer_decode_scheduler_adoption_report;
+use wellfriendpdf_engine::{sdk, ContentEngine};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = std::env::args()
@@ -207,7 +207,7 @@ fn sdk_report_parity() -> Result<serde_json::Value, Box<dyn std::error::Error>> 
     let feature: serde_json::Value = serde_json::from_str(&sdk::feature_report_json()?)?;
     let codec: serde_json::Value = serde_json::from_str(&sdk::codec_isolation_report_json(
         "FlateDecode",
-        &oxide_engine::flate_encode(b"prompt04 parity", 6),
+        &wellfriendpdf_engine::flate_encode(b"prompt04 parity", 6),
         Some("report_only"),
     )?)?;
     Ok(json!({

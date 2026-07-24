@@ -56,14 +56,14 @@ jobs:
             target
           key: ${{ runner.os }}-differential-fuzz-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Build Oxide CLI
-        run: cargo build --bin oxide
+      - name: Build Wellfriend CLI
+        run: cargo build --bin wellfriendpdf
 
       - name: Run differential fuzzing
         run: >
           python scripts/differential_fuzz.py
           --cases "$CASES"
-          --oxide target/debug/oxide
+          --wellfriendpdf target/debug/wellfriendpdf
           --output target/differential-fuzz
 
       - name: Upload differential fuzz report

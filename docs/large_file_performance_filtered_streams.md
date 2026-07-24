@@ -79,7 +79,7 @@ Serial/parallel aggregate text on the same 4.0 GiB decoded compressed fixture:
 
 | Run | Window | Result | Wall | Peak WS | SHA-256 |
 |---|---:|---:|---:|---:|---|
-| `followup-flate-s4096-serial-aggregate` | `OXIDE_TEXT_PARALLEL_PAGES=1` | ok | 14.9s | 9.3 MiB | `0232F63C17EA191E11ED168CBE1CFAEC43AC4B76A2986FF61D75170B62FBBD2A` |
+| `followup-flate-s4096-serial-aggregate` | `WELLFRIENDPDF_TEXT_PARALLEL_PAGES=1` | ok | 14.9s | 9.3 MiB | `0232F63C17EA191E11ED168CBE1CFAEC43AC4B76A2986FF61D75170B62FBBD2A` |
 | `followup-flate-s4096-parallel-aggregate` | default bounded window | ok | 4.8s | 10.8 MiB | `0232F63C17EA191E11ED168CBE1CFAEC43AC4B76A2986FF61D75170B62FBBD2A` |
 
 ## Real Files
@@ -107,7 +107,7 @@ Accuracy regression slices:
 
 - Field slice: unchanged, `macro_field_f1 = 0.72503`, `macro_value_f1 = 0.81434`, precision `0.69231`, recall `0.84536`.
 - Table slice independent re-run: unchanged, `macro_shape_f1 = 0.96232`, `macro_cell_f1 = 0.98737`, `macro_cell_recall = 0.99689`, `macro_cell_precision = 0.98246`, `macro_teds_approx = 0.98111`.
-- 200-file text slice, oxide-only: unchanged, `char_similarity = 0.92743`, `word_f1 = 1.0`, `line_recall = 1.0`, `spurious_line_ratio = 0.07633`, `reading_order = 0.96019`.
+- 200-file text slice, wellfriendpdf-only: unchanged, `char_similarity = 0.92743`, `word_f1 = 1.0`, `line_recall = 1.0`, `spurious_line_ratio = 0.07633`, `reading_order = 0.96019`.
 
 Fuzz and malformed checks:
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Benchmark 0B scaffold: Oxide(original) vs Oxide(compressed).
+"""Benchmark 0B scaffold: Wellfriend(original) vs Wellfriend(compressed).
 
 This is intentionally separate from 0A. It proves that a compression step did
-not visually alter a file, not that Oxide matches Poppler/PDFium.
+not visually alter a file, not that Wellfriend matches Poppler/PDFium.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from renderer_benchmark import (  # noqa: E402
     compare_page_sets,
     executable_name,
-    render_oxide,
+    render_wellfriendpdf,
 )
 
 
@@ -55,7 +55,7 @@ def entry(path: Path, case_id: str, side: str) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--oxide-bin", default=str(REPO_ROOT / "target" / "release" / executable_name("oxide")))
+    parser.add_argument("--wellfriendpdf-bin", default=str(REPO_ROOT / "target" / "release" / executable_name("wellfriendpdf")))
     parser.add_argument("--pairs-dir", default=str(REPO_ROOT / "renderer-benchmark" / "corpus" / "wellpdf-before-after"))
     parser.add_argument("--output-dir", default=str(REPO_ROOT / "renderer-benchmark" / "results" / "run-0b"))
     parser.add_argument("--dpi", type=int, default=144)
@@ -73,9 +73,9 @@ def main() -> None:
     for pair in pairs:
         case_id = safe_id(pair["id"])
         work_dir = output_dir / "artifacts" / case_id
-        original = render_oxide(
+        original = render_wellfriendpdf(
             entry(pair["original"], case_id, "original"),
-            args.oxide_bin,
+            args.wellfriendpdf_bin,
             work_dir / "original",
             args.dpi,
             args.max_pages_per_file,
@@ -83,9 +83,9 @@ def main() -> None:
             args.max_memory_mb,
             suffix="original",
         )
-        compressed = render_oxide(
+        compressed = render_wellfriendpdf(
             entry(pair["compressed"], case_id, "compressed"),
-            args.oxide_bin,
+            args.wellfriendpdf_bin,
             work_dir / "compressed",
             args.dpi,
             args.max_pages_per_file,

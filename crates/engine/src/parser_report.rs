@@ -15,7 +15,7 @@ use crate::reader::PdfReader;
 pub enum ParserMode {
     /// Require a syntactically valid header, startxref, xref chain, and trailer.
     Strict,
-    /// Use Oxide's bounded repair fallbacks when strict opening fails.
+    /// Use Wellfriend's bounded repair fallbacks when strict opening fails.
     Repair,
     /// Run strict first, then repair, and return diagnostics for both outcomes.
     Audit,

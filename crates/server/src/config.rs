@@ -8,16 +8,16 @@ pub struct ServerConfig {
     /// Comma-separated list of valid API keys. Empty means no keys configured;
     /// the server then REFUSES TO START unless `allow_unauthenticated` is set.
     pub api_keys: Vec<String>,
-    /// Explicit dev-only opt-in (OXIDE_ALLOW_UNAUTHENTICATED=true) to run with
+    /// Explicit dev-only opt-in (WELLFRIENDPDF_ALLOW_UNAUTHENTICATED=true) to run with
     /// no API keys. Fail-closed by default: without keys and without this flag,
     /// startup aborts rather than silently exposing every endpoint.
     pub allow_unauthenticated: bool,
     /// Allowlist of origins permitted for cross-origin (CORS) requests. Empty by
     /// default (most restrictive: no cross-origin access). Set
-    /// OXIDE_CORS_ALLOWED_ORIGINS to a comma-separated list of full origins
+    /// WELLFRIENDPDF_CORS_ALLOWED_ORIGINS to a comma-separated list of full origins
     /// (e.g. `https://app.example.com`).
     pub cors_allowed_origins: Vec<String>,
-    /// Dev-only opt-in (OXIDE_CORS_ALLOW_ANY=true) to allow ANY origin. Mirrors
+    /// Dev-only opt-in (WELLFRIENDPDF_CORS_ALLOW_ANY=true) to allow ANY origin. Mirrors
     /// the auth dev opt-in; logs a warning on startup. Never enable in prod.
     pub cors_allow_any: bool,
     /// Maximum requests per minute per key. Zero disables rate limiting.
@@ -53,7 +53,7 @@ pub struct ServerConfig {
     /// memory/disk even if submissions outpace retention cleanup.
     pub max_jobs: usize,
     /// Directory for job result files. `None` => a per-process subdir of the
-    /// system temp dir (or the `OXIDE_JOB_RESULT_DIR` env override). Tests set
+    /// system temp dir (or the `WELLFRIENDPDF_JOB_RESULT_DIR` env override). Tests set
     /// this to a unique dir so on-disk cleanup can be verified in isolation.
     pub job_result_dir: Option<String>,
 }
@@ -108,35 +108,35 @@ impl ServerConfig {
     pub fn from_env() -> Self {
         let mut cfg = Self::default();
 
-        if let Ok(value) = std::env::var("OXIDE_PORT") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_PORT") {
             if let Ok(port) = value.parse::<u16>() {
                 cfg.port = port;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_LOG_LEVEL") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_LOG_LEVEL") {
             cfg.log_level = value;
         }
 
-        if let Ok(value) = std::env::var("OXIDE_MAX_FILE_SIZE") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_MAX_FILE_SIZE") {
             if let Ok(max_file_size) = value.parse::<usize>() {
                 cfg.max_file_size = max_file_size;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_MAX_DPI") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_MAX_DPI") {
             if let Ok(max_dpi) = value.parse::<u32>() {
                 cfg.max_dpi = max_dpi.min(600);
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_MAX_PAGES") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_MAX_PAGES") {
             if let Ok(max_pages) = value.parse::<usize>() {
                 cfg.max_pages = max_pages;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_API_KEYS") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_API_KEYS") {
             cfg.api_keys = value
                 .split(',')
                 .map(|key| key.trim().to_string())
@@ -144,11 +144,11 @@ impl ServerConfig {
                 .collect();
         }
 
-        if let Ok(value) = std::env::var("OXIDE_ALLOW_UNAUTHENTICATED") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_ALLOW_UNAUTHENTICATED") {
             cfg.allow_unauthenticated = parse_bool_env(&value);
         }
 
-        if let Ok(value) = std::env::var("OXIDE_CORS_ALLOWED_ORIGINS") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_CORS_ALLOWED_ORIGINS") {
             cfg.cors_allowed_origins = value
                 .split(',')
                 .map(|origin| origin.trim().to_string())
@@ -156,66 +156,66 @@ impl ServerConfig {
                 .collect();
         }
 
-        if let Ok(value) = std::env::var("OXIDE_CORS_ALLOW_ANY") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_CORS_ALLOW_ANY") {
             cfg.cors_allow_any = parse_bool_env(&value);
         }
 
-        if let Ok(value) = std::env::var("OXIDE_RATE_LIMIT_PER_MIN") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_RATE_LIMIT_PER_MIN") {
             if let Ok(rate_limit_per_min) = value.parse::<u32>() {
                 cfg.rate_limit_per_min = rate_limit_per_min;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_REQUEST_TIMEOUT_SECS") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_REQUEST_TIMEOUT_SECS") {
             if let Ok(request_timeout_secs) = value.parse::<u64>() {
                 cfg.request_timeout_secs = request_timeout_secs;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_MAX_RENDER_PIXELS") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_MAX_RENDER_PIXELS") {
             if let Ok(max_render_pixels) = value.parse::<u64>() {
                 cfg.max_render_pixels = max_render_pixels;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_MAX_OUTPUT_BYTES") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_MAX_OUTPUT_BYTES") {
             if let Ok(max_output_bytes) = value.parse::<u64>() {
                 cfg.max_output_bytes = max_output_bytes;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_MAX_IMAGE_COUNT") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_MAX_IMAGE_COUNT") {
             if let Ok(max_image_count) = value.parse::<usize>() {
                 cfg.max_image_count = max_image_count;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_JOB_WORKERS") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_JOB_WORKERS") {
             if let Ok(job_workers) = value.parse::<usize>() {
                 // At least one worker, else queued jobs would never drain.
                 cfg.job_workers = job_workers.max(1);
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_JOB_QUEUE_CAPACITY") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_JOB_QUEUE_CAPACITY") {
             if let Ok(job_queue_capacity) = value.parse::<usize>() {
                 cfg.job_queue_capacity = job_queue_capacity.max(1);
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_JOB_TIMEOUT_SECS") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_JOB_TIMEOUT_SECS") {
             if let Ok(job_timeout_secs) = value.parse::<u64>() {
                 cfg.job_timeout_secs = job_timeout_secs;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_JOB_RETENTION_SECS") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_JOB_RETENTION_SECS") {
             if let Ok(job_retention_secs) = value.parse::<u64>() {
                 cfg.job_retention_secs = job_retention_secs;
             }
         }
 
-        if let Ok(value) = std::env::var("OXIDE_MAX_JOBS") {
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_MAX_JOBS") {
             if let Ok(max_jobs) = value.parse::<usize>() {
                 cfg.max_jobs = max_jobs.max(1);
             }
@@ -231,9 +231,9 @@ impl ServerConfig {
     pub fn validate(&self) -> Result<(), String> {
         if self.api_keys.is_empty() && !self.allow_unauthenticated {
             return Err(
-                "OXIDE_API_KEYS is empty and OXIDE_ALLOW_UNAUTHENTICATED is not set; \
-                 refusing to start an unauthenticated server. Set OXIDE_API_KEYS to a \
-                 comma-separated list of keys, or set OXIDE_ALLOW_UNAUTHENTICATED=true \
+                "WELLFRIENDPDF_API_KEYS is empty and WELLFRIENDPDF_ALLOW_UNAUTHENTICATED is not set; \
+                 refusing to start an unauthenticated server. Set WELLFRIENDPDF_API_KEYS to a \
+                 comma-separated list of keys, or set WELLFRIENDPDF_ALLOW_UNAUTHENTICATED=true \
                  to explicitly run without authentication (dev only)."
                     .to_string(),
             );

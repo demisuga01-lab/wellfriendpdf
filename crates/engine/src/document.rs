@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::sync::OnceLock;
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::pubsec::PubSecKeyProvider;
@@ -85,10 +85,10 @@ impl PdfDocument {
         let (number, generation) = self
             .reader
             .root_reference()
-            .ok_or_else(|| OxideError::MalformedPdf("trailer is missing /Root".to_string()))?;
+            .ok_or_else(|| WellfriendError::MalformedPdf("trailer is missing /Root".to_string()))?;
         let root = self.reader.get_and_resolve(number, generation)?;
         let catalog = root.as_dict().cloned().ok_or_else(|| {
-            OxideError::MalformedPdf("/Root did not resolve to a dictionary".to_string())
+            WellfriendError::MalformedPdf("/Root did not resolve to a dictionary".to_string())
         })?;
         match catalog.get_name("Type") {
             Some("Catalog") => {}
@@ -113,24 +113,26 @@ impl PdfDocument {
 
     pub fn get_page(&self, page_number: usize) -> Result<PdfPage> {
         if page_number == 0 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "page numbers are 1-indexed".to_string(),
             ));
         }
         self.get_pages()?
             .get(page_number - 1)
             .cloned()
-            .ok_or_else(|| OxideError::MalformedPdf(format!("page {page_number} is out of range")))
+            .ok_or_else(|| {
+                WellfriendError::MalformedPdf(format!("page {page_number} is out of range"))
+            })
     }
 
     fn collect_pages(&self) -> Result<Vec<PdfPage>> {
         let catalog = self.get_catalog()?;
         let pages_ref = catalog.get_reference("Pages").ok_or_else(|| {
-            OxideError::MalformedPdf("catalog is missing /Pages reference".to_string())
+            WellfriendError::MalformedPdf("catalog is missing /Pages reference".to_string())
         })?;
         let root_pages_obj = self.reader.get_and_resolve(pages_ref.0, pages_ref.1)?;
         let root_pages = root_pages_obj.as_dict().cloned().ok_or_else(|| {
-            OxideError::MalformedPdf("/Pages did not resolve to a dictionary".to_string())
+            WellfriendError::MalformedPdf("/Pages did not resolve to a dictionary".to_string())
         })?;
         let expected_count = root_pages.get_integer("Count");
 
@@ -174,7 +176,7 @@ impl PdfDocument {
         for (number, generation) in page.contents.iter().copied() {
             let object = match self.reader.get_object(number, generation) {
                 Ok(object) => object,
-                Err(OxideError::MissingObject { .. }) => {
+                Err(WellfriendError::MissingObject { .. }) => {
                     log::warn!(
                         "page {}: content stream {} {} missing, skipping",
                         page_number,
@@ -267,7 +269,7 @@ impl PdfDocument {
                 );
             }
             let kids = dict.get_array("Kids").ok_or_else(|| {
-                OxideError::MalformedPdf(format!(
+                WellfriendError::MalformedPdf(format!(
                     "page tree node {} {} has non-array /Kids",
                     object_ref.0, object_ref.1
                 ))
@@ -291,7 +293,7 @@ impl PdfDocument {
                 }
                 let kid_object = self.reader.get_and_resolve(kid_ref.0, kid_ref.1)?;
                 let kid_dict = kid_object.as_dict().ok_or_else(|| {
-                    OxideError::MalformedPdf(format!(
+                    WellfriendError::MalformedPdf(format!(
                         "page-tree object {} {} did not resolve to a dictionary",
                         kid_ref.0, kid_ref.1
                     ))
@@ -392,9 +394,9 @@ fn parse_box(object: &PdfObject, reader: Option<&PdfReader>, key: &str) -> Resul
     let object = resolve_if_possible(object, reader)?;
     let array = object
         .as_array()
-        .ok_or_else(|| OxideError::MalformedPdf(format!("/{key} must resolve to an array")))?;
+        .ok_or_else(|| WellfriendError::MalformedPdf(format!("/{key} must resolve to an array")))?;
     if array.len() != 4 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "/{key} must contain four numbers"
         )));
     }
@@ -403,7 +405,7 @@ fn parse_box(object: &PdfObject, reader: Option<&PdfReader>, key: &str) -> Resul
     for (idx, item) in array.iter().enumerate() {
         let item = resolve_if_possible(item, reader)?;
         values[idx] = item.as_number().ok_or_else(|| {
-            OxideError::MalformedPdf(format!("/{key} entry {} is not a number", idx + 1))
+            WellfriendError::MalformedPdf(format!("/{key} entry {} is not a number", idx + 1))
         })?;
     }
     Ok(values)
@@ -413,15 +415,15 @@ fn parse_rotate_value(object: &PdfObject, reader: Option<&PdfReader>) -> Result<
     let object = resolve_if_possible(object, reader)?;
     let value = object
         .as_integer()
-        .ok_or_else(|| OxideError::MalformedPdf("/Rotate must be an integer".to_string()))?;
+        .ok_or_else(|| WellfriendError::MalformedPdf("/Rotate must be an integer".to_string()))?;
     i32::try_from(value)
-        .map_err(|_| OxideError::MalformedPdf("/Rotate does not fit in i32".to_string()))
+        .map_err(|_| WellfriendError::MalformedPdf("/Rotate does not fit in i32".to_string()))
 }
 
 fn parse_resources(object: &PdfObject, reader: Option<&PdfReader>) -> Result<PdfDictionary> {
     let object = resolve_if_possible(object, reader)?;
     object.as_dict().cloned().ok_or_else(|| {
-        OxideError::MalformedPdf("/Resources must resolve to a dictionary".to_string())
+        WellfriendError::MalformedPdf("/Resources must resolve to a dictionary".to_string())
     })
 }
 

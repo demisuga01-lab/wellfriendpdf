@@ -15,7 +15,7 @@ fitted, fit on import, fit on appearance generation, disabled, strict error,
 and performance threshold.
 
 For PDF Ink annotations, `/InkList` remains a point-list interchange surface.
-Oxide preserves raw points in `/OxideRawInkList` when configured, stores cubic
-controls in `/OxideFittedInk`, and generates a cubic Form XObject appearance.
+Wellfriend preserves raw points in `/WellfriendRawInkList` when configured, stores cubic
+controls in `/WellfriendFittedInk`, and generates a cubic Form XObject appearance.
 It does not claim to recover pressure, tilt, velocity, timing, or original pen
 dynamics.

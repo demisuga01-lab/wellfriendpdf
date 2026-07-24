@@ -1,7 +1,7 @@
 use std::io::Cursor;
 use std::path::Path;
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::images::decoder::RawImage;
 
 pub struct RenderQuality;
@@ -81,30 +81,31 @@ impl RenderQuality {
     /// Write a RawImage as a PNG to disk, creating parent directories.
     pub fn write_golden(path: &Path, image: &RawImage) -> Result<()> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|err| OxideError::MalformedPdf(format!("write_golden mkdir: {}", err)))?;
+            std::fs::create_dir_all(parent).map_err(|err| {
+                WellfriendError::MalformedPdf(format!("write_golden mkdir: {}", err))
+            })?;
         }
 
         let png = crate::images::encoder::ImageEncoder::encode_png(image)?;
         std::fs::write(path, &png)
-            .map_err(|err| OxideError::MalformedPdf(format!("write_golden write: {}", err)))?;
+            .map_err(|err| WellfriendError::MalformedPdf(format!("write_golden write: {}", err)))?;
         Ok(())
     }
 
     /// Read a PNG from disk as a RawImage.
     pub fn read_golden(path: &Path) -> Result<RawImage> {
         let bytes = std::fs::read(path).map_err(|err| {
-            OxideError::MalformedPdf(format!("read_golden '{}': {}", path.display(), err))
+            WellfriendError::MalformedPdf(format!("read_golden '{}': {}", path.display(), err))
         })?;
 
         let decoder = png::Decoder::new(Cursor::new(&bytes));
         let mut reader = decoder
             .read_info()
-            .map_err(|err| OxideError::MalformedPdf(format!("read_golden decode: {}", err)))?;
+            .map_err(|err| WellfriendError::MalformedPdf(format!("read_golden decode: {}", err)))?;
         let mut pixels = vec![0u8; reader.output_buffer_size()];
         let info = reader
             .next_frame(&mut pixels)
-            .map_err(|err| OxideError::MalformedPdf(format!("read_golden frame: {}", err)))?;
+            .map_err(|err| WellfriendError::MalformedPdf(format!("read_golden frame: {}", err)))?;
         pixels.truncate(info.buffer_size());
 
         let channels = match info.color_type {
@@ -112,7 +113,7 @@ impl RenderQuality {
             png::ColorType::Rgb => 3,
             png::ColorType::Rgba => 4,
             other => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "read_golden: unsupported PNG color type {:?}",
                     other
                 )))
@@ -148,7 +149,7 @@ impl RenderQuality {
 
     fn validate_same_layout(label: &str, a: &RawImage, b: &RawImage) -> Result<()> {
         if a.width != b.width || a.height != b.height || a.channels != b.channels {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "{}: dimension mismatch: {}x{}x{} vs {}x{}x{}",
                 label, a.width, a.height, a.channels, b.width, b.height, b.channels
             )));
@@ -156,7 +157,7 @@ impl RenderQuality {
 
         let expected = a.byte_count();
         if a.pixels.len() != expected || b.pixels.len() != expected {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "{}: pixel buffer length mismatch: expected {}, got {} and {}",
                 label,
                 expected,
@@ -184,7 +185,7 @@ mod tests {
     }
 
     fn temp_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("oxide_{}_{}.png", name, std::process::id()))
+        std::env::temp_dir().join(format!("wellfriendpdf_{}_{}.png", name, std::process::id()))
     }
 
     #[test]

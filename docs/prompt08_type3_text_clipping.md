@@ -26,7 +26,7 @@ Unsupported and fail-closed behavior:
 
 Evidence:
 
-- `cargo test -p oxide-engine --test prompt08b_type3_cid_tensor --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test prompt08b_type3_cid_tensor --jobs 1`
 - `target/prompt08b-type3-cid-tensor/prompt08b-type3-clip-matrix.json`
 - `target/prompt08b-type3-cid-tensor/prompt08b-render-results.json`
 - `target/prompt08b-type3-cid-tensor/prompt08b-html-report/index.html`
@@ -34,7 +34,7 @@ Evidence:
 Reference posture:
 
 Poppler, PDFium, and MuPDF render the generated Type3 `Tr` clipping fixtures
-without applying the Type3 clip. Oxide records those rows as
+without applying the Type3 clip. Wellfriend records those rows as
 `unsupported_reported_expected` reference-cluster limitations while keeping the
 native path-collection output and local unit tests as the closure proof. No
 bbox fake clipping is used.

@@ -20,7 +20,7 @@ Evidence:
   inline image native counters with zero compatibility fallback.
 - The audit corpus includes `generated_image_only.pdf` and a generated inline
   image PDF.
-- `cargo test -p oxide-engine display_list_replays_image_page_through_native_ops`
+- `cargo test -p wellfriendpdf-engine display_list_replays_image_page_through_native_ops`
   verifies immediate-vs-display-list pixel equivalence for an image fixture.
 
 Remaining limits: image masks, soft masks, interpolation parity, ICC nuance,

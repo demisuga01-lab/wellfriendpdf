@@ -56,7 +56,7 @@ use x509_ocsp::{BasicOcspResponse, OcspResponse, OcspResponseStatus, Request as 
 
 use crate::cancel::CancelToken;
 use crate::document::PdfDocument;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::signature_evidence::{
@@ -212,15 +212,16 @@ impl PdfSigner {
     ) -> Result<Self> {
         let private_key = RsaPrivateKey::from_pkcs8_der(private_key_der)
             .or_else(|_| RsaPrivateKey::from_pkcs1_der(private_key_der))
-            .map_err(|e| OxideError::UnsupportedFeature(format!("signature RSA key: {e}")))?;
+            .map_err(|e| WellfriendError::UnsupportedFeature(format!("signature RSA key: {e}")))?;
         let mut certificates = Vec::with_capacity(chain_der.len() + 1);
         certificates.push(
-            Certificate::from_der(certificate_der)
-                .map_err(|e| OxideError::MalformedPdf(format!("signature certificate: {e}")))?,
+            Certificate::from_der(certificate_der).map_err(|e| {
+                WellfriendError::MalformedPdf(format!("signature certificate: {e}"))
+            })?,
         );
         for cert in chain_der {
             certificates.push(Certificate::from_der(cert).map_err(|e| {
-                OxideError::MalformedPdf(format!("signature chain certificate: {e}"))
+                WellfriendError::MalformedPdf(format!("signature chain certificate: {e}"))
             })?);
         }
         Ok(Self {
@@ -237,15 +238,16 @@ impl PdfSigner {
     ) -> Result<Self> {
         let private_key = RsaPrivateKey::from_pkcs8_pem(private_key_pem)
             .or_else(|_| RsaPrivateKey::from_pkcs1_pem(private_key_pem))
-            .map_err(|e| OxideError::UnsupportedFeature(format!("signature RSA key: {e}")))?;
+            .map_err(|e| WellfriendError::UnsupportedFeature(format!("signature RSA key: {e}")))?;
         let mut certificates = Vec::with_capacity(chain_pem.len() + 1);
         certificates.push(
-            Certificate::from_pem(certificate_pem.as_bytes())
-                .map_err(|e| OxideError::MalformedPdf(format!("signature certificate PEM: {e}")))?,
+            Certificate::from_pem(certificate_pem.as_bytes()).map_err(|e| {
+                WellfriendError::MalformedPdf(format!("signature certificate PEM: {e}"))
+            })?,
         );
         for cert in chain_pem {
             certificates.push(Certificate::from_pem(cert.as_bytes()).map_err(|e| {
-                OxideError::MalformedPdf(format!("signature chain certificate PEM: {e}"))
+                WellfriendError::MalformedPdf(format!("signature chain certificate PEM: {e}"))
             })?);
         }
         Ok(Self {
@@ -263,7 +265,7 @@ impl PdfSigner {
     pub fn signer_certificate_der(&self) -> Result<Vec<u8>> {
         self.certificates[0]
             .to_der()
-            .map_err(|e| OxideError::MalformedPdf(format!("signer certificate encode: {e}")))
+            .map_err(|e| WellfriendError::MalformedPdf(format!("signer certificate encode: {e}")))
     }
 }
 
@@ -389,10 +391,10 @@ impl TrustStore {
         purpose: Option<String>,
     ) -> Result<()> {
         let certificate = Certificate::from_der(der).map_err(|error| {
-            OxideError::invalid_input(format!("trust-anchor certificate DER: {error}"))
+            WellfriendError::invalid_input(format!("trust-anchor certificate DER: {error}"))
         })?;
         let canonical_der = certificate.to_der().map_err(|error| {
-            OxideError::invalid_input(format!("trust-anchor certificate DER encode: {error}"))
+            WellfriendError::invalid_input(format!("trust-anchor certificate DER encode: {error}"))
         })?;
         let fingerprint_sha256 = hex_upper(&Sha256::digest(&canonical_der));
         if self
@@ -424,10 +426,10 @@ impl TrustStore {
         purpose: Option<String>,
     ) -> Result<()> {
         let certificate = Certificate::from_pem(pem).map_err(|error| {
-            OxideError::invalid_input(format!("trust-anchor certificate PEM: {error}"))
+            WellfriendError::invalid_input(format!("trust-anchor certificate PEM: {error}"))
         })?;
         let der = certificate.to_der().map_err(|error| {
-            OxideError::invalid_input(format!("trust-anchor certificate PEM encode: {error}"))
+            WellfriendError::invalid_input(format!("trust-anchor certificate PEM encode: {error}"))
         })?;
         self.add_der(&der, origin, purpose)
     }
@@ -455,10 +457,10 @@ impl IntermediateStore {
 
     pub fn add_der(&mut self, der: &[u8]) -> Result<()> {
         let certificate = Certificate::from_der(der).map_err(|error| {
-            OxideError::invalid_input(format!("intermediate certificate DER: {error}"))
+            WellfriendError::invalid_input(format!("intermediate certificate DER: {error}"))
         })?;
         let canonical_der = certificate.to_der().map_err(|error| {
-            OxideError::invalid_input(format!("intermediate certificate DER encode: {error}"))
+            WellfriendError::invalid_input(format!("intermediate certificate DER encode: {error}"))
         })?;
         if !self
             .certificates_der
@@ -473,10 +475,10 @@ impl IntermediateStore {
 
     pub fn add_pem(&mut self, pem: &[u8]) -> Result<()> {
         let certificate = Certificate::from_pem(pem).map_err(|error| {
-            OxideError::invalid_input(format!("intermediate certificate PEM: {error}"))
+            WellfriendError::invalid_input(format!("intermediate certificate PEM: {error}"))
         })?;
         let der = certificate.to_der().map_err(|error| {
-            OxideError::invalid_input(format!("intermediate certificate PEM encode: {error}"))
+            WellfriendError::invalid_input(format!("intermediate certificate PEM encode: {error}"))
         })?;
         self.add_der(&der)
     }
@@ -517,7 +519,7 @@ impl Default for SignatureAlgorithmPolicy {
 impl SignatureAlgorithmPolicy {
     fn validate(&self) -> Result<()> {
         if self.min_rsa_key_bits < 1024 || self.min_rsa_key_bits > 16_384 {
-            return Err(OxideError::invalid_input(
+            return Err(WellfriendError::invalid_input(
                 "algorithm policy min_rsa_key_bits must be between 1024 and 16384",
             ));
         }
@@ -737,9 +739,9 @@ impl VerifyOptions {
 
     /// Enable bounded AIA/OCSP/CRL retrieval using the supplied policy.
     pub fn with_retrieval_policy(mut self, policy: RetrievalPolicy) -> Result<Self> {
-        policy
-            .validate()
-            .map_err(|error| OxideError::invalid_input(format!("retrieval policy: {error}")))?;
+        policy.validate().map_err(|error| {
+            WellfriendError::invalid_input(format!("retrieval policy: {error}"))
+        })?;
         self.allow_online_retrieval = policy.enabled;
         self.retrieval_policy = policy;
         Ok(self)
@@ -778,12 +780,12 @@ pub fn verify_options_from_json(options_json: &str) -> Result<VerifyOptions> {
         return Ok(VerifyOptions::default());
     }
     let value: serde_json::Value = serde_json::from_str(trimmed)
-        .map_err(|err| OxideError::invalid_input(format!("signature options JSON: {err}")))?;
+        .map_err(|err| WellfriendError::invalid_input(format!("signature options JSON: {err}")))?;
     if value.is_null() {
         return Ok(VerifyOptions::default());
     }
     let obj = value.as_object().ok_or_else(|| {
-        OxideError::invalid_input("signature options JSON must be an object or null")
+        WellfriendError::invalid_input("signature options JSON must be an object or null")
     })?;
     let mut options = VerifyOptions::default();
     for der in parse_hex_array(obj, "trust_anchors_der_hex")? {
@@ -794,11 +796,11 @@ pub fn verify_options_from_json(options_json: &str) -> Result<VerifyOptions> {
     }
     if let Some(values) = obj.get("distrusted_certificate_sha256") {
         let values = values.as_array().ok_or_else(|| {
-            OxideError::invalid_input("distrusted_certificate_sha256 must be an array")
+            WellfriendError::invalid_input("distrusted_certificate_sha256 must be an array")
         })?;
         for (index, value) in values.iter().enumerate() {
             let fingerprint = value.as_str().ok_or_else(|| {
-                OxideError::invalid_input(format!(
+                WellfriendError::invalid_input(format!(
                     "distrusted_certificate_sha256[{index}] must be a string"
                 ))
             })?;
@@ -831,7 +833,7 @@ pub fn verify_options_from_json(options_json: &str) -> Result<VerifyOptions> {
     if let Some(policy) = obj.get("algorithm_policy") {
         let policy: SignatureAlgorithmPolicy =
             serde_json::from_value(policy.clone()).map_err(|error| {
-                OxideError::invalid_input(format!(
+                WellfriendError::invalid_input(format!(
                     "algorithm_policy must be a valid object: {error}"
                 ))
             })?;
@@ -843,14 +845,16 @@ pub fn verify_options_from_json(options_json: &str) -> Result<VerifyOptions> {
     }
     if let Some(policy) = obj.get("retrieval_policy") {
         let policy: RetrievalPolicy = serde_json::from_value(policy.clone()).map_err(|error| {
-            OxideError::invalid_input(format!("retrieval_policy must be a valid object: {error}"))
+            WellfriendError::invalid_input(format!(
+                "retrieval_policy must be a valid object: {error}"
+            ))
         })?;
         options = options.with_retrieval_policy(policy)?;
     }
     if let Some(bundle_value) = obj.get("evidence_bundle") {
         let bundle: EvidenceBundle =
             serde_json::from_value(bundle_value.clone()).map_err(|error| {
-                OxideError::invalid_input(format!("evidence_bundle must be valid: {error}"))
+                WellfriendError::invalid_input(format!("evidence_bundle must be valid: {error}"))
             })?;
         options = options.with_evidence_bundle(bundle)?;
     }
@@ -859,7 +863,7 @@ pub fn verify_options_from_json(options_json: &str) -> Result<VerifyOptions> {
         .and_then(serde_json::Value::as_u64)
     {
         options.max_chain_depth = usize::try_from(depth)
-            .map_err(|_| OxideError::invalid_input("max_chain_depth is too large"))?
+            .map_err(|_| WellfriendError::invalid_input("max_chain_depth is too large"))?
             .max(1);
     }
     if let Some(candidates) = obj
@@ -867,7 +871,7 @@ pub fn verify_options_from_json(options_json: &str) -> Result<VerifyOptions> {
         .and_then(serde_json::Value::as_u64)
     {
         options.max_path_candidates = usize::try_from(candidates)
-            .map_err(|_| OxideError::invalid_input("max_path_candidates is too large"))?
+            .map_err(|_| WellfriendError::invalid_input("max_path_candidates is too large"))?
             .max(1);
     }
     if let Some(mode) = requested_revocation {
@@ -885,11 +889,11 @@ fn append_evidence_bundle(options: &mut VerifyOptions, bundle: &EvidenceBundle) 
             options.retrieval_policy.budget.max_cache_entries,
             options.retrieval_policy.budget.max_cache_bytes,
         )
-        .map_err(|error| OxideError::invalid_input(format!("evidence bundle: {error}")))?;
+        .map_err(|error| WellfriendError::invalid_input(format!("evidence bundle: {error}")))?;
     for record in &bundle.records {
         let bytes = record
             .bytes()
-            .map_err(|error| OxideError::invalid_input(format!("evidence bundle: {error}")))?;
+            .map_err(|error| WellfriendError::invalid_input(format!("evidence bundle: {error}")))?;
         match record.kind {
             EvidenceKind::Certificate => options.intermediates_der.push(bytes),
             EvidenceKind::Ocsp => options.ocsp_responses_der.push(bytes),
@@ -908,16 +912,16 @@ fn parse_hex_array(
     };
     let values = value
         .as_array()
-        .ok_or_else(|| OxideError::invalid_input(format!("{key} must be an array")))?;
+        .ok_or_else(|| WellfriendError::invalid_input(format!("{key} must be an array")))?;
     values
         .iter()
         .enumerate()
         .map(|(idx, value)| {
             let text = value.as_str().ok_or_else(|| {
-                OxideError::invalid_input(format!("{key}[{idx}] must be a hex string"))
+                WellfriendError::invalid_input(format!("{key}[{idx}] must be a hex string"))
             })?;
             decode_hex_der(text).map_err(|err| {
-                OxideError::invalid_input(format!("{key}[{idx}] is not valid hex DER: {err}"))
+                WellfriendError::invalid_input(format!("{key}[{idx}] is not valid hex DER: {err}"))
             })
         })
         .collect()
@@ -963,7 +967,7 @@ fn parse_signature_revocation_mode(value: &str) -> Result<SignatureRevocationMod
         | "online-best-evidence"
         | "soft_fail_network"
         | "soft-fail-network" => Ok(SignatureRevocationMode::OnlineBestEffort),
-        _ => Err(OxideError::invalid_input(format!(
+        _ => Err(WellfriendError::invalid_input(format!(
             "unknown signature revocation mode '{value}'"
         ))),
     }
@@ -980,7 +984,7 @@ fn parse_signature_policy_profile(value: &str) -> Result<SignatureValidationPoli
             Ok(SignatureValidationPolicyProfile::OnlineBestEvidence)
         }
         "custom" => Ok(SignatureValidationPolicyProfile::Custom),
-        _ => Err(OxideError::invalid_input(format!(
+        _ => Err(WellfriendError::invalid_input(format!(
             "unknown signature policy profile '{value}'"
         ))),
     }
@@ -1465,7 +1469,7 @@ pub enum RevocationStatus {
 /// omitted, the material is associated with every signature in the document.
 /// Certificate DER is supplemented with the signer certificates already present
 /// in each CMS signature so the DSS always carries the signer chain known to
-/// Oxide.
+/// WellfriendPdf.
 #[derive(Debug, Clone, Default)]
 pub struct LtvMaterial {
     pub signature_index: Option<usize>,
@@ -1862,7 +1866,7 @@ pub fn verify_signatures_with_options_and_evidence(
             policy.budget.max_cache_entries,
             policy.budget.max_cache_bytes,
         )
-        .map_err(|error| OxideError::invalid_input(format!("evidence bundle: {error}")))?,
+        .map_err(|error| WellfriendError::invalid_input(format!("evidence bundle: {error}")))?,
         None => EvidenceStore::new(
             policy.budget.max_cache_entries,
             policy.budget.max_cache_bytes,
@@ -1877,7 +1881,7 @@ pub fn verify_signatures_with_options_and_evidence(
         let verification = verify_one_with_evidence(&field, file, idx + 1, &dss, options);
         for record in verification.evidence_records {
             evidence.insert(record).map_err(|error| {
-                OxideError::invalid_input(format!("validated evidence: {error}"))
+                WellfriendError::invalid_input(format!("validated evidence: {error}"))
             })?;
         }
         reports.extend(verification.reports);
@@ -1937,7 +1941,7 @@ fn validate_evidence_bundle_document_binding(options: &VerifyOptions, file: &[u8
     };
     let actual = hex_lower(&Sha256::digest(file));
     if !expected.eq_ignore_ascii_case(&actual) {
-        return Err(OxideError::invalid_input(
+        return Err(WellfriendError::invalid_input(
             "evidence bundle source_document_sha256 does not match the PDF being validated",
         ));
     }
@@ -1954,26 +1958,26 @@ fn validate_evidence_bundle_document_binding(options: &VerifyOptions, file: &[u8
 pub fn add_ltv_material(doc: &PdfDocument, material: &LtvMaterial) -> Result<Vec<u8>> {
     let reader = doc.reader();
     if reader.is_encrypted() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "embedding LTV/DSS material in encrypted inputs is not yet supported".to_string(),
         ));
     }
     if material.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "LTV/DSS material must include at least one cert, OCSP response, or CRL".to_string(),
         ));
     }
 
     let fields = find_signature_fields(doc);
     if fields.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "LTV/DSS embedding requires at least one signature field".to_string(),
         ));
     }
 
     if let Some(index) = material.signature_index {
         if index == 0 || index > fields.len() {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "LTV signature_index {index} is out of range for {} signature(s)",
                 fields.len()
             )));
@@ -1987,13 +1991,13 @@ pub fn add_ltv_material(doc: &PdfDocument, material: &LtvMaterial) -> Result<Vec
         .collect::<Vec<_>>();
 
     let (root_number, root_generation) = reader.root_reference().ok_or_else(|| {
-        OxideError::MalformedPdf("LTV/DSS writer: trailer is missing /Root".to_string())
+        WellfriendError::MalformedPdf("LTV/DSS writer: trailer is missing /Root".to_string())
     })?;
     let mut catalog = reader
         .get_object(root_number, root_generation)?
         .as_dict()
         .cloned()
-        .ok_or_else(|| OxideError::MalformedPdf("/Root is not a dictionary".to_string()))?;
+        .ok_or_else(|| WellfriendError::MalformedPdf("/Root is not a dictionary".to_string()))?;
 
     let mut certs = material.certificates_der.clone();
     for (_, field) in &selected {
@@ -2009,11 +2013,11 @@ pub fn add_ltv_material(doc: &PdfDocument, material: &LtvMaterial) -> Result<Vec
     }
     for cert in &certs {
         Certificate::from_der(cert)
-            .map_err(|e| OxideError::MalformedPdf(format!("LTV certificate DER: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("LTV certificate DER: {e}")))?;
     }
     for crl in &material.crls_der {
         CertificateList::from_der(crl)
-            .map_err(|e| OxideError::MalformedPdf(format!("LTV CRL DER: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("LTV CRL DER: {e}")))?;
     }
 
     let next = next_free_object_number(reader);
@@ -2086,45 +2090,47 @@ pub fn sign_document(
 ) -> Result<Vec<u8>> {
     let reader = doc.reader();
     if reader.is_encrypted() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "digital signing encrypted inputs is not yet supported".to_string(),
         ));
     }
     if signer.certificates.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "digital signing requires a signer certificate".to_string(),
         ));
     }
     if options.contents_reserved_bytes == 0 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "signature /Contents placeholder must reserve at least one byte".to_string(),
         ));
     }
 
     let page_index = options.page.checked_sub(1).ok_or_else(|| {
-        OxideError::MalformedPdf("signature page numbers are 1-based".to_string())
+        WellfriendError::MalformedPdf("signature page numbers are 1-based".to_string())
     })?;
     let pages = doc.get_pages()?;
     let page = pages.get(page_index).ok_or_else(|| {
-        OxideError::MalformedPdf(format!(
+        WellfriendError::MalformedPdf(format!(
             "signature target page {} is out of range",
             options.page
         ))
     })?;
 
     let (root_number, root_generation) = reader.root_reference().ok_or_else(|| {
-        OxideError::MalformedPdf("signature writer: trailer is missing /Root".to_string())
+        WellfriendError::MalformedPdf("signature writer: trailer is missing /Root".to_string())
     })?;
     let mut catalog = reader
         .get_object(root_number, root_generation)?
         .as_dict()
         .cloned()
-        .ok_or_else(|| OxideError::MalformedPdf("/Root is not a dictionary".to_string()))?;
+        .ok_or_else(|| WellfriendError::MalformedPdf("/Root is not a dictionary".to_string()))?;
     let mut page_dict = reader
         .get_object(page.object_number, page.generation_number)?
         .as_dict()
         .cloned()
-        .ok_or_else(|| OxideError::MalformedPdf("target page is not a dictionary".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("target page is not a dictionary".to_string())
+        })?;
 
     let next = next_free_object_number(reader);
     let sig_number = next;
@@ -2145,7 +2151,9 @@ pub fn sign_document(
                 .get_object(*number, *generation)?
                 .as_dict()
                 .cloned()
-                .ok_or_else(|| OxideError::MalformedPdf("/AcroForm is not a dictionary".into()))?;
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf("/AcroForm is not a dictionary".into())
+                })?;
             (dict, reference(*number, *generation))
         }
         Some(PdfObject::Dictionary(dict)) => (dict.clone(), reference(acroform_number, 0)),
@@ -2224,12 +2232,12 @@ pub fn sign_document(
     patch_byte_range(&mut staged, byte_range_start, &byte_range)?;
 
     let signed_bytes = extract_signed_bytes(&staged, &byte_range).ok_or_else(|| {
-        OxideError::MalformedPdf("signature writer produced an invalid /ByteRange".to_string())
+        WellfriendError::MalformedPdf("signature writer produced an invalid /ByteRange".to_string())
     })?;
     let digest = Sha256::digest(&signed_bytes);
     let cms = build_detached_cms(signer, &digest, options.timestamp_token_der.as_deref())?;
     if cms.len() > options.contents_reserved_bytes {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "CMS signature is {} bytes but /Contents reserved only {} bytes",
             cms.len(),
             options.contents_reserved_bytes
@@ -2326,7 +2334,7 @@ pub struct CmsSigningResult {
 }
 
 /// External signer callback (HSM/KMS-style). Implementations must not receive
-/// document bytes or private keys through Oxide; they receive a structured
+/// document bytes or private keys through Wellfriend; they receive a structured
 /// [`CmsSigningRequest`] and return a [`CmsSigningResult`].
 pub trait ExternalSigner {
     fn sign_cms(
@@ -2430,39 +2438,41 @@ fn stage_signature(
 ) -> Result<StagedSignature> {
     let reader = doc.reader();
     if reader.is_encrypted() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "digital signing encrypted inputs is not yet supported".to_string(),
         ));
     }
     if reserved_bytes == 0 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "signature /Contents placeholder must reserve at least one byte".to_string(),
         ));
     }
     let page_index = options.page.checked_sub(1).ok_or_else(|| {
-        OxideError::MalformedPdf("signature page numbers are 1-based".to_string())
+        WellfriendError::MalformedPdf("signature page numbers are 1-based".to_string())
     })?;
     let pages = doc.get_pages()?;
     let page = pages.get(page_index).ok_or_else(|| {
-        OxideError::MalformedPdf(format!(
+        WellfriendError::MalformedPdf(format!(
             "signature target page {} is out of range",
             options.page
         ))
     })?;
 
     let (root_number, root_generation) = reader.root_reference().ok_or_else(|| {
-        OxideError::MalformedPdf("signature writer: trailer is missing /Root".to_string())
+        WellfriendError::MalformedPdf("signature writer: trailer is missing /Root".to_string())
     })?;
     let mut catalog = reader
         .get_object(root_number, root_generation)?
         .as_dict()
         .cloned()
-        .ok_or_else(|| OxideError::MalformedPdf("/Root is not a dictionary".to_string()))?;
+        .ok_or_else(|| WellfriendError::MalformedPdf("/Root is not a dictionary".to_string()))?;
     let mut page_dict = reader
         .get_object(page.object_number, page.generation_number)?
         .as_dict()
         .cloned()
-        .ok_or_else(|| OxideError::MalformedPdf("target page is not a dictionary".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("target page is not a dictionary".to_string())
+        })?;
 
     let next = next_free_object_number(reader);
     let sig_number = next;
@@ -2483,7 +2493,9 @@ fn stage_signature(
                 .get_object(*number, *generation)?
                 .as_dict()
                 .cloned()
-                .ok_or_else(|| OxideError::MalformedPdf("/AcroForm is not a dictionary".into()))?;
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf("/AcroForm is not a dictionary".into())
+                })?;
             (dict, reference(*number, *generation))
         }
         Some(PdfObject::Dictionary(dict)) => (dict.clone(), reference(acroform_number, 0)),
@@ -2570,7 +2582,7 @@ fn stage_signature(
     patch_byte_range(&mut staged, byte_range_start, &byte_range)?;
 
     let signed_bytes = extract_signed_bytes(&staged, &byte_range).ok_or_else(|| {
-        OxideError::MalformedPdf("signature writer produced an invalid /ByteRange".to_string())
+        WellfriendError::MalformedPdf("signature writer produced an invalid /ByteRange".to_string())
     })?;
     let digest = Sha256::digest(&signed_bytes).to_vec();
     Ok(StagedSignature {
@@ -2622,7 +2634,7 @@ pub fn sign_incremental(
         SigningIntent::Approval => None,
         SigningIntent::Certification { docmdp_permissions } => {
             if !(1..=3).contains(&docmdp_permissions) {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "certification DocMDP permission must be 1, 2, or 3 (got {docmdp_permissions})"
                 )));
             }
@@ -2631,7 +2643,7 @@ pub fn sign_incremental(
     };
     if let IncrementalSigner::Local(local) = &signer {
         if local.certificates.is_empty() {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "digital signing requires a signer certificate".to_string(),
             ));
         }
@@ -2676,11 +2688,11 @@ pub fn sign_incremental(
                     reserved_bytes: reserved,
                 };
                 let result = signer.sign_cms(&request).map_err(|e| {
-                    OxideError::MalformedPdf(format!("external signer returned an error: {e}"))
+                    WellfriendError::MalformedPdf(format!("external signer returned an error: {e}"))
                 })?;
                 // Reject a non-CMS / malformed response before inserting it.
                 ContentInfo::from_der(&result.cms_der).map_err(|e| {
-                    OxideError::MalformedPdf(format!(
+                    WellfriendError::MalformedPdf(format!(
                         "external signer response is not a valid CMS ContentInfo: {e}"
                     ))
                 })?;
@@ -2690,7 +2702,7 @@ pub fn sign_incremental(
                         .signer_certificate_sha256
                         .eq_ignore_ascii_case(expected)
                     {
-                        return Err(OxideError::MalformedPdf(
+                        return Err(WellfriendError::MalformedPdf(
                             "external signer used a certificate that does not match the pinned fingerprint"
                                 .to_string(),
                         ));
@@ -2705,7 +2717,7 @@ pub fn sign_incremental(
                         .algorithm
                         .eq_ignore_ascii_case("sha256WithRSAEncryption")
                 {
-                    return Err(OxideError::UnsupportedFeature(format!(
+                    return Err(WellfriendError::UnsupportedFeature(format!(
                         "external signer negotiated an unsupported algorithm: {}",
                         result.algorithm
                     )));
@@ -2721,7 +2733,7 @@ pub fn sign_incremental(
                 retried = true;
                 continue;
             }
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "CMS signature is {} bytes but /Contents reserved only {} bytes",
                 cms.len(),
                 reserved
@@ -2738,7 +2750,7 @@ pub fn sign_incremental(
 
         let post_sign = post_sign_validate(&out);
         if !post_sign.signature_valid {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "post-sign validation failed: the generated signature is not mathematically valid over the signed bytes"
                     .to_string(),
             ));
@@ -3581,7 +3593,7 @@ fn signature_vri_key_candidates(contents: &[u8]) -> Vec<String> {
     // pyHanko's DSS writer follows the common PAdES convention of hashing the
     // ASCII hex representation of the PDF signature contents. Accept both the
     // trimmed DER object and the full padded `/Contents` string as alternate
-    // bindings while retaining the raw-CMS key for existing Oxide DSS output
+    // bindings while retaining the raw-CMS key for existing Wellfriend DSS output
     // and malformed inventory paths.
     let hex_contents = hex_lower(cms);
     let hex_key = hex_upper(&Sha1::digest(hex_contents.as_bytes()));
@@ -7617,7 +7629,7 @@ fn find_unique(haystack: &[u8], needle: &[u8]) -> Result<usize> {
     for (idx, window) in haystack.windows(needle.len()).enumerate() {
         if window == needle {
             if found.is_some() {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "signature writer found a non-unique placeholder".to_string(),
                 ));
             }
@@ -7625,14 +7637,14 @@ fn find_unique(haystack: &[u8], needle: &[u8]) -> Result<usize> {
         }
     }
     found.ok_or_else(|| {
-        OxideError::MalformedPdf("signature writer placeholder was not found".to_string())
+        WellfriendError::MalformedPdf("signature writer placeholder was not found".to_string())
     })
 }
 
 fn patch_byte_range(out: &mut [u8], start: usize, br: &ByteRange) -> Result<()> {
     for value in [br.a, br.b, br.c, br.d] {
         if value as u64 > MAX_BYTE_RANGE_FIELD {
-            return Err(OxideError::ResourceLimit(
+            return Err(WellfriendError::ResourceLimit(
                 "signature ByteRange exceeds fixed 10-digit placeholder".to_string(),
             ));
         }
@@ -7680,48 +7692,48 @@ fn build_detached_cms(
         &content,
         Some(content_digest),
     )
-    .map_err(|e| OxideError::MalformedPdf(format!("CMS signer info: {e}")))?;
+    .map_err(|e| WellfriendError::MalformedPdf(format!("CMS signer info: {e}")))?;
     signer_info
         .add_signed_attribute(
             create_signing_time_attribute()
-                .map_err(|e| OxideError::MalformedPdf(format!("CMS signing time: {e}")))?,
+                .map_err(|e| WellfriendError::MalformedPdf(format!("CMS signing time: {e}")))?,
         )
-        .map_err(|e| OxideError::MalformedPdf(format!("CMS signed attribute: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("CMS signed attribute: {e}")))?;
     if let Some(token_der) = timestamp_token_der {
         signer_info
             .add_unsigned_attribute(signature_timestamp_attribute(token_der)?)
-            .map_err(|e| OxideError::MalformedPdf(format!("CMS unsigned attribute: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("CMS unsigned attribute: {e}")))?;
     }
 
     let mut builder = SignedDataBuilder::new(&content);
     builder
         .add_digest_algorithm(digest_algorithm)
-        .map_err(|e| OxideError::MalformedPdf(format!("CMS digest algorithm: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("CMS digest algorithm: {e}")))?;
     for cert in &signer.certificates {
         builder
             .add_certificate(CertificateChoices::Certificate(cert.clone()))
-            .map_err(|e| OxideError::MalformedPdf(format!("CMS certificate: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("CMS certificate: {e}")))?;
     }
     builder
         .add_signer_info::<SigningKey<Sha256>, rsa::pkcs1v15::Signature>(signer_info)
-        .map_err(|e| OxideError::MalformedPdf(format!("CMS signature: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("CMS signature: {e}")))?;
     let content_info = builder
         .build()
-        .map_err(|e| OxideError::MalformedPdf(format!("CMS build: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("CMS build: {e}")))?;
     content_info
         .to_der()
-        .map_err(|e| OxideError::MalformedPdf(format!("CMS encode: {e}")))
+        .map_err(|e| WellfriendError::MalformedPdf(format!("CMS encode: {e}")))
 }
 
 fn signature_timestamp_attribute(token_der: &[u8]) -> Result<Attribute> {
     ContentInfo::from_der(token_der)
-        .map_err(|e| OxideError::MalformedPdf(format!("timestamp token ContentInfo: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("timestamp token ContentInfo: {e}")))?;
     let value = AttributeValue::from_der(token_der)
-        .map_err(|e| OxideError::MalformedPdf(format!("timestamp token attribute: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("timestamp token attribute: {e}")))?;
     let mut values = SetOfVec::new();
     values
         .insert(value)
-        .map_err(|e| OxideError::MalformedPdf(format!("timestamp token set: {e}")))?;
+        .map_err(|e| WellfriendError::MalformedPdf(format!("timestamp token set: {e}")))?;
     Ok(Attribute {
         oid: OID_SIGNATURE_TIMESTAMP_TOKEN,
         values,
@@ -7903,7 +7915,7 @@ fn normalize_certificate_fingerprint(value: &str) -> Result<String> {
         .filter(|byte| !matches!(byte, b':' | b'-' | b'_' | b' ' | b'\t' | b'\r' | b'\n'))
         .collect::<Vec<_>>();
     if normalized.len() != 64 || !normalized.iter().all(u8::is_ascii_hexdigit) {
-        return Err(OxideError::invalid_input(
+        return Err(WellfriendError::invalid_input(
             "certificate SHA-256 fingerprint must contain exactly 64 hexadecimal digits",
         ));
     }
@@ -8059,8 +8071,8 @@ mod tests {
     fn approval_options(reserved: usize) -> IncrementalSigningOptions {
         IncrementalSigningOptions {
             signature: SignatureOptions {
-                field_name: "OxideEngineSig".to_string(),
-                signer_name: Some("Oxide Prompt 26".to_string()),
+                field_name: "WellfriendEngineSig".to_string(),
+                signer_name: Some("Wellfriend Prompt 26".to_string()),
                 reason: Some("engine test".to_string()),
                 contents_reserved_bytes: reserved,
                 ..SignatureOptions::default()
@@ -8637,7 +8649,7 @@ mod tests {
         let public_key = RsaPublicKey::from(&private_key);
         let spki_der = public_key.to_public_key_der().expect("SPKI DER");
         let spki = SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("SPKI parse");
-        let subject = Name::from_str("CN=Oxide Prompt25 TSA,O=Oxide,C=US").expect("name");
+        let subject = Name::from_str("CN=Wellfriend Prompt25 TSA,O=Wellfriend,C=US").expect("name");
         let validity = Validity {
             not_before: Time::from(
                 GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(1_704_067_200))

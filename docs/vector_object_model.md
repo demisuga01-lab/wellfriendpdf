@@ -2,11 +2,11 @@
 
 Prompt 20 reconstructs vector objects from actual content operations. A path
 starts with `m`, `l`, `c`, `v`, `y`, `h`, or `re` and ends at its painting or
-end-path operator. Oxide does not combine adjacent paths into inferred semantic
+end-path operator. Wellfriend does not combine adjacent paths into inferred semantic
 ellipses, icons, charts, or other shapes.
 
 Every object carries a SHA-256-derived stable ID; page, object, generation,
-stream index, byte range, Form invocation and Oxide group stacks,
+stream index, byte range, Form invocation and Wellfriend group stacks,
 marked-content depth, OCG context, and resource-owner provenance; path
 segments; bbox; matrix; fill rule and paint
 mode; stroke width/dash/cap/join/miter; fill/stroke colors; opacity/blend and

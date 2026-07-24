@@ -19,7 +19,7 @@ use crate::cancel::CancelToken;
 use crate::content::Color;
 use crate::decode_scheduler::{DecodeSchedulerContext, DecodeSchedulerMetrics};
 use crate::editing::{EditMode, EditRectStyle, EditTextStyle, ImageRect, OverlayLayer, PdfEditor};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_with_limits, DecodeLimits};
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
@@ -568,7 +568,7 @@ fn load_xfa(document: &PdfDocument, limits: &XfaLimits, cancel: &CancelToken) ->
         Ok(PdfObject::Array(items)) => {
             source_form = "array".to_string();
             if items.len() / 2 > limits.max_packets {
-                return Err(OxideError::ResourceLimit(format!(
+                return Err(WellfriendError::ResourceLimit(format!(
                     "XFA packet count {} exceeds cap {}",
                     items.len() / 2,
                     limits.max_packets
@@ -610,7 +610,7 @@ fn load_xfa(document: &PdfDocument, limits: &XfaLimits, cancel: &CancelToken) ->
                 if parsed.root.local_name == "xdp" && !parsed.root.children.is_empty() {
                     for (order, child) in parsed.root.children.iter().enumerate() {
                         if order >= limits.max_packets {
-                            return Err(OxideError::ResourceLimit(format!(
+                            return Err(WellfriendError::ResourceLimit(format!(
                                 "XFA logical packet count exceeds cap {}",
                                 limits.max_packets
                             )));
@@ -1463,7 +1463,7 @@ fn build_data_node(
 ) -> Result<XfaDataNode> {
     *count = count.saturating_add(1);
     if *count > limits.max_dataset_nodes {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "XFA dataset node count exceeds cap {}",
             limits.max_dataset_nodes
         )));
@@ -1651,9 +1651,9 @@ fn parse_measurement(value: &str) -> Result<f64> {
         .unwrap_or(trimmed.len());
     let number = trimmed[..split]
         .parse::<f64>()
-        .map_err(|_| OxideError::MalformedPdf("invalid XFA measurement".to_string()))?;
+        .map_err(|_| WellfriendError::MalformedPdf("invalid XFA measurement".to_string()))?;
     if !number.is_finite() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "non-finite XFA measurement is forbidden".to_string(),
         ));
     }
@@ -1665,7 +1665,7 @@ fn parse_measurement(value: &str) -> Result<f64> {
         "cm" => number * 72.0 / 2.54,
         "px" => number * 72.0 / 96.0,
         _ => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "XFA measurement unit '{unit}' is unsupported"
             )))
         }
@@ -1673,7 +1673,7 @@ fn parse_measurement(value: &str) -> Result<f64> {
     if points.is_finite() {
         Ok(points)
     } else {
-        Err(OxideError::MalformedPdf(
+        Err(WellfriendError::MalformedPdf(
             "non-finite XFA measurement result is forbidden".to_string(),
         ))
     }
@@ -2109,7 +2109,7 @@ pub fn xfa_runtime_report_cancellable(
     let mut layout_state = LayoutState::new(engine, &options.limits, cancel, started)?;
     if let (Some(template), Some(source)) = (template, template_source) {
         if options.limits.max_relayout_iterations == 0 {
-            return Err(OxideError::ResourceLimit(
+            return Err(WellfriendError::ResourceLimit(
                 "XFA relayout iteration cap is zero; the deterministic layout pass was not admitted"
                     .to_string(),
             ));
@@ -2302,7 +2302,7 @@ fn execute_sandbox(
                 .sum(),
         );
     if source_memory > options.limits.max_script_memory_bytes {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "XFA script memory estimate exceeds cap {}",
             options.limits.max_script_memory_bytes
         )));
@@ -2346,7 +2346,7 @@ fn execute_sandbox(
             continue;
         }
         if events_executed >= options.limits.max_event_executions {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "XFA event executions exceed cap {}",
                 options.limits.max_event_executions
             )));
@@ -2377,7 +2377,7 @@ fn execute_sandbox(
                     });
                     if let Some(field) = target {
                         if field_mutations >= options.limits.max_field_mutations {
-                            return Err(OxideError::ResourceLimit(format!(
+                            return Err(WellfriendError::ResourceLimit(format!(
                                 "XFA field mutation cap {} exceeded",
                                 options.limits.max_field_mutations
                             )));
@@ -2399,8 +2399,10 @@ fn execute_sandbox(
             Err(err) => {
                 scripts_blocked += 1;
                 entry.reason_code = match err {
-                    OxideError::ResourceLimit(_) => "xfa.script.resource_limit",
-                    OxideError::UnsupportedFeature(_) => "xfa.script.unsupported_or_side_effect",
+                    WellfriendError::ResourceLimit(_) => "xfa.script.resource_limit",
+                    WellfriendError::UnsupportedFeature(_) => {
+                        "xfa.script.unsupported_or_side_effect"
+                    }
                     _ => "xfa.script.malformed",
                 }
                 .to_string();
@@ -2536,7 +2538,7 @@ impl<'a> LayoutState<'a> {
     fn new_page(&mut self) -> Result<()> {
         self.current_page = self.current_page.saturating_add(1);
         if self.current_page > self.limits.max_generated_pages {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "XFA generated page count exceeds cap {}",
                 self.limits.max_generated_pages
             )));
@@ -2548,7 +2550,7 @@ impl<'a> LayoutState<'a> {
     fn push(&mut self, item: XfaLayoutItem) -> Result<()> {
         self.generated_nodes = self.generated_nodes.saturating_add(1);
         if self.generated_nodes > self.limits.max_generated_nodes {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "XFA generated node count exceeds cap {}",
                 self.limits.max_generated_nodes
             )));
@@ -2576,7 +2578,7 @@ fn layout_container(
 ) -> Result<f64> {
     state.check("xfa layout container")?;
     if depth > state.limits.max_subform_depth {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "XFA subform depth exceeds cap {}",
             state.limits.max_subform_depth
         )));
@@ -2697,7 +2699,7 @@ fn layout_node(
         instances = instances.min(max);
     }
     if instances > state.limits.max_instances_per_subform {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "XFA subform instance count {instances} exceeds cap {}",
             state.limits.max_instances_per_subform
         )));
@@ -2722,7 +2724,7 @@ fn layout_node(
         if node.local_name == "subform" {
             state.generated_instances = state.generated_instances.saturating_add(1);
             if state.generated_instances > state.limits.max_generated_nodes {
-                return Err(OxideError::ResourceLimit(
+                return Err(WellfriendError::ResourceLimit(
                     "XFA generated subform instance total exceeds generated-node cap".to_string(),
                 ));
             }
@@ -3110,19 +3112,19 @@ pub fn xfa_flatten_pdf(
             XfaFlattenMode::FlattenSupportedStatic | XfaFlattenMode::FlattenAndRemoveXfa
         )
     {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "dynamic XFA requires render_preview; static flatten modes fail closed".to_string(),
         ));
     }
     if options.mode == XfaFlattenMode::FlattenAndRemoveXfa && !unsupported.is_empty() {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "flatten_and_remove_xfa rejected {} exact unsupported construct(s): {}",
             unsupported.len(),
             unsupported.join(", ")
         )));
     }
     if options.mode == XfaFlattenMode::FailOnUnsupported && !unsupported.is_empty() {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "XFA fail_on_unsupported rejected {} exact construct(s): {}",
             unsupported.len(),
             unsupported.join(", ")
@@ -3163,7 +3165,7 @@ pub fn xfa_flatten_pdf(
         }
     }
     if output.len() > options.runtime.limits.max_output_bytes {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "XFA output bytes {} exceed cap {}",
             output.len(),
             options.runtime.limits.max_output_bytes
@@ -3479,7 +3481,7 @@ pub fn sanitize_xfa_pdf(
         }
     };
     if output.len() > options.limits.max_output_bytes {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "sanitized XFA output exceeds cap {}",
             options.limits.max_output_bytes
         )));
@@ -3848,7 +3850,7 @@ pub(crate) fn prompt16_feature_report_value(envelope_version: u32) -> serde_json
         },
         "closure_gates": {
             "public_report_schema": "additive_feature_report_prompt16",
-            "shared_core_owner": "oxide_engine::xfa",
+            "shared_core_owner": "wellfriendpdf_engine::xfa",
             "scripts_default_disabled": true,
             "blocked": 0
         },
@@ -3862,7 +3864,7 @@ pub(crate) fn prompt16_feature_report_value(envelope_version: u32) -> serde_json
 
 fn check_runtime(started: RuntimeInstant, limits: &XfaLimits) -> Result<()> {
     if started.elapsed_millis() > u128::from(limits.max_runtime_ms) {
-        Err(OxideError::ResourceLimit(format!(
+        Err(WellfriendError::ResourceLimit(format!(
             "XFA runtime exceeded {} ms",
             limits.max_runtime_ms
         )))

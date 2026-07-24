@@ -1,16 +1,16 @@
-//! Tool-surface parity test: exercise every Oxide CLI subcommand on fixtures
+//! Tool-surface parity test: exercise every Wellfriend CLI subcommand on fixtures
 //! and assert it succeeds with the expected output shape.
 //!
 //! This is the continuously-verifiable evidence behind the command-by-command
 //! Poppler parity claim. It invokes the actual built binary via
-//! `CARGO_BIN_EXE_oxide`, so it covers argument parsing + the full pipeline,
+//! `CARGO_BIN_EXE_wellfriendpdf`, so it covers argument parsing + the full pipeline,
 //! not just the engine API.
 
 use std::path::PathBuf;
 use std::process::Command;
 
-fn oxide() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_oxide"))
+fn wellfriendpdf() -> Command {
+    Command::new(env!("CARGO_BIN_EXE_wellfriendpdf"))
 }
 
 fn fixtures() -> PathBuf {
@@ -29,14 +29,17 @@ fn fx(name: &str) -> PathBuf {
 
 fn tmp(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
-        "oxide_tool_surface_{}_{}",
+        "wellfriendpdf_tool_surface_{}_{}",
         std::process::id(),
         name
     ))
 }
 
 fn run(args: &[&str]) -> std::process::Output {
-    oxide().args(args).output().expect("spawn oxide")
+    wellfriendpdf()
+        .args(args)
+        .output()
+        .expect("spawn wellfriendpdf")
 }
 
 fn assert_ok(out: &std::process::Output, label: &str) {
@@ -347,7 +350,7 @@ fn render_raster_output_is_deterministic_across_thread_counts() {
     let serial_zip = tmp("render_threads_1.zip");
     let parallel_zip = tmp("render_threads_4.zip");
 
-    let mut serial = oxide();
+    let mut serial = wellfriendpdf();
     let serial = serial
         .env("RAYON_NUM_THREADS", "1")
         .args([
@@ -364,7 +367,7 @@ fn render_raster_output_is_deterministic_across_thread_counts() {
         .expect("render with one worker");
     assert_ok(&serial, "render png serial");
 
-    let mut parallel = oxide();
+    let mut parallel = wellfriendpdf();
     let parallel = parallel
         .env("RAYON_NUM_THREADS", "4")
         .args([
@@ -786,7 +789,7 @@ fn prompt07_report_commands_emit_json() {
     );
     assert_eq!(
         feature["report"]["prompt07b_transparency_closure"]["reference_audit"]
-            ["oxide_outlier_failures"],
+            ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
@@ -795,7 +798,7 @@ fn prompt07_report_commands_emit_json() {
     );
     assert_eq!(
         feature["report"]["prompt08_text_clipping_shading_patterns"]["reference_audit"]
-            ["oxide_outlier_failures"],
+            ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
@@ -804,7 +807,7 @@ fn prompt07_report_commands_emit_json() {
     );
     assert_eq!(
         feature["report"]["prompt08b_type3_cid_tensor_closure"]["reference_audit"]
-            ["oxide_outlier_failures"],
+            ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
@@ -813,7 +816,7 @@ fn prompt07_report_commands_emit_json() {
     );
     assert_eq!(
         feature["report"]["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]
-            ["multi_reference_audit"]["oxide_outlier_failures"],
+            ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
@@ -827,7 +830,7 @@ fn prompt07_report_commands_emit_json() {
     );
     assert_eq!(
         feature["report"]["prompt10c_color_glyph_hinting_cff_closure"]["multi_reference_audit"]
-            ["oxide_outlier_failures"],
+            ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
@@ -846,7 +849,7 @@ fn prompt07_report_commands_emit_json() {
     );
     assert_eq!(
         feature["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["multi_reference_audit"]
-            ["oxide_outlier_failures"],
+            ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
@@ -865,7 +868,7 @@ fn prompt07_report_commands_emit_json() {
     );
     assert_eq!(
         feature["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]
-            ["multi_reference_audit"]["oxide_outlier_failures"],
+            ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
@@ -896,7 +899,7 @@ fn prompt07_report_commands_emit_json() {
     );
     assert_eq!(
         feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_closeout"]
-            ["oxide_outlier_failures"],
+            ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
@@ -942,7 +945,10 @@ fn prompt07_report_commands_emit_json() {
         prompt13["closure_gates"]["public_report_schema"],
         "additive_feature_report_prompt13"
     );
-    assert_eq!(prompt13["reference_audit"]["oxide_outlier_failures"], 0);
+    assert_eq!(
+        prompt13["reference_audit"]["wellfriendpdf_outlier_failures"],
+        0
+    );
     assert_eq!(prompt13["reference_audit"]["unclassified_failures"], 0);
     let prompt14 = &feature["report"]["prompt14_semantic_intelligence_parenttree_cjk_ml_layout"];
     assert_eq!(prompt14["status"], "complete");

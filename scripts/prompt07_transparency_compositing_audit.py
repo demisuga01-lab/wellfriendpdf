@@ -19,7 +19,7 @@ FIXTURE_DIR = OUT_DIR / "generated-fixtures"
 RENDER_DIR = OUT_DIR / "renders"
 DIFF_DIR = OUT_DIR / "diffs"
 LOG_DIR = OUT_DIR / "logs"
-OXIDE_REPORT_DIR = OUT_DIR / "oxide-reports"
+WELLFRIENDPDF_REPORT_DIR = OUT_DIR / "wellfriendpdf-reports"
 
 TOOL_MANIFEST = Path("target/prompt06-renderer-native-replay/reference-tool-manifest-prompt06b.json")
 CORPUS_MANIFEST = OUT_DIR / "corpus-manifest.json"
@@ -34,15 +34,15 @@ MEMORY_BUDGET_REPORT = OUT_DIR / "memory-budget-report.json"
 HTML_REPORT = OUT_DIR / "html-report" / "index.html"
 
 PAIR_NAMES = [
-    ("oxide", "poppler"),
-    ("oxide", "pdfium"),
-    ("oxide", "mupdf"),
+    ("wellfriendpdf", "poppler"),
+    ("wellfriendpdf", "pdfium"),
+    ("wellfriendpdf", "mupdf"),
     ("poppler", "pdfium"),
     ("poppler", "mupdf"),
     ("pdfium", "mupdf"),
 ]
 REFERENCE_PAIRS = [("poppler", "pdfium"), ("poppler", "mupdf"), ("pdfium", "mupdf")]
-OXIDE_PAIRS = [("oxide", "poppler"), ("oxide", "pdfium"), ("oxide", "mupdf")]
+WELLFRIENDPDF_PAIRS = [("wellfriendpdf", "poppler"), ("wellfriendpdf", "pdfium"), ("wellfriendpdf", "mupdf")]
 
 BLEND_MODES = [
     "Normal",
@@ -419,22 +419,22 @@ def load_tool_manifest(path: Path) -> dict[str, Any]:
     return payload
 
 
-def oxide_base_command(oxide_bin: str | None) -> list[str]:
-    if oxide_bin:
-        return [str(Path(oxide_bin))]
+def wellfriendpdf_base_command(wellfriendpdf_bin: str | None) -> list[str]:
+    if wellfriendpdf_bin:
+        return [str(Path(wellfriendpdf_bin))]
     suffix = ".exe" if os.name == "nt" else ""
-    for candidate in [Path("target/debug") / f"oxide{suffix}", Path("target/release") / f"oxide{suffix}"]:
+    for candidate in [Path("target/debug") / f"wellfriendpdf{suffix}", Path("target/release") / f"wellfriendpdf{suffix}"]:
         if candidate.exists():
             return [str(candidate)]
-    return ["cargo", "run", "-p", "oxide-cli", "--quiet", "--"]
+    return ["cargo", "run", "-p", "wellfriendpdf-cli", "--quiet", "--"]
 
 
-def render_oxide(base: list[str], entry: dict[str, Any], dpi: int, timeout: int, phase: str) -> dict[str, Any]:
-    render_dir = RENDER_DIR / phase / "oxide"
+def render_wellfriendpdf(base: list[str], entry: dict[str, Any], dpi: int, timeout: int, phase: str) -> dict[str, Any]:
+    render_dir = RENDER_DIR / phase / "wellfriendpdf"
     render_dir.mkdir(parents=True, exist_ok=True)
     zip_path = render_dir / f"{entry['id']}-p{entry['page']}.zip"
     png_path = render_dir / f"{entry['id']}-p{entry['page']}.png"
-    report_path = OXIDE_REPORT_DIR / phase / f"{entry['id']}-p{entry['page']}.json"
+    report_path = WELLFRIENDPDF_REPORT_DIR / phase / f"{entry['id']}-p{entry['page']}.json"
     for path in [zip_path, png_path, report_path]:
         if path.exists():
             path.unlink()
@@ -481,7 +481,7 @@ def render_oxide(base: list[str], entry: dict[str, Any], dpi: int, timeout: int,
     if render_result["timed_out"] or compare_result["timed_out"]:
         status = "render_timeout"
     elif render_result["exit_status"] != 0 or not zip_path.exists():
-        status = "oxide_render_failure"
+        status = "wellfriendpdf_render_failure"
     else:
         try:
             with zipfile.ZipFile(zip_path) as zf:
@@ -491,7 +491,7 @@ def render_oxide(base: list[str], entry: dict[str, Any], dpi: int, timeout: int,
                 else:
                     png_path.write_bytes(zf.read(names[0]))
         except zipfile.BadZipFile:
-            status = "oxide_render_failure"
+            status = "wellfriendpdf_render_failure"
     return {
         "status": status,
         "artifact": rel(png_path) if png_path.exists() else None,
@@ -631,8 +631,8 @@ def image_metrics(a_name: str, a_path: str | None, b_name: str, b_path: str | No
 
 
 def classify_page(category: str, renders: dict[str, Any], metrics: dict[str, Any]) -> str:
-    if renders["oxide"]["status"] != "rendered":
-        return "oxide_render_failure"
+    if renders["wellfriendpdf"]["status"] != "rendered":
+        return "wellfriendpdf_render_failure"
     if any(renders[name]["status"] != "rendered" for name in ["poppler", "pdfium", "mupdf"]):
         return "reference_tool_failure"
     if any(metric.get("status") == "dimension_mismatch" for metric in metrics.values()):
@@ -642,14 +642,14 @@ def classify_page(category: str, renders: dict[str, Any], metrics: dict[str, Any
         return bool(metrics[f"{a}_vs_{b}"].get("threshold_pass"))
 
     references_agree = all(pair_pass(a, b) for a, b in REFERENCE_PAIRS)
-    oxide_matches = [b for a, b in OXIDE_PAIRS if pair_pass(a, b)]
+    wellfriendpdf_matches = [b for a, b in WELLFRIENDPDF_PAIRS if pair_pass(a, b)]
     if references_agree:
-        return "all_references_agree_oxide_pass" if len(oxide_matches) == 3 else "all_references_agree_oxide_mismatch"
-    if len(oxide_matches) == 1:
-        return f"references_disagree_oxide_matches_{oxide_matches[0]}"
-    if len(oxide_matches) > 1:
-        return "references_disagree_oxide_between_references"
-    return "needs_manual_review" if category.startswith(("group/", "softmask/", "blend/")) else "references_disagree_oxide_between_references"
+        return "all_references_agree_wellfriendpdf_pass" if len(wellfriendpdf_matches) == 3 else "all_references_agree_wellfriendpdf_mismatch"
+    if len(wellfriendpdf_matches) == 1:
+        return f"references_disagree_wellfriendpdf_matches_{wellfriendpdf_matches[0]}"
+    if len(wellfriendpdf_matches) > 1:
+        return "references_disagree_wellfriendpdf_between_references"
+    return "needs_manual_review" if category.startswith(("group/", "softmask/", "blend/")) else "references_disagree_wellfriendpdf_between_references"
 
 
 def run_phase(entries: list[dict[str, Any]], tools: dict[str, Any], base: list[str], phase: str, dpi: int, timeout: int) -> dict[str, Any]:
@@ -661,7 +661,7 @@ def run_phase(entries: list[dict[str, Any]], tools: dict[str, Any], base: list[s
     for entry in entries:
         categories[entry["category"]] = categories.get(entry["category"], 0) + 1
         renders = {
-            "oxide": render_oxide(base, entry, dpi, timeout, phase),
+            "wellfriendpdf": render_wellfriendpdf(base, entry, dpi, timeout, phase),
             "poppler": render_reference("poppler", tools["poppler"], entry, dpi, timeout, phase),
             "pdfium": render_reference("pdfium", tools["pdfium"], entry, dpi, timeout, phase),
             "mupdf": render_reference("mupdf", tools["mupdf"], entry, dpi, timeout, phase),
@@ -672,11 +672,11 @@ def run_phase(entries: list[dict[str, Any]], tools: dict[str, Any], base: list[s
         }
         classification = classify_page(entry["category"], renders, pair_metrics)
         classification_counts[classification] = classification_counts.get(classification, 0) + 1
-        counters = renders["oxide"].get("native_counters", {})
+        counters = renders["wellfriendpdf"].get("native_counters", {})
         for key, value in counters.items():
             if isinstance(value, int):
                 totals[key] = totals.get(key, 0) + value
-        report_artifact = renders["oxide"].get("render_report_artifact")
+        report_artifact = renders["wellfriendpdf"].get("render_report_artifact")
         if report_artifact and Path(report_artifact).exists():
             try:
                 report = json.loads(Path(report_artifact).read_text(encoding="utf-8"))
@@ -861,7 +861,7 @@ def write_summary_artifacts(entries: list[dict[str, Any]], results: dict[str, An
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=TOOL_MANIFEST)
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     parser.add_argument("--phase", choices=["baseline", "post", "both"], default="post")
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--timeout", type=int, default=120)
@@ -869,7 +869,7 @@ def main() -> int:
 
     tools = load_tool_manifest(args.manifest)["tools"]
     entries = generate_corpus()
-    base = oxide_base_command(args.oxide_bin)
+    base = wellfriendpdf_base_command(args.wellfriendpdf_bin)
     latest: dict[str, Any] | None = None
     if args.phase in {"baseline", "both"}:
         latest = run_phase(entries, tools, base, "baseline", args.dpi, args.timeout)

@@ -18,7 +18,7 @@ Current measured ceiling under the same 2 GB cap:
 - Synthetic size axis: open/page-count succeeds at 1.5 GB, then fails at 2.0 GB and 3.0 GB during the initial full-file read. Text/image extraction and first-three-page render complete at 1.0 GB, then fail at 1.5 GB before first page output.
 - Synthetic page-count axis: 5000 tiny pages stay under 20 MB for serial page-by-page extraction, but take about 9 minutes because current page APIs repeatedly rebuild the full page list.
 
-Plainly: Oxide is not yet close to the 3-4 GB target. The primary gap is the full-file heap buffer; the secondary gap is full content-stream materialization and repeated page-tree materialization.
+Plainly: Wellfriend is not yet close to the 3-4 GB target. The primary gap is the full-file heap buffer; the secondary gap is full content-stream materialization and repeated page-tree materialization.
 
 ## Current Read-Path Evidence
 

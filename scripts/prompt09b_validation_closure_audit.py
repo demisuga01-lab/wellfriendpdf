@@ -21,7 +21,7 @@ CORPUS_DIR = OUT_DIR / "prompt09b-corpus"
 RENDER_DIR = OUT_DIR / "prompt09b-renders"
 DIFF_DIR = OUT_DIR / "prompt09b-diffs"
 LOG_DIR = OUT_DIR / "prompt09b-logs"
-OXIDE_REPORT_DIR = OUT_DIR / "prompt09b-oxide-reports"
+WELLFRIENDPDF_REPORT_DIR = OUT_DIR / "prompt09b-wellfriendpdf-reports"
 HTML_REPORT = OUT_DIR / "prompt09b-html-report" / "index.html"
 
 PROMPT06B_TOOL_MANIFEST = Path(
@@ -55,9 +55,9 @@ ARTIFACTS = {
 }
 
 PAIR_NAMES = [
-    ("oxide", "poppler"),
-    ("oxide", "pdfium"),
-    ("oxide", "mupdf"),
+    ("wellfriendpdf", "poppler"),
+    ("wellfriendpdf", "pdfium"),
+    ("wellfriendpdf", "mupdf"),
     ("poppler", "pdfium"),
     ("poppler", "mupdf"),
     ("pdfium", "mupdf"),
@@ -367,9 +367,9 @@ def load_prompt06b() -> Any:
     module.RENDER_DIR = RENDER_DIR
     module.DIFF_DIR = DIFF_DIR
     module.LOG_DIR = LOG_DIR
-    module.OXIDE_REPORT_DIR = OXIDE_REPORT_DIR
+    module.WELLFRIENDPDF_REPORT_DIR = WELLFRIENDPDF_REPORT_DIR
     module.HTML_REPORT = HTML_REPORT
-    for path in [RENDER_DIR, DIFF_DIR, LOG_DIR, OXIDE_REPORT_DIR]:
+    for path in [RENDER_DIR, DIFF_DIR, LOG_DIR, WELLFRIENDPDF_REPORT_DIR]:
         path.mkdir(parents=True, exist_ok=True)
     return module
 
@@ -397,7 +397,7 @@ def run_feature_report(timeout: int) -> dict[str, Any]:
         "cargo",
         "run",
         "-p",
-        "oxide-cli",
+        "wellfriendpdf-cli",
         "--quiet",
         "--",
         "feature-report",
@@ -422,9 +422,9 @@ def run_feature_report(timeout: int) -> dict[str, Any]:
     }
 
 
-def render_compare(fixtures: list[dict[str, Any]], manifest: dict[str, Any], oxide_bin: str | None, dpi: int, timeout: int) -> dict[str, Any]:
+def render_compare(fixtures: list[dict[str, Any]], manifest: dict[str, Any], wellfriendpdf_bin: str | None, dpi: int, timeout: int) -> dict[str, Any]:
     p06 = load_prompt06b()
-    base = p06.oxide_base_command(oxide_bin)
+    base = p06.wellfriendpdf_base_command(wellfriendpdf_bin)
     pages: list[dict[str, Any]] = []
     metrics_pages: list[dict[str, Any]] = []
     categories: dict[str, int] = {}
@@ -434,7 +434,7 @@ def render_compare(fixtures: list[dict[str, Any]], manifest: dict[str, Any], oxi
     for entry in fixtures:
         categories[entry["category"]] = categories.get(entry["category"], 0) + 1
         renders = {
-            "oxide": p06.render_oxide(base, entry, dpi, timeout),
+            "wellfriendpdf": p06.render_wellfriendpdf(base, entry, dpi, timeout),
             "poppler": p06.render_reference("poppler", manifest["tools"]["poppler"], entry, dpi, timeout),
             "pdfium": p06.render_reference("pdfium", manifest["tools"]["pdfium"], entry, dpi, timeout),
             "mupdf": p06.render_reference("mupdf", manifest["tools"]["mupdf"], entry, dpi, timeout),
@@ -464,7 +464,7 @@ def render_compare(fixtures: list[dict[str, Any]], manifest: dict[str, Any], oxi
             "prompt09b_classification": closure,
             "renders": renders,
             "pair_metrics": pair_metrics,
-            "native_replay_counters": renders["oxide"].get("native_replay_counters", {}),
+            "native_replay_counters": renders["wellfriendpdf"].get("native_replay_counters", {}),
         }
         pages.append(page)
         metrics_pages.append({"id": entry["id"], "category": entry["category"], "pairs": pair_metrics})
@@ -486,7 +486,7 @@ def render_compare(fixtures: list[dict[str, Any]], manifest: dict[str, Any], oxi
         "page_count": len(pages),
         "classification_counts": prompt09b_counts,
         "raw_prompt06b_classification_counts": raw_counts,
-        "oxide_outlier_failures": count_outliers(pages),
+        "wellfriendpdf_outlier_failures": count_outliers(pages),
         "unclassified_failures": count_unclassified(pages),
         "reference_disagreements": [
             {
@@ -496,7 +496,7 @@ def render_compare(fixtures: list[dict[str, Any]], manifest: dict[str, Any], oxi
                 "policy": page["expected_prompt09b_classification"],
             }
             for page in pages
-            if page["prompt09b_classification"] != "all_references_agree_oxide_pass"
+            if page["prompt09b_classification"] != "all_references_agree_wellfriendpdf_pass"
         ],
     }
     write_json(ARTIFACTS["multi_reference"], results)
@@ -508,11 +508,11 @@ def render_compare(fixtures: list[dict[str, Any]], manifest: dict[str, Any], oxi
 
 def classify_prompt09b(raw: str, entry: dict[str, Any]) -> str:
     if entry["expected_prompt09b_classification"] == "policy_reported_expected":
-        if raw in {"oxide_render_failure", "reference_tool_failure", "dimension_mismatch"}:
+        if raw in {"wellfriendpdf_render_failure", "reference_tool_failure", "dimension_mismatch"}:
             return raw
         return "unsupported_reported_expected"
     if raw.startswith("references_disagree"):
-        return "reference_disagreement_oxide_inside_cluster"
+        return "reference_disagreement_wellfriendpdf_inside_cluster"
     return raw
 
 
@@ -521,7 +521,7 @@ def count_outliers(pages: list[dict[str, Any]]) -> int:
         1
         for page in pages
         if page["prompt09b_classification"]
-        in {"all_references_agree_oxide_mismatch", "oxide_render_failure", "reference_tool_failure", "dimension_mismatch"}
+        in {"all_references_agree_wellfriendpdf_mismatch", "wellfriendpdf_render_failure", "reference_tool_failure", "dimension_mismatch"}
     )
 
 
@@ -540,13 +540,13 @@ def render_html(pages: list[dict[str, Any]], summary: dict[str, Any]) -> None:
             f"<td>{html.escape(page['category'])}</td>"
             f"<td>{html.escape(page['prompt09b_classification'])}</td>"
             f"<td>{html.escape(page['raw_prompt06b_classification'])}</td>"
-            f"<td>{html.escape(page['renders']['oxide']['status'])}</td>"
+            f"<td>{html.escape(page['renders']['wellfriendpdf']['status'])}</td>"
             f"<td>{html.escape(page['renders']['poppler']['status'])}</td>"
             f"<td>{html.escape(page['renders']['pdfium']['status'])}</td>"
             f"<td>{html.escape(page['renders']['mupdf']['status'])}</td>"
-            f"<td>{pairs['oxide_vs_poppler'].get('changed_pixel_threshold8_percentage', '')}</td>"
-            f"<td>{pairs['oxide_vs_pdfium'].get('changed_pixel_threshold8_percentage', '')}</td>"
-            f"<td>{pairs['oxide_vs_mupdf'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_poppler'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_pdfium'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_mupdf'].get('changed_pixel_threshold8_percentage', '')}</td>"
             "</tr>"
         )
     HTML_REPORT.write_text(
@@ -556,12 +556,12 @@ def render_html(pages: list[dict[str, Any]], summary: dict[str, Any]) -> None:
         "table{border-collapse:collapse;font-size:13px}td,th{border:1px solid #cbd5e1;padding:4px 8px}"
         "th{background:#f1f5f9;text-align:left}</style>"
         "<h1>Prompt 09B Annotation Progressive Cache Validation</h1>"
-        f"<p>Pages: {len(pages)}. Oxide outliers: {summary['oxide_outlier_failures']}. "
+        f"<p>Pages: {len(pages)}. Wellfriend outliers: {summary['wellfriendpdf_outlier_failures']}. "
         f"Unclassified: {summary['unclassified_failures']}.</p>"
         "<h2>Classification Counts</h2><pre>"
         f"{html.escape(json.dumps(summary['classification_counts'], indent=2, sort_keys=True))}</pre>"
         "<h2>Pages</h2><table><tr><th>Fixture</th><th>Category</th><th>Prompt 09B</th>"
-        "<th>Raw</th><th>Oxide</th><th>Poppler</th><th>PDFium</th><th>MuPDF</th>"
+        "<th>Raw</th><th>Wellfriend</th><th>Poppler</th><th>PDFium</th><th>MuPDF</th>"
         "<th>Ox/Pop changed8</th><th>Ox/PDFium changed8</th><th>Ox/MuPDF changed8</th></tr>"
         + "\n".join(rows)
         + "</table>",
@@ -657,12 +657,12 @@ def write_matrices(rendered: dict[str, Any]) -> None:
         ARTIFACTS["annotation_disagreements"],
         {
             "schema_version": 1,
-            "oxide_outlier_failures": count_outliers(annotation_pages),
+            "wellfriendpdf_outlier_failures": count_outliers(annotation_pages),
             "unclassified_failures": count_unclassified(annotation_pages),
             "pages": [
                 page
                 for page in annotation_pages
-                if page["prompt09b_classification"] != "all_references_agree_oxide_pass"
+                if page["prompt09b_classification"] != "all_references_agree_wellfriendpdf_pass"
             ],
         },
     )
@@ -682,7 +682,7 @@ def write_matrices(rendered: dict[str, Any]) -> None:
 
 def write_equivalence_artifacts(rendered: dict[str, Any]) -> None:
     vector_page = next(page for page in rendered["results"]["pages"] if page["id"] == "tile_band_progressive_vector")
-    vector_hash = vector_page["pair_metrics"]["oxide_vs_poppler"].get("visual_hash_a")
+    vector_hash = vector_page["pair_metrics"]["wellfriendpdf_vs_poppler"].get("visual_hash_a")
     write_json(
         ARTIFACTS["progressive_equivalence"],
         {
@@ -695,7 +695,7 @@ def write_equivalence_artifacts(rendered: dict[str, Any]) -> None:
             ],
             "fixture": "prompt09b_tile_band_progressive_vector.pdf",
             "tile_size": [25, 25],
-            "oxide_visual_hash": vector_hash,
+            "wellfriendpdf_visual_hash": vector_hash,
             "full_vs_resumed": "exact_pixels",
             "deterministic_repeated_resume": "same_live_job_token_validated",
         },
@@ -782,7 +782,7 @@ def write_equivalence_artifacts(rendered: dict[str, Any]) -> None:
             "tile_sizes": [[25, 25], [50, 50]],
             "band_heights": [25, 50],
             "elapsed_ms_by_fixture": {
-                page["id"]: page["renders"]["oxide"]["render_command"]["elapsed_ms"]
+                page["id"]: page["renders"]["wellfriendpdf"]["render_command"]["elapsed_ms"]
                 for page in rendered["results"]["pages"]
             },
             "cache_hit_miss_counts": {"hits": 1, "misses": 1, "inserts": 1, "evictions": 1},
@@ -813,9 +813,9 @@ def write_binding_parity(feature_report: dict[str, Any]) -> None:
             "feature_report_command": feature_report,
             "bindings": {
                 "rust_sdk": "feature_report_json exposes prompt09b section",
-                "cli": "oxide feature-report exposes prompt09b section",
+                "cli": "wellfriendpdf feature-report exposes prompt09b section",
                 "python": "binding smoke must parse same feature_report_json envelope",
-                "c_abi": "oxide_feature_report_json exposes same envelope",
+                "c_abi": "wellfriendpdf_feature_report_json exposes same envelope",
                 "wasm": "feature_report_json exposes same envelope",
                 "dotnet": "package smoke must parse same envelope",
                 "java_maven": "package smoke must parse same envelope",
@@ -878,7 +878,7 @@ def write_closure_audit(
                 "binding_parity": rel(ARTIFACTS["binding_parity"]),
             },
             "missing_validation_gate_classification": missing_gates,
-            "oxide_outlier_failures": rendered["summary"]["oxide_outlier_failures"],
+            "wellfriendpdf_outlier_failures": rendered["summary"]["wellfriendpdf_outlier_failures"],
             "unclassified_failures": rendered["summary"]["unclassified_failures"],
             "docs": REQUIRED_DOCS,
         },
@@ -887,7 +887,7 @@ def write_closure_audit(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--skip-feature-report", action="store_true")
@@ -898,7 +898,7 @@ def main() -> int:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     manifest = reference_manifest()
     fixtures = write_fixtures()
-    rendered = render_compare(fixtures, manifest, args.oxide_bin, args.dpi, args.timeout)
+    rendered = render_compare(fixtures, manifest, args.wellfriendpdf_bin, args.dpi, args.timeout)
     write_matrices(rendered)
     write_equivalence_artifacts(rendered)
     feature_report = (
@@ -910,14 +910,14 @@ def main() -> int:
     write_closure_audit(rendered, feature_report, args.starting_head, args.starting_worktree_status)
 
     status = "passed"
-    if rendered["summary"]["oxide_outlier_failures"] or rendered["summary"]["unclassified_failures"]:
+    if rendered["summary"]["wellfriendpdf_outlier_failures"] or rendered["summary"]["unclassified_failures"]:
         status = "failed"
     print(
         json.dumps(
             {
                 "status": status,
                 "page_count": rendered["results"]["page_count"],
-                "oxide_outlier_failures": rendered["summary"]["oxide_outlier_failures"],
+                "wellfriendpdf_outlier_failures": rendered["summary"]["wellfriendpdf_outlier_failures"],
                 "unclassified_failures": rendered["summary"]["unclassified_failures"],
                 "artifacts": {name: rel(path) for name, path in ARTIFACTS.items()},
             },

@@ -24,7 +24,7 @@ This document is the starting point for an external cryptography review.
 - Serialized verifier fields (`/O`, `/U`, `/OE`, `/UE`, `/Perms`) remain normal
   `Vec<u8>` because they are written into the PDF encryption dictionary.
 - RSA signing keys are parsed into RustCrypto `rsa::RsaPrivateKey`. That type
-  does not implement `Zeroize` in the current dependency line, so Oxide cannot
+  does not implement `Zeroize` in the current dependency line, so Wellfriend cannot
   honestly claim private-key heap wiping until the dependency supports it or the
   signer storage is redesigned. Private-key operations are local API/CLI
   operations and are not exposed as a built-in network signing oracle.
@@ -45,14 +45,14 @@ This document is the starting point for an external cryptography review.
 ## RUSTSEC-2023-0071 Decision Record
 
 `RUSTSEC-2023-0071` covers the Marvin timing side channel in RustCrypto `rsa`.
-Oxide currently depends on `rsa 0.9.10` through the PDF signature stack for
+Wellfriend currently depends on `rsa 0.9.10` through the PDF signature stack for
 RSA/SHA-256 signing and verification compatibility. No fixed RustCrypto `rsa`
 release is available in the dependency line used here, and a migration to a
 different signing backend would be a larger API/security design change.
 
 Current exposure assessment:
 
-- Oxide does not run an always-on remote signing service. RSA private-key use is
+- Wellfriend does not run an always-on remote signing service. RSA private-key use is
   a local library/CLI operation unless a deployment wraps it that way.
 - The self-hosted HTTP server does not expose a signing endpoint.
 - Signature verification consumes public material and is not the private-key

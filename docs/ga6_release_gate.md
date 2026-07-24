@@ -12,7 +12,7 @@ Workspace: `E:\wellpdfsdk`.
 Evidence was gathered after GA5 commit `3042550`. The worktree was dirty before
 GA6 started from pre-existing, unrelated source changes. GA6 itself updates this
 report, the capstone positioning doc, the extraction benchmark report/results,
-the SDK operation benchmark JSON, and a small extraction-harness `OXIDE_BIN`
+the SDK operation benchmark JSON, and a small extraction-harness `WELLFRIENDPDF_BIN`
 override so the benchmark can use an isolated OCR-enabled CLI.
 
 Tools used:
@@ -24,7 +24,7 @@ Tools used:
 | Poppler | `target\tools\poppler\poppler-26.02.0\Library\bin` |
 | cargo-fuzz | GA5 evidence, nightly targets |
 | PyMuPDF | extraction benchmark competitor |
-| Tesseract OCR | extraction benchmark OCR path through `oxide-ocr` |
+| Tesseract OCR | extraction benchmark OCR path through `wellfriendpdf-ocr` |
 
 Docling was not installed and no Docling numbers are fabricated.
 
@@ -33,7 +33,7 @@ Docling was not installed and no Docling numbers are fabricated.
 | Blocker | Status | Fresh evidence |
 | --- | --- | --- |
 | Linearization hint tables | Cleared | Freshly linearized `minimal`, `flate`, `multi_stream`, `basicapi`, `tracemonkey`, `form_160f`, and `synthetic100`; all `qpdf --check` and `qpdf --show-linearization` exits were 0. Summary: `target\ga6\linearization\summary.json`. |
-| Signature LTV / PAdES | Partially cleared | `cargo test -p oxide-engine --test signatures -- --nocapture` passed 8/8, including timestamp+DSS offline material and revoked CRL detection. The implemented layer is offline PAdES-B-T/B-LT substrate. Live TSA HTTP, OCSP/CRL fetching, trust-store policy, Adobe/Poppler LTV recognition, and B-LTA document timestamps remain not claimed. |
+| Signature LTV / PAdES | Partially cleared | `cargo test -p wellfriendpdf-engine --test signatures -- --nocapture` passed 8/8, including timestamp+DSS offline material and revoked CRL detection. The implemented layer is offline PAdES-B-T/B-LT substrate. Live TSA HTTP, OCSP/CRL fetching, trust-store policy, Adobe/Poppler LTV recognition, and B-LTA document timestamps remain not claimed. |
 | PDF/A matrix | Cleared | Regenerated `target\ga6\pdfa`; qpdf exited 0 and veraPDF 1.30.2 passed PDF/A-1b, 2b, 2a, 3b, and 3a. Summary: `target\ga6\pdfa\summary.json`. |
 | Renderer fidelity | Cleared as improvement, not visual-proof | Fresh final 265-entry run: 86.12% visual pass, 91.29 weighted score, 100% hostile crash/timeout/memory safety, 24/24 determinism stable. Baseline was 78.37% / 87.19. Report: `renderer-benchmark\results\ga6-final-265\aggregate.md`. |
 | Whole-SDK hardening | Cleared for the measured slice | Fresh 265-file cross-pillar sweep: 1,590 subprocessed operations, 0 crashes, 0 timeouts, 213 qpdf-clean inputs, 0 invalid outputs from qpdf-clean sources. Report: `target\ga6\corpus-hardening-60s\aggregate.json`. |
@@ -46,7 +46,7 @@ Fresh checks:
 | --- | --- |
 | `cargo test --workspace` | Passed before GA6 doc updates; rerun required after final doc commit gate |
 | `cargo clippy --workspace --all-targets -- -D warnings` | Passed before GA6 doc updates; rerun required after final doc commit gate |
-| `cargo test -p oxide-engine --test signatures -- --nocapture` | Passed 8/8 |
+| `cargo test -p wellfriendpdf-engine --test signatures -- --nocapture` | Passed 8/8 |
 | `python extraction-benchmark\scripts\test_harness.py` | Passed |
 | `python scripts\capstone_surface_check.py` | Passed under escalation after sandbox blocked debug incremental writes; library, CLI, C ABI, and server all produced SHA-256 `43c9f91f575550430b4790e76fa65f8e6fbdbece01e517bc0eeb414c11a29e10`. |
 
@@ -58,10 +58,10 @@ and the full workspace suite.
 ### Extraction
 
 Fresh command used an OCR-enabled CLI built into `E:\tmp\wellpdfsdk-ga6-build`
-via `OXIDE_BIN` because the default debug target was locked by Windows:
+via `WELLFRIENDPDF_BIN` because the default debug target was locked by Windows:
 
 ```powershell
-$env:OXIDE_BIN='E:\tmp\wellpdfsdk-ga6-build\debug\oxide.exe'
+$env:WELLFRIENDPDF_BIN='E:\tmp\wellpdfsdk-ga6-build\debug\wellfriendpdf.exe'
 python extraction-benchmark\scripts\extraction_benchmark.py
 python extraction-benchmark\scripts\write_report.py
 ```
@@ -72,10 +72,10 @@ Key fresh extraction metrics:
 
 | Metric | Result |
 | --- | ---: |
-| Oxide startup | 6.9 ms |
+| Wellfriend startup | 6.9 ms |
 | Python + PyMuPDF startup/import | 139.1 ms |
-| Oxide binary size | 12.7 MB |
-| Mean digital text extraction, Oxide CLI | 31.3 ms/doc |
+| Wellfriend binary size | 12.7 MB |
+| Mean digital text extraction, Wellfriend CLI | 31.3 ms/doc |
 | Mean digital text extraction, PyMuPDF in-process | 10.8 ms/doc |
 | Mean digital text extraction, pdftotext CLI | 150.2 ms/doc |
 | Digital invoice field F1 | 1.000 |
@@ -91,7 +91,7 @@ Fresh final run:
 python renderer-benchmark\scripts\renderer_benchmark.py `
   --manifest renderer-benchmark\corpus\manifest.json `
   --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --dpi 144 `
   --timeout-sec 20 `
   --max-memory-mb 1024 `
@@ -109,7 +109,7 @@ python renderer-benchmark\scripts\renderer_benchmark.py `
 | Hostile crash-free | 100.0% |
 | Hostile timeout-safe | 100.0% |
 | Hostile memory-bounded | 100.0% |
-| Median Poppler/Oxide speed ratio | 1.9107 |
+| Median Poppler/Wellfriend speed ratio | 1.9107 |
 | Determinism | 24/24 stable |
 
 ### SDK Operations
@@ -170,7 +170,7 @@ Raw data: `docs\capstone_sdk_operation_benchmarks.json`.
 
 ## Verdict
 
-Oxide is shippable as a v1.0 release candidate or controlled enterprise pilot
+Wellfriend is shippable as a v1.0 release candidate or controlled enterprise pilot
 from a clean release branch. The feature pillars are present, qpdf/veraPDF
 structural and compliance checks are green for the measured outputs, renderer
 quality is materially above the Prompt 11 baseline, and the whole-SDK safety

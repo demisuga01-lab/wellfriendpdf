@@ -1,9 +1,9 @@
 {
   "generated_from": "Advertised/documented capabilities inspected June 2026. This is a documented-feature matrix, not an exhaustive API audit.",
   "sources": {
-    "pdf_oxide": [
-      "https://docs.rs/pdf_oxide/latest/pdf_oxide/",
-      "https://pdf.oxide.fyi/"
+    "pdf_wellfriendpdf": [
+      "https://docs.rs/pdf_wellfriendpdf/latest/pdf_wellfriendpdf/",
+      "https://pdf.wellfriendpdf.fyi/"
     ],
     "pymupdf": [
       "https://pymupdf.readthedocs.io/",
@@ -35,7 +35,7 @@
       "https://pypdf.readthedocs.io/",
       "https://github.com/py-pdf/pypdf"
     ],
-    "oxide": [
+    "wellfriendpdf": [
       "docs/api_overview.md",
       "docs/self_hosting.md",
       "docs/signatures.md",
@@ -44,8 +44,8 @@
     ]
   },
   "tools": [
-    "oxide",
-    "pdf_oxide",
+    "wellfriendpdf",
+    "pdf_wellfriendpdf",
     "pymupdf",
     "pypdfium2",
     "pymupdf4llm",
@@ -59,8 +59,8 @@
     {
       "name": "plain text extraction",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "yes",
         "pymupdf4llm": "yes",
@@ -74,8 +74,8 @@
     {
       "name": "chars/words/lines with geometry",
       "tools": {
-        "oxide": "partial",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "partial",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "partial",
         "pymupdf4llm": "partial",
@@ -89,8 +89,8 @@
     {
       "name": "layout-aware reading order / document model",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "partial",
         "pypdfium2": "partial",
         "pymupdf4llm": "yes",
@@ -104,8 +104,8 @@
     {
       "name": "table extraction",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "partial",
         "pymupdf4llm": "yes",
@@ -119,8 +119,8 @@
     {
       "name": "image extraction",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "partial",
         "pymupdf4llm": "yes",
@@ -134,8 +134,8 @@
     {
       "name": "form field read/fill",
       "tools": {
-        "oxide": "partial",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "partial",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "partial",
         "pymupdf4llm": "no",
@@ -149,8 +149,8 @@
     {
       "name": "annotations",
       "tools": {
-        "oxide": "partial",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "partial",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "partial",
         "pymupdf4llm": "no",
@@ -164,8 +164,8 @@
     {
       "name": "markdown conversion with heading detection",
       "tools": {
-        "oxide": "partial",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "partial",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "partial",
         "pypdfium2": "no",
         "pymupdf4llm": "yes",
@@ -179,8 +179,8 @@
     {
       "name": "HTML conversion",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "no",
         "pymupdf4llm": "no",
@@ -194,8 +194,8 @@
     {
       "name": "PDF creation",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "yes",
         "pymupdf4llm": "no",
@@ -209,8 +209,8 @@
     {
       "name": "editing / merge / split / rotate / redaction",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "partial",
         "pymupdf4llm": "no",
@@ -224,8 +224,8 @@
     {
       "name": "rendering",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "yes",
         "pymupdf4llm": "partial",
@@ -239,8 +239,8 @@
     {
       "name": "OCR",
       "tools": {
-        "oxide": "partial",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "partial",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "partial",
         "pypdfium2": "no",
         "pymupdf4llm": "partial",
@@ -254,8 +254,8 @@
     {
       "name": "encryption / password handling",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "partial",
         "pymupdf4llm": "partial",
@@ -269,8 +269,8 @@
     {
       "name": "digital signatures / LTV reporting",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "unknown",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "unknown",
         "pymupdf": "partial",
         "pypdfium2": "no",
         "pymupdf4llm": "no",
@@ -284,8 +284,8 @@
     {
       "name": "PDF/A or PDF/UA validation/conversion",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "unknown",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "unknown",
         "pymupdf": "partial",
         "pypdfium2": "no",
         "pymupdf4llm": "no",
@@ -299,8 +299,8 @@
     {
       "name": "metadata",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "yes",
         "pymupdf4llm": "yes",
@@ -314,8 +314,8 @@
     {
       "name": "search",
       "tools": {
-        "oxide": "partial",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "partial",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "partial",
         "pymupdf4llm": "no",
@@ -329,8 +329,8 @@
     {
       "name": "region/scoped extraction",
       "tools": {
-        "oxide": "no",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "no",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "yes",
         "pypdfium2": "partial",
         "pymupdf4llm": "partial",
@@ -344,8 +344,8 @@
     {
       "name": "extraction profiles / preset strategies",
       "tools": {
-        "oxide": "partial",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "partial",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "partial",
         "pypdfium2": "no",
         "pymupdf4llm": "yes",
@@ -359,8 +359,8 @@
     {
       "name": "language bindings",
       "tools": {
-        "oxide": "partial",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "partial",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "partial",
         "pypdfium2": "python",
         "pymupdf4llm": "python",
@@ -374,8 +374,8 @@
     {
       "name": "CLI",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "partial",
         "pypdfium2": "yes",
         "pymupdf4llm": "partial",
@@ -389,8 +389,8 @@
     {
       "name": "self-host HTTP/API server",
       "tools": {
-        "oxide": "yes",
-        "pdf_oxide": "no",
+        "wellfriendpdf": "yes",
+        "pdf_wellfriendpdf": "no",
         "pymupdf": "no",
         "pypdfium2": "no",
         "pymupdf4llm": "no",
@@ -404,8 +404,8 @@
     {
       "name": "MCP / AI assistant integration",
       "tools": {
-        "oxide": "no",
-        "pdf_oxide": "yes",
+        "wellfriendpdf": "no",
+        "pdf_wellfriendpdf": "yes",
         "pymupdf": "no",
         "pypdfium2": "no",
         "pymupdf4llm": "partial",
@@ -417,17 +417,17 @@
       }
     }
   ],
-  "oxide_lacks": [
-    "Region/scoped extraction API comparable to pdf_oxide page.region()/within() and pdfplumber crop().",
-    "Documented extraction-profile presets comparable to pdf_oxide ExtractionProfile and PyMuPDF4LLM's high-level extraction modes.",
+  "wellfriendpdf_lacks": [
+    "Region/scoped extraction API comparable to pdf_wellfriendpdf page.region()/within() and pdfplumber crop().",
+    "Documented extraction-profile presets comparable to pdf_wellfriendpdf ExtractionProfile and PyMuPDF4LLM's high-level extraction modes.",
     "Lazy Python page properties such as page.text/page.words/page.tables/page.images.",
-    "Broad published language binding set comparable to pdf_oxide's Python/Go/JS/C#/.NET/Java/WASM positioning.",
+    "Broad published language binding set comparable to pdf_wellfriendpdf's Python/Go/JS/C#/.NET/Java/WASM positioning.",
     "MCP server / AI assistant integration.",
-    "Built-in OCR runtime; Oxide OCR is optional and Tesseract-backed rather than bundled.",
-    "Documented XFA form data support comparable to pdf_oxide's advertised XFA capability.",
+    "Built-in OCR runtime; Wellfriend OCR is optional and Tesseract-backed rather than bundled.",
+    "Documented XFA form data support comparable to pdf_wellfriendpdf's advertised XFA capability.",
     "Markdown heading detection is present only as heuristic document-model output, not an explicit page.markdown(detect_headings=True)-style API."
   ],
-  "oxide_differentiators": [
+  "wellfriendpdf_differentiators": [
     "Self-host HTTP server with async job API, auth, rate limiting, file/time/output caps, and JSON endpoints.",
     "PDF/A and PDF/UA validation/conversion surfaces in the Rust API/CLI.",
     "Digital signature signing, verification, coverage, trust, timestamp/LTV reporting, and offline DSS material support.",

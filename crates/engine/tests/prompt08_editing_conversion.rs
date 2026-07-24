@@ -1,6 +1,6 @@
 use std::io::{Cursor, Read};
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     content_defined_chunks, hamming_distance, pdf_to_docx, pdf_to_pptx, pdf_to_xlsx,
     replace_text_pdf, resource_digest, simhash_text, AuthorPageSize, ContentEngine, DocxOptions,
     EditMode, EditTextStyle, EditableBuildOptions, PdfBuilder, PdfEditor, PptxOptions,
@@ -104,7 +104,7 @@ fn incremental_save_preserves_original_prefix_and_reopens() {
             72.0,
             620.0,
             EditTextStyle::new(10.0),
-            oxide_engine::OverlayLayer::Overlay,
+            wellfriendpdf_engine::OverlayLayer::Overlay,
         )
         .unwrap();
     let edited = editor.save_to_bytes(EditMode::Incremental).unwrap();
@@ -146,7 +146,7 @@ fn deterministic_editing_and_versioning_helpers_are_stable() {
     assert!(hamming_distance(near_a, near_b) < hamming_distance(near_a, far));
 }
 
-fn block_text(block: &oxide_engine::EditableBlock) -> String {
+fn block_text(block: &wellfriendpdf_engine::EditableBlock) -> String {
     block
         .paragraphs
         .iter()

@@ -8,7 +8,7 @@ subset, not a full-corpus or wild-PDF claim.
 
 The 200-PDF capped scorecard in [`competitive_benchmark.md`](competitive_benchmark.md)
 did not score tables — its image-heavy slice had no table ground truth. So the
-table problems from the original benchmark were unverified: Oxide led cell-F1
+table problems from the original benchmark were unverified: Wellfriend led cell-F1
 (`0.857`) but had weak **precision** (`0.806` — false-positive tables) and weak
 **structure** (TEDS-approx `0.667`, behind pdfplumber `0.863` and PyMuPDF
 `0.868`). Prompt 7 was meant to raise precision and TEDS without crushing recall.
@@ -20,11 +20,11 @@ This run measures whether it did. Nothing else is re-tested here.
 | --- | --- |
 | date | 2026-06-27 |
 | commit | `01c592b718f17513083d32556c5b206e9159454d` |
-| oxide | `oxide 0.1.0` (release build, `target/release/oxide.exe`) |
+| wellfriendpdf | `wellfriendpdf 0.1.0` (release build, `target/release/wellfriendpdf.exe`) |
 | python | 3.14.3 |
 | platform | win32 |
 | harness | `extraction-benchmark/scripts/competitive_benchmark.py` |
-| run args | `--category has-tables --limit 200 --tasks tables --tools oxide,pdfplumber,pymupdf --max-workers 4 --timeout 60 --max-memory-mb 2048` |
+| run args | `--category has-tables --limit 200 --tasks tables --tools wellfriendpdf,pdfplumber,pymupdf --max-workers 4 --timeout 60 --max-memory-mb 2048` |
 | concurrency | ≤4 workers, per-(tool,file) subprocess isolation |
 | safety | 60 s timeout + 2048 MB RSS cap per child, `taskkill /T /F` tree-kill, per-record flush+fsync checkpoint, `WinError 1450` detection with checkpoint-and-stop |
 | pass definition | subprocess exits 0 before timeout/memory cap and writes the expected JSON artifact |
@@ -67,12 +67,12 @@ against precision.
 
 | rank | tool | scored | cell-F1 | recall | precision | TEDS-approx | shape-F1 | pass % | mean s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | **oxide** | 200 | **0.936** | **0.997** | **0.896** | **0.893** | 0.765 | 100.0 | 0.13 |
+| 1 | **wellfriendpdf** | 200 | **0.936** | **0.997** | **0.896** | **0.893** | 0.765 | 100.0 | 0.13 |
 | 2 | pdfplumber | 200 | 0.851 | 0.854 | 0.848 | 0.863 | 0.899 | 100.0 | 0.94 |
 | 3 | pymupdf | 200 | 0.846 | 0.840 | 0.854 | 0.867 | **0.933** | 100.0 | 0.92 |
 
 All four headline metrics (cell-F1, recall, precision, TEDS-approx) lead. The one
-column Oxide does **not** lead is the pure structural **shape-F1** (0.765 vs
+column Wellfriend does **not** lead is the pure structural **shape-F1** (0.765 vs
 pymupdf 0.933, pdfplumber 0.899) — see the honest read below.
 
 Capability gaps (not scored as a silent 0):
@@ -80,7 +80,7 @@ Capability gaps (not scored as a silent 0):
 | tool | status | reason |
 | --- | --- | --- |
 | docling | NOT-RUN | Not importable in the benchmark venv (`ModuleNotFoundError: No module named 'docling'`). No number fabricated. |
-| pdf_oxide 0.3.67 | not wired for tables | Installed and advertises table extraction, but this harness has no pdf_oxide table adapter; not scored rather than scored 0. |
+| pdf_wellfriendpdf 0.3.67 | not wired for tables | Installed and advertises table extraction, but this harness has no pdf_wellfriendpdf table adapter; not scored rather than scored 0. |
 
 ## Before / after vs the baseline (same slice, harness, scorer)
 
@@ -93,10 +93,10 @@ Capability gaps (not scored as a silent 0):
 
 **Did Prompt 7's table work land? Yes.** The success condition was precision↑ and
 TEDS↑ with recall and cell-F1 not regressing. **All four moved up and none
-regressed.** Oxide went from *trailing* on TEDS-approx (0.667, behind pdfplumber
+regressed.** Wellfriend went from *trailing* on TEDS-approx (0.667, behind pdfplumber
 0.863 and PyMuPDF 0.868) to *leading* it (0.893). The competitor TEDS numbers are
 essentially unchanged from the baseline (pdfplumber 0.863 → 0.863, PyMuPDF 0.868 →
-0.867), which confirms the scorer was not loosened — the movement is in Oxide.
+0.867), which confirms the scorer was not loosened — the movement is in WellfriendPdf.
 
 ## Honest read — dominant remaining issue
 
@@ -104,17 +104,17 @@ Headline metrics improved decisively, but two honest caveats remain, both pointi
 at the **same root cause: table over-detection / over-segmentation.**
 
 1. **Structural shape-F1 still trails.** The TEDS-approx lead (0.893) is 75%
-   cell-content-weighted. On the pure structural component, Oxide's shape-F1 is
+   cell-content-weighted. On the pure structural component, Wellfriend's shape-F1 is
    **0.765 — last of the three**, behind PyMuPDF (0.933) and pdfplumber (0.899).
-   Oxide recovers cell *content* almost perfectly (recall 0.997) but reconstructs
+   Wellfriend recovers cell *content* almost perfectly (recall 0.997) but reconstructs
    the *grid shape* less faithfully.
 
-2. **Over-detection is the precision and shape drag.** Across the 200 files Oxide
+2. **Over-detection is the precision and shape drag.** Across the 200 files Wellfriend
    emits **1,017 predicted tables for 650 ground-truth tables (1.56×)**,
    over-detecting on **122/200** files and **under-detecting on 0**. It predicts
    114,166 cells vs 105,829 truth (+7.9%). By contrast PyMuPDF predicts exactly
    650 tables (exact count on all 200 files, hence its top shape-F1) and
-   pdfplumber 821. So Oxide's residual weakness is **splitting/over-emitting
+   pdfplumber 821. So Wellfriend's residual weakness is **splitting/over-emitting
    tables**, not missing content — precision (0.896) is its lowest headline metric
    and the structural shape gap follows from the same over-segmentation.
 
@@ -130,13 +130,13 @@ content scores.
 # 1) Table-only run on the deterministic first-200 has-tables slice (crash-safe).
 .\.venv-public-benchmark\Scripts\python.exe extraction-benchmark\scripts\competitive_benchmark.py `
   --corpus E:\wellpdfsdk\test_corpus --category has-tables --limit 200 `
-  --tasks tables --tools oxide,pdfplumber,pymupdf `
+  --tasks tables --tools wellfriendpdf,pdfplumber,pymupdf `
   --output-dir target\competitive-benchmark\tableslice-validation `
   --report target\competitive-benchmark\tableslice-validation.md `
   --max-workers 4 --timeout 60 --max-memory-mb 2048
 
 # 2) Independent verification: recompute from records.jsonl, structural
-#    aggregates, AND an independent oxide re-run re-scored with the same scorer.
+#    aggregates, AND an independent wellfriendpdf re-run re-scored with the same scorer.
 .\.venv-public-benchmark\Scripts\python.exe extraction-benchmark\scripts\verify_tableslice.py
 ```
 

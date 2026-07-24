@@ -13,7 +13,7 @@ Rust / Python / C-ABI stabilization performed in Combined Prompt 01
 
 ## Design principle chosen
 
-The engine (`oxide-engine`) is already large and mostly public: `ContentEngine`
+The engine (`wellfriendpdf-engine`) is already large and mostly public: `ContentEngine`
 is the main facade, and nearly every report type derives `serde::Serialize`.
 The core problem this prompt solves is **binding divergence**: the CLI can
 produce security / sanitizer / redaction / parser / color / validation /
@@ -22,7 +22,7 @@ its own wiring.
 
 Rather than hand-write dozens of divergent Python methods and C functions, this
 prompt introduces **one shared Rust facade** —
-[`oxide_engine::sdk`](../crates/engine/src/sdk.rs) — that returns **versioned
+[`wellfriendpdf_engine::sdk`](../crates/engine/src/sdk.rs) — that returns **versioned
 JSON reports** from a small, stable set of functions. Python and the C ABI both
 call the *same* facade functions, so a security report requested from Python and
 from C is byte-identical JSON (guaranteeing cross-surface parity), and future
@@ -45,16 +45,16 @@ existing behavior is modified.
 | Surface | Location | Entry point | Notes |
 | --- | --- | --- | --- |
 | Rust public API | `crates/engine/src/lib.rs` | `ContentEngine`, `prelude`, flat re-exports | Rich, mostly stable pre-1.0. |
-| Rust SDK facade (new) | `crates/engine/src/sdk.rs` | `oxide_engine::sdk::*` | Versioned-JSON report layer shared by bindings. |
-| Python SDK | `crates/oxide-py/src/lib.rs` | `oxide.Document`, module fns | pyo3; ergonomic but report-light before this prompt. |
-| C ABI | `crates/oxide-capi/src/lib.rs` + `include/oxide.h` | `OxideDocument *` + `OxideBuffer` | opaque handle, owned buffers, explicit free fns. |
+| Rust SDK facade (new) | `crates/engine/src/sdk.rs` | `wellfriendpdf_engine::sdk::*` | Versioned-JSON report layer shared by bindings. |
+| Python SDK | `crates/wellfriendpdf-py/src/lib.rs` | `wellfriendpdf.Document`, module fns | pyo3; ergonomic but report-light before this prompt. |
+| C ABI | `crates/wellfriendpdf-capi/src/lib.rs` + `include/wellfriendpdf.h` | `WellfriendDocument *` + `WellfriendBuffer` | opaque handle, owned buffers, explicit free fns. |
 | CLI | `crates/cli/src/main.rs` (5314 lines) | subcommands | Superset of report capability; source of truth for gaps. |
-| WASM | `crates/oxide-wasm` | wasm-bindgen | Out of scope for this prompt (documented gap). |
+| WASM | `crates/wellfriendpdf-wasm` | wasm-bindgen | Out of scope for this prompt (documented gap). |
 | .NET / Java | `bindings/dotnet`, `bindings/java` | thin over C ABI | Out of scope; inherit C ABI additions. |
 
 ## Existing binding coverage (pre-Prompt-01 baseline)
 
-**Python (`oxide` module):** `Document` (open path/bytes, page_count, metadata,
+**Python (`wellfriendpdf` module):** `Document` (open path/bytes, page_count, metadata,
 pages/iteration, extract_text, extract_tables, extract_fields, document_model,
 to_markdown, to_html, render), `Page`/`RegionPage` (text, words, tables, images,
 region), plus module functions: merge_pdfs, extract_pages, rotate_pdf,
@@ -76,7 +76,7 @@ PDF/A + PDF/UA + standards-profile validation, canonicalize, forms report,
 annotation report, page-operations report, resource-dedup report, deterministic
 writer report, feature-availability + version reporting.
 
-## Shared facade functions added (`oxide_engine::sdk`)
+## Shared facade functions added (`wellfriendpdf_engine::sdk`)
 
 All return `String` (UTF-8 JSON) or `(Vec<u8>, String)` for output-producing ops.
 Each JSON envelope carries `schema_version` and `report`. Input is bytes +
@@ -138,11 +138,11 @@ All commands run on this host (win-msvc, cargo 1.95.0, Python 3.14.3):
 | `git diff --check` | pass (only benign LF→CRLF warnings) |
 | `cargo clippy --workspace --all-targets -- -D warnings` | pass |
 | `cargo test --workspace` | pass (0 failures across all crates) |
-| `cargo test -p oxide-engine --lib sdk` | pass (12/12 facade tests) |
-| `cargo test -p oxide-capi` | pass (12/12, incl. 6 new report tests) |
-| `cargo build -p oxide-capi` (cdylib) | pass |
-| `maturin develop --release` (oxide-py) | pass |
-| `pytest crates/oxide-py/tests/` | pass (18/18: 12 new + 6 existing) |
+| `cargo test -p wellfriendpdf-engine --lib sdk` | pass (12/12 facade tests) |
+| `cargo test -p wellfriendpdf-capi` | pass (12/12, incl. 6 new report tests) |
+| `cargo build -p wellfriendpdf-capi` (cdylib) | pass |
+| `maturin develop --release` (wellfriendpdf-py) | pass |
+| `pytest crates/wellfriendpdf-py/tests/` | pass (18/18: 12 new + 6 existing) |
 | C example compile+run (MSVC, real DLL) | pass (`sdk_reports.c` over fixture) |
 | CLI smokes (security/parser/validate/forms/info/extract/sanitize/canonicalize) | pass (unchanged behavior) |
 | Cross-surface parity (rust/python/c-abi report bodies) | pass (byte-identical) |

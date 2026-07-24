@@ -107,7 +107,7 @@ def git_text(args: list[str]) -> str:
 def load_feature_report(native: bool, run_smoke: bool) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     if not run_smoke:
         return None, None
-    cmd = ["cargo", "run", "-p", "oxide-cli"]
+    cmd = ["cargo", "run", "-p", "wellfriendpdf-cli"]
     if native:
         cmd += ["--features", "native-cmm-lcms2"]
     cmd += ["--quiet", "--", "feature-report"]
@@ -292,8 +292,8 @@ def renderer_tool_results(pdf_path: Path, run_smoke: bool) -> dict[str, Any]:
     render_dir = OUT_DIR / "reference-renders"
     render_dir.mkdir(parents=True, exist_ok=True)
     results: dict[str, Any] = {
-        "oxide_default": {"status": "not_run"},
-        "oxide_native_cmm_lcms2": {"status": "not_run"},
+        "wellfriendpdf_default": {"status": "not_run"},
+        "wellfriendpdf_native_cmm_lcms2": {"status": "not_run"},
         "poppler": {"tool": tools["poppler"], "status": "unavailable_tooling_classified"},
         "pdfium": {"tool": tools["pdfium"], "status": "unavailable_tooling_classified"},
         "mupdf": {"tool": tools["mupdf"], "status": "unavailable_tooling_classified"},
@@ -301,13 +301,13 @@ def renderer_tool_results(pdf_path: Path, run_smoke: bool) -> dict[str, Any]:
     if not run_smoke:
         return results
 
-    oxide_zip = render_dir / "oxide-default.zip"
-    oxide_cmd = run_command(
+    wellfriendpdf_zip = render_dir / "wellfriendpdf-default.zip"
+    wellfriendpdf_cmd = run_command(
         [
             "cargo",
             "run",
             "-p",
-            "oxide-cli",
+            "wellfriendpdf-cli",
             "--quiet",
             "--",
             "render",
@@ -319,25 +319,25 @@ def renderer_tool_results(pdf_path: Path, run_smoke: bool) -> dict[str, Any]:
             "--format",
             "png",
             "--output",
-            str(oxide_zip),
+            str(wellfriendpdf_zip),
             "--json",
         ],
         timeout=360,
     )
-    results["oxide_default"] = {
-        "status": "passed" if oxide_cmd["exit_status"] == 0 else "failed_classified",
-        "command": compact_result(oxide_cmd),
-        "artifact": oxide_zip.as_posix(),
-        "artifact_sha256": sha256_file(oxide_zip),
+    results["wellfriendpdf_default"] = {
+        "status": "passed" if wellfriendpdf_cmd["exit_status"] == 0 else "failed_classified",
+        "command": compact_result(wellfriendpdf_cmd),
+        "artifact": wellfriendpdf_zip.as_posix(),
+        "artifact_sha256": sha256_file(wellfriendpdf_zip),
     }
 
-    native_zip = render_dir / "oxide-native.zip"
+    native_zip = render_dir / "wellfriendpdf-native.zip"
     native_cmd = run_command(
         [
             "cargo",
             "run",
             "-p",
-            "oxide-cli",
+            "wellfriendpdf-cli",
             "--features",
             "native-cmm-lcms2",
             "--quiet",
@@ -356,7 +356,7 @@ def renderer_tool_results(pdf_path: Path, run_smoke: bool) -> dict[str, Any]:
         ],
         timeout=420,
     )
-    results["oxide_native_cmm_lcms2"] = {
+    results["wellfriendpdf_native_cmm_lcms2"] = {
         "status": "passed" if native_cmd["exit_status"] == 0 else "failed_classified",
         "command": compact_result(native_cmd),
         "artifact": native_zip.as_posix(),
@@ -457,7 +457,7 @@ def main() -> int:
     prompt12_default = prompt12_section(default_report)
     prompt12_native = prompt12_section(native_report)
     focused_test = (
-        run_command(["cargo", "test", "-p", "oxide-engine", "prepress", "--jobs", "1"], timeout=360)
+        run_command(["cargo", "test", "-p", "wellfriendpdf-engine", "prepress", "--jobs", "1"], timeout=360)
         if args.run_smoke
         else None
     )
@@ -467,7 +467,7 @@ def main() -> int:
                 "cargo",
                 "test",
                 "-p",
-                "oxide-engine",
+                "wellfriendpdf-engine",
                 "color_report::tests::reports_spot_devicen_overprint_and_intent",
                 "--jobs",
                 "1",
@@ -690,7 +690,7 @@ def main() -> int:
 
     design_doc = """# Prompt 12 Separation Framebuffer Design
 
-Oxide keeps the RGB preview renderer separate from a sparse prepress plate
+Wellfriend keeps the RGB preview renderer separate from a sparse prepress plate
 side-channel. The Prompt 12 framebuffer records plate contributions by plane
 name, tint, alpha, operation, page/tile identity, alternate preview RGB,
 provenance, and Prompt 13 overprint posture.
@@ -783,7 +783,7 @@ overprint/prepress close-out on top of this baseline.
         OUT_DIR / "multi-reference-diff-metrics-prompt12.json",
         {
             "kind": "multi_reference_diff_metrics_prompt12",
-            "oxide_outliers_where_references_agree": 0,
+            "wellfriendpdf_outliers_where_references_agree": 0,
             "unclassified_failures": 0,
             "metrics_policy": "external renderer absence is classified; spot flattening differences are not forced into false parity",
         },
@@ -793,7 +793,7 @@ overprint/prepress close-out on top of this baseline.
         {
             "kind": "reference_disagreement_summary_prompt12",
             "classified_disagreements": [
-                "reference renderers may flatten spot/DeviceN to RGB preview and do not expose Oxide plate framebuffer",
+                "reference renderers may flatten spot/DeviceN to RGB preview and do not expose Wellfriend plate framebuffer",
                 "PDFium/Poppler/MuPDF availability is recorded per run",
             ],
             "unclassified_failures": 0,
@@ -816,12 +816,12 @@ overprint/prepress close-out on top of this baseline.
         "schema": "additive_feature_report_prompt12",
         "surfaces": [
             {"surface": "Rust SDK", "status": IMPLEMENTED_PUBLIC, "entry": "feature_report_json"},
-            {"surface": "CLI", "status": IMPLEMENTED_PUBLIC, "entry": "oxide feature-report"},
-            {"surface": "Python", "status": IMPLEMENTED_PUBLIC, "entry": "oxide.feature_report_json"},
-            {"surface": "C ABI", "status": IMPLEMENTED_PUBLIC, "entry": "oxide_feature_report_json"},
-            {"surface": "WASM", "status": IMPLEMENTED_PUBLIC, "entry": "oxide-wasm SDK report"},
-            {"surface": ".NET", "status": IMPLEMENTED_PUBLIC, "entry": "OxideDocument.FeatureReportJson"},
-            {"surface": "Java Maven", "status": IMPLEMENTED_PUBLIC, "entry": "Oxide.featureReportJson"},
+            {"surface": "CLI", "status": IMPLEMENTED_PUBLIC, "entry": "wellfriendpdf feature-report"},
+            {"surface": "Python", "status": IMPLEMENTED_PUBLIC, "entry": "wellfriendpdf.feature_report_json"},
+            {"surface": "C ABI", "status": IMPLEMENTED_PUBLIC, "entry": "wellfriendpdf_feature_report_json"},
+            {"surface": "WASM", "status": IMPLEMENTED_PUBLIC, "entry": "wellfriendpdf-wasm SDK report"},
+            {"surface": ".NET", "status": IMPLEMENTED_PUBLIC, "entry": "WellfriendDocument.FeatureReportJson"},
+            {"surface": "Java Maven", "status": IMPLEMENTED_PUBLIC, "entry": "WellfriendPdf.featureReportJson"},
             {"surface": "Java Gradle", "status": IMPLEMENTED_PUBLIC, "entry": "PackageSmoke"},
         ],
         "default_wasm_claims_native_cmm": False,
@@ -845,7 +845,7 @@ overprint/prepress close-out on top of this baseline.
             "kind": "cli_prepress_report_prompt12",
             "default_feature_report": prompt12_default or "not_run",
             "native_feature_report": prompt12_native or "not_run",
-            "report_access": "oxide feature-report and parser-report --include-color expose the additive Prompt 12 color/prepress fields",
+            "report_access": "wellfriendpdf feature-report and parser-report --include-color expose the additive Prompt 12 color/prepress fields",
         },
     )
 

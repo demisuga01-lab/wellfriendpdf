@@ -20,8 +20,8 @@
 
 use std::sync::Arc;
 
-use oxide_engine::{ContentEngine, ImageEncoder, Result};
 use rayon::prelude::*;
+use wellfriendpdf_engine::{ContentEngine, ImageEncoder, Result};
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();

@@ -1,7 +1,7 @@
 use axum::extract::Multipart;
 use axum::Json;
 use bytes::Bytes;
-use oxide_engine::{ContentEngine, PdfAnalyzer, TextLayerAnalysis};
+use wellfriendpdf_engine::{ContentEngine, PdfAnalyzer, TextLayerAnalysis};
 
 use crate::error::{ServerError, ServerResult};
 use crate::params::parse_bool_param;

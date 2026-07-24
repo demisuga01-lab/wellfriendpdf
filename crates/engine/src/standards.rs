@@ -1,8 +1,8 @@
 //! Standards-validation profile reports.
 //!
-//! These are veraPDF-style rule containers for Oxide's supported validation
+//! These are veraPDF-style rule containers for Wellfriend's supported validation
 //! subsets. They are not legal certification claims; each rule states exactly
-//! what Oxide evaluated.
+//! what Wellfriend evaluated.
 
 use serde::{Deserialize, Serialize};
 
@@ -117,7 +117,7 @@ fn add_pdfa_rules(engine: &ContentEngine, rules: &mut Vec<ValidationRuleResult>)
             "pdfa",
             "pdfa.supported_subset",
             "document",
-            "Oxide supported PDF/A-2B color/font/action subset passed.",
+            "Wellfriend supported PDF/A-2B color/font/action subset passed.",
         ));
     }
     for violation in report.violations {
@@ -127,7 +127,7 @@ fn add_pdfa_rules(engine: &ContentEngine, rules: &mut Vec<ValidationRuleResult>)
         "pdfa",
         "pdfa.certification_scope",
         "document",
-        "Oxide reports a supported PDF/A subset only; external validator certification is not claimed.",
+        "Wellfriend reports a supported PDF/A subset only; external validator certification is not claimed.",
     ));
     Ok(())
 }
@@ -139,7 +139,7 @@ fn add_pdfua_rules(engine: &ContentEngine, rules: &mut Vec<ValidationRuleResult>
             "pdfua",
             "pdfua.supported_subset",
             "document",
-            "Oxide supported PDF/UA tag/MCID/alt-text subset passed.",
+            "Wellfriend supported PDF/UA tag/MCID/alt-text subset passed.",
         ));
     }
     for violation in report.violations {
@@ -149,7 +149,7 @@ fn add_pdfua_rules(engine: &ContentEngine, rules: &mut Vec<ValidationRuleResult>
         "pdfua",
         "pdfua.certification_scope",
         "document",
-        "Oxide reports a supported PDF/UA subset only; complete accessibility certification is not claimed.",
+        "Wellfriend reports a supported PDF/UA subset only; complete accessibility certification is not claimed.",
     ));
     Ok(())
 }
@@ -226,7 +226,7 @@ fn add_pdfx_rules(engine: &ContentEngine, rules: &mut Vec<ValidationRuleResult>)
         "pdfx",
         "pdfx.certification_scope",
         "document",
-        "Oxide reports a supported PDF/X color/prepress subset only; complete PDF/X certification is not claimed.",
+        "Wellfriend reports a supported PDF/X color/prepress subset only; complete PDF/X certification is not claimed.",
     ));
     Ok(())
 }

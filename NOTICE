@@ -1,5 +1,5 @@
-Oxide PDF Toolkit
-Copyright (c) 2024-2026 the Oxide authors
+Wellfriend PDF SDK Toolkit
+Copyright (c) 2024-2026 the Wellfriend authors
 
 This product is licensed under the terms of MIT OR Apache-2.0 (at your option).
 See LICENSE-MIT and LICENSE-APACHE at the repository root.
@@ -15,7 +15,7 @@ audit — lives in docs/licenses.md. Verbatim license texts ship in-tree at the
 locations referenced below.
 
 --------------------------------------------------------------------------------
-1. Bundled fonts (embedded into oxide-engine as fallback/substitution data)
+1. Bundled fonts (embedded into wellfriendpdf-engine as fallback/substitution data)
 --------------------------------------------------------------------------------
 
   DejaVu Sans (DejaVuSans.ttf)
@@ -38,7 +38,7 @@ locations referenced below.
 --------------------------------------------------------------------------------
 
   The resolved dependency tree comprises 260 third-party crates (excluding
-  Oxide's own workspace crates). A `cargo metadata` license audit finds the tree
+  Wellfriend's own workspace crates). A `cargo metadata` license audit finds the tree
   is ENTIRELY PERMISSIVE: predominantly MIT OR Apache-2.0, with some MIT, BSD,
   Zlib, Unicode-3.0, and IJG (libjpeg) components — all permissive.
 
@@ -54,7 +54,7 @@ locations referenced below.
   copyleft obligations. (Contrast Poppler's GPLv2-family licensing.)
 
   NOTE: PyMuPDF (AGPL) is used ONLY as an external comparison/benchmark tool in
-  the dev-time benchmark harness; it is NOT a dependency of any Oxide crate and
+  the dev-time benchmark harness; it is NOT a dependency of any Wellfriend crate and
   is never linked or distributed with the SDK.
 
   The full per-license breakdown, the audit method, and reproduction steps are

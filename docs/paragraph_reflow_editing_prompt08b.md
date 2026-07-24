@@ -18,7 +18,7 @@ Supported edit operations:
 The default CLI mode is now:
 
 ```powershell
-oxide edit-text input.pdf --query OLD --replacement NEW --mode paragraph-reflow --out edited.pdf --json
+wellfriendpdf edit-text input.pdf --query OLD --replacement NEW --mode paragraph-reflow --out edited.pdf --json
 ```
 
 `overlay-fallback` remains available only when explicitly requested.

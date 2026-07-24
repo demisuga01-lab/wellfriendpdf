@@ -15,7 +15,7 @@ through local fixtures.
 Prompt 04E reran the exact original 24-file font/text slice:
 
 ```powershell
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04e-font-after-audit --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04e-font-after-audit --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 | Metric | Prompt 04D anchor | Prompt 04E after audit |
@@ -26,7 +26,7 @@ python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benc
 | Visual pass | 50.0% | 50.0% |
 | Weighted score | 47.5 | 47.5 |
 | Determinism | 5/5 stable | 5/5 stable |
-| Peak Oxide memory | 11.99 MB | 11.55 MB |
+| Peak Wellfriend memory | 11.99 MB | 11.55 MB |
 | Poppler | 26.02.0 | 26.02.0 |
 | PDFium | unavailable | unavailable |
 
@@ -60,7 +60,7 @@ The two blank-reference mismatches remain the same as Prompt 04D:
 - `renderer-benchmark/corpus/real-world/pdfjs-full/arial_unicode_en_cidfont.pdf`.
 - `tests/corpus/pdfs/pdfjs/issue5801.pdf`.
 
-The Prompt 04E Tr tests reduce the likelihood that Oxide is simply painting
+The Prompt 04E Tr tests reduce the likelihood that Wellfriend is simply painting
 `Tr 3` or `Tr 7` invisible text. Prompt 04D had already recorded Poppler
 warnings for missing language/display fonts. With PDFium unavailable in this
 environment and no MuPDF result captured for this slice, these remain classified

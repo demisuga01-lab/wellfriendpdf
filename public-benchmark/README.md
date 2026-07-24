@@ -1,7 +1,7 @@
 # Public PDF Benchmark
 
 This directory contains the reproducible public-corpus text extraction benchmark
-for Oxide. It is measurement infrastructure only; it does not change parser,
+for WellfriendPdf. It is measurement infrastructure only; it does not change parser,
 renderer, server, or CLI behavior.
 
 ## Layout
@@ -53,10 +53,10 @@ benchmark never fabricates numbers.
 ## Run The Benchmark
 
 ```powershell
-cargo build --release -p oxide-cli
+cargo build --release -p wellfriendpdf-cli
 python public-benchmark\scripts\run_text_benchmark.py `
   --manifest public-benchmark\manifests\public_corpus_manifest.json `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --output-dir public-benchmark\results\raw\run-full `
   --report docs\benchmark_public.md
 ```

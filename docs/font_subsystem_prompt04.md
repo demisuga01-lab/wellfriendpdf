@@ -2,7 +2,7 @@
 
 This document records the Prompt 04 font baseline and the implemented closure
 work. It is intentionally an engineering status document, not a claim that
-Oxide now matches mature font engines such as FreeType plus HarfBuzz across
+Wellfriend now matches mature font engines such as FreeType plus HarfBuzz across
 every script and PDF font corner.
 
 ## Baseline Inventory
@@ -53,7 +53,7 @@ font-code resolution behavior.
 
 ## Encoding and Unicode Recovery Priority
 
-Oxide’s extraction/render text decoding follows this practical priority:
+Wellfriend’s extraction/render text decoding follows this practical priority:
 
 1. `/ToUnicode` CMap when present and parseable.
 2. Simple-font `/Encoding` plus `/Differences`.
@@ -179,7 +179,7 @@ Example diagnostic codes:
 - `font.color_glyphs.detected`
 - `font.subset.sfnt_deferred`
 
-The human `oxide fonts` table remains pdffonts-style. JSON surfaces expose the
+The human `wellfriendpdf fonts` table remains pdffonts-style. JSON surfaces expose the
 extra fields.
 
 ## Fuzz and Tests

@@ -7,9 +7,9 @@ Inventory covers RichMediaContent/Settings, assets/configurations/instances, emb
 `flatten_static_poster` selectively paints the valid static AP into page content, removes the media annotation and active/payload objects, and rescans. Unrelated annotations and Widgets remain.
 
 ```text
-oxide rich-media-report input.pdf
-oxide rich-media-sanitize input.pdf --policy remove_all_media --output clean.pdf --json
-oxide rich-media-flatten-poster input.pdf --output poster.pdf --json
+wellfriendpdf rich-media-report input.pdf
+wellfriendpdf rich-media-sanitize input.pdf --policy remove_all_media --output clean.pdf --json
+wellfriendpdf rich-media-flatten-poster input.pdf --output poster.pdf --json
 ```
 
 If no valid static AP exists, poster flatten reports the exact limitation and removes active media under the selected policy; it does not decode video/audio/3D data to manufacture a poster.

@@ -15,7 +15,7 @@ use sha2::{Digest, Sha256};
 use zip::ZipArchive;
 
 use crate::editing::{EditMode, PdfEditor};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
@@ -1111,7 +1111,7 @@ pub fn form_action_graph(
         }
     }
     if edges.len() > MAX_DEPENDENCIES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "form dependency count {} exceeds cap {MAX_DEPENDENCIES}",
             edges.len()
         )));
@@ -1185,7 +1185,7 @@ fn collect_field_node(
     out: &mut Vec<FieldRecord>,
 ) -> Result<()> {
     if depth > 32 {
-        return Err(OxideError::ResourceLimit(
+        return Err(WellfriendError::ResourceLimit(
             "form field tree depth exceeds 32".to_string(),
         ));
     }
@@ -1421,7 +1421,7 @@ fn enforce_signature_policy(decision: &EditPolicyDecision, override_policy: bool
         EditPolicyDecision::BlockedBySignaturePolicy | EditPolicyDecision::ExplicitOverrideRequired
     ) && !override_policy
     {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "Prompt 18B signature policy blocks full-rewrite sanitization without an explicit override"
                 .to_string(),
         ));
@@ -1639,7 +1639,7 @@ pub fn flatten_calculated_values_pdf(
             Ok((target, value, instructions)) => {
                 let rendered = value.render();
                 if mutations.len() >= options.limits.max_field_mutations {
-                    return Err(OxideError::ResourceLimit(format!(
+                    return Err(WellfriendError::ResourceLimit(format!(
                         "field mutation count exceeds cap {}",
                         options.limits.max_field_mutations
                     )));
@@ -2229,7 +2229,7 @@ pub fn word_pagination_audit(
     };
     let bytes = pdf_to_docx(engine, &options)?;
     if bytes.len() > MAX_DOCX_OUTPUT_BYTES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "DOCX output {} exceeds cap {MAX_DOCX_OUTPUT_BYTES}",
             bytes.len()
         )));
@@ -2240,7 +2240,7 @@ pub fn word_pagination_audit(
         &crate::parse::ParseOptions::default(),
     )?;
     if document.pages.len() > MAX_DOCX_PAGES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "DOCX page count {} exceeds cap {MAX_DOCX_PAGES}",
             document.pages.len()
         )));
@@ -2254,10 +2254,11 @@ fn inspect_docx(
     document: &crate::parse::Document,
     deterministic_repeat_match: bool,
 ) -> Result<DocxLayoutAuditReport> {
-    let mut zip = ZipArchive::new(Cursor::new(bytes))
-        .map_err(|error| OxideError::MalformedPdf(format!("DOCX ZIP readback failed: {error}")))?;
+    let mut zip = ZipArchive::new(Cursor::new(bytes)).map_err(|error| {
+        WellfriendError::MalformedPdf(format!("DOCX ZIP readback failed: {error}"))
+    })?;
     if zip.len() > MAX_DOCX_PARTS {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "DOCX part count {} exceeds cap {MAX_DOCX_PARTS}",
             zip.len()
         )));
@@ -2267,7 +2268,9 @@ fn inspect_docx(
         .collect::<Vec<_>>();
     let mut xml = String::new();
     zip.by_name("word/document.xml")
-        .map_err(|error| OxideError::MalformedPdf(format!("DOCX missing document.xml: {error}")))?
+        .map_err(|error| {
+            WellfriendError::MalformedPdf(format!("DOCX missing document.xml: {error}"))
+        })?
         .read_to_string(&mut xml)?;
     let page_sizes_twips = document
         .pages

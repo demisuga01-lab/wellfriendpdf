@@ -7,18 +7,18 @@ Prompt 08 audit script:
 
 The script generates 26 deterministic PDF fixtures under
 `target/prompt08-text-shading-patterns/corpus/`, copies the target-local
-Prompt 06B/07B reference tool manifest, and renders each page through Oxide,
+Prompt 06B/07B reference tool manifest, and renders each page through Wellfriend,
 Poppler, PDFium, and MuPDF.
 
 Current audit summary:
 
 - Fixtures: 26.
 - Pairwise comparisons: 156.
-- `all_references_agree_oxide_passes`: 19.
-- `references_disagree_oxide_within_cluster`: 3.
+- `all_references_agree_wellfriendpdf_passes`: 19.
+- `references_disagree_wellfriendpdf_within_cluster`: 3.
 - `unsupported_reported_expected`: 3.
 - `malformed_reference_failure`: 1.
-- Oxide outlier failures: 0.
+- Wellfriend outlier failures: 0.
 - Prompt 08 cluster-tolerance acceptances: 2.
 
 Primary artifacts:
@@ -38,9 +38,9 @@ Prompt 08B closure summary:
 
 - Fixtures: 21.
 - Pairwise comparisons: 126.
-- `all_references_agree_oxide_passes`: 11.
+- `all_references_agree_wellfriendpdf_passes`: 11.
 - `unsupported_reported_expected`: 10.
-- Oxide outlier failures: 0.
+- Wellfriend outlier failures: 0.
 - Unclassified failures: 0.
 
 Prompt 08B artifacts:
@@ -52,6 +52,6 @@ Prompt 08B artifacts:
 - `target/prompt08b-type3-cid-tensor/prompt08b-reference-disagreement-summary.json`
 - `target/prompt08b-type3-cid-tensor/prompt08b-html-report/index.html`
 
-The Type3 rows are expected reference-cluster limitations: Oxide clips from the
+The Type3 rows are expected reference-cluster limitations: Wellfriend clips from the
 Type3 charproc path, while Poppler, PDFium, and MuPDF render the generated Type3
 `Tr` fixtures without applying the Type3 clip. Those rows are not bbox fallback.

@@ -189,34 +189,34 @@ def render_reference_proof(mutool: pathlib.Path | None) -> dict:
         "deterministic": True,
         "fail_on_unsupported": False,
     }, indent=2), encoding="utf-8")
-    oxide = ROOT / "target" / "debug" / "oxide.exe"
-    apply = run(str(oxide), "redact-image-mask", str(fixture), str(plan), "--output", str(output))
+    wellfriendpdf = ROOT / "target" / "debug" / "wellfriendpdf.exe"
+    apply = run(str(wellfriendpdf), "redact-image-mask", str(fixture), str(plan), "--output", str(output))
     proof = {
         "apply": apply,
         "output_reopened_by_focused_suite": True,
         "mutool_available": mutool is not None,
         "compared": False,
-        "oxide_outlier": False,
+        "wellfriendpdf_outlier": False,
     }
     if not apply["passed"] or mutool is None:
         return proof
-    oxide_zip = proof_dir / "oxide-render.zip"
-    oxide_render = run(str(oxide), "render", str(output), "--output", str(oxide_zip), "--dpi", "72")
+    wellfriendpdf_zip = proof_dir / "wellfriendpdf-render.zip"
+    wellfriendpdf_render = run(str(wellfriendpdf), "render", str(output), "--output", str(wellfriendpdf_zip), "--dpi", "72")
     mupdf_png = proof_dir / "mupdf-1.png"
     mupdf_render = run(str(mutool), "draw", "-q", "-r", "72", "-o", str(mupdf_png), str(output), "1")
-    proof.update({"oxide_render": oxide_render, "mupdf_render": mupdf_render})
-    if not oxide_render["passed"] or not mupdf_render["passed"]:
+    proof.update({"wellfriendpdf_render": wellfriendpdf_render, "mupdf_render": mupdf_render})
+    if not wellfriendpdf_render["passed"] or not mupdf_render["passed"]:
         return proof
     try:
         from PIL import Image, ImageChops, ImageStat
-        with zipfile.ZipFile(oxide_zip) as archive:
+        with zipfile.ZipFile(wellfriendpdf_zip) as archive:
             png_name = next(name for name in archive.namelist() if name.lower().endswith(".png"))
-            oxide_png = proof_dir / "oxide-1.png"
-            oxide_png.write_bytes(archive.read(png_name))
-        with Image.open(oxide_png).convert("RGB") as oxide_image, Image.open(mupdf_png).convert("RGB") as mupdf_image:
-            same_dimensions = oxide_image.size == mupdf_image.size
+            wellfriendpdf_png = proof_dir / "wellfriendpdf-1.png"
+            wellfriendpdf_png.write_bytes(archive.read(png_name))
+        with Image.open(wellfriendpdf_png).convert("RGB") as wellfriendpdf_image, Image.open(mupdf_png).convert("RGB") as mupdf_image:
+            same_dimensions = wellfriendpdf_image.size == mupdf_image.size
             if same_dimensions:
-                stat = ImageStat.Stat(ImageChops.difference(oxide_image, mupdf_image))
+                stat = ImageStat.Stat(ImageChops.difference(wellfriendpdf_image, mupdf_image))
                 mean_abs = sum(stat.mean) / 3.0
                 max_channel_mean = max(stat.mean)
             else:
@@ -228,7 +228,7 @@ def render_reference_proof(mutool: pathlib.Path | None) -> dict:
             "mean_absolute_channel_error": round(mean_abs, 6),
             "max_channel_mean_error": round(max_channel_mean, 6),
             "supported_row_threshold": 8.0,
-            "oxide_outlier": (not same_dimensions) or mean_abs > 8.0,
+            "wellfriendpdf_outlier": (not same_dimensions) or mean_abs > 8.0,
         })
     except Exception as error:  # precise unavailable evidence, never a pass
         proof["comparison_error"] = str(error)
@@ -300,7 +300,7 @@ def main() -> int:
     }
     write("prompt18-feature-matrix.json", matrix)
 
-    focused = run("cargo", "test", "-p", "oxide-engine", "--test", "prompt18_secure_mutation")
+    focused = run("cargo", "test", "-p", "wellfriendpdf-engine", "--test", "prompt18_secure_mutation")
     if not focused["passed"]:
         write("prompt18-focused-failure.json", focused)
         return focused["exit_code"] or 1
@@ -330,14 +330,14 @@ def main() -> int:
     mutool_paths = tool_candidates["mupdf_mutool"]
     reference_proof = render_reference_proof(mutool_paths[0] if mutool_paths else None)
     write("prompt18-reference-render-proof.json", reference_proof)
-    if reference_proof.get("oxide_outlier"):
+    if reference_proof.get("wellfriendpdf_outlier"):
         return 2
     common = {
         "schema_version": SCHEMA,
         "focused_suite": focused,
         "zero_security_proof_failures": True,
         "zero_unclassified_failures": True,
-        "zero_supported_oxide_outliers": True,
+        "zero_supported_wellfriendpdf_outliers": True,
         "deterministic": True,
         "memory_cap_mb": 4096,
         "validation_concurrency": "serial",
@@ -419,7 +419,7 @@ def main() -> int:
         "<!doctype html><meta charset='utf-8'><title>Prompt 18 audit</title>"
         "<h1>Prompt 18 secure mutation audit</h1>"
         "<p>Focused executable security suite: PASS.</p>"
-        "<p>Blocked: 0; unclassified: 0; security-proof failures: 0; supported Oxide outliers: 0.</p>",
+        "<p>Blocked: 0; unclassified: 0; security-proof failures: 0; supported Wellfriend outliers: 0.</p>",
         encoding="utf-8",
     )
     print(json.dumps(manifest, indent=2))

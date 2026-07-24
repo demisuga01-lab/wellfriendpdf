@@ -27,7 +27,7 @@ failure category such as `missing_binary`, `reference_execution_failure`,
 
 Prompt 06B closes the earlier local-host caveat: Poppler, PDFium, and MuPDF are
 now represented in the multi-reference audit. The audit still does not claim
-that Oxide matches every page; it classifies whether references agree, Oxide
+that Wellfriend matches every page; it classifies whether references agree, Wellfriend
 matches one reference, dimensions differ, or the page belongs to later-owned
 renderer parity work.
 
@@ -36,4 +36,4 @@ corpus. The Prompt 07 audit writes baseline and post-implementation render
 results under `target/prompt07-transparency-compositing/` and treats a missing
 Poppler, PDFium, or MuPDF adapter as a blocker rather than an unavailable-tool
 excuse. The audit records reference-vs-reference disagreement before assigning
-an Oxide owner.
+an Wellfriend owner.

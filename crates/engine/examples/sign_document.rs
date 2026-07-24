@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 
-use oxide_engine::{ContentEngine, PdfSigner, Result, SignatureOptions};
+use wellfriendpdf_engine::{ContentEngine, PdfSigner, Result, SignatureOptions};
 
 fn main() -> Result<()> {
     let args = env::args().collect::<Vec<_>>();
@@ -21,8 +21,8 @@ fn main() -> Result<()> {
     let signed = engine.sign(
         &signer,
         &SignatureOptions {
-            field_name: "OxideSignature1".to_string(),
-            signer_name: Some("Oxide SDK Example Signer".to_string()),
+            field_name: "WellfriendSignature1".to_string(),
+            signer_name: Some("Wellfriend SDK Example Signer".to_string()),
             reason: Some("example signature".to_string()),
             location: Some("example".to_string()),
             signing_time: Some("D:20260622000000Z".to_string()),

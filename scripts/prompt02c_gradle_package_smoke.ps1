@@ -51,12 +51,12 @@ function Get-HostRid {
 function Get-NativeLibraryName {
     $runtime = [System.Runtime.InteropServices.RuntimeInformation]
     if ($runtime::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-        return "oxide_capi.dll"
+        return "wellfriendpdf_capi.dll"
     }
     if ($runtime::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
-        return "liboxide_capi.dylib"
+        return "libwellfriendpdf_capi.dylib"
     }
-    "liboxide_capi.so"
+    "libwellfriendpdf_capi.so"
 }
 
 function Ensure-Gradle {
@@ -133,18 +133,18 @@ function Assert-JarContents {
     $entries = Get-JarEntries $Jar
     $requiredEntries = @(
         "META-INF/MANIFEST.MF",
-        "org/oxidepdf/Oxide.class",
-        "org/oxidepdf/Oxide`$Document.class",
-        "org/oxidepdf/Oxide`$BinaryResult.class",
-        "org/oxidepdf/Oxide`$Office.class"
+        "io/wellfriendpdf/WellfriendPdf.class",
+        "io/wellfriendpdf/Wellfriend`$Document.class",
+        "io/wellfriendpdf/Wellfriend`$BinaryResult.class",
+        "io/wellfriendpdf/Wellfriend`$Office.class"
     )
     $missingEntries = @($requiredEntries | Where-Object { $entries -notcontains $_ })
     $forbiddenEntries = @($entries | Where-Object {
-        $_ -like "*OxideSmokeTest*" -or
-        $_ -like "org/oxidepdf/packagesmoke/*" -or
+        $_ -like "*WellfriendPdfSmokeTest*" -or
+        $_ -like "io/wellfriendpdf/packagesmoke/*" -or
         $_ -like "target/*" -or
         $_ -like "build/*" -or
-        $_ -like "*oxide_capi*" -or
+        $_ -like "*wellfriendpdf_capi*" -or
         $_ -like "*.pdb"
     })
     if ($missingEntries.Count -ne 0) {
@@ -157,7 +157,7 @@ function Assert-JarContents {
         entry_count = $entries.Count
         required_entries_present = $missingEntries.Count -eq 0
         forbidden_entries_absent = $forbiddenEntries.Count -eq 0
-        native_libraries_in_jar = @($entries | Where-Object { $_ -like "*oxide_capi*" })
+        native_libraries_in_jar = @($entries | Where-Object { $_ -like "*wellfriendpdf_capi*" })
         tests_in_jar = @($entries | Where-Object { $_ -like "*Test*" })
         entries = $entries
     }
@@ -179,12 +179,12 @@ public final class ApiSummary {
         URL jar = Path.of(args[0]).toUri().toURL();
         try (URLClassLoader loader = new URLClassLoader(new URL[] { jar }, ClassLoader.getPlatformClassLoader())) {
             String[] classes = {
-                "org.oxidepdf.Oxide",
-                "org.oxidepdf.Oxide$Document",
-                "org.oxidepdf.Oxide$Page",
-                "org.oxidepdf.Oxide$BinaryResult",
-                "org.oxidepdf.Oxide$Office",
-                "org.oxidepdf.Oxide$OxideException"
+                "io.wellfriendpdf.Wellfriend",
+                "io.wellfriendpdf.WellfriendPdf$Document",
+                "io.wellfriendpdf.WellfriendPdf$Page",
+                "io.wellfriendpdf.WellfriendPdf$BinaryResult",
+                "io.wellfriendpdf.WellfriendPdf$Office",
+                "io.wellfriendpdf.WellfriendPdf$WellfriendPdfException"
             };
             ArrayList<String> out = new ArrayList<>();
             for (String name : classes) {
@@ -233,21 +233,21 @@ $gradle = Ensure-Gradle
 $nativeName = Get-NativeLibraryName
 $nativePath = Join-Path $Repo "target/debug/$nativeName"
 if (!(Test-Path $nativePath)) {
-    Invoke-Checked "cargo" @("build", "-p", "oxide-capi") "cargo build -p oxide-capi"
+    Invoke-Checked "cargo" @("build", "-p", "wellfriendpdf-capi") "cargo build -p wellfriendpdf-capi"
 }
 if (!(Test-Path $nativePath)) {
     throw "native library not found after build: $nativePath"
 }
 
-$env:OXIDE_NATIVE_LIBRARY = $nativePath
-$env:OXIDE_PROMPT02_ARTIFACT_DIR = $ArtifactDir
+$env:WELLFRIENDPDF_NATIVE_LIBRARY = $nativePath
+$env:WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR = $ArtifactDir
 
 Invoke-Checked $gradle @("--version") "gradle --version"
 Invoke-Checked $gradle @("--no-daemon", "-p", $JavaDir, "clean", "test") "gradle clean test"
 Invoke-Checked $gradle @("--no-daemon", "-p", $JavaDir, "jar") "gradle jar"
 Invoke-Checked $gradle @("--no-daemon", "-p", $JavaDir, "build") "gradle build"
 
-$gradleJar = Join-Path $JavaDir "build/libs/oxide-sdk-0.1.0.jar"
+$gradleJar = Join-Path $JavaDir "build/libs/wellfriendpdf-sdk-0.1.0.jar"
 if (!(Test-Path $gradleJar)) {
     throw "Gradle package did not produce $gradleJar"
 }
@@ -268,19 +268,19 @@ New-Item -ItemType Directory -Force -Path $classes, $runDir | Out-Null
 $packageSmoke = Join-Path $JavaDir "package-smoke/PackageSmoke.java"
 Invoke-Checked "javac" @("--enable-preview", "--release", "25", "-cp", $gradleJar, "-d", $classes, $packageSmoke) "javac Gradle package smoke"
 
-$oldNative = $env:OXIDE_NATIVE_LIBRARY
-Remove-Item Env:\OXIDE_NATIVE_LIBRARY -ErrorAction SilentlyContinue
+$oldNative = $env:WELLFRIENDPDF_NATIVE_LIBRARY
+Remove-Item Env:\WELLFRIENDPDF_NATIVE_LIBRARY -ErrorAction SilentlyContinue
 try {
     Push-Location $runDir
     try {
         $classpath = "$classes$([System.IO.Path]::PathSeparator)$gradleJar"
-        Invoke-Checked "java" @("--enable-preview", "--enable-native-access=ALL-UNNAMED", "-cp", $classpath, "org.oxidepdf.packagesmoke.PackageSmoke", $Fixture) "Gradle JAR runtime smoke"
+        Invoke-Checked "java" @("--enable-preview", "--enable-native-access=ALL-UNNAMED", "-cp", $classpath, "io.wellfriendpdf.packagesmoke.PackageSmoke", $Fixture) "Gradle JAR runtime smoke"
     } finally {
         Pop-Location
     }
 } finally {
     if ($null -ne $oldNative) {
-        $env:OXIDE_NATIVE_LIBRARY = $oldNative
+        $env:WELLFRIENDPDF_NATIVE_LIBRARY = $oldNative
     }
 }
 
@@ -314,11 +314,11 @@ $gradleSmoke = [ordered]@{
         fixture = $Fixture
         operations = @("engineVersion", "abiVersion", "featureReportJson", "Document.open(Path,String)", "page text", "securityReportJson", "parserReportJson", "sanitize")
     }
-    native_loading = "Gradle JAR smoke ran from target/prompt02c-gradle-package-smoke/run with OXIDE_NATIVE_LIBRARY unset and oxide_capi copied to bindings/java/build/libs/runtimes/$rid/native."
+    native_loading = "Gradle JAR smoke ran from target/prompt02c-gradle-package-smoke/run with WELLFRIENDPDF_NATIVE_LIBRARY unset and wellfriendpdf_capi copied to bindings/java/build/libs/runtimes/$rid/native."
 }
 Write-JsonNoBom (Join-Path $ArtifactDir "gradle-jar-smoke.json") $gradleSmoke
 
-$mavenJar = Join-Path $JavaDir "target/oxide-sdk-0.1.0.jar"
+$mavenJar = Join-Path $JavaDir "target/wellfriendpdf-sdk-0.1.0.jar"
 if (!(Test-Path $mavenJar)) {
     Invoke-Checked "powershell" @("-ExecutionPolicy", "Bypass", "-File", (Join-Path $Repo "scripts/prompt02b_java_package_smoke.ps1")) "Maven package smoke for equivalence"
 }
@@ -332,8 +332,8 @@ Compile-ApiSummary $apiClasses
 $mavenApi = Get-ApiSummary $mavenJar $apiClasses
 $gradleApi = Get-ApiSummary $gradleJar $apiClasses
 
-$mavenClasses = @($mavenInspection.entries | Where-Object { $_ -like "org/oxidepdf/*.class" } | Sort-Object)
-$gradleClasses = @($gradleInspection.entries | Where-Object { $_ -like "org/oxidepdf/*.class" } | Sort-Object)
+$mavenClasses = @($mavenInspection.entries | Where-Object { $_ -like "io/wellfriendpdf/*.class" } | Sort-Object)
+$gradleClasses = @($gradleInspection.entries | Where-Object { $_ -like "io/wellfriendpdf/*.class" } | Sort-Object)
 $classesOnlyMaven = @($mavenClasses | Where-Object { $gradleClasses -notcontains $_ })
 $classesOnlyGradle = @($gradleClasses | Where-Object { $mavenClasses -notcontains $_ })
 $apiOnlyMaven = @($mavenApi | Where-Object { $gradleApi -notcontains $_ })
@@ -379,8 +379,8 @@ $equivalence = [ordered]@{
         only_maven = $apiOnlyMaven
         only_gradle = $apiOnlyGradle
         password_open_methods = @(
-            "org.oxidepdf.Oxide`$Document#public static open(java.nio.file.Path,java.lang.String):org.oxidepdf.Oxide`$Document",
-            "org.oxidepdf.Oxide`$Document#public static open(byte[],java.lang.String):org.oxidepdf.Oxide`$Document"
+            "io.wellfriendpdf.Wellfriend`$Document#public static open(java.nio.file.Path,java.lang.String):io.wellfriendpdf.Wellfriend`$Document",
+            "io.wellfriendpdf.Wellfriend`$Document#public static open(byte[],java.lang.String):io.wellfriendpdf.Wellfriend`$Document"
         )
     }
     manifest = [ordered]@{

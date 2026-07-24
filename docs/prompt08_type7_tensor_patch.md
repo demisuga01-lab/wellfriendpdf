@@ -26,14 +26,14 @@ Limits and fail-closed behavior:
 
 Evidence:
 
-- `cargo test -p oxide-engine --test shadings --jobs 1`
-- `cargo test -p oxide-engine render::shading::tests --jobs 1`
-- `cargo test -p oxide-engine --test prompt08b_type3_cid_tensor --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test shadings --jobs 1`
+- `cargo test -p wellfriendpdf-engine render::shading::tests --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test prompt08b_type3_cid_tensor --jobs 1`
 - `target/prompt08b-type3-cid-tensor/prompt08b-type7-tensor-matrix.json`
 - `target/prompt08b-type3-cid-tensor/prompt08b-reference-disagreement-summary.json`
 
 Prompt 08B includes smooth, curved-interior, clipped, transformed,
 multi-patch, transparency-group, truncated-stream, and excessive-patch fixtures.
 All six valid Type 7 tensor fixtures are classified as
-`all_references_agree_oxide_passes`; malformed/limit rows are
+`all_references_agree_wellfriendpdf_passes`; malformed/limit rows are
 `unsupported_reported_expected`.

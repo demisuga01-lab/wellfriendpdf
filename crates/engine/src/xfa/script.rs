@@ -1,5 +1,5 @@
 use super::{RuntimeInstant, XfaLimits};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone)]
@@ -59,14 +59,14 @@ impl Value {
             Self::Number(value) => *value,
             Self::Bool(value) => i32::from(*value) as f64,
             Self::String(value) => value.parse::<f64>().map_err(|_| {
-                OxideError::MalformedPdf("FormCalc numeric coercion failed".to_string())
+                WellfriendError::MalformedPdf("FormCalc numeric coercion failed".to_string())
             })?,
             Self::Null => 0.0,
         };
         if value.is_finite() {
             Ok(value)
         } else {
-            Err(OxideError::MalformedPdf(
+            Err(WellfriendError::MalformedPdf(
                 "FormCalc produced a non-finite number".to_string(),
             ))
         }
@@ -90,7 +90,7 @@ pub(crate) fn evaluate_formcalc(
 ) -> Result<EvalOutcome> {
     reject_side_effects(source)?;
     if source.len() > limits.max_script_source_bytes {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "XFA script source exceeds cap {}",
             limits.max_script_source_bytes
         )));
@@ -105,7 +105,7 @@ pub(crate) fn evaluate_formcalc(
     let value = eval_tokens(&tokens, fields, &mut budget)?;
     let value = value.into_string();
     if value.len() > limits.max_script_string_bytes {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "XFA script string result exceeds cap {}",
             limits.max_script_string_bytes
         )));
@@ -136,7 +136,7 @@ fn reject_side_effects(source: &str) -> Result<()> {
         (" do ", "loops"),
     ];
     if let Some((_, reason)) = BLOCKED.iter().find(|(needle, _)| lower.contains(needle)) {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "FormCalc sandbox blocked {reason}"
         )));
     }
@@ -226,7 +226,9 @@ fn tokenize(source: &str, limits: &XfaLimits) -> Result<Vec<Token>> {
                     if chars[pos] == '\\' {
                         pos += 1;
                         let escaped = *chars.get(pos).ok_or_else(|| {
-                            OxideError::MalformedPdf("unterminated FormCalc string escape".into())
+                            WellfriendError::MalformedPdf(
+                                "unterminated FormCalc string escape".into(),
+                            )
                         })?;
                         value.push(match escaped {
                             'n' => '\n',
@@ -239,14 +241,14 @@ fn tokenize(source: &str, limits: &XfaLimits) -> Result<Vec<Token>> {
                     }
                     pos += 1;
                     if value.len() > limits.max_script_string_bytes {
-                        return Err(OxideError::ResourceLimit(format!(
+                        return Err(WellfriendError::ResourceLimit(format!(
                             "XFA script string exceeds cap {}",
                             limits.max_script_string_bytes
                         )));
                     }
                 }
                 if chars.get(pos) != Some(&quote) {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "unterminated FormCalc string".to_string(),
                     ));
                 }
@@ -267,11 +269,11 @@ fn tokenize(source: &str, limits: &XfaLimits) -> Result<Vec<Token>> {
                     pos += 1;
                 }
                 let text: String = chars[start..pos].iter().collect();
-                let number = text
-                    .parse::<f64>()
-                    .map_err(|_| OxideError::MalformedPdf("invalid FormCalc number".to_string()))?;
+                let number = text.parse::<f64>().map_err(|_| {
+                    WellfriendError::MalformedPdf("invalid FormCalc number".to_string())
+                })?;
                 if !number.is_finite() {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "non-finite FormCalc number is forbidden".to_string(),
                     ));
                 }
@@ -296,14 +298,14 @@ fn tokenize(source: &str, limits: &XfaLimits) -> Result<Vec<Token>> {
                 }
             }
             _ => {
-                return Err(OxideError::UnsupportedFeature(
+                return Err(WellfriendError::UnsupportedFeature(
                     "FormCalc construct is outside the pure-expression subset".to_string(),
                 ))
             }
         };
         out.push(token);
         if out.len() > limits.max_script_instructions {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "XFA script token count exceeds instruction cap {}",
                 limits.max_script_instructions
             )));
@@ -327,13 +329,13 @@ impl Budget {
     fn charge(&mut self) -> Result<()> {
         self.instructions = self.instructions.saturating_add(1);
         if self.instructions > self.limits.max_script_instructions {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "XFA script instruction cap {} exceeded",
                 self.limits.max_script_instructions
             )));
         }
         if self.started.elapsed_millis() > u128::from(self.limits.max_runtime_ms) {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "XFA runtime exceeded {} ms",
                 self.limits.max_runtime_ms
             )));
@@ -344,7 +346,7 @@ impl Budget {
     fn enter(&mut self) -> Result<()> {
         self.call_depth = self.call_depth.saturating_add(1);
         if self.call_depth > self.limits.max_script_call_depth {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "XFA script call depth exceeds cap {}",
                 self.limits.max_script_call_depth
             )));
@@ -364,16 +366,16 @@ fn eval_tokens(
 ) -> Result<Value> {
     if tokens.first() == Some(&Token::If) {
         let then = find_keyword(tokens, Token::Then, 1).ok_or_else(|| {
-            OxideError::MalformedPdf("FormCalc if expression is missing then".into())
+            WellfriendError::MalformedPdf("FormCalc if expression is missing then".into())
         })?;
         let else_pos = find_keyword(tokens, Token::Else, then + 1).ok_or_else(|| {
-            OxideError::MalformedPdf("FormCalc if expression is missing else".into())
+            WellfriendError::MalformedPdf("FormCalc if expression is missing else".into())
         })?;
         let end = find_keyword(tokens, Token::EndIf, else_pos + 1).ok_or_else(|| {
-            OxideError::MalformedPdf("FormCalc if expression is missing endif".into())
+            WellfriendError::MalformedPdf("FormCalc if expression is missing endif".into())
         })?;
         if end + 1 != tokens.len() {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "statements after FormCalc endif are outside the subset".to_string(),
             ));
         }
@@ -393,7 +395,7 @@ fn eval_tokens(
     };
     let value = parser.parse_or()?;
     if parser.pos != tokens.len() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "FormCalc statement is outside the pure-expression subset".to_string(),
         ));
     }
@@ -510,7 +512,7 @@ impl ExpressionParser<'_, '_, '_> {
                 self.budget.charge()?;
                 let divisor = self.parse_unary()?.as_number()?;
                 if divisor == 0.0 {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "FormCalc division by zero".to_string(),
                     ));
                 }
@@ -540,11 +542,9 @@ impl ExpressionParser<'_, '_, '_> {
 
     fn parse_primary(&mut self) -> Result<Value> {
         self.budget.charge()?;
-        let token = self
-            .tokens
-            .get(self.pos)
-            .cloned()
-            .ok_or_else(|| OxideError::MalformedPdf("incomplete FormCalc expression".into()))?;
+        let token = self.tokens.get(self.pos).cloned().ok_or_else(|| {
+            WellfriendError::MalformedPdf("incomplete FormCalc expression".into())
+        })?;
         self.pos += 1;
         match token {
             Token::Number(value) => Ok(Value::Number(value)),
@@ -559,13 +559,13 @@ impl ExpressionParser<'_, '_, '_> {
             Token::LParen => {
                 let value = self.parse_or()?;
                 if !self.consume(&Token::RParen) {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "FormCalc expression is missing ')'".to_string(),
                     ));
                 }
                 Ok(value)
             }
-            _ => Err(OxideError::UnsupportedFeature(
+            _ => Err(WellfriendError::UnsupportedFeature(
                 "FormCalc construct is outside the pure-expression subset".to_string(),
             )),
         }
@@ -580,12 +580,12 @@ impl ExpressionParser<'_, '_, '_> {
                     break;
                 }
                 if !self.consume(&Token::Comma) {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "FormCalc function arguments are malformed".to_string(),
                     ));
                 }
                 if args.len() > self.budget.limits.max_script_object_properties {
-                    return Err(OxideError::ResourceLimit(
+                    return Err(WellfriendError::ResourceLimit(
                         "XFA script argument count exceeded object/property cap".to_string(),
                     ));
                 }
@@ -675,7 +675,7 @@ fn pure_function(name: &str, args: Vec<Value>) -> Result<Value> {
         "lower" => Ok(Value::String(
             exactly_one(args)?.into_string().to_lowercase(),
         )),
-        _ => Err(OxideError::UnsupportedFeature(format!(
+        _ => Err(WellfriendError::UnsupportedFeature(format!(
             "FormCalc pure function '{name}' is not whitelisted"
         ))),
     }
@@ -687,7 +687,7 @@ fn one_number(args: Vec<Value>, op: fn(f64) -> f64) -> Result<Value> {
     if result.is_finite() {
         Ok(Value::Number(result))
     } else {
-        Err(OxideError::MalformedPdf(
+        Err(WellfriendError::MalformedPdf(
             "FormCalc produced a non-finite number".to_string(),
         ))
     }
@@ -695,7 +695,7 @@ fn one_number(args: Vec<Value>, op: fn(f64) -> f64) -> Result<Value> {
 
 fn exactly_one(mut args: Vec<Value>) -> Result<Value> {
     if args.len() != 1 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "FormCalc function expects exactly one argument".to_string(),
         ));
     }

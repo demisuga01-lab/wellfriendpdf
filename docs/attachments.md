@@ -1,22 +1,22 @@
 # Embedded File Attachments (`detach`)
 
-`oxide detach` lists and extracts **embedded files** (attachments) from a PDF —
+`wellfriendpdf detach` lists and extracts **embedded files** (attachments) from a PDF —
 the `pdfdetach`-equivalent. PDFs can carry arbitrary embedded files:
 spreadsheets, source data, other PDFs, and XML e-invoices (ZUGFeRD / Factur-X
 embed an XML invoice inside the PDF).
 
 ```
-oxide detach in.pdf --list                       # list attachments
-oxide detach in.pdf --list --json                # machine-readable listing
-oxide detach in.pdf --save 1   --output-dir out  # extract by index
-oxide detach in.pdf --name data.xml --output-dir out   # extract by name
-oxide detach in.pdf --save-all --output-dir out  # extract all
-oxide detach secret.pdf --save-all --password p  # encrypted input
+wellfriendpdf detach in.pdf --list                       # list attachments
+wellfriendpdf detach in.pdf --list --json                # machine-readable listing
+wellfriendpdf detach in.pdf --save 1   --output-dir out  # extract by index
+wellfriendpdf detach in.pdf --name data.xml --output-dir out   # extract by name
+wellfriendpdf detach in.pdf --save-all --output-dir out  # extract all
+wellfriendpdf detach secret.pdf --save-all --password p  # encrypted input
 ```
 
 ## Where embedded files are located
 
-The engine (`oxide_engine::attachments`) collects embedded files from **both**
+The engine (`wellfriendpdf_engine::attachments`) collects embedded files from **both**
 standard locations and dedupes by the embedded-file stream's object id (a file
 referenced from both places is listed once):
 
@@ -83,7 +83,7 @@ the byte payload lands as `<output-dir>/evil.txt` with nothing escaping.
 - **Empty**: a PDF with no attachments lists empty (not an error).
 - **Dedupe**: no duplicate stream ids in a listing.
 - **`pdfdetach` cross-check**: attachment counts agree across all fixtures, and
-  Oxide-extracted bytes equal `pdfdetach -saveall` bytes for the name-tree file.
+  Wellfriend-extracted bytes equal `pdfdetach -saveall` bytes for the name-tree file.
 
 ## Future enhancements
 

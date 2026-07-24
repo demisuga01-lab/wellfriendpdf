@@ -21,10 +21,10 @@ Run the text robustness benchmark with bounded workers, subprocess isolation,
 timeout, memory polling, and per-tool/file JSONL checkpointing:
 
 ```powershell
-cargo build --release -p oxide-cli
+cargo build --release -p wellfriendpdf-cli
 python robustness-benchmark\scripts\robustness_benchmark.py `
   --manifest robustness-benchmark\manifest.json `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --output-dir target\robustness-benchmark\latest `
   --report docs\robustness_benchmark.md `
   --max-workers 4 `

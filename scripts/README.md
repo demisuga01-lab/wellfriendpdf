@@ -2,7 +2,7 @@
 
 ## Poppler Comparison Harness
 
-`poppler_compare.py` runs Poppler and the Oxide CLI against the same PDFs and
+`poppler_compare.py` runs Poppler and the Wellfriend CLI against the same PDFs and
 records text similarity, render PSNR, `analyze` status, and `extract-images`
 status.
 

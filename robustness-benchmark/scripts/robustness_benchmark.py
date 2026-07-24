@@ -81,10 +81,10 @@ except Exception as e:
     sys.exit(2)
 '''
 
-PY_PDF_OXIDE_TEXT = r'''
+PY_PDF_WELLFRIENDPDF_TEXT = r'''
 import sys
 try:
-    from pdf_oxide import PdfDocument
+    from pdf_wellfriendpdf import PdfDocument
     doc=PdfDocument(sys.argv[1])
     parts=[]
     try:
@@ -205,9 +205,9 @@ def exe(name: str) -> str:
     return name + ".exe" if os.name == "nt" and not name.endswith(".exe") else name
 
 
-def default_oxide() -> Path:
-    rel = REPO / "target" / "release" / exe("oxide")
-    dbg = REPO / "target" / "debug" / exe("oxide")
+def default_wellfriendpdf() -> Path:
+    rel = REPO / "target" / "release" / exe("wellfriendpdf")
+    dbg = REPO / "target" / "debug" / exe("wellfriendpdf")
     return rel if rel.exists() else dbg
 
 
@@ -215,8 +215,8 @@ def pycmd(code: str, pdf: Path, out: Path, _args: argparse.Namespace) -> list[st
     return [sys.executable, "-c", code, str(pdf), str(out)]
 
 
-def oxide_text(pdf: Path, out: Path, args: argparse.Namespace) -> list[str]:
-    return [str(Path(args.oxide_bin)), "extract-text", str(pdf), "--output", str(out)]
+def wellfriendpdf_text(pdf: Path, out: Path, args: argparse.Namespace) -> list[str]:
+    return [str(Path(args.wellfriendpdf_bin)), "extract-text", str(pdf), "--output", str(out)]
 
 
 def poppler_text(pdf: Path, out: Path, _args: argparse.Namespace) -> list[str]:
@@ -239,8 +239,8 @@ def docling_text(pdf: Path, out: Path, _args: argparse.Namespace) -> list[str]:
 
 def all_tools() -> list[Tool]:
     return [
-        Tool("oxide", "local", None, None, oxide_text, "MIT OR Apache-2.0"),
-        Tool("pdf_oxide", "python", "pdf_oxide", "pdf_oxide", lambda p, o, a: pycmd(PY_PDF_OXIDE_TEXT, p, o, a), "MIT"),
+        Tool("wellfriendpdf", "local", None, None, wellfriendpdf_text, "MIT OR Apache-2.0"),
+        Tool("pdf_wellfriendpdf", "python", "pdf_wellfriendpdf", "pdf_wellfriendpdf", lambda p, o, a: pycmd(PY_PDF_WELLFRIENDPDF_TEXT, p, o, a), "MIT"),
         Tool("pymupdf", "python", "fitz", "PyMuPDF", lambda p, o, a: pycmd(PY_PYMUPDF_TEXT, p, o, a), "AGPL-3.0/commercial"),
         Tool("pypdfium2", "python", "pypdfium2", "pypdfium2", lambda p, o, a: pycmd(PY_PYPDFIUM2_TEXT, p, o, a), "Apache-2.0/BSD-3-Clause"),
         Tool("poppler", "cli", None, None, poppler_text, "GPL-2.0-or-later"),
@@ -262,14 +262,14 @@ def run_cap(cmd: list[str], timeout: int = 20) -> tuple[bool, str]:
         return False, str(err)
 
 
-def detect_tool(tool: Tool, oxide_bin: Path) -> dict[str, Any]:
-    if tool.name == "oxide":
-        ok = oxide_bin.exists()
+def detect_tool(tool: Tool, wellfriendpdf_bin: Path) -> dict[str, Any]:
+    if tool.name == "wellfriendpdf":
+        ok = wellfriendpdf_bin.exists()
         version = None
         if ok:
-            _ok, out = run_cap([str(oxide_bin), "--version"])
+            _ok, out = run_cap([str(wellfriendpdf_bin), "--version"])
             version = out.splitlines()[0] if out else None
-        return {"available": ok, "version": version, "reason": None if ok else f"missing {oxide_bin}", "license": tool.license}
+        return {"available": ok, "version": version, "reason": None if ok else f"missing {wellfriendpdf_bin}", "license": tool.license}
     if tool.name == "poppler":
         ok = shutil.which("pdftotext") is not None
         version = None
@@ -512,34 +512,34 @@ def aggregate(records: list[dict[str, Any]], manifest: dict[str, Any], availabil
         )
     tool_rows.sort(key=lambda r: (-r["survival_rate"], -r["parsed_pass_rate"], r["hard_failures"], r["tool"]))
 
-    oxide_fail_comp_survives = []
-    oxide_clean_error_comp_pass = []
+    wellfriendpdf_fail_comp_survives = []
+    wellfriendpdf_clean_error_comp_pass = []
     no_tool_parsed = []
     for file_id, items in sorted(by_file.items()):
-        ox = next((r for r in items if r["tool"] == "oxide"), None)
+        ox = next((r for r in items if r["tool"] == "wellfriendpdf"), None)
         if not ox:
             continue
-        competitor_pass = sorted(r["tool"] for r in items if r["tool"] != "oxide" and r["outcome"] == "pass")
-        competitor_survive = sorted(r["tool"] for r in items if r["tool"] != "oxide" and r.get("survived"))
+        competitor_pass = sorted(r["tool"] for r in items if r["tool"] != "wellfriendpdf" and r["outcome"] == "pass")
+        competitor_survive = sorted(r["tool"] for r in items if r["tool"] != "wellfriendpdf" and r.get("survived"))
         if ox["outcome"] in ("crash_panic", "timeout", "oom", "error") and competitor_survive:
-            oxide_fail_comp_survives.append(
+            wellfriendpdf_fail_comp_survives.append(
                 {
                     "file_id": file_id,
                     "path": ox["path"],
                     "stress_tag": ox.get("stress_tag"),
-                    "oxide_outcome": ox["outcome"],
-                    "oxide_error": trim(ox.get("stderr") or ox.get("error") or ox.get("stdout"), 300),
+                    "wellfriendpdf_outcome": ox["outcome"],
+                    "wellfriendpdf_error": trim(ox.get("stderr") or ox.get("error") or ox.get("stdout"), 300),
                     "competitors_survived": competitor_survive,
                     "root_cause": classify_root_cause(ox),
                 }
             )
         if ox["outcome"] == "clean_error" and competitor_pass:
-            oxide_clean_error_comp_pass.append(
+            wellfriendpdf_clean_error_comp_pass.append(
                 {
                     "file_id": file_id,
                     "path": ox["path"],
                     "stress_tag": ox.get("stress_tag"),
-                    "oxide_error": trim(ox.get("stderr") or ox.get("error") or ox.get("stdout"), 300),
+                    "wellfriendpdf_error": trim(ox.get("stderr") or ox.get("error") or ox.get("stdout"), 300),
                     "competitors_parsed": competitor_pass,
                     "root_cause": classify_root_cause(ox),
                 }
@@ -547,16 +547,16 @@ def aggregate(records: list[dict[str, Any]], manifest: dict[str, Any], availabil
         if not any(r["outcome"] == "pass" for r in items):
             no_tool_parsed.append({"file_id": file_id, "path": ox["path"], "stress_tag": ox.get("stress_tag")})
 
-    oxide_bad = [
+    wellfriendpdf_bad = [
         r
         for r in records
-        if r["tool"] == "oxide" and r["outcome"] in ("crash_panic", "timeout", "oom", "error", "clean_error")
+        if r["tool"] == "wellfriendpdf" and r["outcome"] in ("crash_panic", "timeout", "oom", "error", "clean_error")
     ]
-    root_counts = Counter(classify_root_cause(r) for r in oxide_bad)
+    root_counts = Counter(classify_root_cause(r) for r in wellfriendpdf_bad)
     hard_root_counts = Counter(
         classify_root_cause(r)
         for r in records
-        if r["tool"] == "oxide" and r["outcome"] in ("crash_panic", "timeout", "oom", "error")
+        if r["tool"] == "wellfriendpdf" and r["outcome"] in ("crash_panic", "timeout", "oom", "error")
     )
     fix_counts = hard_root_counts or root_counts
     prioritized = [
@@ -583,8 +583,8 @@ def aggregate(records: list[dict[str, Any]], manifest: dict[str, Any], availabil
         },
         "availability": availability,
         "tool_rows": tool_rows,
-        "oxide_fails_competitor_survives": oxide_fail_comp_survives[:100],
-        "oxide_clean_error_competitor_parses": oxide_clean_error_comp_pass[:100],
+        "wellfriendpdf_fails_competitor_survives": wellfriendpdf_fail_comp_survives[:100],
+        "wellfriendpdf_clean_error_competitor_parses": wellfriendpdf_clean_error_comp_pass[:100],
         "no_tool_parsed": no_tool_parsed[:100],
         "root_cause_counts": dict(root_counts.most_common()),
         "hard_root_cause_counts": dict(hard_root_counts.most_common()),
@@ -632,8 +632,8 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
     lines: list[str] = []
     w = lines.append
     tool_rows = summary["tool_rows"]
-    oxide = next((r for r in tool_rows if r["tool"] == "oxide"), None) or {}
-    leaders = [r for r in tool_rows if r["tool"] in {"pdf_oxide", "pymupdf", "pypdfium2", "poppler"}]
+    wellfriendpdf = next((r for r in tool_rows if r["tool"] == "wellfriendpdf"), None) or {}
+    leaders = [r for r in tool_rows if r["tool"] in {"pdf_wellfriendpdf", "pymupdf", "pypdfium2", "poppler"}]
     top3 = summary["prioritized_fix_list"][:3]
     top_text = ", ".join(f"{x['category']} ({x['files']})" for x in top3) if top3 else "no hard failure category found"
     label = summary.get("label") or "robustness corpus"
@@ -642,8 +642,8 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
     w("# Robustness Benchmark: Wild-PDF Survival\n")
     w(
         f"**Plain-language summary.** On this {label} robustness run, "
-        f"Oxide survived {oxide.get('survival_rate', '-')}% of attempted files and produced parsed text artifacts for "
-        f"{oxide.get('parsed_pass_rate', '-')}%. The main Prompt 2 targets are: {top_text}. "
+        f"Wellfriend survived {wellfriendpdf.get('survival_rate', '-')}% of attempted files and produced parsed text artifacts for "
+        f"{wellfriendpdf.get('parsed_pass_rate', '-')}%. The main Prompt 2 targets are: {top_text}. "
         "Clean handled errors are separated from crashes/timeouts/OOMs because a clean rejection is acceptable for malformed input, "
         "while a hard failure is not.\n"
     )
@@ -697,30 +697,30 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
     if leaders:
         w("Leader comparison set: " + ", ".join(f"{r['tool']} {r['survival_rate']}%" for r in leaders) + ".")
         w("")
-    w("## Oxide Hard-Fails But A Competitor Survives\n")
-    hard = summary["oxide_fails_competitor_survives"]
+    w("## Wellfriend Hard-Fails But A Competitor Survives\n")
+    hard = summary["wellfriendpdf_fails_competitor_survives"]
     if hard:
-        w(md(["file", "tag", "Oxide outcome", "root cause", "competitors survived", "Oxide error"], [
-            [x["path"], x["stress_tag"], x["oxide_outcome"], x["root_cause"], ", ".join(x["competitors_survived"]), x["oxide_error"]]
+        w(md(["file", "tag", "Wellfriend outcome", "root cause", "competitors survived", "Wellfriend error"], [
+            [x["path"], x["stress_tag"], x["wellfriendpdf_outcome"], x["root_cause"], ", ".join(x["competitors_survived"]), x["wellfriendpdf_error"]]
             for x in hard[:50]
         ]))
     else:
-        w("No Oxide crash/timeout/OOM/missing-output hard failures had a competitor survival on this run.")
+        w("No Wellfriend crash/timeout/OOM/missing-output hard failures had a competitor survival on this run.")
     w("")
-    w("## Oxide Clean-Errors But A Competitor Parses\n")
-    clean = summary["oxide_clean_error_competitor_parses"]
+    w("## Wellfriend Clean-Errors But A Competitor Parses\n")
+    clean = summary["wellfriendpdf_clean_error_competitor_parses"]
     if clean:
         w("These are not crash bugs, but they are best-effort recovery gaps for Prompt 2 if the category is common.\n")
-        w(md(["file", "tag", "root cause", "competitors parsed", "Oxide error"], [
-            [x["path"], x["stress_tag"], x["root_cause"], ", ".join(x["competitors_parsed"]), x["oxide_error"]]
+        w(md(["file", "tag", "root cause", "competitors parsed", "Wellfriend error"], [
+            [x["path"], x["stress_tag"], x["root_cause"], ", ".join(x["competitors_parsed"]), x["wellfriendpdf_error"]]
             for x in clean[:50]
         ]))
     else:
-        w("No Oxide clean-error/competitor-parse gaps were found.")
+        w("No Wellfriend clean-error/competitor-parse gaps were found.")
     w("")
-    w("## Oxide Root-Cause Grouping\n")
+    w("## Wellfriend Root-Cause Grouping\n")
     w("Clean errors are included here but are distinguished from hard failures.")
-    w(md(["category", "all Oxide non-pass files", "hard-failure subset"], [
+    w(md(["category", "all Wellfriend non-pass files", "hard-failure subset"], [
         [cat, count, summary["hard_root_cause_counts"].get(cat, 0)]
         for cat, count in summary["root_cause_counts"].items()
     ]))
@@ -752,7 +752,7 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
-    p.add_argument("--oxide-bin", default=str(default_oxide()))
+    p.add_argument("--wellfriendpdf-bin", default=str(default_wellfriendpdf()))
     p.add_argument("--output-dir", default=str(DEFAULT_OUTPUT))
     p.add_argument("--report", default=str(DEFAULT_REPORT))
     p.add_argument("--tools", help="comma-separated tool names; default runs all non-heavy installed tools")
@@ -781,8 +781,8 @@ def main() -> int:
     if args.limit:
         manifest["entries"] = manifest["entries"][: args.limit]
 
-    oxide_bin = Path(args.oxide_bin)
-    availability = {tool.name: detect_tool(tool, oxide_bin) for tool in all_tools()}
+    wellfriendpdf_bin = Path(args.wellfriendpdf_bin)
+    availability = {tool.name: detect_tool(tool, wellfriendpdf_bin) for tool in all_tools()}
     tools = wanted_tools(args, availability)
     active = {t.name for t in tools}
     for name, info in availability.items():

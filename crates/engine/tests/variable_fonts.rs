@@ -1,6 +1,6 @@
 //! OpenType variable-font (OTVar) support: instance selection + interpolated
 //! outlines and metrics, exercised through the **production** code path
-//! (`oxide_engine::fonts::variations` + `render::glyph_outline::*_var`).
+//! (`wellfriendpdf_engine::fonts::variations` + `render::glyph_outline::*_var`).
 //!
 //! Because the local PDF corpus contains **no** embedded variable fonts (every
 //! variable font that reaches these PDFs was pre-instanced by the producer), the
@@ -18,9 +18,9 @@
 //!   - determinism: same coordinates → same outline + advance;
 //!   - `VariationRequest::from_descriptor` maps PDF `/FontWeight` + `/FontStretch`.
 
-use oxide_engine::fonts::variations::{self, VariationRequest, AXIS_WGHT};
-use oxide_engine::render::glyph_outline::extract_glyph_path_for_simple_var;
-use oxide_engine::render::path::PathSegment;
+use wellfriendpdf_engine::fonts::variations::{self, VariationRequest, AXIS_WGHT};
+use wellfriendpdf_engine::render::glyph_outline::extract_glyph_path_for_simple_var;
+use wellfriendpdf_engine::render::path::PathSegment;
 
 mod synthfont;
 use synthfont::build_weight_variable_font;

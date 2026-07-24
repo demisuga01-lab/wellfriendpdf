@@ -2,7 +2,7 @@
 //! Minimal PDFs paint a shading via the `sh` operator and assert pixel
 //! colors at known points against hand-computed expectations.
 
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::ContentEngine;
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,
@@ -459,7 +459,7 @@ fn tensor_patch_type7_renders_bounded_patch() {
     );
 }
 
-fn count_painted_pixels(buf: &oxide_engine::PixelBuffer) -> usize {
+fn count_painted_pixels(buf: &wellfriendpdf_engine::PixelBuffer) -> usize {
     let mut painted = 0;
     for y in 0..buf.height as i32 {
         for x in 0..buf.width as i32 {

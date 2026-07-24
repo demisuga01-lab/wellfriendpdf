@@ -1,6 +1,6 @@
-# Oxide Performance Baseline (Mega-Prompt 10)
+# Wellfriend Performance Baseline (Mega-Prompt 10)
 
-This document records throughput and peak-memory numbers for the Oxide CLI and
+This document records throughput and peak-memory numbers for the Wellfriend CLI and
 engine. It complements the **parity** harness (`scripts/poppler_compare.py`),
 which measures correctness (text similarity, render PSNR) but **not**
 performance. Round 10 is a performance round: it parallelises multi-page text
@@ -13,7 +13,7 @@ of re-parsing the PDF per page. Output is unchanged (see
 
 Two complementary tools, both using the **release** build:
 
-1. **`scripts/perf_bench.py`** — times the real `oxide` CLI on representative
+1. **`scripts/perf_bench.py`** — times the real `wellfriendpdf` CLI on representative
    documents and samples peak working-set / RSS. It runs each case at **1
    thread** and at **N threads** (`RAYON_NUM_THREADS` pinned) so the
    parallelism win is explicit and apples-to-apples on a single build. Best
@@ -23,9 +23,9 @@ Two complementary tools, both using the **release** build:
    on Linux), so it is exact, not sampled-and-maybe-missed.
 
    ```
-   cargo build --release -p oxide-cli
-   py scripts/perf_bench.py --label oxide --repeats 5
-   # -> docs/perf_oxide_results.json + a printed table
+   cargo build --release -p wellfriendpdf-cli
+   py scripts/perf_bench.py --label wellfriendpdf --repeats 5
+   # -> docs/perf_wellfriendpdf_results.json + a printed table
    ```
 
 2. **`crates/engine/examples/render_bench.rs`** — renders every page of a PDF in
@@ -39,7 +39,7 @@ Two complementary tools, both using the **release** build:
      O(num_pages) copies of the parsed document at peak.
 
    ```
-   cargo build --release -p oxide-engine --examples
+   cargo build --release -p wellfriendpdf-engine --examples
    # measure peak memory of each mode with the perf_bench memory sampler or
    # /usr/bin/time -v; pixels are identical between modes by construction.
    ```
@@ -59,7 +59,7 @@ The two deltas this round targets are both measurable on **one** build:
 
 ## Measurement context
 
-- Machine / OS: _Windows 11, see `platform` field in `docs/perf_oxide_results.json`_
+- Machine / OS: _Windows 11, see `platform` field in `docs/perf_wellfriendpdf_results.json`_
 - Logical CPUs: _see `cpu_count` in the JSON_
 - Build: `cargo build --release` (optimised). Debug builds are not representative.
 - Reporting: best-of-N wall-clock time; max peak memory across runs.
@@ -76,13 +76,13 @@ The two deltas this round targets are both measurable on **one** build:
 
 Measured 2026-06-15 on Windows 11 (10.0.26200), 20 logical CPUs, rustc 1.95.0,
 release build. Best-of-3 wall-clock; peak from Win32 `PeakWorkingSetSize`. These
-Oxide-only 1-vs-N numbers come from the same run as the Oxide-vs-Poppler
-comparison in `docs/oxide_vs_poppler.md` (§D.3.2); raw data is
+Wellfriend-only 1-vs-N numbers come from the same run as the Wellfriend-vs-Poppler
+comparison in `docs/wellfriendpdf_vs_poppler.md` (§D.3.2); raw data is
 `docs/perf_compare_results.json`.
 
 ### Text extraction throughput — 1 vs N threads (Part B)
 
-`oxide extract-text`, `RAYON_NUM_THREADS` pinned to 1 and 20:
+`wellfriendpdf extract-text`, `RAYON_NUM_THREADS` pinned to 1 and 20:
 
 | document | pages | time @1 thread (s) | time @20 threads (s) | speedup |
 | --- | ---: | ---: | ---: | ---: |
@@ -96,19 +96,19 @@ parallel-text win, now quantified.
 
 ### Render peak memory — flat in page count (Part C)
 
-Peak working set of `oxide render` (all pages → PNG-in-ZIP), measured this
+Peak working set of `wellfriendpdf render` (all pages → PNG-in-ZIP), measured this
 session, vs Poppler `pdftoppm` on the same inputs:
 
-| document | pages | DPI | Oxide peak (MB) | Poppler peak (MB) |
+| document | pages | DPI | Wellfriend peak (MB) | Poppler peak (MB) |
 | --- | ---: | ---: | ---: | ---: |
 | 120pg | 120 | 150 | 21.4 | 21.9 |
 | 120pg | 120 | 300 | 63.9 | 46.0 |
 | 1.5 MB image PDF | 1 | 150 | 67.4 | 32.3 |
 
-The headline result: Oxide's render peak at 150 DPI is **21.4 MB for 120 pages —
+The headline result: Wellfriend's render peak at 150 DPI is **21.4 MB for 120 pages —
 the same as a single page** — confirming the Arc-shared engine keeps memory flat
 in page count (one parsed copy + per-page scratch, not O(pages) copies). At
-300 DPI Oxide holds more than Poppler (64 vs 46 MB) because it buffers pages for
+300 DPI Wellfriend holds more than Poppler (64 vs 46 MB) because it buffers pages for
 ZIP assembly while Poppler streams each page to disk; same reason it uses more on
 image decode.
 
@@ -117,7 +117,7 @@ image decode.
 > the flat-memory property above is demonstrated directly from the production
 > CLI render path instead, which is the user-facing path. The CLI render also
 > showed no 1-vs-N wall-clock speedup (page-level render parallelism is not
-> wired into the CLI) — see `docs/oxide_vs_poppler.md` §D.5.
+> wired into the CLI) — see `docs/wellfriendpdf_vs_poppler.md` §D.5.
 
 ## Prompt 4 Follow-Up (2026-06-23)
 

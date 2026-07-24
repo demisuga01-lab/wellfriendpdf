@@ -67,9 +67,9 @@ bindings/java/target/
 
 # wasm-bindgen / wasm-pack generated package for the browser demo. This is a
 # BUILD ARTIFACT (the compiled .wasm + JS glue + .d.ts), regenerated from
-# crates/oxide-wasm via the commands in examples/browser/README.md. Not tracked
+# crates/wellfriendpdf-wasm via the commands in examples/browser/README.md. Not tracked
 # (large, regenerable, and would otherwise drift from the Rust source).
-crates/oxide-wasm/examples/browser/pkg/
+crates/wellfriendpdf-wasm/examples/browser/pkg/
 
 # Fuzzing build/run outputs. Everything libFuzzer GENERATES at runtime
 # (mutated corpus entries, crash/timeout artifacts, lockfile, target dir) is

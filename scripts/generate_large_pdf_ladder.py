@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate deterministic synthetic large-PDF fixtures for Oxide profiling.
+"""Generate deterministic synthetic large-PDF fixtures for Wellfriend profiling.
 
 The generator writes PDF bytes incrementally so multi-GB fixtures can be created
 without holding the PDF in memory. Fixtures are intentionally simple: one page

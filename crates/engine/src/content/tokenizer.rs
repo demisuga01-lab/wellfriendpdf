@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::io::Read;
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContentToken {
@@ -188,7 +188,7 @@ impl<'a> ContentTokenizer<'a> {
             }
         }
 
-        Err(OxideError::ParseError(
+        Err(WellfriendError::ParseError(
             "unterminated content literal string".to_string(),
         ))
     }
@@ -251,7 +251,7 @@ impl<'a> ContentTokenizer<'a> {
             }
         }
 
-        Err(OxideError::ParseError(
+        Err(WellfriendError::ParseError(
             "unterminated content hex string".to_string(),
         ))
     }
@@ -459,11 +459,11 @@ impl<R: Read> StreamingContentTokenizer<R> {
         if saw_dot {
             text.parse::<f64>()
                 .map(ContentToken::Real)
-                .map_err(|_| OxideError::ParseError("invalid content real".to_string()))
+                .map_err(|_| WellfriendError::ParseError("invalid content real".to_string()))
         } else {
             text.parse::<i64>()
                 .map(ContentToken::Integer)
-                .map_err(|_| OxideError::ParseError("invalid content integer".to_string()))
+                .map_err(|_| WellfriendError::ParseError("invalid content integer".to_string()))
         }
     }
 
@@ -517,7 +517,7 @@ impl<R: Read> StreamingContentTokenizer<R> {
             }
         }
 
-        Err(OxideError::ParseError(
+        Err(WellfriendError::ParseError(
             "unterminated content literal string".to_string(),
         ))
     }
@@ -581,7 +581,7 @@ impl<R: Read> StreamingContentTokenizer<R> {
             }
         }
 
-        Err(OxideError::ParseError(
+        Err(WellfriendError::ParseError(
             "unterminated content hex string".to_string(),
         ))
     }
@@ -724,7 +724,10 @@ impl<R: Read> StreamingContentTokenizer<R> {
 
     fn read_raw_byte(&mut self) -> Result<Option<u8>> {
         if self.pos >= self.len {
-            self.len = self.reader.read(&mut self.buffer).map_err(OxideError::Io)?;
+            self.len = self
+                .reader
+                .read(&mut self.buffer)
+                .map_err(WellfriendError::Io)?;
             self.pos = 0;
             if self.len == 0 {
                 return Ok(None);

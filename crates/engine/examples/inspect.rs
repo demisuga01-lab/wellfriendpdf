@@ -1,12 +1,14 @@
-use oxide_engine::content::{ContentParser, GraphicsState};
-use oxide_engine::{
-    decode_stream, ContentEngine, OxideError, PdfDocument, PdfObject, Result, TextExtractor,
+use wellfriendpdf_engine::content::{ContentParser, GraphicsState};
+use wellfriendpdf_engine::{
+    decode_stream, ContentEngine, PdfDocument, PdfObject, Result, TextExtractor, WellfriendError,
 };
 
 fn main() -> Result<()> {
     env_logger::init();
     let path = std::env::args().nth(1).ok_or_else(|| {
-        OxideError::MalformedPdf("usage: cargo run --example inspect -- <pdf-path>".to_string())
+        WellfriendError::MalformedPdf(
+            "usage: cargo run --example inspect -- <pdf-path>".to_string(),
+        )
     })?;
     let document = PdfDocument::open_path(&path)?;
     let engine = ContentEngine::open_path(&path)?;
@@ -88,12 +90,12 @@ fn page_tree_root(document: &PdfDocument) -> Result<(u32, u16)> {
     let reader = document.reader();
     let (root_number, root_generation) = reader
         .root_reference()
-        .ok_or_else(|| OxideError::MalformedPdf("trailer is missing /Root".to_string()))?;
+        .ok_or_else(|| WellfriendError::MalformedPdf("trailer is missing /Root".to_string()))?;
     let catalog = document.get_catalog()?;
     let _ = (root_number, root_generation);
     catalog
         .get_reference("Pages")
-        .ok_or_else(|| OxideError::MalformedPdf("/Catalog is missing /Pages".to_string()))
+        .ok_or_else(|| WellfriendError::MalformedPdf("/Catalog is missing /Pages".to_string()))
 }
 
 fn format_reference(reference: Option<(u32, u16)>) -> Option<String> {

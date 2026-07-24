@@ -1,6 +1,6 @@
 use std::io::Cursor;
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{
     apply_filter_bytes_with_limits, decode_stream_lossless_with_limits, DecodeLimits,
     StreamDecodeStatus,
@@ -87,7 +87,7 @@ impl ImageDecoder {
         limits: &DecodeLimits,
     ) -> Result<RawImage> {
         if image.object_number == 0 {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "inline image decoding via decode() is not supported; use decode_inline() with the raw pixel bytes"
                     .to_string(),
             ));
@@ -97,7 +97,7 @@ impl ImageDecoder {
         let (dict, raw) = match obj {
             PdfObject::Stream { dict, raw } => (dict, raw),
             _ => {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "image object {} is not a stream",
                     image.object_number
                 )))
@@ -227,7 +227,7 @@ impl ImageDecoder {
         limits: &DecodeLimits,
     ) -> Result<RawImage> {
         if decode_params.len() != filters.len() {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "inline DecodeParms count {} does not match filter count {}",
                 decode_params.len(),
                 filters.len()
@@ -241,7 +241,7 @@ impl ImageDecoder {
                 "DCTDecode" | "DCT" | "JPXDecode" | "CCITTFaxDecode" | "CCF" | "JBIG2Decode"
             ) {
                 if index + 1 != filters.len() {
-                    return Err(OxideError::UnsupportedFeature(
+                    return Err(WellfriendError::UnsupportedFeature(
                         "inline image codec filter must be the final filter".to_string(),
                     ));
                 }
@@ -286,7 +286,7 @@ impl ImageDecoder {
     /// Decode a JPEG image reference directly from its original stream bytes.
     pub fn decode_jpeg_image(image: &ImageReference, reader: &PdfReader) -> Result<RawImage> {
         let raw = ImageLocator::get_stream_bytes(image, reader)?.ok_or_else(|| {
-            OxideError::UnsupportedFeature(
+            WellfriendError::UnsupportedFeature(
                 "inline JPEG images not supported via this path".to_string(),
             )
         })?;
@@ -309,18 +309,18 @@ impl ImageDecoder {
     /// Decode JPEG bytes and return pixels plus width, height, channel count.
     pub fn decode_jpeg_with_info(jpeg_bytes: &[u8]) -> Result<(Vec<u8>, u32, u32, u8)> {
         let mut decoder = jpeg_decoder::Decoder::new(Cursor::new(jpeg_bytes));
-        decoder
-            .read_info()
-            .map_err(|e| OxideError::MalformedPdf(format!("JPEG metadata decode failed: {e}")))?;
+        decoder.read_info().map_err(|e| {
+            WellfriendError::MalformedPdf(format!("JPEG metadata decode failed: {e}"))
+        })?;
         let info = decoder.info().ok_or_else(|| {
-            OxideError::MalformedPdf("JPEG decode: no metadata after read_info".to_string())
+            WellfriendError::MalformedPdf("JPEG decode: no metadata after read_info".to_string())
         })?;
         let channels = match info.pixel_format {
             jpeg_decoder::PixelFormat::L8 => 1,
             jpeg_decoder::PixelFormat::RGB24 => 3,
             jpeg_decoder::PixelFormat::CMYK32 => 4,
             other => {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "unsupported JPEG pixel format: {other:?}"
                 )))
             }
@@ -332,7 +332,7 @@ impl ImageDecoder {
         decoder.set_max_decoding_buffer_size(max_decoded);
         let pixels = decoder
             .decode()
-            .map_err(|e| OxideError::MalformedPdf(format!("JPEG decode failed: {e}")))?;
+            .map_err(|e| WellfriendError::MalformedPdf(format!("JPEG decode failed: {e}")))?;
         Ok((pixels, width, height, channels))
     }
 
@@ -347,7 +347,7 @@ impl ImageDecoder {
             8 => Ok(raw),
             16 => Ok(raw.chunks(2).map(|chunk| chunk[0]).collect()),
             4 | 2 | 1 => Ok(unpack_subbyte_rows(&raw, width, height, channels, bpc)),
-            other => Err(OxideError::UnsupportedFeature(format!(
+            other => Err(WellfriendError::UnsupportedFeature(format!(
                 "unsupported bits_per_component: {other}"
             ))),
         }
@@ -415,7 +415,7 @@ impl ImageDecoder {
             other => {
                 let _ = reader;
                 let _ = dict;
-                Err(OxideError::UnsupportedFeature(format!(
+                Err(WellfriendError::UnsupportedFeature(format!(
                     "unknown image filter '{other}'"
                 )))
             }
@@ -463,7 +463,7 @@ impl ImageDecoder {
             });
         }
         if decompressed.is_empty() {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "image {width}x{height} decoded to empty pixel data"
             )));
         }
@@ -533,7 +533,7 @@ impl ImageDecoder {
                             3 => (normalised, 3u8),
                             4 => (ColorSpaceConverter::cmyk_to_rgb(&normalised), 3u8),
                             _ => {
-                                return Err(OxideError::UnsupportedFeature(format!(
+                                return Err(WellfriendError::UnsupportedFeature(format!(
                                     "ICCBased with {n} components not supported"
                                 )))
                             }
@@ -650,7 +650,7 @@ impl ColorSpaceConverter {
                         1 => Ok((pixels, 1)),
                         3 => Ok((pixels, 3)),
                         4 => Ok((Self::cmyk_to_rgb(&pixels), 3)),
-                        _ => Err(OxideError::UnsupportedFeature(format!(
+                        _ => Err(WellfriendError::UnsupportedFeature(format!(
                             "ICCBased with {n} components not supported"
                         ))),
                     }
@@ -809,9 +809,9 @@ pub(crate) fn ensure_decode_budget(width: u32, height: u32, channels: u8) -> Res
     let pixels = u64::from(width).saturating_mul(u64::from(height));
     let cap = crate::engine::max_decode_pixels();
     if pixels > cap {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "image {width}x{height} = {pixels} pixels exceeds decode cap of {cap} pixels \
-             (raise OXIDE_MAX_DECODE_PIXELS if this is a legitimate image)"
+             (raise WELLFRIENDPDF_MAX_DECODE_PIXELS if this is a legitimate image)"
         )));
     }
     // Guard the byte product against `usize` overflow (notably on 32-bit / wasm32).
@@ -821,7 +821,7 @@ pub(crate) fn ensure_decode_budget(width: u32, height: u32, channels: u8) -> Res
         .and_then(|bytes| usize::try_from(bytes).ok())
         .is_none()
     {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "image {width}x{height} x{channels} channels overflows addressable memory"
         )));
     }
@@ -880,7 +880,7 @@ fn jbig2_globals(
             match decoded.status {
                 StreamDecodeStatus::Complete => Ok(Some(decoded.data)),
                 StreamDecodeStatus::StoppedAtImageFilter(filter) => {
-                    Err(OxideError::UnsupportedFeature(format!(
+                    Err(WellfriendError::UnsupportedFeature(format!(
                         "JBIG2Globals stream stopped at image filter {filter}"
                     )))
                 }
@@ -888,7 +888,7 @@ fn jbig2_globals(
         }
         PdfObject::String(bytes) => Ok(Some(bytes)),
         PdfObject::Null => Ok(None),
-        other => Err(OxideError::MalformedPdf(format!(
+        other => Err(WellfriendError::MalformedPdf(format!(
             "JBIG2Decode /JBIG2Globals must resolve to a stream, got {}",
             other.variant_name()
         ))),
@@ -906,7 +906,7 @@ fn image_decode_params(
         .iter()
         .position(|filter| same_filter(filter, target_filter))
         .ok_or_else(|| {
-            OxideError::MalformedPdf(format!(
+            WellfriendError::MalformedPdf(format!(
                 "image stream filter list does not contain stopped filter {target_filter}"
             ))
         })?;
@@ -927,7 +927,7 @@ fn stream_filter_names(dict: &PdfDictionary, reader: Option<&PdfReader>) -> Resu
                 match resolved_object(&item, reader)? {
                     PdfObject::Name(name) => names.push(name),
                     other => {
-                        return Err(OxideError::MalformedPdf(format!(
+                        return Err(WellfriendError::MalformedPdf(format!(
                             "filter array contains {}",
                             other.variant_name()
                         )));
@@ -937,7 +937,7 @@ fn stream_filter_names(dict: &PdfDictionary, reader: Option<&PdfReader>) -> Resu
             Ok(names)
         }
         PdfObject::Null => Ok(Vec::new()),
-        other => Err(OxideError::MalformedPdf(format!(
+        other => Err(WellfriendError::MalformedPdf(format!(
             "Filter must be a name or array, got {}",
             other.variant_name()
         ))),
@@ -969,7 +969,7 @@ fn stream_decode_params(
                     PdfObject::Null => out.push(None),
                     PdfObject::Dictionary(params) => out.push(Some(params)),
                     other => {
-                        return Err(OxideError::MalformedPdf(format!(
+                        return Err(WellfriendError::MalformedPdf(format!(
                             "DecodeParms array contains {}",
                             other.variant_name()
                         )));
@@ -981,7 +981,7 @@ fn stream_decode_params(
             }
             Ok(out)
         }
-        other => Err(OxideError::MalformedPdf(format!(
+        other => Err(WellfriendError::MalformedPdf(format!(
             "DecodeParms must be a dictionary or array, got {}",
             other.variant_name()
         ))),
@@ -1010,7 +1010,7 @@ fn canonical_filter_name(name: &str) -> &str {
 fn int_param(params: Option<&PdfDictionary>, key: &str, default: i64) -> Result<i64> {
     match params.and_then(|dict| dict.get(key)) {
         Some(PdfObject::Integer(value)) => Ok(*value),
-        Some(other) => Err(OxideError::MalformedPdf(format!(
+        Some(other) => Err(WellfriendError::MalformedPdf(format!(
             "CCITTFaxDecode /{key} must be an integer, got {}",
             other.variant_name()
         ))),
@@ -1026,7 +1026,7 @@ fn u32_param(
 ) -> Result<u32> {
     let value = int_param(params, key, i64::from(default))?;
     if value < 0 || (!allow_zero && value == 0) {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "CCITTFaxDecode /{key} must be {}",
             if allow_zero {
                 "nonnegative"
@@ -1036,7 +1036,7 @@ fn u32_param(
         )));
     }
     u32::try_from(value)
-        .map_err(|_| OxideError::MalformedPdf(format!("CCITTFaxDecode /{key} is too large")))
+        .map_err(|_| WellfriendError::MalformedPdf(format!("CCITTFaxDecode /{key} is too large")))
 }
 
 fn bool_param(params: Option<&PdfDictionary>, key: &str, default: bool) -> Result<bool> {
@@ -1044,7 +1044,7 @@ fn bool_param(params: Option<&PdfDictionary>, key: &str, default: bool) -> Resul
         Some(PdfObject::Boolean(value)) => Ok(*value),
         Some(PdfObject::Name(name)) if name.eq_ignore_ascii_case("true") => Ok(true),
         Some(PdfObject::Name(name)) if name.eq_ignore_ascii_case("false") => Ok(false),
-        Some(other) => Err(OxideError::MalformedPdf(format!(
+        Some(other) => Err(WellfriendError::MalformedPdf(format!(
             "CCITTFaxDecode /{key} must be a boolean, got {}",
             other.variant_name()
         ))),
@@ -1310,7 +1310,7 @@ mod tests {
         // 60000 x 60000 = 3.6e9 pixels, far over the 100M default cap.
         let err = ensure_decode_budget(60_000, 60_000, 1).unwrap_err();
         assert!(
-            matches!(err, OxideError::MalformedPdf(_)),
+            matches!(err, WellfriendError::MalformedPdf(_)),
             "huge dimensions must be a clean MalformedPdf error, got {err:?}"
         );
         // A legitimately large image (12 MP) is well under the cap and allowed.

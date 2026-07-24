@@ -1,9 +1,9 @@
-package org.oxidepdf.packagesmoke;
+package io.wellfriendpdf.packagesmoke;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
 
-import org.oxidepdf.Oxide;
+import io.wellfriendpdf.Wellfriend;
 
 public final class PackageSmoke {
     private PackageSmoke() {
@@ -17,23 +17,23 @@ public final class PackageSmoke {
         if (!Files.exists(fixture)) {
             throw new IllegalArgumentException("fixture does not exist: " + fixture);
         }
-        Oxide.Document.class.getMethod("open", Path.class, String.class);
-        Oxide.Document.class.getMethod("open", byte[].class, String.class);
-        Oxide.Document.class.getMethod("openPubSec", byte[].class, byte[].class, byte[].class);
-        Oxide.Document.class.getMethod("openPubSecPfx", byte[].class, byte[].class, byte[].class);
-        Oxide.Document.class.getMethod("pubsecEncryptPdf", byte[].class);
-        Oxide.Document.class.getMethod("pdfMacCreate");
-        Oxide.Document.class.getMethod("validatePdfaStandardsJson", String.class);
-        Oxide.Document.class.getMethod("validatePdfuaStandardsJson", String.class);
-        Oxide.Document.class.getMethod("validatePdfxStandardsJson", String.class);
-        Oxide.Document.class.getMethod("validateAllStandardsJson", String.class);
-        Oxide.Document.class.getMethod("incrementalSigningPlanJson", String.class, String.class, long.class, int.class);
-        Oxide.Document.class.getMethod("signIncremental", String.class, String.class, long.class, int.class, String.class, String.class);
-        if (Oxide.engineVersion().isBlank() || Oxide.abiVersion() < 1) {
+        WellfriendPdf.Document.class.getMethod("open", Path.class, String.class);
+        WellfriendPdf.Document.class.getMethod("open", byte[].class, String.class);
+        WellfriendPdf.Document.class.getMethod("openPubSec", byte[].class, byte[].class, byte[].class);
+        WellfriendPdf.Document.class.getMethod("openPubSecPfx", byte[].class, byte[].class, byte[].class);
+        WellfriendPdf.Document.class.getMethod("pubsecEncryptPdf", byte[].class);
+        WellfriendPdf.Document.class.getMethod("pdfMacCreate");
+        WellfriendPdf.Document.class.getMethod("validatePdfaStandardsJson", String.class);
+        WellfriendPdf.Document.class.getMethod("validatePdfuaStandardsJson", String.class);
+        WellfriendPdf.Document.class.getMethod("validatePdfxStandardsJson", String.class);
+        WellfriendPdf.Document.class.getMethod("validateAllStandardsJson", String.class);
+        WellfriendPdf.Document.class.getMethod("incrementalSigningPlanJson", String.class, String.class, long.class, int.class);
+        WellfriendPdf.Document.class.getMethod("signIncremental", String.class, String.class, long.class, int.class, String.class, String.class);
+        if (WellfriendPdf.engineVersion().isBlank() || WellfriendPdf.abiVersion() < 1) {
             throw new AssertionError("version queries failed");
         }
 
-        try (Oxide.Document doc = Oxide.Document.open(fixture, "")) {
+        try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(fixture, "")) {
             if (doc.pageCount() < 1) {
                 throw new AssertionError("expected at least one page");
             }
@@ -69,33 +69,33 @@ public final class PackageSmoke {
                     || !doc.prompt21ObjectStreamReportJson().contains("prompt21_object_stream_report")) {
                 throw new AssertionError("Prompt 21 report surfaces missing");
             }
-            Oxide.BinaryResult prompt21Packed = doc.prompt21PackObjectStreams();
+            WellfriendPdf.BinaryResult prompt21Packed = doc.prompt21PackObjectStreams();
             if (prompt21Packed.bytes().length == 0
                     || !prompt21Packed.reportJson().contains("prompt21_pack_object_streams_report")) {
                 throw new AssertionError("Prompt 21 packed output/report missing");
             }
-            Oxide.BinaryResult sanitized = doc.sanitize("balanced");
+            WellfriendPdf.BinaryResult sanitized = doc.sanitize("balanced");
             if (sanitized.bytes().length == 0 || !sanitized.reportJson().contains("sanitize_report")) {
                 throw new AssertionError("sanitize output/report missing");
             }
-            Oxide.BinaryResult pdfMac = doc.pdfMacCreate();
+            WellfriendPdf.BinaryResult pdfMac = doc.pdfMacCreate();
             if (pdfMac.bytes().length == 0 || !pdfMac.reportJson().contains("pdf_mac_create")) {
                 throw new AssertionError("PDF-MAC output/report missing");
             }
-            try (Oxide.Document pdfMacDoc = Oxide.Document.open(pdfMac.bytes())) {
+            try (WellfriendPdf.Document pdfMacDoc = WellfriendPdf.Document.open(pdfMac.bytes())) {
                 if (!pdfMacDoc.pdfMacVerifyJson().contains("\"state\":\"valid\"")) {
                     throw new AssertionError("PDF-MAC verification did not return valid");
                 }
             }
         }
 
-        String feature = Oxide.featureReportJson();
+        String feature = WellfriendPdf.featureReportJson();
         if (!feature.contains("engine_tile_progressive_resume_supported")
                 || !feature.contains("engine_render_cancellation_supported_binding_tokens_later")) {
             throw new AssertionError("feature report missing Prompt 09 progress/cancellation posture");
         }
         if (!feature.contains("\"prompt07b_transparency_closure\"")
-                || !feature.contains("\"oxide_outlier_failures\":0")) {
+                || !feature.contains("\"wellfriendpdf_outlier_failures\":0")) {
             throw new AssertionError("feature report missing Prompt 07B transparency closure posture");
         }
         if (!feature.contains("\"prompt08_text_clipping_shading_patterns\"")
@@ -168,7 +168,7 @@ public final class PackageSmoke {
         }
         if (!feature.contains("\"prompt13_full_overprint_prepress_closeout\"")
                 || !feature.contains("\"additive_feature_report_prompt13\"")
-                || !feature.contains("\"oxide_outlier_failures\":0")) {
+                || !feature.contains("\"wellfriendpdf_outlier_failures\":0")) {
             throw new AssertionError("feature report missing Prompt 13 overprint prepress closeout posture");
         }
         if (!feature.contains("\"prompt14_semantic_intelligence_parenttree_cjk_ml_layout\"")
@@ -196,13 +196,13 @@ public final class PackageSmoke {
         if (!feature.contains("\"prompt21_raster_vector_font_persistent_object_stream\"")
                 || !feature.contains("\"object_stream_packing\"")
                 || !feature.contains("\"writer_mode\":\"XrefStreamWithObjStm\"")
-                || !Oxide.prompt21HistoryReportJson().contains("prompt21_history_report")) {
+                || !WellfriendPdf.prompt21HistoryReportJson().contains("prompt21_history_report")) {
             throw new AssertionError("feature report missing Prompt 21 closure posture");
         }
         if (!feature.contains("\"prompt23_deterministic_writer_pubsec_aesgcm\"")
                 || !feature.contains("\"public_key_handler_status\":\"implemented_with_limits\"")
                 || !feature.contains("\"aes_gcm_decrypt_status\":\"implemented_with_limits\"")
-                || !Oxide.cryptoTamperTestJson().contains("crypto_tamper_test")) {
+                || !WellfriendPdf.cryptoTamperTestJson().contains("crypto_tamper_test")) {
             throw new AssertionError("feature report missing Prompt 23 writer/crypto posture");
         }
     }

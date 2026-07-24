@@ -1,18 +1,18 @@
 # Third-Party Licenses & Attribution (NOTICE)
 
-This is the consolidated attribution document for the Oxide PDF Toolkit. It
+This is the consolidated attribution document for the Wellfriend PDF SDK Toolkit. It
 covers (1) the project's own license, (2) the bundled fonts, and (3) the Rust
 crate dependency tree. Generated/verified with `cargo metadata` and the fonts'
 embedded license metadata.
 
-## 1. Oxide's own license
+## 1. Wellfriend's own license
 
-The Oxide PDF Toolkit (`oxide-engine`, `oxide-cli`, `oxide-server`) is licensed
+The Wellfriend PDF SDK Toolkit (`wellfriendpdf-engine`, `wellfriendpdf-cli`, `wellfriendpdf-server`) is licensed
 under **`MIT OR Apache-2.0`** at the user's option. See [`LICENSE-MIT`](../LICENSE-MIT)
 and [`LICENSE-APACHE`](../LICENSE-APACHE) at the repository root. Each crate
 declares `license = "MIT OR Apache-2.0"` in its `Cargo.toml`.
 
-## 2. Bundled fonts (embedded into `oxide-engine`)
+## 2. Bundled fonts (embedded into `wellfriendpdf-engine`)
 
 These font programs are embedded as fallback/substitution fonts (see
 [`crates/engine/fonts/README.md`](../crates/engine/fonts/README.md)).
@@ -28,7 +28,7 @@ The full license texts ship in-repo as those licenses require.
 ## 3. Rust crate dependencies
 
 A `cargo metadata` scan of the **entire resolved dependency tree** (260
-third-party crates, excluding Oxide's own workspace crates) yields the following
+third-party crates, excluding Wellfriend's own workspace crates) yields the following
 license distribution — **all permissive, no forced copyleft**:
 
 | Count | License (SPDX) |
@@ -59,12 +59,12 @@ license distribution — **all permissive, no forced copyleft**:
 
 **Conclusion:** the dependency tree is fully compatible with the project's
 `MIT OR Apache-2.0` license. This is the differentiator vs Poppler's GPLv2 —
-Oxide can be embedded in proprietary software without copyleft obligations.
+Wellfriend can be embedded in proprietary software without copyleft obligations.
 
 ## 4. C-toolchain note (pure-Rust status)
 
-The library (`oxide-engine`) pulls **no C** at runtime. The `oxide-cli` and
-`oxide-server` binaries pull three C-backed crates (`bzip2-sys`, `lzma-sys`,
+The library (`wellfriendpdf-engine`) pulls **no C** at runtime. The `wellfriendpdf-cli` and
+`wellfriendpdf-server` binaries pull three C-backed crates (`bzip2-sys`, `lzma-sys`,
 `zstd-sys`) **only** via `zip`'s default features — a build-time C dependency
 that is a one-line fix (`zip = { default-features = false, features =
 ["deflate"] }`). No `ring`/`openssl`/`cmake` anywhere. See the positioning doc

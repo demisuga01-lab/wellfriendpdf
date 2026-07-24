@@ -22,7 +22,7 @@ GA Prompt 3 broadened the compliance API beyond PDF/A-1b and PDF/A-2b.
 Generated with:
 
 ```powershell
-cargo run -p oxide-engine --example compliance -- target\tmp\pdfa_ga3
+cargo run -p wellfriendpdf-engine --example compliance -- target\tmp\pdfa_ga3
 ```
 
 qpdf 12.3.2:

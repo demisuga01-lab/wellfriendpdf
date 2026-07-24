@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Renderer Benchmark 0A: Oxide renderer compatibility and safety suite."""
+"""Renderer Benchmark 0A: Wellfriend renderer compatibility and safety suite."""
 
 from __future__ import annotations
 
@@ -262,8 +262,8 @@ def get_poppler_info(entry: dict[str, Any], poppler: dict[str, str], timeout: in
     }
 
 
-def get_oxide_info(entry: dict[str, Any], oxide_bin: str, timeout: int, mem_mb: int | None) -> dict[str, Any]:
-    cmd = [oxide_bin, "info", entry["absolute_path"], "--json"]
+def get_wellfriendpdf_info(entry: dict[str, Any], wellfriendpdf_bin: str, timeout: int, mem_mb: int | None) -> dict[str, Any]:
+    cmd = [wellfriendpdf_bin, "info", entry["absolute_path"], "--json"]
     result = run_monitored(cmd, timeout_sec=timeout, max_memory_mb=mem_mb)
     parsed: dict[str, Any] | None = None
     if result.ok:
@@ -303,7 +303,7 @@ def render_poppler(
     mem_mb: int | None,
 ) -> dict[str, Any]:
     prefix = work_dir / "poppler_page"
-    # `-cropbox`: Oxide renders the CropBox (MediaBox ∩ CropBox) by default — the
+    # `-cropbox`: Wellfriend renders the CropBox (MediaBox ∩ CropBox) by default — the
     # spec/viewer default that pdfinfo, PDFium, Chrome, and `pdftocairo` agree on.
     # `pdftoppm` alone defaults to the MediaBox, so without this flag the two
     # renderers size differently on every page that has a CropBox (≈16 corpus
@@ -328,19 +328,19 @@ def render_poppler(
     return {"command": result.compact(), "pages": rendered, "parse_errors": errors}
 
 
-def render_oxide(
+def render_wellfriendpdf(
     entry: dict[str, Any],
-    oxide_bin: str,
+    wellfriendpdf_bin: str,
     work_dir: Path,
     dpi: int,
     pages: int | None,
     timeout: int,
     mem_mb: int | None,
-    suffix: str = "oxide",
+    suffix: str = "wellfriendpdf",
 ) -> dict[str, Any]:
     output_zip = work_dir / f"{suffix}.zip"
     cmd = [
-        oxide_bin,
+        wellfriendpdf_bin,
         "render",
         entry["absolute_path"],
         "--output",
@@ -605,9 +605,9 @@ def resample_nearest(image: RGBImage, target_w: int, target_h: int) -> RGBImage:
     return RGBImage(width=target_w, height=target_h, pixels=bytes(out))
 
 
-def compare_images(oxide: RenderedPage, ref: RenderedPage, thresholds: dict[str, float]) -> dict[str, Any]:
-    dim_delta = max(abs(oxide.image.width - ref.image.width), abs(oxide.image.height - ref.image.height))
-    dimension_match = oxide.image.width == ref.image.width and oxide.image.height == ref.image.height
+def compare_images(wellfriendpdf: RenderedPage, ref: RenderedPage, thresholds: dict[str, float]) -> dict[str, Any]:
+    dim_delta = max(abs(wellfriendpdf.image.width - ref.image.width), abs(wellfriendpdf.image.height - ref.image.height))
+    dimension_match = wellfriendpdf.image.width == ref.image.width and wellfriendpdf.image.height == ref.image.height
     dimension_rounding_ok = dim_delta <= thresholds["dimension_rounding_px"]
     real_dimension_mismatch = not dimension_match and not dimension_rounding_ok
 
@@ -618,22 +618,22 @@ def compare_images(oxide: RenderedPage, ref: RenderedPage, thresholds: dict[str,
     # into the pixel-difference bucket on top of the dimension flag (triple
     # counting). After normalization the metrics are content-aligned and the page
     # is attributed to its PRIMARY cause (dimension_mismatch) below.
-    cmp_oxide, cmp_ref = oxide.image, ref.image
+    cmp_wellfriendpdf, cmp_ref = wellfriendpdf.image, ref.image
     if real_dimension_mismatch:
-        target_w = min(oxide.image.width, ref.image.width)
-        target_h = min(oxide.image.height, ref.image.height)
-        cmp_oxide = resample_nearest(oxide.image, target_w, target_h)
+        target_w = min(wellfriendpdf.image.width, ref.image.width)
+        target_h = min(wellfriendpdf.image.height, ref.image.height)
+        cmp_wellfriendpdf = resample_nearest(wellfriendpdf.image, target_w, target_h)
         cmp_ref = resample_nearest(ref.image, target_w, target_h)
-    width, height = crop_pair(cmp_oxide, cmp_ref)
+    width, height = crop_pair(cmp_wellfriendpdf, cmp_ref)
 
-    metrics = pixel_metrics(cmp_oxide, cmp_ref, width, height)
-    metrics["ssim"] = round(ssim_global(cmp_oxide, cmp_ref, width, height), 6)
-    metrics["phash_distance"] = hamming(phash(cmp_oxide), phash(cmp_ref))
-    metrics["edge_mae"] = round(edge_mae(cmp_oxide, cmp_ref, width, height), 6)
-    metrics["blank_score_oxide"] = round(blank_score(oxide.image), 6)
+    metrics = pixel_metrics(cmp_wellfriendpdf, cmp_ref, width, height)
+    metrics["ssim"] = round(ssim_global(cmp_wellfriendpdf, cmp_ref, width, height), 6)
+    metrics["phash_distance"] = hamming(phash(cmp_wellfriendpdf), phash(cmp_ref))
+    metrics["edge_mae"] = round(edge_mae(cmp_wellfriendpdf, cmp_ref, width, height), 6)
+    metrics["blank_score_wellfriendpdf"] = round(blank_score(wellfriendpdf.image), 6)
     metrics["blank_score_reference"] = round(blank_score(ref.image), 6)
-    metrics["large_region_score"] = round(large_region_score(cmp_oxide, cmp_ref, width, height), 6)
-    metrics["oxide_size"] = [oxide.image.width, oxide.image.height]
+    metrics["large_region_score"] = round(large_region_score(cmp_wellfriendpdf, cmp_ref, width, height), 6)
+    metrics["wellfriendpdf_size"] = [wellfriendpdf.image.width, wellfriendpdf.image.height]
     metrics["reference_size"] = [ref.image.width, ref.image.height]
     metrics["compared_size"] = [width, height]
     metrics["dimension_match"] = dimension_match
@@ -642,7 +642,7 @@ def compare_images(oxide: RenderedPage, ref: RenderedPage, thresholds: dict[str,
 
     # Structural failures (STRICT) are evaluated regardless of pixel tolerance.
     structural: list[str] = []
-    if abs(metrics["blank_score_oxide"] - metrics["blank_score_reference"]) > thresholds["blank_delta"]:
+    if abs(metrics["blank_score_wellfriendpdf"] - metrics["blank_score_reference"]) > thresholds["blank_delta"]:
         structural.append("blank_page_mismatch")
     large_region_noise_only = is_large_region_text_aa_noise(metrics, thresholds)
     if metrics["large_region_score"] > thresholds["large_region"] and not large_region_noise_only:
@@ -715,7 +715,7 @@ def is_phash_aa_noise(metrics: dict[str, Any], thresholds: dict[str, float]) -> 
         and metrics["mae"] <= max(0.25, thresholds["mae"] * 0.17)
         and metrics["edge_mae"] <= max(0.005, thresholds["edge_mae"] * 0.20)
         and metrics["large_region_score"] <= thresholds["large_region"]
-        and abs(metrics["blank_score_oxide"] - metrics["blank_score_reference"]) <= max(0.01, thresholds["blank_delta"] * 0.50)
+        and abs(metrics["blank_score_wellfriendpdf"] - metrics["blank_score_reference"]) <= max(0.01, thresholds["blank_delta"] * 0.50)
         and metrics["ssim"] >= thresholds["ssim"] - 0.03
     )
 
@@ -736,7 +736,7 @@ def is_low_energy_pixel_noise(
         and metrics["ssim"] >= thresholds["ssim"]
         and metrics["edge_mae"] <= thresholds["edge_mae"]
         and (metrics["large_region_score"] <= thresholds["large_region"] or large_region_noise_only)
-        and abs(metrics["blank_score_oxide"] - metrics["blank_score_reference"]) <= thresholds["blank_delta"]
+        and abs(metrics["blank_score_wellfriendpdf"] - metrics["blank_score_reference"]) <= thresholds["blank_delta"]
         and not (metrics["max_channel_delta"] > 220 and metrics["mae"] > thresholds["mae"] * 3)
     )
 
@@ -755,7 +755,7 @@ def is_large_region_text_aa_noise(metrics: dict[str, Any], thresholds: dict[str,
         and metrics["different_pixel_percent"] <= thresholds["different_pixel_percent"] * 1.25
         and metrics["mae"] <= thresholds["mae"] * 0.50
         and metrics["edge_mae"] <= thresholds["edge_mae"] * 0.40
-        and abs(metrics["blank_score_oxide"] - metrics["blank_score_reference"]) <= thresholds["blank_delta"]
+        and abs(metrics["blank_score_wellfriendpdf"] - metrics["blank_score_reference"]) <= thresholds["blank_delta"]
         and metrics["ssim"] >= thresholds["ssim"]
         and metrics["phash_distance"] <= thresholds["phash_distance"]
     )
@@ -795,10 +795,10 @@ def thresholds(profile: str, *, text_heavy: bool = False) -> dict[str, float]:
     """Return a metric-threshold profile.
 
     `compression` is the STRICT same-renderer profile used by Benchmark 0B
-    (Oxide-original vs Oxide-compressed); near-exact match is expected there and
+    (Wellfriend-original vs Wellfriend-compressed); near-exact match is expected there and
     must NOT be loosened.
 
-    `renderer` is the LOOSE cross-renderer profile for 0A (Oxide vs Poppler /
+    `renderer` is the LOOSE cross-renderer profile for 0A (Wellfriend vs Poppler /
     PDFium). Two different but correct renderers antialias and hint text
     differently, scoring SSIM ~0.95-0.99 and 1-6% differing pixels on perfectly
     correct text pages, so the pixel/AA tolerances are loosened accordingly.
@@ -844,21 +844,21 @@ def thresholds(profile: str, *, text_heavy: bool = False) -> dict[str, float]:
 
 
 def compare_page_sets(
-    oxide_pages: list[RenderedPage],
+    wellfriendpdf_pages: list[RenderedPage],
     ref_pages: list[RenderedPage],
     profile: str,
     category: str | None = None,
 ) -> dict[str, Any]:
     by_page_ref = {p.page: p for p in ref_pages}
-    by_page_oxide = {p.page: p for p in oxide_pages}
+    by_page_wellfriendpdf = {p.page: p for p in wellfriendpdf_pages}
     failed: list[dict[str, Any]] = []
     compared = 0
     passed = 0
     dim_pass = 0
     threshold = thresholds(profile, text_heavy=is_text_heavy(category))
-    for page in sorted(set(by_page_ref) & set(by_page_oxide)):
+    for page in sorted(set(by_page_ref) & set(by_page_wellfriendpdf)):
         compared += 1
-        metrics = compare_images(by_page_oxide[page], by_page_ref[page], threshold)
+        metrics = compare_images(by_page_wellfriendpdf[page], by_page_ref[page], threshold)
         metrics["page"] = page
         if metrics["dimension_match"] or metrics["dimension_rounding_ok"]:
             dim_pass += 1
@@ -866,7 +866,7 @@ def compare_page_sets(
             passed += 1
         else:
             failed.append(metrics)
-    missing_pages = sorted(set(by_page_ref) ^ set(by_page_oxide))
+    missing_pages = sorted(set(by_page_ref) ^ set(by_page_wellfriendpdf))
     for page in missing_pages:
         failed.append({"page": page, "reason": "rendered_page_missing", "reasons": ["rendered_page_missing"], "pass": False})
     return {
@@ -894,13 +894,13 @@ def command_crashed(result: dict[str, Any]) -> bool:
     return exit_code < 0
 
 
-def determinism_check(entry: dict[str, Any], oxide_bin: str, work_dir: Path, dpi: int, timeout: int, mem_mb: int | None) -> dict[str, Any]:
+def determinism_check(entry: dict[str, Any], wellfriendpdf_bin: str, work_dir: Path, dpi: int, timeout: int, mem_mb: int | None) -> dict[str, Any]:
     hashes: list[str] = []
     commands: list[dict[str, Any]] = []
     for i in range(3):
         run_dir = work_dir / f"determinism_{i}"
         run_dir.mkdir(parents=True, exist_ok=True)
-        rendered = render_oxide(entry, oxide_bin, run_dir, dpi, 1, timeout, mem_mb, suffix="determinism")
+        rendered = render_wellfriendpdf(entry, wellfriendpdf_bin, run_dir, dpi, 1, timeout, mem_mb, suffix="determinism")
         commands.append(rendered["command"])
         if rendered["pages"]:
             hashes.append(rendered["pages"][0].sha256)
@@ -914,7 +914,7 @@ def process_entry(
     *,
     args: argparse.Namespace,
     poppler: dict[str, str],
-    oxide_bin: str,
+    wellfriendpdf_bin: str,
     output_dir: Path,
     do_determinism: bool,
 ) -> dict[str, Any]:
@@ -922,51 +922,51 @@ def process_entry(
     work_dir = output_dir / "artifacts" / file_id
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    oxide_info = get_oxide_info(entry, oxide_bin, args.timeout_sec, args.max_memory_mb)
+    wellfriendpdf_info = get_wellfriendpdf_info(entry, wellfriendpdf_bin, args.timeout_sec, args.max_memory_mb)
     poppler_info = get_poppler_info(entry, poppler, args.timeout_sec, args.max_memory_mb)
-    oxide_pages_declared = oxide_info.get("page_count")
+    wellfriendpdf_pages_declared = wellfriendpdf_info.get("page_count")
     poppler_pages_declared = poppler_info.get("page_count")
-    pages = page_limit(oxide_pages_declared or poppler_pages_declared, args.max_pages_per_file)
+    pages = page_limit(wellfriendpdf_pages_declared or poppler_pages_declared, args.max_pages_per_file)
 
     poppler_render = render_poppler(entry, poppler, work_dir, args.dpi, pages, args.timeout_sec, args.max_memory_mb)
-    oxide_render = render_oxide(entry, oxide_bin, work_dir, args.dpi, pages, args.timeout_sec, args.max_memory_mb)
+    wellfriendpdf_render = render_wellfriendpdf(entry, wellfriendpdf_bin, work_dir, args.dpi, pages, args.timeout_sec, args.max_memory_mb)
     visual = compare_page_sets(
-        oxide_render["pages"],
+        wellfriendpdf_render["pages"],
         poppler_render["pages"],
         args.threshold_profile,
         entry.get("category"),
     )
 
-    oxide_command = oxide_render["command"]
+    wellfriendpdf_command = wellfriendpdf_render["command"]
     safety = {
-        "crashed": command_crashed(oxide_command),
-        "timed_out": oxide_command["timed_out"],
+        "crashed": command_crashed(wellfriendpdf_command),
+        "timed_out": wellfriendpdf_command["timed_out"],
         "timeout_safe": True,
-        "memory_exceeded": oxide_command["memory_exceeded"],
-        "peak_mem_ok": not oxide_command["memory_exceeded"],
+        "memory_exceeded": wellfriendpdf_command["memory_exceeded"],
+        "peak_mem_ok": not wellfriendpdf_command["memory_exceeded"],
         "active_content_ignored": is_hostile(entry)
         and any(token in str(entry.get("category", "")) for token in ["openaction-js", "uri-action", "launch-action"]),
     }
 
     determinism = (
-        determinism_check(entry, oxide_bin, work_dir, args.dpi, args.timeout_sec, args.max_memory_mb)
+        determinism_check(entry, wellfriendpdf_bin, work_dir, args.dpi, args.timeout_sec, args.max_memory_mb)
         if do_determinism and not is_hostile(entry)
         else {"stable": None, "note": "not sampled"}
     )
 
     fail_reasons: list[str] = []
-    if oxide_pages_declared is not None and poppler_pages_declared is not None and oxide_pages_declared != poppler_pages_declared:
+    if wellfriendpdf_pages_declared is not None and poppler_pages_declared is not None and wellfriendpdf_pages_declared != poppler_pages_declared:
         fail_reasons.append("page_count_mismatch")
-    if not oxide_render["command"]["ok"] and not is_hostile(entry):
-        fail_reasons.append("oxide_render_failed")
+    if not wellfriendpdf_render["command"]["ok"] and not is_hostile(entry):
+        fail_reasons.append("wellfriendpdf_render_failed")
     if not poppler_render["command"]["ok"] and not is_hostile(entry):
         fail_reasons.append("poppler_render_failed")
     if visual["failed_pages"] and not is_hostile(entry):
         fail_reasons.extend(sorted({p.get("reason", "visual_failure") for p in visual["failed_pages"]}))
     if safety["crashed"]:
-        fail_reasons.append("oxide_crash_or_panic")
+        fail_reasons.append("wellfriendpdf_crash_or_panic")
     if safety["memory_exceeded"]:
-        fail_reasons.append("oxide_memory_cap_exceeded")
+        fail_reasons.append("wellfriendpdf_memory_cap_exceeded")
     if determinism.get("stable") is False:
         fail_reasons.append("non_deterministic")
 
@@ -982,39 +982,39 @@ def process_entry(
         "source": entry.get("source"),
         "notes": entry.get("notes"),
         "page_count": {
-            "oxide": oxide_pages_declared,
+            "wellfriendpdf": wellfriendpdf_pages_declared,
             "poppler": poppler_pages_declared,
             "pdfium": None,
-            "pass": oxide_pages_declared is not None
+            "pass": wellfriendpdf_pages_declared is not None
             and poppler_pages_declared is not None
-            and oxide_pages_declared == poppler_pages_declared,
+            and wellfriendpdf_pages_declared == poppler_pages_declared,
         },
         "render": {
-            "oxide_success": oxide_render["command"]["ok"],
+            "wellfriendpdf_success": wellfriendpdf_render["command"]["ok"],
             "poppler_success": poppler_render["command"]["ok"],
             "pdfium_success": None,
-            "oxide_rendered_pages": len(oxide_render["pages"]),
+            "wellfriendpdf_rendered_pages": len(wellfriendpdf_render["pages"]),
             "poppler_rendered_pages": len(poppler_render["pages"]),
-            "oxide": oxide_render["command"],
+            "wellfriendpdf": wellfriendpdf_render["command"],
             "poppler": poppler_render["command"],
-            "oxide_parse_errors": oxide_render["parse_errors"],
+            "wellfriendpdf_parse_errors": wellfriendpdf_render["parse_errors"],
             "poppler_parse_errors": poppler_render["parse_errors"],
         },
         "visual_compare": {
-            "oxide_vs_poppler_pass_pages": visual["pass_pages"],
-            "oxide_vs_pdfium_pass_pages": None,
+            "wellfriendpdf_vs_poppler_pass_pages": visual["pass_pages"],
+            "wellfriendpdf_vs_pdfium_pass_pages": None,
             "compared_pages": visual["compared_pages"],
             "failed_pages": visual["failed_pages"],
         },
         "performance": {
-            "oxide_total_ms": oxide_render["command"]["duration_ms"],
+            "wellfriendpdf_total_ms": wellfriendpdf_render["command"]["duration_ms"],
             "poppler_total_ms": poppler_render["command"]["duration_ms"],
             "pdfium_total_ms": None,
-            "oxide_peak_memory_mb": oxide_render["command"]["peak_memory_mb"],
+            "wellfriendpdf_peak_memory_mb": wellfriendpdf_render["command"]["peak_memory_mb"],
             "poppler_peak_memory_mb": poppler_render["command"]["peak_memory_mb"],
-            "oxide_speed_ratio_vs_poppler": (
-                round(poppler_render["command"]["duration_ms"] / oxide_render["command"]["duration_ms"], 4)
-                if oxide_render["command"]["duration_ms"] > 0 and poppler_render["command"]["duration_ms"] > 0
+            "wellfriendpdf_speed_ratio_vs_poppler": (
+                round(poppler_render["command"]["duration_ms"] / wellfriendpdf_render["command"]["duration_ms"], 4)
+                if wellfriendpdf_render["command"]["duration_ms"] > 0 and poppler_render["command"]["duration_ms"] > 0
                 else None
             ),
         },
@@ -1034,7 +1034,7 @@ def category_breakdown(results: list[dict[str, Any]]) -> dict[str, Any]:
     for category in sorted({r["category"] for r in results}):
         items = [r for r in results if r["category"] == category]
         pages = sum(r["visual_compare"]["compared_pages"] for r in items if not str(category).startswith("hostile-"))
-        passed = sum(r["visual_compare"]["oxide_vs_poppler_pass_pages"] for r in items if not str(category).startswith("hostile-"))
+        passed = sum(r["visual_compare"]["wellfriendpdf_vs_poppler_pass_pages"] for r in items if not str(category).startswith("hostile-"))
         out[category] = {
             "files": len(items),
             "file_pass_percent": round(pct(sum(1 for r in items if r["result"] == "pass"), len(items)), 2),
@@ -1048,8 +1048,8 @@ def aggregate(results: list[dict[str, Any]], args: argparse.Namespace, versions:
     normal = [r for r in results if not str(r["category"]).startswith("hostile-")]
     hostile = [r for r in results if str(r["category"]).startswith("hostile-")]
     visual_pages = sum(r["visual_compare"]["compared_pages"] for r in normal)
-    visual_pass = sum(r["visual_compare"]["oxide_vs_poppler_pass_pages"] for r in normal)
-    oxide_rendered_pages = sum(r.get("render", {}).get("oxide_rendered_pages", 0) for r in results)
+    visual_pass = sum(r["visual_compare"]["wellfriendpdf_vs_poppler_pass_pages"] for r in normal)
+    wellfriendpdf_rendered_pages = sum(r.get("render", {}).get("wellfriendpdf_rendered_pages", 0) for r in results)
     poppler_rendered_pages = sum(r.get("render", {}).get("poppler_rendered_pages", 0) for r in results)
     dim_pages = visual_pages
     dim_pass = 0
@@ -1060,7 +1060,7 @@ def aggregate(results: list[dict[str, Any]], args: argparse.Namespace, versions:
         dim_pass += r["visual_compare"]["compared_pages"] - sum(
             1 for f in r["visual_compare"]["failed_pages"] if f.get("reason") == "dimension_mismatch"
         )
-    page_count_checks = [r["page_count"]["pass"] for r in normal if r["page_count"]["oxide"] is not None and r["page_count"]["poppler"] is not None]
+    page_count_checks = [r["page_count"]["pass"] for r in normal if r["page_count"]["wellfriendpdf"] is not None and r["page_count"]["poppler"] is not None]
     page_count_score = pct(sum(1 for ok in page_count_checks if ok), len(page_count_checks))
     dimension_score = pct(dim_pass, dim_pages)
     page_dimension_score = (page_count_score + dimension_score) / 2 if page_count_checks or dim_pages else 0.0
@@ -1077,13 +1077,13 @@ def aggregate(results: list[dict[str, Any]], args: argparse.Namespace, versions:
     def category_visual_score(tokens: tuple[str, ...]) -> float:
         subset = [r for r in normal if any(token in str(r["category"]) for token in tokens)]
         pages = sum(r["visual_compare"]["compared_pages"] for r in subset)
-        passed = sum(r["visual_compare"]["oxide_vs_poppler_pass_pages"] for r in subset)
+        passed = sum(r["visual_compare"]["wellfriendpdf_vs_poppler_pass_pages"] for r in subset)
         return pct(passed, pages) if pages else visual_score
 
     speed_ratios = [
-        r["performance"]["oxide_speed_ratio_vs_poppler"]
+        r["performance"]["wellfriendpdf_speed_ratio_vs_poppler"]
         for r in normal
-        if r["performance"]["oxide_speed_ratio_vs_poppler"] is not None and r["render"]["oxide_success"] and r["render"]["poppler_success"]
+        if r["performance"]["wellfriendpdf_speed_ratio_vs_poppler"] is not None and r["render"]["wellfriendpdf_success"] and r["render"]["poppler_success"]
     ]
     median_speed = sorted(speed_ratios)[len(speed_ratios) // 2] if speed_ratios else 0.0
     perf_score = min(100.0, (median_speed / 0.70) * 100.0) if median_speed else 0.0
@@ -1124,15 +1124,15 @@ def aggregate(results: list[dict[str, Any]], args: argparse.Namespace, versions:
         "max_pages_per_file": args.max_pages_per_file,
         "threshold_profile": args.threshold_profile,
         "backends": {
-            "oxide_bin": args.oxide_bin,
+            "wellfriendpdf_bin": args.wellfriendpdf_bin,
             "poppler": versions["poppler"],
             "pdfium": {"available": pdfium is not None, "path": pdfium, "version": versions.get("pdfium")},
         },
-        "oxide_cli_reconciliation": {
-            "info": "adapted existing `oxide info --json`",
-            "render": "adapted existing `oxide render --format png` ZIP output; no product CLI change",
+        "wellfriendpdf_cli_reconciliation": {
+            "info": "adapted existing `wellfriendpdf info --json`",
+            "render": "adapted existing `wellfriendpdf render --format png` ZIP output; no product CLI change",
             "timeout_memory": "enforced by benchmark subprocess monitor, not product CLI flags",
-            "disable_javascript": "Oxide has no JavaScript execution path; active content fixtures are rendered as inert PDF objects",
+            "disable_javascript": "Wellfriend has no JavaScript execution path; active content fixtures are rendered as inert PDF objects",
         },
         "scale": {
             "files": len(results),
@@ -1141,9 +1141,9 @@ def aggregate(results: list[dict[str, Any]], args: argparse.Namespace, versions:
             "real_world_files": real_files,
             "visual_pages_compared": visual_pages,
             "visual_pages_passed": visual_pass,
-            "oxide_rendered_pages": oxide_rendered_pages,
+            "wellfriendpdf_rendered_pages": wellfriendpdf_rendered_pages,
             "poppler_rendered_pages": poppler_rendered_pages,
-            "total_backend_page_images": oxide_rendered_pages + poppler_rendered_pages,
+            "total_backend_page_images": wellfriendpdf_rendered_pages + poppler_rendered_pages,
             "full_spec_real_world_files": 1000,
             "full_spec_rendered_pages": 10000,
         },
@@ -1156,9 +1156,9 @@ def aggregate(results: list[dict[str, Any]], args: argparse.Namespace, versions:
                 "hostile_memory_bounded_percent": round(hostile_memory_ok, 2),
             },
             "performance": {
-                "median_oxide_speed_ratio_vs_poppler": round(median_speed, 4),
-                "ratio_definition": "poppler_total_ms / oxide_total_ms; >1 means Oxide faster",
-                "peak_oxide_memory_mb_max": max((r["performance"]["oxide_peak_memory_mb"] or 0 for r in results), default=0),
+                "median_wellfriendpdf_speed_ratio_vs_poppler": round(median_speed, 4),
+                "ratio_definition": "poppler_total_ms / wellfriendpdf_total_ms; >1 means Wellfriend faster",
+                "peak_wellfriendpdf_memory_mb_max": max((r["performance"]["wellfriendpdf_peak_memory_mb"] or 0 for r in results), default=0),
             },
             "determinism": determinism_summary(results),
             "failure_breakdown": failure_breakdown(results),
@@ -1211,8 +1211,8 @@ def failure_breakdown(results: list[dict[str, Any]]) -> dict[str, int]:
 def blocking_findings(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
     blockers: list[dict[str, Any]] = []
     blocker_reasons = {
-        "oxide_crash_or_panic",
-        "oxide_memory_cap_exceeded",
+        "wellfriendpdf_crash_or_panic",
+        "wellfriendpdf_memory_cap_exceeded",
         "page_count_mismatch",
         "blank_page_mismatch",
         "large_region_difference",
@@ -1259,7 +1259,7 @@ def write_markdown(agg: dict[str, Any], output_dir: Path) -> None:
         "",
         "## Backends",
         "",
-        f"- Oxide: `{agg['backends']['oxide_bin']}`",
+        f"- Wellfriend: `{agg['backends']['wellfriendpdf_bin']}`",
         f"- Poppler: `{agg['backends']['poppler']}`",
         f"- PDFium: {'available' if agg['backends']['pdfium']['available'] else 'not available; skipped cleanly'}",
         "",
@@ -1271,7 +1271,7 @@ def write_markdown(agg: dict[str, Any], output_dir: Path) -> None:
         f"- Hostile crash-free: **{agg['results']['safety']['hostile_crash_free_percent']}%**",
         f"- Hostile timeout-safe: **{agg['results']['safety']['hostile_timeout_safe_percent']}%**",
         f"- Hostile memory-bounded: **{agg['results']['safety']['hostile_memory_bounded_percent']}%**",
-        f"- Median speed ratio Poppler/Oxide: **{agg['results']['performance']['median_oxide_speed_ratio_vs_poppler']}**",
+        f"- Median speed ratio Poppler/Wellfriend: **{agg['results']['performance']['median_wellfriendpdf_speed_ratio_vs_poppler']}**",
         f"- Determinism: {agg['results']['determinism']}",
         "",
         "## Sub-Scores",
@@ -1315,7 +1315,7 @@ def write_markdown(agg: dict[str, Any], output_dir: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", default=str(REPO_ROOT / "renderer-benchmark" / "corpus" / "manifest.json"))
-    parser.add_argument("--oxide-bin", default=str(REPO_ROOT / "target" / "release" / executable_name("oxide")))
+    parser.add_argument("--wellfriendpdf-bin", default=str(REPO_ROOT / "target" / "release" / executable_name("wellfriendpdf")))
     parser.add_argument("--poppler-bin-dir")
     parser.add_argument("--pdfium-bin")
     parser.add_argument("--dpi", type=int, default=144)
@@ -1379,7 +1379,7 @@ def main() -> None:
                 entry,
                 args=args,
                 poppler=poppler,
-                oxide_bin=args.oxide_bin,
+                wellfriendpdf_bin=args.wellfriendpdf_bin,
                 output_dir=output_dir,
                 do_determinism=do_det,
             )
@@ -1391,10 +1391,10 @@ def main() -> None:
                 "result": "fail",
                 "fail_reasons": ["harness_exception"],
                 "harness_exception": str(err),
-                "page_count": {"oxide": None, "poppler": None, "pdfium": None, "pass": False},
-                "render": {"oxide_success": False, "poppler_success": False, "pdfium_success": None},
-                "visual_compare": {"oxide_vs_poppler_pass_pages": 0, "oxide_vs_pdfium_pass_pages": None, "compared_pages": 0, "failed_pages": []},
-                "performance": {"oxide_total_ms": None, "poppler_total_ms": None, "pdfium_total_ms": None, "oxide_peak_memory_mb": None},
+                "page_count": {"wellfriendpdf": None, "poppler": None, "pdfium": None, "pass": False},
+                "render": {"wellfriendpdf_success": False, "poppler_success": False, "pdfium_success": None},
+                "visual_compare": {"wellfriendpdf_vs_poppler_pass_pages": 0, "wellfriendpdf_vs_pdfium_pass_pages": None, "compared_pages": 0, "failed_pages": []},
+                "performance": {"wellfriendpdf_total_ms": None, "poppler_total_ms": None, "pdfium_total_ms": None, "wellfriendpdf_peak_memory_mb": None},
                 "safety": {"crashed": False, "timed_out": False, "peak_mem_ok": False},
                 "determinism": {"stable": None, "note": "not sampled"},
             }

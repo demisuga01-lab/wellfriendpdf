@@ -14,7 +14,7 @@
 - Prompt 06/06B established native replay, compatibility fallback taxonomy, Poppler/PDFium/MuPDF manifests, multi-reference render artifacts, diff metrics, and HTML reports.
 - Prompt 07/07B closed transparency groups, blend modes, soft masks, and knockout behavior with a zero-unclassified-outlier matrix.
 - Prompt 08/08B closed text clipping, axial/radial and mesh/patch shadings, tiling patterns, Type3 clipping, CID fallback policy, and tensor patch posture.
-- Prompt 09 must use the same matrix vocabulary: `all_reference_pass`, `reference_disagreement_oxide_inside_cluster`, `unsupported_reported_expected`, `malformed_reference_failure`, and `oxide_outlier`.
+- Prompt 09 must use the same matrix vocabulary: `all_reference_pass`, `reference_disagreement_wellfriendpdf_inside_cluster`, `unsupported_reported_expected`, `malformed_reference_failure`, and `wellfriendpdf_outlier`.
 
 ## Existing code audit
 

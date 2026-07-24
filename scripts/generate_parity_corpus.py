@@ -572,7 +572,7 @@ def write_manifest(entries: list[dict[str, Any]]) -> None:
     manifest = {
         "version": 1,
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "description": "Tagged corpus for Poppler-vs-Oxide parity measurements.",
+        "description": "Tagged corpus for Poppler-vs-Wellfriend parity measurements.",
         "sources": {
             "existing-engine-fixture": {
                 "path": "crates/engine/tests/fixtures",

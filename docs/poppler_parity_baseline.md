@@ -9,7 +9,7 @@ Generated: 2026-06-14T01:25:15.314765+00:00
 - Render page cap: 1
 - Poppler pdftotext: `E:\wellpdfsdk\target\tools\poppler\poppler-26.02.0\Library\bin\pdftotext.exe`
 - Poppler pdftoppm: `E:\wellpdfsdk\target\tools\poppler\poppler-26.02.0\Library\bin\pdftoppm.exe`
-- Oxide CLI: `E:\wellpdfsdk\target\release\oxide.exe`
+- Wellfriend CLI: `E:\wellpdfsdk\target\release\wellfriendpdf.exe`
 
 ## Headline Numbers
 
@@ -17,7 +17,7 @@ Generated: 2026-06-14T01:25:15.314765+00:00
 > The latest **re-measured** numbers (full 75-file harness, Poppler 26.02.0,
 > 150 DPI, re-run this session) are: **text 67.7%**, **render 29.31 dB**,
 > analyze 96.0%, extract-images 96.0%, **0 panics / 0 timeouts** — see the
-> per-category breakdown in `docs/oxide_vs_poppler.md` §D.3.
+> per-category breakdown in `docs/wellfriendpdf_vs_poppler.md` §D.3.
 
 - Overall text similarity: 66.8%
 - Overall render PSNR: 26.13 dB
@@ -46,11 +46,11 @@ Generated: 2026-06-14T01:25:15.314765+00:00
 
 ## Failure Details
 
-- `pdfjs_empty_protected` (encrypted): text/oxide: Error: document is encrypted; render/oxide: Error: document is encrypted; analyze/oxide: Error: document is encrypted; extract_images/oxide: Error: document is encrypted
-- `pdfjs_encrypted-attachment` (encrypted): text/oxide: Error: parse error: indirect object header is missing obj keyword; render/oxide: Error: parse error: indirect object header is missing obj keyword; analyze/oxide: Error: parse error: indirect object header is missing obj keyword; extract_images/oxide: Error: parse error: indirect object header is missing obj keyword
-- `pdfjs_issue15893_reduced` (encrypted): text/oxide: Error: parse error: expected numeric token; render/oxide: Error: parse error: expected numeric token; analyze/oxide: Error: parse error: expected numeric token; extract_images/oxide: Error: parse error: expected numeric token
-- `pdfjs_print_protection` (encrypted): text/poppler: Command Line Error: Incorrect password; text/oxide: Error: document is encrypted; render/poppler: Command Line Error: Incorrect password; render/oxide: Error: document is encrypted; analyze/oxide: Error: document is encrypted; extract_images/oxide: Error: document is encrypted
-- `pdfjs_secHandler` (encrypted): text/oxide: Error: document is encrypted; render/oxide: Error: document is encrypted; analyze/oxide: Error: document is encrypted; extract_images/oxide: Error: document is encrypted
+- `pdfjs_empty_protected` (encrypted): text/wellfriendpdf: Error: document is encrypted; render/wellfriendpdf: Error: document is encrypted; analyze/wellfriendpdf: Error: document is encrypted; extract_images/wellfriendpdf: Error: document is encrypted
+- `pdfjs_encrypted-attachment` (encrypted): text/wellfriendpdf: Error: parse error: indirect object header is missing obj keyword; render/wellfriendpdf: Error: parse error: indirect object header is missing obj keyword; analyze/wellfriendpdf: Error: parse error: indirect object header is missing obj keyword; extract_images/wellfriendpdf: Error: parse error: indirect object header is missing obj keyword
+- `pdfjs_issue15893_reduced` (encrypted): text/wellfriendpdf: Error: parse error: expected numeric token; render/wellfriendpdf: Error: parse error: expected numeric token; analyze/wellfriendpdf: Error: parse error: expected numeric token; extract_images/wellfriendpdf: Error: parse error: expected numeric token
+- `pdfjs_print_protection` (encrypted): text/poppler: Command Line Error: Incorrect password; text/wellfriendpdf: Error: document is encrypted; render/poppler: Command Line Error: Incorrect password; render/wellfriendpdf: Error: document is encrypted; analyze/wellfriendpdf: Error: document is encrypted; extract_images/wellfriendpdf: Error: document is encrypted
+- `pdfjs_secHandler` (encrypted): text/wellfriendpdf: Error: document is encrypted; render/wellfriendpdf: Error: document is encrypted; analyze/wellfriendpdf: Error: document is encrypted; extract_images/wellfriendpdf: Error: document is encrypted
 - `pdfjs_bug_jpx` (jpeg2000): render/poppler: Syntax Error: Malformed JP2 file format: first box must be JPEG 2000 signature box<0a> Syntax Warning: Unable to read header Syntax Warning: Did no succeed opening JPX Stream as JP
 - Rust panic signatures recorded: 0
 - Command timeouts recorded: 0
@@ -59,8 +59,8 @@ Generated: 2026-06-14T01:25:15.314765+00:00
 
 - Text similarity is a normalized word-token SequenceMatcher ratio against Poppler pdftotext output; very large token streams use a linear token Dice score.
 - Render quality is PSNR against Poppler pdftoppm PPM output. Infinite PSNR pages are capped at 100 dB for averages.
-- If Poppler and Oxide render dimensions differ, PSNR is computed over the overlapping crop and the mismatch is recorded per page.
-- A failed Oxide or Poppler command is recorded as data and does not stop the run.
+- If Poppler and Wellfriend render dimensions differ, PSNR is computed over the overlapping crop and the mismatch is recorded per page.
+- A failed Wellfriend or Poppler command is recorded as data and does not stop the run.
 - The harness output directory contains results.json and results.csv with per-file command status, stderr snippets, and page-level PSNR values.
 
 ## Progress - CCITT/JBIG2 Image Decode (2026-06-14)
@@ -73,11 +73,11 @@ Implementation:
 
 Validation:
 
-- `cargo test -p oxide-engine`: 426 unit tests, 147 integration tests, and doc tests passed.
+- `cargo test -p wellfriendpdf-engine`: 426 unit tests, 147 integration tests, and doc tests passed.
 - `cargo test --workspace`: passed for CLI, engine, and server.
 - Synthetic 60-page CCITT render sanity check: `target\poppler_compare\perf\synthetic_ccitt_60p.pdf` rendered all pages at 150 DPI in 0.334 s total, about 0.0056 s/page.
 - Scanned corpus command:
-  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --category scanned --output-dir target\poppler_compare\scanned_after_ccitt_jbig2_release --report-path target\poppler_compare\scanned_after_ccitt_jbig2_release\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --oxide-bin target\release\oxide.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
+  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --category scanned --output-dir target\poppler_compare\scanned_after_ccitt_jbig2_release --report-path target\poppler_compare\scanned_after_ccitt_jbig2_release\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --wellfriendpdf-bin target\release\wellfriendpdf.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
 
 Scanned category before/after:
 
@@ -124,7 +124,7 @@ from-scratch decoder was therefore unnecessary.
   (soft masks remain handled by the SMask pipeline), matching the JPEG path.
 - Wired into `images/decoder.rs` at the former "JPXDecode not implemented"
   branch (XObject path) and into `decode_inline` (inline path). Unsupported or
-  malformed JPEG 2000 constructs surface as `OxideError`, never a panic.
+  malformed JPEG 2000 constructs surface as `WellfriendError`, never a panic.
 
 Supported subset: the vast majority of the JPEG 2000 core coding system
 (ISO/IEC 15444-1) — both the 5/3 reversible and 9/7 irreversible wavelet
@@ -145,7 +145,7 @@ Per-file render movement:
 | file | before PSNR | after PSNR | delta | notes |
 | --- | ---: | ---: | ---: | --- |
 | `pdfjs_jp2k-resetprob` | 4.019 dB | 36.96 dB | +32.94 dB | JP2-wrapped RGB image; now decodes correctly |
-| `pdfjs_bug_jpx` | n/a | n/a | n/a | Deliberately truncated ~200-byte codestream; Poppler **segfaults** (exit `0xC0000005`) so no PSNR comparison exists in either round. Oxide decodes it gracefully to a clean black image of the correct dimensions instead of crashing. |
+| `pdfjs_bug_jpx` | n/a | n/a | n/a | Deliberately truncated ~200-byte codestream; Poppler **segfaults** (exit `0xC0000005`) so no PSNR comparison exists in either round. Wellfriend decodes it gracefully to a clean black image of the correct dimensions instead of crashing. |
 
 The render-scored file (`jp2k-resetprob`) is the same in both rounds, so the
 +32.94 dB is a true apples-to-apples improvement — from "random noise" to a
@@ -232,7 +232,7 @@ unchanged from their respective prior rounds.
   FlateDecode inline image and `/F` name-array filter handling; server
   `format=webp` returns 200 + ZIP.
 - Harness command (full corpus):
-  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --output-dir target\poppler_compare\full_round2 --report-path target\poppler_compare\full_round2\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --oxide-bin target\release\oxide.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
+  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --output-dir target\poppler_compare\full_round2 --report-path target\poppler_compare\full_round2\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --wellfriendpdf-bin target\release\wellfriendpdf.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
 - Per-file Round 2 data: `docs/poppler_parity_round2_results.json` and
   `docs/poppler_parity_round2_results.csv` (the Round 0 `poppler_parity_baseline_results.{json,csv}`
   are left unchanged as the original snapshot, matching the Round 1 convention).
@@ -240,7 +240,7 @@ unchanged from their respective prior rounds.
 ### Remaining known gaps / follow-ups
 
 - `bug_jpx` cannot be content-matched against Poppler because Poppler crashes on
-  it; Oxide's graceful black-image fallback is arguably better behavior but
+  it; Wellfriend's graceful black-image fallback is arguably better behavior but
   carries no real image content (the codestream is truncated by design).
 - Inline images are exported and decoded, but the **renderer still treats
   BI/ID/EI as no-ops** (painting inline images into rendered pages is out of
@@ -399,7 +399,7 @@ complex-vector number — those are the real bottleneck the data points to.
 ### Validation command
 
 - Full corpus:
-  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --output-dir target\poppler_compare\full_round3 --report-path target\poppler_compare\full_round3\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --oxide-bin target\release\oxide.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
+  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --output-dir target\poppler_compare\full_round3 --report-path target\poppler_compare\full_round3\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --wellfriendpdf-bin target\release\wellfriendpdf.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
 - Per-file Round 3 data: `docs/poppler_parity_round3_results.json` and
   `docs/poppler_parity_round3_results.csv` (Round 0 and Round 2 result files left
   unchanged).
@@ -552,7 +552,7 @@ clearly where this category's gains come from.
 ### Validation command
 
 - Full corpus:
-  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --output-dir target\poppler_compare\full_round4 --report-path target\poppler_compare\full_round4\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --oxide-bin target\release\oxide.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
+  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --output-dir target\poppler_compare\full_round4 --report-path target\poppler_compare\full_round4\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --wellfriendpdf-bin target\release\wellfriendpdf.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
 - Per-file Round 4 data: `docs/poppler_parity_round4_results.json` / `.csv`
   (Round 0/2/3 result files left unchanged).
 
@@ -584,7 +584,7 @@ almost entirely from the Coons/tensor fix.
 ### Part B - Coons/tensor all-flags meshes (the big mover)
 
 **Root cause was not the shared-edge tables.** Investigating
-`coons-allflags-withfunction` (0.65 dB) showed Oxide rendered a *fully black
+`coons-allflags-withfunction` (0.65 dB) showed Wellfriend rendered a *fully black
 page* while Poppler showed a centred green/blue gradient. The patches are
 painted via a **PatternType 2 shading pattern** (`/Cs cs /P scn 0 0 W H re f`),
 not the `sh` operator, and two bugs combined to break it:
@@ -732,7 +732,7 @@ net correctness improvement, same pattern as Round 3's TAMReview.
 ### Validation command
 
 - Full corpus:
-  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --output-dir target\poppler_compare\full_round5 --report-path target\poppler_compare\full_round5\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --oxide-bin target\release\oxide.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
+  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --output-dir target\poppler_compare\full_round5 --report-path target\poppler_compare\full_round5\report.md --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --wellfriendpdf-bin target\release\wellfriendpdf.exe --no-build --dpi 150 --max-render-pages 1 --timeout 60 --render-timeout 120`
 - Per-file Round 5 data: `docs/poppler_parity_round5_results.json` / `.csv`
   (Round 0/2/3/4 result files left unchanged).
 
@@ -849,14 +849,14 @@ Per-file movers (Round 5 → Round 6) — exactly 7 files changed:
 | `pdfjs_annotation-button-widget` | forms | render | 25.49 dB | 24.87 dB | −0.62 | Part B |
 | `pdfjs_annotation-choice-widget` | forms | render | 23.38 dB | 23.10 dB | −0.28 | Part B |
 | `pdfjs_annotation-text-widget` | forms | render | 19.54 dB | 19.38 dB | −0.16 | Part B |
-| `pdfjs_bug_jpx` | jpeg2000 | render | (poppler-fail) | 37.18 dB | n/a | Poppler now produced a page (its side, not Oxide) |
+| `pdfjs_bug_jpx` | jpeg2000 | render | (poppler-fail) | 37.18 dB | n/a | Poppler now produced a page (its side, not Wellfriend) |
 
 **Honest accounting of Part B.** The CFF fallback is genuinely live — the four
 forms files moved *only* because the renderer is deterministic and the sole
 render-affecting change this round is the bare-CFF path; `prefilled_f1040`
 carries 14 plaintext `/FontFile3` programs and the `annotation-*` widgets carry
 theirs inside object streams. But the movement is a **small net render dip**, not
-a gain: the same pattern documented in Rounds 3 and 5 — Oxide now *draws*
+a gain: the same pattern documented in Rounds 3 and 5 — Wellfriend now *draws*
 previously-absent glyphs, and against Poppler's already-rendered form fields the
 freshly-drawn (slightly differently-hinted/positioned) CFF glyphs score a hair
 lower on whole-page PSNR while being more correct. The CFF-heavy multi-column
@@ -869,16 +869,16 @@ documents whose primary content is bare-CFF body text.
 
 ### `cargo test --workspace`
 
-- `cargo build -p oxide-engine` and `cargo build --release -p oxide-cli`: clean.
-- `cargo test -p oxide-engine --lib`: pass (incl. 12 new bare-CFF unit tests in
+- `cargo build -p wellfriendpdf-engine` and `cargo build --release -p wellfriendpdf-cli`: clean.
+- `cargo test -p wellfriendpdf-engine --lib`: pass (incl. 12 new bare-CFF unit tests in
   `font_rasterizer.rs` and the BiDi reading-order tests).
-- `cargo test -p oxide-engine --test integration`: 152 pass, 0 fail.
-- `cargo test -p oxide-engine --test symbolic_fonts`: 3 pass.
+- `cargo test -p wellfriendpdf-engine --test integration`: 152 pass, 0 fail.
+- `cargo test -p wellfriendpdf-engine --test symbolic_fonts`: 3 pass.
 
 ### Validation command
 
 - Full corpus (release binary, no rebuild):
-  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --oxide-bin target\release\oxide.exe --no-build --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --output-dir target\poppler_compare\round6 --report-path docs\poppler_parity_round6_summary.md --max-render-pages 1 --dpi 150`
+  `py scripts\poppler_compare.py --manifest tests\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --no-build --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin --output-dir target\poppler_compare\round6 --report-path docs\poppler_parity_round6_summary.md --max-render-pages 1 --dpi 150`
 - Per-file Round 6 data: `docs/poppler_parity_round6_results.json` / `.csv`
   and `docs/poppler_parity_round6_summary.md` (Round 0/2/3/4/5 files unchanged).
 
@@ -912,7 +912,7 @@ metrics and a dedicated vertical reading-order reconstructor.
 
 ### Harness note (Part A)
 
-The parity harness compares plain `pdftotext` (no `-layout`) vs `oxide
+The parity harness compares plain `pdftotext` (no `-layout`) vs `wellfriendpdf
 extract-text` with `preserve_layout=false`. **Part A improvements (layout grid)
 do not appear in the harness number** — they affect only the `preserve_layout`
 code path which the harness never exercises. Layout-mode correctness is verified
@@ -1024,7 +1024,7 @@ Per-category text similarity (Round 7):
 | text-basic | 6 | 64.9% | 64.9% | 0.0% |
 
 **Why the harness number did not move:** The harness measures plain `pdftotext`
-(no `-layout`) vs `oxide extract-text` with `preserve_layout=false`. Part A's
+(no `-layout`) vs `wellfriendpdf extract-text` with `preserve_layout=false`. Part A's
 layout-grid fix affects only the `preserve_layout` path (not exercised by the
 harness). Part B's WMode fix affects vertical CJK text — but `pdfjs_vertical`'s
 fonts are in compressed object streams whose encoding the parser currently reads as
@@ -1047,7 +1047,7 @@ cargo clippy -- -D warnings  → clean (0 warnings)
 ### Remaining gaps / follow-ups
 
 - **Harness layout-mode comparison**: add a second comparison column to
-  `poppler_compare.py` that runs `pdftotext -layout` vs `oxide extract-text
+  `poppler_compare.py` that runs `pdftotext -layout` vs `wellfriendpdf extract-text
   --layout` so Part A improvements are measurable. Add as an *additional* metric
   to preserve cross-round comparability of the existing number.
 - **Vertical fixture font accessibility**: `pdfjs_vertical`'s font encoding is in
@@ -1157,7 +1157,7 @@ cargo build --workspace  → 0 errors, 0 warnings
 
 ### Harness results (Round 8 vs Round 7)
 
-Full 75-file corpus, 150 DPI, `--no-build` (using existing `target/release/oxide.exe`):
+Full 75-file corpus, 150 DPI, `--no-build` (using existing `target/release/wellfriendpdf.exe`):
 
 | metric | Round 7 | Round 8 | delta |
 | --- | ---: | ---: | ---: |
@@ -1273,7 +1273,7 @@ encrypted (41.6%), multi-column (64.0%). Render: rtl-text (17.90 dB),
 multi-column (18.44 dB). These are the roadmap: Arabic/CJK shaping, multi-column
 reading order.
 
-The capstone Oxide-vs-Poppler positioning report (feature matrix, performance
-comparison, differentiators, honest gaps) is **`docs/oxide_vs_poppler.md`**.
+The capstone Wellfriend-vs-Poppler positioning report (feature matrix, performance
+comparison, differentiators, honest gaps) is **`docs/wellfriendpdf_vs_poppler.md`**.
 Harness command and per-file data: see `docs/poppler_parity_round15_summary.md`
 and `target/poppler_compare/final_round15/results.{json,csv}`.

@@ -39,7 +39,7 @@ def mutate(data: bytes, name: str) -> bytes:
     fn = MUTATIONS[name]
     mutated = fn(data)
     if mutated == data:
-        mutated = data + f"\n% oxide-mutator:{name}\n".encode("ascii")
+        mutated = data + f"\n% wellfriendpdf-mutator:{name}\n".encode("ascii")
     return mutated
 
 

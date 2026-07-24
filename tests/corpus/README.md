@@ -37,7 +37,7 @@ category.
 
 ## Running The Harness
 
-Poppler is a dev dependency for the harness only. It is not an Oxide runtime
+Poppler is a dev dependency for the harness only. It is not an Wellfriend runtime
 dependency.
 
 ```powershell

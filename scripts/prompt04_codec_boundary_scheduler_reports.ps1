@@ -100,11 +100,11 @@ $rlboxReport = [ordered]@{
         attempted = $false
         reason = "Required C/C++ wasm sandbox toolchain components were unavailable locally and no Rust RLBox crate candidate was discoverable from cargo search output in this run."
     }
-    ipc_or_call_boundary = "Existing oxide-codec-worker JSON subprocess boundary remains the supported isolation mechanism."
+    ipc_or_call_boundary = "Existing wellfriendpdf-codec-worker JSON subprocess boundary remains the supported isolation mechanism."
     performance_estimate = "No RLBox stub benchmark was run because the prototype was hard-blocked before build; subprocess isolation overhead remains measured by Prompt 03 release gate and codec isolation tests."
     security_benefit_estimate = "Potential benefit would be finer-grained memory isolation for native codec code, but it would add C++/wasm toolchain and runtime packaging risk. Without a reproducible prototype it must not be claimed."
     future_integration_plan = @(
-        "Add a separate optional crate for RLBox/WASM experiments outside oxide-engine's unsafe-forbidden core.",
+        "Add a separate optional crate for RLBox/WASM experiments outside wellfriendpdf-engine's unsafe-forbidden core.",
         "Define one no-op C codec stub compiled to wasm and called through a sandbox runtime on Windows, Linux, and macOS CI.",
         "Package the runtime in release gates before enabling any real codec.",
         "Keep native codec registry entries worker-required and deny-by-default until the stub is reproducible."
@@ -116,7 +116,7 @@ Write-JsonNoBom (Join-Path $OutPath "rlbox-wasm-feasibility.json") $rlboxReport
 $generator = Invoke-Capture "prompt04 rust report generator" "cargo" @(
     "run",
     "-p",
-    "oxide-engine",
+    "wellfriendpdf-engine",
     "--example",
     "prompt04_reports",
     "--",

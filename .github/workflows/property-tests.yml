@@ -24,7 +24,7 @@ permissions:
 
 jobs:
   property-tests:
-    name: oxide-engine property invariants
+    name: wellfriendpdf-engine property invariants
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -48,4 +48,4 @@ jobs:
           key: ${{ runner.os }}-property-tests-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run property tests
-        run: cargo test -p oxide-engine --test property_invariants -- --nocapture
+        run: cargo test -p wellfriendpdf-engine --test property_invariants -- --nocapture

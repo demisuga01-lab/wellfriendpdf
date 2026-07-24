@@ -1,7 +1,7 @@
 # PDF Function Evaluator
 
 PDF functions are used by shadings, Separation/DeviceN tint transforms, transfer
-functions, and future prepress validation. Oxide centralizes them in
+functions, and future prepress validation. Wellfriend centralizes them in
 `crates/engine/src/render/function.rs`.
 
 ## Supported Types

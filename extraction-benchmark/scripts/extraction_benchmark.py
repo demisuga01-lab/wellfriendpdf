@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Extraction-quality head-to-head benchmark harness.
 
-Runs Oxide and each available competitor (PyMuPDF, qpdf, Poppler pdftotext, and
+Runs Wellfriend and each available competitor (PyMuPDF, qpdf, Poppler pdftotext, and
 Docling if present) over the ground-truth corpus and scores every tool with the
-SAME pure-Rust metrics (via ``oxide eval-score``), so the numbers are directly
+SAME pure-Rust metrics (via ``wellfriendpdf eval-score``), so the numbers are directly
 comparable and comparable to how the literature reports (CER/WER, cell-F1/TEDS,
 field-F1, block-type accuracy, reading-order similarity).
 
@@ -35,17 +35,17 @@ RESULTS = os.path.join(ROOT, "results")
 
 TIMEOUT = 60  # seconds per tool/doc
 
-# Resolve the oxide CLI binary. OXIDE_BIN lets release-gate runs use an
+# Resolve the wellfriendpdf CLI binary. WELLFRIENDPDF_BIN lets release-gate runs use an
 # isolated target directory when the default debug artifact is locked.
-OXIDE = os.environ.get("OXIDE_BIN")
-if not OXIDE:
-    OXIDE = os.path.join(REPO, "target", "debug", "oxide.exe")
-    if not os.path.exists(OXIDE):
-        OXIDE = os.path.join(REPO, "target", "debug", "oxide")
+WELLFRIENDPDF = os.environ.get("WELLFRIENDPDF_BIN")
+if not WELLFRIENDPDF:
+    WELLFRIENDPDF = os.path.join(REPO, "target", "debug", "wellfriendpdf.exe")
+    if not os.path.exists(WELLFRIENDPDF):
+        WELLFRIENDPDF = os.path.join(REPO, "target", "debug", "wellfriendpdf")
 
-# Whether this oxide build understands --ocr (the `ocr` cargo feature). Probed at
+# Whether this wellfriendpdf build understands --ocr (the `ocr` cargo feature). Probed at
 # import time so scanned-doc handling degrades cleanly when OCR isn't built in.
-OXIDE_HAS_OCR = False
+WELLFRIENDPDF_HAS_OCR = False
 
 
 # ── subprocess helper (isolated, timed, failure-as-data) ─────────────────────
@@ -72,9 +72,9 @@ def run(cmd, timeout=TIMEOUT, stdin=None):
         return (False, b"", time.perf_counter() - t0, str(e)[:400])
 
 
-def oxide_score(score_input):
+def wellfriendpdf_score(score_input):
     """Score a ScoreInput dict with the pure-Rust scorer; returns the dict."""
-    ok, out, _dt, err = run([OXIDE, "eval-score"], stdin=json.dumps(score_input).encode())
+    ok, out, _dt, err = run([WELLFRIENDPDF, "eval-score"], stdin=json.dumps(score_input).encode())
     if not ok:
         return {"_error": err}
     try:
@@ -87,23 +87,23 @@ def oxide_score(score_input):
 
 
 def detect_tools():
-    global OXIDE_HAS_OCR
+    global WELLFRIENDPDF_HAS_OCR
     tools = {}
-    tools["oxide"] = os.path.exists(OXIDE)
-    if tools["oxide"]:
+    tools["wellfriendpdf"] = os.path.exists(WELLFRIENDPDF)
+    if tools["wellfriendpdf"]:
         # The `--ocr` flag exists in the CLI regardless of the cargo feature, but
         # invoking it without the feature returns an actionable "no OCR backend"
         # error. Probe by actually running `--ocr` and checking the error text, so
-        # OXIDE_HAS_OCR reflects the *built* capability, not just the flag.
+        # WELLFRIENDPDF_HAS_OCR reflects the *built* capability, not just the flag.
         sample = None
         for f in os.listdir(CORPUS):
             if f.endswith("_scanned.pdf"):
                 sample = os.path.join(CORPUS, f)
                 break
         if sample:
-            ok, _o, _dt, err = run([OXIDE, "parse", sample, "--format", "markdown", "--ocr"])
-            OXIDE_HAS_OCR = ok and ("no OCR backend" not in err)
-    tools["oxide_ocr"] = OXIDE_HAS_OCR
+            ok, _o, _dt, err = run([WELLFRIENDPDF, "parse", sample, "--format", "markdown", "--ocr"])
+            WELLFRIENDPDF_HAS_OCR = ok and ("no OCR backend" not in err)
+    tools["wellfriendpdf_ocr"] = WELLFRIENDPDF_HAS_OCR
     try:
         import fitz  # noqa: F401
         tools["pymupdf"] = True
@@ -122,18 +122,18 @@ def detect_tools():
 # ── per-tool text extractors → reading-order plain text ──────────────────────
 
 
-def oxide_text(pdf, ocr=False):
+def wellfriendpdf_text(pdf, ocr=False):
     # Markdown without furniture is the closest to clean reading-order text.
-    args = [OXIDE, "parse", pdf, "--format", "markdown"]
+    args = [WELLFRIENDPDF, "parse", pdf, "--format", "markdown"]
     if ocr:
         args += ["--ocr"]
     ok, out, dt, err = run(args)
     return (markdown_to_text(out.decode("utf-8", "replace")) if ok else None, dt, err)
 
 
-def oxide_text_order(pdf):
-    """Oxide block order keys (lowercased block text) for the order metric."""
-    ok, out, _dt, _err = run([OXIDE, "parse", pdf, "--format", "json"])
+def wellfriendpdf_text_order(pdf):
+    """Wellfriend block order keys (lowercased block text) for the order metric."""
+    ok, out, _dt, _err = run([WELLFRIENDPDF, "parse", pdf, "--format", "json"])
     if not ok:
         return None
     try:
@@ -199,12 +199,12 @@ def block_text_key(b):
 # ── table extractors → list of grids ─────────────────────────────────────────
 
 
-def oxide_tables(pdf, ocr=False):
+def wellfriendpdf_tables(pdf, ocr=False):
     # extract-tables has no OCR path; on scanned docs use `parse --ocr` JSON and
     # pull table rows from the body. For digital docs the dedicated command is
     # faster and identical.
-    if ocr and OXIDE_HAS_OCR:
-        ok, out, dt, err = run([OXIDE, "parse", pdf, "--format", "json", "--ocr"])
+    if ocr and WELLFRIENDPDF_HAS_OCR:
+        ok, out, dt, err = run([WELLFRIENDPDF, "parse", pdf, "--format", "json", "--ocr"])
         if not ok:
             return (None, dt, err)
         try:
@@ -213,7 +213,7 @@ def oxide_tables(pdf, ocr=False):
             return (None, dt, "parse error")
         grids = [b["table"]["rows"] for b in doc.get("body", []) if b.get("kind") == "table"]
         return (grids, dt, "")
-    ok, out, dt, err = run([OXIDE, "extract-tables", pdf, "--format", "json"])
+    ok, out, dt, err = run([WELLFRIENDPDF, "extract-tables", pdf, "--format", "json"])
     if not ok:
         return (None, dt, err)
     try:
@@ -243,14 +243,14 @@ def pymupdf_tables(pdf):
         return (None, time.perf_counter() - t0, str(e)[:200])
 
 
-# ── KV extractor (Oxide only; competitors don't do KV out of the box) ────────
+# ── KV extractor (Wellfriend only; competitors don't do KV out of the box) ────────
 
 
-def oxide_fields(pdf, doc_type, ocr=False):
-    args = [OXIDE, "extract-fields", pdf, "--format", "json"]
+def wellfriendpdf_fields(pdf, doc_type, ocr=False):
+    args = [WELLFRIENDPDF, "extract-fields", pdf, "--format", "json"]
     if doc_type in ("invoice", "receipt", "form"):
         args += ["--type", doc_type]
-    if ocr and OXIDE_HAS_OCR:
+    if ocr and WELLFRIENDPDF_HAS_OCR:
         args += ["--ocr"]
     ok, out, dt, err = run(args)
     if not ok:
@@ -285,11 +285,11 @@ def normalize_field_value(v):
     return str(v.get("text", "")).strip().lower()
 
 
-# ── block-type sequence (Oxide) ──────────────────────────────────────────────
+# ── block-type sequence (Wellfriend) ──────────────────────────────────────────────
 
 
-def oxide_block_types(pdf):
-    ok, out, _dt, _err = run([OXIDE, "parse", pdf, "--format", "json"])
+def wellfriendpdf_block_types(pdf):
+    ok, out, _dt, _err = run([WELLFRIENDPDF, "parse", pdf, "--format", "json"])
     if not ok:
         return None
     try:
@@ -299,14 +299,14 @@ def oxide_block_types(pdf):
     return [b.get("kind", "") for b in doc.get("body", [])]
 
 
-# ── structural ops (qpdf vs oxide) ───────────────────────────────────────────
+# ── structural ops (qpdf vs wellfriendpdf) ───────────────────────────────────────────
 
 
 def structural_ops(tools):
-    """Compare Oxide and qpdf on structural correctness + cross-validation.
+    """Compare Wellfriend and qpdf on structural correctness + cross-validation.
 
-    - Oxide splits a multi-page PDF; qpdf validates Oxide's output (--check).
-    - qpdf linearizes a PDF; Oxide reports its page count (round-trip integrity).
+    - Wellfriend splits a multi-page PDF; qpdf validates Wellfriend's output (--check).
+    - qpdf linearizes a PDF; Wellfriend reports its page count (round-trip integrity).
     """
     results = {}
     sample = os.path.join(CORPUS, "paper.pdf")  # single page; use tracemonkey if present
@@ -317,8 +317,8 @@ def structural_ops(tools):
     tmp = os.path.join(RESULTS, "_tmp")
     os.makedirs(tmp, exist_ok=True)
 
-    # Oxide page count.
-    ok, out, dt_ox, _ = run([OXIDE, "info", sample])
+    # Wellfriend page count.
+    ok, out, dt_ox, _ = run([WELLFRIENDPDF, "info", sample])
     ox_pages = None
     if ok:
         for line in out.decode("utf-8", "replace").splitlines():
@@ -328,11 +328,11 @@ def structural_ops(tools):
                 if digits:
                     ox_pages = int(digits)
                     break
-    results["oxide_info_time_s"] = round(dt_ox, 4)
-    results["oxide_page_count"] = ox_pages
+    results["wellfriendpdf_info_time_s"] = round(dt_ox, 4)
+    results["wellfriendpdf_page_count"] = ox_pages
 
     if tools.get("qpdf"):
-        # qpdf linearize Oxide-validatable round trip.
+        # qpdf linearize Wellfriend-validatable round trip.
         lin = os.path.join(tmp, "lin.pdf")
         ok_lin, _o, dt_lin, err_lin = run(["qpdf", "--linearize", sample, lin])
         results["qpdf_linearize_ok"] = ok_lin
@@ -355,7 +355,7 @@ def structural_ops(tools):
     else:
         results["qpdf"] = "not run (absent)"
 
-    # Oxide split → qpdf --check each part (Oxide output validated by qpdf).
+    # Wellfriend split → qpdf --check each part (Wellfriend output validated by qpdf).
     if tools.get("qpdf"):
         outdir = os.path.join(tmp, "split")
         if os.path.isdir(outdir):
@@ -365,7 +365,7 @@ def structural_ops(tools):
         t0 = time.perf_counter()
         try:
             p = subprocess.run(
-                [OXIDE, "split", os.path.abspath(sample), "-o", "page-%d.pdf"],
+                [WELLFRIENDPDF, "split", os.path.abspath(sample), "-o", "page-%d.pdf"],
                 cwd=outdir, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=TIMEOUT,
             )
             ok_sp = p.returncode == 0
@@ -373,10 +373,10 @@ def structural_ops(tools):
         except Exception as e:  # noqa: BLE001
             ok_sp, err_sp = False, str(e)[:200]
         dt_sp = time.perf_counter() - t0
-        results["oxide_split_ok"] = ok_sp
-        results["oxide_split_time_s"] = round(dt_sp, 4)
+        results["wellfriendpdf_split_ok"] = ok_sp
+        results["wellfriendpdf_split_time_s"] = round(dt_sp, 4)
         if not ok_sp:
-            results["oxide_split_error"] = err_sp
+            results["wellfriendpdf_split_error"] = err_sp
         if ok_sp:
             parts = [os.path.join(outdir, f) for f in os.listdir(outdir) if f.endswith(".pdf")]
             valid = 0
@@ -384,8 +384,8 @@ def structural_ops(tools):
                 okc, _oc, _dtc, _ec = run(["qpdf", "--check", part])
                 if okc:
                     valid += 1
-            results["oxide_split_parts"] = len(parts)
-            results["qpdf_validated_oxide_parts_of_5"] = valid
+            results["wellfriendpdf_split_parts"] = len(parts)
+            results["qpdf_validated_wellfriendpdf_parts_of_5"] = valid
     return results
 
 
@@ -421,14 +421,14 @@ def bench_doc(name, gt, tools):
             if ho is not None:
                 si["ref_order"] = ref_order
                 si["hyp_order"] = ho
-        e.update(oxide_score(si))
+        e.update(wellfriendpdf_score(si))
         return e
 
     if ref_text:
-        if tools.get("oxide"):
-            # Scanned docs are OCR'd by Oxide — the whole point of including them.
-            text, dt, err = oxide_text(pdf, ocr=is_scanned and OXIDE_HAS_OCR)
-            rec["tools"]["oxide_text"] = text_entry(text, dt, err, get_order=oxide_text_order)
+        if tools.get("wellfriendpdf"):
+            # Scanned docs are OCR'd by Wellfriend — the whole point of including them.
+            text, dt, err = wellfriendpdf_text(pdf, ocr=is_scanned and WELLFRIENDPDF_HAS_OCR)
+            rec["tools"]["wellfriendpdf_text"] = text_entry(text, dt, err, get_order=wellfriendpdf_text_order)
         if tools.get("pymupdf"):
             # PyMuPDF/Poppler have NO OCR; on scanned pages they recover nothing
             # (recorded honestly — it is the OCR-capability gap, not a bug).
@@ -441,43 +441,43 @@ def bench_doc(name, gt, tools):
     # TABLES.
     ref_tables = gt.get("tables") or []
     if ref_tables:
-        if tools.get("oxide"):
-            grids, dt, err = oxide_tables(pdf, ocr=is_scanned)
+        if tools.get("wellfriendpdf"):
+            grids, dt, err = wellfriendpdf_tables(pdf, ocr=is_scanned)
             e = {"time_s": round(dt, 4)}
             if grids is None:
                 e["error"] = err
             else:
-                e.update(oxide_score({"ref_tables": ref_tables, "hyp_tables": grids}))
-            rec["tools"]["oxide_tables"] = e
+                e.update(wellfriendpdf_score({"ref_tables": ref_tables, "hyp_tables": grids}))
+            rec["tools"]["wellfriendpdf_tables"] = e
         if tools.get("pymupdf"):
             grids, dt, err = pymupdf_tables(pdf)
             e = {"time_s": round(dt, 4)}
             if grids is None:
                 e["error"] = err
             else:
-                e.update(oxide_score({"ref_tables": ref_tables, "hyp_tables": grids}))
+                e.update(wellfriendpdf_score({"ref_tables": ref_tables, "hyp_tables": grids}))
             rec["tools"]["pymupdf_tables"] = e
 
-    # KV fields (Oxide only).
+    # KV fields (Wellfriend only).
     ref_fields = gt.get("fields") or []
-    if ref_fields and tools.get("oxide"):
-        fields, dt, err = oxide_fields(pdf, gt.get("doc_type"), ocr=is_scanned)
+    if ref_fields and tools.get("wellfriendpdf"):
+        fields, dt, err = wellfriendpdf_fields(pdf, gt.get("doc_type"), ocr=is_scanned)
         e = {"time_s": round(dt, 4)}
         if fields is None:
             e["error"] = err
         else:
-            e.update(oxide_score({"ref_fields": ref_fields, "hyp_fields": fields}))
-        rec["tools"]["oxide_fields"] = e
+            e.update(wellfriendpdf_score({"ref_fields": ref_fields, "hyp_fields": fields}))
+        rec["tools"]["wellfriendpdf_fields"] = e
 
-    # Block-type structure (Oxide only).
+    # Block-type structure (Wellfriend only).
     ref_bt = gt.get("block_types") or []
-    if ref_bt and tools.get("oxide"):
-        bt = oxide_block_types(pdf)
+    if ref_bt and tools.get("wellfriendpdf"):
+        bt = wellfriendpdf_block_types(pdf)
         if bt is not None:
             # Align by length (the order metric already covers ordering); we score
             # the leading aligned run as a coarse structure accuracy.
-            e = oxide_score({"ref_block_types": ref_bt, "hyp_block_types": bt})
-            rec["tools"]["oxide_structure"] = e
+            e = wellfriendpdf_score({"ref_block_types": ref_bt, "hyp_block_types": bt})
+            rec["tools"]["wellfriendpdf_structure"] = e
 
     return rec
 
@@ -488,8 +488,8 @@ def main():
     print("Tool availability:")
     for t, ok in tools.items():
         print(f"  {t:10s} {'present' if ok else 'ABSENT (skipped)'}")
-    if not tools.get("oxide"):
-        print("ERROR: oxide binary not found; build with `cargo build -p oxide-cli` first.")
+    if not tools.get("wellfriendpdf"):
+        print("ERROR: wellfriendpdf binary not found; build with `cargo build -p wellfriendpdf-cli` first.")
         return 1
 
     expected = load_expected()

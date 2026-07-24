@@ -7,7 +7,7 @@
 //! without adding the fuzz crate to the stable workspace.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::fuzz::fuzz_writer;
+use wellfriendpdf_engine::fuzz::fuzz_writer;
 
 fuzz_target!(|data: &[u8]| {
     fuzz_writer(data);

@@ -20,8 +20,8 @@ Supported:
 - matching uses Prompt 06B semantic search and glyph quads.
 - old source text is removed through the Prompt 07B full-rewrite redaction path.
 - replacement text is drawn in the matched region with an `EditTextStyle`.
-- output reopens in Oxide and can be extracted/searched.
-- CLI: `oxide edit-text --query OLD --replacement NEW --out edited.pdf`.
+- output reopens in Wellfriend and can be extracted/searched.
+- CLI: `wellfriendpdf edit-text --query OLD --replacement NEW --out edited.pdf`.
 
 Prompt 08B closure:
 
@@ -48,7 +48,7 @@ Incremental save:
 
 - `PdfEditor::save_to_bytes(EditMode::Incremental)` remains available for
   additive overlays.
-- CLI: `oxide save-incremental --text NOTE --out incremental.pdf`.
+- CLI: `wellfriendpdf save-incremental --text NOTE --out incremental.pdf`.
 - Tests verify that incremental output preserves the original byte prefix and
   reopens.
 

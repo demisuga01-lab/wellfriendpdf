@@ -61,7 +61,7 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p target/sanitizer-logs
-          cargo +nightly test ${{ matrix.cargo_flags }} --locked -p oxide-capi --tests \
+          cargo +nightly test ${{ matrix.cargo_flags }} --locked -p wellfriendpdf-capi --tests \
             2>&1 | tee "target/sanitizer-logs/${{ matrix.name }}-capi.log"
 
       - name: Run crypto regression tests under sanitizer
@@ -72,7 +72,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          cargo +nightly test ${{ matrix.cargo_flags }} --locked -p oxide-engine crypto::tests --lib \
+          cargo +nightly test ${{ matrix.cargo_flags }} --locked -p wellfriendpdf-engine crypto::tests --lib \
             2>&1 | tee "target/sanitizer-logs/${{ matrix.name }}-crypto.log"
 
       - name: Upload sanitizer failure logs

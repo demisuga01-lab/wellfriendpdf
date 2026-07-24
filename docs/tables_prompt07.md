@@ -1,6 +1,6 @@
 # Prompt 07 Tables
 
-Oxide's table engine remains classical and CPU-safe. Prompt 07 documents and
+Wellfriend's table engine remains classical and CPU-safe. Prompt 07 documents and
 keeps the existing hybrid behavior rather than replacing it with a model:
 
 1. Semantic tables from tagged/structured extraction when available.

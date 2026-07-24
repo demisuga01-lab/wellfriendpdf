@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Run Oxide vs public PDF text extraction competitors.
+"""Run Wellfriend vs public PDF text extraction competitors.
 
-Methodology mirrors the published pdf_oxide benchmark shape:
+Methodology mirrors the published pdf_wellfriendpdf benchmark shape:
 single-threaded, no warm-up, one isolated subprocess per (tool, file), fixed
 timeout, and crash/timeout/error recorded as data.
 """
@@ -148,9 +148,9 @@ for page in reader.pages:
 open(sys.argv[2], "w", encoding="utf-8", errors="replace").write("\n".join(parts))
 """
 
-PY_PDF_OXIDE = r"""
+PY_PDF_WELLFRIENDPDF = r"""
 import sys
-from pdf_oxide import PdfDocument
+from pdf_wellfriendpdf import PdfDocument
 doc = PdfDocument(sys.argv[1])
 parts = []
 count_attr = getattr(doc, "page_count", None)
@@ -216,9 +216,9 @@ def executable_name(name: str) -> str:
     return name
 
 
-def default_oxide_bin() -> Path:
-    release = REPO_ROOT / "target" / "release" / executable_name("oxide")
-    debug = REPO_ROOT / "target" / "debug" / executable_name("oxide")
+def default_wellfriendpdf_bin() -> Path:
+    release = REPO_ROOT / "target" / "release" / executable_name("wellfriendpdf")
+    debug = REPO_ROOT / "target" / "debug" / executable_name("wellfriendpdf")
     return release if release.exists() else debug
 
 
@@ -226,8 +226,8 @@ def python_cmd(code: str, pdf: Path, output: Path, _args: argparse.Namespace) ->
     return [sys.executable, "-c", code, str(pdf), str(output)]
 
 
-def oxide_cmd(pdf: Path, output: Path, args: argparse.Namespace) -> list[str]:
-    return [str(Path(args.oxide_bin)), "extract-text", str(pdf), "--output", str(output)]
+def wellfriendpdf_cmd(pdf: Path, output: Path, args: argparse.Namespace) -> list[str]:
+    return [str(Path(args.wellfriendpdf_bin)), "extract-text", str(pdf), "--output", str(output)]
 
 
 def optional_command_cmd(binary: str) -> Callable[[Path, Path, argparse.Namespace], list[str]]:
@@ -239,8 +239,8 @@ def optional_command_cmd(binary: str) -> Callable[[Path, Path, argparse.Namespac
 
 def tool_definitions() -> list[Tool]:
     return [
-        Tool("oxide", "local", None, "MIT OR Apache-2.0", oxide_cmd),
-        Tool("pdf_oxide", "python", "pdf_oxide", "MIT", lambda p, o, a: python_cmd(PY_PDF_OXIDE, p, o, a)),
+        Tool("wellfriendpdf", "local", None, "MIT OR Apache-2.0", wellfriendpdf_cmd),
+        Tool("pdf_wellfriendpdf", "python", "pdf_wellfriendpdf", "MIT", lambda p, o, a: python_cmd(PY_PDF_WELLFRIENDPDF, p, o, a)),
         Tool("pymupdf", "python", "fitz", "AGPL-3.0/commercial", lambda p, o, a: python_cmd(PY_PYMUPDF, p, o, a)),
         Tool("pypdfium2", "python", "pypdfium2", "Apache-2.0/BSD-3-Clause", lambda p, o, a: python_cmd(PY_PYPDFIUM2, p, o, a)),
         Tool("pymupdf4llm", "python", "pymupdf4llm", "AGPL-3.0/commercial", lambda p, o, a: python_cmd(PY_PYMUPDF4LLM, p, o, a)),
@@ -260,9 +260,9 @@ def detect_tools(args: argparse.Namespace) -> tuple[list[Tool], dict[str, Any]]:
     availability: dict[str, Any] = {}
     available: list[Tool] = []
     for tool in tool_definitions():
-        if tool.name == "oxide":
-            ok = Path(args.oxide_bin).exists()
-            availability[tool.name] = {"available": ok, "reason": None if ok else f"missing oxide binary: {args.oxide_bin}"}
+        if tool.name == "wellfriendpdf":
+            ok = Path(args.wellfriendpdf_bin).exists()
+            availability[tool.name] = {"available": ok, "reason": None if ok else f"missing wellfriendpdf binary: {args.wellfriendpdf_bin}"}
         elif tool.kind == "python":
             proc = subprocess.run(
                 [sys.executable, "-c", f"import {tool.import_name}; print('ok')"],
@@ -571,7 +571,7 @@ def run_one_file(entry: dict[str, Any], tools: list[Tool], args: argparse.Namesp
                 pass
     if sample and sample_outputs:
         reference = None
-        for name in ["pymupdf", "pypdfium2", "pdf_oxide", "oxide"]:
+        for name in ["pymupdf", "pypdfium2", "pdf_wellfriendpdf", "wellfriendpdf"]:
             if sample_outputs.get(name):
                 reference = name
                 break
@@ -616,36 +616,36 @@ def aggregate_quality(records: list[dict[str, Any]]) -> dict[str, Any]:
 
 def make_worklist(summary: dict[str, Any], records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     overall = summary["overall"]
-    oxide = overall.get("oxide", {})
+    wellfriendpdf = overall.get("wellfriendpdf", {})
     work: list[dict[str, Any]] = []
     faster = [
         (tool, stats)
         for tool, stats in overall.items()
-        if tool != "oxide" and stats.get("mean_s") is not None and oxide.get("mean_s") is not None and stats["mean_s"] < oxide["mean_s"]
+        if tool != "wellfriendpdf" and stats.get("mean_s") is not None and wellfriendpdf.get("mean_s") is not None and stats["mean_s"] < wellfriendpdf["mean_s"]
     ]
     if faster:
         work.append(
             {
                 "rank": 1,
                 "area": "performance",
-                "finding": "Oxide mean extraction is slower than one or more leaders in this run.",
+                "finding": "Wellfriend mean extraction is slower than one or more leaders in this run.",
                 "evidence": {tool: stats["mean_s"] for tool, stats in sorted(faster, key=lambda x: x[1]["mean_s"])[:5]},
             }
         )
-    oxide_fail_others_pass = [
+    wellfriendpdf_fail_others_pass = [
         rec["id"]
         for rec in records
-        if not rec.get("tools", {}).get("oxide", {}).get("ok")
-        and any(v.get("ok") for k, v in rec.get("tools", {}).items() if k != "oxide")
+        if not rec.get("tools", {}).get("wellfriendpdf", {}).get("ok")
+        and any(v.get("ok") for k, v in rec.get("tools", {}).items() if k != "wellfriendpdf")
     ]
-    if oxide_fail_others_pass:
+    if wellfriendpdf_fail_others_pass:
         work.append(
             {
                 "rank": len(work) + 1,
                 "area": "fidelity",
-                "finding": "Oxide failed files that another extractor passed.",
-                "evidence_count": len(oxide_fail_others_pass),
-                "examples": oxide_fail_others_pass[:20],
+                "finding": "Wellfriend failed files that another extractor passed.",
+                "evidence_count": len(wellfriendpdf_fail_others_pass),
+                "examples": wellfriendpdf_fail_others_pass[:20],
             }
         )
     quality = summary.get("quality", {}).get("tools", {})
@@ -655,7 +655,7 @@ def make_worklist(summary: dict[str, Any], records: list[dict[str, Any]]) -> lis
             {
                 "rank": len(work) + 1,
                 "area": "text-quality",
-                "finding": "Some tools diverged materially from the reference text sample; inspect Oxide if listed.",
+                "finding": "Some tools diverged materially from the reference text sample; inspect Wellfriend if listed.",
                 "evidence": low_quality,
             }
         )
@@ -757,10 +757,10 @@ def render_report(payload: dict[str, Any], report_path: Path) -> None:
     else:
         lines.append("Capability matrix not loaded.")
     lines.extend(["", "## Feature Gaps Found", ""])
-    for gap in capability.get("oxide_lacks", []):
+    for gap in capability.get("wellfriendpdf_lacks", []):
         lines.append(f"- {gap}")
-    lines.extend(["", "## Oxide Differentiators Found", ""])
-    for win in capability.get("oxide_differentiators", []):
+    lines.extend(["", "## Wellfriend Differentiators Found", ""])
+    for win in capability.get("wellfriendpdf_differentiators", []):
         lines.append(f"- {win}")
     lines.extend(["", "## Prioritized Work List", ""])
     for item in payload.get("worklist", []):
@@ -774,13 +774,13 @@ def render_report(payload: dict[str, Any], report_path: Path) -> None:
             "",
             f"- Python: `{sys.version.split()[0]}`",
             f"- Platform: `{sys.platform}`",
-            f"- Oxide binary: `{payload['oxide_bin']}`",
+            f"- Wellfriend binary: `{payload['wellfriendpdf_bin']}`",
             f"- Manifest: `{payload['manifest_path']}`",
             f"- Output JSON: `{payload['output_json']}`",
             "",
             "## Source Notes",
             "",
-            "- pdf_oxide publishes a comparable 3,830-PDF benchmark using veraPDF, Mozilla pdf.js, and DARPA SafeDocs with single-thread, 60s timeout, no warm-up methodology.",
+            "- pdf_wellfriendpdf publishes a comparable 3,830-PDF benchmark using veraPDF, Mozilla pdf.js, and DARPA SafeDocs with single-thread, 60s timeout, no warm-up methodology.",
             "- The corpus script also uses arXiv for scale and diversity. arXiv paper license metadata varies by paper; PDFs remain local-only.",
         ]
     )
@@ -798,7 +798,7 @@ def git_commit() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", default=str(DEFAULT_MANIFEST))
-    parser.add_argument("--oxide-bin", default=str(default_oxide_bin()))
+    parser.add_argument("--wellfriendpdf-bin", default=str(default_wellfriendpdf_bin()))
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
     parser.add_argument("--report", default=str(DEFAULT_REPORT))
     parser.add_argument("--timeout", type=int, default=60)
@@ -855,7 +855,7 @@ def main() -> int:
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "commit": git_commit(),
         "manifest_path": str(manifest_path.relative_to(REPO_ROOT) if manifest_path.is_relative_to(REPO_ROOT) else manifest_path),
-        "oxide_bin": str(args.oxide_bin),
+        "wellfriendpdf_bin": str(args.wellfriendpdf_bin),
         "timeout_s": args.timeout,
         "max_memory_mb": args.max_memory_mb,
         "files_benchmarked": len(records),

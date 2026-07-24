@@ -1,4 +1,4 @@
-use oxide_engine::{
+use wellfriendpdf_engine::{
     mock_tableformer_proposal_set, sdk, segment_cjk_dictionary_text_with_provider,
     AdvancedChunkMode, CjkDictionaryProvider, ContentEngine, ParentTreeRecoveryStatus,
     SemanticBindingOptions, TableProposalMergeOutcomeKind,
@@ -82,7 +82,7 @@ fn semantic_bundle_preserves_parenttree_text_provenance_and_proposal_status() {
             pages: vec![1],
             search_query: Some("Recovered".to_string()),
             table_proposals: Some(mock_tableformer_proposal_set(1)),
-            chunk_options: oxide_engine::AdvancedChunkOptions {
+            chunk_options: wellfriendpdf_engine::AdvancedChunkOptions {
                 mode: AdvancedChunkMode::CjkTokenAware,
                 target_tokens: 32,
                 overlap_tokens: 0,
@@ -130,7 +130,7 @@ fn semantic_bundle_preserves_parenttree_text_provenance_and_proposal_status() {
                 pages: vec![1],
                 search_query: Some("Recovered".to_string()),
                 table_proposals: Some(mock_tableformer_proposal_set(1)),
-                chunk_options: oxide_engine::AdvancedChunkOptions {
+                chunk_options: wellfriendpdf_engine::AdvancedChunkOptions {
                     mode: AdvancedChunkMode::CjkTokenAware,
                     target_tokens: 32,
                     overlap_tokens: 0,

@@ -23,15 +23,15 @@ extraction and editing paths.
 ## CLI/API
 
 - Rust: `forms_report(&ContentEngine)`.
-- CLI: `oxide forms-report input.pdf`.
-- CLI: `oxide forms-export input.pdf --format xfdf --output fields.xfdf`.
-- CLI: `oxide forms-import input.pdf fields.xfdf --format xfdf --out filled.pdf`.
+- CLI: `wellfriendpdf forms-report input.pdf`.
+- CLI: `wellfriendpdf forms-export input.pdf --format xfdf --output fields.xfdf`.
+- CLI: `wellfriendpdf forms-import input.pdf fields.xfdf --format xfdf --out filled.pdf`.
 - Existing editing API: `PdfEditor::set_form_text`,
   `set_form_checkbox`, `set_form_choice`, and `flatten_forms`.
 
 ## Limits
 
-- Dynamic XFA is detected and reported as unsupported. Oxide does not execute
+- Dynamic XFA is detected and reported as unsupported. Wellfriend does not execute
   XFA or Acrobat JavaScript.
 - Signature fields are detected, but cryptographic validation is Prompt 09.
 - Rich text field appearance and all producer-specific DA quirks are bounded

@@ -15,7 +15,7 @@ use crate::jobs::JobsState;
 use crate::rate_limit::RateLimiter;
 use crate::routes;
 
-// -- Oxide HTTP API v1 -----------------------------------------------------
+// -- Wellfriend HTTP API v1 -----------------------------------------------------
 //
 // POST /api/v1/extract-text
 //   Extract plain text from a PDF.
@@ -156,7 +156,7 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
 /// Default (no `cors_allowed_origins`, no `cors_allow_any`): no cross-origin
 /// access is granted — the safest posture for an auth-gated API that may handle
 /// sensitive documents. Deployers opt in by listing their frontend origin(s) in
-/// `OXIDE_CORS_ALLOWED_ORIGINS`. The `OXIDE_CORS_ALLOW_ANY` dev opt-in mirrors
+/// `WELLFRIENDPDF_CORS_ALLOWED_ORIGINS`. The `WELLFRIENDPDF_CORS_ALLOW_ANY` dev opt-in mirrors
 /// the auth dev opt-in for local development only.
 fn build_cors_layer(config: &ServerConfig) -> CorsLayer {
     // Only the methods the API actually serves, and only the headers a real
@@ -175,7 +175,7 @@ fn build_cors_layer(config: &ServerConfig) -> CorsLayer {
     if config.cors_allow_any {
         // Dev-only: warn loudly. (Startup also warns; this guards the layer.)
         tracing::warn!(
-            "CORS is in ALLOW-ANY mode (OXIDE_CORS_ALLOW_ANY) — any origin may \
+            "CORS is in ALLOW-ANY mode (WELLFRIENDPDF_CORS_ALLOW_ANY) — any origin may \
              call this API. Do NOT use this in production."
         );
         return base.allow_origin(AllowOrigin::any());

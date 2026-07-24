@@ -22,7 +22,7 @@ fn long_version() -> &'static str {
         format!(
             "{cli}\nengine: {engine}\nocr: {ocr}\nfeatures: [{features}]",
             cli = env!("CARGO_PKG_VERSION"),
-            engine = oxide_engine::ENGINE_VERSION,
+            engine = wellfriendpdf_engine::ENGINE_VERSION,
             ocr = if OCR_COMPILED_IN {
                 "compiled-in (Tesseract backend available)"
             } else {
@@ -36,11 +36,11 @@ fn long_version() -> &'static str {
 
 #[derive(Parser)]
 #[command(
-    name = "oxide",
-    about = "Oxide — pure-Rust PDF processing tool",
+    name = "wellfriendpdf",
+    about = "Wellfriend — pure-Rust PDF processing tool",
     version,
     long_version = long_version(),
-    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, render-compare, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  oxide extract-text input.pdf --structured --format json\n  oxide parser-report input.pdf --mode audit\n  oxide pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  oxide image-to-pdf img1.jpg img2.png --out combined.pdf\n  oxide pdf-to-xlsx report.pdf --out report.xlsx\n  oxide pdf-to-pptx deck.pdf --out deck.pptx\n  oxide pdf-to-docx report.pdf --out report.docx\n  oxide xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  oxide watermark input.pdf --text CONFIDENTIAL --out out.pdf"
+    after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, render-compare, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  wellfriendpdf extract-text input.pdf --structured --format json\n  wellfriendpdf parser-report input.pdf --mode audit\n  wellfriendpdf pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  wellfriendpdf image-to-pdf img1.jpg img2.png --out combined.pdf\n  wellfriendpdf pdf-to-xlsx report.pdf --out report.xlsx\n  wellfriendpdf pdf-to-pptx deck.pdf --out deck.pptx\n  wellfriendpdf pdf-to-docx report.pdf --out report.docx\n  wellfriendpdf xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  wellfriendpdf watermark input.pdf --text CONFIDENTIAL --out out.pdf"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -130,17 +130,17 @@ fn classify_error(err: &(dyn Error + 'static)) -> CliExitCode {
         if let Some(cli) = error.downcast_ref::<CliError>() {
             return cli.kind;
         }
-        if let Some(oxide) = error.downcast_ref::<oxide_engine::OxideError>() {
-            return match oxide.kind() {
-                oxide_engine::ErrorKind::Io => CliExitCode::Io,
-                oxide_engine::ErrorKind::UnsupportedFeature => CliExitCode::Unsupported,
-                oxide_engine::ErrorKind::MalformedPdf
-                | oxide_engine::ErrorKind::Parse
-                | oxide_engine::ErrorKind::MissingObject
-                | oxide_engine::ErrorKind::Encrypted
-                | oxide_engine::ErrorKind::AuthenticationFailure
-                | oxide_engine::ErrorKind::ResourceLimit => CliExitCode::Input,
-                oxide_engine::ErrorKind::Cancelled => CliExitCode::Internal,
+        if let Some(wellfriendpdf) = error.downcast_ref::<wellfriendpdf_engine::WellfriendError>() {
+            return match wellfriendpdf.kind() {
+                wellfriendpdf_engine::ErrorKind::Io => CliExitCode::Io,
+                wellfriendpdf_engine::ErrorKind::UnsupportedFeature => CliExitCode::Unsupported,
+                wellfriendpdf_engine::ErrorKind::MalformedPdf
+                | wellfriendpdf_engine::ErrorKind::Parse
+                | wellfriendpdf_engine::ErrorKind::MissingObject
+                | wellfriendpdf_engine::ErrorKind::Encrypted
+                | wellfriendpdf_engine::ErrorKind::AuthenticationFailure
+                | wellfriendpdf_engine::ErrorKind::ResourceLimit => CliExitCode::Input,
+                wellfriendpdf_engine::ErrorKind::Cancelled => CliExitCode::Internal,
             };
         }
         if error.downcast_ref::<std::io::Error>().is_some() {
@@ -420,11 +420,11 @@ enum Commands {
     EditText(EditTextArgs),
     /// Append a small incremental text overlay update for writer verification
     SaveIncremental(SaveIncrementalArgs),
-    /// Convert a DOCX document to PDF with Oxide's native writer
+    /// Convert a DOCX document to PDF with Wellfriend's native writer
     DocxToPdf(OfficeToPdfArgs),
-    /// Convert an XLSX workbook to PDF with Oxide's native writer
+    /// Convert an XLSX workbook to PDF with Wellfriend's native writer
     XlsxToPdf(OfficeToPdfArgs),
-    /// Convert a PPTX presentation to PDF with Oxide's native writer
+    /// Convert a PPTX presentation to PDF with Wellfriend's native writer
     PptxToPdf(OfficeToPdfArgs),
     /// Analyze whether a PDF has a real text layer
     Analyze(AnalyzeArgs),
@@ -650,7 +650,7 @@ struct CodecIsolationReportArgs {
     /// Isolation policy: in_process, isolated_preferred, isolated_required, report_only, disabled
     #[arg(long, default_value = "in_process")]
     policy: String,
-    /// Explicit worker binary path. Otherwise OXIDE_CODEC_WORKER or a sibling binary is used.
+    /// Explicit worker binary path. Otherwise WELLFRIENDPDF_CODEC_WORKER or a sibling binary is used.
     #[arg(long)]
     worker: Option<PathBuf>,
     /// Worker timeout in milliseconds
@@ -2177,7 +2177,7 @@ struct RenderArgs {
     /// Maximum pixels (width*height) per rendered page. A page whose final pixel
     /// count would exceed this is skipped with a clean error instead of attempting
     /// an abusive allocation. Defaults to the engine cap (100 MP); overrides the
-    /// OXIDE_MAX_RENDER_PIXELS environment variable when set.
+    /// WELLFRIENDPDF_MAX_RENDER_PIXELS environment variable when set.
     #[arg(long)]
     max_render_pixels: Option<u64>,
     /// Emit a JSON result summary
@@ -2974,18 +2974,18 @@ struct CanonicalizeArgs {
 
 fn main() -> ExitCode {
     match std::thread::Builder::new()
-        .name("oxide-cli".to_string())
+        .name("wellfriendpdf-cli".to_string())
         .stack_size(32 * 1024 * 1024)
         .spawn(run_cli)
     {
         Ok(handle) => handle.join().unwrap_or_else(|_| {
             eprintln!(
-                "oxide: internal error: command panicked; this is a bug, not a PDF-level error"
+                "wellfriendpdf: internal error: command panicked; this is a bug, not a PDF-level error"
             );
             ExitCode::from(CliExitCode::Internal.code())
         }),
         Err(err) => {
-            eprintln!("oxide: internal error: could not start CLI worker thread: {err}");
+            eprintln!("wellfriendpdf: internal error: could not start CLI worker thread: {err}");
             ExitCode::from(CliExitCode::Internal.code())
         }
     }
@@ -3003,12 +3003,12 @@ fn run_cli() -> ExitCode {
         Ok(Ok(())) => ExitCode::from(CliExitCode::Success.code()),
         Ok(Err(err)) => {
             let code = classify_error(err.as_ref());
-            eprintln!("oxide: {}: {}", code.label(), err);
+            eprintln!("wellfriendpdf: {}: {}", code.label(), err);
             ExitCode::from(code.code())
         }
         Err(_) => {
             eprintln!(
-                "oxide: internal error: command panicked; this is a bug, not a PDF-level error"
+                "wellfriendpdf: internal error: command panicked; this is a bug, not a PDF-level error"
             );
             ExitCode::from(CliExitCode::Internal.code())
         }
@@ -3217,10 +3217,11 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     use rayon::prelude::*;
 
     let engine = match &args.password {
-        Some(password) => {
-            oxide_engine::ContentEngine::open_path_with_password(&args.pdf, password.as_bytes())?
-        }
-        None => oxide_engine::ContentEngine::open_path(&args.pdf)?,
+        Some(password) => wellfriendpdf_engine::ContentEngine::open_path_with_password(
+            &args.pdf,
+            password.as_bytes(),
+        )?,
+        None => wellfriendpdf_engine::ContentEngine::open_path(&args.pdf)?,
     };
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
@@ -3266,8 +3267,8 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
     // of page buffers in flight. Each chunk preserves input order, and chunks
     // are appended sequentially, so the output stays byte-identical to serial
     // extraction.
-    let parallel_window = oxide_engine::bounded_text_parallel_window(page_nums.len());
-    let page_texts: Vec<oxide_engine::Result<String>> = if parallel_window >= 4 {
+    let parallel_window = wellfriendpdf_engine::bounded_text_parallel_window(page_nums.len());
+    let page_texts: Vec<wellfriendpdf_engine::Result<String>> = if parallel_window >= 4 {
         let mut out = Vec::with_capacity(page_nums.len());
         for chunk in page_nums.chunks(parallel_window) {
             out.extend(
@@ -3312,7 +3313,7 @@ fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {
 /// columns/blocks. `--format text` emits reading-order text; `--format json`
 /// emits the structured block tree (bounding boxes + reading order).
 fn run_extract_text_structured(
-    engine: &oxide_engine::ContentEngine,
+    engine: &wellfriendpdf_engine::ContentEngine,
     page_nums: &[usize],
     args: &ExtractTextArgs,
 ) -> Result<(), Box<dyn Error>> {
@@ -3389,7 +3390,7 @@ fn run_extract_text_structured(
 /// Semantic extraction: tagged PDFs use `/StructTreeRoot` and MCID links;
 /// untagged PDFs fall back to the geometric layout analyzer from `--structured`.
 fn run_extract_text_semantic(
-    engine: &oxide_engine::ContentEngine,
+    engine: &wellfriendpdf_engine::ContentEngine,
     page_nums: &[usize],
     args: &ExtractTextArgs,
 ) -> Result<(), Box<dyn Error>> {
@@ -3442,19 +3443,19 @@ fn run_extract_text_semantic(
 
 fn semantic_model_options(
     args: &ExtractTextArgs,
-) -> Result<oxide_engine::TextSemanticOptions, Box<dyn Error>> {
+) -> Result<wellfriendpdf_engine::TextSemanticOptions, Box<dyn Error>> {
     let cjk_segmentation = match args.cjk_segmentation.to_ascii_lowercase().as_str() {
-        "char" => oxide_engine::CjkSegmentationMode::Char,
-        "simple" => oxide_engine::CjkSegmentationMode::Simple,
-        "dictionary" | "dict" => oxide_engine::CjkSegmentationMode::Dictionary,
+        "char" => wellfriendpdf_engine::CjkSegmentationMode::Char,
+        "simple" => wellfriendpdf_engine::CjkSegmentationMode::Simple,
+        "dictionary" | "dict" => wellfriendpdf_engine::CjkSegmentationMode::Dictionary,
         other => {
             return Err(usage_error(format!(
                 "unknown --cjk-segmentation '{other}'; use char, simple, or dictionary"
             )));
         }
     };
-    let defaults = oxide_engine::TextSemanticOptions::default();
-    Ok(oxide_engine::TextSemanticOptions {
+    let defaults = wellfriendpdf_engine::TextSemanticOptions::default();
+    Ok(wellfriendpdf_engine::TextSemanticOptions {
         include_structure: args.include_structure || args.semantic,
         include_detailed_provenance: args.include_provenance,
         cjk_segmentation,
@@ -3468,12 +3469,12 @@ fn semantic_model_options(
 /// blocks as plain text in recovered reading order. Digital-born pages parse as
 /// usual; only pages with no text layer differ from the non-OCR path.
 fn run_extract_text_ocr(
-    engine: &oxide_engine::ContentEngine,
+    engine: &wellfriendpdf_engine::ContentEngine,
     page_nums: Vec<usize>,
     args: &ExtractTextArgs,
-    policy: oxide_engine::OcrPolicy,
+    policy: wellfriendpdf_engine::OcrPolicy,
 ) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{BlockKind, ParseOptions};
+    use wellfriendpdf_engine::{BlockKind, ParseOptions};
 
     let options = ParseOptions {
         pages: page_nums,
@@ -3541,10 +3542,11 @@ fn run_extract_tables(args: ExtractTablesArgs) -> Result<(), Box<dyn Error>> {
     }
     let _ = (&args.ocr_lang, args.ocr_dpi); // accepted for flag consistency only
     let engine = match &args.password {
-        Some(password) => {
-            oxide_engine::ContentEngine::open_path_with_password(&args.pdf, password.as_bytes())?
-        }
-        None => oxide_engine::ContentEngine::open_path(&args.pdf)?,
+        Some(password) => wellfriendpdf_engine::ContentEngine::open_path_with_password(
+            &args.pdf,
+            password.as_bytes(),
+        )?,
+        None => wellfriendpdf_engine::ContentEngine::open_path(&args.pdf)?,
     };
     let total = engine.page_count()?;
     let page_nums = parse_page_range_cli(&args.pages, total)?;
@@ -3624,7 +3626,9 @@ fn run_extract_tables(args: ExtractTablesArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn table_pages_to_html(pages: &[(usize, Vec<oxide_engine::analysis::tables::Table>)]) -> String {
+fn table_pages_to_html(
+    pages: &[(usize, Vec<wellfriendpdf_engine::analysis::tables::Table>)],
+) -> String {
     let mut out = String::from(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>Extracted Tables</title></head><body>\n",
     );
@@ -3648,30 +3652,32 @@ fn table_pages_to_html(pages: &[(usize, Vec<oxide_engine::analysis::tables::Tabl
 /// with the feature off, it returns an actionable error so a default
 /// (pure-Rust) CLI build still parses, just without OCR.
 #[cfg(feature = "ocr")]
-fn build_ocr_engine() -> Result<std::sync::Arc<dyn oxide_engine::OcrEngine>, Box<dyn Error>> {
-    let engine = oxide_ocr_tesseract::TesseractEngine::new()?;
+fn build_ocr_engine() -> Result<std::sync::Arc<dyn wellfriendpdf_engine::OcrEngine>, Box<dyn Error>>
+{
+    let engine = wellfriendpdf_ocr_tesseract::TesseractEngine::new()?;
     Ok(std::sync::Arc::new(engine))
 }
 
 #[cfg(not(feature = "ocr"))]
-fn build_ocr_engine() -> Result<std::sync::Arc<dyn oxide_engine::OcrEngine>, Box<dyn Error>> {
+fn build_ocr_engine() -> Result<std::sync::Arc<dyn wellfriendpdf_engine::OcrEngine>, Box<dyn Error>>
+{
     Err(unsupported_error(
-        "this build of oxide has no OCR backend; rebuild the CLI with \
+        "this build of wellfriendpdf has no OCR backend; rebuild the CLI with \
          `--features ocr` (and install the `tesseract` binary + language data) \
          to use --ocr",
     ))
 }
 
-/// Build [`oxide_engine::OcrOptions`] from the shared CLI `--ocr-lang`/`--ocr-dpi`
+/// Build [`wellfriendpdf_engine::OcrOptions`] from the shared CLI `--ocr-lang`/`--ocr-dpi`
 /// flags (languages split on `+`/`,`, falling back to `eng`). Used by every
 /// command that supports `--ocr` so the option parsing stays identical.
-fn ocr_options(ocr_lang: &str, ocr_dpi: u32) -> oxide_engine::OcrOptions {
+fn ocr_options(ocr_lang: &str, ocr_dpi: u32) -> wellfriendpdf_engine::OcrOptions {
     let langs: Vec<String> = ocr_lang
         .split(['+', ','])
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    oxide_engine::OcrOptions {
+    wellfriendpdf_engine::OcrOptions {
         languages: if langs.is_empty() {
             vec!["eng".to_string()]
         } else {
@@ -3682,7 +3688,7 @@ fn ocr_options(ocr_lang: &str, ocr_dpi: u32) -> oxide_engine::OcrOptions {
     }
 }
 
-/// Interpret the CLI `--ocr` flag value into an [`oxide_engine::OcrPolicy`].
+/// Interpret the CLI `--ocr` flag value into an [`wellfriendpdf_engine::OcrPolicy`].
 ///
 /// `--ocr` is an optional-value flag: absent → `None` (OCR off, the default);
 /// bare `--ocr` → `Some("auto")` via clap's `default_missing_value`; `--ocr off`
@@ -3691,11 +3697,11 @@ fn ocr_options(ocr_lang: &str, ocr_dpi: u32) -> oxide_engine::OcrOptions {
 /// error for an unrecognized token.
 fn ocr_policy_from_flag(
     flag: &Option<String>,
-) -> Result<Option<oxide_engine::OcrPolicy>, Box<dyn Error>> {
+) -> Result<Option<wellfriendpdf_engine::OcrPolicy>, Box<dyn Error>> {
     match flag.as_deref() {
         None => Ok(None),
-        Some(tok) => match oxide_engine::OcrPolicy::parse(tok) {
-            Some(oxide_engine::OcrPolicy::Off) => Ok(None),
+        Some(tok) => match wellfriendpdf_engine::OcrPolicy::parse(tok) {
+            Some(wellfriendpdf_engine::OcrPolicy::Off) => Ok(None),
             Some(policy) => Ok(Some(policy)),
             None => Err(format!(
                 "invalid --ocr value '{tok}'; use off, auto, or force (bare --ocr means auto)"
@@ -3711,7 +3717,7 @@ fn ocr_policy_from_flag(
 /// geometric precedence-graph ordering + semantic classifier. JSON emits the
 /// full model; markdown emits a readable rendering for human inspection.
 fn run_parse(args: ParseArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{ImageHandling, ParseOptions, SerializeOptions};
+    use wellfriendpdf_engine::{ImageHandling, ParseOptions, SerializeOptions};
 
     #[derive(Clone, Copy)]
     enum Fmt {
@@ -3778,7 +3784,7 @@ fn run_parse(args: ParseArgs) -> Result<(), Box<dyn Error>> {
     let scanned = document
         .pages
         .iter()
-        .filter(|p| p.source == oxide_engine::PageSource::Scanned)
+        .filter(|p| p.source == wellfriendpdf_engine::PageSource::Scanned)
         .count();
     eprintln!(
         "Parsed: {} body block(s) across {} page(s) ({:?} source, schema {}){}",
@@ -3799,7 +3805,7 @@ fn run_parse(args: ParseArgs) -> Result<(), Box<dyn Error>> {
 
 /// Extract structured key-value fields to JSON (the data-automation surface).
 fn run_extract_fields(args: ExtractFieldsArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{DocType, ExtractOptions};
+    use wellfriendpdf_engine::{DocType, ExtractOptions};
 
     if !matches!(args.format.to_lowercase().as_str(), "json") {
         return Err(format!("unknown --format '{}'; only json is supported", args.format).into());
@@ -3863,30 +3869,34 @@ fn run_extract_fields(args: ExtractFieldsArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_forms_report(args: FormsReportArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let output = serde_json::to_string_pretty(&oxide_engine::forms_report(&engine)?)?;
+    let output = serde_json::to_string_pretty(&wellfriendpdf_engine::forms_report(&engine)?)?;
     write_output_optional(&args.output, &output)?;
     Ok(())
 }
 
 fn run_xfa_report(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let output =
-        oxide_engine::sdk::xfa_report_json(&bytes, args.password.as_deref().map(str::as_bytes))?;
+    let output = wellfriendpdf_engine::sdk::xfa_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
     write_output_optional(&args.output, &pretty_json(&output)?)?;
     Ok(())
 }
 
 fn run_xfa_extract(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let output =
-        oxide_engine::sdk::xfa_extract_json(&bytes, args.password.as_deref().map(str::as_bytes))?;
+    let output = wellfriendpdf_engine::sdk::xfa_extract_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
     write_output_optional(&args.output, &pretty_json(&output)?)?;
     Ok(())
 }
 
 fn run_xfa_script_report(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let output = oxide_engine::sdk::xfa_script_report_json(
+    let output = wellfriendpdf_engine::sdk::xfa_script_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -3896,7 +3906,7 @@ fn run_xfa_script_report(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_xfa_security_report(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let output = oxide_engine::sdk::xfa_security_report_json(
+    let output = wellfriendpdf_engine::sdk::xfa_security_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -3906,7 +3916,7 @@ fn run_xfa_security_report(args: XfaReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_xfa_runtime_report(args: XfaRuntimeReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let output = oxide_engine::sdk::xfa_runtime_report_json(
+    let output = wellfriendpdf_engine::sdk::xfa_runtime_report_json(
         &bytes,
         Some(&args.script_policy),
         args.execute_events,
@@ -3918,7 +3928,7 @@ fn run_xfa_runtime_report(args: XfaRuntimeReportArgs) -> Result<(), Box<dyn Erro
 
 fn run_xfa_render(args: XfaRenderArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (output, report) = oxide_engine::sdk::xfa_render_preview_json(
+    let (output, report) = wellfriendpdf_engine::sdk::xfa_render_preview_json(
         &bytes,
         Some(&args.script_policy),
         args.execute_events,
@@ -3935,7 +3945,7 @@ fn run_xfa_render(args: XfaRenderArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_xfa_flatten(args: XfaFlattenArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (output, report) = oxide_engine::sdk::xfa_flatten_json(
+    let (output, report) = wellfriendpdf_engine::sdk::xfa_flatten_json(
         &bytes,
         Some(&args.mode),
         args.password.as_deref().map(str::as_bytes),
@@ -3953,7 +3963,7 @@ fn run_xfa_flatten(args: XfaFlattenArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_xfa_sanitize(args: XfaSanitizeArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (output, report) = oxide_engine::sdk::xfa_sanitize_json(
+    let (output, report) = wellfriendpdf_engine::sdk::xfa_sanitize_json(
         &bytes,
         Some(&args.mode),
         args.password.as_deref().map(str::as_bytes),
@@ -3988,7 +3998,7 @@ fn write_xfa_operation_report(
 
 fn run_annotation_xfdf_export(args: AnnotationXfdfExportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (xfdf, report) = oxide_engine::sdk::annotation_xfdf_export_json(
+    let (xfdf, report) = wellfriendpdf_engine::sdk::annotation_xfdf_export_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4008,7 +4018,7 @@ fn run_annotation_xfdf_import(args: AnnotationXfdfImportArgs) -> Result<(), Box<
         .as_ref()
         .map(std::fs::read_to_string)
         .transpose()?;
-    let (output, report) = oxide_engine::sdk::annotation_xfdf_import_json(
+    let (output, report) = wellfriendpdf_engine::sdk::annotation_xfdf_import_json(
         &bytes,
         &xfdf,
         options.as_deref(),
@@ -4033,7 +4043,7 @@ fn run_annotation_appearance_generate(
         .as_ref()
         .map(std::fs::read_to_string)
         .transpose()?;
-    let (output, report) = oxide_engine::sdk::annotation_appearance_generate_json(
+    let (output, report) = wellfriendpdf_engine::sdk::annotation_appearance_generate_json(
         &bytes,
         options.as_deref(),
         args.password.as_deref().map(str::as_bytes),
@@ -4060,7 +4070,7 @@ fn run_annotation_appearance_report(
         .as_ref()
         .map(std::fs::read_to_string)
         .transpose()?;
-    let report = oxide_engine::sdk::annotation_appearance_report_json(
+    let report = wellfriendpdf_engine::sdk::annotation_appearance_report_json(
         &bytes,
         options.as_deref(),
         args.password.as_deref().map(str::as_bytes),
@@ -4071,7 +4081,7 @@ fn run_annotation_appearance_report(
 
 fn run_rich_media_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::rich_media_report_json(
+    let report = wellfriendpdf_engine::sdk::rich_media_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4086,7 +4096,7 @@ fn run_rich_media_sanitize(args: RichMediaSanitizeArgs) -> Result<(), Box<dyn Er
         .as_ref()
         .map(std::fs::read_to_string)
         .transpose()?;
-    let (output, report) = oxide_engine::sdk::rich_media_sanitize_json(
+    let (output, report) = wellfriendpdf_engine::sdk::rich_media_sanitize_json(
         &bytes,
         Some(&args.policy),
         custom.as_deref(),
@@ -4104,7 +4114,7 @@ fn run_rich_media_sanitize(args: RichMediaSanitizeArgs) -> Result<(), Box<dyn Er
 
 fn run_rich_media_flatten_poster(args: Prompt17OutputArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (output, report) = oxide_engine::sdk::rich_media_flatten_poster_json(
+    let (output, report) = wellfriendpdf_engine::sdk::rich_media_flatten_poster_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4125,7 +4135,7 @@ fn run_nonaxis_redaction(args: NonAxisRedactionArgs) -> Result<(), Box<dyn Error
     let bytes = std::fs::read(&args.pdf)?;
     let options = std::fs::read_to_string(&args.plan)?;
     if args.dry_run {
-        let report = oxide_engine::sdk::nonaxis_redaction_plan_json(
+        let report = wellfriendpdf_engine::sdk::nonaxis_redaction_plan_json(
             &bytes,
             &options,
             args.password.as_deref().map(str::as_bytes),
@@ -4133,7 +4143,7 @@ fn run_nonaxis_redaction(args: NonAxisRedactionArgs) -> Result<(), Box<dyn Error
         write_xfa_operation_report(&report, args.report.as_ref(), true)?;
         return Ok(());
     }
-    let (output, report) = oxide_engine::sdk::nonaxis_redaction_apply_json(
+    let (output, report) = wellfriendpdf_engine::sdk::nonaxis_redaction_apply_json(
         &bytes,
         &options,
         args.password.as_deref().map(str::as_bytes),
@@ -4151,7 +4161,7 @@ fn run_nonaxis_redaction(args: NonAxisRedactionArgs) -> Result<(), Box<dyn Error
 
 fn run_prompt17_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt17_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt17_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4161,7 +4171,7 @@ fn run_prompt17_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_prompt18_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt18_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt18_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4170,7 +4180,7 @@ fn run_prompt18_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_prompt18b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt18b_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt18b_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4179,7 +4189,7 @@ fn run_prompt18b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> 
 
 fn run_form_js_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::form_js_report_json(
+    let report = wellfriendpdf_engine::sdk::form_js_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4194,24 +4204,24 @@ fn run_form_js_sanitize(args: Prompt19SanitizeArgs, flatten: bool) -> Result<(),
         let mode = if flatten {
             "flatten_calculated_values_then_remove"
         } else {
-            oxide_engine::FormJsPolicyMode::parse(&args.policy)
+            wellfriendpdf_engine::FormJsPolicyMode::parse(&args.policy)
                 .ok_or_else(|| usage_error("unknown --policy for form-js-sanitize"))?
                 .as_str()
         };
         serde_json::to_string(&serde_json::json!({
             "mode": mode,
             "signature_policy_override": args.signature_policy_override,
-            "limits": oxide_engine::FormJsLimits::default()
+            "limits": wellfriendpdf_engine::FormJsLimits::default()
         }))?
     };
     if args.dry_run {
         let report = if flatten {
-            oxide_engine::sdk::form_action_graph_json(
+            wellfriendpdf_engine::sdk::form_action_graph_json(
                 &bytes,
                 args.password.as_deref().map(str::as_bytes),
             )?
         } else {
-            oxide_engine::sdk::form_js_report_json(
+            wellfriendpdf_engine::sdk::form_js_report_json(
                 &bytes,
                 args.password.as_deref().map(str::as_bytes),
             )?
@@ -4219,13 +4229,13 @@ fn run_form_js_sanitize(args: Prompt19SanitizeArgs, flatten: bool) -> Result<(),
         return write_xfa_operation_report(&report, args.report.as_ref(), true);
     }
     let (output, report) = if flatten {
-        oxide_engine::sdk::form_js_flatten_values_json(
+        wellfriendpdf_engine::sdk::form_js_flatten_values_json(
             &bytes,
             Some(&options),
             args.password.as_deref().map(str::as_bytes),
         )?
     } else {
-        oxide_engine::sdk::form_js_sanitize_json(
+        wellfriendpdf_engine::sdk::form_js_sanitize_json(
             &bytes,
             Some(&options),
             args.password.as_deref().map(str::as_bytes),
@@ -4244,7 +4254,7 @@ fn run_form_js_sanitize(args: Prompt19SanitizeArgs, flatten: bool) -> Result<(),
 
 fn run_interactive_data_closeout_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::interactive_data_closeout_report_json(
+    let report = wellfriendpdf_engine::sdk::interactive_data_closeout_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4253,7 +4263,7 @@ fn run_interactive_data_closeout_report(args: Prompt17ReportArgs) -> Result<(), 
 
 fn run_word_pagination_audit(args: WordPaginationAuditArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let raw = oxide_engine::sdk::word_pagination_audit_json(
+    let raw = wellfriendpdf_engine::sdk::word_pagination_audit_json(
         &bytes,
         &args.layout,
         args.password.as_deref().map(str::as_bytes),
@@ -4286,7 +4296,7 @@ fn run_word_pagination_audit(args: WordPaginationAuditArgs) -> Result<(), Box<dy
 
 fn run_prompt19_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt19_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt19_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4295,7 +4305,7 @@ fn run_prompt19_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_prompt20_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt20_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt20_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4304,7 +4314,7 @@ fn run_prompt20_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_prompt20b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt20b_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt20b_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4313,7 +4323,7 @@ fn run_prompt20b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> 
 
 fn run_prompt21_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt21_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt21_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4326,7 +4336,7 @@ fn run_prompt21_raster_vector_report(args: Prompt21RasterVectorArgs) -> Result<(
         Some(path) => Some(std::fs::read_to_string(path)?),
         None => None,
     };
-    let report = oxide_engine::sdk::prompt21_raster_vector_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt21_raster_vector_report_json(
         &bytes,
         args.page,
         options_json.as_deref(),
@@ -4337,7 +4347,7 @@ fn run_prompt21_raster_vector_report(args: Prompt21RasterVectorArgs) -> Result<(
 
 fn run_prompt21_font_reconstruction_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt21_font_reconstruction_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt21_font_reconstruction_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4345,13 +4355,13 @@ fn run_prompt21_font_reconstruction_report(args: Prompt17ReportArgs) -> Result<(
 }
 
 fn run_prompt21_history_report(args: Prompt21HistoryArgs) -> Result<(), Box<dyn Error>> {
-    let report = oxide_engine::sdk::prompt21_history_report_json()?;
+    let report = wellfriendpdf_engine::sdk::prompt21_history_report_json()?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
 fn run_prompt21_object_stream_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt21_object_stream_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt21_object_stream_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4362,7 +4372,7 @@ fn run_prompt21_save_object_streams(
     args: Prompt21SaveObjectStreamsArgs,
 ) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (output, report) = oxide_engine::sdk::prompt21_pack_object_streams_json(
+    let (output, report) = wellfriendpdf_engine::sdk::prompt21_pack_object_streams_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4381,7 +4391,7 @@ fn run_prompt21_save_object_streams(
 
 fn run_prompt22_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt22_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt22_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4390,7 +4400,7 @@ fn run_prompt22_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_prompt23_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::prompt23_report_json(
+    let report = wellfriendpdf_engine::sdk::prompt23_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4399,7 +4409,7 @@ fn run_prompt23_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_writer_determinism_audit(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::writer_determinism_audit_json(
+    let report = wellfriendpdf_engine::sdk::writer_determinism_audit_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4408,7 +4418,7 @@ fn run_writer_determinism_audit(args: Prompt17ReportArgs) -> Result<(), Box<dyn 
 
 fn run_writer_external_diff(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::writer_external_diff_json(
+    let report = wellfriendpdf_engine::sdk::writer_external_diff_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4417,7 +4427,7 @@ fn run_writer_external_diff(args: Prompt17ReportArgs) -> Result<(), Box<dyn Erro
 
 fn run_writer_closeout_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::writer_closeout_report_json(
+    let report = wellfriendpdf_engine::sdk::writer_closeout_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4426,8 +4436,10 @@ fn run_writer_closeout_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Er
 
 fn run_pubsec_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report =
-        oxide_engine::sdk::pubsec_report_json(&bytes, args.password.as_deref().map(str::as_bytes))?;
+    let report = wellfriendpdf_engine::sdk::pubsec_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
@@ -4439,8 +4451,9 @@ fn run_pubsec_decrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Erro
     refuse_overwrite(output)?;
     let provider = load_pubsec_provider(&args)?;
     let bytes = std::fs::read(&args.pdf)?;
-    let engine = oxide_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)?;
-    let out = oxide_engine::decrypt_pdf(&engine)?;
+    let engine =
+        wellfriendpdf_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)?;
+    let out = wellfriendpdf_engine::decrypt_pdf(&engine)?;
     std::fs::write(output, &out)?;
     let report = serde_json::json!({
         "operation": "pubsec_decrypt",
@@ -4465,7 +4478,7 @@ fn run_pubsec_encrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Erro
     let engine = open_engine(&args.pdf, &args.password)?;
     let options = pubsec_encrypt_options_from_args(&args)?;
     let (out, pubsec_report) =
-        oxide_engine::encrypt_pdf_pubsec(engine.document().reader(), &options)?;
+        wellfriendpdf_engine::encrypt_pdf_pubsec(engine.document().reader(), &options)?;
     std::fs::write(output, &out)?;
     let report = serde_json::json!({
         "operation": "pubsec_encrypt",
@@ -4502,10 +4515,10 @@ fn run_pubsec_reencrypt_with_operation(
     } else {
         let provider = load_pubsec_provider(&args)?;
         let bytes = std::fs::read(&args.pdf)?;
-        oxide_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)?
+        wellfriendpdf_engine::ContentEngine::open_bytes_with_pubsec_provider(bytes, &provider)?
     };
     let (out, pubsec_report) =
-        oxide_engine::reencrypt_pdf_pubsec(engine.document().reader(), &options)?;
+        wellfriendpdf_engine::reencrypt_pdf_pubsec(engine.document().reader(), &options)?;
     std::fs::write(output, &out)?;
     let report = serde_json::json!({
         "operation": operation,
@@ -4523,7 +4536,7 @@ fn run_pubsec_reencrypt_with_operation(
 
 fn run_pdf_mac_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::pdf_mac_report_json(
+    let report = wellfriendpdf_engine::sdk::pdf_mac_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4532,7 +4545,7 @@ fn run_pdf_mac_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_pdf_mac_verify(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::pdf_mac_verify_json(
+    let report = wellfriendpdf_engine::sdk::pdf_mac_verify_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4546,7 +4559,7 @@ fn run_pdf_mac_create(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Erro
         .ok_or("pdf-mac-create requires --pdf-output to write protected PDF bytes")?;
     refuse_overwrite(output)?;
     let bytes = std::fs::read(&args.pdf)?;
-    let (out, report) = oxide_engine::sdk::pdf_mac_create_json(
+    let (out, report) = wellfriendpdf_engine::sdk::pdf_mac_create_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4571,7 +4584,7 @@ fn run_pdf_mac_create(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Erro
 
 fn load_pubsec_provider(
     args: &Prompt23CryptoReportArgs,
-) -> Result<oxide_engine::PubSecKeyProvider, Box<dyn Error>> {
+) -> Result<wellfriendpdf_engine::PubSecKeyProvider, Box<dyn Error>> {
     if let Some(pfx_path) = &args.pfx {
         if !args.certificate.is_empty() || !args.private_key.is_empty() {
             return Err(
@@ -4581,8 +4594,8 @@ fn load_pubsec_provider(
         }
         let pfx = std::fs::read(pfx_path)?;
         let password = read_private_key_password(args)?;
-        let identity = oxide_engine::PubSecIdentity::from_pkcs12_der(&pfx, &password)?;
-        return Ok(oxide_engine::PubSecKeyProvider::single(identity));
+        let identity = wellfriendpdf_engine::PubSecIdentity::from_pkcs12_der(&pfx, &password)?;
+        return Ok(wellfriendpdf_engine::PubSecKeyProvider::single(identity));
     }
     if args.certificate.len() != 1 || args.private_key.len() != 1 {
         return Err(
@@ -4594,11 +4607,11 @@ fn load_pubsec_provider(
     let key = std::fs::read(&args.private_key[0])?;
     let password = read_private_key_password(args)?;
     let identity = if password.is_empty() {
-        oxide_engine::PubSecIdentity::from_bytes(&cert, &key)?
+        wellfriendpdf_engine::PubSecIdentity::from_bytes(&cert, &key)?
     } else {
-        oxide_engine::PubSecIdentity::from_encrypted_pkcs8_der(&cert, &key, &password)?
+        wellfriendpdf_engine::PubSecIdentity::from_encrypted_pkcs8_der(&cert, &key, &password)?
     };
-    Ok(oxide_engine::PubSecKeyProvider::single(identity))
+    Ok(wellfriendpdf_engine::PubSecKeyProvider::single(identity))
 }
 
 fn read_private_key_password(args: &Prompt23CryptoReportArgs) -> Result<Vec<u8>, Box<dyn Error>> {
@@ -4614,7 +4627,7 @@ fn read_private_key_password(args: &Prompt23CryptoReportArgs) -> Result<Vec<u8>,
 
 fn pubsec_encrypt_options_from_args(
     args: &Prompt23CryptoReportArgs,
-) -> Result<oxide_engine::PubSecEncryptOptions, Box<dyn Error>> {
+) -> Result<wellfriendpdf_engine::PubSecEncryptOptions, Box<dyn Error>> {
     let recipient_paths = if args.recipient_certificate.is_empty() {
         &args.certificate
     } else {
@@ -4629,16 +4642,14 @@ fn pubsec_encrypt_options_from_args(
     let mut recipients = Vec::with_capacity(recipient_paths.len());
     for path in recipient_paths {
         let bytes = std::fs::read(path)?;
-        recipients.push(oxide_engine::PubSecRecipientCertificate::from_bytes(
-            &bytes,
-        )?);
+        recipients.push(wellfriendpdf_engine::PubSecRecipientCertificate::from_bytes(&bytes)?);
     }
-    Ok(oxide_engine::PubSecEncryptOptions {
+    Ok(wellfriendpdf_engine::PubSecEncryptOptions {
         recipients,
         permissions: args.permissions as u32,
         encrypt_metadata: true,
-        method: oxide_engine::CryptMethod::AesV2,
-        recipient_id_mode: oxide_engine::PubSecRecipientIdMode::IssuerAndSerial,
+        method: wellfriendpdf_engine::CryptMethod::AesV2,
+        recipient_id_mode: wellfriendpdf_engine::PubSecRecipientIdMode::IssuerAndSerial,
     })
 }
 
@@ -4651,7 +4662,7 @@ fn refuse_overwrite(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
 
 fn run_aes_gcm_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::aes_gcm_report_json(
+    let report = wellfriendpdf_engine::sdk::aes_gcm_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4659,7 +4670,7 @@ fn run_aes_gcm_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_aes_gcm_encrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+    use wellfriendpdf_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
 
     let output = args
         .pdf_output
@@ -4682,7 +4693,7 @@ fn run_aes_gcm_encrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Err
         algorithm: EncryptAlgorithm::Aes256Gcm,
         encrypt_metadata: true,
     };
-    let bytes = oxide_engine::encrypt(&engine, &params)?;
+    let bytes = wellfriendpdf_engine::encrypt(&engine, &params)?;
     std::fs::write(output, &bytes)?;
     let report = serde_json::json!({
         "operation": "aes_gcm_encrypt",
@@ -4707,7 +4718,7 @@ fn run_aes_gcm_decrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Err
         return Err(format!("refusing to overwrite existing output {}", output.display()).into());
     }
     let engine = open_engine(&args.pdf, &args.password)?;
-    let bytes = oxide_engine::decrypt_pdf(&engine)?;
+    let bytes = wellfriendpdf_engine::decrypt_pdf(&engine)?;
     std::fs::write(output, &bytes)?;
     let report = serde_json::json!({
         "operation": "aes_gcm_decrypt",
@@ -4723,7 +4734,7 @@ fn run_aes_gcm_decrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Err
 }
 
 fn run_crypto_tamper_test(args: Prompt23TamperArgs) -> Result<(), Box<dyn Error>> {
-    let report = oxide_engine::sdk::crypto_tamper_test_json()?;
+    let report = wellfriendpdf_engine::sdk::crypto_tamper_test_json()?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
@@ -4733,7 +4744,7 @@ fn run_prompt22_optimize(args: Prompt22OptimizeArgs) -> Result<(), Box<dyn Error
         Some(path) => Some(std::fs::read_to_string(path)?),
         None => None,
     };
-    let (output, report) = oxide_engine::sdk::prompt22_optimize_pdf_json(
+    let (output, report) = wellfriendpdf_engine::sdk::prompt22_optimize_pdf_json(
         &bytes,
         options_json.as_deref(),
         args.password.as_deref().map(str::as_bytes),
@@ -4753,13 +4764,14 @@ fn run_prompt22_optimize(args: Prompt22OptimizeArgs) -> Result<(), Box<dyn Error
 
 fn run_prompt22_office_inspect(args: Prompt22OfficeArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.input)?;
-    let report = oxide_engine::sdk::prompt22_office_inspect_json(&bytes, &args.format)?;
+    let report = wellfriendpdf_engine::sdk::prompt22_office_inspect_json(&bytes, &args.format)?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
 fn run_prompt22_office_to_pdf(args: Prompt22OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.input)?;
-    let (output, report) = oxide_engine::sdk::prompt22_office_to_pdf_json(&bytes, &args.format)?;
+    let (output, report) =
+        wellfriendpdf_engine::sdk::prompt22_office_to_pdf_json(&bytes, &args.format)?;
     if !args.dry_run {
         std::fs::write(&args.output, output)?;
     }
@@ -4782,7 +4794,7 @@ fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn 
     };
     let _logical_requested = args.logical;
     if args.analyze {
-        let report = oxide_engine::sdk::prompt20b_text_range_analyze_json(
+        let report = wellfriendpdf_engine::sdk::prompt20b_text_range_analyze_json(
             &bytes,
             args.page,
             args.password.as_deref().map(str::as_bytes),
@@ -4793,7 +4805,7 @@ fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn 
         .request
         .ok_or_else(|| usage_error("edit-text-range requires --request or --analyze"))?;
     let request_json = std::fs::read_to_string(request)?;
-    let (output, report) = oxide_engine::sdk::prompt20b_text_range_edit_json(
+    let (output, report) = wellfriendpdf_engine::sdk::prompt20b_text_range_edit_json(
         &bytes,
         &request_json,
         args.password.as_deref().map(str::as_bytes),
@@ -4810,20 +4822,20 @@ fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn 
 
 fn run_prompt20_vector_list(args: Prompt20VectorListArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let report = oxide_engine::list_vector_objects(&input, args.page)?;
+    let report = wellfriendpdf_engine::list_vector_objects(&input, args.page)?;
     write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
 }
 
 fn run_prompt20_vector_edit(args: Prompt20VectorEditArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let operation: oxide_engine::VectorEditOperation =
+    let operation: wellfriendpdf_engine::VectorEditOperation =
         serde_json::from_str(&std::fs::read_to_string(&args.operation)?)?;
-    let (output, report) = oxide_engine::edit_vector_object(
+    let (output, report) = wellfriendpdf_engine::edit_vector_object(
         &input,
         args.page,
         &args.id,
         operation,
-        &oxide_engine::VectorEditOptions {
+        &wellfriendpdf_engine::VectorEditOptions {
             signature_policy_override: args.signature_policy_override,
             deterministic: true,
             shared_form_policy: parse_prompt20_shared_form_policy(&args.shared_form_policy)?,
@@ -4845,19 +4857,19 @@ fn run_prompt20_vector_direct(
 ) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let operation = if duplicate {
-        oxide_engine::VectorEditOperation::Duplicate {
+        wellfriendpdf_engine::VectorEditOperation::Duplicate {
             dx: args.dx,
             dy: args.dy,
         }
     } else {
-        oxide_engine::VectorEditOperation::Delete
+        wellfriendpdf_engine::VectorEditOperation::Delete
     };
-    let (output, report) = oxide_engine::edit_vector_object(
+    let (output, report) = wellfriendpdf_engine::edit_vector_object(
         &input,
         args.page,
         &args.id,
         operation,
-        &oxide_engine::VectorEditOptions {
+        &wellfriendpdf_engine::VectorEditOptions {
             signature_policy_override: args.signature_policy_override,
             deterministic: true,
             shared_form_policy: parse_prompt20_shared_form_policy(&args.shared_form_policy)?,
@@ -4875,12 +4887,12 @@ fn run_prompt20_vector_direct(
 
 fn parse_prompt20_shared_form_policy(
     value: &str,
-) -> Result<oxide_engine::SharedFormEditPolicy, Box<dyn Error>> {
+) -> Result<wellfriendpdf_engine::SharedFormEditPolicy, Box<dyn Error>> {
     match value {
-        "reject" => Ok(oxide_engine::SharedFormEditPolicy::Reject),
-        "edit-all-uses" | "edit_all_uses" => Ok(oxide_engine::SharedFormEditPolicy::EditAllUses),
+        "reject" => Ok(wellfriendpdf_engine::SharedFormEditPolicy::Reject),
+        "edit-all-uses" | "edit_all_uses" => Ok(wellfriendpdf_engine::SharedFormEditPolicy::EditAllUses),
         "clone-edit-one-instance" | "clone_edit_one_instance" => {
-            Ok(oxide_engine::SharedFormEditPolicy::CloneEditOneInstance)
+            Ok(wellfriendpdf_engine::SharedFormEditPolicy::CloneEditOneInstance)
         }
         other => Err(format!(
             "unsupported shared Form policy '{other}'; expected reject, edit-all-uses, or clone-edit-one-instance"
@@ -4896,10 +4908,10 @@ fn run_prompt20_ink_fit(args: Prompt20InkFitArgs) -> Result<(), Box<dyn Error>> 
         .as_ref()
         .map(std::fs::read_to_string)
         .transpose()?
-        .map(|json| serde_json::from_str::<oxide_engine::InkFitOptions>(&json))
+        .map(|json| serde_json::from_str::<wellfriendpdf_engine::InkFitOptions>(&json))
         .transpose()?
         .unwrap_or_default();
-    let (output, report) = oxide_engine::fit_annotation_ink_pdf(
+    let (output, report) = wellfriendpdf_engine::fit_annotation_ink_pdf(
         &input,
         args.page,
         args.annotation,
@@ -4925,7 +4937,7 @@ fn run_prompt18_redaction(args: NonAxisRedactionArgs, masked: bool) -> Result<()
     }
     let options = serde_json::to_string(&options_value)?;
     if args.dry_run {
-        let report = oxide_engine::sdk::nonaxis_redaction_plan_json(
+        let report = wellfriendpdf_engine::sdk::nonaxis_redaction_plan_json(
             &bytes,
             &options,
             args.password.as_deref().map(str::as_bytes),
@@ -4933,13 +4945,13 @@ fn run_prompt18_redaction(args: NonAxisRedactionArgs, masked: bool) -> Result<()
         return write_xfa_operation_report(&report, args.report.as_ref(), true);
     }
     let (output, report) = if masked {
-        oxide_engine::sdk::redact_image_mask_json(
+        wellfriendpdf_engine::sdk::redact_image_mask_json(
             &bytes,
             &options,
             args.password.as_deref().map(str::as_bytes),
         )?
     } else {
-        oxide_engine::sdk::redact_inline_image_json(
+        wellfriendpdf_engine::sdk::redact_inline_image_json(
             &bytes,
             &options,
             args.password.as_deref().map(str::as_bytes),
@@ -4951,7 +4963,7 @@ fn run_prompt18_redaction(args: NonAxisRedactionArgs, masked: bool) -> Result<()
 
 fn run_associated_files_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = oxide_engine::sdk::associated_files_report_json(
+    let report = wellfriendpdf_engine::sdk::associated_files_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4960,7 +4972,7 @@ fn run_associated_files_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn E
 
 fn run_associated_files_extract(args: AssociatedFilesExtractArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (payload, report) = oxide_engine::sdk::associated_files_extract_json(
+    let (payload, report) = wellfriendpdf_engine::sdk::associated_files_extract_json(
         &bytes,
         &args.id,
         args.password.as_deref().map(str::as_bytes),
@@ -4973,7 +4985,7 @@ fn run_associated_files_add(args: AssociatedFilesAddArgs) -> Result<(), Box<dyn 
     let bytes = std::fs::read(&args.pdf)?;
     let payload = std::fs::read(&args.file)?;
     let options = std::fs::read_to_string(&args.options)?;
-    let (output, report) = oxide_engine::sdk::associated_files_add_json(
+    let (output, report) = wellfriendpdf_engine::sdk::associated_files_add_json(
         &bytes,
         &payload,
         &options,
@@ -4989,7 +5001,7 @@ fn run_associated_files_update(args: AssociatedFilesUpdateArgs) -> Result<(), Bo
     let bytes = std::fs::read(&args.pdf)?;
     let payload = std::fs::read(&args.file)?;
     let options = std::fs::read_to_string(&args.options)?;
-    let (output, report) = oxide_engine::sdk::associated_files_update_owner_json(
+    let (output, report) = wellfriendpdf_engine::sdk::associated_files_update_owner_json(
         &bytes,
         &payload,
         &options,
@@ -5012,13 +5024,13 @@ fn run_associated_files_remove(args: AssociatedFilesRemoveArgs) -> Result<(), Bo
             "owner": owner.trim().to_ascii_lowercase().replace('-', "_"),
             "owner_ref": args.owner_ref,
         });
-        oxide_engine::sdk::associated_files_remove_owner_json(
+        wellfriendpdf_engine::sdk::associated_files_remove_owner_json(
             &bytes,
             &options.to_string(),
             args.password.as_deref().map(str::as_bytes),
         )?
     } else {
-        oxide_engine::sdk::associated_files_remove_json(
+        wellfriendpdf_engine::sdk::associated_files_remove_json(
             &bytes,
             &args.id,
             args.password.as_deref().map(str::as_bytes),
@@ -5042,7 +5054,7 @@ fn signature_policy_override(value: &str) -> Result<bool, Box<dyn Error>> {
 
 fn run_edit_form(args: EditFormArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (output, report) = oxide_engine::sdk::incremental_form_edit_json(
+    let (output, report) = wellfriendpdf_engine::sdk::incremental_form_edit_json(
         &bytes,
         &args.field,
         &args.value,
@@ -5067,7 +5079,7 @@ fn run_signature_preserving_form(
         .transpose()?
         .unwrap_or_else(|| "{}".to_string());
     if plan_only {
-        let report = oxide_engine::sdk::signature_preserving_form_plan_json(
+        let report = wellfriendpdf_engine::sdk::signature_preserving_form_plan_json(
             &bytes,
             &args.field,
             &args.value,
@@ -5081,7 +5093,7 @@ fn run_signature_preserving_form(
         return write_xfa_operation_report(&report, args.report.as_ref(), args.json);
     }
 
-    let (output, report) = oxide_engine::sdk::signature_preserving_form_edit_json(
+    let (output, report) = wellfriendpdf_engine::sdk::signature_preserving_form_edit_json(
         &bytes,
         &args.field,
         &args.value,
@@ -5106,14 +5118,14 @@ fn run_edit_mutation(args: EditMutationArgs, annotation: bool) -> Result<(), Box
     let options = std::fs::read_to_string(&args.options)?;
     let override_policy = signature_policy_override(&args.signature_policy)?;
     let (output, report) = if annotation {
-        oxide_engine::sdk::incremental_annotation_edit_json(
+        wellfriendpdf_engine::sdk::incremental_annotation_edit_json(
             &bytes,
             &options,
             override_policy,
             args.password.as_deref().map(str::as_bytes),
         )?
     } else {
-        oxide_engine::sdk::incremental_page_property_edit_json(
+        wellfriendpdf_engine::sdk::incremental_page_property_edit_json(
             &bytes,
             &options,
             override_policy,
@@ -5133,7 +5145,7 @@ fn run_associated_files_sanitize(args: AssociatedFilesSanitizeArgs) -> Result<()
         .as_ref()
         .map(std::fs::read_to_string)
         .transpose()?;
-    let (output, report) = oxide_engine::sdk::associated_files_sanitize_json(
+    let (output, report) = wellfriendpdf_engine::sdk::associated_files_sanitize_json(
         &bytes,
         options.as_deref(),
         args.password.as_deref().map(str::as_bytes),
@@ -5147,13 +5159,13 @@ fn run_associated_files_sanitize(args: AssociatedFilesSanitizeArgs) -> Result<()
 fn run_edit_policy_report(args: EditPolicyArgs, impact: bool) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = if impact {
-        oxide_engine::sdk::edit_signature_impact_json(
+        wellfriendpdf_engine::sdk::edit_signature_impact_json(
             &bytes,
             &args.operation,
             args.password.as_deref().map(str::as_bytes),
         )?
     } else {
-        oxide_engine::sdk::edit_policy_report_json(
+        wellfriendpdf_engine::sdk::edit_policy_report_json(
             &bytes,
             &args.operation,
             args.password.as_deref().map(str::as_bytes),
@@ -5165,13 +5177,14 @@ fn run_edit_policy_report(args: EditPolicyArgs, impact: bool) -> Result<(), Box<
 fn run_forms_export(args: FormsExportArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let format = parse_form_data_format(&args.format)?;
-    let bytes = oxide_engine::export_form_data(&engine, format)?;
+    let bytes = wellfriendpdf_engine::export_form_data(&engine, format)?;
     match args.output {
         Some(path) => std::fs::write(path, bytes)?,
         None => {
             if matches!(
                 format,
-                oxide_engine::FormDataFormat::Json | oxide_engine::FormDataFormat::Xfdf
+                wellfriendpdf_engine::FormDataFormat::Json
+                    | wellfriendpdf_engine::FormDataFormat::Xfdf
             ) {
                 print!("{}", String::from_utf8_lossy(&bytes));
             } else {
@@ -5197,7 +5210,7 @@ fn run_forms_import(args: FormsImportArgs) -> Result<(), Box<dyn Error>> {
     };
     let input = read_edit_input(&args.pdf, &args.password)?;
     let data = std::fs::read(&args.data)?;
-    let (bytes, report) = oxide_engine::apply_form_data_pdf(input, &data, format)?;
+    let (bytes, report) = wellfriendpdf_engine::apply_form_data_pdf(input, &data, format)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -5214,16 +5227,16 @@ fn run_forms_import(args: FormsImportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_annotations_report(args: AnnotationsReportArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let output = serde_json::to_string_pretty(&oxide_engine::annotation_report(&engine)?)?;
+    let output = serde_json::to_string_pretty(&wellfriendpdf_engine::annotation_report(&engine)?)?;
     write_output_optional(&args.output, &output)?;
     Ok(())
 }
 
 fn run_annotations_flatten(args: AnnotationsFlattenArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let mut editor = oxide_engine::PdfEditor::open_bytes(input)?;
+    let mut editor = wellfriendpdf_engine::PdfEditor::open_bytes(input)?;
     editor.flatten_annotations();
-    let bytes = editor.save_to_bytes(oxide_engine::EditMode::FullRewrite)?;
+    let bytes = editor.save_to_bytes(wellfriendpdf_engine::EditMode::FullRewrite)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -5243,14 +5256,15 @@ fn run_annotations_flatten(args: AnnotationsFlattenArgs) -> Result<(), Box<dyn E
 
 fn run_pages_report(args: PagesReportArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let output = serde_json::to_string_pretty(&oxide_engine::page_operations_report(&engine)?)?;
+    let output =
+        serde_json::to_string_pretty(&wellfriendpdf_engine::page_operations_report(&engine)?)?;
     write_output_optional(&args.output, &output)?;
     Ok(())
 }
 
 fn run_interactive_report(args: InteractiveReportArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let output = serde_json::to_string_pretty(&oxide_engine::interactive_report(&engine)?)?;
+    let output = serde_json::to_string_pretty(&wellfriendpdf_engine::interactive_report(&engine)?)?;
     write_output_optional(&args.output, &output)?;
     Ok(())
 }
@@ -5260,7 +5274,7 @@ fn run_redact(args: RedactArgs) -> Result<(), Box<dyn Error>> {
         return Err("redact requires at least one --text or --rect".into());
     }
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let engine = oxide_engine::ContentEngine::open_bytes(input.clone())?;
+    let engine = wellfriendpdf_engine::ContentEngine::open_bytes(input.clone())?;
     let total = engine.page_count()?;
     let search_pages = parse_page_range_cli(&args.pages, total)?;
     let mut explicit_regions = Vec::new();
@@ -5268,11 +5282,11 @@ fn run_redact(args: RedactArgs) -> Result<(), Box<dyn Error>> {
         explicit_regions.push(parse_redact_rect_cli(spec, total)?);
     }
 
-    let mut editor = oxide_engine::PdfEditor::open_bytes(input)?;
+    let mut editor = wellfriendpdf_engine::PdfEditor::open_bytes(input)?;
     let image_policy = parse_image_redaction_policy(&args.image_policy)?;
     let attachment_policy = parse_attachment_policy(&args.attachments)?;
-    let redaction_options = oxide_engine::RedactionOptions {
-        fill: oxide_engine::Color::black(),
+    let redaction_options = wellfriendpdf_engine::RedactionOptions {
+        fill: wellfriendpdf_engine::Color::black(),
         scrub_metadata: !args.no_metadata_scrub,
         image_policy,
         attachment_policy,
@@ -5286,10 +5300,10 @@ fn run_redact(args: RedactArgs) -> Result<(), Box<dyn Error>> {
         let matches = engine.search_text(
             &search_pages,
             term,
-            oxide_engine::TextSearchOptions {
+            wellfriendpdf_engine::TextSearchOptions {
                 case_sensitive: false,
                 include_hidden: true,
-                ..oxide_engine::TextSearchOptions::default()
+                ..wellfriendpdf_engine::TextSearchOptions::default()
             },
         )?;
         for hit in matches {
@@ -5314,8 +5328,8 @@ fn run_redact(args: RedactArgs) -> Result<(), Box<dyn Error>> {
         return Err("redact found no matching text and no usable rectangles".into());
     }
 
-    let bytes = editor.save_to_bytes(oxide_engine::EditMode::FullRewrite)?;
-    let verification = oxide_engine::redaction_verification_report(&bytes, &args.text)?;
+    let bytes = editor.save_to_bytes(wellfriendpdf_engine::EditMode::FullRewrite)?;
+    let verification = wellfriendpdf_engine::redaction_verification_report(&bytes, &args.text)?;
     if args.strict && !verification.verified_absent {
         return Err("strict redaction verification failed: requested term remains".into());
     }
@@ -5352,7 +5366,7 @@ fn run_redact(args: RedactArgs) -> Result<(), Box<dyn Error>> {
 
 /// Split a PDF into RAG-ready semantic chunks (the embedding-pipeline surface).
 fn run_chunk(args: ChunkArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{ChunkOptions, ParseOptions};
+    use wellfriendpdf_engine::{ChunkOptions, ParseOptions};
 
     if !matches!(args.format.to_lowercase().as_str(), "json") {
         return Err(format!("unknown --format '{}'; only json is supported", args.format).into());
@@ -5366,26 +5380,27 @@ fn run_chunk(args: ChunkArgs) -> Result<(), Box<dyn Error>> {
         return Err("--dictionary-pack requires --advanced".into());
     }
     if args.advanced {
-        let mode = oxide_engine::AdvancedChunkMode::parse(&args.mode).ok_or_else(|| {
+        let mode = wellfriendpdf_engine::AdvancedChunkMode::parse(&args.mode).ok_or_else(|| {
             format!(
                 "unknown advanced chunk mode '{}'; use hybrid, page, section, paragraph, table, table-row, table-cell, figure-caption, cjk, or search-index",
                 args.mode
             )
         })?;
-        let report = engine.semantic_binding_report(&oxide_engine::SemanticBindingOptions {
-            pages: page_nums,
-            dictionary_manifest_paths: args.dictionary_packs,
-            chunk_options: oxide_engine::AdvancedChunkOptions {
-                mode,
-                target_tokens: args.target_tokens.max(1),
-                overlap_tokens: args.overlap,
-                include_heading_context: !args.no_heading_context,
-                include_furniture: args.keep_furniture,
-                cjk_token_aware: mode == oxide_engine::AdvancedChunkMode::CjkTokenAware,
-                ..oxide_engine::AdvancedChunkOptions::default()
-            },
-            ..oxide_engine::SemanticBindingOptions::default()
-        })?;
+        let report =
+            engine.semantic_binding_report(&wellfriendpdf_engine::SemanticBindingOptions {
+                pages: page_nums,
+                dictionary_manifest_paths: args.dictionary_packs,
+                chunk_options: wellfriendpdf_engine::AdvancedChunkOptions {
+                    mode,
+                    target_tokens: args.target_tokens.max(1),
+                    overlap_tokens: args.overlap,
+                    include_heading_context: !args.no_heading_context,
+                    include_furniture: args.keep_furniture,
+                    cjk_token_aware: mode == wellfriendpdf_engine::AdvancedChunkMode::CjkTokenAware,
+                    ..wellfriendpdf_engine::AdvancedChunkOptions::default()
+                },
+                ..wellfriendpdf_engine::SemanticBindingOptions::default()
+            })?;
         let output_text = serde_json::to_string_pretty(&report.rag_chunks)?;
         match &args.output {
             Some(path) => std::fs::write(path, &output_text)?,
@@ -5459,31 +5474,31 @@ fn run_semantic_export(args: SemanticExportArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let mode = oxide_engine::AdvancedChunkMode::parse(&args.chunk_mode).ok_or_else(|| {
+    let mode = wellfriendpdf_engine::AdvancedChunkMode::parse(&args.chunk_mode).ok_or_else(|| {
         format!(
             "unknown advanced chunk mode '{}'; use hybrid, page, section, paragraph, table, table-row, table-cell, figure-caption, cjk, or search-index",
             args.chunk_mode
         )
     })?;
     let table_proposals = match args.table_proposals {
-        Some(path) => Some(serde_json::from_slice::<oxide_engine::TableProposalSet>(
-            &std::fs::read(path)?,
-        )?),
+        Some(path) => Some(serde_json::from_slice::<
+            wellfriendpdf_engine::TableProposalSet,
+        >(&std::fs::read(path)?)?),
         None => None,
     };
-    let options = oxide_engine::SemanticBindingOptions {
+    let options = wellfriendpdf_engine::SemanticBindingOptions {
         pages,
         dictionary_manifest_paths: args.dictionary_packs,
-        chunk_options: oxide_engine::AdvancedChunkOptions {
+        chunk_options: wellfriendpdf_engine::AdvancedChunkOptions {
             mode,
             target_tokens: args.target_tokens.max(1),
             overlap_tokens: args.overlap,
-            cjk_token_aware: mode == oxide_engine::AdvancedChunkMode::CjkTokenAware,
-            ..oxide_engine::AdvancedChunkOptions::default()
+            cjk_token_aware: mode == wellfriendpdf_engine::AdvancedChunkMode::CjkTokenAware,
+            ..wellfriendpdf_engine::AdvancedChunkOptions::default()
         },
         search_query: args.query.clone(),
         table_proposals,
-        ..oxide_engine::SemanticBindingOptions::default()
+        ..wellfriendpdf_engine::SemanticBindingOptions::default()
     };
     let report = engine.semantic_binding_report(&options)?;
     let value = match args.view.trim().to_ascii_lowercase().as_str() {
@@ -5585,8 +5600,8 @@ fn run_eval_score(args: EvalScoreArgs) -> Result<(), Box<dyn Error>> {
             s
         }
     };
-    let output_json =
-        oxide_engine::score_json(&input_json).map_err(|e| -> Box<dyn Error> { e.into() })?;
+    let output_json = wellfriendpdf_engine::score_json(&input_json)
+        .map_err(|e| -> Box<dyn Error> { e.into() })?;
     match &args.output {
         Some(path) => std::fs::write(path, &output_json)?,
         None => println!("{output_json}"),
@@ -5620,7 +5635,7 @@ fn run_document_model(args: DocumentModelArgs) -> Result<(), Box<dyn Error>> {
     let output_text = if as_json {
         serde_json::to_string_pretty(&model)?
     } else {
-        oxide_engine::render_document_markdown(&model)
+        wellfriendpdf_engine::render_document_markdown(&model)
     };
 
     match &args.output {
@@ -5642,8 +5657,8 @@ fn run_document_model(args: DocumentModelArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{ImageLocateOptions, ImageLocator, ImageOutputFormat};
     use std::io::Write;
+    use wellfriendpdf_engine::{ImageLocateOptions, ImageLocator, ImageOutputFormat};
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
     let engine = open_engine(&args.pdf, &args.password)?;
@@ -5666,7 +5681,7 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
         }
     };
 
-    let images: Vec<oxide_engine::PlacedImageReference> = if let Some(region) = region {
+    let images: Vec<wellfriendpdf_engine::PlacedImageReference> = if let Some(region) = region {
         let mut placed = Vec::new();
         for page_num in page_nums {
             placed.extend(
@@ -5688,7 +5703,7 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
         };
         ImageLocator::find_all_images(&engine, &opts)?
             .into_iter()
-            .map(|image| oxide_engine::PlacedImageReference {
+            .map(|image| wellfriendpdf_engine::PlacedImageReference {
                 image,
                 bbox: [0.0; 4],
             })
@@ -5765,7 +5780,7 @@ fn run_extract_images(args: ExtractImagesArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::RenderMode;
+    use wellfriendpdf_engine::RenderMode;
 
     let dpi = args.dpi.clamp(24, 600);
     if dpi != args.dpi {
@@ -5903,9 +5918,9 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{ImageEncoder, ImageOutputFormat, RenderMode};
     use rayon::prelude::*;
     use std::io::Write;
+    use wellfriendpdf_engine::{ImageEncoder, ImageOutputFormat, RenderMode};
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
     let dpi = args.dpi.clamp(24, 600);
@@ -5917,7 +5932,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     // `max_render_pixels()` resolver (also read by the svg/ps/eps sub-paths,
     // which all size their pages through `page_viewport`).
     if let Some(cap) = args.max_render_pixels {
-        std::env::set_var("OXIDE_MAX_RENDER_PIXELS", cap.to_string());
+        std::env::set_var("WELLFRIENDPDF_MAX_RENDER_PIXELS", cap.to_string());
     }
 
     // Vector output formats take separate paths.
@@ -6026,9 +6041,9 @@ fn run_pdf_to_jpg(args: PdfToJpgArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let format = oxide_engine::RasterImageFormat::parse(&args.format)
+    let format = wellfriendpdf_engine::RasterImageFormat::parse(&args.format)
         .ok_or_else(|| format!("unknown --format '{}'; use jpg or png", args.format))?;
-    let results = oxide_engine::export_pdf_pages_to_images(
+    let results = wellfriendpdf_engine::export_pdf_pages_to_images(
         &engine,
         &args.out_dir,
         &pages,
@@ -6061,15 +6076,16 @@ fn run_pdf_to_jpg(args: PdfToJpgArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_image_to_pdf(args: ImageToPdfArgs) -> Result<(), Box<dyn Error>> {
-    let page_size = oxide_engine::ImagePdfPageSize::parse(&args.page_size).ok_or_else(|| {
-        format!(
-            "unknown --page-size '{}'; use a4, letter, or size-to-image",
-            args.page_size
-        )
-    })?;
-    let bytes = oxide_engine::images_to_pdf_from_paths(
+    let page_size =
+        wellfriendpdf_engine::ImagePdfPageSize::parse(&args.page_size).ok_or_else(|| {
+            format!(
+                "unknown --page-size '{}'; use a4, letter, or size-to-image",
+                args.page_size
+            )
+        })?;
+    let bytes = wellfriendpdf_engine::images_to_pdf_from_paths(
         &args.images,
-        oxide_engine::ImageToPdfOptions {
+        wellfriendpdf_engine::ImageToPdfOptions {
             page_size,
             margin_points: args.margin,
         },
@@ -6098,9 +6114,10 @@ fn run_image_to_pdf(args: ImageToPdfArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_pdf_to_xlsx(args: PdfToXlsxArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let layout = oxide_engine::XlsxLayout::parse(&args.layout)
+    let layout = wellfriendpdf_engine::XlsxLayout::parse(&args.layout)
         .ok_or_else(|| format!("unknown --layout '{}'; use pages or tables", args.layout))?;
-    let bytes = oxide_engine::pdf_to_xlsx(&engine, &oxide_engine::XlsxOptions { layout })?;
+    let bytes =
+        wellfriendpdf_engine::pdf_to_xlsx(&engine, &wellfriendpdf_engine::XlsxOptions { layout })?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -6126,10 +6143,10 @@ fn run_pdf_to_xlsx(args: PdfToXlsxArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_pdf_to_pptx(args: PdfToPptxArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let options = oxide_engine::PptxOptions {
+    let options = wellfriendpdf_engine::PptxOptions {
         include_images: !args.no_images,
     };
-    let bytes = oxide_engine::pdf_to_pptx(&engine, &options)?;
+    let bytes = wellfriendpdf_engine::pdf_to_pptx(&engine, &options)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -6154,13 +6171,13 @@ fn run_pdf_to_pptx(args: PdfToPptxArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_pdf_to_docx(args: PdfToDocxArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let layout = oxide_engine::DocxLayout::parse(&args.layout)
+    let layout = wellfriendpdf_engine::DocxLayout::parse(&args.layout)
         .ok_or_else(|| usage_error("unknown --layout; use flowing, page-faithful, or hybrid"))?;
-    let options = oxide_engine::DocxOptions {
+    let options = wellfriendpdf_engine::DocxOptions {
         include_images: !args.no_images,
         layout,
     };
-    let bytes = oxide_engine::pdf_to_docx(&engine, &options)?;
+    let bytes = wellfriendpdf_engine::pdf_to_docx(&engine, &options)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -6188,9 +6205,9 @@ fn run_pdf_to_html(args: PdfToHtmlArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let model = engine.build_editable_document(&oxide_engine::EditableBuildOptions {
+    let model = engine.build_editable_document(&wellfriendpdf_engine::EditableBuildOptions {
         pages: pages.clone(),
-        ..oxide_engine::EditableBuildOptions::default()
+        ..wellfriendpdf_engine::EditableBuildOptions::default()
     })?;
     let output = model.to_semantic_html();
     std::fs::write(&args.output, output.as_bytes())?;
@@ -6216,9 +6233,9 @@ fn run_pdf_to_markdown(args: PdfToMarkdownArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let model = engine.build_editable_document(&oxide_engine::EditableBuildOptions {
+    let model = engine.build_editable_document(&wellfriendpdf_engine::EditableBuildOptions {
         pages: pages.clone(),
-        ..oxide_engine::EditableBuildOptions::default()
+        ..wellfriendpdf_engine::EditableBuildOptions::default()
     })?;
     let output = model.to_markdown();
     std::fs::write(&args.output, output.as_bytes())?;
@@ -6244,9 +6261,9 @@ fn run_pdf_to_json(args: PdfToJsonArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let model = engine.build_editable_document(&oxide_engine::EditableBuildOptions {
+    let model = engine.build_editable_document(&wellfriendpdf_engine::EditableBuildOptions {
         pages: pages.clone(),
-        ..oxide_engine::EditableBuildOptions::default()
+        ..wellfriendpdf_engine::EditableBuildOptions::default()
     })?;
     let output = serde_json::to_string_pretty(&model)?;
     std::fs::write(&args.output, output.as_bytes())?;
@@ -6272,9 +6289,9 @@ fn run_export_editable_model(args: ExportEditableModelArgs) -> Result<(), Box<dy
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let model = engine.build_editable_document(&oxide_engine::EditableBuildOptions {
+    let model = engine.build_editable_document(&wellfriendpdf_engine::EditableBuildOptions {
         pages: pages.clone(),
-        ..oxide_engine::EditableBuildOptions::default()
+        ..wellfriendpdf_engine::EditableBuildOptions::default()
     })?;
     let output = serde_json::to_string_pretty(&model)?;
     std::fs::write(&args.output, output.as_bytes())?;
@@ -6317,32 +6334,32 @@ fn run_edit_text(args: EditTextArgs) -> Result<(), Box<dyn Error>> {
             .first()
             .ok_or_else(|| usage_error("Prompt 20 edit requires at least one selected page"))?;
         let (bytes, report) = if args.mode == "same-width-patch" {
-            let (bytes, report) = oxide_engine::apply_same_width_patch(
+            let (bytes, report) = wellfriendpdf_engine::apply_same_width_patch(
                 &input,
                 page,
                 &args.query,
                 &args.replacement,
-                &oxide_engine::SameWidthPatchOptions {
+                &wellfriendpdf_engine::SameWidthPatchOptions {
                     signature_policy_override: args.signature_policy_override,
-                    ..oxide_engine::SameWidthPatchOptions::default()
+                    ..wellfriendpdf_engine::SameWidthPatchOptions::default()
                 },
             )?;
             (bytes, serde_json::to_value(report)?)
         } else {
             let mode = if args.mode == "rtl-reflow" {
-                oxide_engine::AdvancedTextMode::ParagraphReflowRtl
+                wellfriendpdf_engine::AdvancedTextMode::ParagraphReflowRtl
             } else {
-                oxide_engine::AdvancedTextMode::ParagraphReflowVertical
+                wellfriendpdf_engine::AdvancedTextMode::ParagraphReflowVertical
             };
             let page_info = engine.document().get_page(page)?;
             let margin = 36.0;
-            let (bytes, report) = oxide_engine::edit_advanced_text_pdf(
+            let (bytes, report) = wellfriendpdf_engine::edit_advanced_text_pdf(
                 &input,
                 page,
                 &args.query,
                 &args.replacement,
                 mode,
-                &oxide_engine::AdvancedTextEditOptions {
+                &wellfriendpdf_engine::AdvancedTextEditOptions {
                     region: [
                         page_info.crop_box[0] + margin,
                         page_info.crop_box[1] + margin,
@@ -6351,7 +6368,7 @@ fn run_edit_text(args: EditTextArgs) -> Result<(), Box<dyn Error>> {
                     ],
                     font_size: args.font_size,
                     signature_policy_override: args.signature_policy_override,
-                    ..oxide_engine::AdvancedTextEditOptions::default()
+                    ..wellfriendpdf_engine::AdvancedTextEditOptions::default()
                 },
                 None,
             )?;
@@ -6374,55 +6391,55 @@ fn run_edit_text(args: EditTextArgs) -> Result<(), Box<dyn Error>> {
         }
         return Ok(());
     }
-    let style = oxide_engine::EditTextStyle::new(args.font_size)
-        .fill(oxide_engine::Color::device_rgb(rgb.r, rgb.g, rgb.b));
-    let mode =
-        oxide_engine::ParagraphEditSerializationMode::parse(&args.mode).ok_or_else(|| {
-            usage_error("unknown --mode; use paragraph-reflow, safe-patch, or overlay-fallback")
-        })?;
+    let style = wellfriendpdf_engine::EditTextStyle::new(args.font_size)
+        .fill(wellfriendpdf_engine::Color::device_rgb(rgb.r, rgb.g, rgb.b));
+    let mode = wellfriendpdf_engine::ParagraphEditSerializationMode::parse(&args.mode).ok_or_else(
+        || usage_error("unknown --mode; use paragraph-reflow, safe-patch, or overlay-fallback"),
+    )?;
     let operation = if let Some(range) = args.delete_range.as_deref() {
         let (start, end) = parse_char_range_cli(range)?;
-        oxide_engine::ParagraphEditOperation::Delete { start, end }
+        wellfriendpdf_engine::ParagraphEditOperation::Delete { start, end }
     } else if let Some(offset) = args.insert_at {
-        oxide_engine::ParagraphEditOperation::Insert {
+        wellfriendpdf_engine::ParagraphEditOperation::Insert {
             offset,
             text: args.replacement.clone(),
         }
     } else {
-        oxide_engine::ParagraphEditOperation::Replace {
+        wellfriendpdf_engine::ParagraphEditOperation::Replace {
             replacement: args.replacement.clone(),
         }
     };
-    let (bytes, report) = if mode == oxide_engine::ParagraphEditSerializationMode::OverlayFallback {
-        let (bytes, report) = oxide_engine::replace_text_pdf(
-            input,
-            &args.query,
-            &args.replacement,
-            oxide_engine::TextReplacementOptions {
-                pages,
-                case_sensitive: !args.ignore_case,
-                max_replacements: args.max_replacements.max(1),
-                replacement_style: style,
-                ..oxide_engine::TextReplacementOptions::default()
-            },
-        )?;
-        (bytes, serde_json::to_value(report)?)
-    } else {
-        let (bytes, report) = oxide_engine::edit_paragraph_reflow_pdf(
-            input,
-            &args.query,
-            operation,
-            oxide_engine::ParagraphReflowOptions {
-                pages,
-                case_sensitive: !args.ignore_case,
-                max_edits: args.max_replacements.max(1),
-                replacement_style: style,
-                mode,
-                ..oxide_engine::ParagraphReflowOptions::default()
-            },
-        )?;
-        (bytes, serde_json::to_value(report)?)
-    };
+    let (bytes, report) =
+        if mode == wellfriendpdf_engine::ParagraphEditSerializationMode::OverlayFallback {
+            let (bytes, report) = wellfriendpdf_engine::replace_text_pdf(
+                input,
+                &args.query,
+                &args.replacement,
+                wellfriendpdf_engine::TextReplacementOptions {
+                    pages,
+                    case_sensitive: !args.ignore_case,
+                    max_replacements: args.max_replacements.max(1),
+                    replacement_style: style,
+                    ..wellfriendpdf_engine::TextReplacementOptions::default()
+                },
+            )?;
+            (bytes, serde_json::to_value(report)?)
+        } else {
+            let (bytes, report) = wellfriendpdf_engine::edit_paragraph_reflow_pdf(
+                input,
+                &args.query,
+                operation,
+                wellfriendpdf_engine::ParagraphReflowOptions {
+                    pages,
+                    case_sensitive: !args.ignore_case,
+                    max_edits: args.max_replacements.max(1),
+                    replacement_style: style,
+                    mode,
+                    ..wellfriendpdf_engine::ParagraphReflowOptions::default()
+                },
+            )?;
+            (bytes, serde_json::to_value(report)?)
+        };
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -6442,30 +6459,30 @@ fn run_edit_text(args: EditTextArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_save_incremental(args: SaveIncrementalArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let mut editor = oxide_engine::PdfEditor::open_bytes(input.clone())?;
+    let mut editor = wellfriendpdf_engine::PdfEditor::open_bytes(input.clone())?;
     editor.draw_text(
         args.page,
         args.text,
         args.x,
         args.y,
-        oxide_engine::EditTextStyle::new(args.font_size),
-        oxide_engine::OverlayLayer::Overlay,
+        wellfriendpdf_engine::EditTextStyle::new(args.font_size),
+        wellfriendpdf_engine::OverlayLayer::Overlay,
     )?;
-    let deterministic_options = oxide_engine::DeterministicSaveOptions {
+    let deterministic_options = wellfriendpdf_engine::DeterministicSaveOptions {
         fixed_pdf_date: args.fixed_timestamp.clone(),
-        ..oxide_engine::DeterministicSaveOptions::default()
+        ..wellfriendpdf_engine::DeterministicSaveOptions::default()
     };
     let (bytes, report) = if args.deterministic || args.fixed_timestamp.is_some() {
         editor.save_to_bytes_with_options(
-            oxide_engine::EditMode::Incremental,
+            wellfriendpdf_engine::EditMode::Incremental,
             &deterministic_options,
         )?
     } else {
-        let bytes = editor.save_to_bytes(oxide_engine::EditMode::Incremental)?;
+        let bytes = editor.save_to_bytes(wellfriendpdf_engine::EditMode::Incremental)?;
         let output_bytes = bytes.len();
         (
             bytes,
-            oxide_engine::DeterministicSaveReport {
+            wellfriendpdf_engine::DeterministicSaveReport {
                 mode: "incremental".to_string(),
                 output_bytes,
                 fixed_pdf_date: None,
@@ -6505,24 +6522,27 @@ fn run_save_incremental(args: SaveIncrementalArgs) -> Result<(), Box<dyn Error>>
 }
 
 fn run_docx_to_pdf(args: OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
-    run_office_to_pdf(args, "docx-to-pdf", oxide_engine::docx_to_pdf)
+    run_office_to_pdf(args, "docx-to-pdf", wellfriendpdf_engine::docx_to_pdf)
 }
 
 fn run_xlsx_to_pdf(args: OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
-    run_office_to_pdf(args, "xlsx-to-pdf", oxide_engine::xlsx_to_pdf)
+    run_office_to_pdf(args, "xlsx-to-pdf", wellfriendpdf_engine::xlsx_to_pdf)
 }
 
 fn run_pptx_to_pdf(args: OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
-    run_office_to_pdf(args, "pptx-to-pdf", oxide_engine::pptx_to_pdf)
+    run_office_to_pdf(args, "pptx-to-pdf", wellfriendpdf_engine::pptx_to_pdf)
 }
 
 fn run_office_to_pdf(
     args: OfficeToPdfArgs,
     op: &str,
-    convert: fn(&[u8], &oxide_engine::OfficeToPdfOptions) -> oxide_engine::Result<Vec<u8>>,
+    convert: fn(
+        &[u8],
+        &wellfriendpdf_engine::OfficeToPdfOptions,
+    ) -> wellfriendpdf_engine::Result<Vec<u8>>,
 ) -> Result<(), Box<dyn Error>> {
     let input = std::fs::read(&args.input)?;
-    let bytes = convert(&input, &oxide_engine::OfficeToPdfOptions::default())?;
+    let bytes = convert(&input, &wellfriendpdf_engine::OfficeToPdfOptions::default())?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -6716,7 +6736,7 @@ fn run_render_eps(args: RenderArgs, dpi: u32) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_analyze(args: AnalyzeArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{ContentEngine, PdfAnalyzer};
+    use wellfriendpdf_engine::{ContentEngine, PdfAnalyzer};
 
     let engine = ContentEngine::open_path(&args.pdf)?;
     let analysis = PdfAnalyzer::quick_analysis(&engine)?;
@@ -6744,8 +6764,8 @@ fn run_analyze(args: AnalyzeArgs) -> Result<(), Box<dyn Error>> {
 fn open_engine(
     pdf: &std::path::Path,
     password: &Option<String>,
-) -> Result<oxide_engine::ContentEngine, Box<dyn Error>> {
-    use oxide_engine::ContentEngine;
+) -> Result<wellfriendpdf_engine::ContentEngine, Box<dyn Error>> {
+    use wellfriendpdf_engine::ContentEngine;
     let engine = match password {
         Some(pw) => ContentEngine::open_path_with_password(pdf, pw.as_bytes())?,
         None => ContentEngine::open_path(pdf)?,
@@ -6767,18 +6787,20 @@ fn read_edit_input(
 ) -> Result<Vec<u8>, Box<dyn Error>> {
     if password.is_some() {
         let engine = open_engine(pdf, password)?;
-        Ok(oxide_engine::decrypt_pdf(&engine)?)
+        Ok(wellfriendpdf_engine::decrypt_pdf(&engine)?)
     } else {
         Ok(std::fs::read(pdf)?)
     }
 }
 
-fn parse_stamp_position(value: &str) -> Result<oxide_engine::StampPosition, Box<dyn Error>> {
-    oxide_engine::StampPosition::parse(value)
+fn parse_stamp_position(
+    value: &str,
+) -> Result<wellfriendpdf_engine::StampPosition, Box<dyn Error>> {
+    wellfriendpdf_engine::StampPosition::parse(value)
         .ok_or_else(|| format!("unknown position '{value}'").into())
 }
 
-fn parse_rgb_color(value: &str) -> Result<oxide_engine::RgbColor, Box<dyn Error>> {
+fn parse_rgb_color(value: &str) -> Result<wellfriendpdf_engine::RgbColor, Box<dyn Error>> {
     let hex = value.strip_prefix('#').unwrap_or(value);
     if hex.len() != 6 {
         return Err(format!("color '{value}' must be #RRGGBB").into());
@@ -6786,7 +6808,7 @@ fn parse_rgb_color(value: &str) -> Result<oxide_engine::RgbColor, Box<dyn Error>
     let r = u8::from_str_radix(&hex[0..2], 16)?;
     let g = u8::from_str_radix(&hex[2..4], 16)?;
     let b = u8::from_str_radix(&hex[4..6], 16)?;
-    Ok(oxide_engine::RgbColor {
+    Ok(wellfriendpdf_engine::RgbColor {
         r: f64::from(r) / 255.0,
         g: f64::from(g) / 255.0,
         b: f64::from(b) / 255.0,
@@ -6796,7 +6818,7 @@ fn parse_rgb_color(value: &str) -> Result<oxide_engine::RgbColor, Box<dyn Error>
 #[derive(Debug, Clone, Copy)]
 struct RedactRegionSpec {
     page: usize,
-    rect: oxide_engine::ImageRect,
+    rect: wellfriendpdf_engine::ImageRect,
 }
 
 fn parse_redact_rect_cli(
@@ -6826,11 +6848,11 @@ fn parse_redact_rect_cli(
     }
     Ok(RedactRegionSpec {
         page,
-        rect: oxide_engine::ImageRect::new(values[0], values[1], values[2], values[3]),
+        rect: wellfriendpdf_engine::ImageRect::new(values[0], values[1], values[2], values[3]),
     })
 }
 
-fn parse_plain_rect_cli(spec: &str) -> Result<oxide_engine::ImageRect, Box<dyn Error>> {
+fn parse_plain_rect_cli(spec: &str) -> Result<wellfriendpdf_engine::ImageRect, Box<dyn Error>> {
     let values: Vec<f64> = spec
         .split(',')
         .map(|part| part.trim().parse::<f64>())
@@ -6843,23 +6865,25 @@ fn parse_plain_rect_cli(spec: &str) -> Result<oxide_engine::ImageRect, Box<dyn E
             "rectangle coordinates must be finite and width/height must be positive",
         ));
     }
-    Ok(oxide_engine::ImageRect::new(
+    Ok(wellfriendpdf_engine::ImageRect::new(
         values[0], values[1], values[2], values[3],
     ))
 }
 
-fn parse_form_data_format(value: &str) -> Result<oxide_engine::FormDataFormat, Box<dyn Error>> {
-    oxide_engine::FormDataFormat::parse(value)
+fn parse_form_data_format(
+    value: &str,
+) -> Result<wellfriendpdf_engine::FormDataFormat, Box<dyn Error>> {
+    wellfriendpdf_engine::FormDataFormat::parse(value)
         .ok_or_else(|| usage_error(format!("unknown form data format '{value}'")))
 }
 
 fn parse_image_redaction_policy(
     value: &str,
-) -> Result<oxide_engine::ImageRedactionPolicy, Box<dyn Error>> {
+) -> Result<wellfriendpdf_engine::ImageRedactionPolicy, Box<dyn Error>> {
     match value.to_ascii_lowercase().as_str() {
-        "partial" => Ok(oxide_engine::ImageRedactionPolicy::Partial),
-        "remove" => Ok(oxide_engine::ImageRedactionPolicy::Remove),
-        "fail" => Ok(oxide_engine::ImageRedactionPolicy::Fail),
+        "partial" => Ok(wellfriendpdf_engine::ImageRedactionPolicy::Partial),
+        "remove" => Ok(wellfriendpdf_engine::ImageRedactionPolicy::Remove),
+        "fail" => Ok(wellfriendpdf_engine::ImageRedactionPolicy::Fail),
         _ => Err(usage_error(format!(
             "unknown --image-policy '{value}'; expected partial, remove, or fail"
         ))),
@@ -6868,14 +6892,14 @@ fn parse_image_redaction_policy(
 
 fn parse_attachment_policy(
     value: &str,
-) -> Result<oxide_engine::AttachmentRedactionPolicy, Box<dyn Error>> {
+) -> Result<wellfriendpdf_engine::AttachmentRedactionPolicy, Box<dyn Error>> {
     match value.to_ascii_lowercase().as_str() {
-        "keep" => Ok(oxide_engine::AttachmentRedactionPolicy::Keep),
+        "keep" => Ok(wellfriendpdf_engine::AttachmentRedactionPolicy::Keep),
         "remove-all" | "remove_all" | "all" => {
-            Ok(oxide_engine::AttachmentRedactionPolicy::RemoveAll)
+            Ok(wellfriendpdf_engine::AttachmentRedactionPolicy::RemoveAll)
         }
         "remove-overlapping" | "remove_overlapping" | "overlapping" => {
-            Ok(oxide_engine::AttachmentRedactionPolicy::RemoveOverlapping)
+            Ok(wellfriendpdf_engine::AttachmentRedactionPolicy::RemoveOverlapping)
         }
         _ => Err(usage_error(format!(
             "unknown --attachments '{value}'; expected keep, remove-all, or remove-overlapping"
@@ -6883,10 +6907,12 @@ fn parse_attachment_policy(
     }
 }
 
-fn redaction_rect_from_quads(quads: &[oxide_engine::TextQuad]) -> Option<oxide_engine::ImageRect> {
-    let bbox = oxide_engine::TextQuad::union(quads)?;
+fn redaction_rect_from_quads(
+    quads: &[wellfriendpdf_engine::TextQuad],
+) -> Option<wellfriendpdf_engine::ImageRect> {
+    let bbox = wellfriendpdf_engine::TextQuad::union(quads)?;
     let pad = 0.5;
-    Some(oxide_engine::ImageRect::new(
+    Some(wellfriendpdf_engine::ImageRect::new(
         bbox.x0 - pad,
         bbox.y0 - pad,
         (bbox.x1 - bbox.x0 + pad * 2.0).max(0.1),
@@ -6972,7 +6998,7 @@ fn run_info(args: InfoArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_feature_report(args: FeatureReportArgs) -> Result<(), Box<dyn Error>> {
-    let json = oxide_engine::sdk::feature_report_json()?;
+    let json = wellfriendpdf_engine::sdk::feature_report_json()?;
     let output = if args.pretty {
         let value: serde_json::Value = serde_json::from_str(&json)?;
         serde_json::to_string_pretty(&value)?
@@ -6984,9 +7010,9 @@ fn run_feature_report(args: FeatureReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
     let mode = match args.mode.to_ascii_lowercase().as_str() {
-        "strict" => oxide_engine::ParserMode::Strict,
-        "repair" => oxide_engine::ParserMode::Repair,
-        "audit" => oxide_engine::ParserMode::Audit,
+        "strict" => wellfriendpdf_engine::ParserMode::Strict,
+        "repair" => wellfriendpdf_engine::ParserMode::Repair,
+        "audit" => wellfriendpdf_engine::ParserMode::Audit,
         other => {
             return Err(format!(
                 "unknown parser report mode '{other}'; use strict, repair, or audit"
@@ -6997,11 +7023,11 @@ fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let password = args.password.as_deref().unwrap_or("").as_bytes();
     let decode_limits = parser_report_decode_limits(&args)?;
-    let mut report = oxide_engine::parser_report_bytes_with_options(
+    let mut report = wellfriendpdf_engine::parser_report_bytes_with_options(
         &bytes,
         mode,
         password,
-        oxide_engine::ParserReportOptions {
+        wellfriendpdf_engine::ParserReportOptions {
             include_decode: args.include_decode,
             decode_limits,
         },
@@ -7010,7 +7036,7 @@ fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
         report.diagnostics.truncate(max);
     }
     let color_report = if args.include_color {
-        Some(oxide_engine::color_report_bytes(
+        Some(wellfriendpdf_engine::color_report_bytes(
             &bytes,
             parser_report_color_profile(&args.color_profile)?,
         )?)
@@ -7056,11 +7082,11 @@ fn run_parser_report(args: ParserReportArgs) -> Result<(), Box<dyn Error>> {
 
 fn parser_report_color_profile(
     profile: &str,
-) -> Result<oxide_engine::ColorValidationProfile, Box<dyn Error>> {
+) -> Result<wellfriendpdf_engine::ColorValidationProfile, Box<dyn Error>> {
     match profile.to_ascii_lowercase().as_str() {
-        "generic" | "default" => Ok(oxide_engine::ColorValidationProfile::Generic),
-        "pdfa" | "pdf/a" | "pdf-a" => Ok(oxide_engine::ColorValidationProfile::PdfA),
-        "pdfx" | "pdf/x" | "pdf-x" => Ok(oxide_engine::ColorValidationProfile::PdfX),
+        "generic" | "default" => Ok(wellfriendpdf_engine::ColorValidationProfile::Generic),
+        "pdfa" | "pdf/a" | "pdf-a" => Ok(wellfriendpdf_engine::ColorValidationProfile::PdfA),
+        "pdfx" | "pdf/x" | "pdf-x" => Ok(wellfriendpdf_engine::ColorValidationProfile::PdfX),
         other => Err(format!(
             "unknown --color-profile value '{other}'; use generic, pdfa, or pdfx"
         )
@@ -7070,11 +7096,11 @@ fn parser_report_color_profile(
 
 fn parser_report_decode_limits(
     args: &ParserReportArgs,
-) -> Result<oxide_engine::DecodeLimits, Box<dyn Error>> {
+) -> Result<wellfriendpdf_engine::DecodeLimits, Box<dyn Error>> {
     let mut limits = match args.decode_profile.to_ascii_lowercase().as_str() {
-        "default" => oxide_engine::DecodeLimits::default(),
-        "low-memory" | "low_memory" => oxide_engine::DecodeLimits::strict_low_memory(),
-        "audit" => oxide_engine::DecodeLimits::audit_generous(),
+        "default" => wellfriendpdf_engine::DecodeLimits::default(),
+        "low-memory" | "low_memory" => wellfriendpdf_engine::DecodeLimits::strict_low_memory(),
+        "audit" => wellfriendpdf_engine::DecodeLimits::audit_generous(),
         other => {
             return Err(format!(
                 "unknown --decode-profile value '{other}'; use default, low-memory, or audit"
@@ -7111,23 +7137,23 @@ fn parser_report_decode_limits(
 
 fn enforce_parser_report_fail_on(
     fail_on: &str,
-    report: &oxide_engine::ParserReport,
+    report: &wellfriendpdf_engine::ParserReport,
 ) -> Result<(), Box<dyn Error>> {
     let should_fail = match fail_on.to_ascii_lowercase().as_str() {
         "never" => false,
         "fatal" => report.diagnostics.iter().any(|diagnostic| {
             matches!(
                 diagnostic.severity,
-                oxide_engine::ParserSeverity::FatalError
-                    | oxide_engine::ParserSeverity::SecurityLimit
+                wellfriendpdf_engine::ParserSeverity::FatalError
+                    | wellfriendpdf_engine::ParserSeverity::SecurityLimit
             )
         }),
         "error" => report.diagnostics.iter().any(|diagnostic| {
             matches!(
                 diagnostic.severity,
-                oxide_engine::ParserSeverity::RecoverableError
-                    | oxide_engine::ParserSeverity::FatalError
-                    | oxide_engine::ParserSeverity::SecurityLimit
+                wellfriendpdf_engine::ParserSeverity::RecoverableError
+                    | wellfriendpdf_engine::ParserSeverity::FatalError
+                    | wellfriendpdf_engine::ParserSeverity::SecurityLimit
             )
         }),
         other => {
@@ -7143,7 +7169,7 @@ fn enforce_parser_report_fail_on(
     }
 }
 
-fn format_parser_report_human(path: &Path, report: &oxide_engine::ParserReport) -> String {
+fn format_parser_report_human(path: &Path, report: &wellfriendpdf_engine::ParserReport) -> String {
     let counts = report.diagnostic_counts();
     let verdict = if report.opened { "opened" } else { "failed" };
     let mut out = String::new();
@@ -7209,7 +7235,7 @@ fn format_parser_report_human(path: &Path, report: &oxide_engine::ParserReport) 
     out
 }
 
-fn page_size_label(s: &oxide_engine::PageSize) -> String {
+fn page_size_label(s: &wellfriendpdf_engine::PageSize) -> String {
     let base = format!(
         "{:.2} x {:.2} pts ({:.0} x {:.0} mm)",
         s.width_pts,
@@ -7278,7 +7304,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 fn run_detach(args: DetachArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::sanitize_filename;
+    use wellfriendpdf_engine::sanitize_filename;
 
     let engine = open_engine(&args.pdf, &args.password)?;
     let attachments = engine.list_attachments()?;
@@ -7313,7 +7339,7 @@ fn run_detach(args: DetachArgs) -> Result<(), Box<dyn Error>> {
     }
 
     // Determine which attachments to save.
-    let to_save: Vec<&oxide_engine::Attachment> = if args.save_all {
+    let to_save: Vec<&wellfriendpdf_engine::Attachment> = if args.save_all {
         attachments.iter().collect()
     } else if let Some(n) = args.save {
         let a = attachments
@@ -7356,7 +7382,7 @@ fn run_detach(args: DetachArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_to_html(args: ToHtmlArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{HtmlMode, HtmlOptions};
+    use wellfriendpdf_engine::{HtmlMode, HtmlOptions};
 
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
@@ -7423,7 +7449,7 @@ enum SignatureCliMode {
 }
 
 fn run_verify_sig(args: VerifySigArgs, mode: SignatureCliMode) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{
+    use wellfriendpdf_engine::{
         Coverage, PadesLevel, RevocationStatus, SignatureStatus, SignatureTrust, SignatureValidity,
     };
 
@@ -7608,8 +7634,11 @@ fn run_timestamp_verify(args: TimestampVerifyArgs) -> Result<(), Box<dyn Error>>
     let token = std::fs::read(&args.token)?;
     let signature_value = std::fs::read(&args.signature_value)?;
     let options = verify_options_from_timestamp_args(&args)?;
-    let report =
-        oxide_engine::verify_signature_timestamp_token_der(&token, &signature_value, &options)?;
+    let report = wellfriendpdf_engine::verify_signature_timestamp_token_der(
+        &token,
+        &signature_value,
+        &options,
+    )?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -7653,9 +7682,9 @@ fn run_timestamp_verify(args: TimestampVerifyArgs) -> Result<(), Box<dyn Error>>
 }
 
 fn finish_timestamp_cli_validation(
-    report: &oxide_engine::TimestampValidationReport,
+    report: &wellfriendpdf_engine::TimestampValidationReport,
 ) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::SignatureValidationState as State;
+    use wellfriendpdf_engine::SignatureValidationState as State;
 
     if report.status == State::Valid {
         return Ok(());
@@ -7688,10 +7717,10 @@ fn finish_timestamp_cli_validation(
 }
 
 fn finish_signature_cli_validation(
-    reports: &[oxide_engine::SignatureReport],
+    reports: &[wellfriendpdf_engine::SignatureReport],
     mode: SignatureCliMode,
 ) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{
+    use wellfriendpdf_engine::{
         SignatureStatus, SignatureTrust, SignatureValidationState, SignatureValidity,
     };
 
@@ -7896,12 +7925,12 @@ fn finish_signature_cli_validation(
 }
 
 fn finish_revocation_evidence_cli(
-    reports: &[oxide_engine::SignatureReport],
+    reports: &[wellfriendpdf_engine::SignatureReport],
     evidence_prefix: &str,
     label: &str,
 ) -> Result<(), Box<dyn Error>> {
     if reports.iter().any(|report| {
-        report.prompt24.revocation.status == oxide_engine::SignatureValidationState::Revoked
+        report.prompt24.revocation.status == wellfriendpdf_engine::SignatureValidationState::Revoked
     }) {
         return Err(Box::new(CliError::new(
             CliExitCode::Revoked,
@@ -7909,7 +7938,7 @@ fn finish_revocation_evidence_cli(
         )));
     }
     if reports.iter().all(|report| {
-        report.prompt24.revocation.status == oxide_engine::SignatureValidationState::Valid
+        report.prompt24.revocation.status == wellfriendpdf_engine::SignatureValidationState::Valid
             && report
                 .prompt24
                 .revocation
@@ -7933,9 +7962,9 @@ fn finish_revocation_evidence_cli(
 
 fn verify_options_from_args(
     args: &VerifySigArgs,
-) -> Result<oxide_engine::VerifyOptions, Box<dyn Error>> {
-    let mut options = oxide_engine::VerifyOptions::default();
-    let mut trust_store = oxide_engine::TrustStore::new();
+) -> Result<wellfriendpdf_engine::VerifyOptions, Box<dyn Error>> {
+    let mut options = wellfriendpdf_engine::VerifyOptions::default();
+    let mut trust_store = wellfriendpdf_engine::TrustStore::new();
     for path in &args.trust_anchors {
         let bytes = std::fs::read(path)?;
         if certificate_input_is_pem(&bytes) {
@@ -7946,7 +7975,7 @@ fn verify_options_from_args(
     }
     options = options.with_trust_store(&trust_store);
 
-    let mut intermediate_store = oxide_engine::IntermediateStore::new();
+    let mut intermediate_store = wellfriendpdf_engine::IntermediateStore::new();
     for path in &args.intermediates {
         let bytes = std::fs::read(path)?;
         if certificate_input_is_pem(&bytes) {
@@ -7966,7 +7995,7 @@ fn verify_options_from_args(
         options = options.with_crl_der(std::fs::read(path)?);
     }
     if args.online {
-        let mut policy = oxide_engine::RetrievalPolicy::online();
+        let mut policy = wellfriendpdf_engine::RetrievalPolicy::online();
         if let Some(timeout_ms) = args.network_timeout_ms {
             if timeout_ms == 0 {
                 return Err(usage_error(
@@ -7991,7 +8020,7 @@ fn verify_options_from_args(
         }
         policy.allowed_hosts = args.network_allow_hosts.clone();
         if args.ocsp_require_nonce {
-            policy.ocsp_nonce_policy = oxide_engine::OcspNoncePolicy::Required;
+            policy.ocsp_nonce_policy = wellfriendpdf_engine::OcspNoncePolicy::Required;
         }
         options = options.with_retrieval_policy(policy)?;
     } else if !args.network_allow_hosts.is_empty()
@@ -8006,13 +8035,13 @@ fn verify_options_from_args(
     }
     if let Some(path) = &args.evidence_in {
         let bytes = std::fs::read(path)?;
-        let bundle: oxide_engine::EvidenceBundle = serde_json::from_slice(&bytes)
+        let bundle: wellfriendpdf_engine::EvidenceBundle = serde_json::from_slice(&bytes)
             .map_err(|error| usage_error(format!("invalid --evidence-in bundle: {error}")))?;
         options = options.with_evidence_bundle(bundle)?;
     }
     if let Some(path) = &args.algorithm_policy {
         let bytes = std::fs::read(path)?;
-        let policy: oxide_engine::SignatureAlgorithmPolicy = serde_json::from_slice(&bytes)
+        let policy: wellfriendpdf_engine::SignatureAlgorithmPolicy = serde_json::from_slice(&bytes)
             .map_err(|error| usage_error(format!("invalid --algorithm-policy JSON: {error}")))?;
         options = options.with_algorithm_policy(policy)?;
     }
@@ -8025,9 +8054,9 @@ fn verify_options_from_args(
 
 fn verify_options_from_timestamp_args(
     args: &TimestampVerifyArgs,
-) -> Result<oxide_engine::VerifyOptions, Box<dyn Error>> {
-    let mut options = oxide_engine::VerifyOptions::default();
-    let mut trust_store = oxide_engine::TrustStore::new();
+) -> Result<wellfriendpdf_engine::VerifyOptions, Box<dyn Error>> {
+    let mut options = wellfriendpdf_engine::VerifyOptions::default();
+    let mut trust_store = wellfriendpdf_engine::TrustStore::new();
     for path in &args.trust_anchors {
         let bytes = std::fs::read(path)?;
         if certificate_input_is_pem(&bytes) {
@@ -8038,7 +8067,7 @@ fn verify_options_from_timestamp_args(
     }
     options = options.with_trust_store(&trust_store);
 
-    let mut intermediate_store = oxide_engine::IntermediateStore::new();
+    let mut intermediate_store = wellfriendpdf_engine::IntermediateStore::new();
     for path in &args.intermediates {
         let bytes = std::fs::read(path)?;
         if certificate_input_is_pem(&bytes) {
@@ -8058,7 +8087,7 @@ fn verify_options_from_timestamp_args(
         options = options.with_crl_der(std::fs::read(path)?);
     }
     if args.online {
-        let mut policy = oxide_engine::RetrievalPolicy::online();
+        let mut policy = wellfriendpdf_engine::RetrievalPolicy::online();
         if let Some(timeout_ms) = args.network_timeout_ms {
             if timeout_ms == 0 {
                 return Err(usage_error(
@@ -8083,7 +8112,7 @@ fn verify_options_from_timestamp_args(
         }
         policy.allowed_hosts = args.network_allow_hosts.clone();
         if args.ocsp_require_nonce {
-            policy.ocsp_nonce_policy = oxide_engine::OcspNoncePolicy::Required;
+            policy.ocsp_nonce_policy = wellfriendpdf_engine::OcspNoncePolicy::Required;
         }
         options = options.with_retrieval_policy(policy)?;
     } else if !args.network_allow_hosts.is_empty()
@@ -8098,13 +8127,13 @@ fn verify_options_from_timestamp_args(
     }
     if let Some(path) = &args.evidence_in {
         let bytes = std::fs::read(path)?;
-        let bundle: oxide_engine::EvidenceBundle = serde_json::from_slice(&bytes)
+        let bundle: wellfriendpdf_engine::EvidenceBundle = serde_json::from_slice(&bytes)
             .map_err(|error| usage_error(format!("invalid --evidence-in bundle: {error}")))?;
         options = options.with_evidence_bundle(bundle)?;
     }
     if let Some(path) = &args.algorithm_policy {
         let bytes = std::fs::read(path)?;
-        let policy: oxide_engine::SignatureAlgorithmPolicy = serde_json::from_slice(&bytes)
+        let policy: wellfriendpdf_engine::SignatureAlgorithmPolicy = serde_json::from_slice(&bytes)
             .map_err(|error| usage_error(format!("invalid --algorithm-policy JSON: {error}")))?;
         options = options.with_algorithm_policy(policy)?;
     }
@@ -8123,11 +8152,11 @@ fn certificate_input_is_pem(bytes: &[u8]) -> bool {
 
 fn write_evidence_bundle(
     path: &Path,
-    bundle: &oxide_engine::EvidenceBundle,
-    options: &oxide_engine::VerifyOptions,
+    bundle: &wellfriendpdf_engine::EvidenceBundle,
+    options: &wellfriendpdf_engine::VerifyOptions,
 ) -> Result<(), Box<dyn Error>> {
     let budget = &options.retrieval_policy.budget;
-    let store = oxide_engine::EvidenceStore::import_bundle(
+    let store = wellfriendpdf_engine::EvidenceStore::import_bundle(
         bundle,
         budget.max_cache_entries,
         budget.max_cache_bytes,
@@ -8151,22 +8180,22 @@ fn write_evidence_bundle(
 
 fn parse_signature_revocation_mode(
     value: &str,
-) -> Result<oxide_engine::SignatureRevocationMode, Box<dyn Error>> {
+) -> Result<wellfriendpdf_engine::SignatureRevocationMode, Box<dyn Error>> {
     match value {
-        "not-checked" | "not_checked" => Ok(oxide_engine::SignatureRevocationMode::NotChecked),
+        "not-checked" | "not_checked" => Ok(wellfriendpdf_engine::SignatureRevocationMode::NotChecked),
         "offline-strict" | "offline_strict" => {
-            Ok(oxide_engine::SignatureRevocationMode::OfflineStrict)
+            Ok(wellfriendpdf_engine::SignatureRevocationMode::OfflineStrict)
         }
         "offline-best-effort" | "offline_best_effort" => {
-            Ok(oxide_engine::SignatureRevocationMode::OfflineBestEffort)
+            Ok(wellfriendpdf_engine::SignatureRevocationMode::OfflineBestEffort)
         }
         "online-strict" | "online_strict" | "online-hard-fail" | "online_hard_fail" => {
-            Ok(oxide_engine::SignatureRevocationMode::OnlineStrict)
+            Ok(wellfriendpdf_engine::SignatureRevocationMode::OnlineStrict)
         }
         "online-best-effort"
         | "online_best_effort"
         | "online-best-evidence"
-        | "online_best_evidence" => Ok(oxide_engine::SignatureRevocationMode::OnlineBestEffort),
+        | "online_best_evidence" => Ok(wellfriendpdf_engine::SignatureRevocationMode::OnlineBestEffort),
         other => Err(format!(
             "unknown revocation mode '{other}'; use not-checked, offline-strict, offline-best-effort, online-strict, or online-best-effort"
         )
@@ -8176,7 +8205,7 @@ fn parse_signature_revocation_mode(
 
 fn run_security_report(args: SecurityReportArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let report = oxide_engine::security_report(&engine)?;
+    let report = wellfriendpdf_engine::security_report(&engine)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -8202,7 +8231,7 @@ fn run_security_report(args: SecurityReportArgs) -> Result<(), Box<dyn Error>> {
 fn run_sanitize(args: SanitizeArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let options = parse_sanitizer_options(&args.policy)?;
-    let (bytes, report) = oxide_engine::sanitize_pdf(&engine, &options)?;
+    let (bytes, report) = wellfriendpdf_engine::sanitize_pdf(&engine, &options)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -8224,9 +8253,9 @@ fn run_sanitize(args: SanitizeArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let profile = oxide_engine::StandardsProfile::parse(&args.profile)
+    let profile = wellfriendpdf_engine::StandardsProfile::parse(&args.profile)
         .ok_or_else(|| usage_error(format!("unknown validation profile '{}'", args.profile)))?;
-    let report = oxide_engine::validate_standards_profile(&engine, profile)?;
+    let report = wellfriendpdf_engine::validate_standards_profile(&engine, profile)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -8246,11 +8275,11 @@ fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
     let has_fail = report
         .rules
         .iter()
-        .any(|rule| matches!(rule.status, oxide_engine::ValidationStatus::Fail));
+        .any(|rule| matches!(rule.status, wellfriendpdf_engine::ValidationStatus::Fail));
     let has_warn = report
         .rules
         .iter()
-        .any(|rule| matches!(rule.status, oxide_engine::ValidationStatus::Warn));
+        .any(|rule| matches!(rule.status, wellfriendpdf_engine::ValidationStatus::Warn));
     let fail_on = parse_validate_fail_on(&args.fail_on, args.fail_on_warning)?;
     if (fail_on == "error" && has_fail) || (fail_on == "warning" && (has_fail || has_warn)) {
         return Err(Box::new(CliError::new(
@@ -8275,22 +8304,22 @@ fn run_standards_validate(
 ) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let options = match &args.target {
-        Some(target) => oxide_engine::StandardsValidationOptions::with_target(target),
-        None => oxide_engine::StandardsValidationOptions::default(),
+        Some(target) => wellfriendpdf_engine::StandardsValidationOptions::with_target(target),
+        None => wellfriendpdf_engine::StandardsValidationOptions::default(),
     };
     let (json, conformant, has_fail, has_warn, summary) = match kind {
         StandardsKind::All => {
-            let report = oxide_engine::validate_all_standards(&engine, &options)?;
+            let report = wellfriendpdf_engine::validate_all_standards(&engine, &options)?;
             let has_fail = report.reports.iter().any(|r| {
                 matches!(
                     r.conformance,
-                    oxide_engine::ConformanceStatus::NonConformant
+                    wellfriendpdf_engine::ConformanceStatus::NonConformant
                 )
             });
             let has_warn = report.conflicts.iter().any(|c| {
                 matches!(
                     c.severity,
-                    oxide_engine::standards_engine::ValidationSeverity::Warning
+                    wellfriendpdf_engine::standards_engine::ValidationSeverity::Warning
                 )
             });
             let summary = format!(
@@ -8309,20 +8338,21 @@ fn run_standards_validate(
         }
         other => {
             let family = match other {
-                StandardsKind::PdfA => oxide_engine::StandardsFamily::PdfA,
-                StandardsKind::PdfUa => oxide_engine::StandardsFamily::PdfUa,
-                StandardsKind::PdfX => oxide_engine::StandardsFamily::PdfX,
+                StandardsKind::PdfA => wellfriendpdf_engine::StandardsFamily::PdfA,
+                StandardsKind::PdfUa => wellfriendpdf_engine::StandardsFamily::PdfUa,
+                StandardsKind::PdfX => wellfriendpdf_engine::StandardsFamily::PdfX,
                 StandardsKind::All => unreachable!(),
             };
-            let report = oxide_engine::validate_standards_family(&engine, family, &options)?;
+            let report =
+                wellfriendpdf_engine::validate_standards_family(&engine, family, &options)?;
             let has_fail = report
                 .rules
                 .iter()
-                .any(|r| matches!(r.status, oxide_engine::RuleStatus::Fail));
+                .any(|r| matches!(r.status, wellfriendpdf_engine::RuleStatus::Fail));
             let has_warn = report
                 .rules
                 .iter()
-                .any(|r| matches!(r.status, oxide_engine::RuleStatus::Warning));
+                .any(|r| matches!(r.status, wellfriendpdf_engine::RuleStatus::Warning));
             let summary = format!(
                 "{}: {:?}, {} rule(s), {} pass / {} fail / {} unsupported / {} deferred",
                 family.as_str(),
@@ -8380,9 +8410,9 @@ fn run_signature_sign(args: SignatureSignArgs, plan_only: bool) -> Result<(), Bo
         .map(std::fs::read_to_string)
         .collect::<std::result::Result<_, _>>()?;
     let chain_refs: Vec<&str> = chain_pem.iter().map(String::as_str).collect();
-    let signer = oxide_engine::PdfSigner::from_pem(&key_pem, &cert_pem, &chain_refs)?;
+    let signer = wellfriendpdf_engine::PdfSigner::from_pem(&key_pem, &cert_pem, &chain_refs)?;
 
-    let mut signature = oxide_engine::SignatureOptions {
+    let mut signature = wellfriendpdf_engine::SignatureOptions {
         contents_reserved_bytes: args.placeholder_size,
         ..Default::default()
     };
@@ -8391,12 +8421,12 @@ fn run_signature_sign(args: SignatureSignArgs, plan_only: bool) -> Result<(), Bo
     }
     signature.reason = args.reason.clone();
     let intent = match args.certify {
-        Some(p) => oxide_engine::SigningIntent::Certification {
+        Some(p) => wellfriendpdf_engine::SigningIntent::Certification {
             docmdp_permissions: p,
         },
-        None => oxide_engine::SigningIntent::Approval,
+        None => wellfriendpdf_engine::SigningIntent::Approval,
     };
-    let options = oxide_engine::IncrementalSigningOptions {
+    let options = wellfriendpdf_engine::IncrementalSigningOptions {
         signature,
         intent,
         retry_larger_placeholder: true,
@@ -8404,7 +8434,8 @@ fn run_signature_sign(args: SignatureSignArgs, plan_only: bool) -> Result<(), Bo
     };
 
     if plan_only {
-        let plan = oxide_engine::plan_signature_placeholder(engine.document(), &signer, &options)?;
+        let plan =
+            wellfriendpdf_engine::plan_signature_placeholder(engine.document(), &signer, &options)?;
         if args.json {
             println!("{}", serde_json::to_string_pretty(&plan)?);
         } else {
@@ -8416,9 +8447,9 @@ fn run_signature_sign(args: SignatureSignArgs, plan_only: bool) -> Result<(), Bo
         return Ok(());
     }
 
-    let result = oxide_engine::sign_incremental(
+    let result = wellfriendpdf_engine::sign_incremental(
         engine.document(),
-        oxide_engine::IncrementalSigner::Local(&signer),
+        wellfriendpdf_engine::IncrementalSigner::Local(&signer),
         &options,
     )?;
     if !result.post_sign.signature_valid {
@@ -8449,11 +8480,11 @@ fn run_signature_sign(args: SignatureSignArgs, plan_only: bool) -> Result<(), Bo
 
 fn run_canonicalize(args: CanonicalizeArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let options = oxide_engine::CanonicalizeOptions {
+    let options = wellfriendpdf_engine::CanonicalizeOptions {
         fixed_source_date_epoch: args.source_date_epoch,
         ..Default::default()
     };
-    let (bytes, report) = oxide_engine::canonicalize_pdf(&engine, &options)?;
+    let (bytes, report) = wellfriendpdf_engine::canonicalize_pdf(&engine, &options)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -8468,12 +8499,14 @@ fn run_canonicalize(args: CanonicalizeArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn parse_sanitizer_options(policy: &str) -> Result<oxide_engine::SanitizerOptions, Box<dyn Error>> {
+fn parse_sanitizer_options(
+    policy: &str,
+) -> Result<wellfriendpdf_engine::SanitizerOptions, Box<dyn Error>> {
     match policy.to_ascii_lowercase().as_str() {
-        "strict" => Ok(oxide_engine::SanitizerOptions::strict()),
-        "balanced" => Ok(oxide_engine::SanitizerOptions::balanced()),
+        "strict" => Ok(wellfriendpdf_engine::SanitizerOptions::strict()),
+        "balanced" => Ok(wellfriendpdf_engine::SanitizerOptions::balanced()),
         "preserve-visual" | "preserve_visual" => {
-            Ok(oxide_engine::SanitizerOptions::preserve_visual())
+            Ok(wellfriendpdf_engine::SanitizerOptions::preserve_visual())
         }
         other => Err(usage_error(format!("unknown sanitizer policy '{other}'"))),
     }
@@ -8497,7 +8530,7 @@ fn parse_validate_fail_on(
 }
 
 fn run_merge(args: MergeArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::{build_merged, ContentEngine};
+    use wellfriendpdf_engine::{build_merged, ContentEngine};
 
     // Split positional passwords (comma-separated) and match by input index.
     let passwords: Vec<String> = args
@@ -8554,7 +8587,7 @@ fn run_merge(args: MergeArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_split(args: SplitArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::ContentEngine;
+    use wellfriendpdf_engine::ContentEngine;
 
     let engine = match &args.password {
         Some(pw) => ContentEngine::open_path_with_password(&args.pdf, pw.as_bytes())?,
@@ -8602,7 +8635,7 @@ fn run_split(args: SplitArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_extract_pages(args: ExtractPagesArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::ContentEngine;
+    use wellfriendpdf_engine::ContentEngine;
 
     let engine = match &args.password {
         Some(pw) => ContentEngine::open_path_with_password(&args.pdf, pw.as_bytes())?,
@@ -8639,7 +8672,7 @@ fn run_extract_pages(args: ExtractPagesArgs) -> Result<(), Box<dyn Error>> {
 // --- Structural-write ops (Bucket 2): encrypt / rotate / optimize / repair ---
 
 fn run_encrypt(args: EncryptArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+    use wellfriendpdf_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
 
     let algo = EncryptAlgorithm::parse(&args.algo).ok_or_else(|| {
         format!(
@@ -8662,13 +8695,13 @@ fn run_encrypt(args: EncryptArgs) -> Result<(), Box<dyn Error>> {
     };
     if matches!(algo, EncryptAlgorithm::Rc4_128 | EncryptAlgorithm::Aes128) {
         eprintln!(
-            "Warning: {} is a legacy algorithm. Oxide reads its own output, but \
+            "Warning: {} is a legacy algorithm. Wellfriend reads its own output, but \
              cross-reader interop is only verified for AES-256 (the default). \
              Prefer --algo aes256 unless a consumer requires legacy encryption.",
             args.algo
         );
     }
-    let bytes = oxide_engine::encrypt(&engine, &params)?;
+    let bytes = wellfriendpdf_engine::encrypt(&engine, &params)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -8693,7 +8726,7 @@ fn run_encrypt(args: EncryptArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_decrypt(args: DecryptArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let bytes = oxide_engine::decrypt_pdf(&engine)?;
+    let bytes = wellfriendpdf_engine::decrypt_pdf(&engine)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -8721,15 +8754,15 @@ fn run_watermark(args: WatermarkArgs) -> Result<(), Box<dyn Error>> {
         return Err("pass exactly one of --text or --image".into());
     }
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let engine = oxide_engine::ContentEngine::open_bytes(input.clone())?;
+    let engine = wellfriendpdf_engine::ContentEngine::open_bytes(input.clone())?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
     let position = parse_stamp_position(&args.position)?;
     let bytes = if let Some(text) = args.text {
-        oxide_engine::watermark_text_pdf(
+        wellfriendpdf_engine::watermark_text_pdf(
             input,
             &text,
-            oxide_engine::TextWatermarkOptions {
+            wellfriendpdf_engine::TextWatermarkOptions {
                 pages: pages.clone(),
                 position,
                 opacity: args.opacity,
@@ -8741,11 +8774,11 @@ fn run_watermark(args: WatermarkArgs) -> Result<(), Box<dyn Error>> {
     } else {
         let image_path = args.image.expect("checked above");
         let image = std::fs::read(&image_path)?;
-        oxide_engine::watermark_image_pdf(
+        wellfriendpdf_engine::watermark_image_pdf(
             input,
             &image,
             image_path.extension().and_then(|s| s.to_str()),
-            oxide_engine::ImageWatermarkOptions {
+            wellfriendpdf_engine::ImageWatermarkOptions {
                 pages: pages.clone(),
                 position,
                 opacity: args.opacity,
@@ -8776,12 +8809,12 @@ fn run_watermark(args: WatermarkArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_page_numbers(args: PageNumbersArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let engine = oxide_engine::ContentEngine::open_bytes(input.clone())?;
+    let engine = wellfriendpdf_engine::ContentEngine::open_bytes(input.clone())?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let bytes = oxide_engine::add_page_numbers_pdf(
+    let bytes = wellfriendpdf_engine::add_page_numbers_pdf(
         input,
-        oxide_engine::PageNumberOptions {
+        wellfriendpdf_engine::PageNumberOptions {
             pages: pages.clone(),
             position: parse_stamp_position(&args.position)?,
             format: args.format,
@@ -8819,13 +8852,13 @@ fn run_organize(args: OrganizeArgs) -> Result<(), Box<dyn Error>> {
         let inserted = open_engine(&insert_path, &args.insert_password)?;
         let inserted_total = inserted.page_count()?;
         let insert_pages = parse_page_selection_ordered(&args.insert_pages, inserted_total)?;
-        oxide_engine::organize_pdf_with_insert(
+        wellfriendpdf_engine::organize_pdf_with_insert(
             &engine,
             &order,
             Some((&inserted, insert_pages, args.insert_at)),
         )?
     } else {
-        oxide_engine::organize_pdf(&engine, &order)?
+        wellfriendpdf_engine::organize_pdf(&engine, &order)?
     };
     std::fs::write(&args.output, &bytes)?;
     if args.json {
@@ -8845,7 +8878,7 @@ fn run_organize(args: OrganizeArgs) -> Result<(), Box<dyn Error>> {
 }
 
 fn run_rotate(args: RotateArgs) -> Result<(), Box<dyn Error>> {
-    use oxide_engine::Rotation;
+    use wellfriendpdf_engine::Rotation;
 
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
@@ -8855,7 +8888,7 @@ fn run_rotate(args: RotateArgs) -> Result<(), Box<dyn Error>> {
     } else {
         Rotation::Absolute(args.angle)
     };
-    let bytes = oxide_engine::rotate_pages(&engine, &pages, rotation)?;
+    let bytes = wellfriendpdf_engine::rotate_pages(&engine, &pages, rotation)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -8885,7 +8918,7 @@ fn run_pages_crop(args: PagesCropArgs) -> Result<(), Box<dyn Error>> {
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
     let rect = parse_plain_rect_cli(&args.rect)?;
-    let bytes = oxide_engine::crop_pdf(&engine, &pages, rect)?;
+    let bytes = wellfriendpdf_engine::crop_pdf(&engine, &pages, rect)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -8913,12 +8946,12 @@ fn run_pages_scale(args: PagesScaleArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let options = oxide_engine::ScalePagesOptions {
+    let options = wellfriendpdf_engine::ScalePagesOptions {
         pages: Some(pages.clone()),
         scale: args.scale,
         dpi: args.dpi,
     };
-    let bytes = oxide_engine::scale_pdf_pages(&engine, options)?;
+    let bytes = wellfriendpdf_engine::scale_pdf_pages(&engine, options)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -8947,12 +8980,12 @@ fn run_pages_nup(args: PagesNupArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
     let pages = parse_page_range_cli(&args.pages, total)?;
-    let options = oxide_engine::NUpOptions {
+    let options = wellfriendpdf_engine::NUpOptions {
         columns: args.columns,
         rows: args.rows,
         dpi: args.dpi,
     };
-    let bytes = oxide_engine::n_up_pdf(&engine, &pages, options)?;
+    let bytes = wellfriendpdf_engine::n_up_pdf(&engine, &pages, options)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -8979,7 +9012,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<(), Box<dyn Error>> {
         .map(|m| m.len() as usize)
         .unwrap_or(0);
     let engine = open_engine(&args.pdf, &args.password)?;
-    let (bytes, report) = oxide_engine::optimize(&engine)?;
+    let (bytes, report) = wellfriendpdf_engine::optimize(&engine)?;
     std::fs::write(&args.output, &bytes)?;
     let saved = input_size.saturating_sub(bytes.len());
     if args.json {
@@ -9010,7 +9043,7 @@ fn run_optimize(args: OptimizeArgs) -> Result<(), Box<dyn Error>> {
 fn run_repair(args: RepairArgs) -> Result<(), Box<dyn Error>> {
     let input = std::fs::read(&args.pdf)?;
     let password = args.password.clone().unwrap_or_default();
-    let bytes = oxide_engine::repair(input, password.as_bytes())?;
+    let bytes = wellfriendpdf_engine::repair(input, password.as_bytes())?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -9033,7 +9066,7 @@ fn run_repair(args: RepairArgs) -> Result<(), Box<dyn Error>> {
 
 fn run_linearize(args: LinearizeArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
-    let bytes = oxide_engine::linearize(&engine)?;
+    let bytes = wellfriendpdf_engine::linearize(&engine)?;
     std::fs::write(&args.output, &bytes)?;
     if args.json {
         println!(
@@ -9061,7 +9094,7 @@ fn run_codec_isolation_report(args: CodecIsolationReportArgs) -> Result<(), Box<
         parse_hex_bytes_cli(&hex)?
     } else if let Some(text) = args.sample_text {
         if matches!(args.filter.as_str(), "FlateDecode" | "Fl") {
-            oxide_engine::flate_encode(text.as_bytes(), 6)
+            wellfriendpdf_engine::flate_encode(text.as_bytes(), 6)
         } else {
             text.into_bytes()
         }
@@ -9071,17 +9104,18 @@ fn run_codec_isolation_report(args: CodecIsolationReportArgs) -> Result<(), Box<
         ));
     };
 
-    let mut config = oxide_engine::CodecIsolationConfig::from_policy_str(Some(&args.policy))?
-        .with_timeout_ms(args.timeout_ms)
-        .with_max_decoded_bytes(args.max_output_bytes);
+    let mut config =
+        wellfriendpdf_engine::CodecIsolationConfig::from_policy_str(Some(&args.policy))?
+            .with_timeout_ms(args.timeout_ms)
+            .with_max_decoded_bytes(args.max_output_bytes);
     if let Some(worker) = args.worker {
         config = config.with_worker_path(worker);
     }
-    let result = oxide_engine::decode_filter_with_isolation(&args.filter, &input, &config);
+    let result = wellfriendpdf_engine::decode_filter_with_isolation(&args.filter, &input, &config);
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({
-            "schema_version": oxide_engine::REPORT_ENVELOPE_VERSION,
+            "schema_version": wellfriendpdf_engine::REPORT_ENVELOPE_VERSION,
             "kind": "codec_isolation_report",
             "report": result.report,
         }))?
@@ -9252,7 +9286,7 @@ fn parse_char_range_cli(spec: &str) -> Result<(usize, usize), Box<dyn Error>> {
     Ok((start, end))
 }
 
-fn parse_region_cli(spec: &str) -> Result<oxide_engine::PageRegion, Box<dyn Error>> {
+fn parse_region_cli(spec: &str) -> Result<wellfriendpdf_engine::PageRegion, Box<dyn Error>> {
     let values: Vec<f64> = spec
         .split(',')
         .map(|part| part.trim().parse::<f64>())
@@ -9260,12 +9294,14 @@ fn parse_region_cli(spec: &str) -> Result<oxide_engine::PageRegion, Box<dyn Erro
     if values.len() != 4 {
         return Err("region must be four comma-separated numbers: x0,y0,x1,y1".into());
     }
-    oxide_engine::PageRegion::new(values[0], values[1], values[2], values[3])
+    wellfriendpdf_engine::PageRegion::new(values[0], values[1], values[2], values[3])
         .map_err(|err| err.into())
 }
 
-fn parse_profile_cli(name: &str) -> Result<oxide_engine::ExtractionProfile, Box<dyn Error>> {
-    oxide_engine::ExtractionProfile::parse(name).ok_or_else(|| {
+fn parse_profile_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::ExtractionProfile, Box<dyn Error>> {
+    wellfriendpdf_engine::ExtractionProfile::parse(name).ok_or_else(|| {
         format!(
             "unknown --profile '{name}'; use fast-text, layout-faithful, tables-focused, or rag-chunks"
         )
@@ -9302,7 +9338,7 @@ mod tests {
     fn cli_profile_parser_accepts_named_profiles() {
         assert_eq!(
             parse_profile_cli("layout-faithful").unwrap(),
-            oxide_engine::ExtractionProfile::LayoutFaithful
+            wellfriendpdf_engine::ExtractionProfile::LayoutFaithful
         );
         assert!(parse_profile_cli("made-up").is_err());
     }
@@ -9357,7 +9393,7 @@ mod tests {
     #[test]
     fn prompt15_cli_surfaces_parse_without_ambiguous_flags() {
         let semantic = Cli::try_parse_from([
-            "oxide",
+            "wellfriendpdf",
             "semantic-export",
             "fixture.pdf",
             "--view",
@@ -9379,7 +9415,7 @@ mod tests {
         assert_eq!(args.dictionary_packs.len(), 1);
 
         let chunk = Cli::try_parse_from([
-            "oxide",
+            "wellfriendpdf",
             "chunk",
             "fixture.pdf",
             "--advanced",

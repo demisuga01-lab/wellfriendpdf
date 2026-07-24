@@ -4,7 +4,7 @@
 //! fill colour space, fills a rectangle, renders, and asserts the painted pixel
 //! colour matches the tint-transform → alternate-space → RGB result.
 
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::ContentEngine;
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,

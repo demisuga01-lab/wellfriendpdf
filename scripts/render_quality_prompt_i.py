@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Prompt I fidelity measurement for Oxide Compat vs High vs Poppler.
+"""Prompt I fidelity measurement for Wellfriend Compat vs High vs Poppler.
 
-Ground truth is approximated by rendering Oxide HighQuality at 4x the target
+Ground truth is approximated by rendering Wellfriend HighQuality at 4x the target
 DPI and downsampling in linear light. That intentionally measures whether the
 target-DPI High mode is closer to a supersampled, gamma-correct render than the
 default Compat mode and Poppler/Splash output.
@@ -23,7 +23,7 @@ from PIL import Image
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OXIDE = ROOT / "target" / "release" / "oxide.exe"
+DEFAULT_WELLFRIENDPDF = ROOT / "target" / "release" / "wellfriendpdf.exe"
 DEFAULT_POPPLER = ROOT / "target" / "tools" / "poppler" / "poppler-26.02.0" / "Library" / "bin"
 
 
@@ -88,13 +88,13 @@ def load_rgb(path: Path) -> Image.Image:
         return img.convert("RGB")
 
 
-def render_oxide(oxide: Path, pdf: Path, dpi: int, mode: str, out_dir: Path, name: str) -> Image.Image:
-    out_zip = out_dir / f"{name}_oxide_{mode}_{dpi}.zip"
+def render_wellfriendpdf(wellfriendpdf: Path, pdf: Path, dpi: int, mode: str, out_dir: Path, name: str) -> Image.Image:
+    out_zip = out_dir / f"{name}_wellfriendpdf_{mode}_{dpi}.zip"
     if out_zip.exists():
         out_zip.unlink()
     run(
         [
-            str(oxide),
+            str(wellfriendpdf),
             "render",
             str(pdf),
             "--format",
@@ -113,7 +113,7 @@ def render_oxide(oxide: Path, pdf: Path, dpi: int, mode: str, out_dir: Path, nam
         members = [m for m in zf.namelist() if m.lower().endswith(".png")]
         if not members:
             raise RuntimeError(f"{out_zip} did not contain a PNG")
-        png_path = out_dir / f"{name}_oxide_{mode}_{dpi}.png"
+        png_path = out_dir / f"{name}_wellfriendpdf_{mode}_{dpi}.png"
         png_path.write_bytes(zf.read(members[0]))
     return load_rgb(png_path)
 
@@ -235,7 +235,7 @@ def write_markdown(path: Path, payload: dict) -> None:
         "## Method",
         "",
         (
-            f"Target renders use {payload['dpi']} DPI. Ground truth is Oxide HighQuality "
+            f"Target renders use {payload['dpi']} DPI. Ground truth is Wellfriend HighQuality "
             f"at {payload['reference_dpi']} DPI, downsampled {payload['supersample']}x "
             "in linear light."
         ),
@@ -291,7 +291,7 @@ def write_markdown(path: Path, payload: dict) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--oxide-bin", type=Path, default=DEFAULT_OXIDE)
+    parser.add_argument("--wellfriendpdf-bin", type=Path, default=DEFAULT_WELLFRIENDPDF)
     parser.add_argument("--poppler-bin-dir", type=Path, default=DEFAULT_POPPLER)
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--supersample", type=int, default=4)
@@ -300,8 +300,8 @@ def main() -> int:
     parser.add_argument("--markdown", type=Path, default=ROOT / "docs" / "render_quality_prompt_i_summary.md")
     args = parser.parse_args()
 
-    if not args.oxide_bin.exists():
-        raise SystemExit(f"missing Oxide binary: {args.oxide_bin}")
+    if not args.wellfriendpdf_bin.exists():
+        raise SystemExit(f"missing Wellfriend binary: {args.wellfriendpdf_bin}")
     if not (args.poppler_bin_dir / "pdftoppm.exe").exists():
         raise SystemExit(f"missing pdftoppm.exe under {args.poppler_bin_dir}")
 
@@ -316,9 +316,9 @@ def main() -> int:
         if not pdf.exists():
             continue
         name = case["name"]
-        compat = render_oxide(args.oxide_bin, pdf, args.dpi, "compat", args.work_dir, name)
-        high = render_oxide(args.oxide_bin, pdf, args.dpi, "high", args.work_dir, name)
-        high_ref = render_oxide(args.oxide_bin, pdf, reference_dpi, "high", args.work_dir, f"{name}_ref")
+        compat = render_wellfriendpdf(args.wellfriendpdf_bin, pdf, args.dpi, "compat", args.work_dir, name)
+        high = render_wellfriendpdf(args.wellfriendpdf_bin, pdf, args.dpi, "high", args.work_dir, name)
+        high_ref = render_wellfriendpdf(args.wellfriendpdf_bin, pdf, reference_dpi, "high", args.work_dir, f"{name}_ref")
         reference = downsample_linear(high_ref, args.supersample)
         ref_path = args.work_dir / f"{name}_reference_linear_downsample.png"
         reference.save(ref_path)
@@ -361,7 +361,7 @@ def main() -> int:
 
     payload = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "oxide_bin": str(args.oxide_bin),
+        "wellfriendpdf_bin": str(args.wellfriendpdf_bin),
         "poppler_bin_dir": str(args.poppler_bin_dir),
         "dpi": args.dpi,
         "supersample": args.supersample,

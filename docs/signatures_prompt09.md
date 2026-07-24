@@ -1,6 +1,6 @@
 # Prompt 09 Signatures
 
-Oxide parses signature dictionaries, validates `/ByteRange`, hashes the signed byte ranges, parses detached CMS/PKCS#7 `SignedData`, verifies supported RSA signatures, reports signer certificate details, and reports PAdES/LTV material.
+Wellfriend parses signature dictionaries, validates `/ByteRange`, hashes the signed byte ranges, parses detached CMS/PKCS#7 `SignedData`, verifies supported RSA signatures, reports signer certificate details, and reports PAdES/LTV material.
 
 ## Report Status Fields
 

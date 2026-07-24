@@ -1,6 +1,6 @@
 # Prompt 19 Known Limits
 
-- Oxide does not implement or claim full Acrobat JavaScript.
+- Wellfriend does not implement or claim full Acrobat JavaScript.
 - The safe calculation subset is static, scalar, bounded, opt-in, and rejects
   loops/dynamic/runtime APIs.
 - Script streams above 8 MiB, total decoded script bytes above 64 MiB, action

@@ -8,7 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 
-import oxide
+import wellfriendpdf
 
 
 def envelope(value: object, kind: str) -> dict:
@@ -28,12 +28,12 @@ def main() -> int:
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
 
-    feature = envelope(oxide.feature_report(), "feature_report")
+    feature = envelope(wellfriendpdf.feature_report(), "feature_report")
     prompt15 = feature["prompt15_semantic_binding_rag_benchmark_closeout"]
     if prompt15["closure_gates"]["blocked_count"] != 0:
         raise AssertionError("Prompt 15 feature report has blocked rows")
 
-    document = oxide.open(args.fixture)
+    document = wellfriendpdf.open(args.fixture)
     semantic = envelope(document.semantic_bundle(), "semantic_binding_report")
     chunks = envelope(document.advanced_chunks(), "advanced_rag_chunk_set")
     search = envelope(document.semantic_search("Hello"), "semantic_search_report")
@@ -87,8 +87,8 @@ def main() -> int:
     payload = {
         "schema_version": "prompt15.python_wheel_smoke.v1",
         "status": "passed",
-        "module_path": str(Path(oxide.__file__).resolve()),
-        "module_version": oxide.__version__,
+        "module_path": str(Path(wellfriendpdf.__file__).resolve()),
+        "module_version": wellfriendpdf.__version__,
         "fixture": str(args.fixture.resolve()),
         "fixture_sha256": "sha256:" + hashlib.sha256(args.fixture.read_bytes()).hexdigest(),
         "semantic_schema": semantic["schema_version"],

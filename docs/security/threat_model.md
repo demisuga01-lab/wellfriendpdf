@@ -1,6 +1,6 @@
 # Threat Model
 
-This document describes Oxide's security model for untrusted PDFs, network
+This document describes Wellfriend's security model for untrusted PDFs, network
 service deployments, crypto/signature workflows, and supply-chain risk.
 
 ## Trust Boundaries

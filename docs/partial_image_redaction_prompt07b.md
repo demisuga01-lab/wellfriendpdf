@@ -17,7 +17,7 @@ pixel-level partial image redaction for the safe common case.
 CLI:
 
 ```powershell
-oxide redact input.pdf --rect 1:200,500,50,100 --image-policy partial --out redacted.pdf --strict
+wellfriendpdf redact input.pdf --rect 1:200,500,50,100 --image-policy partial --out redacted.pdf --strict
 ```
 
 ## Limits

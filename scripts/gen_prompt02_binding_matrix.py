@@ -196,7 +196,7 @@ EXTRA_ROWS = [
         "category": "prompt02-wasm",
         "feature": "WASM open from bytes and lifecycle",
         "surfaces": {"wasm": PUB, "dotnet": DEF, "java": DEF, "docs": PUB, "packaging": PUB},
-        "note": "OxidePdf constructor, openWithPassword, close/isClosed, and use-after-close guard.",
+        "note": "WellfriendPdf constructor, openWithPassword, close/isClosed, and use-after-close guard.",
     },
     {
         "id": "wasm.input.path",
@@ -210,7 +210,7 @@ EXTRA_ROWS = [
         "category": "prompt02-wasm",
         "feature": "TypeScript declarations",
         "surfaces": {"wasm": PUB, "dotnet": DEF, "java": DEF, "docs": PUB, "packaging": PUB},
-        "note": "crates/oxide-wasm/oxide.d.ts declares reports and output ownership.",
+        "note": "crates/wellfriendpdf-wasm/wellfriendpdf.d.ts declares reports and output ownership.",
     },
     {
         "id": "wasm.package",
@@ -224,35 +224,35 @@ EXTRA_ROWS = [
         "category": "prompt02-dotnet",
         "feature": ".NET native binary loading",
         "surfaces": {"wasm": DEF, "dotnet": PUB, "java": DEF, "docs": PUB, "packaging": PUB},
-        "note": "Resolver checks OXIDE_NATIVE_LIBRARY and RID runtime/native locations.",
+        "note": "Resolver checks WELLFRIENDPDF_NATIVE_LIBRARY and RID runtime/native locations.",
     },
     {
         "id": "dotnet.nuget",
         "category": "prompt02-dotnet",
         "feature": ".NET NuGet metadata and pack smoke",
         "surfaces": {"wasm": DEF, "dotnet": PUB, "java": DEF, "docs": PUB, "packaging": PUB},
-        "note": "Oxide.Sdk.csproj includes package metadata/readme/license/tags.",
+        "note": "WellfriendPdf.csproj includes package metadata/readme/license/tags.",
     },
     {
         "id": "dotnet.binary.output",
         "category": "prompt02-dotnet",
         "feature": ".NET output buffer ownership",
         "surfaces": {"wasm": DEF, "dotnet": PUB, "java": DEF, "docs": PUB, "packaging": PUB},
-        "note": "OxideBinaryResult copies bytes to managed memory and frees native buffers.",
+        "note": "WellfriendBinaryResult copies bytes to managed memory and frees native buffers.",
     },
     {
         "id": "java.native.loading",
         "category": "prompt02-java",
         "feature": "Java native binary loading",
         "surfaces": {"wasm": DEF, "dotnet": DEF, "java": PUB, "docs": PUB, "packaging": PUB},
-        "note": "FFM loader checks OXIDE_NATIVE_LIBRARY and RID runtime/native locations.",
+        "note": "FFM loader checks WELLFRIENDPDF_NATIVE_LIBRARY and RID runtime/native locations.",
     },
     {
         "id": "java.maven",
         "category": "prompt02-java",
         "feature": "Java Maven package metadata",
         "surfaces": {"wasm": DEF, "dotnet": DEF, "java": PUB, "docs": PUB, "packaging": PUB},
-        "note": "pom.xml records Maven metadata and binds OxideSmokeTest into mvn test; Prompt 02B package smoke runs mvn test/package.",
+        "note": "pom.xml records Maven metadata and binds WellfriendPdfSmokeTest into mvn test; Prompt 02B package smoke runs mvn test/package.",
     },
     {
         "id": "java.binary.output",
@@ -287,21 +287,21 @@ EXTRA_ROWS = [
         "category": "prompt02b-closure",
         "feature": "C ABI open with optional password",
         "surfaces": {"c_abi": PUB, "dotnet": PUB, "java": PUB, "docs": PUB, "packaging": PUB},
-        "note": "oxide_document_open_from_bytes_with_password uses UTF-8 pointer+length and preserves existing open ABI.",
+        "note": "wellfriendpdf_document_open_from_bytes_with_password uses UTF-8 pointer+length and preserves existing open ABI.",
     },
     {
         "id": "prompt02b.dotnet.password_open",
         "category": "prompt02b-closure",
         "feature": ".NET password-open parity",
         "surfaces": {"dotnet": PUB, "docs": PUB, "packaging": PUB},
-        "note": "OxideDocument.Open(path/bytes, string? password) routes through the password-aware C ABI.",
+        "note": "WellfriendDocument.Open(path/bytes, string? password) routes through the password-aware C ABI.",
     },
     {
         "id": "prompt02b.java.password_open",
         "category": "prompt02b-closure",
         "feature": "Java password-open parity",
         "surfaces": {"java": PUB, "docs": PUB, "packaging": PUB},
-        "note": "Oxide.Document.open(Path/byte[], String password) routes UTF-8 bytes through the password-aware C ABI.",
+        "note": "WellfriendPdf.Document.open(Path/byte[], String password) routes UTF-8 bytes through the password-aware C ABI.",
     },
     {
         "id": "prompt02b.java.maven_package",
@@ -322,7 +322,7 @@ EXTRA_ROWS = [
         "category": "prompt02c-closure",
         "feature": "Java Gradle build/package/JAR smoke",
         "surfaces": {"java": PUB, "docs": PUB, "packaging": PUB},
-        "note": "scripts/prompt02c_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/oxide-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts.",
+        "note": "scripts/prompt02c_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/wellfriendpdf-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts.",
     },
     {
         "id": "prompt02b.java.jar_verification",
@@ -489,7 +489,7 @@ def tests_for(fid: str, category: str, surfaces: dict) -> str:
     if fid.startswith(("diag.", "test.", "pkg.", "doc.")):
         return "Prompt 02 matrix/docs plus focused smoke artifacts"
     if any(surfaces[name] == PUB for name in ("wasm", "dotnet", "java")):
-        return "WASM cargo build; .NET OxideSmokeTests; Java OxideSmokeTest; C ABI facade tests"
+        return "WASM cargo build; .NET WellfriendPdfSmokeTests; Java WellfriendPdfSmokeTest; C ABI facade tests"
     return "Matrixed as partial/unsupported/deferred; no fake wrapper test"
 
 

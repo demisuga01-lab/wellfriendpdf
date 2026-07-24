@@ -4,7 +4,7 @@ Prompt 10 extends the renderer parity campaign into complex text rasterization
 and direct reference-renderer harnessing. It does not change the PDF imaging
 model: existing page content streams are painted from encoded PDF glyph codes,
 CMap/CID/GID mapping, font data, text matrices, and explicit positioning.
-Unicode shaping is used only when Oxide owns text generation or fallback text
+Unicode shaping is used only when Wellfriend owns text generation or fallback text
 layout.
 
 ## Artifact Root
@@ -23,21 +23,21 @@ Important outputs:
   policy rows for missing or unsupported color-glyph cases.
 - `prompt10-capability-matrix.json`: CJK, RTL, color glyph, PDFium, and MuPDF
   status matrix.
-- `multi-reference-render-results-prompt10.json`: per-page Oxide/Poppler/PDFium/
+- `multi-reference-render-results-prompt10.json`: per-page Wellfriend/Poppler/PDFium/
   MuPDF render commands, artifacts, and raw classifications.
 - `multi-reference-diff-metrics-prompt10.json`: per-page pairwise image metrics.
 - `reference-disagreement-summary-prompt10.json`: reference disagreement and
-  Oxide outlier summary.
+  Wellfriend outlier summary.
 - `html-report/index.html`: browsable summary table.
 - `public-feature-report-prompt10.json`: feature report captured through the CLI.
 - `binding-report-parity-prompt10.json`: shared public report surface mapping.
 
 ## Running The Harness
 
-Build the CLI first when no existing `target/debug/oxide.exe` is present:
+Build the CLI first when no existing `target/debug/wellfriendpdf.exe` is present:
 
 ```powershell
-cargo build -p oxide-cli
+cargo build -p wellfriendpdf-cli
 ```
 
 Run the full Prompt 10 harness:

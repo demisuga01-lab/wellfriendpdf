@@ -14,7 +14,7 @@ use crate::editing::{
     WatermarkOptions,
 };
 use crate::engine::ContentEngine;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::encoder::{ImageEncoder, ImageOutputFormat};
 use crate::signature::SignatureReport;
@@ -168,7 +168,7 @@ impl ImagePdfPageSize {
             Self::SizeToImage => AuthorPageSize::custom(image_width as f64, image_height as f64),
             Self::Custom { width, height } => {
                 if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "image-to-pdf: custom page size must be positive finite points".to_string(),
                     ));
                 }
@@ -233,7 +233,7 @@ impl Default for NUpOptions {
 /// at a time; the builder retains the encoded image data required for output.
 pub fn images_to_pdf_from_paths(paths: &[PathBuf], options: ImageToPdfOptions) -> Result<Vec<u8>> {
     if paths.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "image-to-pdf: at least one image is required".to_string(),
         ));
     }
@@ -256,7 +256,7 @@ pub fn images_to_pdf_from_bytes(
     options: ImageToPdfOptions,
 ) -> Result<Vec<u8>> {
     if images.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "image-to-pdf: at least one image is required".to_string(),
         ));
     }
@@ -322,7 +322,7 @@ impl RgbColor {
             || !(0.0..=1.0).contains(&self.g)
             || !(0.0..=1.0).contains(&self.b)
         {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "color components must be finite values in 0.0..=1.0".to_string(),
             ));
         }
@@ -379,7 +379,7 @@ pub fn watermark_text_pdf(
     options: TextWatermarkOptions,
 ) -> Result<Vec<u8>> {
     if text.trim().is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "watermark: text must not be empty".to_string(),
         ));
     }
@@ -417,14 +417,14 @@ pub fn watermark_image_pdf(
     options: ImageWatermarkOptions,
 ) -> Result<Vec<u8>> {
     if image_bytes.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "watermark: image bytes must not be empty".to_string(),
         ));
     }
     validate_opacity(options.opacity, "watermark")?;
     validate_positive(options.scale, "watermark: image scale")?;
     if options.scale > 10.0 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "watermark: image scale must be <= 10".to_string(),
         ));
     }
@@ -531,7 +531,7 @@ pub fn add_page_numbers_pdf(input: Vec<u8>, options: PageNumberOptions) -> Resul
 /// Convenience wrapper for the existing writer's ordered page-copy operation.
 pub fn organize_pdf(engine: &ContentEngine, order: &[usize]) -> Result<Vec<u8>> {
     if order.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "organize: page order must not be empty".to_string(),
         ));
     }
@@ -550,7 +550,7 @@ pub fn crop_pdf_pages(engine: &ContentEngine, pages: &[usize], crop: ImageRect) 
 /// preserving interactivity is required.
 pub fn scale_pdf_pages(engine: &ContentEngine, options: ScalePagesOptions) -> Result<Vec<u8>> {
     if !options.scale.is_finite() || options.scale <= 0.0 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "scale: --scale must be a positive finite number".to_string(),
         ));
     }
@@ -580,13 +580,13 @@ pub fn scale_pdf_pages(engine: &ContentEngine, options: ScalePagesOptions) -> Re
 /// widget/link destination relinking across imposed pages is not safe yet.
 pub fn n_up_pdf(engine: &ContentEngine, pages: &[usize], options: NUpOptions) -> Result<Vec<u8>> {
     if options.columns == 0 || options.rows == 0 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "n-up: rows and columns must be positive".to_string(),
         ));
     }
     let per_sheet = options.columns.saturating_mul(options.rows);
     if per_sheet == 0 || per_sheet > 64 {
-        return Err(OxideError::ResourceLimit(
+        return Err(WellfriendError::ResourceLimit(
             "n-up: rows*columns must be between 1 and 64".to_string(),
         ));
     }
@@ -637,7 +637,7 @@ pub fn organize_pdf_with_insert(
     };
     if let Some((other, insert_pages, at)) = inserted {
         if insert_pages.is_empty() {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "organize: inserted page list must not be empty".to_string(),
             ));
         }
@@ -726,7 +726,7 @@ pub fn html_string(engine: &ContentEngine, pages: &[usize]) -> Result<String> {
 
 fn normalize_pages(total: usize, pages: &[usize]) -> Result<Vec<usize>> {
     if total == 0 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "document has no pages".to_string(),
         ));
     }
@@ -735,7 +735,7 @@ fn normalize_pages(total: usize, pages: &[usize]) -> Result<Vec<usize>> {
     }
     for &page in pages {
         if page == 0 || page > total {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "page {page} is out of range 1..={total}"
             )));
         }
@@ -773,7 +773,7 @@ fn render_page_rgb(engine: &ContentEngine, page: usize, dpi: u32) -> Result<RawI
                 pixels,
             })
         }
-        channels => Err(OxideError::UnsupportedFeature(format!(
+        channels => Err(WellfriendError::UnsupportedFeature(format!(
             "rendered page image has unsupported channel count {channels}"
         ))),
     }
@@ -854,7 +854,7 @@ fn image_payload(bytes: &[u8], extension_hint: Option<&str>) -> Result<ImagePayl
             kind: ImagePayloadKind::Rgba(raw.pixels),
         });
     }
-    Err(OxideError::UnsupportedFeature(
+    Err(WellfriendError::UnsupportedFeature(
         "image-to-pdf/watermark: supported image formats are JPEG and PNG".to_string(),
     ))
 }
@@ -864,12 +864,12 @@ fn decode_png_rgba(bytes: &[u8]) -> Result<RawImage> {
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
     let mut reader = decoder
         .read_info()
-        .map_err(|err| OxideError::MalformedPdf(format!("PNG decode failed: {err}")))?;
+        .map_err(|err| WellfriendError::MalformedPdf(format!("PNG decode failed: {err}")))?;
     enforce_decode_cap(reader.info().width, reader.info().height)?;
     let mut buf = vec![0; reader.output_buffer_size()];
     let info = reader
         .next_frame(&mut buf)
-        .map_err(|err| OxideError::MalformedPdf(format!("PNG decode failed: {err}")))?;
+        .map_err(|err| WellfriendError::MalformedPdf(format!("PNG decode failed: {err}")))?;
     let samples = &buf[..info.buffer_size()];
     let pixels = match info.color_type {
         png::ColorType::Grayscale => gray_to_rgba(info.width, info.height, samples),
@@ -877,7 +877,7 @@ fn decode_png_rgba(bytes: &[u8]) -> Result<RawImage> {
         png::ColorType::Rgb => rgb_to_rgba(info.width, info.height, samples, 3)?,
         png::ColorType::Rgba => samples.to_vec(),
         png::ColorType::Indexed => {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "indexed PNG did not expand to samples".to_string(),
             ))
         }
@@ -895,7 +895,7 @@ fn enforce_decode_cap(width: u32, height: u32) -> Result<()> {
     let pixels = u64::from(width) * u64::from(height);
     let cap = crate::engine::max_decode_pixels();
     if pixels > cap {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "image has {pixels} pixels, exceeding decode cap {cap}"
         )));
     }
@@ -1021,7 +1021,7 @@ fn approximate_text_width(text: &str, font_size: f64) -> f64 {
 
 fn validate_opacity(value: f64, op: &str) -> Result<()> {
     if !value.is_finite() || !(0.0..=1.0).contains(&value) {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "{op}: opacity must be between 0 and 1"
         )));
     }
@@ -1030,7 +1030,7 @@ fn validate_opacity(value: f64, op: &str) -> Result<()> {
 
 fn validate_positive(value: f64, field: &str) -> Result<()> {
     if !value.is_finite() || value <= 0.0 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "{field} must be a positive finite value"
         )));
     }
@@ -1039,14 +1039,16 @@ fn validate_positive(value: f64, field: &str) -> Result<()> {
 
 fn validate_finite(value: f64, field: &str) -> Result<()> {
     if !value.is_finite() {
-        return Err(OxideError::MalformedPdf(format!("{field} must be finite")));
+        return Err(WellfriendError::MalformedPdf(format!(
+            "{field} must be finite"
+        )));
     }
     Ok(())
 }
 
 fn validate_page_number_format(format: &str) -> Result<()> {
     if format.trim().is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "page-numbers: format must not be empty".to_string(),
         ));
     }
@@ -1054,18 +1056,18 @@ fn validate_page_number_format(format: &str) -> Result<()> {
     while let Some(start) = rest.find('{') {
         let after = &rest[start + 1..];
         let end = after.find('}').ok_or_else(|| {
-            OxideError::MalformedPdf("page-numbers: unclosed format token".to_string())
+            WellfriendError::MalformedPdf("page-numbers: unclosed format token".to_string())
         })?;
         let token = &after[..end];
         if !matches!(token, "n" | "page" | "total") {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "page-numbers: unsupported format token {{{token}}}"
             )));
         }
         rest = &after[end + 1..];
     }
     if rest.contains('}') {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "page-numbers: unmatched closing brace".to_string(),
         ));
     }
@@ -1090,7 +1092,7 @@ fn gray_alpha_to_rgba(width: u32, height: u32, samples: &[u8]) -> Vec<u8> {
 
 fn rgb_to_rgba(width: u32, height: u32, samples: &[u8], channels: u8) -> Result<Vec<u8>> {
     if channels != 3 {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "unsupported RGB conversion channel count {channels}"
         )));
     }

@@ -43,9 +43,9 @@ fn next_correlation_id() -> String {
     format!("err-{:012x}", n)
 }
 
-impl From<oxide_engine::OxideError> for ServerError {
-    fn from(e: oxide_engine::OxideError) -> Self {
-        use oxide_engine::OxideError::*;
+impl From<wellfriendpdf_engine::WellfriendError> for ServerError {
+    fn from(e: wellfriendpdf_engine::WellfriendError) -> Self {
+        use wellfriendpdf_engine::WellfriendError::*;
         match e {
             EncryptedDocument => ServerError::EncryptedDocument,
             EncryptedPdf(msg) => ServerError::EncryptedPdf(msg),
@@ -203,14 +203,15 @@ mod tests {
     #[test]
     fn unsupported_feature_maps_to_422_not_500() {
         let err: ServerError =
-            oxide_engine::OxideError::UnsupportedFeature("JBIG2".to_string()).into();
+            wellfriendpdf_engine::WellfriendError::UnsupportedFeature("JBIG2".to_string()).into();
         let resp = err.into_response();
         assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 
     #[test]
     fn internal_error_maps_to_500() {
-        let resp = ServerError::Internal("secret path /etc/oxide/key".to_string()).into_response();
+        let resp =
+            ServerError::Internal("secret path /etc/wellfriendpdf/key".to_string()).into_response();
         assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

@@ -254,7 +254,7 @@ pub struct Prompt12BPrepressReport {
     pub pdfium_reference_audit_status: String,
     pub mupdf_reference_audit_status: String,
     pub native_fallback_backend_status: String,
-    pub oxide_outlier_count: usize,
+    pub wellfriendpdf_outlier_count: usize,
     pub unclassified_failure_count: usize,
     pub remaining_exact_limits: Vec<String>,
 }
@@ -411,7 +411,7 @@ pub struct Prompt13PrepressCloseoutReport {
     pub native_fallback_backend_status: String,
     pub pdfium_reference_status: String,
     pub mupdf_reference_status: String,
-    pub oxide_outlier_count: usize,
+    pub wellfriendpdf_outlier_count: usize,
     pub unclassified_failure_count: usize,
     pub cache_key_fields: Vec<String>,
     pub supported_cases: Vec<String>,
@@ -459,7 +459,7 @@ impl Prompt13PrepressCloseoutReport {
             .to_string(),
             pdfium_reference_status: "required_and_run_by_prompt13_benchmark_when_target_local_tool_is_available".to_string(),
             mupdf_reference_status: "required_and_run_by_prompt13_benchmark_when_target_local_tool_is_available".to_string(),
-            oxide_outlier_count: 0,
+            wellfriendpdf_outlier_count: 0,
             unclassified_failure_count: 0,
             cache_key_fields: vec![
                 "backend".to_string(),
@@ -488,7 +488,7 @@ impl Prompt13PrepressCloseoutReport {
             ],
             remaining_exact_limits: vec![
                 "certification-grade PDF/X validation remains later standards work".to_string(),
-                "vendor-specific RIP behavior not covered by Poppler/PDFium/MuPDF/Oxide evidence is not claimed".to_string(),
+                "vendor-specific RIP behavior not covered by Poppler/PDFium/MuPDF/Wellfriend evidence is not claimed".to_string(),
                 "profiles or image layouts whose high-channel pixel format is not exposed by the safe native wrapper are unsupported_reported_exact".to_string(),
                 "malformed recursive resource bombs fail closed under scheduler and resource caps".to_string(),
             ],
@@ -590,7 +590,7 @@ impl Prompt12BPrepressReport {
                 "fallback_qcms_active; native_nchannel_transforms_reported_no_native_backend"
             }
             .to_string(),
-            oxide_outlier_count: 0,
+            wellfriendpdf_outlier_count: 0,
             unclassified_failure_count: 0,
             remaining_exact_limits: vec![
                 "Prompt 13 owns bounded overprint close-out; Prompt 12B remains the n-channel baseline".to_string(),

@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     build_merged, build_subset, write_document_roundtrip, ContentEngine, PdfDocument,
 };
 
@@ -104,7 +104,7 @@ fn find_under(dir: &std::path::Path, tool: &str) -> Option<PathBuf> {
 /// rejects the file (that's a writer bug we want to fail on).
 fn poppler_page_count(bytes: &[u8], label: &str) -> Option<usize> {
     let tool = poppler_tool("pdfinfo")?;
-    let tmp = std::env::temp_dir().join(format!("oxide_writer_test_{label}.pdf"));
+    let tmp = std::env::temp_dir().join(format!("wellfriendpdf_writer_test_{label}.pdf"));
     std::fs::write(&tmp, bytes).expect("write temp pdf");
     let output = Command::new(&tool).arg(&tmp).output().expect("run pdfinfo");
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -128,7 +128,7 @@ fn poppler_page_count(bytes: &[u8], label: &str) -> Option<usize> {
 /// is unavailable. Panics if Poppler rejects the file.
 fn poppler_text(bytes: &[u8], label: &str) -> Option<String> {
     let tool = poppler_tool("pdftotext")?;
-    let tmp = std::env::temp_dir().join(format!("oxide_writer_text_{label}.pdf"));
+    let tmp = std::env::temp_dir().join(format!("wellfriendpdf_writer_text_{label}.pdf"));
     std::fs::write(&tmp, bytes).expect("write temp pdf");
     let output = Command::new(&tool)
         .arg(&tmp)
@@ -291,7 +291,7 @@ fn merge_two_documents_concatenates_pages() {
 fn roundtrip_real_document_preserves_text_and_poppler_agrees() {
     // tracemonkey.pdf is a realistic multi-page paper with embedded fonts and
     // (typically) object streams — the strongest faithfulness probe. We require
-    // it to round-trip with identical Oxide text, identical page count, and —
+    // it to round-trip with identical Wellfriend text, identical page count, and —
     // when Poppler is available — identical Poppler text and page count.
     let name = "tracemonkey.pdf";
     let path = fixture_path(name);
@@ -313,7 +313,7 @@ fn roundtrip_real_document_preserves_text_and_poppler_agrees() {
         "real-document round-trip changed page count"
     );
 
-    // Compare Oxide-extracted text across all pages.
+    // Compare Wellfriend-extracted text across all pages.
     for page in 1..=orig_count {
         let before = norm(&original.get_page_text(page).unwrap_or_default());
         let after = norm(&rewritten.get_page_text(page).unwrap_or_default());

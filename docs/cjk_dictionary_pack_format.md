@@ -29,7 +29,7 @@ term<TAB>language<TAB>priority<TAB>source<TAB>confidence
 optional. Supported language tags are `zh`, `ja`, `ko`, `mixed`,
 `mixed_latin`, and `und`.
 
-The current normalization policy is `trim_no_unicode_rewrite`. Oxide trims entry
+The current normalization policy is `trim_no_unicode_rewrite`. Wellfriend trims entry
 edges but does not silently normalize or rewrite Unicode content. Pack builders
 must apply any desired Unicode normalization before generating the manifest
 hash.

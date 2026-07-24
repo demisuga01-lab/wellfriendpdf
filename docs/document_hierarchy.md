@@ -5,7 +5,7 @@ It is authoritative for the Phase 4b-4e converters.
 
 ## Decision
 
-Oxide will use the canonical parsed document model (`parse::Document`, built
+Wellfriend will use the canonical parsed document model (`parse::Document`, built
 from `docmodel.rs`) as the shared hierarchy for PDF-to-Word and
 PDF-to-PowerPoint. PDF-to-Excel will consume the same document model, but its
 primary input is the table/grid projection carried by `BlockKind::Table` and
@@ -54,7 +54,7 @@ Markdown/HTML.
 ## Corpus Evidence
 
 The decision was checked against real repository fixtures using
-`oxide parse --format json` and summarized under `target/phase4a-prototype`.
+`wellfriendpdf parse --format json` and summarized under `target/phase4a-prototype`.
 
 | PDF | Pages | Relevant output |
 | --- | ---: | --- |

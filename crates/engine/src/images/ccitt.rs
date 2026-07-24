@@ -1,4 +1,4 @@
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::images::decoder::RawImage;
 
 /// PDF /CCITTFaxDecode parameters relevant to bi-level image decoding.
@@ -13,7 +13,7 @@ pub struct CcittDecodeParams {
     pub end_of_block: bool,
 }
 
-/// Decode a CCITT Group 3/Group 4 fax stream into Oxide's grayscale RawImage.
+/// Decode a CCITT Group 3/Group 4 fax stream into Wellfriend's grayscale RawImage.
 pub fn decode(data: &[u8], params: CcittDecodeParams) -> Result<RawImage> {
     if params.columns == 0 || params.rows == 0 {
         return Ok(RawImage {
@@ -32,7 +32,7 @@ pub fn decode(data: &[u8], params: CcittDecodeParams) -> Result<RawImage> {
     } else {
         hayro_ccitt::EncodingMode::Group3_2D {
             k: u32::try_from(params.k).map_err(|_| {
-                OxideError::MalformedPdf("CCITTFaxDecode /K is too large".to_string())
+                WellfriendError::MalformedPdf("CCITTFaxDecode /K is too large".to_string())
             })?,
         }
     };
@@ -53,7 +53,7 @@ pub fn decode(data: &[u8], params: CcittDecodeParams) -> Result<RawImage> {
     let mut sink = GrayscaleSink::new(params.columns, params.rows);
 
     hayro_ccitt::decode(data, &mut sink, &mut context)
-        .map_err(|err| OxideError::MalformedPdf(format!("CCITTFaxDecode failed: {err}")))?;
+        .map_err(|err| WellfriendError::MalformedPdf(format!("CCITTFaxDecode failed: {err}")))?;
 
     Ok(sink.finish())
 }
@@ -214,7 +214,7 @@ mod tests {
         // fail closed with a clean error from a tiny input.
         let err = decode(&[0u8; 8], params(-1, 100_000, 100_000)).unwrap_err();
         assert!(
-            matches!(err, OxideError::MalformedPdf(_)),
+            matches!(err, WellfriendError::MalformedPdf(_)),
             "oversized CCITT dims must be a clean error, got {err:?}"
         );
     }

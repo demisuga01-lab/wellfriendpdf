@@ -1,4 +1,4 @@
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::locator::ImageReference;
 use crate::object::PdfDictionary;
@@ -103,7 +103,7 @@ impl SmaskLoader {
                     .collect()
             }
             channels => {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "SMask combine: unsupported main image channel count {}",
                     channels
                 )))

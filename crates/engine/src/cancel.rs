@@ -8,7 +8,7 @@
 //! engine call, and arms a timer thread/task that calls [`CancelToken::cancel`]
 //! when a deadline elapses. The engine's hot loops call
 //! [`CancelToken::check`] every N iterations; once the flag is set, `check`
-//! returns `Err(OxideError::Cancelled)` which propagates up and frees the
+//! returns `Err(WellfriendError::Cancelled)` which propagates up and frees the
 //! worker thread promptly.
 //!
 //! The flag is a single `Arc<AtomicBool>`, so when N pages render in parallel
@@ -18,7 +18,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 
 /// A shared, cheap-to-poll cancellation flag.
 ///
@@ -66,7 +66,7 @@ impl CancelToken {
     #[inline]
     pub fn check(&self, context: &str) -> Result<()> {
         if self.is_cancelled() {
-            Err(OxideError::Cancelled(context.to_string()))
+            Err(WellfriendError::Cancelled(context.to_string()))
         } else {
             Ok(())
         }
@@ -96,7 +96,7 @@ mod tests {
         t.cancel();
         assert!(t.is_cancelled());
         let err = t.check("render-loop").unwrap_err();
-        assert!(matches!(err, OxideError::Cancelled(ctx) if ctx == "render-loop"));
+        assert!(matches!(err, WellfriendError::Cancelled(ctx) if ctx == "render-loop"));
     }
 
     #[test]

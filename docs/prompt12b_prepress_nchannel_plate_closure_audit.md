@@ -34,7 +34,7 @@ Closure classifications:
 | native/fallback report parity | implemented | Feature and color reports expose the same additive Prompt 12B envelope with native/fallback posture. |
 | public binding report parity | implemented | Rust, CLI, Python, C ABI, WASM, .NET, Java Maven, and Java Gradle smokes assert the new section. |
 
-The audit artifacts report zero Oxide outlier failures and zero unclassified
+The audit artifacts report zero Wellfriend outlier failures and zero unclassified
 failures. Reference renderer disagreements remain classified because spot and
-DeviceN previews are often flattened differently by external tools, while Oxide
+DeviceN previews are often flattened differently by external tools, while Wellfriend
 plate data is verified through internal artifacts.

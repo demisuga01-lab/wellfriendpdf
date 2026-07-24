@@ -1,6 +1,6 @@
 # Continuous Private CI Fuzzing
 
-Oxide uses private GitHub Actions fuzzing rather than OSS-Fuzz because the
+Wellfriend uses private GitHub Actions fuzzing rather than OSS-Fuzz because the
 repository is private and commercially distributed.
 
 The workflow is `.github/workflows/fuzz.yml`.

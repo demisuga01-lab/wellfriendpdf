@@ -621,10 +621,10 @@ def write_validation_artifacts() -> None:
         ("git_diff_cached_check", "git diff --cached --check", "required"),
         ("cargo_clippy_workspace", "cargo clippy --workspace --all-targets --jobs 1 -- -D warnings", "required"),
         ("cargo_test_workspace", "cargo test --workspace --all-targets --jobs 1", "required"),
-        ("wasm_target_check", "cargo check -p oxide-wasm --target wasm32-unknown-unknown", "required"),
+        ("wasm_target_check", "cargo check -p wellfriendpdf-wasm --target wasm32-unknown-unknown", "required"),
         ("fuzz_bin_compile", "cargo check --manifest-path fuzz/Cargo.toml --bins", "required"),
-        ("c_abi_runtime", "cargo test -p oxide-capi prompt22 -- --nocapture", "required"),
-        ("fresh_python_wheel_runtime", "maturin build/install smoke for crates/oxide-py", "required"),
+        ("c_abi_runtime", "cargo test -p wellfriendpdf-capi prompt22 -- --nocapture", "required"),
+        ("fresh_python_wheel_runtime", "maturin build/install smoke for crates/wellfriendpdf-py", "required"),
         ("dotnet_tests_pack_runtime", "dotnet test and dotnet pack", "required"),
         ("java_maven_package_runtime", "scripts/prompt02b_java_package_smoke.ps1", "required"),
         ("java_gradle_package_runtime", "scripts/prompt02c_gradle_package_smoke.ps1", "required"),
@@ -682,7 +682,7 @@ Prompt 22B closes the evidence gap left after Prompt 22 by making resource-famil
 deduplication explicit and by publishing benchmark, binding-runtime, reference,
 and historical-gate artifacts under `{ARTIFACT_ROOT.relative_to(ROOT)}`.
 
-The production Office conversion path remains Oxide's native OOXML inspection
+The production Office conversion path remains Wellfriend's native OOXML inspection
 and shared model/PDF writer path. Microsoft Office, LibreOffice, Poppler,
 PDFium, MuPDF, and qpdf are reference tools only. Reference availability is
 recorded separately from pass status.
@@ -722,7 +722,7 @@ Microsoft Office-identical layout.
         "image_form_resource_dedup.md": "Image and Form dedup compares decoded samples/content, geometry, BPC, Decode/DecodeParms, color spaces, masks, soft masks, ICC context, BBox, Matrix, Group, resource graphs, OCG, transparency, ownership, mutability, and redaction provenance.",
         "icc_pattern_shading_dedup.md": "ICC, color-space, ExtGState, pattern, and shading dedup preserves prepress semantics. Output-intent ownership, proofing context, tint transforms, overprint, transfer functions, soft masks, resources, and unknown graphics-state keys are nonmerge dimensions when mismatched.",
         "appearance_embedded_file_dedup.md": "Annotation and widget appearances compare role, state, AS relationship, owner identity, geometry, resources, mutability, and clone provenance. Embedded payload streams may share while FileSpec objects preserve filename, description, MIME, Params, AFRelationship, dates, checksums, and owner metadata.",
-        "office_conversion_benchmark.md": "Office benchmark artifacts record DOCX, PPTX, XLSX, and round-trip corpus coverage, generated PDF reopen behavior, semantic metrics, visual metrics, security warnings, determinism, performance, and memory. The production converter is native Oxide, not Office or LibreOffice.",
+        "office_conversion_benchmark.md": "Office benchmark artifacts record DOCX, PPTX, XLSX, and round-trip corpus coverage, generated PDF reopen behavior, semantic metrics, visual metrics, security warnings, determinism, performance, and memory. The production converter is native Wellfriend, not Office or LibreOffice.",
         "office_reference_tools.md": "Reference tools are optional comparators. Microsoft Office and LibreOffice are never production converters. Unavailable references are reported as reference_unavailable_not_counted and cannot be counted as passed.",
         "prompt22_bindings.md": "Prompt 22 and 22B surfaces are exposed through the shared feature report plus Prompt 22 Rust, CLI, Python, C ABI, WASM, .NET, and Java operations. Prompt 22B adds an additive feature-report section named prompt22b_resource_dedup_office_benchmark_closure.",
         "prompt22_known_limits.md": "Known limits: zopfli cancellation is stream-boundary bounded, Office layout is supported-fixture fidelity rather than editor identity, formulas use cached values only, active content is blocked or inventoried, global dedup is full rewrite, and ambiguous semantic equality does not merge.",

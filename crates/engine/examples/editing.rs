@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     AnnotationOptions, AuthorPageSize as PageSize, Color, EditMode, EditRectStyle, EditTextStyle,
     HeaderFooterOptions, ImageRect, ImageStampOptions, OverlayLayer, PdfBuilder, PdfEditor,
     RedactionOptions, StandardFont, TextStyle, WatermarkOptions,
 };
 
-fn main() -> oxide_engine::Result<()> {
+fn main() -> wellfriendpdf_engine::Result<()> {
     let out_dir = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
@@ -42,11 +42,11 @@ fn main() -> oxide_engine::Result<()> {
     Ok(())
 }
 
-fn base_pdf() -> oxide_engine::Result<Vec<u8>> {
+fn base_pdf() -> wellfriendpdf_engine::Result<Vec<u8>> {
     let mut doc = PdfBuilder::new();
     doc.set_title("Editing API base")
-        .set_author("Oxide PDF SDK")
-        .set_creator("oxide-engine examples/editing.rs");
+        .set_author("Wellfriend PDF SDK")
+        .set_creator("wellfriendpdf-engine examples/editing.rs");
     for page_number in 1..=2 {
         let page = doc.add_page(PageSize::LETTER);
         page.draw_text(
@@ -73,12 +73,12 @@ fn base_pdf() -> oxide_engine::Result<Vec<u8>> {
     doc.to_bytes()
 }
 
-fn edit_pdf(base: Vec<u8>, mode: EditMode) -> oxide_engine::Result<Vec<u8>> {
+fn edit_pdf(base: Vec<u8>, mode: EditMode) -> wellfriendpdf_engine::Result<Vec<u8>> {
     let mut editor = PdfEditor::open_bytes(base)?;
     editor
         .add_watermark_text("CONFIDENTIAL", WatermarkOptions::default())?
         .add_header(
-            "Edited with Oxide",
+            "Edited with Wellfriend",
             HeaderFooterOptions {
                 style: EditTextStyle::new(9.0).fill(Color::device_gray(0.25)),
                 ..HeaderFooterOptions::default()
@@ -118,7 +118,7 @@ fn edit_pdf(base: Vec<u8>, mode: EditMode) -> oxide_engine::Result<Vec<u8>> {
     editor.save_to_bytes(mode)
 }
 
-fn redact_pdf(base: Vec<u8>) -> oxide_engine::Result<Vec<u8>> {
+fn redact_pdf(base: Vec<u8>) -> wellfriendpdf_engine::Result<Vec<u8>> {
     let mut editor = PdfEditor::open_bytes(base)?;
     editor.redact(
         2,
@@ -128,7 +128,7 @@ fn redact_pdf(base: Vec<u8>) -> oxide_engine::Result<Vec<u8>> {
     editor.save_to_bytes(EditMode::FullRewrite)
 }
 
-fn annotate_pdf(base: Vec<u8>, mode: EditMode) -> oxide_engine::Result<Vec<u8>> {
+fn annotate_pdf(base: Vec<u8>, mode: EditMode) -> wellfriendpdf_engine::Result<Vec<u8>> {
     let mut editor = PdfEditor::open_bytes(base)?;
     editor
         .add_highlight_annotation(
@@ -150,7 +150,7 @@ fn annotate_pdf(base: Vec<u8>, mode: EditMode) -> oxide_engine::Result<Vec<u8>> 
     editor.save_to_bytes(mode)
 }
 
-fn fill_and_flatten_form() -> oxide_engine::Result<Vec<u8>> {
+fn fill_and_flatten_form() -> wellfriendpdf_engine::Result<Vec<u8>> {
     let mut editor = PdfEditor::open_bytes(form_fixture_pdf())?;
     editor
         .set_form_text("name", "Alice Example")

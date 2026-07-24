@@ -36,7 +36,7 @@ def cert_name(common_name: str) -> x509.Name:
     return x509.Name(
         [
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Oxide Prompt25 Test"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Wellfriend Prompt25 Test"),
             x509.NameAttribute(NameOID.COMMON_NAME, common_name),
         ]
     )
@@ -153,12 +153,12 @@ async def validate_with_pyhanko(token_der: bytes, root_der: bytes, signature_val
     }
 
 
-def run_oxide_cli(token_path: Path, sig_path: Path, root_path: Path) -> dict:
+def run_wellfriendpdf_cli(token_path: Path, sig_path: Path, root_path: Path) -> dict:
     cmd = [
         "cargo",
         "run",
         "-p",
-        "oxide-cli",
+        "wellfriendpdf-cli",
         "--",
         "timestamp-verify",
         "--json",
@@ -185,7 +185,7 @@ def run_oxide_cli(token_path: Path, sig_path: Path, root_path: Path) -> dict:
         except json.JSONDecodeError:
             parsed = None
     return {
-        "tool": "oxide-cli",
+        "tool": "wellfriendpdf-cli",
         "command": cmd,
         "exit_code": proc.returncode,
         "stdout_sha256": sha256_hex(proc.stdout.encode("utf-8")),
@@ -248,8 +248,8 @@ async def main() -> int:
             "error": f"{type(exc).__name__}: {exc}",
         }
 
-    oxide_valid = run_oxide_cli(token_path, sig_path, root_path)
-    oxide_wrong = run_oxide_cli(token_path, wrong_sig_path, root_path)
+    wellfriendpdf_valid = run_wellfriendpdf_cli(token_path, sig_path, root_path)
+    wellfriendpdf_wrong = run_wellfriendpdf_cli(token_path, wrong_sig_path, root_path)
 
     payload = {
         "schema": "prompt25.timestamp-interoperability.v1",
@@ -272,17 +272,17 @@ async def main() -> int:
             "valid_imprint": pyhanko_valid,
             "wrong_imprint": pyhanko_wrong,
         },
-        "oxide_validation": {
-            "valid_imprint": oxide_valid,
-            "wrong_imprint": oxide_wrong,
+        "wellfriendpdf_validation": {
+            "valid_imprint": wellfriendpdf_valid,
+            "wrong_imprint": wellfriendpdf_wrong,
         },
         "result": "passed"
         if (
             pyhanko_valid.get("trusted") is True
             and pyhanko_wrong.get("intact") is False
-            and oxide_valid.get("exit_code") == 0
-            and oxide_valid.get("parsed", {}).get("status") == "valid"
-            and oxide_wrong.get("parsed", {}).get("status") != "valid"
+            and wellfriendpdf_valid.get("exit_code") == 0
+            and wellfriendpdf_valid.get("parsed", {}).get("status") == "valid"
+            and wellfriendpdf_wrong.get("parsed", {}).get("status") != "valid"
         )
         else "failed",
     }

@@ -80,7 +80,7 @@ def entries_tsv() -> str:
 
 def pack_manifest(entries_bytes: bytes) -> dict[str, Any]:
     return {
-        "pack_id": "oxide-prompt14b-synthetic-production-shape-pack",
+        "pack_id": "wellfriendpdf-prompt14b-synthetic-production-shape-pack",
         "languages": ["zh", "ja", "ko"],
         "scripts": ["Han", "Kana", "Hangul"],
         "source": "generated Prompt 14B permissive fixture pack",

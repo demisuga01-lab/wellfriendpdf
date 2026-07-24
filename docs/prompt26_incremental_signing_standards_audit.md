@@ -16,7 +16,7 @@ Verified with `git rev-parse HEAD`, `git log`, `git status --short`, `git diff -
   the local closure commit is **not** reset or discarded; Prompt 26 continues from the
   local clean Prompt 25B closure.
 - Worktree clean; both whitespace checks clean.
-- No repo-local long-running cargo/rustc/oxide/fuzz/java/dotnet/python processes.
+- No repo-local long-running cargo/rustc/wellfriendpdf/fuzz/java/dotnet/python processes.
 - Host: Windows 11 (10.0.26200), x86_64. rustc stable 1.95.0 / nightly 1.98.0; cargo-fuzz
   0.13.1. Targets: wasm32, x86_64-pc-windows-msvc, x86_64-unknown-linux-gnu.
 

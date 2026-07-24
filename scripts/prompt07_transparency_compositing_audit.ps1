@@ -1,7 +1,7 @@
 param(
   [ValidateSet("baseline", "post", "both")]
   [string]$Phase = "post",
-  [string]$OxideBin = "",
+  [string]$WellfriendBin = "",
   [int]$Dpi = 72,
   [int]$TimeoutSeconds = 120
 )
@@ -23,8 +23,8 @@ $argsList = @(
   "--dpi", "$Dpi",
   "--timeout", "$TimeoutSeconds"
 )
-if ($OxideBin -ne "") {
-  $argsList += @("--oxide-bin", $OxideBin)
+if ($WellfriendBin -ne "") {
+  $argsList += @("--wellfriendpdf-bin", $WellfriendBin)
 }
 
 python @argsList

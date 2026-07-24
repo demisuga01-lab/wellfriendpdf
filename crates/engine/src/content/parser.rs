@@ -48,7 +48,7 @@ impl ContentParser {
             let token = match token_result {
                 Ok(token) => token,
                 Err(err) => {
-                    if propagate_io && matches!(err, crate::error::OxideError::Io(_)) {
+                    if propagate_io && matches!(err, crate::error::WellfriendError::Io(_)) {
                         return Err(err);
                     }
                     log::warn!("content token error: {err}");

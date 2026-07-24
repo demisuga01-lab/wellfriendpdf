@@ -16,7 +16,7 @@ on:
         type: boolean
         default: false
       build_docker:
-        description: Build the optional oxide-server Docker image
+        description: Build the optional wellfriendpdf-server Docker image
         required: false
         type: boolean
         default: false
@@ -101,24 +101,24 @@ jobs:
       - name: Dry-run publishable crates
         shell: bash
         run: |
-          cargo publish -p oxide-engine --dry-run --locked
+          cargo publish -p wellfriendpdf-engine --dry-run --locked
           engine_version="$(awk -F '"' '/^version = / {print $2; exit}' crates/engine/Cargo.toml)"
-          if cargo search oxide-engine --limit 5 | grep -E "^oxide-engine = \"${engine_version}\"" >/dev/null; then
-            cargo publish -p oxide-cli --dry-run --locked
-            cargo publish -p oxide-server --dry-run --locked
+          if cargo search wellfriendpdf-engine --limit 5 | grep -E "^wellfriendpdf-engine = \"${engine_version}\"" >/dev/null; then
+            cargo publish -p wellfriendpdf-cli --dry-run --locked
+            cargo publish -p wellfriendpdf-server --dry-run --locked
           else
             {
               echo "### Crate publish dry-run"
               echo
-              echo "- oxide-engine: cargo publish --dry-run passed."
-              echo "- oxide-cli: deferred until oxide-engine ${engine_version} exists in crates.io."
-              echo "- oxide-server: deferred until oxide-engine ${engine_version} exists in crates.io."
+              echo "- wellfriendpdf-engine: cargo publish --dry-run passed."
+              echo "- wellfriendpdf-cli: deferred until wellfriendpdf-engine ${engine_version} exists in crates.io."
+              echo "- wellfriendpdf-server: deferred until wellfriendpdf-engine ${engine_version} exists in crates.io."
               echo
               echo "Cargo verifies publishable path dependencies against the registry."
-              echo "For the first crates.io release, publish oxide-engine manually first,"
-              echo "then rerun the release workflow or dry-run oxide-cli and oxide-server."
+              echo "For the first crates.io release, publish wellfriendpdf-engine manually first,"
+              echo "then rerun the release workflow or dry-run wellfriendpdf-cli and wellfriendpdf-server."
             } >> "$GITHUB_STEP_SUMMARY"
-            echo "::notice::oxide-cli and oxide-server publish dry-runs are deferred until oxide-engine ${engine_version} exists in crates.io."
+            echo "::notice::wellfriendpdf-cli and wellfriendpdf-server publish dry-runs are deferred until wellfriendpdf-engine ${engine_version} exists in crates.io."
           fi
 
   build-cli:
@@ -132,19 +132,19 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            artifact: oxide-linux-x86_64-musl
+            artifact: wellfriendpdf-linux-x86_64-musl
             package: tar
           - os: macos-13
             target: x86_64-apple-darwin
-            artifact: oxide-macos-x86_64
+            artifact: wellfriendpdf-macos-x86_64
             package: tar
           - os: macos-14
             target: aarch64-apple-darwin
-            artifact: oxide-macos-aarch64
+            artifact: wellfriendpdf-macos-aarch64
             package: tar
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: oxide-windows-x86_64
+            artifact: wellfriendpdf-windows-x86_64
             package: zip
     steps:
       - name: Check out repository
@@ -163,7 +163,7 @@ jobs:
           sudo apt-get install -y musl-tools
 
       - name: Build release CLI
-        run: cargo build --release --locked -p oxide-cli --target ${{ matrix.target }}
+        run: cargo build --release --locked -p wellfriendpdf-cli --target ${{ matrix.target }}
 
       - name: Package Unix artifact
         if: matrix.package == 'tar'
@@ -176,7 +176,7 @@ jobs:
           name="${ARTIFACT}-${RELEASE_TAG}"
           staging="target/package/${name}"
           mkdir -p "${staging}" dist
-          cp "target/${TARGET}/release/oxide" "${staging}/oxide"
+          cp "target/${TARGET}/release/wellfriendpdf" "${staging}/wellfriendpdf"
           cp README.md CHANGELOG.md "${staging}/"
           for license in LICENSE LICENSE-MIT LICENSE-APACHE; do
             if [ -f "${license}" ]; then
@@ -201,7 +201,7 @@ jobs:
           $name = "$env:ARTIFACT-$env:RELEASE_TAG"
           $staging = Join-Path "target/package" $name
           New-Item -ItemType Directory -Force -Path $staging, "dist" | Out-Null
-          Copy-Item "target/$env:TARGET/release/oxide.exe" (Join-Path $staging "oxide.exe")
+          Copy-Item "target/$env:TARGET/release/wellfriendpdf.exe" (Join-Path $staging "wellfriendpdf.exe")
           Copy-Item "README.md", "CHANGELOG.md" $staging
           foreach ($license in @("LICENSE", "LICENSE-MIT", "LICENSE-APACHE")) {
             if (Test-Path $license) {
@@ -238,14 +238,14 @@ jobs:
 
       - name: Build Docker image
         env:
-          IMAGE: ghcr.io/${{ github.repository_owner }}/oxide-server:${{ env.RELEASE_TAG }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/wellfriendpdf-server:${{ env.RELEASE_TAG }}
         run: docker build -t "$IMAGE" .
 
       - name: Push Docker image
         if: ${{ inputs.push_docker }}
         env:
           GH_TOKEN: ${{ github.token }}
-          IMAGE: ghcr.io/${{ github.repository_owner }}/oxide-server:${{ env.RELEASE_TAG }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/wellfriendpdf-server:${{ env.RELEASE_TAG }}
         run: |
           echo "$GH_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           docker push "$IMAGE"

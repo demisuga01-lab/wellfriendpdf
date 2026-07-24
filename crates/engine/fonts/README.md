@@ -1,9 +1,9 @@
 # Bundled fonts
 
-These font programs are embedded into `oxide-engine` (via `include_bytes!` in
+These font programs are embedded into `wellfriendpdf-engine` (via `include_bytes!` in
 `src/render/font_rasterizer.rs`) and used as **fallback / substitution fonts**
 when a PDF references a non-embedded font (e.g. the standard-14 families, or a
-symbolic font Oxide cannot otherwise resolve). They are *not* redistributed as
+symbolic font Wellfriend cannot otherwise resolve). They are *not* redistributed as
 standalone fonts — they ship as substitution data inside the library.
 
 Both families are open fonts under permissive licenses. Their full license

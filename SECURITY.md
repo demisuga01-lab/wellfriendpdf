@@ -24,7 +24,7 @@ disclosure timeline before public details are published.
 
 ## Security Guarantees
 
-Oxide is designed for untrusted PDFs:
+Wellfriend is designed for untrusted PDFs:
 
 - Pure-Rust core with no C/C++ PDF engine dependency.
 - JavaScript in PDFs is not executed.

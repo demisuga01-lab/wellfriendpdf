@@ -6,7 +6,7 @@
 //! data buffer. Targets the size-field overflow / row-alignment class of bugs.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::filters::fuzz_apply_predictor;
+use wellfriendpdf_engine::filters::fuzz_apply_predictor;
 
 fuzz_target!(|data: &[u8]| {
     let _ = std::hint::black_box(fuzz_apply_predictor(data));

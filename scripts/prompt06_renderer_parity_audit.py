@@ -192,18 +192,18 @@ def corpus_entries() -> list[dict[str, Any]]:
     return out
 
 
-def oxide_base_command(args: argparse.Namespace) -> list[str]:
-    if args.oxide_bin:
-        return [str(Path(args.oxide_bin))]
+def wellfriendpdf_base_command(args: argparse.Namespace) -> list[str]:
+    if args.wellfriendpdf_bin:
+        return [str(Path(args.wellfriendpdf_bin))]
     suffix = ".exe" if os.name == "nt" else ""
-    for candidate in [Path("target/debug") / f"oxide{suffix}", Path("target/release") / f"oxide{suffix}"]:
+    for candidate in [Path("target/debug") / f"wellfriendpdf{suffix}", Path("target/release") / f"wellfriendpdf{suffix}"]:
         if candidate.exists():
             return [str(candidate)]
-    return ["cargo", "run", "-p", "oxide-cli", "--quiet", "--"]
+    return ["cargo", "run", "-p", "wellfriendpdf-cli", "--quiet", "--"]
 
 
-def run_oxide_render_compare(base: list[str], entry: dict[str, Any], dpi: int) -> tuple[dict[str, Any], Path]:
-    out = OUT_DIR / "oxide" / f"{entry['id']}-render-compare.json"
+def run_wellfriendpdf_render_compare(base: list[str], entry: dict[str, Any], dpi: int) -> tuple[dict[str, Any], Path]:
+    out = OUT_DIR / "wellfriendpdf" / f"{entry['id']}-render-compare.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         *base,
@@ -220,7 +220,7 @@ def run_oxide_render_compare(base: list[str], entry: dict[str, Any], dpi: int) -
     result = run_command(cmd, timeout=120)
     if result["exit_status"] != 0 or not out.exists():
         return {
-            "status": "oxide_execution_failure" if not result["timed_out"] else "render_timeout",
+            "status": "wellfriendpdf_execution_failure" if not result["timed_out"] else "render_timeout",
             "command": result,
             "report_artifact": str(out).replace("\\", "/"),
         }, out
@@ -228,7 +228,7 @@ def run_oxide_render_compare(base: list[str], entry: dict[str, Any], dpi: int) -
         payload = json.loads(out.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         return {
-            "status": "oxide_report_parse_failure",
+            "status": "wellfriendpdf_report_parse_failure",
             "error": str(exc),
             "command": result,
             "report_artifact": str(out).replace("\\", "/"),
@@ -239,8 +239,8 @@ def run_oxide_render_compare(base: list[str], entry: dict[str, Any], dpi: int) -
     return payload, out
 
 
-def run_oxide_render_zip(base: list[str], entry: dict[str, Any], dpi: int) -> dict[str, Any]:
-    out = OUT_DIR / "oxide" / f"{entry['id']}.zip"
+def run_wellfriendpdf_render_zip(base: list[str], entry: dict[str, Any], dpi: int) -> dict[str, Any]:
+    out = OUT_DIR / "wellfriendpdf" / f"{entry['id']}.zip"
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [
         *base,
@@ -258,7 +258,7 @@ def run_oxide_render_zip(base: list[str], entry: dict[str, Any], dpi: int) -> di
     ]
     result = run_command(cmd, timeout=120)
     return {
-        "status": "rendered" if result["exit_status"] == 0 and out.exists() else "oxide_execution_failure",
+        "status": "rendered" if result["exit_status"] == 0 and out.exists() else "wellfriendpdf_execution_failure",
         "artifact": str(out).replace("\\", "/"),
         "sha256": sha256(out),
         "command": result,
@@ -370,7 +370,7 @@ def extract_first_png(zip_artifact: dict[str, Any], entry_id: str) -> Path | Non
     zip_path = Path(zip_artifact["artifact"])
     if not zip_path.exists():
         return None
-    out = OUT_DIR / "oxide-png" / f"{entry_id}.png"
+    out = OUT_DIR / "wellfriendpdf-png" / f"{entry_id}.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     try:
         with zipfile.ZipFile(zip_path) as zf:
@@ -385,7 +385,7 @@ def extract_first_png(zip_artifact: dict[str, Any], entry_id: str) -> Path | Non
 
 def classify_after_page(compare: dict[str, Any], refs: dict[str, Any]) -> str:
     if compare.get("status") != "rendered":
-        return compare.get("status", "oxide_execution_failure")
+        return compare.get("status", "wellfriendpdf_execution_failure")
     rendered_refs = [r for r in refs.values() if r.get("status") == "rendered"]
     if not rendered_refs:
         return "unsupported_comparison"
@@ -413,7 +413,7 @@ def add_counts(dst: dict[str, int], src: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--oxide-bin", help="Path to oxide executable; defaults to target binary or cargo run")
+    parser.add_argument("--wellfriendpdf-bin", help="Path to wellfriendpdf executable; defaults to target binary or cargo run")
     parser.add_argument("--dpi", type=int, default=72)
     args = parser.parse_args()
 
@@ -423,7 +423,7 @@ def main() -> int:
     write_json(CORPUS_MANIFEST, {"schema_version": 1, "entries": corpus})
     write_json(REFERENCE_AVAILABILITY, {"schema_version": 1, "engines": availability})
 
-    base = oxide_base_command(args)
+    base = wellfriendpdf_base_command(args)
     baseline_pages: list[dict[str, Any]] = []
     after_pages: list[dict[str, Any]] = []
     visual_pages: list[dict[str, Any]] = []
@@ -436,8 +436,8 @@ def main() -> int:
         if not entry["available"]:
             after_pages.append({"id": entry["id"], "category": entry["category"], "status": "missing_fixture"})
             continue
-        compare, _ = run_oxide_render_compare(base, entry, args.dpi)
-        oxide_zip = run_oxide_render_zip(base, entry, args.dpi)
+        compare, _ = run_wellfriendpdf_render_compare(base, entry, args.dpi)
+        wellfriendpdf_zip = run_wellfriendpdf_render_zip(base, entry, args.dpi)
         refs = {
             name: render_reference(name, availability[name], entry, args.dpi)
             for name in ["poppler", "pdfium", "mupdf"]
@@ -467,11 +467,11 @@ def main() -> int:
         if classification == "reference_disagreement":
             reference_disagreements += 1
         poppler_artifact = Path(refs["poppler"].get("artifact", ""))
-        oxide_png = extract_first_png(oxide_zip, entry["id"])
+        wellfriendpdf_png = extract_first_png(wellfriendpdf_zip, entry["id"])
         diff = (
-            image_metrics(oxide_png, poppler_artifact)
-            if oxide_png and refs["poppler"].get("status") == "rendered"
-            else {"status": "no_direct_oxide_png_or_poppler_reference"}
+            image_metrics(wellfriendpdf_png, poppler_artifact)
+            if wellfriendpdf_png and refs["poppler"].get("status") == "rendered"
+            else {"status": "no_direct_wellfriendpdf_png_or_poppler_reference"}
         )
         visual_pages.append(
             {
@@ -487,8 +487,8 @@ def main() -> int:
                 "category": entry["category"],
                 "input": entry["path"],
                 "classification": classification,
-                "oxide": compare,
-                "oxide_render_artifact": oxide_zip,
+                "wellfriendpdf": compare,
+                "wellfriendpdf_render_artifact": wellfriendpdf_zip,
                 "references": refs,
             }
         )
@@ -502,7 +502,7 @@ def main() -> int:
             "blank_output",
             "malformed_input_rejection",
             "reference_disagreement",
-            "oxide_mismatch",
+            "wellfriendpdf_mismatch",
             "unsupported_comparison",
             "visual_pass_with_compatibility_fallback",
             "native_replay_audited",

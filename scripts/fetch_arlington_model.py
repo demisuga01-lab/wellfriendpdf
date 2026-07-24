@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fetch the pinned Arlington PDF Model checkout used by Oxide generation."""
+"""Fetch the pinned Arlington PDF Model checkout used by Wellfriend generation."""
 
 from __future__ import annotations
 

@@ -4,7 +4,7 @@ Generated: 2026-06-17T13:40:38.499406+00:00
 
 ## Method
 
-Target renders use 72 DPI. Ground truth is Oxide HighQuality at 288 DPI, downsampled 4x in linear light.
+Target renders use 72 DPI. Ground truth is Wellfriend HighQuality at 288 DPI, downsampled 4x in linear light.
 
 | case | class | Compat PSNR | High PSNR | Poppler PSNR | Compat SSIM | High SSIM | Poppler SSIM | verdict |
 |---|---|---:|---:|---:|---:|---:|---:|---|

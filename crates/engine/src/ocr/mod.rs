@@ -7,7 +7,7 @@
 //! This module is strictly pure Rust and links no C library. OCR itself is
 //! defined only as a [`trait`](OcrEngine) — the parse pipeline depends on the
 //! trait, never on a concrete engine. The default backend (Tesseract) lives in
-//! the separate, optional `oxide-ocr-tesseract` crate and drives the external
+//! the separate, optional `wellfriendpdf-ocr-tesseract` crate and drives the external
 //! `tesseract` *process* (no linked C). With no engine injected, scanned pages
 //! degrade gracefully to the placeholder the digital-born pipeline already
 //! emits (see [`crate::parse`]).
@@ -276,7 +276,7 @@ impl Default for OcrOptions {
 
 /// The OCR boundary. A backend turns a (preprocessed) page image into positioned
 /// words. The parse pipeline depends only on this trait; concrete backends live
-/// outside the core (e.g. `oxide-ocr-tesseract`).
+/// outside the core (e.g. `wellfriendpdf-ocr-tesseract`).
 ///
 /// `Send + Sync` so an engine can be shared across the rayon-parallel page work
 /// the renderer already uses.

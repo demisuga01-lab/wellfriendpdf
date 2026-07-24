@@ -1,6 +1,6 @@
 # Layout And Reading Order
 
-PDF pages contain positioned drawing operations, not words, paragraphs, or reading order. Oxide's Prompt 06 text model uses a staged deterministic reconstruction path.
+PDF pages contain positioned drawing operations, not words, paragraphs, or reading order. Wellfriend's Prompt 06 text model uses a staged deterministic reconstruction path.
 
 ## Strategy Order
 

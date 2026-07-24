@@ -68,8 +68,8 @@ Prompt 10B currently audits five rendered fixture pages:
 The summary is recorded in
 `prompt10b-reference-disagreement-summary.json`:
 
-- Oxide outlier failures: `0`
+- Wellfriend outlier failures: `0`
 - unclassified failures: `0`
-- reference disagreement: sbix PNG, with Oxide inside the PDFium/MuPDF cluster
+- reference disagreement: sbix PNG, with Wellfriend inside the PDFium/MuPDF cluster
 - unsupported exotic case: advanced CID-keyed CFF clipping geometry where a
   safe charstring clipping path is not exposed

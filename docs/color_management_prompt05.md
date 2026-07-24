@@ -32,7 +32,7 @@ Core modules:
 
 ## CMM Backend Decision
 
-Outcome B/C: Oxide keeps the default pure-Rust/no-unsafe engine boundary and
+Outcome B/C: Wellfriend keeps the default pure-Rust/no-unsafe engine boundary and
 uses qcms for ICCBased preview transforms. No LittleCMS/native FFI is introduced
 in Prompt 05. The report exposes this as:
 
@@ -56,7 +56,7 @@ preserves the pure-Rust/no-unsafe engine policy.
 Rust API:
 
 ```rust
-use oxide_engine::{color_report_bytes, ColorValidationProfile};
+use wellfriendpdf_engine::{color_report_bytes, ColorValidationProfile};
 
 let report = color_report_bytes(pdf_bytes, ColorValidationProfile::PdfA)?;
 ```
@@ -64,7 +64,7 @@ let report = color_report_bytes(pdf_bytes, ColorValidationProfile::PdfA)?;
 CLI:
 
 ```powershell
-oxide parser-report input.pdf --json --include-color --color-profile pdfa
+wellfriendpdf parser-report input.pdf --json --include-color --color-profile pdfa
 ```
 
 The JSON `color` object includes:
@@ -124,8 +124,8 @@ samples, CMYK JPEG, shadings, and tiling patterns.
 Command:
 
 ```powershell
-cargo build --release -p oxide-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt05-color-baseline-manifest.json --oxide-bin target\release\oxide.exe --dpi 96 --timeout-sec 30 --max-memory-mb 2048 --max-pages-per-file 1 --output-dir target\prompt05-color-after --determinism-sample 4 --threshold-profile renderer
+cargo build --release -p wellfriendpdf-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt05-color-baseline-manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --dpi 96 --timeout-sec 30 --max-memory-mb 2048 --max-pages-per-file 1 --output-dir target\prompt05-color-after --determinism-sample 4 --threshold-profile renderer
 ```
 
 Results:
@@ -136,7 +136,7 @@ Results:
 | weighted score | 59.0 | 59.0 |
 | visual pass | 60.87% | 60.87% |
 | file pass | 58.33% | 58.33% |
-| peak Oxide memory | 19.69 MB | 19.68 MB |
+| peak Wellfriend memory | 19.69 MB | 19.68 MB |
 | determinism | 4/4 stable | 4/4 stable |
 
 The score did not move because Prompt 05 focused on architecture, caps,
@@ -153,7 +153,7 @@ Prompt 05B reran the same 24-file anchor before changes under
 | weighted score | 59.0 | 59.0 |
 | visual pass | 60.87% | 60.87% |
 | file pass | 58.33% | 58.33% |
-| peak Oxide memory | 19.48 MB | 19.47 MB |
+| peak Wellfriend memory | 19.48 MB | 19.47 MB |
 | determinism | 4/4 stable | 4/4 stable |
 
 Prompt 05B's closure details are tracked in

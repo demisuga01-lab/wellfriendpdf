@@ -5,7 +5,7 @@ the validation gates and target-local benchmark pass.
 
 The release claim is bounded:
 
-- Oxide has a credible overprint, plate, CMM, shading, pattern, and benchmark
+- Wellfriend has a credible overprint, plate, CMM, shading, pattern, and benchmark
   path for supported cases.
 - Public reports across SDK bindings expose the same Prompt 13 status and exact
   remaining limits.

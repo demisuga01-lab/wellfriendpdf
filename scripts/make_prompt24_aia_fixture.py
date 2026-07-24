@@ -38,7 +38,7 @@ def name(common_name: str) -> x509.Name:
     return x509.Name(
         [
             x509.NameAttribute(NameOID.COMMON_NAME, common_name),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Oxide Prompt24 Test PKI"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Wellfriend Prompt24 Test PKI"),
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
         ]
     )
@@ -195,11 +195,11 @@ def delegated_ocsp_good_response(cert, issuer, responder, responder_key):
 def main() -> None:
     now = datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc)
     root_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    root_subject = name("Oxide Prompt24 AIA Root")
+    root_subject = name("Wellfriend Prompt24 AIA Root")
     root = ca_certificate(root_subject, root_subject, root_key.public_key(), root_key, 0xA1A00001, 1)
 
     intermediate_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    intermediate_subject = name("Oxide Prompt24 AIA Intermediate")
+    intermediate_subject = name("Wellfriend Prompt24 AIA Intermediate")
     intermediate = ca_certificate(
         intermediate_subject,
         root.subject,
@@ -262,7 +262,7 @@ def main() -> None:
     )
 
     leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    leaf_subject = name("Oxide Prompt24 AIA Leaf")
+    leaf_subject = name("Wellfriend Prompt24 AIA Leaf")
     leaf = (
         x509.CertificateBuilder()
         .subject_name(leaf_subject)
@@ -323,7 +323,7 @@ def main() -> None:
     bad_usage_leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     bad_usage_leaf = (
         x509.CertificateBuilder()
-        .subject_name(name("Oxide Prompt24 Key Usage Restricted Leaf"))
+        .subject_name(name("Wellfriend Prompt24 Key Usage Restricted Leaf"))
         .issuer_name(intermediate.subject)
         .public_key(bad_usage_leaf_key.public_key())
         .serial_number(0xA1A00004)
@@ -358,7 +358,7 @@ def main() -> None:
     crl_signer_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     crl_signer = (
         x509.CertificateBuilder()
-        .subject_name(name("Oxide Prompt24 Delegated CRL Signer"))
+        .subject_name(name("Wellfriend Prompt24 Delegated CRL Signer"))
         .issuer_name(intermediate.subject)
         .public_key(crl_signer_key.public_key())
         .serial_number(0xA1A00005)
@@ -387,7 +387,7 @@ def main() -> None:
     indirect_leaf_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     indirect_leaf = (
         x509.CertificateBuilder()
-        .subject_name(name("Oxide Prompt24 Indirect CRL Leaf"))
+        .subject_name(name("Wellfriend Prompt24 Indirect CRL Leaf"))
         .issuer_name(intermediate.subject)
         .public_key(indirect_leaf_key.public_key())
         .serial_number(0xA1A00006)
@@ -427,7 +427,7 @@ def main() -> None:
     ocsp_responder_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     ocsp_responder = (
         x509.CertificateBuilder()
-        .subject_name(name("Oxide Prompt24 Delegated OCSP Responder"))
+        .subject_name(name("Wellfriend Prompt24 Delegated OCSP Responder"))
         .issuer_name(intermediate.subject)
         .public_key(ocsp_responder_key.public_key())
         .serial_number(0xA1A00007)
@@ -459,7 +459,7 @@ def main() -> None:
     bad_ocsp_responder_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     bad_ocsp_responder = (
         x509.CertificateBuilder()
-        .subject_name(name("Oxide Prompt24 Wrong EKU OCSP Responder"))
+        .subject_name(name("Wellfriend Prompt24 Wrong EKU OCSP Responder"))
         .issuer_name(intermediate.subject)
         .public_key(bad_ocsp_responder_key.public_key())
         .serial_number(0xA1A00008)
@@ -494,7 +494,7 @@ def main() -> None:
     try:
         temporary_p12.write_bytes(
             pkcs12.serialize_key_and_certificates(
-                name=b"oxide-prompt24-aia-leaf",
+                name=b"wellfriendpdf-prompt24-aia-leaf",
                 key=leaf_key,
                 cert=leaf,
                 cas=None,
@@ -517,7 +517,7 @@ def main() -> None:
 
         temporary_bad_usage_p12.write_bytes(
             pkcs12.serialize_key_and_certificates(
-                name=b"oxide-prompt24-aia-bad-usage-leaf",
+                name=b"wellfriendpdf-prompt24-aia-bad-usage-leaf",
                 key=bad_usage_leaf_key,
                 cert=bad_usage_leaf,
                 cas=None,
@@ -544,7 +544,7 @@ def main() -> None:
 
         temporary_indirect_leaf_p12.write_bytes(
             pkcs12.serialize_key_and_certificates(
-                name=b"oxide-prompt24-aia-indirect-leaf",
+                name=b"wellfriendpdf-prompt24-aia-indirect-leaf",
                 key=indirect_leaf_key,
                 cert=indirect_leaf,
                 cas=None,

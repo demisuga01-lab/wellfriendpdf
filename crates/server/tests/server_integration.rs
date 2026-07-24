@@ -14,7 +14,7 @@ fn fixture_pdf(name: &str) -> Vec<u8> {
 }
 
 fn make_multipart(filename: &str, pdf: &[u8], extra: &[(&str, &str)]) -> (String, Vec<u8>) {
-    let boundary = "oxide-test-boundary-xyz";
+    let boundary = "wellfriendpdf-test-boundary-xyz";
     let mut body: Vec<u8> = Vec::new();
 
     body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
@@ -48,7 +48,7 @@ fn make_multipart(filename: &str, pdf: &[u8], extra: &[(&str, &str)]) -> (String
 
 #[tokio::test]
 async fn health_check_returns_ok() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(Request::get("/health").body(Body::empty()).unwrap())
         .await
@@ -60,7 +60,7 @@ async fn health_check_returns_ok() {
 
 #[tokio::test]
 async fn readiness_endpoint_returns_ready() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(Request::get("/readiness").body(Body::empty()).unwrap())
         .await
@@ -74,7 +74,7 @@ async fn readiness_endpoint_returns_ready() {
 
 #[test]
 fn server_config_defaults_are_sane() {
-    let cfg = oxide_server::config::ServerConfig::default();
+    let cfg = wellfriendpdf_server::config::ServerConfig::default();
     assert_eq!(cfg.port, 8080);
     assert_eq!(cfg.max_dpi, 600);
     assert!(cfg.max_file_size > 0);
@@ -83,20 +83,20 @@ fn server_config_defaults_are_sane() {
 
 #[test]
 fn config_default_port_and_max_dpi_are_sane() {
-    let cfg = oxide_server::config::ServerConfig::default();
+    let cfg = wellfriendpdf_server::config::ServerConfig::default();
     assert_eq!(cfg.port, 8080, "default port should be 8080");
     assert_eq!(cfg.max_dpi, 600);
 }
 
 #[test]
 fn server_config_max_dpi_default_is_capped_at_600() {
-    let cfg = oxide_server::config::ServerConfig::default();
+    let cfg = wellfriendpdf_server::config::ServerConfig::default();
     assert!(cfg.max_dpi <= 600, "max_dpi should never exceed 600");
 }
 
 #[tokio::test]
 async fn health_still_returns_ok() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(Request::get("/health").body(Body::empty()).unwrap())
         .await
@@ -106,7 +106,7 @@ async fn health_still_returns_ok() {
 
 #[tokio::test]
 async fn api_readiness_alias_works() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::get("/api/v1/readiness")
@@ -120,7 +120,7 @@ async fn api_readiness_alias_works() {
 
 #[tokio::test]
 async fn api_health_alias_works() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(Request::get("/api/v1/health").body(Body::empty()).unwrap())
         .await
@@ -130,7 +130,7 @@ async fn api_health_alias_works() {
 
 #[tokio::test]
 async fn version_endpoint_returns_json() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(Request::get("/api/v1/version").body(Body::empty()).unwrap())
         .await
@@ -138,13 +138,13 @@ async fn version_endpoint_returns_json() {
     assert_eq!(response.status(), StatusCode::OK);
     let body_bytes = to_bytes(response.into_body(), 4096).await.unwrap();
     let json: Value = serde_json::from_slice(&body_bytes).unwrap();
-    assert_eq!(json["product"], "Oxide");
+    assert_eq!(json["product"], "Wellfriend");
     assert!(json["version"].is_string());
 }
 
 #[tokio::test]
 async fn extract_text_missing_file_returns_400() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let boundary = "test-boundary";
     let body = format!(
         "--{}\r\nContent-Disposition: form-data; name=\"pages\"\r\n\r\nall\r\n--{}--\r\n",
@@ -172,7 +172,7 @@ async fn extract_text_missing_file_returns_400() {
 async fn extract_text_with_flate_pdf_returns_text() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("page_markers", "false")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -195,7 +195,7 @@ async fn extract_text_with_flate_pdf_returns_text() {
 async fn extract_text_json_format_returns_valid_json() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("output_format", "json")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -228,7 +228,7 @@ async fn extract_text_json_format_returns_valid_json() {
 async fn extract_text_scanned_pdf_returns_422() {
     let pdf = fixture_pdf("image_only.pdf");
     let (ct, body_bytes) = make_multipart("scanned.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -248,7 +248,7 @@ async fn extract_text_scanned_pdf_returns_422() {
 async fn extract_text_invalid_page_range_returns_400() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("pages", "999")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -265,7 +265,7 @@ async fn extract_text_invalid_page_range_returns_400() {
 async fn analyze_endpoint_returns_analysis() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/analyze")
@@ -292,7 +292,7 @@ async fn analyze_endpoint_returns_analysis() {
 
 #[tokio::test]
 async fn analyze_missing_file_returns_400() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let boundary = "test-boundary";
     let body = format!("--{}--\r\n", boundary);
     let response = app
@@ -314,7 +314,7 @@ async fn analyze_missing_file_returns_400() {
 async fn extract_text_page_markers_false_omits_marker() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("page_markers", "false")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -341,7 +341,7 @@ async fn extract_text_specific_page_range() {
         &pdf,
         &[("pages", "1"), ("page_markers", "false")],
     );
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -363,7 +363,7 @@ async fn extract_text_specific_page_range() {
 async fn extract_text_invalid_boolean_param_returns_400() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("page_markers", "maybe")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -383,7 +383,7 @@ async fn extract_text_invalid_boolean_param_returns_400() {
 async fn extract_text_invalid_output_format_returns_400() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("output_format", "pdf")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -400,7 +400,7 @@ async fn extract_text_invalid_output_format_returns_400() {
 async fn extract_images_returns_zip() {
     let pdf = fixture_pdf("image_only.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-images")
@@ -435,7 +435,7 @@ async fn extract_images_returns_zip() {
 async fn extract_images_json_mode_returns_metadata_only() {
     let pdf = fixture_pdf("image_only.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("output_format", "json")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-images")
@@ -470,7 +470,7 @@ async fn extract_images_json_mode_returns_metadata_only() {
 
 #[tokio::test]
 async fn extract_images_missing_file_returns_400() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let boundary = "test-boundary";
     let body = format!("--{}--\r\n", boundary);
     let response = app
@@ -495,7 +495,7 @@ async fn extract_images_missing_file_returns_400() {
 async fn extract_images_invalid_format_returns_400() {
     let pdf = fixture_pdf("image_only.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("format", "bmp")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-images")
@@ -512,7 +512,7 @@ async fn extract_images_invalid_format_returns_400() {
 async fn extract_images_text_only_pdf_returns_empty_zip() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-images")
@@ -542,7 +542,7 @@ async fn extract_images_text_only_pdf_returns_empty_zip() {
 async fn extract_images_with_format_png_returns_zip_with_png_files() {
     let pdf = fixture_pdf("image_only.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("format", "png")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-images")
@@ -561,7 +561,7 @@ async fn extract_images_with_format_png_returns_zip_with_png_files() {
 async fn extract_images_with_format_webp_returns_zip_and_succeeds() {
     let pdf = fixture_pdf("image_only.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("format", "webp")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-images")
@@ -591,7 +591,7 @@ async fn extract_images_with_format_webp_returns_zip_and_succeeds() {
 async fn pdf2img_returns_zip_with_png_pages() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("dpi", "72")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -648,7 +648,7 @@ async fn pdf2img_returns_zip_with_png_pages() {
 async fn pdf2img_with_jpeg_format_returns_jpeg_pages() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("dpi", "72"), ("format", "jpg")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -676,7 +676,7 @@ async fn pdf2img_with_jpeg_format_returns_jpeg_pages() {
 
 #[tokio::test]
 async fn pdf2img_missing_file_returns_400() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let boundary = "bound";
     let body = format!("--{}--\r\n", boundary);
     let response = app
@@ -698,7 +698,7 @@ async fn pdf2img_missing_file_returns_400() {
 async fn pdf2img_invalid_dpi_returns_400() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("dpi", "2")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -715,7 +715,7 @@ async fn pdf2img_invalid_dpi_returns_400() {
 async fn pdf2img_invalid_format_returns_400() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("format", "bmp")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -732,7 +732,7 @@ async fn pdf2img_invalid_format_returns_400() {
 async fn pdf2img_page_range_limits_pages() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("pages", "1"), ("dpi", "72")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -756,7 +756,7 @@ async fn pdf2img_page_range_limits_pages() {
 async fn pdf2img_high_dpi_page_has_larger_dimensions() {
     async fn render_zip_size(pdf: &[u8], dpi: &str) -> usize {
         let (ct, body_bytes) = make_multipart("test.pdf", pdf, &[("dpi", dpi)]);
-        let app = oxide_server::app::create_app();
+        let app = wellfriendpdf_server::app::create_app();
         let response = app
             .oneshot(
                 Request::post("/api/v1/pdf2img")
@@ -789,7 +789,7 @@ async fn pdf2img_high_dpi_page_has_larger_dimensions() {
 async fn pdf2img_renders_pages_in_correct_order() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[("dpi", "72")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -818,7 +818,7 @@ async fn pdf2img_renders_pages_in_correct_order() {
 async fn pdf2img_default_dpi_header_is_150() {
     let pdf = fixture_pdf("image_only.pdf");
     let (ct, body_bytes) = make_multipart("test.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -845,7 +845,7 @@ async fn content_type_header_is_correct_for_txt() {
         &pdf,
         &[("output_format", "txt"), ("page_markers", "false")],
     );
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -875,7 +875,7 @@ async fn content_type_header_is_correct_for_txt() {
 async fn auth_disabled_by_default_allows_all_requests() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -892,7 +892,7 @@ async fn auth_disabled_by_default_allows_all_requests() {
 
 #[tokio::test]
 async fn rate_limit_disabled_by_default_allows_rapid_health_requests() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     for _ in 0..5 {
         let response = app
             .clone()
@@ -905,7 +905,7 @@ async fn rate_limit_disabled_by_default_allows_rapid_health_requests() {
 
 #[tokio::test]
 async fn version_endpoint_returns_version_string() {
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(Request::get("/api/v1/version").body(Body::empty()).unwrap())
         .await
@@ -920,7 +920,7 @@ async fn version_endpoint_returns_version_string() {
 async fn e2e_extract_text_returns_content() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -943,7 +943,7 @@ async fn e2e_extract_text_returns_content() {
 async fn e2e_pdf2img_produces_valid_zip_with_png() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[("dpi", "72")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -972,7 +972,7 @@ async fn e2e_pdf2img_produces_valid_zip_with_png() {
 async fn e2e_analyze_detects_text_layer() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/analyze")
@@ -991,7 +991,7 @@ async fn e2e_analyze_detects_text_layer() {
 #[tokio::test]
 async fn e2e_all_endpoints_return_200_for_valid_pdf() {
     let pdf = fixture_pdf("flate.pdf");
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
 
     for (path, extra) in [
         ("/api/v1/extract-text", Vec::<(&str, &str)>::new()),
@@ -1018,7 +1018,7 @@ async fn e2e_all_endpoints_return_200_for_valid_pdf() {
 async fn e2e_non_pdf_bytes_returns_error() {
     let garbage = b"this is not a pdf file, definitely not";
     let (ct, body) = make_multipart("garbage.pdf", garbage, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -1037,7 +1037,7 @@ async fn e2e_non_pdf_bytes_returns_error() {
 async fn e2e_extract_images_from_image_pdf() {
     let pdf = fixture_pdf("image_only.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[("format", "png")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-images")
@@ -1066,7 +1066,7 @@ async fn e2e_extract_images_from_image_pdf() {
 async fn e2e_render_image_pdf_contains_non_white_pixels() {
     let pdf = fixture_pdf("image_only.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[("dpi", "72")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -1111,7 +1111,7 @@ async fn unencrypted_pdf_with_password_param_still_works() {
     // Supplying a password for a non-encrypted PDF must not break it.
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[("password", "any_password")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -1132,7 +1132,7 @@ async fn unencrypted_pdf_with_password_param_still_works() {
 async fn analyze_with_password_param_on_unencrypted_pdf_works() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[("password", "ignored")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/analyze")
@@ -1149,7 +1149,7 @@ async fn analyze_with_password_param_on_unencrypted_pdf_works() {
 async fn invalid_pdf_returns_client_or_server_error() {
     let garbage = b"%PDF-1.4 ... this is not real PDF content";
     let (ct, body) = make_multipart("test.pdf", garbage, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -1172,7 +1172,7 @@ async fn password_protected_pdf_without_password_returns_422() {
     // Synthesised inline so the test needs no external fixture.
     let pdf = build_password_protected_pdf();
     let (ct, body) = make_multipart("protected.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-text")
@@ -1296,7 +1296,7 @@ fn build_form_xobject_pdf() -> Vec<u8> {
 async fn pdf2img_form_xobject_pdf_returns_valid_png() {
     let pdf_bytes = build_form_xobject_pdf();
     let (ct, body) = make_multipart("form.pdf", &pdf_bytes, &[("dpi", "72")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")
@@ -1340,7 +1340,7 @@ async fn pdf2img_form_xobject_pdf_returns_valid_png() {
 async fn parse_markdown_returns_text() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[("format", "markdown")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/parse")
@@ -1360,7 +1360,7 @@ async fn parse_markdown_returns_text() {
 async fn parse_json_is_canonical_schema() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[("format", "json")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/parse")
@@ -1385,7 +1385,7 @@ async fn parse_json_is_canonical_schema() {
 async fn parse_invalid_format_returns_400() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[("format", "yaml")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/parse")
@@ -1400,10 +1400,10 @@ async fn parse_invalid_format_returns_400() {
 
 #[tokio::test]
 async fn parse_missing_file_returns_400() {
-    let boundary = "oxide-test-boundary-xyz";
+    let boundary = "wellfriendpdf-test-boundary-xyz";
     let body = format!("--{0}--\r\n", boundary).into_bytes();
     let ct = format!("multipart/form-data; boundary={}", boundary);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/parse")
@@ -1420,7 +1420,7 @@ async fn parse_missing_file_returns_400() {
 async fn chunk_returns_chunkset_json() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[("target_tokens", "256")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/chunk")
@@ -1444,7 +1444,7 @@ async fn chunk_returns_chunkset_json() {
 async fn extract_fields_returns_json_on_acroform() {
     let pdf = fixture_pdf("form_160f.pdf");
     let (ct, body) = make_multipart("form.pdf", &pdf, &[("doc_type", "auto")]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/extract-fields")
@@ -1469,7 +1469,7 @@ async fn extract_fields_returns_json_on_acroform() {
 async fn info_returns_metadata_json() {
     let pdf = fixture_pdf("flate.pdf");
     let (ct, body) = make_multipart("test.pdf", &pdf, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/info")
@@ -1494,7 +1494,7 @@ async fn parse_garbage_input_does_not_crash() {
     // Untrusted/garbage bytes must produce a clean 4xx/5xx, never panic the server.
     let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01, 0x02, 0x03];
     let (ct, body) = make_multipart("not.pdf", &garbage, &[]);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/parse")

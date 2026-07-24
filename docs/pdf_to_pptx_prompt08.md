@@ -22,5 +22,5 @@ Bounded limits:
 CLI:
 
 ```powershell
-oxide pdf-to-pptx input.pdf --out output.pptx --json
+wellfriendpdf pdf-to-pptx input.pdf --out output.pptx --json
 ```

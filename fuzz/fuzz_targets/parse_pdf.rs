@@ -8,7 +8,7 @@
 //! `Err` for every malformed input, never crash.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::{
+use wellfriendpdf_engine::{
     extract_xfa, xfa_inventory, xfa_runtime_report, ContentEngine, XfaLimits, XfaRuntimeOptions,
 };
 

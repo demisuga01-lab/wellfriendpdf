@@ -23,7 +23,7 @@ Prompt 08B closure:
   boxes for text blocks and anchored image drawings.
 - `DocxLayout::Hybrid` keeps confident semantic structures and positions lower
   confidence blocks.
-- CLI: `oxide pdf-to-docx input.pdf --layout page-faithful --out output.docx`.
+- CLI: `wellfriendpdf pdf-to-docx input.pdf --layout page-faithful --out output.docx`.
 - tests inspect the generated OOXML for anchored text box markup.
 
 Bounded limits:
@@ -37,8 +37,8 @@ Bounded limits:
 CLI:
 
 ```powershell
-oxide pdf-to-docx input.pdf --out output.docx --json
-oxide pdf-to-docx input.pdf --layout page-faithful --out output.docx --json
+wellfriendpdf pdf-to-docx input.pdf --out output.docx --json
+wellfriendpdf pdf-to-docx input.pdf --layout page-faithful --out output.docx --json
 ```
 
 Prompt 08 also keeps the existing `docx-to-pdf` native authoring path unchanged.

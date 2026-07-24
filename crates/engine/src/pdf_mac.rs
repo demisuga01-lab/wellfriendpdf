@@ -24,7 +24,7 @@ use x509_cert::attr::{Attribute, Attributes};
 use zeroize::Zeroize;
 
 use crate::crypto::{secret_bytes, SecretBytes};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::writer::PdfWriter;
@@ -268,13 +268,13 @@ pub fn write_standalone_pdf_mac(
     kdf_salt: &[u8],
 ) -> Result<(Vec<u8>, PdfMacWriteReport)> {
     if file_key.len() != PDF_MAC_KEY_LEN {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PDF-MAC writer requires a 32-byte file key, got {}",
             file_key.len()
         )));
     }
     if kdf_salt.len() != PDF_MAC_KDF_SALT_LEN {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PDF-MAC writer requires a 32-byte /KDFSalt, got {}",
             kdf_salt.len()
         )));
@@ -293,10 +293,10 @@ pub fn write_standalone_pdf_mac(
         let bytes = writer.write()?;
         let (hex_start, hex_end) = locate_unique_placeholder_hex(&bytes, &placeholder_hex)?;
         let mac_literal_start = hex_start.checked_sub(1).ok_or_else(|| {
-            OxideError::MalformedPdf("PDF-MAC placeholder starts at byte 0".to_string())
+            WellfriendError::MalformedPdf("PDF-MAC placeholder starts at byte 0".to_string())
         })?;
         let after_mac_literal = hex_end.checked_add(1).ok_or_else(|| {
-            OxideError::MalformedPdf("PDF-MAC placeholder offset overflow".to_string())
+            WellfriendError::MalformedPdf("PDF-MAC placeholder offset overflow".to_string())
         })?;
         let next_range = [
             0,
@@ -312,19 +312,19 @@ pub fn write_standalone_pdf_mac(
     }
     let Some((mut bytes, hex_start, hex_end, stable_iterations)) = stable else {
         mac_key.zeroize();
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "PDF-MAC ByteRange placeholder did not stabilize".to_string(),
         ));
     };
     let covered = pdf_mac_covered_bytes(&bytes, &byte_range)
-        .map_err(|err| OxideError::MalformedPdf(err.to_string()))?;
+        .map_err(|err| WellfriendError::MalformedPdf(err.to_string()))?;
     let covered_hash = Sha256::digest(&covered);
     let final_token = map_pdf_mac_write_error(build_pdf_mac_token_for_supported_profile(
         file_key, kdf_salt, &mac_key, &covered,
     ))?;
     mac_key.zeroize();
     if final_token.len() != placeholder_token.len() {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "PDF-MAC final token length {} exceeded reserved placeholder {}",
             final_token.len(),
             placeholder_token.len()
@@ -332,15 +332,15 @@ pub fn write_standalone_pdf_mac(
     }
     let final_hex = hex_upper(&final_token);
     if final_hex.len() != hex_end - hex_start {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "PDF-MAC final token hex length changed".to_string(),
         ));
     }
     bytes[hex_start..hex_end].copy_from_slice(final_hex.as_bytes());
     let covered_after_patch = pdf_mac_covered_bytes(&bytes, &byte_range)
-        .map_err(|err| OxideError::MalformedPdf(err.to_string()))?;
+        .map_err(|err| WellfriendError::MalformedPdf(err.to_string()))?;
     if covered_after_patch != covered {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "PDF-MAC patch changed covered bytes".to_string(),
         ));
     }
@@ -764,7 +764,7 @@ fn hex_upper(bytes: &[u8]) -> String {
 fn locate_unique_placeholder_hex(bytes: &[u8], placeholder_hex: &str) -> Result<(usize, usize)> {
     let needle = placeholder_hex.as_bytes();
     if needle.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "PDF-MAC placeholder token is empty".to_string(),
         ));
     }
@@ -772,7 +772,7 @@ fn locate_unique_placeholder_hex(bytes: &[u8], placeholder_hex: &str) -> Result<
     for (idx, window) in bytes.windows(needle.len()).enumerate() {
         if window == needle {
             if found.is_some() {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "PDF-MAC placeholder token is not unique".to_string(),
                 ));
             }
@@ -780,13 +780,13 @@ fn locate_unique_placeholder_hex(bytes: &[u8], placeholder_hex: &str) -> Result<
         }
     }
     let start = found.ok_or_else(|| {
-        OxideError::MalformedPdf("PDF-MAC placeholder token was not serialized".to_string())
+        WellfriendError::MalformedPdf("PDF-MAC placeholder token was not serialized".to_string())
     })?;
     if start == 0
         || bytes.get(start - 1) != Some(&b'<')
         || bytes.get(start + needle.len()) != Some(&b'>')
     {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "PDF-MAC placeholder is not a direct hex string".to_string(),
         ));
     }
@@ -796,10 +796,10 @@ fn locate_unique_placeholder_hex(bytes: &[u8], placeholder_hex: &str) -> Result<
 fn map_pdf_mac_write_error<T>(result: std::result::Result<T, PdfMacVerifyFailure>) -> Result<T> {
     result.map_err(|err| match err {
         PdfMacVerifyFailure::Malformed(msg) | PdfMacVerifyFailure::Invalid(msg) => {
-            OxideError::MalformedPdf(msg)
+            WellfriendError::MalformedPdf(msg)
         }
-        PdfMacVerifyFailure::Unsupported(msg) => OxideError::UnsupportedFeature(msg),
-        PdfMacVerifyFailure::Authentication(msg) => OxideError::AuthenticationFailure(msg),
+        PdfMacVerifyFailure::Unsupported(msg) => WellfriendError::UnsupportedFeature(msg),
+        PdfMacVerifyFailure::Authentication(msg) => WellfriendError::AuthenticationFailure(msg),
     })
 }
 

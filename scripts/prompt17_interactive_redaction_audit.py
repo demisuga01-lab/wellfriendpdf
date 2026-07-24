@@ -159,7 +159,7 @@ def fixture_pdf() -> bytes:
         "<< /Type /Annot /Subtype /3D /NM (three-d-1) /Rect [392 106 410 124] /3DD << /Type /3D /Subtype /U3D >> >>",
         "<< /Type /Annot /Subtype /Link /NM (link-1) /Rect [392 84 410 102] /A << /S /URI /URI (https://example.invalid/) >> >>",
         "<< /Type /Annot /Subtype /RichMedia /NM (rich-media-1) /Rect [392 62 410 80] /RichMediaSettings << /Activation << /Condition /PV >> >> >>",
-        "<< /Type /Annot /Subtype /OxideUnknown /NM (unknown-1) /Rect [392 40 410 58] >>",
+        "<< /Type /Annot /Subtype /WellfriendUnknown /NM (unknown-1) /Rect [392 40 410 58] >>",
     ]
     for annotation in annotations:
         b.add(annotation)
@@ -274,19 +274,19 @@ def find_tool(name: str, fallback: Path | None = None) -> str | None:
     return None
 
 
-def render_references(pdf: Path, oxide: Path, label: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def render_references(pdf: Path, wellfriendpdf: Path, label: str) -> tuple[dict[str, Any], dict[str, Any]]:
     reference_dir = REFERENCE / label
     reference_dir.mkdir(parents=True, exist_ok=True)
     commands: dict[str, Any] = {}
     images: dict[str, Path] = {}
 
-    oxide_zip = reference_dir / "oxide.zip"
-    commands["oxide"] = run([str(oxide), "render", str(pdf), "--output", str(oxide_zip), "--pages", "1", "--dpi", "72", "--format", "png"])
-    with zipfile.ZipFile(oxide_zip) as archive:
+    wellfriendpdf_zip = reference_dir / "wellfriendpdf.zip"
+    commands["wellfriendpdf"] = run([str(wellfriendpdf), "render", str(pdf), "--output", str(wellfriendpdf_zip), "--pages", "1", "--dpi", "72", "--format", "png"])
+    with zipfile.ZipFile(wellfriendpdf_zip) as archive:
         member = next(name for name in archive.namelist() if name.endswith(".png"))
         data = archive.read(member)
-    images["oxide"] = reference_dir / "oxide.png"
-    images["oxide"].write_bytes(data)
+    images["wellfriendpdf"] = reference_dir / "wellfriendpdf.png"
+    images["wellfriendpdf"].write_bytes(data)
 
     poppler = find_tool("pdftoppm")
     if poppler:
@@ -311,12 +311,12 @@ def render_references(pdf: Path, oxide: Path, label: str) -> tuple[dict[str, Any
         commands["mupdf"] = {"passed": False, "unavailable": True}
 
     metrics: dict[str, Any] = {}
-    oxide_image = Image.open(images["oxide"]).convert("RGB")
+    wellfriendpdf_image = Image.open(images["wellfriendpdf"]).convert("RGB")
     for name, path in images.items():
         image = Image.open(path).convert("RGB")
-        if image.size != oxide_image.size:
-            image = image.resize(oxide_image.size)
-        difference = ImageChops.difference(oxide_image, image)
+        if image.size != wellfriendpdf_image.size:
+            image = image.resize(wellfriendpdf_image.size)
+        difference = ImageChops.difference(wellfriendpdf_image, image)
         stats = ImageStat.Stat(difference)
         nonwhite = sum(1 for pixel in image.getdata() if pixel != (255, 255, 255))
         metrics[name] = {
@@ -325,19 +325,19 @@ def render_references(pdf: Path, oxide: Path, label: str) -> tuple[dict[str, Any
             "width": image.width,
             "height": image.height,
             "nonwhite_pixels": nonwhite,
-            "mean_abs_diff_vs_oxide": round(sum(stats.mean) / 3.0, 6),
+            "mean_abs_diff_vs_wellfriendpdf": round(sum(stats.mean) / 3.0, 6),
             "max_channel_extrema": max(extreme[1] for extreme in stats.extrema),
         }
     available_refs = [name for name in ("poppler", "pdfium", "mupdf") if name in metrics]
-    outlier = not metrics["oxide"]["nonwhite_pixels"] or any(not metrics[name]["nonwhite_pixels"] for name in available_refs)
+    outlier = not metrics["wellfriendpdf"]["nonwhite_pixels"] or any(not metrics[name]["nonwhite_pixels"] for name in available_refs)
     summary = {
         "schema_version": SCHEMA,
         "input": str(pdf.relative_to(ROOT)),
         "commands": commands,
         "metrics": metrics,
         "available_reference_engines": available_refs,
-        "classification": "oxide_outlier" if outlier else "all_references_render_generated_static_ap",
-        "oxide_outliers": int(outlier),
+        "classification": "wellfriendpdf_outlier" if outlier else "all_references_render_generated_static_ap",
+        "wellfriendpdf_outliers": int(outlier),
         "unclassified_failures": 0,
     }
     return summary, metrics
@@ -372,7 +372,7 @@ def feature_rows() -> list[dict[str, Any]]:
                 "category": category,
                 "feature": feature,
                 "implementation_status": status,
-                "rust_api": "oxide_engine::prompt17",
+                "rust_api": "wellfriendpdf_engine::prompt17",
                 "cli": "implemented",
                 "python": "implemented",
                 "c_abi": "implemented_versioned_owned_buffers",
@@ -415,37 +415,37 @@ def main() -> int:
     fixture.write_bytes(fixture_pdf())
     media_fixture.write_bytes(media_fixture_pdf())
     format_fixture.write_bytes(format_fixture_pdf())
-    oxide = ROOT / "target" / "debug" / ("oxide.exe" if os.name == "nt" else "oxide")
-    if not oxide.exists():
-        run(["cargo", "build", "-p", "oxide-cli"], timeout=300)
+    wellfriendpdf = ROOT / "target" / "debug" / ("wellfriendpdf.exe" if os.name == "nt" else "wellfriendpdf")
+    if not wellfriendpdf.exists():
+        run(["cargo", "build", "-p", "wellfriendpdf-cli"], timeout=300)
 
     validations: list[dict[str, Any]] = []
     if not args.skip_focused_test:
-        validations.append(run(["cargo", "test", "-p", "oxide-engine", "--test", "prompt17_interactive_redaction", "--", "--nocapture"], timeout=300))
+        validations.append(run(["cargo", "test", "-p", "wellfriendpdf-engine", "--test", "prompt17_interactive_redaction", "--", "--nocapture"], timeout=300))
 
     appearance_a = OUT / "appearance-a.pdf"
     appearance_b = OUT / "appearance-b.pdf"
     appearance_report = OUT / "appearance-report.json"
-    validations.append(run([str(oxide), "annotation-appearance-generate", str(fixture), "--output", str(appearance_a), "--report", str(appearance_report)]))
-    validations.append(run([str(oxide), "annotation-appearance-generate", str(fixture), "--output", str(appearance_b)]))
+    validations.append(run([str(wellfriendpdf), "annotation-appearance-generate", str(fixture), "--output", str(appearance_a), "--report", str(appearance_report)]))
+    validations.append(run([str(wellfriendpdf), "annotation-appearance-generate", str(fixture), "--output", str(appearance_b)]))
 
     xfdf_a = OUT / "annotations-a.xfdf"
     xfdf_b = OUT / "annotations-b.xfdf"
     imported = OUT / "annotations-imported.pdf"
     xfdf_export_report = OUT / "xfdf-export-report.json"
     xfdf_import_report = OUT / "xfdf-import-report.json"
-    validations.append(run([str(oxide), "annotation-xfdf-export", str(fixture), "--output", str(xfdf_a), "--report", str(xfdf_export_report)]))
-    validations.append(run([str(oxide), "annotation-xfdf-export", str(fixture), "--output", str(xfdf_b)]))
-    validations.append(run([str(oxide), "annotation-xfdf-import", str(fixture), str(xfdf_a), "--output", str(imported), "--report", str(xfdf_import_report)]))
+    validations.append(run([str(wellfriendpdf), "annotation-xfdf-export", str(fixture), "--output", str(xfdf_a), "--report", str(xfdf_export_report)]))
+    validations.append(run([str(wellfriendpdf), "annotation-xfdf-export", str(fixture), "--output", str(xfdf_b)]))
+    validations.append(run([str(wellfriendpdf), "annotation-xfdf-import", str(fixture), str(xfdf_a), "--output", str(imported), "--report", str(xfdf_import_report)]))
 
     media_clean_a = OUT / "media-clean-a.pdf"
     media_clean_b = OUT / "media-clean-b.pdf"
     media_flat = OUT / "media-poster-flat.pdf"
     media_clean_report = OUT / "media-clean-report.json"
     media_flat_report = OUT / "media-flat-report.json"
-    validations.append(run([str(oxide), "rich-media-sanitize", str(media_fixture), "--policy", "remove_all_media", "--output", str(media_clean_a), "--report", str(media_clean_report)]))
-    validations.append(run([str(oxide), "rich-media-sanitize", str(media_clean_a), "--policy", "remove_all_media", "--output", str(media_clean_b)]))
-    validations.append(run([str(oxide), "rich-media-flatten-poster", str(media_fixture), "--output", str(media_flat), "--report", str(media_flat_report)]))
+    validations.append(run([str(wellfriendpdf), "rich-media-sanitize", str(media_fixture), "--policy", "remove_all_media", "--output", str(media_clean_a), "--report", str(media_clean_report)]))
+    validations.append(run([str(wellfriendpdf), "rich-media-sanitize", str(media_clean_a), "--policy", "remove_all_media", "--output", str(media_clean_b)]))
+    validations.append(run([str(wellfriendpdf), "rich-media-flatten-poster", str(media_fixture), "--output", str(media_flat), "--report", str(media_flat_report)]))
 
     redaction_plan = OUT / "nonaxis-plan.json"
     redaction_plan.write_text(json.dumps({
@@ -506,8 +506,8 @@ def main() -> int:
     redacted_a = OUT / "redacted-a.pdf"
     redacted_b = OUT / "redacted-b.pdf"
     redaction_report = OUT / "nonaxis-redaction-report.json"
-    validations.append(run([str(oxide), "redact-image-nonaxis", str(fixture), str(redaction_plan), "--output", str(redacted_a), "--report", str(redaction_report)]))
-    validations.append(run([str(oxide), "redact-image-nonaxis", str(fixture), str(redaction_plan), "--output", str(redacted_b)]))
+    validations.append(run([str(wellfriendpdf), "redact-image-nonaxis", str(fixture), str(redaction_plan), "--output", str(redacted_a), "--report", str(redaction_report)]))
+    validations.append(run([str(wellfriendpdf), "redact-image-nonaxis", str(fixture), str(redaction_plan), "--output", str(redacted_b)]))
 
     format_plan = OUT / "nonaxis-format-plan.json"
     format_plan.write_text(json.dumps({
@@ -527,8 +527,8 @@ def main() -> int:
     format_redacted_a = OUT / "nonaxis-formats-redacted-a.pdf"
     format_redacted_b = OUT / "nonaxis-formats-redacted-b.pdf"
     format_redaction_report = OUT / "nonaxis-format-redaction-report.json"
-    validations.append(run([str(oxide), "redact-image-nonaxis", str(format_fixture), str(format_plan), "--output", str(format_redacted_a), "--report", str(format_redaction_report)]))
-    validations.append(run([str(oxide), "redact-image-nonaxis", str(format_fixture), str(format_plan), "--output", str(format_redacted_b)]))
+    validations.append(run([str(wellfriendpdf), "redact-image-nonaxis", str(format_fixture), str(format_plan), "--output", str(format_redacted_a), "--report", str(format_redaction_report)]))
+    validations.append(run([str(wellfriendpdf), "redact-image-nonaxis", str(format_fixture), str(format_plan), "--output", str(format_redacted_b)]))
 
     qpdf = find_tool("qpdf")
     qpdf_checks = []
@@ -536,18 +536,18 @@ def main() -> int:
         for path in (appearance_a, imported, media_clean_a, media_flat, redacted_a, format_redacted_a):
             qpdf_checks.append(run([qpdf, "--check", str(path)], check=False))
 
-    appearance_reference, appearance_metrics = render_references(appearance_a, oxide, "appearance")
-    nonaxis_before_reference, nonaxis_before_metrics = render_references(fixture, oxide, "nonaxis-before")
-    nonaxis_after_reference, nonaxis_after_metrics = render_references(redacted_a, oxide, "nonaxis-after")
+    appearance_reference, appearance_metrics = render_references(appearance_a, wellfriendpdf, "appearance")
+    nonaxis_before_reference, nonaxis_before_metrics = render_references(fixture, wellfriendpdf, "nonaxis-before")
+    nonaxis_after_reference, nonaxis_after_metrics = render_references(redacted_a, wellfriendpdf, "nonaxis-after")
     nonaxis_format_reference, nonaxis_format_metrics = render_references(
-        format_redacted_a, oxide, "nonaxis-formats-after"
+        format_redacted_a, wellfriendpdf, "nonaxis-formats-after"
     )
     nonaxis_references = {
         "before": nonaxis_before_reference,
         "after": nonaxis_after_reference,
         "unsupported_format_after": nonaxis_format_reference,
     }
-    nonaxis_outliers = sum(result["oxide_outliers"] for result in nonaxis_references.values())
+    nonaxis_outliers = sum(result["wellfriendpdf_outliers"] for result in nonaxis_references.values())
     nonaxis_unclassified = sum(result["unclassified_failures"] for result in nonaxis_references.values())
     reference_results = {
         "schema_version": SCHEMA,
@@ -556,10 +556,10 @@ def main() -> int:
         "available_reference_engines": appearance_reference["available_reference_engines"],
         "classification": (
             "appearance_and_nonaxis_before_after_reference_audits_passed"
-            if appearance_reference["oxide_outliers"] == 0 and nonaxis_outliers == 0
-            else "oxide_outlier"
+            if appearance_reference["wellfriendpdf_outliers"] == 0 and nonaxis_outliers == 0
+            else "wellfriendpdf_outlier"
         ),
-        "oxide_outliers": appearance_reference["oxide_outliers"] + nonaxis_outliers,
+        "wellfriendpdf_outliers": appearance_reference["wellfriendpdf_outliers"] + nonaxis_outliers,
         "unclassified_failures": appearance_reference["unclassified_failures"] + nonaxis_unclassified,
     }
     metrics = {
@@ -573,7 +573,7 @@ def main() -> int:
     write_json("prompt17-reference-disagreements.json", {
         "schema_version": SCHEMA,
         "disagreements": [],
-        "oxide_outliers": reference_results["oxide_outliers"],
+        "wellfriendpdf_outliers": reference_results["wellfriendpdf_outliers"],
         "unclassified_failures": 0,
     })
 
@@ -608,13 +608,13 @@ def main() -> int:
             "reference_applicability": "visual" if category in ("annotation_appearance_nonaxis", "media_policy") else "structural_security",
             "security_expectation": "no_execution_fail_closed",
             "deterministic_expectation": True,
-            "owner": "oxide-prompt17",
+            "owner": "wellfriendpdf-prompt17",
         })
     for subtype in [
         "Text", "FreeText", "Line", "Square", "Circle", "Polygon", "PolyLine",
         "Highlight", "Underline", "Squiggly", "StrikeOut", "Stamp", "Caret", "Ink",
         "Popup", "FileAttachment", "Sound", "Movie", "Screen", "Widget", "PrinterMark",
-        "TrapNet", "Watermark", "3D", "Redact", "RichMedia", "Link", "OxideUnknown",
+        "TrapNet", "Watermark", "3D", "Redact", "RichMedia", "Link", "WellfriendUnknown",
     ]:
         corpus_rows.append({
             "id": f"annotation-{subtype.lower()}",
@@ -625,7 +625,7 @@ def main() -> int:
             "reference_applicability": "visual_or_policy",
             "security_expectation": "no_active_content_execution",
             "deterministic_expectation": True,
-            "owner": "oxide-prompt17",
+            "owner": "wellfriendpdf-prompt17",
         })
     for media_kind in [
         "RichMediaContent", "RichMediaSettings", "embedded_asset", "Sound", "Movie",
@@ -641,7 +641,7 @@ def main() -> int:
             "reference_applicability": "security_policy_and_static_poster_visual",
             "security_expectation": "zero_player_script_network_or_codec_execution",
             "deterministic_expectation": True,
-            "owner": "oxide-prompt17",
+            "owner": "wellfriendpdf-prompt17",
         })
     for geometry in [
         "rotation", "skew", "reflection", "negative_scale", "nonuniform_scale",
@@ -657,7 +657,7 @@ def main() -> int:
             "reference_applicability": "visual_and_structural_security",
             "security_expectation": "no_overlay_only_success_and_no_reachable_redacted_clone_samples",
             "deterministic_expectation": True,
-            "owner": "oxide-prompt17",
+            "owner": "wellfriendpdf-prompt17",
         })
     for image_format in [
         "DeviceGray8", "DeviceRGB8", "DeviceCMYK8", "inline_DeviceGray8",
@@ -684,7 +684,7 @@ def main() -> int:
             "reference_applicability": "structural_security_and_reopen",
             "security_expectation": "unsupported_decoder_never_becomes_overlay_only_success",
             "deterministic_expectation": True,
-            "owner": "oxide-prompt17",
+            "owner": "wellfriendpdf-prompt17",
         })
     write_json("prompt17-corpus-manifest.json", {"schema_version": SCHEMA, "fixtures": corpus_rows})
 
@@ -831,7 +831,7 @@ def main() -> int:
         "full_validation": full_validation,
         "passed": all(item["passed"] for item in validations)
         and all(item["passed"] for item in qpdf_checks)
-        and reference_results["oxide_outliers"] == 0
+        and reference_results["wellfriendpdf_outliers"] == 0
         and reference_results["unclassified_failures"] == 0
         and security_proof_failures == 0
         and overlay_only_success_claims == 0
@@ -859,7 +859,7 @@ def main() -> int:
         "<style>body{font:14px system-ui;margin:32px;color:#18212b}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ccd4dc;padding:7px;text-align:left}th{background:#eef2f5}.pass{color:#176b36}</style>"
         f"<h1>Prompt 17 audit</h1><p class='pass'>Validation passed: {validation['passed']}</p>"
         f"<p>Starting checkpoint: <code>{STARTING_COMMIT}</code></p>"
-        f"<p>Reference classification: {html.escape(reference_results['classification'])}; Oxide outliers: {reference_results['oxide_outliers']}; security proof failures: 0.</p>"
+        f"<p>Reference classification: {html.escape(reference_results['classification'])}; Wellfriend outliers: {reference_results['wellfriendpdf_outliers']}; security proof failures: 0.</p>"
         "<table><thead><tr><th>Category</th><th>Feature</th><th>Status</th><th>Security</th></tr></thead><tbody>"
         + rows_html
         + "</tbody></table>",
@@ -873,7 +873,7 @@ def main() -> int:
         "blocked_rows": 0,
         "unclassified_failures": 0,
         "security_proof_failures": 0,
-        "oxide_outliers_supported_rows": reference_results["oxide_outliers"],
+        "wellfriendpdf_outliers_supported_rows": reference_results["wellfriendpdf_outliers"],
         "overlay_only_success_claims": 0,
         "commit_required": "Complete combined prompt 17 annotation xfdf media nonaxis redaction",
         "clean_worktree_required_after_commit": True,

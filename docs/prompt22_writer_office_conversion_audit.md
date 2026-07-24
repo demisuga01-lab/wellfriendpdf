@@ -17,7 +17,7 @@ The current generator also records the post-edit status in `prompt22-starting-st
 - Global dedup is a deterministic full-rewrite planning pass over eligible streams. It buckets by SHA-256 but only deduplicates after canonical stream bytes compare equal.
 - Encrypted PDF optimization is refused rather than writing decrypted output or changing encryption semantics. Full rewrite is reported as signature-impacting.
 - Office package security is enforced in `crates/engine/src/office.rs` before DOCX/PPTX/XLSX conversion. ZIP path traversal, bombs, unsupported methods, macros, OLE, ActiveX, embedded executables, XML entities, and external relationships are blocked or reported.
-- DOCX/PPTX/XLSX-to-PDF uses Oxide-native parsing and authoring paths. Microsoft Office, LibreOffice, Ghostscript, browser rendering, and cloud conversion are not production dependencies.
+- DOCX/PPTX/XLSX-to-PDF uses Wellfriend-native parsing and authoring paths. Microsoft Office, LibreOffice, Ghostscript, browser rendering, and cloud conversion are not production dependencies.
 
 ## Feature matrix
 
@@ -43,7 +43,7 @@ The current generator also records the post-edit status in `prompt22-starting-st
 ## Benchmark posture
 
 - The bundled benchmark artifacts classify reference tools as optional. Unavailable Office, LibreOffice, qpdf, Poppler, PDFium, and MuPDF binaries are reported as unavailable, not passed.
-- Required production proofs are Oxide-native: generated PDFs reopen through Oxide, Prompt 22 tests prove decoded equality and package blocking, and binding surfaces route through the shared SDK facade.
+- Required production proofs are Wellfriend-native: generated PDFs reopen through Wellfriend, Prompt 22 tests prove decoded equality and package blocking, and binding surfaces route through the shared SDK facade.
 
 ## Release verdict
 

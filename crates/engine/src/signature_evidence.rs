@@ -469,7 +469,7 @@ impl EvidenceStore {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or(EvidenceError::InvalidCachePath)?;
-        let temporary = parent.join(format!(".{file_name}.oxide-partial"));
+        let temporary = parent.join(format!(".{file_name}.wellfriendpdf-partial"));
         if temporary.exists() {
             return Err(EvidenceError::CacheAlreadyExists);
         }
@@ -502,7 +502,7 @@ impl EvidenceStore {
         }
         std::fs::create_dir_all(directory).map_err(EvidenceError::CacheIo)?;
         let destination = directory.join("validated-evidence-cache.json");
-        let temporary = directory.join(".validated-evidence-cache.json.oxide-partial");
+        let temporary = directory.join(".validated-evidence-cache.json.wellfriendpdf-partial");
         if temporary.exists() {
             return Err(EvidenceError::CacheAlreadyExists);
         }
@@ -849,7 +849,7 @@ impl RetrievalSession {
                 .redirect(Policy::none())
                 .connect_timeout(Duration::from_millis(self.policy.budget.connect_timeout_ms))
                 .timeout(self.remaining_request_timeout()?)
-                .user_agent("oxide-pdf-signature-validation/1");
+                .user_agent("wellfriendpdf-signature-validation/1");
             if host.parse::<IpAddr>().is_err() {
                 builder = builder.resolve_to_addrs(&host, &resolved);
             }

@@ -31,7 +31,7 @@ fn unique_result_dir(tag: &str) -> String {
     let _ = getrandom::fill(&mut id);
     let hex: String = id.iter().map(|b| format!("{:02x}", b)).collect();
     std::env::temp_dir()
-        .join(format!("oxide-jobtest-{}-{}", tag, hex))
+        .join(format!("wellfriendpdf-jobtest-{}-{}", tag, hex))
         .to_string_lossy()
         .into_owned()
 }
@@ -39,8 +39,8 @@ fn unique_result_dir(tag: &str) -> String {
 /// A config tuned for tests: auth disabled (so we exercise the "anonymous"
 /// identity by default, and supply keys explicitly when testing ownership),
 /// generous job timeout, and a dedicated result dir.
-fn test_config(tag: &str) -> oxide_server::config::ServerConfig {
-    oxide_server::config::ServerConfig {
+fn test_config(tag: &str) -> wellfriendpdf_server::config::ServerConfig {
+    wellfriendpdf_server::config::ServerConfig {
         allow_unauthenticated: true,
         rate_limit_per_min: 0, // disable rate limiting in tests
         job_workers: 2,
@@ -49,16 +49,16 @@ fn test_config(tag: &str) -> oxide_server::config::ServerConfig {
         job_retention_secs: 3600,
         max_jobs: 1000,
         job_result_dir: Some(unique_result_dir(tag)),
-        ..oxide_server::config::ServerConfig::default()
+        ..wellfriendpdf_server::config::ServerConfig::default()
     }
 }
 
-fn build_app(config: oxide_server::config::ServerConfig) -> Router {
-    oxide_server::app::create_app_with_config(config)
+fn build_app(config: wellfriendpdf_server::config::ServerConfig) -> Router {
+    wellfriendpdf_server::app::create_app_with_config(config)
 }
 
 fn make_multipart(filename: &str, pdf: &[u8], extra: &[(&str, &str)]) -> (String, Vec<u8>) {
-    let boundary = "oxide-jobs-boundary-123";
+    let boundary = "wellfriendpdf-jobs-boundary-123";
     let mut body: Vec<u8> = Vec::new();
     body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
     body.extend_from_slice(
@@ -390,7 +390,7 @@ async fn queue_full_returns_503() {
     // Tiny config: 1 worker, queue capacity 1. Flood with submissions of a
     // slowish job (multi-page at higher DPI) so the worker + queue saturate and
     // at least one submission is rejected with 503.
-    let config = oxide_server::config::ServerConfig {
+    let config = wellfriendpdf_server::config::ServerConfig {
         allow_unauthenticated: true,
         rate_limit_per_min: 0,
         job_workers: 1,
@@ -399,7 +399,7 @@ async fn queue_full_returns_503() {
         job_retention_secs: 3600,
         max_jobs: 1000,
         job_result_dir: Some(unique_result_dir("queuefull")),
-        ..oxide_server::config::ServerConfig::default()
+        ..wellfriendpdf_server::config::ServerConfig::default()
     };
     let app = build_app(config);
     let pdf = fixture_pdf("tracemonkey.pdf");
@@ -439,7 +439,7 @@ async fn queue_full_returns_503() {
 async fn job_owned_by_another_key_is_404_not_403() {
     // Auth enabled with two keys. Key A submits; key B must get 404 (not 403)
     // for both status and result — never confirming the job exists.
-    let config = oxide_server::config::ServerConfig {
+    let config = wellfriendpdf_server::config::ServerConfig {
         api_keys: vec!["key-a".to_string(), "key-b".to_string()],
         allow_unauthenticated: false,
         rate_limit_per_min: 0,
@@ -449,7 +449,7 @@ async fn job_owned_by_another_key_is_404_not_403() {
         job_retention_secs: 3600,
         max_jobs: 1000,
         job_result_dir: Some(unique_result_dir("ownership")),
-        ..oxide_server::config::ServerConfig::default()
+        ..wellfriendpdf_server::config::ServerConfig::default()
     };
     let app = build_app(config);
     let pdf = fixture_pdf("tracemonkey.pdf");
@@ -489,12 +489,12 @@ async fn job_owned_by_another_key_is_404_not_403() {
 
 #[tokio::test]
 async fn job_endpoints_reject_unauthenticated_when_auth_enabled() {
-    let config = oxide_server::config::ServerConfig {
+    let config = wellfriendpdf_server::config::ServerConfig {
         api_keys: vec!["the-key".to_string()],
         allow_unauthenticated: false,
         rate_limit_per_min: 0,
         job_result_dir: Some(unique_result_dir("auth")),
-        ..oxide_server::config::ServerConfig::default()
+        ..wellfriendpdf_server::config::ServerConfig::default()
     };
     let app = build_app(config);
     let pdf = fixture_pdf("tracemonkey.pdf");
@@ -516,7 +516,7 @@ async fn completed_job_is_cleaned_up_after_retention() {
     // 1-second retention so the cleanup task reaps the job quickly. Verify the
     // job becomes 404 AND the temp result file is deleted from disk.
     let result_dir = unique_result_dir("retention");
-    let config = oxide_server::config::ServerConfig {
+    let config = wellfriendpdf_server::config::ServerConfig {
         allow_unauthenticated: true,
         rate_limit_per_min: 0,
         job_workers: 2,
@@ -525,7 +525,7 @@ async fn completed_job_is_cleaned_up_after_retention() {
         job_retention_secs: 1,
         max_jobs: 1000,
         job_result_dir: Some(result_dir.clone()),
-        ..oxide_server::config::ServerConfig::default()
+        ..wellfriendpdf_server::config::ServerConfig::default()
     };
     let app = build_app(config);
     let pdf = fixture_pdf("tracemonkey.pdf");

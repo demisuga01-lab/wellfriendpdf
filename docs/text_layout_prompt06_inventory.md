@@ -4,7 +4,7 @@ Starting checkpoint: `69ceef5 Complete Prompt 05B color prepress closure`.
 
 Baseline before edits:
 
-- `cargo build --release -p oxide-cli`: passed.
+- `cargo build --release -p wellfriendpdf-cli`: passed.
 - 200-file text slice: `target\competitive-benchmark\prompt06-text-before`.
 - `char_similarity`: 0.92743.
 - `word_f1`: 1.0.

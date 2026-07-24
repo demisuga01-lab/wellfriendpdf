@@ -2,7 +2,7 @@
 //!
 //! The correctness bar mirrors the SVG backend's (`svg_output.rs`): emit the
 //! page as PostScript, rasterise it with **Ghostscript** (`gs` / `gswin64c`),
-//! and compare (PSNR) against Oxide's OWN raster render of the same page. High
+//! and compare (PSNR) against Wellfriend's OWN raster render of the same page. High
 //! similarity proves the PostScript faithfully represents the page (same
 //! validation philosophy as SVG-via-resvg). We also assert DSC/EPSF structural
 //! conformance and the vector-vs-rasterize-embed decision.
@@ -14,8 +14,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use oxide_engine::render::quality::RenderQuality;
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::render::quality::RenderQuality;
+use wellfriendpdf_engine::ContentEngine;
 
 const DPI: u32 = 96;
 
@@ -61,9 +61,9 @@ fn ghostscript_rasterize(
     ps_path: &Path,
     width: u32,
     height: u32,
-) -> Option<oxide_engine::images::decoder::RawImage> {
+) -> Option<wellfriendpdf_engine::images::decoder::RawImage> {
     let out_png = std::env::temp_dir().join(format!(
-        "oxide_ps_gs_{}_{}.png",
+        "wellfriendpdf_ps_gs_{}_{}.png",
         std::process::id(),
         ps_path.file_name().and_then(|n| n.to_str()).unwrap_or("x")
     ));
@@ -92,13 +92,14 @@ fn ghostscript_rasterize(
 
 /// Write a PostScript document to a temp file and return its path.
 fn write_temp(name: &str, contents: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("oxide_ps_{}_{}", std::process::id(), name));
+    let path =
+        std::env::temp_dir().join(format!("wellfriendpdf_ps_{}_{}", std::process::id(), name));
     std::fs::write(&path, contents).unwrap();
     path
 }
 
 /// Composite a (possibly RGB or RGBA) RawImage onto white and return RGB bytes.
-fn to_rgb_on_white(img: &oxide_engine::images::decoder::RawImage) -> Vec<u8> {
+fn to_rgb_on_white(img: &wellfriendpdf_engine::images::decoder::RawImage) -> Vec<u8> {
     let ch = img.channels as usize;
     let mut out = Vec::with_capacity(img.width as usize * img.height as usize * 3);
     for px in img.pixels.chunks_exact(ch) {
@@ -118,8 +119,8 @@ fn to_rgb_on_white(img: &oxide_engine::images::decoder::RawImage) -> Vec<u8> {
 
 /// PSNR (dB) over RGB between two equal-size images composited onto white.
 fn psnr_rgb(
-    a: &oxide_engine::images::decoder::RawImage,
-    b: &oxide_engine::images::decoder::RawImage,
+    a: &wellfriendpdf_engine::images::decoder::RawImage,
+    b: &wellfriendpdf_engine::images::decoder::RawImage,
 ) -> f64 {
     let (aw, ah) = (a.width.min(b.width), a.height.min(b.height));
     let av = to_rgb_on_white(a);
@@ -192,7 +193,7 @@ fn multipage_ps_has_one_page_per_requested() {
 // ── Ghostscript rasterisation PSNR (skips cleanly when gs is absent) ─────────
 
 #[test]
-fn ps_rasterizes_close_to_oxide_raster() {
+fn ps_rasterizes_close_to_wellfriendpdf_raster() {
     let Some(gs) = find_ghostscript() else {
         eprintln!("NOTE: Ghostscript not found; skipping PS rasterisation PSNR test");
         return;
@@ -201,7 +202,7 @@ fn ps_rasterizes_close_to_oxide_raster() {
     // Pages chosen because the raster render has meaningful non-white VECTOR
     // content (so a high PSNR is meaningful and the page is true-vector, not a
     // raster-embed fallback). Floors are conservative — PS path flattening +
-    // Ghostscript's own AA differ slightly from Oxide's rasteriser.
+    // Ghostscript's own AA differ slightly from Wellfriend's rasteriser.
     let cases = [("multi_stream.pdf", 1usize, 22.0f64)];
 
     for (name, page, floor) in cases {
@@ -289,7 +290,7 @@ fn ps_rasterize_embed_fallback_round_trips() {
 }
 
 #[test]
-fn eps_rasterizes_close_to_oxide_raster() {
+fn eps_rasterizes_close_to_wellfriendpdf_raster() {
     let Some(gs) = find_ghostscript() else {
         eprintln!("NOTE: Ghostscript not found; skipping EPS rasterisation PSNR test");
         return;

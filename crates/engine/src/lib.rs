@@ -1,4 +1,4 @@
-//! Oxide Engine — Pure Rust PDF processing.
+//! Wellfriend Engine — Pure Rust PDF processing.
 //!
 //! This crate has no external PDF processing system dependencies:
 //! - No Poppler
@@ -19,9 +19,9 @@
 //! operation you need:
 //!
 //! ```no_run
-//! use oxide_engine::ContentEngine;
+//! use wellfriendpdf_engine::ContentEngine;
 //!
-//! # fn main() -> oxide_engine::Result<()> {
+//! # fn main() -> wellfriendpdf_engine::Result<()> {
 //! let engine = ContentEngine::open_path("input.pdf")?;
 //!
 //! // Document facts.
@@ -45,9 +45,9 @@
 //! Document manipulation produces new PDF bytes via the pure-Rust writer:
 //!
 //! ```no_run
-//! use oxide_engine::{build_merged, PdfDocument};
+//! use wellfriendpdf_engine::{build_merged, PdfDocument};
 //!
-//! # fn main() -> oxide_engine::Result<()> {
+//! # fn main() -> wellfriendpdf_engine::Result<()> {
 //! let a = PdfDocument::open_path("a.pdf")?;
 //! let b = PdfDocument::open_path("b.pdf")?;
 //! // Merge all pages of both documents (pdfunite-equivalent).
@@ -65,7 +65,7 @@
 //!
 //! # Public API Stability
 //!
-//! `oxide_engine::prelude` is the curated integration surface. The crate root
+//! `wellfriendpdf_engine::prelude` is the curated integration surface. The crate root
 //! also exposes lower-level PDF internals for advanced users; those are useful
 //! but less stable while the crate remains pre-1.0. See `docs/api_overview.md`
 //! and `docs/stability.md` in the repository for the full policy.
@@ -141,7 +141,7 @@ pub mod versioning;
 pub mod writer;
 pub mod xfa;
 
-/// Semantic version of the oxide-engine crate.
+/// Semantic version of the wellfriendpdf-engine crate.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub use advanced_rag::{
@@ -246,7 +246,7 @@ pub use engine::{
     PageResources, PlacedImageReference, RegionImage, RegionWord, DEFAULT_MAX_DECODE_PIXELS,
     DEFAULT_MAX_RENDER_PIXELS,
 };
-pub use error::{ErrorKind, OxideError, Result};
+pub use error::{ErrorKind, Result, WellfriendError};
 pub use eval::{score, score_json, ScoreInput, ScoreOutput};
 pub use extract::{
     extract_fields, DocType, ExtractOptions, ExtractedFields, Field, FieldSource, FieldValue,
@@ -543,9 +543,9 @@ pub use xfa::{
 /// export Office formats, and inject an OCR backend** — nothing more.
 ///
 /// ```no_run
-/// use oxide_engine::prelude::*;
+/// use wellfriendpdf_engine::prelude::*;
 ///
-/// # fn main() -> oxide_engine::Result<()> {
+/// # fn main() -> wellfriendpdf_engine::Result<()> {
 /// let engine = ContentEngine::open_path("input.pdf")?;
 ///
 /// // Parse → canonical model → Markdown / JSON for RAG and automation.
@@ -564,7 +564,7 @@ pub use xfa::{
 /// ```
 ///
 /// To inject OCR for scanned pages, supply a concrete [`OcrEngine`] (e.g. the
-/// `oxide-ocr-tesseract` crate) via [`ParseOptions::ocr`] /
+/// `wellfriendpdf-ocr-tesseract` crate) via [`ParseOptions::ocr`] /
 /// [`ExtractOptions::ocr`]. Everything here works **without** the CLI, the
 /// server, or any non-Rust binding.
 pub mod prelude {
@@ -593,7 +593,7 @@ pub mod prelude {
         TextReplacementReport, WatermarkOptions,
     };
     pub use crate::engine::ContentEngine;
-    pub use crate::error::{ErrorKind, OxideError, Result};
+    pub use crate::error::{ErrorKind, Result, WellfriendError};
     pub use crate::eval::{score, score_json, ScoreInput, ScoreOutput};
     pub use crate::extract::{
         extract_fields, DocType, ExtractOptions, ExtractedFields, Field, FieldValue, LineItem,

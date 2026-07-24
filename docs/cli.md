@@ -1,6 +1,6 @@
-# Oxide CLI
+# Wellfriend CLI
 
-Oxide's CLI is a scriptable interface over the Rust engine. Human-readable output remains the default where it already existed; machine-readable output is opt-in through `--json` or `--format json`.
+Wellfriend's CLI is a scriptable interface over the Rust engine. Human-readable output remains the default where it already existed; machine-readable output is opt-in through `--json` or `--format json`.
 
 ## Exit Codes
 
@@ -13,50 +13,50 @@ Oxide's CLI is a scriptable interface over the Rust engine. Human-readable outpu
 | 4 | parse/format error | The file is malformed, encrypted without the right password, resource-limited, or otherwise rejected as input. |
 | 5 | unsupported feature | The request needs a feature this build or command does not support, such as OCR in a non-OCR build. |
 
-Malformed PDFs should return a clean non-zero exit code and an `oxide: <category>: <message>` stderr line. Raw Rust panic text should not reach users.
+Malformed PDFs should return a clean non-zero exit code and an `wellfriendpdf: <category>: <message>` stderr line. Raw Rust panic text should not reach users.
 
 ## Machine Output
 
 Use JSON for scripts:
 
 ```powershell
-oxide info input.pdf --json
-oxide fonts input.pdf --json
-oxide detach input.pdf --list --json
-oxide verify-sig signed.pdf --json
-oxide extract-text input.pdf --structured --format json
-oxide extract-tables input.pdf --format json --structure
-oxide parse input.pdf --format json
-oxide extract-fields input.pdf --format json
-oxide chunk input.pdf --format json
+wellfriendpdf info input.pdf --json
+wellfriendpdf fonts input.pdf --json
+wellfriendpdf detach input.pdf --list --json
+wellfriendpdf verify-sig signed.pdf --json
+wellfriendpdf extract-text input.pdf --structured --format json
+wellfriendpdf extract-tables input.pdf --format json --structure
+wellfriendpdf parse input.pdf --format json
+wellfriendpdf extract-fields input.pdf --format json
+wellfriendpdf chunk input.pdf --format json
 ```
 
 File-writing commands that naturally write their primary artifact to disk expose JSON result summaries:
 
 ```powershell
-oxide render input.pdf --format png --output pages.zip --json
-oxide pdf-to-jpg input.pdf --out-dir pages --dpi 150 --quality 85 --json
-oxide pdf-to-jpg input.pdf --out-dir pages-png --format png --json
-oxide image-to-pdf scan1.jpg scan2.png --out wrapped.pdf --page-size a4 --json
-oxide pdf-to-xlsx tables.pdf --out tables.xlsx --layout pages --json
-oxide pdf-to-pptx report.pdf --out slides.pptx --json
-oxide pdf-to-docx report.pdf --out report.docx --json
-oxide docx-to-pdf report.docx --out report.pdf --json
-oxide xlsx-to-pdf tables.xlsx --out tables.pdf --json
-oxide pptx-to-pdf slides.pptx --out slides.pdf --json
-oxide extract-images input.pdf --output images.zip --json
-oxide merge a.pdf b.pdf --output merged.pdf --json
-oxide split input.pdf --output page-%d.pdf --json
-oxide extract-pages input.pdf 1,3-5 --output subset.pdf --json
-oxide organize input.pdf --order 1,2,5,3,4,3 --output organized.pdf --json
-oxide linearize input.pdf --output linearized.pdf --json
-oxide encrypt input.pdf --user-pw secret --output encrypted.pdf --json
-oxide decrypt encrypted.pdf --password secret --output unlocked.pdf --json
-oxide rotate input.pdf --angle 90 --output rotated.pdf --json
-oxide watermark input.pdf --text CONFIDENTIAL --opacity 0.3 --rotation 45 --output watermarked.pdf --json
-oxide add-page-numbers input.pdf --format "Page {n} of {total}" --output numbered.pdf --json
-oxide optimize input.pdf --output optimized.pdf --json
-oxide repair damaged.pdf --output repaired.pdf --json
+wellfriendpdf render input.pdf --format png --output pages.zip --json
+wellfriendpdf pdf-to-jpg input.pdf --out-dir pages --dpi 150 --quality 85 --json
+wellfriendpdf pdf-to-jpg input.pdf --out-dir pages-png --format png --json
+wellfriendpdf image-to-pdf scan1.jpg scan2.png --out wrapped.pdf --page-size a4 --json
+wellfriendpdf pdf-to-xlsx tables.pdf --out tables.xlsx --layout pages --json
+wellfriendpdf pdf-to-pptx report.pdf --out slides.pptx --json
+wellfriendpdf pdf-to-docx report.pdf --out report.docx --json
+wellfriendpdf docx-to-pdf report.docx --out report.pdf --json
+wellfriendpdf xlsx-to-pdf tables.xlsx --out tables.pdf --json
+wellfriendpdf pptx-to-pdf slides.pptx --out slides.pdf --json
+wellfriendpdf extract-images input.pdf --output images.zip --json
+wellfriendpdf merge a.pdf b.pdf --output merged.pdf --json
+wellfriendpdf split input.pdf --output page-%d.pdf --json
+wellfriendpdf extract-pages input.pdf 1,3-5 --output subset.pdf --json
+wellfriendpdf organize input.pdf --order 1,2,5,3,4,3 --output organized.pdf --json
+wellfriendpdf linearize input.pdf --output linearized.pdf --json
+wellfriendpdf encrypt input.pdf --user-pw secret --output encrypted.pdf --json
+wellfriendpdf decrypt encrypted.pdf --password secret --output unlocked.pdf --json
+wellfriendpdf rotate input.pdf --angle 90 --output rotated.pdf --json
+wellfriendpdf watermark input.pdf --text CONFIDENTIAL --opacity 0.3 --rotation 45 --output watermarked.pdf --json
+wellfriendpdf add-page-numbers input.pdf --format "Page {n} of {total}" --output numbered.pdf --json
+wellfriendpdf optimize input.pdf --output optimized.pdf --json
+wellfriendpdf repair damaged.pdf --output repaired.pdf --json
 ```
 
 These summaries use stable top-level fields:
@@ -112,7 +112,7 @@ images to preserve page geometry where a flowing document would lose too much
 layout. It still does not claim pixel-perfect Word pagination.
 
 `docx-to-pdf`, `xlsx-to-pdf`, and `pptx-to-pdf` are native by default and reuse
-Oxide's authoring/writer machinery. They do not require LibreOffice. Their
+Wellfriend's authoring/writer machinery. They do not require LibreOffice. Their
 fidelity boundaries and the optional external-renderer decision are documented
 in `docs/office_to_pdf_architecture.md`.
 
@@ -121,16 +121,16 @@ second table detector and do not change extraction accuracy paths.
 
 ## OCR Honesty
 
-Default builds report OCR as unavailable in `oxide --version`. Commands that need OCR return exit code 5 with an actionable message unless the CLI is rebuilt with `--features ocr` and the external `tesseract` binary plus language data are installed. `extract-tables --ocr` is intentionally unsupported today because reconstructing table grids from OCR word boxes is a known gap; use `extract-fields --ocr` or `extract-text --ocr` for scanned documents.
+Default builds report OCR as unavailable in `wellfriendpdf --version`. Commands that need OCR return exit code 5 with an actionable message unless the CLI is rebuilt with `--features ocr` and the external `tesseract` binary plus language data are installed. `extract-tables --ocr` is intentionally unsupported today because reconstructing table grids from OCR word boxes is a known gap; use `extract-fields --ocr` or `extract-text --ocr` for scanned documents.
 
 ## Help
 
 Top-level help groups commands by purpose:
 
 ```powershell
-oxide --help
-oxide extract-text --help
-oxide render --help
+wellfriendpdf --help
+wellfriendpdf extract-text --help
+wellfriendpdf render --help
 ```
 
 Region coordinates are PDF user-space points with the origin at the bottom-left, matching the region extraction docs.

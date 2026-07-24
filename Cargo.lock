@@ -1719,142 +1719,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c08d65885ee38876c4f86fa503fb49d7b507c2b62552df7c70b2fce627e06381"
 
 [[package]]
-name = "oxide-capi"
-version = "0.1.0"
-dependencies = [
- "der",
- "libc",
- "oxide-engine",
- "rand_core 0.6.4",
- "rsa",
- "serde_json",
- "sha2",
- "spki",
- "x509-cert",
-]
-
-[[package]]
-name = "oxide-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "oxide-engine",
- "oxide-ocr-tesseract",
- "rayon",
- "serde_json",
- "zip",
-]
-
-[[package]]
-name = "oxide-engine"
-version = "0.1.0"
-dependencies = [
- "aes 0.8.4",
- "aes-gcm",
- "aes-kw",
- "cbc",
- "cms",
- "const-oid 0.9.6",
- "der",
- "env_logger",
- "flate2",
- "getrandom 0.2.17",
- "hayro-ccitt",
- "hayro-jbig2",
- "hayro-jpeg2000",
- "hkdf",
- "hmac",
- "image-webp",
- "jpeg-decoder",
- "jpeg-encoder",
- "js-sys",
- "lcms2",
- "log",
- "md-5",
- "p12",
- "p256",
- "p384",
- "pkcs8",
- "pkix-path",
- "pkix-path-builder",
- "pkix-revocation",
- "png 0.17.16",
- "proptest",
- "qcms",
- "rayon",
- "reqwest",
- "resvg",
- "rsa",
- "rustybuzz",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "spki",
- "subtle",
- "thiserror 1.0.69",
- "ttf-parser 0.21.1",
- "unicode-bidi",
- "url",
- "x509-cert",
- "x509-ocsp",
- "zeroize",
- "zip",
- "zopfli",
-]
-
-[[package]]
-name = "oxide-ocr-tesseract"
-version = "0.1.0"
-dependencies = [
- "oxide-engine",
-]
-
-[[package]]
-name = "oxide-py"
-version = "0.1.0"
-dependencies = [
- "oxide-engine",
- "pyo3",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "oxide-server"
-version = "0.1.0"
-dependencies = [
- "axum",
- "bytes",
- "flate2",
- "getrandom 0.3.4",
- "oxide-engine",
- "oxide-ocr-tesseract",
- "png 0.17.16",
- "rayon",
- "serde",
- "serde_json",
- "subtle",
- "tokio",
- "tower",
- "tower-http 0.5.2",
- "tracing",
- "tracing-subscriber",
- "zip",
-]
-
-[[package]]
-name = "oxide-wasm"
-version = "0.1.0"
-dependencies = [
- "console_error_panic_hook",
- "getrandom 0.2.17",
- "oxide-engine",
- "serde_json",
- "wasm-bindgen",
-]
-
-[[package]]
 name = "p12"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3600,6 +3464,142 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "wellfriendpdf-capi"
+version = "0.1.0"
+dependencies = [
+ "der",
+ "libc",
+ "rand_core 0.6.4",
+ "rsa",
+ "serde_json",
+ "sha2",
+ "spki",
+ "wellfriendpdf-engine",
+ "x509-cert",
+]
+
+[[package]]
+name = "wellfriendpdf-cli"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "rayon",
+ "serde_json",
+ "wellfriendpdf-engine",
+ "wellfriendpdf-ocr-tesseract",
+ "zip",
+]
+
+[[package]]
+name = "wellfriendpdf-engine"
+version = "0.1.0"
+dependencies = [
+ "aes 0.8.4",
+ "aes-gcm",
+ "aes-kw",
+ "cbc",
+ "cms",
+ "const-oid 0.9.6",
+ "der",
+ "env_logger",
+ "flate2",
+ "getrandom 0.2.17",
+ "hayro-ccitt",
+ "hayro-jbig2",
+ "hayro-jpeg2000",
+ "hkdf",
+ "hmac",
+ "image-webp",
+ "jpeg-decoder",
+ "jpeg-encoder",
+ "js-sys",
+ "lcms2",
+ "log",
+ "md-5",
+ "p12",
+ "p256",
+ "p384",
+ "pkcs8",
+ "pkix-path",
+ "pkix-path-builder",
+ "pkix-revocation",
+ "png 0.17.16",
+ "proptest",
+ "qcms",
+ "rayon",
+ "reqwest",
+ "resvg",
+ "rsa",
+ "rustybuzz",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2",
+ "spki",
+ "subtle",
+ "thiserror 1.0.69",
+ "ttf-parser 0.21.1",
+ "unicode-bidi",
+ "url",
+ "x509-cert",
+ "x509-ocsp",
+ "zeroize",
+ "zip",
+ "zopfli",
+]
+
+[[package]]
+name = "wellfriendpdf-ocr-tesseract"
+version = "0.1.0"
+dependencies = [
+ "wellfriendpdf-engine",
+]
+
+[[package]]
+name = "wellfriendpdf-py"
+version = "0.1.0"
+dependencies = [
+ "pyo3",
+ "serde",
+ "serde_json",
+ "wellfriendpdf-engine",
+]
+
+[[package]]
+name = "wellfriendpdf-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "bytes",
+ "flate2",
+ "getrandom 0.3.4",
+ "png 0.17.16",
+ "rayon",
+ "serde",
+ "serde_json",
+ "subtle",
+ "tokio",
+ "tower",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-subscriber",
+ "wellfriendpdf-engine",
+ "wellfriendpdf-ocr-tesseract",
+ "zip",
+]
+
+[[package]]
+name = "wellfriendpdf-wasm"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "getrandom 0.2.17",
+ "serde_json",
+ "wasm-bindgen",
+ "wellfriendpdf-engine",
+]
 
 [[package]]
 name = "windows-link"

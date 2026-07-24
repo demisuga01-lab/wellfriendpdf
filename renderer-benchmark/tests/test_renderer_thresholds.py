@@ -20,7 +20,7 @@ class RendererThresholdTests(unittest.TestCase):
             "mae": 0.1744,
             "edge_mae": 0.001853,
             "large_region_score": 0.055556,
-            "blank_score_oxide": 0.051904,
+            "blank_score_wellfriendpdf": 0.051904,
             "blank_score_reference": 0.052597,
             "ssim": 0.937922,
         }
@@ -35,7 +35,7 @@ class RendererThresholdTests(unittest.TestCase):
             "mae": 0.8221,
             "edge_mae": 0.040294,
             "large_region_score": 0.296296,
-            "blank_score_oxide": 0.05,
+            "blank_score_wellfriendpdf": 0.05,
             "blank_score_reference": 0.05,
             "ssim": 0.909914,
         }
@@ -50,7 +50,7 @@ class RendererThresholdTests(unittest.TestCase):
             "ssim": 0.999985,
             "edge_mae": 0.001044,
             "large_region_score": 0.0,
-            "blank_score_oxide": 0.05,
+            "blank_score_wellfriendpdf": 0.05,
             "blank_score_reference": 0.05,
             "max_channel_delta": 8,
         }
@@ -65,7 +65,7 @@ class RendererThresholdTests(unittest.TestCase):
             "ssim": 0.900304,
             "edge_mae": 0.060141,
             "large_region_score": 0.246914,
-            "blank_score_oxide": 0.05,
+            "blank_score_wellfriendpdf": 0.05,
             "blank_score_reference": 0.05,
             "max_channel_delta": 255,
         }
@@ -80,7 +80,7 @@ class RendererThresholdTests(unittest.TestCase):
             "ssim": 0.964814,
             "edge_mae": 0.010124,
             "large_region_score": 0.578,
-            "blank_score_oxide": 0.04,
+            "blank_score_wellfriendpdf": 0.04,
             "blank_score_reference": 0.041,
             "phash_distance": 6,
             "max_channel_delta": 255,
@@ -97,7 +97,7 @@ class RendererThresholdTests(unittest.TestCase):
             "ssim": 0.900304,
             "edge_mae": 0.060141,
             "large_region_score": 0.578,
-            "blank_score_oxide": 0.05,
+            "blank_score_wellfriendpdf": 0.05,
             "blank_score_reference": 0.05,
             "phash_distance": 22,
             "max_channel_delta": 255,

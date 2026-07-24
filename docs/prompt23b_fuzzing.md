@@ -45,7 +45,7 @@ Result:
 - max input length: 4096 bytes
 - crash artifacts: 0
 - timed out phases: 0
-- repository-local orphaned cargo/rustc/oxide/cargo-fuzz processes: 0
+- repository-local orphaned cargo/rustc/wellfriendpdf/cargo-fuzz processes: 0
 
 Artifacts:
 

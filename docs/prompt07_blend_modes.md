@@ -34,7 +34,7 @@ group color conversion.
 ## Evidence
 
 The Prompt 07 audit script generates one fixture per required blend mode plus a
-combined 4 by 4 grid. Each fixture is rendered by Oxide, Poppler, PDFium, and
+combined 4 by 4 grid. Each fixture is rendered by Wellfriend, Poppler, PDFium, and
 MuPDF. Pairwise metrics and visual hashes are written to:
 
 - `target/prompt07-transparency-compositing/blend-mode-matrix.json`
@@ -42,7 +42,7 @@ MuPDF. Pairwise metrics and visual hashes are written to:
 - `target/prompt07-transparency-compositing/reference-disagreement-summary.json`
 
 When references disagree, the matrix records the disagreement instead of
-weakening the fixture or calling the Oxide result release-grade parity.
+weakening the fixture or calling the Wellfriend result release-grade parity.
 
 ## Known Limits
 

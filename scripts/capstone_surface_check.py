@@ -78,7 +78,7 @@ def health(url: str) -> bool:
 
 
 def multipart_body(path: Path, fields: dict[str, str]) -> tuple[bytes, str]:
-    boundary = "oxide-capstone-boundary"
+    boundary = "wellfriendpdf-capstone-boundary"
     chunks: list[bytes] = []
     for name, value in fields.items():
         chunks.extend(
@@ -106,10 +106,10 @@ def server_extract(server_bin: Path, port: int) -> dict:
     env = os.environ.copy()
     env.update(
         {
-            "OXIDE_PORT": str(port),
-            "OXIDE_ALLOW_UNAUTHENTICATED": "true",
-            "OXIDE_API_KEYS": "",
-            "OXIDE_LOG_LEVEL": "warn",
+            "WELLFRIENDPDF_PORT": str(port),
+            "WELLFRIENDPDF_ALLOW_UNAUTHENTICATED": "true",
+            "WELLFRIENDPDF_API_KEYS": "",
+            "WELLFRIENDPDF_LOG_LEVEL": "warn",
         }
     )
     proc = subprocess.Popen(
@@ -160,9 +160,9 @@ def server_extract(server_bin: Path, port: int) -> dict:
 
 
 def main() -> int:
-    cli = RELEASE / f"oxide{EXE}"
-    server = RELEASE / f"oxide-server{EXE}"
-    capi = RELEASE / f"oxide_capi_extract_text{EXE}"
+    cli = RELEASE / f"wellfriendpdf{EXE}"
+    server = RELEASE / f"wellfriendpdf-server{EXE}"
+    capi = RELEASE / f"wellfriendpdf_capi_extract_text{EXE}"
     required = [cli, server, capi, FIXTURE]
 
     results: dict[str, dict] = {
@@ -183,7 +183,7 @@ def main() -> int:
             "run",
             "--quiet",
             "-p",
-            "oxide-engine",
+            "wellfriendpdf-engine",
             "--example",
             "capstone_extract_text",
             "--",

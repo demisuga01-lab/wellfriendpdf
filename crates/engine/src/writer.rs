@@ -32,7 +32,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::document::PdfDocument;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 
@@ -317,14 +317,14 @@ impl PdfWriter {
 
         for obj in &objects {
             if obj.number == 0 {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "writer: object number 0 is reserved for the free-list head".to_string(),
                 ));
             }
         }
         for pair in objects.windows(2) {
             if pair[0].number == pair[1].number {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "writer: duplicate output object number {}",
                     pair[0].number
                 )));
@@ -855,7 +855,7 @@ fn build_objstm_body(
     let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(members.len());
     for &num in members {
         let obj = obj_by_number.get(&num).ok_or_else(|| {
-            OxideError::MalformedPdf(format!("objstm member {num} missing from object set"))
+            WellfriendError::MalformedPdf(format!("objstm member {num} missing from object set"))
         })?;
         let mut body = Vec::new();
         serialize_object(&obj.object, &mut body);
@@ -1289,7 +1289,7 @@ fn copy_closure(copier: &mut DocCopier, roots: &[(u32, u16)], next_number: &mut 
         };
 
         if copier.copied.len() >= MAX_CLOSURE_OBJECTS {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "writer closure exceeded {MAX_CLOSURE_OBJECTS} objects"
             )));
         }
@@ -1410,7 +1410,7 @@ fn build_merged_internal(inputs: &[(&PdfDocument, Vec<usize>)]) -> Result<Vec<u8
         let mut selected: Vec<SelectedPage> = Vec::new();
         for &page_index in page_indices {
             let page = pages.get(page_index - 1).ok_or_else(|| {
-                OxideError::MalformedPdf(format!(
+                WellfriendError::MalformedPdf(format!(
                     "page {page_index} is out of range (document has {} pages)",
                     pages.len()
                 ))
@@ -1621,7 +1621,7 @@ pub fn write_incremental_update_raw(
     changed_objects: Vec<RawIncrementalObject>,
 ) -> Result<Vec<u8>> {
     if reader.is_encrypted() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "incremental writer: encrypted inputs require encrypted appended objects".to_string(),
         ));
     }
@@ -1633,7 +1633,7 @@ pub fn write_incremental_update_raw(
     objects.sort_by_key(|obj| (obj.number, obj.generation));
     for pair in objects.windows(2) {
         if pair[0].number == pair[1].number && pair[0].generation == pair[1].generation {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "incremental writer: duplicate object {} {}",
                 pair[0].number, pair[0].generation
             )));
@@ -1641,7 +1641,7 @@ pub fn write_incremental_update_raw(
     }
     for obj in &objects {
         if obj.number == 0 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "incremental writer: object number 0 is reserved".to_string(),
             ));
         }
@@ -1735,7 +1735,7 @@ fn incremental_trailer_dict(reader: &PdfReader, max_changed: i64) -> Result<PdfD
         PdfObject::Integer(existing_size.max(max_changed + 1)),
     );
     let (root, root_generation) = reader.root_reference().ok_or_else(|| {
-        OxideError::MalformedPdf("incremental writer: trailer is missing /Root".to_string())
+        WellfriendError::MalformedPdf("incremental writer: trailer is missing /Root".to_string())
     })?;
     trailer.insert(
         "Root",
@@ -1795,7 +1795,7 @@ pub fn rewrite_document_objects(
     mutate: &mut impl FnMut(u32, &mut PdfObject),
 ) -> Result<(Vec<OutputObject>, u32, Option<u32>)> {
     let root = reader.root_reference().ok_or_else(|| {
-        OxideError::MalformedPdf("cannot round-trip: trailer is missing /Root".to_string())
+        WellfriendError::MalformedPdf("cannot round-trip: trailer is missing /Root".to_string())
     })?;
 
     let ids = reader.object_ids();
@@ -1849,7 +1849,7 @@ fn rewrite_document_objects_with_remap(
     mutate: &mut impl FnMut(u32, &mut PdfObject),
 ) -> Result<(Vec<OutputObject>, u32, Option<u32>)> {
     let root = reader.root_reference().ok_or_else(|| {
-        OxideError::MalformedPdf("cannot round-trip: trailer is missing /Root".to_string())
+        WellfriendError::MalformedPdf("cannot round-trip: trailer is missing /Root".to_string())
     })?;
 
     let mut objects: Vec<OutputObject> = Vec::new();
@@ -1894,7 +1894,7 @@ pub fn write_document_linearized(doc: &PdfDocument) -> Result<Vec<u8>> {
     let reader = doc.reader();
     let pages = doc.get_pages()?;
     if pages.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "linearize: document has no pages".to_string(),
         ));
     }
@@ -2096,7 +2096,7 @@ pub fn write_document_linearized(doc: &PdfDocument) -> Result<Vec<u8>> {
         return Ok(output);
     }
 
-    Err(OxideError::UnsupportedFeature(
+    Err(WellfriendError::UnsupportedFeature(
         "linearize: offset layout did not stabilize".to_string(),
     ))
 }
@@ -2110,7 +2110,7 @@ fn ensure_linearization_supported(
         let page_obj = reader.get_object(page.object_number, page.generation_number)?;
         if let Some(dict) = page_obj.as_dict() {
             if dict.contains_key("Thumb") {
-                return Err(OxideError::UnsupportedFeature(
+                return Err(WellfriendError::UnsupportedFeature(
                     "linearize: qpdf-valid output for page thumbnails is still deferred"
                         .to_string(),
                 ));
@@ -2154,7 +2154,7 @@ fn remap_numbers(numbers: &[u32], remap: &HashMap<u32, u32>) -> Result<Vec<u32>>
         .iter()
         .map(|number| {
             remap.get(number).copied().ok_or_else(|| {
-                OxideError::MalformedPdf(format!(
+                WellfriendError::MalformedPdf(format!(
                     "linearize: object {number} was not assigned an output number"
                 ))
             })
@@ -2194,7 +2194,7 @@ fn build_linearization_source_plan(
     }
 
     let root = reader.root_reference().ok_or_else(|| {
-        OxideError::MalformedPdf("cannot linearize: trailer is missing /Root".to_string())
+        WellfriendError::MalformedPdf("cannot linearize: trailer is missing /Root".to_string())
     })?;
     let opening_objects = build_opening_source_objects(root.0, &object_map);
     let opening_set: BTreeSet<u32> = opening_objects.iter().copied().collect();
@@ -2566,7 +2566,7 @@ fn ensure_layout_object(object_bytes: &HashMap<u32, Vec<u8>>, number: u32) -> Re
     if object_bytes.contains_key(&number) {
         Ok(())
     } else {
-        Err(OxideError::MalformedPdf(format!(
+        Err(WellfriendError::MalformedPdf(format!(
             "linearize: planned object {number} was not copied"
         )))
     }
@@ -2974,15 +2974,16 @@ fn build_startxref(offset: usize) -> Vec<u8> {
 }
 
 fn write_u32(out: &mut Vec<u8>, value: usize) -> Result<()> {
-    let value = u32::try_from(value)
-        .map_err(|_| OxideError::UnsupportedFeature("linearize: hint value exceeds u32".into()))?;
+    let value = u32::try_from(value).map_err(|_| {
+        WellfriendError::UnsupportedFeature("linearize: hint value exceeds u32".into())
+    })?;
     out.extend_from_slice(&value.to_be_bytes());
     Ok(())
 }
 
 fn write_u16(out: &mut Vec<u8>, value: usize) -> Result<()> {
     let value = u16::try_from(value).map_err(|_| {
-        OxideError::UnsupportedFeature("linearize: hint bit width exceeds u16".into())
+        WellfriendError::UnsupportedFeature("linearize: hint bit width exceeds u16".into())
     })?;
     out.extend_from_slice(&value.to_be_bytes());
     Ok(())

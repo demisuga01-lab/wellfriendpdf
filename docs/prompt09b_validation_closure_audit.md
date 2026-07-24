@@ -46,8 +46,8 @@ The corpus covers annotation AP streams, generated widget missing-AP policy, OCG
 Prompt 09B uses the Prompt 06B reference manifest and requires Poppler, PDFium, and MuPDF to be available. The closure run produced:
 
 - Pages: 8
-- Classification counts: 5 `all_references_agree_oxide_pass`, 2 `reference_disagreement_oxide_inside_cluster`, 1 `unsupported_reported_expected`
-- Oxide outlier failures: 0
+- Classification counts: 5 `all_references_agree_wellfriendpdf_pass`, 2 `reference_disagreement_wellfriendpdf_inside_cluster`, 1 `unsupported_reported_expected`
+- Wellfriend outlier failures: 0
 - Unclassified failures: 0
 
 Artifacts:

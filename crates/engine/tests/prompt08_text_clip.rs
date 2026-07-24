@@ -4,7 +4,7 @@
 //! accumulates glyph outlines and the following paint operation must be clipped
 //! to those outlines.
 
-use oxide_engine::{ContentEngine, PixelBuffer};
+use wellfriendpdf_engine::{ContentEngine, PixelBuffer};
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,

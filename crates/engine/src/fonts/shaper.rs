@@ -1,14 +1,14 @@
 //! Text shaping facade for generated text.
 //!
 //! Existing PDF pages usually contain positioned glyph codes and should not be
-//! reshaped during rendering. This module is for text Oxide creates itself:
+//! reshaped during rendering. This module is for text Wellfriend creates itself:
 //! authoring, page numbers, watermarks, annotations, and future Office-to-PDF
 //! output. It provides a HarfBuzz-style shape result with a deterministic Latin
 //! fallback and a rustybuzz-backed complex-script path.
 
 use rustybuzz::{script, Direction, Script, UnicodeBuffer};
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 
 /// Writing direction requested for generated text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +81,7 @@ impl TextShaper {
 
 fn shape_latin_fallback(font_bytes: &[u8], text: &str, options: ShapeOptions) -> Result<ShapedRun> {
     let face = ttf_parser::Face::parse(font_bytes, 0)
-        .map_err(|_| OxideError::UnsupportedFeature("font.shaper.invalid_font".to_string()))?;
+        .map_err(|_| WellfriendError::UnsupportedFeature("font.shaper.invalid_font".to_string()))?;
     let upem = f64::from(face.units_per_em()).max(1.0);
     let mut byte_index = 0u32;
     let mut glyphs = Vec::with_capacity(text.chars().count());
@@ -114,8 +114,9 @@ fn shape_complex(
     script: Script,
     options: ShapeOptions,
 ) -> Result<ShapedRun> {
-    let face = rustybuzz::Face::from_slice(font_bytes, 0)
-        .ok_or_else(|| OxideError::UnsupportedFeature("font.shaper.invalid_font".to_string()))?;
+    let face = rustybuzz::Face::from_slice(font_bytes, 0).ok_or_else(|| {
+        WellfriendError::UnsupportedFeature("font.shaper.invalid_font".to_string())
+    })?;
     let mut buffer = UnicodeBuffer::new();
     buffer.push_str(text);
     buffer.set_script(script);
@@ -131,7 +132,7 @@ fn shape_complex(
     let infos = shaped.glyph_infos();
     let positions = shaped.glyph_positions();
     if infos.len() != positions.len() {
-        return Err(OxideError::ParseError(
+        return Err(WellfriendError::ParseError(
             "font.shaper.position_count_mismatch".to_string(),
         ));
     }

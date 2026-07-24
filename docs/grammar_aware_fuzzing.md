@@ -14,7 +14,7 @@ content so the input gets past parsing and reaches deeper code.
 - `scripts/ci_fuzz.py`
 - `.github/workflows/fuzz.yml`
 
-The target calls `oxide_engine::fuzz::fuzz_structured_pdf`, which is compiled
+The target calls `wellfriendpdf_engine::fuzz::fuzz_structured_pdf`, which is compiled
 only with the `fuzzing` feature and is not part of the shipped public API.
 
 ## Input Classes

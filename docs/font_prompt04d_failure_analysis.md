@@ -3,7 +3,7 @@
 Prompt 04D started from `846c8dd Implement Prompt 04C glyf subsetting closure` with a clean worktree. The acceptance anchor remained the original Prompt 04B/04C 24-file text/font slice:
 
 ```text
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04d-font-baseline --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04d-font-baseline --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Poppler 26.02.0 was available. PDFium and MuPDF were not available in this environment. The reproduced baseline matched Prompt 04C: weighted score `45.21`, visual pass `45.83%`, determinism `5/5`.
@@ -39,7 +39,7 @@ Poppler 26.02.0 was available. PDFium and MuPDF were not available in this envir
 
 ## Blank-Reference Classification
 
-`pdfjs_full_arial_unicode_en_cidfont` emits a Poppler warning, `Missing language pack for 'Adobe-Japan1' mapping`, while Oxide renders visible content. With no MuPDF/PDFium available locally, this remains classified as a reference/environment limitation or non-font visibility artifact, not a safe Prompt 04D font-code target.
+`pdfjs_full_arial_unicode_en_cidfont` emits a Poppler warning, `Missing language pack for 'Adobe-Japan1' mapping`, while Wellfriend renders visible content. With no MuPDF/PDFium available locally, this remains classified as a reference/environment limitation or non-font visibility artifact, not a safe Prompt 04D font-code target.
 
 `real_pdfjs_issue5801` emits Poppler font warnings for missing display fonts (`Symbol`, `ArialUnicode`) and malformed ToUnicode warnings. It remains a blank-reference mismatch requiring a separate reference/tooling decision before using it as a font-fidelity gate.
 
@@ -64,7 +64,7 @@ The fix adds a bounded CFF fallback for SID-keyed bare CFF simple fonts:
 After the Type1C/seac fix, the exact original 24-file slice was rerun:
 
 ```text
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04d-font-after-cff-seac --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04d-font-after-cff-seac --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Results:

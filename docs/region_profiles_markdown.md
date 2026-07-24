@@ -18,7 +18,7 @@ error.
 Rust:
 
 ```rust
-use oxide_engine::{ContentEngine, PageRegion};
+use wellfriendpdf_engine::{ContentEngine, PageRegion};
 
 let engine = ContentEngine::open_path("input.pdf")?;
 let region = PageRegion::new(0.0, 396.0, 306.0, 792.0)?;
@@ -31,17 +31,17 @@ let images = engine.find_page_image_regions(1, region)?;
 CLI:
 
 ```powershell
-oxide extract-text input.pdf --region 0,396,306,792
-oxide extract-tables input.pdf --region 0,396,306,792 --format json
-oxide extract-images input.pdf --region 0,396,306,792 -o images.zip
+wellfriendpdf extract-text input.pdf --region 0,396,306,792
+wellfriendpdf extract-tables input.pdf --region 0,396,306,792 --format json
+wellfriendpdf extract-images input.pdf --region 0,396,306,792 -o images.zip
 ```
 
 Python:
 
 ```python
-import oxide
+import wellfriendpdf
 
-doc = oxide.open("input.pdf")
+doc = wellfriendpdf.open("input.pdf")
 top_left = doc.page(1).region(0, 396, 306, 792)
 print(top_left.text)
 print(top_left.words)
@@ -68,7 +68,7 @@ Profiles are named bundles over existing engine options, not a separate parser:
 Rust:
 
 ```rust
-use oxide_engine::{ContentEngine, ExtractionProfile};
+use wellfriendpdf_engine::{ContentEngine, ExtractionProfile};
 
 let engine = ContentEngine::open_path("input.pdf")?;
 let text = engine.get_page_text_with_profile(1, ExtractionProfile::LayoutFaithful)?;
@@ -77,8 +77,8 @@ let text = engine.get_page_text_with_profile(1, ExtractionProfile::LayoutFaithfu
 CLI:
 
 ```powershell
-oxide extract-text input.pdf --profile layout-faithful
-oxide parse input.pdf --profile rag-chunks --format markdown
+wellfriendpdf extract-text input.pdf --profile layout-faithful
+wellfriendpdf parse input.pdf --profile rag-chunks --format markdown
 ```
 
 Python:
@@ -92,15 +92,15 @@ doc.page(1).text_with_profile("layout-faithful")
 ## Markdown Headings
 
 Markdown heading detection is now explicit. With heading detection enabled,
-Oxide serializes the document model's heuristic title/heading blocks to Markdown
+Wellfriend serializes the document model's heuristic title/heading blocks to Markdown
 heading syntax. With heading detection disabled, Markdown output falls back to a
 flat text-like export.
 
 CLI:
 
 ```powershell
-oxide parse input.pdf --format markdown --detect-headings=true
-oxide parse input.pdf --format markdown --detect-headings=false
+wellfriendpdf parse input.pdf --format markdown --detect-headings=true
+wellfriendpdf parse input.pdf --format markdown --detect-headings=false
 ```
 
 Python:

@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use serde::Serialize;
 
 use crate::document::PdfDocument;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::fonts_report::{list_fonts, FontInfo};
 use crate::info::{decode_pdf_text_string, DocumentInfo};
 use crate::object::{PdfDictionary, PdfObject};
@@ -193,12 +193,12 @@ pub fn convert_to_pdfa(doc: &PdfDocument, profile: PdfAProfile) -> Result<Vec<u8
             .map(|font| font.name.clone())
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "PDF/A conversion blocked: source fonts are not embedded ({names})"
         )));
     }
     if doc.reader().is_encrypted() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "PDF/A conversion requires an already-decrypted source document".to_string(),
         ));
     }
@@ -209,7 +209,7 @@ pub fn convert_to_pdfa(doc: &PdfDocument, profile: PdfAProfile) -> Result<Vec<u8
     })?;
     drop_copied_structural_artifacts(&mut objects);
     let mut document_info = DocumentInfo::gather(doc)?;
-    document_info.producer = Some("Oxide PDF SDK".to_string());
+    document_info.producer = Some("Wellfriend PDF SDK".to_string());
     let file_id = pdfa_file_id(doc, profile, &document_info);
     let next = objects.iter().map(|obj| obj.number).max().unwrap_or(0) + 1;
     let metadata_number = next;
@@ -254,7 +254,7 @@ pub fn convert_to_pdfa(doc: &PdfDocument, profile: PdfAProfile) -> Result<Vec<u8
         .write()
 }
 
-/// Convert and immediately validate with Oxide's validator.
+/// Convert and immediately validate with Wellfriend's validator.
 pub fn convert_to_pdfa_checked(
     doc: &PdfDocument,
     profile: PdfAProfile,
@@ -300,9 +300,11 @@ pub fn improve_pdfua_best_effort(doc: &PdfDocument, lang: &str) -> Result<Vec<u8
     let root_obj = objects
         .iter_mut()
         .find(|obj| obj.number == root)
-        .ok_or_else(|| OxideError::MalformedPdf("PDF/UA improve: missing catalog".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("PDF/UA improve: missing catalog".to_string())
+        })?;
     let PdfObject::Dictionary(catalog) = &mut root_obj.object else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "PDF/UA improve: catalog is not a dictionary".to_string(),
         ));
     };
@@ -538,7 +540,7 @@ fn validate_output_intent(
             violations.push(ComplianceViolation::warning(
                 "pdfa.output_intent.icc",
                 format!("Catalog/OutputIntents[{idx}]/DestOutputProfile/N"),
-                "Only RGB OutputIntent profiles are validated by Oxide",
+                "Only RGB OutputIntent profiles are validated by Wellfriend",
             ));
         }
         if raw.len() < 128 || raw.get(36..40) != Some(b"acsp") {
@@ -949,12 +951,14 @@ fn upsert_catalog_compliance(
     let root_index = objects
         .iter()
         .position(|obj| obj.number == root)
-        .ok_or_else(|| OxideError::MalformedPdf("PDF/A conversion: missing catalog".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("PDF/A conversion: missing catalog".to_string())
+        })?;
     let mut append_level_a_structure = None;
     {
         let root_obj = &mut objects[root_index];
         let PdfObject::Dictionary(catalog) = &mut root_obj.object else {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "PDF/A conversion: catalog is not a dictionary".to_string(),
             ));
         };
@@ -1024,13 +1028,13 @@ fn level_a_document_struct_elem(
 fn upsert_info(objects: &mut Vec<OutputObject>, info_number: u32) {
     if let Some(existing) = objects.iter_mut().find(|obj| obj.number == info_number) {
         if let PdfObject::Dictionary(info) = &mut existing.object {
-            info.insert("Producer", pdf_text("Oxide PDF SDK"));
+            info.insert("Producer", pdf_text("Wellfriend PDF SDK"));
         }
         return;
     }
     objects.push(OutputObject {
         number: info_number,
-        object: PdfObject::Dictionary(dict(&[("Producer", pdf_text("Oxide PDF SDK"))])),
+        object: PdfObject::Dictionary(dict(&[("Producer", pdf_text("Wellfriend PDF SDK"))])),
     });
 }
 
@@ -1042,7 +1046,7 @@ fn pdfa_file_id(doc: &PdfDocument, profile: PdfAProfile, info: &DocumentInfo) ->
     }
 
     let mut seed = Vec::new();
-    seed.extend_from_slice(b"oxide-pdfa-file-id\0");
+    seed.extend_from_slice(b"wellfriendpdfa-file-id\0");
     seed.extend_from_slice(profile.label().as_bytes());
     seed.push(0);
     seed.extend_from_slice(doc.reader().version().as_bytes());
@@ -1150,8 +1154,8 @@ fn xmp_metadata_stream(profile: PdfAProfile, info: &DocumentInfo) -> PdfObject {
         .as_deref()
         .map(|value| format!("      <pdf:Keywords>{}</pdf:Keywords>\n", xml_escape(value)))
         .unwrap_or_default();
-    let creator = info.creator.as_deref().unwrap_or("Oxide PDF SDK");
-    let producer = info.producer.as_deref().unwrap_or("Oxide PDF SDK");
+    let creator = info.creator.as_deref().unwrap_or("Wellfriend PDF SDK");
+    let producer = info.producer.as_deref().unwrap_or("Wellfriend PDF SDK");
     let xml = format!(
         r#"<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
 <x:xmpmeta xmlns:x="adobe:ns:meta/">

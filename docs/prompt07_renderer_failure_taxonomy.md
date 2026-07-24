@@ -5,36 +5,36 @@ specific classifications.
 
 ## Page Classifications
 
-- `all_references_agree_oxide_pass`: all references match each other and Oxide
+- `all_references_agree_wellfriendpdf_pass`: all references match each other and Wellfriend
   falls inside threshold against all three.
-- `all_references_agree_oxide_mismatch`: references agree, but Oxide is outside
+- `all_references_agree_wellfriendpdf_mismatch`: references agree, but Wellfriend is outside
   threshold.
-- `references_disagree_oxide_matches_poppler`: references disagree and Oxide
+- `references_disagree_wellfriendpdf_matches_poppler`: references disagree and Wellfriend
   matches Poppler within threshold.
-- `references_disagree_oxide_matches_pdfium`: references disagree and Oxide
+- `references_disagree_wellfriendpdf_matches_pdfium`: references disagree and Wellfriend
   matches PDFium within threshold.
-- `references_disagree_oxide_matches_mupdf`: references disagree and Oxide
+- `references_disagree_wellfriendpdf_matches_mupdf`: references disagree and Wellfriend
   matches MuPDF within threshold.
-- `references_disagree_oxide_between_references`: references disagree and Oxide
+- `references_disagree_wellfriendpdf_between_references`: references disagree and Wellfriend
   matches more than one reference or lands between the reference outputs.
 - `needs_manual_review`: transparency, blend, or soft-mask fixture where no
   pairwise classification is enough to determine the owner.
 - `reference_tool_failure`: Poppler, PDFium, or MuPDF failed to render.
-- `oxide_render_failure`: Oxide failed to render.
+- `wellfriendpdf_render_failure`: Wellfriend failed to render.
 - `dimension_mismatch`: outputs rendered at incompatible dimensions.
 
 Prompt 07B also writes normalized closure classifications:
 
-- `all_references_agree_and_oxide_passes`
-- `all_references_agree_and_oxide_mismatches`
-- `references_disagree_and_oxide_within_cluster`
-- `references_disagree_and_oxide_outlier`
+- `all_references_agree_and_wellfriendpdf_passes`
+- `all_references_agree_and_wellfriendpdf_mismatches`
+- `references_disagree_and_wellfriendpdf_within_cluster`
+- `references_disagree_and_wellfriendpdf_outlier`
 - `malformed_or_reference_failure`
 - `unsupported_reported`
 
 ## Ownership Categories
 
-- `oxide/bug`: references agree and Oxide differs.
+- `wellfriendpdf/bug`: references agree and Wellfriend differs.
 - `reference/disagreement`: references visibly differ.
 - `prompt08/pattern_or_shading`: paint source belongs to the next prompt.
 - `antialias/tolerance`: difference is limited to edge coverage.

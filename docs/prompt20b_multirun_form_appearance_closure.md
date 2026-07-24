@@ -22,7 +22,7 @@ Every mutator uses Prompt 18B signature preflight, incremental writer evidence w
 
 ## Executable evidence
 
-- Focused Rust suite: `cargo test -p oxide-engine prompt20::tests --lib -j1`.
+- Focused Rust suite: `cargo test -p wellfriendpdf-engine prompt20::tests --lib -j1`.
 - Prompt 20B audit harness: `scripts/prompt20b_closure_audit.py`.
 - Main artifact directory: `target/prompt20-advanced-editing/`.
 - HTML report: `target/prompt20-advanced-editing/prompt20b-html-report/index.html`.

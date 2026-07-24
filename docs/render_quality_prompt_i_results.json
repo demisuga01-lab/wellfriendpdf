@@ -1,6 +1,6 @@
 {
   "generated_at": "2026-06-17T13:40:38.499406+00:00",
-  "oxide_bin": "E:\\wellpdfsdk\\target\\release\\oxide.exe",
+  "wellfriendpdf_bin": "E:\\wellpdfsdk\\target\\release\\wellfriendpdf.exe",
   "poppler_bin_dir": "E:\\wellpdfsdk\\target\\tools\\poppler\\poppler-26.02.0\\Library\\bin",
   "dpi": 72,
   "supersample": 4,

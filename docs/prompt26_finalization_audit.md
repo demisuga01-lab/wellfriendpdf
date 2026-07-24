@@ -1,11 +1,11 @@
-﻿# Prompt 26 finalization audit
+# Prompt 26 finalization audit
 
 ## Checkpoint
 
 - Baseline commit: `291d8ea424b2e657629d3606fbf8a93b33999f98` (`Close combined prompt 25 timestamp ltv mdp signature edits`).
 - The worktree is intentionally dirty with the uncommitted Prompt 26 implementation; it was preserved without reset, stash, clean, or discarded files.
 - `git diff --check` and `git diff --cached --check` passed during the finalization-start audit.
-- No repository-local cargo, rustc, Oxide, fuzz, Java, .NET, Python, or test process was running at the checkpoint.
+- No repository-local cargo, rustc, Wellfriend, fuzz, Java, .NET, Python, or test process was running at the checkpoint.
 
 ## VPS completion evidence
 
@@ -34,7 +34,7 @@ The following gates passed on the VPS:
 - Adversarial/tamper matrix, performance/memory probes, security audit, secret scan,
   docs/artifacts verification, and impacted historical gate reruns/focused equivalents.
 
-The full workspace gate peaked below the 32 GiB WellPDF budget. The fuzz cgroup stayed
+The full workspace gate peaked below the 32 GiB Wellfriend PDF SDK budget. The fuzz cgroup stayed
 below the 4 GiB Prompt 25B cap; the highest per-target build RSS recorded was for the
 initial fuzz target build and remained under the cap.
 

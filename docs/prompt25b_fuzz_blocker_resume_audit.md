@@ -21,7 +21,7 @@ outstanding closure gap — sanitizer-backed `cargo-fuzz` execution under the
   `cargo-fuzz 0.13.1`; stable `1.95.0` default. Installed targets:
   `wasm32-unknown-unknown`, `x86_64-pc-windows-msvc`, `x86_64-unknown-linux-gnu`.
 - Processes at start: only persistent `dotnet.exe` MSBuild build-server nodes; no
-  repo-local long-running cargo/rustc/oxide/fuzz/java/python processes.
+  repo-local long-running cargo/rustc/wellfriendpdf/fuzz/java/python processes.
 
 Full machine-readable start state:
 `target/prompt25-signature-ltv-edits/prompt25b-resume-start-state.json`.
@@ -48,7 +48,7 @@ The 4 GiB cap is enforced with a Windows Job Object
 1. **ASan OOM** — `cargo +nightly fuzz run timestamp_token --sanitizer address
    -D --no-trace-compares --codegen-units 16 -- -runs=1 -max_len=256 -timeout=5`
    → `rustc-LLVM ERROR: out of memory` / `Allocation failed` while compiling
-   `oxide-engine`; `exit_code=1`, `hit_memory_cap=true`, ~100 s.
+   `wellfriendpdf-engine`; `exit_code=1`, `hit_memory_cap=true`, ~100 s.
    Log: `cargo-fuzz-asan-oom-repro.log`.
 2. **`--sanitizer none` MSVC link failure** — same target with `--sanitizer
    none` → many `LNK2001: unresolved external symbol __stop___sancov_pcs` and

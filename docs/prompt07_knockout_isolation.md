@@ -33,8 +33,8 @@ written to:
 
 Prompt 07B adds `knockout_overlap_exact` and
 `knockout_overlap_nested_form`. Poppler, PDFium, and MuPDF disagree on these
-semi-transparent overlap fixtures; Oxide matches MuPDF and is classified inside
-the reference cluster, with zero Oxide-outlier failures.
+semi-transparent overlap fixtures; Wellfriend matches MuPDF and is classified inside
+the reference cluster, with zero Wellfriend-outlier failures.
 
 Remaining bounds are later-owned: text clipping inside knockout groups and
 pattern/shading paints inside knockout groups are not Prompt 07B work.

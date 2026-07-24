@@ -4,8 +4,8 @@ members = [
     "crates/engine",
     "crates/server",
     "crates/cli",
-    "crates/oxide-capi",
-    "crates/oxide-wasm",
-    "crates/oxide-ocr-tesseract",
-    "crates/oxide-py",
+    "crates/wellfriendpdf-capi",
+    "crates/wellfriendpdf-wasm",
+    "crates/wellfriendpdf-ocr-tesseract",
+    "crates/wellfriendpdf-py",
 ]

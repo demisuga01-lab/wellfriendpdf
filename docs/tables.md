@@ -1,15 +1,15 @@
 # Table Detection & Structure Extraction
 
-`oxide extract-tables` detects tables and emits either a flattened CSV view or a
+`wellfriendpdf extract-tables` detects tables and emits either a flattened CSV view or a
 span-aware structured model. Poppler CLIs expose text placement, but they do not
 recover table structure such as merged cells, header hierarchy, or nested tables.
 
 ```
-oxide extract-tables in.pdf                         # CSV to stdout
-oxide extract-tables in.pdf --format json --structure
-oxide extract-tables in.pdf --format html
-oxide extract-tables in.pdf -p 2 -o tables.csv
-oxide extract-tables in.pdf --min-confidence 0.8
+wellfriendpdf extract-tables in.pdf                         # CSV to stdout
+wellfriendpdf extract-tables in.pdf --format json --structure
+wellfriendpdf extract-tables in.pdf --format html
+wellfriendpdf extract-tables in.pdf -p 2 -o tables.csv
+wellfriendpdf extract-tables in.pdf --min-confidence 0.8
 ```
 
 The command is additive; normal text extraction is unchanged.

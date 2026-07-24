@@ -1,4 +1,4 @@
-id,path,category,text_similarity,text_poppler_ok,text_oxide_ok,render_psnr,render_poppler_ok,render_oxide_ok,analyze_ok,extract_images_ok,image_count
+id,path,category,text_similarity,text_poppler_ok,text_wellfriendpdf_ok,render_psnr,render_poppler_ok,render_wellfriendpdf_ok,analyze_ok,extract_images_ok,image_count
 pdfjs_90ms_rksj_h_sample,tests/corpus/pdfs/pdfjs/90ms_rksj_h_sample.pdf,cjk-text,0.6666666666666666,True,True,37.469,True,True,True,True,0
 pdfjs_IdentityToUnicodeMap_charCodeOf,tests/corpus/pdfs/pdfjs/IdentityToUnicodeMap_charCodeOf.pdf,cjk-text,1.0,True,True,16.211,True,True,True,True,0
 pdfjs_SimFang-variant,tests/corpus/pdfs/pdfjs/SimFang-variant.pdf,cjk-text,0.05263157894736842,True,True,30.7,True,True,True,True,0

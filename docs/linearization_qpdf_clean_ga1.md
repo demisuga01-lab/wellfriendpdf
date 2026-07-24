@@ -1,6 +1,6 @@
 # Linearization Hint Tables - GA Prompt 1
 
-GA Prompt 1 fixes the Prompt 11 v1.0 blocker: qpdf recognized Oxide output as
+GA Prompt 1 fixes the Prompt 11 v1.0 blocker: qpdf recognized Wellfriend output as
 linearized, but reported hint-table warnings.
 
 ## Reproduced Warning
@@ -46,7 +46,7 @@ references, `/H`, `/E`, `/T`, and `/L` from the final converged layout.
 
 ## qpdf-Clean Fixture Breadth
 
-Each fixture below was linearized with `target/release/oxide.exe linearize`,
+Each fixture below was linearized with `target/release/wellfriendpdf.exe linearize`,
 then validated with both `qpdf --check` and `qpdf --show-linearization`.
 All checks exited 0 with zero warnings.
 

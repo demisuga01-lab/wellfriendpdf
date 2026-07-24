@@ -1,6 +1,6 @@
 # Tagged-PDF Semantic Extraction
 
-`oxide extract-text --semantic` extracts authored semantic structure from tagged
+`wellfriendpdf extract-text --semantic` extracts authored semantic structure from tagged
 PDFs. It reads `/StructTreeRoot`, walks `/StructElem` nodes in tree order, and
 links structure elements to page content through marked-content IDs:
 
@@ -10,14 +10,14 @@ links structure elements to page content through marked-content IDs:
 EMC
 ```
 
-When a structure element's `/K` references MCID `3` on a page, Oxide collects
+When a structure element's `/K` references MCID `3` on a page, Wellfriend collects
 the text chunks emitted inside that marked-content range and attaches that text
 to the semantic element.
 
 ```sh
-oxide extract-text in.pdf --semantic
-oxide extract-text in.pdf --semantic --format json
-oxide extract-text in.pdf -p 1-3 --semantic --format json
+wellfriendpdf extract-text in.pdf --semantic
+wellfriendpdf extract-text in.pdf --semantic --format json
+wellfriendpdf extract-text in.pdf -p 1-3 --semantic --format json
 ```
 
 ## Output
@@ -47,9 +47,9 @@ Figure: Revenue chart
 
 Semantic mode is tags-first:
 
-1. If `/StructTreeRoot` is present, Oxide trusts the authored tag order. This is
+1. If `/StructTreeRoot` is present, Wellfriend trusts the authored tag order. This is
    the best available reading order for tagged multi-column documents.
-2. If no structure tree is present, Oxide falls back to the geometric XY-cut
+2. If no structure tree is present, Wellfriend falls back to the geometric XY-cut
    layout analyzer from `--structured`.
 
 The default `extract-text` path is unchanged.

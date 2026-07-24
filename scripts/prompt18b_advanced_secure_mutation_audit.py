@@ -58,7 +58,7 @@ def run(*args: str) -> dict:
         "CARGO_BUILD_JOBS": "1",
         "RAYON_NUM_THREADS": "1",
         "RUST_TEST_THREADS": "1",
-        "OXIDE_PROMPT18B_EXPORT_FIXTURES": str(OUT / "fixtures"),
+        "WELLFRIENDPDF_PROMPT18B_EXPORT_FIXTURES": str(OUT / "fixtures"),
     })
     started = time.perf_counter()
     proc = subprocess.run(args, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE,
@@ -100,7 +100,7 @@ def execute(command: list[str]) -> dict:
     }
 
 
-def reference_proof(tools: dict, oxide: pathlib.Path) -> dict:
+def reference_proof(tools: dict, wellfriendpdf: pathlib.Path) -> dict:
     from PIL import Image, ImageChops, ImageStat
 
     fixture = OUT / "fixtures" / "advanced-promoted.pdf"
@@ -111,28 +111,28 @@ def reference_proof(tools: dict, oxide: pathlib.Path) -> dict:
     images: dict[str, pathlib.Path] = {}
     direct_images: dict[str, pathlib.Path] = {}
 
-    oxide_zip = render_dir / "oxide.zip"
-    commands["oxide"] = execute([
-        str(oxide), "render", str(fixture), "--output", str(oxide_zip),
+    wellfriendpdf_zip = render_dir / "wellfriendpdf.zip"
+    commands["wellfriendpdf"] = execute([
+        str(wellfriendpdf), "render", str(fixture), "--output", str(wellfriendpdf_zip),
         "--pages", "1", "--dpi", "72", "--format", "png",
     ])
-    if commands["oxide"]["passed"]:
-        with zipfile.ZipFile(oxide_zip) as archive:
+    if commands["wellfriendpdf"]["passed"]:
+        with zipfile.ZipFile(wellfriendpdf_zip) as archive:
             member = next(name for name in archive.namelist() if name.lower().endswith(".png"))
-            oxide_png = render_dir / "oxide.png"
-            oxide_png.write_bytes(archive.read(member))
-            images["oxide"] = oxide_png
-    direct_zip = render_dir / "oxide-direct.zip"
-    commands["oxide_direct"] = execute([
-        str(oxide), "render", str(direct_fixture), "--output", str(direct_zip),
+            wellfriendpdf_png = render_dir / "wellfriendpdf.png"
+            wellfriendpdf_png.write_bytes(archive.read(member))
+            images["wellfriendpdf"] = wellfriendpdf_png
+    direct_zip = render_dir / "wellfriendpdf-direct.zip"
+    commands["wellfriendpdf_direct"] = execute([
+        str(wellfriendpdf), "render", str(direct_fixture), "--output", str(direct_zip),
         "--pages", "1", "--dpi", "72", "--format", "png",
     ])
-    if commands["oxide_direct"]["passed"]:
+    if commands["wellfriendpdf_direct"]["passed"]:
         with zipfile.ZipFile(direct_zip) as archive:
             member = next(name for name in archive.namelist() if name.lower().endswith(".png"))
-            direct_png = render_dir / "oxide-direct.png"
+            direct_png = render_dir / "wellfriendpdf-direct.png"
             direct_png.write_bytes(archive.read(member))
-            direct_images["oxide"] = direct_png
+            direct_images["wellfriendpdf"] = direct_png
 
     if tools["poppler"]["available"]:
         output = render_dir / "poppler.png"
@@ -193,7 +193,7 @@ def reference_proof(tools: dict, oxide: pathlib.Path) -> dict:
     tools["pdfbox"]["reason"] = "no PDFBox application JAR installed; Java alone is not PDFBox"
 
     metrics: dict[str, dict] = {}
-    oxide_image = Image.open(images["oxide"]).convert("RGB")
+    wellfriendpdf_image = Image.open(images["wellfriendpdf"]).convert("RGB")
     for name, path in images.items():
         candidate = Image.open(path).convert("RGB")
         entry = {
@@ -201,12 +201,12 @@ def reference_proof(tools: dict, oxide: pathlib.Path) -> dict:
             "width": candidate.width,
             "height": candidate.height,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-            "dimensions_match_oxide": candidate.size == oxide_image.size,
+            "dimensions_match_wellfriendpdf": candidate.size == wellfriendpdf_image.size,
         }
-        if candidate.size == oxide_image.size:
-            diff = ImageChops.difference(oxide_image, candidate)
+        if candidate.size == wellfriendpdf_image.size:
+            diff = ImageChops.difference(wellfriendpdf_image, candidate)
             stats = ImageStat.Stat(diff)
-            entry["mean_abs_diff_vs_oxide"] = round(sum(stats.mean) / len(stats.mean), 6)
+            entry["mean_abs_diff_vs_wellfriendpdf"] = round(sum(stats.mean) / len(stats.mean), 6)
             entry["max_channel_extrema"] = max(high for _, high in stats.extrema)
         metrics[name] = entry
 
@@ -231,12 +231,12 @@ def reference_proof(tools: dict, oxide: pathlib.Path) -> dict:
         }
 
     required = [
-        "oxide", "oxide_direct", "poppler", "poppler_direct", "pdfium", "pdfium_direct",
+        "wellfriendpdf", "wellfriendpdf_direct", "poppler", "poppler_direct", "pdfium", "pdfium_direct",
         "mupdf", "mupdf_direct", "qpdf", "qpdf_direct",
     ]
     passed = fixture.exists() and direct_fixture.exists()
     passed = passed and all(commands.get(name, {}).get("passed", False) for name in required)
-    passed = passed and all(value["dimensions_match_oxide"] for value in metrics.values())
+    passed = passed and all(value["dimensions_match_wellfriendpdf"] for value in metrics.values())
     passed = passed and all(value["passed"] for value in metamorphic.values())
     return {
         "status": "passed" if passed else "failed",
@@ -244,7 +244,7 @@ def reference_proof(tools: dict, oxide: pathlib.Path) -> dict:
         "commands": commands,
         "metrics": metrics,
         "direct_promotion_metamorphic": metamorphic,
-        "oxide_outlier_failures": 0 if passed else 1,
+        "wellfriendpdf_outlier_failures": 0 if passed else 1,
         "unclassified_failures": 0,
         "security_proof_failures": 0,
         "pdfbox": tools["pdfbox"],
@@ -266,16 +266,16 @@ def main() -> int:
     write("prompt18b-starting-state.json", start)
 
     gates = [
-        run("cargo", "test", "-p", "oxide-engine", "--test", "prompt18_secure_mutation", "--jobs", "1"),
-        run("cargo", "test", "-p", "oxide-engine", "--test", "prompt18b_advanced_secure_mutation", "--jobs", "1"),
-        run("cargo", "build", "-p", "oxide-cli", "--jobs", "1"),
+        run("cargo", "test", "-p", "wellfriendpdf-engine", "--test", "prompt18_secure_mutation", "--jobs", "1"),
+        run("cargo", "test", "-p", "wellfriendpdf-engine", "--test", "prompt18b_advanced_secure_mutation", "--jobs", "1"),
+        run("cargo", "build", "-p", "wellfriendpdf-cli", "--jobs", "1"),
     ]
     if not all(gate["passed"] for gate in gates):
         write("prompt18b-focused-failure.json", {"schema_version": SCHEMA, "gates": gates})
         return 1
 
     feature_path = OUT / "public-feature-report-prompt18b.json"
-    feature_gate = run(str(ROOT / "target" / "debug" / "oxide.exe"), "feature-report", "--output", str(feature_path))
+    feature_gate = run(str(ROOT / "target" / "debug" / "wellfriendpdf.exe"), "feature-report", "--output", str(feature_path))
     gates.append(feature_gate)
     if not feature_gate["passed"]:
         return 1
@@ -289,7 +289,7 @@ def main() -> int:
         "qpdf": tool("qpdf", ["target/prompt*-tools/**/qpdf.exe"]),
         "pdfbox": tool(None, ["target/prompt*-tools/**/pdfbox*.jar"]),
     }
-    reference = reference_proof(tools, ROOT / "target" / "debug" / "oxide.exe")
+    reference = reference_proof(tools, ROOT / "target" / "debug" / "wellfriendpdf.exe")
     if reference["status"] != "passed":
         write("prompt18b-reference-failure.json", reference)
         return 1
@@ -297,7 +297,7 @@ def main() -> int:
         "schema_version": SCHEMA,
         "rows": [{"row": row, "status": "implemented"} for row in ROWS],
         "blocked": 0, "unclassified_failures": 0, "security_proof_failures": 0,
-        "supported_oxide_outlier_failures": 0,
+        "supported_wellfriendpdf_outlier_failures": 0,
     }
     write("prompt18b-closure-audit.json", matrix)
 
@@ -308,7 +308,7 @@ def main() -> int:
         "fixture": "crates/engine/tests/prompt18b_advanced_secure_mutation.rs",
         "zero_unclassified_failures": True,
         "zero_security_proof_failures": True,
-        "zero_supported_oxide_outliers": True,
+        "zero_supported_wellfriendpdf_outliers": True,
         "deterministic_output": True,
         "exact_original_prefix_proved": True,
         "cryptographic_validity_claimed_from_prefix": False,
@@ -350,7 +350,7 @@ def main() -> int:
     html.write_text(
         "<!doctype html><meta charset='utf-8'><title>Prompt 18B closure</title>"
         "<h1>Prompt 18B advanced secure mutation closure</h1>"
-        "<p>Blocked: 0; unclassified: 0; security-proof failures: 0; supported Oxide outliers: 0.</p>"
+        "<p>Blocked: 0; unclassified: 0; security-proof failures: 0; supported Wellfriend outliers: 0.</p>"
         "<p>Validation posture: serial, 4 GiB cap. Prefix preservation is not a cryptographic-validity claim.</p>",
         encoding="utf-8",
     )

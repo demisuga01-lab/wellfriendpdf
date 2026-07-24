@@ -356,10 +356,10 @@ def seed_corpus_manifest(mutator_report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def oxide_command(oxide_bin: Path) -> list[str] | None:
-    if oxide_bin.exists():
-        return [str(oxide_bin)]
-    release = Path("target/release/oxide.exe" if os.name == "nt" else "target/release/oxide")
+def wellfriendpdf_command(wellfriendpdf_bin: Path) -> list[str] | None:
+    if wellfriendpdf_bin.exists():
+        return [str(wellfriendpdf_bin)]
+    release = Path("target/release/wellfriendpdf.exe" if os.name == "nt" else "target/release/wellfriendpdf")
     if release.exists():
         return [str(release)]
     return None
@@ -378,7 +378,7 @@ def run_fuzz_smoke(args: argparse.Namespace, mutator_report: dict[str, Any]) -> 
     cargo_fuzz_available = cargo_fuzz_list["exit_status"] == 0
 
     SMOKE_RENDER_DIR.mkdir(parents=True, exist_ok=True)
-    base = oxide_command(args.oxide_bin)
+    base = wellfriendpdf_command(args.wellfriendpdf_bin)
     render_rows = []
     for entry in mutator_report.get("mutations", [])[: args.render_limit]:
         pdf_path = Path(entry["path"])
@@ -389,8 +389,8 @@ def run_fuzz_smoke(args: argparse.Namespace, mutator_report: dict[str, Any]) -> 
             render_rows.append(
                 {
                     "id": entry["id"],
-                    "status": "unavailable_oxide_binary",
-                    "reason": "Build target/debug/oxide.exe or pass --oxide-bin before renderer corpus smoke.",
+                    "status": "unavailable_wellfriendpdf_binary",
+                    "reason": "Build target/debug/wellfriendpdf.exe or pass --wellfriendpdf-bin before renderer corpus smoke.",
                 }
             )
             continue
@@ -455,7 +455,7 @@ def run_fuzz_smoke(args: argparse.Namespace, mutator_report: dict[str, Any]) -> 
             else "cargo-fuzz unavailable; repository fuzz-bin compile plus mutator corpus runner used",
         },
         "mutator_corpus_runner": {
-            "oxide_binary": rel(base[0]) if base else None,
+            "wellfriendpdf_binary": rel(base[0]) if base else None,
             "render_limit": args.render_limit,
             "rows": render_rows,
         },
@@ -626,7 +626,7 @@ def closeout_reports() -> dict[str, Any]:
     rows = []
     total_pages = 0
     total_fixtures = 0
-    oxide_outliers = 0
+    wellfriendpdf_outliers = 0
     unclassified = 0
     classification_counts: dict[str, int] = {}
     reference_disagreements = []
@@ -639,7 +639,7 @@ def closeout_reports() -> dict[str, Any]:
         fixture_count = int(summary.get("fixture_count") or page_count)
         total_pages += page_count
         total_fixtures += fixture_count
-        oxide_outliers += int(summary.get("oxide_outlier_failures") or 0)
+        wellfriendpdf_outliers += int(summary.get("wellfriendpdf_outlier_failures") or 0)
         unclassified += int(summary.get("unclassified_failures") or 0)
         for item in summary.get("reference_disagreements", []) or summary.get(
             "reference_disagreement_pages", []
@@ -703,7 +703,7 @@ def closeout_reports() -> dict[str, Any]:
         "schema_version": 1,
         "kind": "renderer_closeout_render_results_prompt11",
         "status": STATUS_IMPLEMENTED,
-        "reference_renderers": ["Poppler", "PDFium", "MuPDF", "Oxide"],
+        "reference_renderers": ["Poppler", "PDFium", "MuPDF", "Wellfriend"],
         "source_render_artifacts": [row["render_results"] for row in rows],
         "rows": rows,
     }
@@ -723,7 +723,7 @@ def closeout_reports() -> dict[str, Any]:
         "status": STATUS_IMPLEMENTED,
         "classification_counts": classification_counts,
         "reference_disagreements": reference_disagreements,
-        "oxide_outlier_failures": oxide_outliers,
+        "wellfriendpdf_outlier_failures": wellfriendpdf_outliers,
         "unclassified_failures": unclassified,
     }
     performance = {
@@ -750,7 +750,7 @@ def closeout_reports() -> dict[str, Any]:
         "verdict": {
             "status": STATUS_IMPLEMENTED,
             "renderer_parity_campaign_verdict": "advanced CMM/prepress may begin with exact CMM limits carried forward",
-            "oxide_outlier_failures": oxide_outliers,
+            "wellfriendpdf_outlier_failures": wellfriendpdf_outliers,
             "unclassified_failures": unclassified,
             "aggregate_fixture_count": total_fixtures,
             "aggregate_page_count": total_pages,
@@ -767,7 +767,7 @@ def cmm_reports() -> dict[str, Any]:
         "license_compatibility": "MIT-style LittleCMS license appears generally compatible, but no dependency is added until vendoring/package policy is approved",
         "source_of_dependency": "deferred; no crates.io lcms2-sys or system library is introduced in default builds",
         "static_vs_dynamic_linking_posture": "hard-blocked until per-platform packaging policy exists",
-        "default_build_posture": "no native C dependency; oxide-engine remains forbid(unsafe_code)",
+        "default_build_posture": "no native C dependency; wellfriendpdf-engine remains forbid(unsafe_code)",
         "feature_flag_name": "reserved: native-cmm-lcms2",
         "wasm_support_posture": "native CMM disabled for WASM; qcms/default path remains portable",
         "windows_linux_macos_packaging_posture": "must be explicit per target; no silent system lcms2 probing",
@@ -782,7 +782,7 @@ def cmm_reports() -> dict[str, Any]:
         "profile_cache_safety": "profile data is not globally cached; transform cache is bounded",
         "transform_cache_safety": "keyed by profile hash, profile length, source/destination data type, intent, BPC posture, and component count",
         "fuzzing_posture": "color_report and renderer_prompt11 fuzz targets cover malformed ICC/color-space reporting paths",
-        "sandbox_native_boundary_policy": "native LittleCMS hard-blocked until a separate optional boundary can carry unsafe/native code outside oxide-engine",
+        "sandbox_native_boundary_policy": "native LittleCMS hard-blocked until a separate optional boundary can carry unsafe/native code outside wellfriendpdf-engine",
         "failure_behavior_when_native_backend_unavailable": "feature report says qcms/default; no native dependency is attempted",
         "pure_rust_fallback_behavior": "DeviceRGB/DeviceCMYK/CalRGB/CalGray/Lab and ICCBased-to-sRGB preview paths remain available",
         "security_policy_updates": ["docs/prompt11_cmm_security_policy.md", "docs/security_policy.md"],
@@ -897,7 +897,7 @@ def scope_matrix(
         row("renderer_fuzz_target_inventory", "041", "fuzz", STATUS_IMPLEMENTED, ["cargo check --manifest-path fuzz/Cargo.toml --bins --jobs 1"], ["renderer-fuzz-target-inventory-prompt11.json"], "release-duration coverage-guided fuzzing deferred", "release hardening"),
         row("renderer_seed_corpus", "041", "fuzz", STATUS_IMPLEMENTED, ["prompt11 mutator corpus smoke"], ["renderer-seed-corpus-manifest-prompt11.json"], "corpus promotion continues as crashes are reduced", "renderer QA"),
         row("renderer_structure_aware_mutator", "041", "fuzz", STATUS_IMPLEMENTED, ["prompt11 mutator corpus smoke"], ["renderer-mutator-report-prompt11.json"], "not a replacement for libFuzzer coverage", "renderer QA"),
-        row("renderer_metamorphic_tests", "041", "metamorphic", STATUS_IMPLEMENTED, ["cargo test -p oxide-engine --test prompt11_renderer_metamorphic"], ["renderer-metamorphic-matrix-prompt11.json"], "category matrix points to Prompt 06-10F specialist tests", "renderer QA"),
+        row("renderer_metamorphic_tests", "041", "metamorphic", STATUS_IMPLEMENTED, ["cargo test -p wellfriendpdf-engine --test prompt11_renderer_metamorphic"], ["renderer-metamorphic-matrix-prompt11.json"], "category matrix points to Prompt 06-10F specialist tests", "renderer QA"),
         row("full_tile_band_equivalence", "041", "metamorphic", STATUS_IMPLEMENTED, ["prompt11_renderer_metamorphic"], ["full-tile-band-equivalence-prompt11.json"], "byte-exact only", "renderer QA"),
         row("cache_no_cache_equivalence", "041", "metamorphic", STATUS_IMPLEMENTED, ["prompt11_renderer_metamorphic"], ["cache-no-cache-equivalence-prompt11.json"], "byte-exact only", "renderer QA"),
         row("progressive_resume_equivalence", "041", "metamorphic", STATUS_IMPLEMENTED, ["prompt11_renderer_metamorphic"], ["progressive-equivalence-prompt11.json"], "byte-exact only", "renderer QA"),
@@ -935,7 +935,7 @@ def scope_matrix(
             "rows": len(rows),
             "fuzz_target_count": fuzz_inventory["fuzz_target_count"],
             "fuzz_unclassified_crashes": smoke["unclassified_crashes"],
-            "closeout_oxide_outlier_failures": closeout["verdict"]["oxide_outlier_failures"],
+            "closeout_wellfriendpdf_outlier_failures": closeout["verdict"]["wellfriendpdf_outlier_failures"],
             "closeout_unclassified_failures": closeout["verdict"]["unclassified_failures"],
             "native_cmm_decision": cmm["feasibility"]["decision"],
         },
@@ -949,7 +949,7 @@ def write_html_report(closeout: dict[str, Any], smoke: dict[str, Any]) -> None:
         "<!doctype html><meta charset='utf-8'><title>Prompt 11 Renderer Close-out</title>",
         "<style>body{font-family:system-ui,Segoe UI,sans-serif;margin:32px;line-height:1.4}table{border-collapse:collapse}td,th{border:1px solid #ccc;padding:6px 8px}code{background:#f5f5f5;padding:2px 4px}</style>",
         "<h1>Prompt 11 Renderer Fuzz / CMM Close-out</h1>",
-        f"<p>Status: <strong>{html.escape(verdict['status'])}</strong>. Oxide outliers: {verdict['oxide_outlier_failures']}. Unclassified failures: {verdict['unclassified_failures']}.</p>",
+        f"<p>Status: <strong>{html.escape(verdict['status'])}</strong>. Wellfriend outliers: {verdict['wellfriendpdf_outlier_failures']}. Unclassified failures: {verdict['unclassified_failures']}.</p>",
         f"<p>Fuzz unclassified crashes/hangs/OOMs: {smoke['unclassified_crashes']}.</p>",
         "<h2>Reference Corpus Sources</h2><table><tr><th>Prompt</th><th>Fixtures</th><th>Pages</th><th>Summary</th></tr>",
     ]
@@ -1003,7 +1003,7 @@ def write_docs_artifacts(args: argparse.Namespace) -> None:
         OUT_DIR / "renderer-crash-minimization-workflow-prompt11.md",
         "# Prompt 11 Renderer Crash Minimization Workflow\n\n"
         "1. Preserve the original seed and mutated PDF under the Prompt 11 artifact root.\n"
-        "2. Reproduce with `oxide render <fixture> --pages 1 --dpi 36 --format png --json`.\n"
+        "2. Reproduce with `wellfriendpdf render <fixture> --pages 1 --dpi 36 --format png --json`.\n"
         "3. If libFuzzer produced the input, run `cargo fuzz tmin <target> <artifact>` and keep the minimized file.\n"
         "4. Classify as crash, hang, OOM, fail-closed parser error, or reference disagreement before filing.\n"
         "5. Assign an exact owner: parser, content interpreter, display-list replay, image decode, font/CJK/RTL, annotation, OCG, shading/pattern, transparency, scheduler, or CMM.\n"
@@ -1030,7 +1030,7 @@ def write_docs_artifacts(args: argparse.Namespace) -> None:
     write_html_report(closeout, smoke)
 
     feature_report = run_command(
-        [*(oxide_command(args.oxide_bin) or ["cargo", "run", "-p", "oxide-cli", "--quiet", "--"]), "feature-report"],
+        [*(wellfriendpdf_command(args.wellfriendpdf_bin) or ["cargo", "run", "-p", "wellfriendpdf-cli", "--quiet", "--"]), "feature-report"],
         timeout=args.render_timeout,
         stdout_limit=None,
     )
@@ -1052,7 +1052,7 @@ def write_docs_artifacts(args: argparse.Namespace) -> None:
                 "artifact_root": rel(OUT_DIR),
                 "fuzz_targets": fuzz_inventory["fuzz_target_count"],
                 "mutations": len(mutator_report["mutations"]),
-                "oxide_outliers": closeout["verdict"]["oxide_outlier_failures"],
+                "wellfriendpdf_outliers": closeout["verdict"]["wellfriendpdf_outlier_failures"],
                 "unclassified_failures": closeout["verdict"]["unclassified_failures"],
                 "native_cmm_decision": cmm["feasibility"]["decision"],
             },
@@ -1063,7 +1063,7 @@ def write_docs_artifacts(args: argparse.Namespace) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate Prompt 11 renderer/CMM close-out artifacts.")
-    parser.add_argument("--oxide-bin", type=Path, default=Path("target/debug/oxide.exe" if os.name == "nt" else "target/debug/oxide"))
+    parser.add_argument("--wellfriendpdf-bin", type=Path, default=Path("target/debug/wellfriendpdf.exe" if os.name == "nt" else "target/debug/wellfriendpdf"))
     parser.add_argument("--render-limit", type=int, default=12)
     parser.add_argument("--render-timeout", type=int, default=60)
     parser.add_argument("--cargo-timeout", type=int, default=600)

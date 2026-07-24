@@ -1,13 +1,13 @@
 # .NET SDK Prompt 02
 
-The .NET SDK lives under `bindings/dotnet/Oxide.Sdk` and wraps the stable C ABI
+The .NET SDK lives under `bindings/dotnet/WellfriendPdf` and wraps the stable C ABI
 with P/Invoke. It returns the same versioned report JSON as the Rust facade and
 C ABI.
 
 ## Package Shape
 
-- Library project: `bindings/dotnet/Oxide.Sdk/Oxide.Sdk.csproj`
-- Tests: `bindings/dotnet/Oxide.Sdk.Tests`
+- Library project: `bindings/dotnet/WellfriendPdf/WellfriendPdf.csproj`
+- Tests: `bindings/dotnet/WellfriendPdf.Tests`
 - Example: `bindings/dotnet/examples/Prompt02Reports.cs`
 - NuGet metadata: package id, license, tags, readme, repository, documentation
   file generation.
@@ -16,17 +16,17 @@ C ABI.
 
 Lifecycle:
 
-- `OxideDocument.Open(string path)`
-- `OxideDocument.Open(byte[] bytes)`
-- `OxideDocument.Open(string path, string? password = null)`
-- `OxideDocument.Open(byte[] bytes, string? password = null)`
+- `WellfriendDocument.Open(string path)`
+- `WellfriendDocument.Open(byte[] bytes)`
+- `WellfriendDocument.Open(string path, string? password = null)`
+- `WellfriendDocument.Open(byte[] bytes, string? password = null)`
 - `Dispose()` / `using`
 - `PageCount`, `Pages`, `GetPage(n)`, `ExtractText(n)`
 
 Reports:
 
-- `OxideDocument.FeatureReportJson()`
-- `OxideDocument.EngineVersion()`, `OxideDocument.AbiVersion`
+- `WellfriendDocument.FeatureReportJson()`
+- `WellfriendDocument.EngineVersion()`, `WellfriendDocument.AbiVersion`
 - `SecurityReportJson`
 - `ParserReportJson`
 - `ColorReportJson`
@@ -47,11 +47,11 @@ Outputs:
 
 ## Native Loading and Ownership
 
-The resolver checks `OXIDE_NATIVE_LIBRARY`, the application/assembly/current
+The resolver checks `WELLFRIENDPDF_NATIVE_LIBRARY`, the application/assembly/current
 directories, local `target/debug` and `target/release`, and
 `runtimes/<rid>/native`. Native document handles are owned by `SafeHandle`.
 Native output buffers are copied into managed `byte[]` and freed immediately.
-Errors preserve the C ABI status code and message in `OxideException`.
+Errors preserve the C ABI status code and message in `WellfriendPdfException`.
 
 ## Limits
 

@@ -3,5 +3,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    oxide_engine::fuzz::fuzz_standards_xmp_identifier(data);
+    wellfriendpdf_engine::fuzz::fuzz_standards_xmp_identifier(data);
 });

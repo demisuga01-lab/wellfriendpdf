@@ -7,11 +7,11 @@
 //! function evaluation.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::fuzz::{
+use wellfriendpdf_engine::fuzz::{
     fuzz_color_report, fuzz_font_mapping, fuzz_functions, fuzz_parse_font, fuzz_structured_pdf,
 };
-use oxide_engine::render::{build_display_list, render_display_list, RenderMode, Viewport};
-use oxide_engine::{ContentParser, PageResources};
+use wellfriendpdf_engine::render::{build_display_list, render_display_list, RenderMode, Viewport};
+use wellfriendpdf_engine::{ContentParser, PageResources};
 
 fuzz_target!(|data: &[u8]| {
     if data.is_empty() {

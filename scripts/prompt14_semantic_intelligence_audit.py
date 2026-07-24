@@ -162,7 +162,7 @@ def main() -> int:
         "검색엔진",
     ]
     dictionary_report = {
-        "name": "oxide-prompt14-synthetic-cjk-test-dictionary",
+        "name": "wellfriendpdf-prompt14-synthetic-cjk-test-dictionary",
         "version": "2026-07-09",
         "hash": hash_entries(dictionary_entries),
         "license": "CC0-1.0 synthetic fixture terms",

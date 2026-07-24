@@ -5,7 +5,7 @@
 > [`security.md`](security.md). This document covers resource-safety and
 > memory-safety (DoS-class) hardening.
 
-Oxide is pure safe Rust. By construction it cannot exhibit the buffer
+Wellfriend is pure safe Rust. By construction it cannot exhibit the buffer
 overflows, use-after-free, and type-confusion bugs that have produced a long
 history of CVEs in C/C++ PDF stacks such as Poppler: safe Rust has no raw
 pointer arithmetic and enforces bounds and lifetimes at compile time.
@@ -81,7 +81,7 @@ font programs) are under `fuzz/corpus/<target>/`. See
 ## Findings and fixes
 
 Each subsystem was audited against the four DoS classes above, and each
-confirmed bug was fixed to return a clean `OxideError` (never crash or hang)
+confirmed bug was fixed to return a clean `WellfriendError` (never crash or hang)
 and locked down with a permanent regression test feeding the malicious input
 to the function and asserting `Err`.
 
@@ -93,7 +93,7 @@ to the function and asserting `Err`.
 | 4 | **Infinite loop (hang / CPU-DoS)** — *found by libFuzzer (`content_tokenizer`) this round* | `content/tokenizer.rs` `read_inline_image_data` + `content/parser.rs` `parse_tokens` | An inline image (`BI`/`ID`) with no `EI` terminator made `read_inline_image_data` return a token error **without advancing `pos` or leaving the `Data` state**; `ContentParser::parse` recovers from token errors with `continue`, so it called the tokenizer again at the same position, got the same error, and looped forever (100% CPU, no termination). | On no-`EI`, consume the remaining bytes as the (unterminated) inline-image payload, advance to EOF, and leave the inline-image state so iteration terminates. The previously-hanging libFuzzer input now executes in ~1 ms. | `content::tokenizer::tests::unterminated_inline_image_terminates_and_does_not_hang` (+ the minimized input saved as a corpus seed) |
 
 | 5 | Panic (malformed encryption dictionary) | `crypto.rs` `EncryptionInfo::from_dict` / `compute_encryption_key` | The new `crypto` fuzz target generated a legacy V1-V4 encryption dictionary with `/Length 256`. The parser accepted it, then key derivation tried to slice 32 bytes from a 16-byte MD5 digest. | Reject legacy `/Length` values outside 40..128 bits in 8-bit increments; `compute_encryption_key` also clamps defensively so direct internal calls cannot panic. | `crypto::tests::from_dict_rejects_invalid_legacy_key_length`, `crypto::tests::compute_encryption_key_defensively_caps_invalid_legacy_length` |
-| 6 | Resource cap too loose for a 1 GB render harness | `engine.rs` `DEFAULT_MAX_RENDER_PIXELS` | A real pdf.js image fixture (`issue19517.pdf`) declares a 12608x16806 pt page: 211,890,048 pixels at 72 DPI. The old 300 MP engine default admitted it, so the outer 1 GB harness memory cap killed both Oxide and Poppler. | Lowered the default engine/CLI render cap to 100 MP, matching the server default. The page now fails in 56 ms with a clean `ResourceLimit` and 3.1 MB peak RSS. | `render_resource_limits::oversized_real_world_page_is_capped_at_default_limit` |
+| 6 | Resource cap too loose for a 1 GB render harness | `engine.rs` `DEFAULT_MAX_RENDER_PIXELS` | A real pdf.js image fixture (`issue19517.pdf`) declares a 12608x16806 pt page: 211,890,048 pixels at 72 DPI. The old 300 MP engine default admitted it, so the outer 1 GB harness memory cap killed both Wellfriend and Poppler. | Lowered the default engine/CLI render cap to 100 MP, matching the server default. The page now fails in 56 ms with a clean `ResourceLimit` and 3.1 MB peak RSS. | `render_resource_limits::oversized_real_world_page_is_capped_at_default_limit` |
 
 ### Audited and already robust (no change needed)
 
@@ -165,7 +165,7 @@ covered by regression tests.
   not be linked on MSVC because the crate also builds as `cdylib`.
 - The image/font/shaping paths wrap Rust dependency crates (`hayro-*`,
   `ttf-parser`, `jpeg-decoder`, `rustybuzz`). A crash inside a dependency would
-  be an upstream bug, but Oxide's wrappers are expected to validate sizes and
+  be an upstream bug, but Wellfriend's wrappers are expected to validate sizes and
   return errors regardless; no dependency-level crash surfaced in these runs.
 - `cargo-fuzz` requires nightly Rust; the `fuzz/` crate is intentionally
   outside the stable workspace, so the stable `cargo build`/`cargo test` never
@@ -199,7 +199,7 @@ Run command:
 ```powershell
 py renderer-benchmark\scripts\renderer_benchmark.py `
   --manifest renderer-benchmark\corpus\prompt-g-cve-class-manifest.json `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin `
   --output-dir renderer-benchmark\results\prompt-g-cve-class `
   --dpi 72 --max-pages-per-file 1 --timeout-sec 15 --max-memory-mb 1024 `
@@ -210,12 +210,12 @@ Full run result:
 
 - Files processed: 751.
 - Hostile subset: 60/60 crash-free, timeout-safe, and memory-bounded.
-- All-file Oxide crashes/panics: 0.
-- Active-content fixtures: rendered as inert PDF content; Oxide has no
+- All-file Wellfriend crashes/panics: 0.
+- Active-content fixtures: rendered as inert PDF content; Wellfriend has no
   JavaScript/Launch execution path.
 - Initial all-file resource findings: 2.
-  - `pdfjs_full_issue19517`: both Oxide and Poppler crossed the 1 GB harness
-    memory cap on a 211.9 MP page. Fixed by lowering Oxide's default render cap
+  - `pdfjs_full_issue19517`: both Wellfriend and Poppler crossed the 1 GB harness
+    memory cap on a 211.9 MP page. Fixed by lowering Wellfriend's default render cap
     to 100 MP; targeted rerun returns a clean `ResourceLimit` in 56 ms with
     3.08 MB peak RSS.
   - `pdfjs_full_issue840`: timed out under the 15 s safety harness but completed
@@ -223,23 +223,23 @@ Full run result:
     performance/visual-fidelity item, not a crash/hang/OOM.
 
 After the targeted fixes/reruns, the safety statement for the corpus is:
-0 Oxide panics/aborts, no unbounded memory growth, hostile fixtures bounded by
+0 Wellfriend panics/aborts, no unbounded memory growth, hostile fixtures bounded by
 the harness, and every discovered malformed-input panic/resource issue fixed or
 converted into a clean error.
 
 ## AddressSanitizer and `unsafe`
 
 The core engine, CLI, and server have no workspace-owned `unsafe` blocks. The
-`oxide-capi` crate necessarily contains FFI `unsafe` around raw pointers and
-ownership transfer. `cargo test -p oxide-capi` passed, and an ASan libFuzzer
-replay of `parse_pdf` passed, but a direct `oxide-capi` fuzz target could not be
+`wellfriendpdf-capi` crate necessarily contains FFI `unsafe` around raw pointers and
+ownership transfer. `cargo test -p wellfriendpdf-capi` passed, and an ASan libFuzzer
+replay of `parse_pdf` passed, but a direct `wellfriendpdf-capi` fuzz target could not be
 linked on Windows/MSVC because the crate also emits `cdylib` and the fuzz link
 failed with an unresolved `main` symbol. Treat the C API FFI boundary as audited
 and unit-tested, but not yet ASan-fuzzed.
 
 ## Poppler comparison framing
 
-Oxide's factual differentiator is class elimination, not perfection: safe Rust
+Wellfriend's factual differentiator is class elimination, not perfection: safe Rust
 eliminates buffer-overflow, use-after-free, and out-of-bounds-write bugs in the
 core engine/CLI/server by construction, while Poppler is a C++ stack that must
 continue patching memory-safety and malformed-document crash classes. Public
@@ -277,7 +277,7 @@ correct fix is **cooperative cancellation**:
 
 1. The server creates a [`CancelToken`](../crates/engine/src/cancel.rs) (a
    shared `Arc<AtomicBool>`) per request and arms a timer task that trips it at
-   `OXIDE_REQUEST_TIMEOUT_SECS`.
+   `WELLFRIENDPDF_REQUEST_TIMEOUT_SECS`.
 2. The token is threaded into `render_page_cancellable`. The engine's hot loops
    poll it and bail out early when set:
    - the **operator dispatch loop** (`dispatch_all`) checks every 64 operators;
@@ -286,7 +286,7 @@ correct fix is **cooperative cancellation**:
      nested work stops too.
 3. Because all rayon page-workers share the one token, when the deadline hits
    they **all** observe it and bail, freeing every thread promptly.
-4. The early exit becomes `OxideError::Cancelled`, which the server maps to a
+4. The early exit becomes `WellfriendError::Cancelled`, which the server maps to a
    clean **503 Service Unavailable** ("request exceeded the processing time
    limit") — never a 500 or a hang.
 5. The timer is aborted the instant the work finishes, so no timer leaks on the
@@ -302,15 +302,15 @@ message.
 
 ### Resource limits (memory / output / work)
 
-Beyond the existing `OXIDE_MAX_FILE_SIZE` / `OXIDE_MAX_DPI` / `OXIDE_MAX_PAGES`
+Beyond the existing `WELLFRIENDPDF_MAX_FILE_SIZE` / `WELLFRIENDPDF_MAX_DPI` / `WELLFRIENDPDF_MAX_PAGES`
 caps, three processing-level limits close resource-exhaustion vectors that
 well-formed input can still hit:
 
 | Limit | Env var (default) | Vector | Enforcement point |
 |-------|-------------------|--------|-------------------|
-| Render pixels per page | `OXIDE_MAX_RENDER_PIXELS` (100 MP) | "Pixel explosion": a giant MediaBox at a legal DPI demands billions of pixels → gigabytes of buffer → OOM | **Before** buffer allocation, from the page viewport (`check_render_pixels`). Hard-reject with 413 — clamping a true bomb is unsafe. |
-| Total output bytes | `OXIDE_MAX_OUTPUT_BYTES` (2 GiB) | "Output explosion": a small input producing a huge ZIP (many large images / pages) | **During** output accumulation (`check_output_size`), so the oversized payload is never fully buffered. 413. |
-| Image count | `OXIDE_MAX_IMAGE_COUNT` (10 000) | extract-images on a PDF with an absurd number of images | **Before** decode/encode of any image. 413. |
+| Render pixels per page | `WELLFRIENDPDF_MAX_RENDER_PIXELS` (100 MP) | "Pixel explosion": a giant MediaBox at a legal DPI demands billions of pixels → gigabytes of buffer → OOM | **Before** buffer allocation, from the page viewport (`check_render_pixels`). Hard-reject with 413 — clamping a true bomb is unsafe. |
+| Total output bytes | `WELLFRIENDPDF_MAX_OUTPUT_BYTES` (2 GiB) | "Output explosion": a small input producing a huge ZIP (many large images / pages) | **During** output accumulation (`check_output_size`), so the oversized payload is never fully buffered. 413. |
+| Image count | `WELLFRIENDPDF_MAX_IMAGE_COUNT` (10 000) | extract-images on a PDF with an absurd number of images | **Before** decode/encode of any image. 413. |
 | Decompressed stream bytes | engine const `MAX_FLATE_DECOMPRESSED_BYTES` (512 MiB) | "Decompression bomb": a tiny FlateDecode stream inflating to gigabytes | **Inside** the flate decode loop via `Read::take` — stops inflating past the cap rather than checking after. `MalformedPdf`. |
 
 Defaults are chosen to comfortably admit real workloads (an A4 page at 600 DPI
@@ -352,17 +352,17 @@ The heavy endpoints have async job variants (`/api/v1/jobs/...`, see
 connection, the job system **adds resource-safety properties** of its own — it
 is bounded in every dimension, consistent with the per-request model above:
 
-- **Bounded queue** (`OXIDE_JOB_QUEUE_CAPACITY`): submissions past the cap are
+- **Bounded queue** (`WELLFRIENDPDF_JOB_QUEUE_CAPACITY`): submissions past the cap are
   rejected with **503 + `Retry-After`** rather than accepted into unbounded
   backlog. Bursts are absorbed up to the cap, then shed cleanly.
-- **Bounded worker pool** (`OXIDE_JOB_WORKERS`): a fixed number of background
+- **Bounded worker pool** (`WELLFRIENDPDF_JOB_WORKERS`): a fixed number of background
   workers process at controlled concurrency — inbound submissions never each
   consume a processing slot the way sync requests do.
-- **Bounded retained state** (`OXIDE_MAX_JOBS` + `OXIDE_JOB_RETENTION_SECS`): a
+- **Bounded retained state** (`WELLFRIENDPDF_MAX_JOBS` + `WELLFRIENDPDF_JOB_RETENTION_SECS`): a
   cleanup task (same scheduling pattern as the rate-limiter reaper) drops jobs
   past their retention window and deletes their on-disk result files, so neither
   the in-memory store nor the result temp-dir grows without limit.
-- **Per-job deadline** (`OXIDE_JOB_TIMEOUT_SECS`): larger than the sync cap
+- **Per-job deadline** (`WELLFRIENDPDF_JOB_TIMEOUT_SECS`): larger than the sync cap
   (that is the point of async) but still bounded, and enforced via the **same
   cooperative cancellation** — on expiry the job is marked `failed` and its
   worker thread is freed.

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Differential fuzzing harness for Oxide.
+"""Differential fuzzing harness for WellfriendPdf.
 
 The harness intentionally checks high-signal properties first: qpdf/page-count
-agreement, Poppler/Oxide text extraction at a tolerant token level, and writer
+agreement, Poppler/Wellfriend text extraction at a tolerant token level, and writer
 round-trip validity. It is designed for CI smoke runs and longer scheduled runs.
 """
 
@@ -160,8 +160,8 @@ def qpdf_page_count(qpdf: str, pdf: Path) -> tuple[int | None, Run]:
         return None, run
 
 
-def oxide_info(oxide: str, pdf: Path) -> tuple[dict | None, Run]:
-    run = run_cmd([oxide, "info", "--json", str(pdf)], timeout=15)
+def wellfriendpdf_info(wellfriendpdf: str, pdf: Path) -> tuple[dict | None, Run]:
+    run = run_cmd([wellfriendpdf, "info", "--json", str(pdf)], timeout=15)
     if run.code != 0:
         return None, run
     try:
@@ -174,8 +174,8 @@ def qpdf_check(qpdf: str, pdf: Path) -> Run:
     return run_cmd([qpdf, "--check", str(pdf)], timeout=20)
 
 
-def extract_oxide_text(oxide: str, pdf: Path) -> Run:
-    return run_cmd([oxide, "extract-text", str(pdf)], timeout=20)
+def extract_wellfriendpdf_text(wellfriendpdf: str, pdf: Path) -> Run:
+    return run_cmd([wellfriendpdf, "extract-text", str(pdf)], timeout=20)
 
 
 def extract_poppler_text(pdftotext: str, pdf: Path, out_dir: Path) -> Run:
@@ -226,7 +226,7 @@ def evaluate_case(
     *,
     pdf: Path,
     output: Path,
-    oxide: str,
+    wellfriendpdf: str,
     qpdf: str,
     pdftotext: str,
     text_threshold: float,
@@ -238,34 +238,34 @@ def evaluate_case(
     qcheck = qpdf_check(qpdf, pdf)
     qpdf_valid = qcheck.code == 0
     qpages, qpages_run = qpdf_page_count(qpdf, pdf)
-    oinfo, oinfo_run = oxide_info(oxide, pdf)
+    oinfo, oinfo_run = wellfriendpdf_info(wellfriendpdf, pdf)
 
     if qpdf_valid and oinfo is None:
         findings.append(
             {
-                "kind": "qpdf_valid_oxide_rejected",
+                "kind": "qpdf_valid_wellfriendpdf_rejected",
                 "case": str(pdf),
-                "oxide_error": oinfo_run.stderr.strip() or oinfo_run.stdout.strip(),
+                "wellfriendpdf_error": oinfo_run.stderr.strip() or oinfo_run.stdout.strip(),
             }
         )
     elif not qpdf_valid and oinfo is not None:
         notes.append(
             {
-                "kind": "oxide_lenient_reference_rejected",
+                "kind": "wellfriendpdf_lenient_reference_rejected",
                 "case": str(pdf),
                 "qpdf_error": qcheck.stderr.strip() or qcheck.stdout.strip(),
             }
         )
 
     if qpages is not None and oinfo is not None:
-        oxide_pages = int(oinfo.get("page_count", -1))
-        if oxide_pages != qpages:
+        wellfriendpdf_pages = int(oinfo.get("page_count", -1))
+        if wellfriendpdf_pages != qpages:
             findings.append(
                 {
                     "kind": "page_count_mismatch",
                     "case": str(pdf),
                     "qpdf_pages": qpages,
-                    "oxide_pages": oxide_pages,
+                    "wellfriendpdf_pages": wellfriendpdf_pages,
                 }
             )
     elif qpdf_valid and qpages is None:
@@ -278,10 +278,10 @@ def evaluate_case(
         )
 
     if qpdf_valid and oinfo is not None:
-        oxide_text = extract_oxide_text(oxide, pdf)
+        wellfriendpdf_text = extract_wellfriendpdf_text(wellfriendpdf, pdf)
         poppler_text = extract_poppler_text(pdftotext, pdf, output / "text")
-        if oxide_text.code == 0 and poppler_text.code == 0:
-            left = normalize_text(oxide_text.stdout)
+        if wellfriendpdf_text.code == 0 and poppler_text.code == 0:
+            left = normalize_text(wellfriendpdf_text.stdout)
             right = normalize_text(poppler_text.stdout)
             similarity = token_similarity(left, right)
             if similarity < text_threshold:
@@ -290,16 +290,16 @@ def evaluate_case(
                         "kind": "text_token_divergence",
                         "case": str(pdf),
                         "similarity": similarity,
-                        "oxide_tokens": left[:80],
+                        "wellfriendpdf_tokens": left[:80],
                         "poppler_tokens": right[:80],
                     }
                 )
-        elif poppler_text.code == 0 and oxide_text.code != 0:
+        elif poppler_text.code == 0 and wellfriendpdf_text.code != 0:
             findings.append(
                 {
-                    "kind": "qpdf_valid_poppler_text_ok_oxide_text_failed",
+                    "kind": "qpdf_valid_poppler_text_ok_wellfriendpdf_text_failed",
                     "case": str(pdf),
-                    "oxide_error": oxide_text.stderr.strip() or oxide_text.stdout.strip(),
+                    "wellfriendpdf_error": wellfriendpdf_text.stderr.strip() or wellfriendpdf_text.stdout.strip(),
                 }
             )
         else:
@@ -307,7 +307,7 @@ def evaluate_case(
                 {
                     "kind": "text_diff_skipped",
                     "case": str(pdf),
-                    "oxide_code": oxide_text.code,
+                    "wellfriendpdf_code": wellfriendpdf_text.code,
                     "poppler_code": poppler_text.code,
                 }
             )
@@ -315,13 +315,13 @@ def evaluate_case(
     if writer_roundtrip and qpdf_valid and oinfo is not None:
         roundtrip = output / "roundtrip" / f"{pdf.stem}.optimized.pdf"
         roundtrip.parent.mkdir(parents=True, exist_ok=True)
-        opt = run_cmd([oxide, "optimize", "-o", str(roundtrip), str(pdf)], timeout=30)
+        opt = run_cmd([wellfriendpdf, "optimize", "-o", str(roundtrip), str(pdf)], timeout=30)
         if opt.code != 0:
             findings.append(
                 {
                     "kind": "writer_roundtrip_failed",
                     "case": str(pdf),
-                    "oxide_error": opt.stderr.strip() or opt.stdout.strip(),
+                    "wellfriendpdf_error": opt.stderr.strip() or opt.stdout.strip(),
                 }
             )
         else:
@@ -373,7 +373,7 @@ def build_cases(args: argparse.Namespace, rng: random.Random, output: Path) -> l
             break
 
     while len(case_paths) < args.cases:
-        text = f"oxide differential case {len(case_paths)} seed {args.seed}"
+        text = f"wellfriendpdf differential case {len(case_paths)} seed {args.seed}"
         data = build_minimal_pdf(text)
         name = f"grammar-{len(case_paths):04d}-{case_id(data)}.pdf"
         case_paths.append(write_case(output / "inputs" / name, data))
@@ -382,7 +382,7 @@ def build_cases(args: argparse.Namespace, rng: random.Random, output: Path) -> l
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Differential fuzz Oxide against qpdf/Poppler.")
+    parser = argparse.ArgumentParser(description="Differential fuzz Wellfriend against qpdf/Poppler.")
     parser.add_argument("--cases", type=int, default=20, help="Number of generated/mutated cases.")
     parser.add_argument("--seed", type=int, default=0x0D1F_F00D, help="Deterministic RNG seed.")
     parser.add_argument("--seed-dir", action="append", default=[], help="Directory containing seed PDFs.")
@@ -390,7 +390,7 @@ def main() -> int:
     parser.add_argument("--max-seed-bytes", type=int, default=2_000_000, help="Skip larger seed PDFs.")
     parser.add_argument("--output", default="target/differential-fuzz", help="Output directory.")
     parser.add_argument("--regressions", default="differential/regressions", help="Regression seed dir.")
-    parser.add_argument("--oxide", default=None, help="Path to oxide CLI.")
+    parser.add_argument("--wellfriendpdf", default=None, help="Path to wellfriendpdf CLI.")
     parser.add_argument("--qpdf", default=None, help="Path to qpdf.")
     parser.add_argument("--pdftotext", default=None, help="Path to Poppler pdftotext.")
     parser.add_argument("--text-threshold", type=float, default=0.65, help="Token similarity floor.")
@@ -402,7 +402,7 @@ def main() -> int:
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
-    oxide = resolve_tool(args.oxide, ["target/debug/oxide.exe", "target/release/oxide.exe", "oxide"])
+    wellfriendpdf = resolve_tool(args.wellfriendpdf, ["target/debug/wellfriendpdf.exe", "target/release/wellfriendpdf.exe", "wellfriendpdf"])
     qpdf = resolve_tool(args.qpdf, ["qpdf"])
     pdftotext = resolve_tool(args.pdftotext, ["pdftotext"])
 
@@ -414,7 +414,7 @@ def main() -> int:
         findings, notes = evaluate_case(
             pdf=pdf,
             output=output,
-            oxide=oxide,
+            wellfriendpdf=wellfriendpdf,
             qpdf=qpdf,
             pdftotext=pdftotext,
             text_threshold=args.text_threshold,
@@ -428,7 +428,7 @@ def main() -> int:
         "findings": all_findings,
         "notes": all_notes,
         "tools": {
-            "oxide": oxide,
+            "wellfriendpdf": wellfriendpdf,
             "qpdf": qpdf,
             "pdftotext": pdftotext,
         },

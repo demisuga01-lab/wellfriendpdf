@@ -1,6 +1,6 @@
 # Stability and SemVer Policy
 
-Oxide currently publishes workspace crates at version `0.1.0`. That is an
+Wellfriend currently publishes workspace crates at version `0.1.0`. That is an
 honest pre-1.0 signal: the stable integration path is documented, but some
 low-level PDF internals can still move before a `1.0` commitment.
 
@@ -8,18 +8,18 @@ low-level PDF internals can still move before a `1.0` commitment.
 
 The following are the intended stable surfaces during the `0.x` line:
 
-- `oxide_engine::prelude`
+- `wellfriendpdf_engine::prelude`
 - `ContentEngine`
 - canonical parse types: `Document`, `Page`, `Block`, `ParseOptions`,
   `SerializeOptions`, extraction profiles, and region/scoped extraction types
 - authoring/editing/compliance/signature option structs documented in
   `docs/api_overview.md`
-- `OxideError`, `ErrorKind`, `Result<T>`, and `OxideError::code()`
+- `WellfriendError`, `ErrorKind`, `Result<T>`, and `WellfriendError::code()`
 - CLI command names, exit codes, and documented JSON output schemas in
-  `README.md`, `docs/cli.md`, and `oxide --help`
+  `README.md`, `docs/cli.md`, and `wellfriendpdf --help`
 - Python binding package/module surface documented in `docs/python_binding.md`
-  and `crates/oxide-py/README.md`
-- C ABI symbols in `crates/oxide-capi/include/oxide.h`
+  and `crates/wellfriendpdf-py/README.md`
+- C ABI symbols in `crates/wellfriendpdf-capi/include/wellfriendpdf.h`
 - WASM exports documented in `docs/bindings.md`
 - HTTP `/api/v1/*` endpoint paths and documented JSON response shapes
 
@@ -71,7 +71,7 @@ Recommended future CI guard:
 
 ```sh
 cargo install cargo-public-api
-cargo public-api -p oxide-engine --simplified > docs/public-api-oxide-engine.txt
+cargo public-api -p wellfriendpdf-engine --simplified > docs/public-api-wellfriendpdf-engine.txt
 ```
 
 Run the command before releases and review the diff. `cargo-semver-checks` can

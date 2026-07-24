@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run Oxide large-file probe operations under a hard per-process memory cap.
+"""Run Wellfriend large-file probe operations under a hard per-process memory cap.
 
 The Windows path uses a Job Object with process/job memory limits and samples
 the child process working set/private bytes at fixed intervals. The child emits

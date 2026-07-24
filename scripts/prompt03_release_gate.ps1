@@ -96,12 +96,12 @@ function Add-Artifact {
 function Get-NativeLibraryName {
     $runtime = [System.Runtime.InteropServices.RuntimeInformation]
     if ($runtime::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) {
-        return "oxide_capi.dll"
+        return "wellfriendpdf_capi.dll"
     }
     if ($runtime::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)) {
-        return "liboxide_capi.dylib"
+        return "libwellfriendpdf_capi.dylib"
     }
-    return "liboxide_capi.so"
+    return "libwellfriendpdf_capi.so"
 }
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
@@ -112,24 +112,24 @@ $nativeName = Get-NativeLibraryName
 $nativePath = Join-Path $Repo "target/debug/$nativeName"
 $runtime = [System.Runtime.InteropServices.RuntimeInformation]
 $exeSuffix = if ($runtime::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)) { ".exe" } else { "" }
-$worker = Join-Path $Repo "target/debug/oxide-codec-worker$exeSuffix"
-$oxide = Join-Path $Repo "target/debug/oxide$exeSuffix"
+$worker = Join-Path $Repo "target/debug/wellfriendpdf-codec-worker$exeSuffix"
+$wellfriendpdf = Join-Path $Repo "target/debug/wellfriendpdf$exeSuffix"
 
 Invoke-GateStep "cargo fmt check" "cargo" @("fmt", "--check")
-Invoke-GateStep "cargo package oxide-engine" "cargo" @("package", "-p", "oxide-engine", "--allow-dirty")
-Invoke-GateStep "cargo build cli capi" "cargo" @("build", "-p", "oxide-cli", "-p", "oxide-capi")
-Invoke-GateStep "cargo build codec worker" "cargo" @("build", "-p", "oxide-engine", "--bin", "oxide-codec-worker")
-Invoke-GateStep "rust example codec isolation" "cargo" @("run", "-p", "oxide-engine", "--example", "prompt03_codec_isolation", "--", "in_process")
-Invoke-GateStep "cli codec isolation in-process" $oxide @("codec-isolation-report", "--filter", "FlateDecode", "--sample-text", "hello oxide", "--policy", "in_process")
-Invoke-GateStep "cli codec isolation isolated" $oxide @("codec-isolation-report", "--filter", "FlateDecode", "--sample-text", "hello oxide", "--policy", "isolated_required", "--worker", $worker)
-Invoke-GateStep "capi tests" "cargo" @("test", "-p", "oxide-capi")
-Invoke-GateStep "engine isolation tests" "cargo" @("test", "-p", "oxide-engine", "--test", "codec_isolation")
-Invoke-GateStep "wasm target check" "cargo" @("check", "-p", "oxide-wasm", "--target", "wasm32-unknown-unknown")
+Invoke-GateStep "cargo package wellfriendpdf-engine" "cargo" @("package", "-p", "wellfriendpdf-engine", "--allow-dirty")
+Invoke-GateStep "cargo build cli capi" "cargo" @("build", "-p", "wellfriendpdf-cli", "-p", "wellfriendpdf-capi")
+Invoke-GateStep "cargo build codec worker" "cargo" @("build", "-p", "wellfriendpdf-engine", "--bin", "wellfriendpdf-codec-worker")
+Invoke-GateStep "rust example codec isolation" "cargo" @("run", "-p", "wellfriendpdf-engine", "--example", "prompt03_codec_isolation", "--", "in_process")
+Invoke-GateStep "cli codec isolation in-process" $wellfriendpdf @("codec-isolation-report", "--filter", "FlateDecode", "--sample-text", "hello wellfriendpdf", "--policy", "in_process")
+Invoke-GateStep "cli codec isolation isolated" $wellfriendpdf @("codec-isolation-report", "--filter", "FlateDecode", "--sample-text", "hello wellfriendpdf", "--policy", "isolated_required", "--worker", $worker)
+Invoke-GateStep "capi tests" "cargo" @("test", "-p", "wellfriendpdf-capi")
+Invoke-GateStep "engine isolation tests" "cargo" @("test", "-p", "wellfriendpdf-engine", "--test", "codec_isolation")
+Invoke-GateStep "wasm target check" "cargo" @("check", "-p", "wellfriendpdf-wasm", "--target", "wasm32-unknown-unknown")
 
 if (Get-Command python -ErrorAction SilentlyContinue) {
     $maturinVersion = & python -m maturin --version 2>$null
     if ($LASTEXITCODE -eq 0) {
-        Invoke-GateStep "python wheel build" "python" @("-m", "maturin", "build", "--manifest-path", "crates/oxide-py/Cargo.toml", "--out", $OutDir)
+        Invoke-GateStep "python wheel build" "python" @("-m", "maturin", "build", "--manifest-path", "crates/wellfriendpdf-py/Cargo.toml", "--out", $OutDir)
     } else {
         Add-Step "python wheel build" "python -m maturin build" "unavailable" 127 "" "maturin is not installed"
     }
@@ -138,12 +138,12 @@ if (Get-Command python -ErrorAction SilentlyContinue) {
 }
 
 if (Get-Command dotnet -ErrorAction SilentlyContinue) {
-    $env:OXIDE_NATIVE_LIBRARY = $nativePath
-    Invoke-GateStep "dotnet test" "dotnet" @("test", "bindings/dotnet/Oxide.Sdk.Tests/Oxide.Sdk.Tests.csproj")
-    Invoke-GateStep "dotnet pack" "dotnet" @("pack", "bindings/dotnet/Oxide.Sdk/Oxide.Sdk.csproj", "-o", $OutDir)
+    $env:WELLFRIENDPDF_NATIVE_LIBRARY = $nativePath
+    Invoke-GateStep "dotnet test" "dotnet" @("test", "bindings/dotnet/WellfriendPdf.Tests/WellfriendPdf.Tests.csproj")
+    Invoke-GateStep "dotnet pack" "dotnet" @("pack", "bindings/dotnet/WellfriendPdf/WellfriendPdf.csproj", "-o", $OutDir)
 } else {
-    Add-Step "dotnet test" "dotnet test bindings/dotnet/Oxide.Sdk.Tests" "unavailable" 127 "" "dotnet is not on PATH"
-    Add-Step "dotnet pack" "dotnet pack bindings/dotnet/Oxide.Sdk" "unavailable" 127 "" "dotnet is not on PATH"
+    Add-Step "dotnet test" "dotnet test bindings/dotnet/WellfriendPdf.Tests" "unavailable" 127 "" "dotnet is not on PATH"
+    Add-Step "dotnet pack" "dotnet pack bindings/dotnet/WellfriendPdf" "unavailable" 127 "" "dotnet is not on PATH"
 }
 
 if ((Get-Command java -ErrorAction SilentlyContinue) -and (Get-Command javac -ErrorAction SilentlyContinue)) {
@@ -156,13 +156,13 @@ if ((Get-Command java -ErrorAction SilentlyContinue) -and (Get-Command javac -Er
 
 Invoke-GateStep "wasm-pack package" "powershell" @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/prompt03b_wasm_pack_gate.ps1", "-OutDir", $OutDir)
 
-Add-Artifact "oxide cli debug binary" $oxide "cli"
+Add-Artifact "wellfriendpdf cli debug binary" $wellfriendpdf "cli"
 Add-Artifact "codec worker debug binary" $worker "codec_worker"
 Add-Artifact "c abi native library" $nativePath "c_abi"
-Add-Artifact "c abi header" (Join-Path $Repo "crates/oxide-capi/include/oxide.h") "c_abi"
-Add-Artifact "python codec isolation example" (Join-Path $Repo "crates/oxide-py/examples/codec_isolation_report.py") "python"
+Add-Artifact "c abi header" (Join-Path $Repo "crates/wellfriendpdf-capi/include/wellfriendpdf.h") "c_abi"
+Add-Artifact "python codec isolation example" (Join-Path $Repo "crates/wellfriendpdf-py/examples/codec_isolation_report.py") "python"
 Add-Artifact "rust codec isolation example" (Join-Path $Repo "crates/engine/examples/prompt03_codec_isolation.rs") "rust"
-Add-Artifact "wasm codec isolation example" (Join-Path $Repo "crates/oxide-wasm/examples/browser/codec_isolation_report.mjs") "wasm"
+Add-Artifact "wasm codec isolation example" (Join-Path $Repo "crates/wellfriendpdf-wasm/examples/browser/codec_isolation_report.mjs") "wasm"
 Add-Artifact "wasm-pack web package" (Join-Path $OutDir "wasm-pack/web-pkg") "wasm"
 Add-Artifact "wasm-pack node package" (Join-Path $OutDir "wasm-pack/node-pkg") "wasm"
 Add-Artifact "wasm-pack inspection report" (Join-Path $OutDir "wasm-pack/wasm-package-inspection.json") "wasm"
@@ -174,12 +174,12 @@ $examplesMatrix = [ordered]@{
     schema_version = 1
     prompt = "combined_prompt03"
     surfaces = @(
-        @{ surface = "rust"; example = "crates/engine/examples/sdk_reports.rs"; codec_isolation = "crates/engine/examples/prompt03_codec_isolation.rs"; package_command = "cargo package -p oxide-engine --allow-dirty" },
-        @{ surface = "cli"; example = "examples/cli/codec_isolation_report.ps1"; command = "oxide codec-isolation-report --filter FlateDecode --sample-text 'hello oxide' --policy in_process" },
-        @{ surface = "python"; example = "crates/oxide-py/examples/sdk_reports.py"; codec_isolation = "crates/oxide-py/examples/codec_isolation_report.py"; package_command = "python -m maturin build --manifest-path crates/oxide-py/Cargo.toml" },
-        @{ surface = "c_abi"; example = "crates/oxide-capi/examples/sdk_reports.c"; codec_isolation = "crates/oxide-capi/examples/codec_isolation_report.c"; package_command = "cargo build -p oxide-capi" },
-        @{ surface = "wasm"; example = "crates/oxide-wasm/examples/browser"; codec_isolation = "crates/oxide-wasm/examples/browser/codec_isolation_report.mjs"; package_command = "scripts/prompt03b_wasm_pack_gate.ps1"; package_status = "implemented_public" },
-        @{ surface = "dotnet"; example = "bindings/dotnet/examples/Prompt02Reports.cs"; codec_isolation = "bindings/dotnet/examples/Prompt03CodecIsolation.cs"; package_command = "dotnet pack bindings/dotnet/Oxide.Sdk/Oxide.Sdk.csproj" },
+        @{ surface = "rust"; example = "crates/engine/examples/sdk_reports.rs"; codec_isolation = "crates/engine/examples/prompt03_codec_isolation.rs"; package_command = "cargo package -p wellfriendpdf-engine --allow-dirty" },
+        @{ surface = "cli"; example = "examples/cli/codec_isolation_report.ps1"; command = "wellfriendpdf codec-isolation-report --filter FlateDecode --sample-text 'hello wellfriendpdf' --policy in_process" },
+        @{ surface = "python"; example = "crates/wellfriendpdf-py/examples/sdk_reports.py"; codec_isolation = "crates/wellfriendpdf-py/examples/codec_isolation_report.py"; package_command = "python -m maturin build --manifest-path crates/wellfriendpdf-py/Cargo.toml" },
+        @{ surface = "c_abi"; example = "crates/wellfriendpdf-capi/examples/sdk_reports.c"; codec_isolation = "crates/wellfriendpdf-capi/examples/codec_isolation_report.c"; package_command = "cargo build -p wellfriendpdf-capi" },
+        @{ surface = "wasm"; example = "crates/wellfriendpdf-wasm/examples/browser"; codec_isolation = "crates/wellfriendpdf-wasm/examples/browser/codec_isolation_report.mjs"; package_command = "scripts/prompt03b_wasm_pack_gate.ps1"; package_status = "implemented_public" },
+        @{ surface = "dotnet"; example = "bindings/dotnet/examples/Prompt02Reports.cs"; codec_isolation = "bindings/dotnet/examples/Prompt03CodecIsolation.cs"; package_command = "dotnet pack bindings/dotnet/WellfriendPdf/WellfriendPdf.csproj" },
         @{ surface = "java_maven"; example = "bindings/java/examples/Prompt02Reports.java"; codec_isolation = "bindings/java/examples/Prompt03CodecIsolation.java"; package_command = "scripts/prompt02b_java_package_smoke.ps1" },
         @{ surface = "java_gradle"; example = "bindings/java/examples/Prompt02Reports.java"; codec_isolation = "bindings/java/examples/Prompt03CodecIsolation.java"; package_command = "scripts/prompt02c_gradle_package_smoke.ps1" }
     )
@@ -247,10 +247,10 @@ $smoke = [ordered]@{
     schema_version = 1
     prompt = "combined_prompt03"
     focused_tests = @(
-        "cargo test -p oxide-engine --test codec_isolation",
-        "cargo test -p oxide-capi",
-        "oxide codec-isolation-report --policy in_process",
-        "oxide codec-isolation-report --policy isolated_required --worker target/debug/oxide-codec-worker"
+        "cargo test -p wellfriendpdf-engine --test codec_isolation",
+        "cargo test -p wellfriendpdf-capi",
+        "wellfriendpdf codec-isolation-report --policy in_process",
+        "wellfriendpdf codec-isolation-report --policy isolated_required --worker target/debug/wellfriendpdf-codec-worker"
     )
     steps = @($Steps | Where-Object { $_.name -like "*codec isolation*" -or $_.name -like "*isolation tests*" })
 }

@@ -3,7 +3,7 @@
 use std::fs;
 use std::process::Command;
 
-use oxide_engine::{fuzz::structured_pdf_samples_for_seed, ContentEngine};
+use wellfriendpdf_engine::{fuzz::structured_pdf_samples_for_seed, ContentEngine};
 
 fn qpdf_available() -> bool {
     Command::new("qpdf")
@@ -30,7 +30,7 @@ fn structured_fuzz_samples_parse_and_qpdf_accepts_when_available() {
 
         if check_qpdf {
             let path = std::env::temp_dir().join(format!(
-                "oxide-structured-fuzz-sample-{}-{index}.pdf",
+                "wellfriendpdf-structured-fuzz-sample-{}-{index}.pdf",
                 std::process::id()
             ));
             fs::write(&path, bytes).expect("write generated sample");

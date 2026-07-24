@@ -3,12 +3,12 @@ plugins {
     id "maven-publish"
 }
 
-group = "org.oxidepdf"
+group = "io.wellfriendpdf"
 version = "0.1.0"
-description = "Java FFM binding for the Oxide PDF SDK."
+description = "Java FFM binding for the Wellfriend PDF SDK."
 
 base {
-    archivesName = "oxide-sdk"
+    archivesName = "wellfriendpdf-sdk"
 }
 
 java {
@@ -36,14 +36,14 @@ tasks.withType(Test).configureEach {
     useJUnit()
     jvmArgs("--enable-preview", "--enable-native-access=ALL-UNNAMED")
     doFirst {
-        def nativeFile = oxideNativeLibrary()
+        def nativeFile = wellfriendpdfNativeLibrary()
         if (nativeFile == null) {
-            throw new GradleException("Build oxide-capi or set OXIDE_NATIVE_LIBRARY before running Java smoke tests")
+            throw new GradleException("Build wellfriendpdf-capi or set WELLFRIENDPDF_NATIVE_LIBRARY before running Java smoke tests")
         }
-        environment "OXIDE_NATIVE_LIBRARY", nativeFile.absolutePath
-        def artifactDir = System.getenv("OXIDE_PROMPT02_ARTIFACT_DIR")
+        environment "WELLFRIENDPDF_NATIVE_LIBRARY", nativeFile.absolutePath
+        def artifactDir = System.getenv("WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR")
         if (artifactDir != null && !artifactDir.isBlank()) {
-            environment "OXIDE_PROMPT02_ARTIFACT_DIR", artifactDir
+            environment "WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR", artifactDir
         }
     }
 }
@@ -51,8 +51,8 @@ tasks.withType(Test).configureEach {
 jar {
     manifest {
         attributes(
-            "Automatic-Module-Name": "org.oxidepdf",
-            "Implementation-Title": "Oxide Java SDK",
+            "Automatic-Module-Name": "io.wellfriendpdf",
+            "Implementation-Title": "Wellfriend PDF SDK Java Binding",
             "Implementation-Version": project.version
         )
     }
@@ -63,9 +63,9 @@ publishing {
         mavenJava(MavenPublication) {
             from components.java
             pom {
-                name = "Oxide Java SDK"
+                name = "Wellfriend PDF SDK Java Binding"
                 description = project.description
-                url = "https://github.com/oxide-pdf/oxide"
+                url = "https://github.com/demisuga01-lab/wellfriendpdf-sdk"
                 licenses {
                     license {
                         name = "MIT OR Apache-2.0"
@@ -76,8 +76,8 @@ publishing {
     }
 }
 
-File oxideNativeLibrary() {
-    def explicit = System.getenv("OXIDE_NATIVE_LIBRARY")
+File wellfriendpdfNativeLibrary() {
+    def explicit = System.getenv("WELLFRIENDPDF_NATIVE_LIBRARY")
     if (explicit != null && !explicit.isBlank()) {
         def file = file(explicit)
         if (file.exists()) {
@@ -87,8 +87,8 @@ File oxideNativeLibrary() {
 
     def os = System.getProperty("os.name", "").toLowerCase(Locale.ROOT)
     def mapped = os.contains("win")
-        ? "oxide_capi.dll"
-        : (os.contains("mac") || os.contains("darwin") ? "liboxide_capi.dylib" : "liboxide_capi.so")
+        ? "wellfriendpdf_capi.dll"
+        : (os.contains("mac") || os.contains("darwin") ? "libwellfriendpdf_capi.dylib" : "libwellfriendpdf_capi.so")
     def repoRoot = projectDir.toPath().resolve("../..").normalize().toFile()
     def candidates = [
         new File(repoRoot, "target/debug/${mapped}"),

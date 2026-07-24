@@ -3,5 +3,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    oxide_engine::fuzz::fuzz_cms_insertion_boundary(data);
+    wellfriendpdf_engine::fuzz::fuzz_cms_insertion_boundary(data);
 });

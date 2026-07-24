@@ -63,7 +63,7 @@ pub struct FontInfo {
     pub writing_mode: String,
     /// Predefined CMap name, if the font references one.
     pub predefined_cmap: Option<String>,
-    /// Whether the referenced predefined CMap is covered by Oxide's bounded
+    /// Whether the referenced predefined CMap is covered by Wellfriend's bounded
     /// built-in CMap metadata.
     pub predefined_cmap_supported: bool,
     /// Detected OpenType color-glyph table tags.

@@ -11,7 +11,7 @@
 
 use std::path::PathBuf;
 
-use oxide_engine::prelude::*;
+use wellfriendpdf_engine::prelude::*;
 
 fn main() -> Result<()> {
     let path = std::env::args()
@@ -31,7 +31,7 @@ fn main() -> Result<()> {
     // 2. Parse into the canonical Document model. ParseOptions::default() parses
     //    all pages and strips page furniture from the body. To OCR scanned
     //    pages, set `ocr: Some(Arc::new(my_engine))` (e.g. the
-    //    `oxide-ocr-tesseract` crate's TesseractEngine) — the model stays the
+    //    `wellfriendpdf-ocr-tesseract` crate's TesseractEngine) — the model stays the
     //    same whether text is digital-born or OCR'd.
     let doc: Document = engine.parse_document(&ParseOptions::default())?;
     println!(

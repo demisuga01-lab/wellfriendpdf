@@ -6,7 +6,7 @@
 //! `standards_profile_json` envelope still uses) so existing callers keep
 //! working while the certification-grade engines are layered on top.
 //!
-//! Certification honesty: a `Conformant` verdict here means "the rules Oxide
+//! Certification honesty: a `Conformant` verdict here means "the rules Wellfriend
 //! implemented for this profile subset passed and were clause-mapped and
 //! evidenced". It is not an accredited archival/accessibility/print
 //! certification. Unknown rules are reported exactly (never silently passed).
@@ -72,7 +72,7 @@ impl RuleStatus {
     }
 }
 
-/// How completely Oxide implements a given rule.
+/// How completely Wellfriend implements a given rule.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleImplementation {
@@ -104,7 +104,7 @@ pub enum ConformanceStatus {
     /// No hard failure, but inconclusive/unsupported/deferred rows remain, so a
     /// clean conformance claim cannot be made.
     Indeterminate,
-    /// The requested profile is not supported by Oxide at all.
+    /// The requested profile is not supported by Wellfriend at all.
     Unsupported,
 }
 
@@ -116,7 +116,7 @@ pub struct StandardsClauseRef {
     pub standard: String,
     /// e.g. `6.2.4.3` or `7.1`.
     pub clause: String,
-    /// Short derived description of the requirement (Oxide's own words).
+    /// Short derived description of the requirement (Wellfriend's own words).
     pub title: String,
 }
 
@@ -212,7 +212,7 @@ impl StandardsRuleResult {
         }
     }
 
-    /// A rule that Oxide does not implement, reported exactly.
+    /// A rule that Wellfriend does not implement, reported exactly.
     pub fn unsupported(
         profile: &str,
         rule_id: &str,
@@ -227,7 +227,7 @@ impl StandardsRuleResult {
             context: ValidationEvidence::document(),
             status: RuleStatus::UnsupportedReportedExact,
             severity: ValidationSeverity::Warning,
-            diagnostic: format!("Rule not evaluated by Oxide: {reason}"),
+            diagnostic: format!("Rule not evaluated by Wellfriend: {reason}"),
             unsupported_reason: Some(reason),
             implementation: RuleImplementation::Unsupported,
         }
@@ -376,7 +376,7 @@ impl StandardsValidationReport {
             rules,
             certification_claimed: false,
             certification_disclaimer:
-                "Clause-mapped Oxide validation subset; not an accredited certification claim."
+                "Clause-mapped Wellfriend validation subset; not an accredited certification claim."
                     .to_string(),
         }
     }
@@ -405,7 +405,7 @@ pub struct StandardsValidationOptions {
     pub target_profile: Option<String>,
     /// Validate every profile claimed in metadata.
     pub validate_all_claimed: bool,
-    /// Validate every profile family Oxide supports.
+    /// Validate every profile family Wellfriend supports.
     pub validate_all_supported: bool,
     /// Include passing rows in the report (default true).
     #[serde(default = "default_true")]
@@ -818,7 +818,7 @@ pub fn validate_pdfa_profile(
     let part = pdfa_part_from_label(&target_label);
     let standard = pdfa_standard_for(part);
     let Some(profile) = pdfa_profile_from_label(&target_label) else {
-        // Part 4 or conformance level not implemented by Oxide's rule engine.
+        // Part 4 or conformance level not implemented by Wellfriend's rule engine.
         let (status_rule, reason) = if part == 4 {
             (
                 "pdfa4.profile_support",
@@ -827,7 +827,7 @@ pub fn validate_pdfa_profile(
         } else {
             (
                 "pdfa.profile_support",
-                "Requested PDF/A profile/conformance level is not implemented by Oxide's rule engine.",
+                "Requested PDF/A profile/conformance level is not implemented by Wellfriend's rule engine.",
             )
         };
         if part == 4 {
@@ -1056,7 +1056,7 @@ pub fn validate_pdfua_profile(
         ));
     }
 
-    // Human-judgment requirements Oxide cannot deterministically certify.
+    // Human-judgment requirements Wellfriend cannot deterministically certify.
     rules.push(StandardsRuleResult::unsupported(
         profile_label,
         "pdfua.reading_order.human_judgment",

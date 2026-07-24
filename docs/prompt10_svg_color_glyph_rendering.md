@@ -17,7 +17,7 @@ The renderer accepts:
   transforms.
 - gzip-compressed SVGZ documents under the static byte cap.
 
-The parsed geometry is routed through Oxide's existing path painter with the
+The parsed geometry is routed through Wellfriend's existing path painter with the
 current glyph transform, text matrix, CTM, graphics-state alpha, and clipping
 state.
 

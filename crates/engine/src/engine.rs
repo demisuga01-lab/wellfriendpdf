@@ -4,7 +4,7 @@ use std::path::Path;
 
 use crate::content::{ContentOperation, ContentParser, StreamingContentTokenizer};
 use crate::document::{PdfDocument, PdfPage};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_lossless_reader_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::encoder::{ImageEncoder, ImageOutputFormat};
@@ -98,7 +98,7 @@ impl Read for JoinedContentStreams<'_> {
 
 /// A rectangular page region in PDF user-space points.
 ///
-/// Coordinates use the same convention as Oxide's positioned layout model:
+/// Coordinates use the same convention as Wellfriend's positioned layout model:
 /// origin at the page's bottom-left, `x` increasing rightward, and `y`
 /// increasing upward. Region extraction keeps an item when the item's center is
 /// inside the rectangle or at least half of the item's area overlaps it.
@@ -113,12 +113,12 @@ pub struct PageRegion {
 impl PageRegion {
     pub fn new(x0: f64, y0: f64, x1: f64, y1: f64) -> Result<Self> {
         if ![x0, y0, x1, y1].iter().all(|v| v.is_finite()) {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "region coordinates must be finite numbers".to_string(),
             ));
         }
         if x0 >= x1 || y0 >= y1 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "region must satisfy x0 < x1 and y0 < y1".to_string(),
             ));
         }
@@ -176,7 +176,7 @@ impl PageRegion {
         let x1 = self.x1.min(page[2]);
         let y1 = self.y1.min(page[3]);
         if x0 >= x1 || y0 >= y1 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "region [{:.2},{:.2},{:.2},{:.2}] does not overlap page box [{:.2},{:.2},{:.2},{:.2}]",
                 self.x0, self.y0, self.x1, self.y1, page[0], page[1], page[2], page[3]
             )));
@@ -1222,7 +1222,7 @@ impl ContentEngine {
         limits: &DecodeLimits,
     ) -> Result<RawImage> {
         let data = image.inline_data.as_ref().ok_or_else(|| {
-            OxideError::UnsupportedFeature(format!(
+            WellfriendError::UnsupportedFeature(format!(
                 "inline image '{}' has no captured pixel data",
                 image.xobject_name
             ))
@@ -1300,7 +1300,7 @@ impl ContentEngine {
     /// Rejects a page whose final pixel count (post-DPI, post-rotation) would
     /// exceed [`max_render_pixels`] BEFORE any buffer is allocated, so a hostile
     /// PDF declaring a giant `/MediaBox` (e.g. `[0 0 200000 200000]`) returns a
-    /// clean [`OxideError::ResourceLimit`] instead of attempting a multi-hundred-
+    /// clean [`WellfriendError::ResourceLimit`] instead of attempting a multi-hundred-
     /// gigabyte allocation that aborts the process.
     pub fn page_viewport(&self, page_number: usize, dpi: u32) -> Result<Viewport> {
         self.validate_page(page_number)?;
@@ -1313,7 +1313,7 @@ impl ContentEngine {
         let pixels = viewport.width_px as u64 * viewport.height_px as u64;
         let cap = max_render_pixels();
         if pixels > cap {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "page {} would render {} pixels ({}x{}) at {} DPI, exceeding the limit of {} \
                  pixels; lower the DPI or the page is abusively large",
                 page_number, pixels, viewport.width_px, viewport.height_px, dpi, cap
@@ -1346,7 +1346,7 @@ impl ContentEngine {
     /// The token is polled periodically while executing the page content
     /// stream (and any nested Form XObjects / tiling patterns). When the token
     /// is cancelled — e.g. by a server request-timeout timer — rendering bails
-    /// out early with [`OxideError::Cancelled`] instead of running to
+    /// out early with [`WellfriendError::Cancelled`] instead of running to
     /// completion, freeing the worker thread promptly.
     pub fn render_page_cancellable(
         &self,
@@ -1610,13 +1610,13 @@ impl ContentEngine {
 
     fn validate_page(&self, page_number: usize) -> Result<()> {
         if page_number == 0 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "page_number is 1-indexed; 0 is invalid".to_string(),
             ));
         }
         let count = self.doc.page_count()?;
         if page_number > count {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "page {} out of range (document has {} pages)",
                 page_number, count
             )));
@@ -1642,12 +1642,12 @@ impl ContentEngine {
 pub const DEFAULT_MAX_RENDER_PIXELS: u64 = 100_000_000;
 
 /// The active per-page render pixel cap. Overridable at runtime via the
-/// `OXIDE_MAX_RENDER_PIXELS` environment variable (a positive integer); falls
+/// `WELLFRIENDPDF_MAX_RENDER_PIXELS` environment variable (a positive integer); falls
 /// back to [`DEFAULT_MAX_RENDER_PIXELS`] when unset, empty, zero, or unparsable.
 /// Keeping this an env-var keeps the engine API free of a config object while
 /// still letting the CLI/server/benchmark tune the bound.
 pub fn max_render_pixels() -> u64 {
-    std::env::var("OXIDE_MAX_RENDER_PIXELS")
+    std::env::var("WELLFRIENDPDF_MAX_RENDER_PIXELS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|&v| v > 0)
@@ -1660,13 +1660,13 @@ pub fn max_render_pixels() -> u64 {
 /// bit-depth expansion, CCITT/JBIG2 sinks) is capped, not just the render layer.
 pub const DEFAULT_MAX_DECODE_PIXELS: u64 = DEFAULT_MAX_RENDER_PIXELS;
 
-/// The active image-decode pixel cap. Overridable via `OXIDE_MAX_DECODE_PIXELS`
+/// The active image-decode pixel cap. Overridable via `WELLFRIENDPDF_MAX_DECODE_PIXELS`
 /// (a positive integer); falls back to [`DEFAULT_MAX_DECODE_PIXELS`] when unset,
 /// empty, zero, or unparsable. A hostile image header declaring enormous
 /// dimensions is rejected with a clean error *before* allocation rather than
 /// OOMing the process.
 pub fn max_decode_pixels() -> u64 {
-    std::env::var("OXIDE_MAX_DECODE_PIXELS")
+    std::env::var("WELLFRIENDPDF_MAX_DECODE_PIXELS")
         .ok()
         .and_then(|v| v.trim().parse::<u64>().ok())
         .filter(|&v| v > 0)

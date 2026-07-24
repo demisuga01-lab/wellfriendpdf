@@ -41,8 +41,8 @@ BLK = "blocked"
 
 # Common test/example references used across many rows.
 T_SDK = "engine sdk::tests (crates/engine/src/sdk.rs)"
-T_PY = "oxide-py tests/test_reports.py"
-T_C = "oxide-capi capi_* tests (crates/oxide-capi/src/lib.rs)"
+T_PY = "wellfriendpdf-py tests/test_reports.py"
+T_C = "wellfriendpdf-capi capi_* tests (crates/wellfriendpdf-capi/src/lib.rs)"
 T_PARITY = "cross-surface parity: rust/python/c-abi smoke JSON compared equal"
 
 # Each feature: (id, category, name, rust, python, capi, cli, note)
@@ -108,7 +108,7 @@ FEATURES = [
     ("decode.raw_vs_decoded", "decode", "raw stream versus decoded stream access", INT, MISS, MISS, PART,
      "filters::decode_stream[_lossless] at Rust root. Action: raw/decoded stream fetch not exposed to bindings (unstable object handles)."),
     ("decode.unsupported_filter", "decode", "unsupported filter diagnostics", PUB, PUB, PUB, PUB,
-     "DecodeReport diagnostics + OxideError::UnsupportedFeature; honest reporting."),
+     "DecodeReport diagnostics + WellfriendError::UnsupportedFeature; honest reporting."),
     ("decode.perf_counters", "decode", "decode performance counters", PART, PART, PART, PART,
      "DecodeMetrics inside decode reports. Action: full perf-counter export deferred."),
 
@@ -359,7 +359,7 @@ FEATURES = [
     ("diag.schema", "diagnostics", "structured diagnostics schema", PUB, PUB, PUB, PUB,
      "versioned JSON envelope (schema_version/kind/report). REPORT_ENVELOPE_VERSION."),
     ("diag.error_taxonomy", "diagnostics", "error code taxonomy", PUB, PUB, PUB, PUB,
-     "ErrorKind.code(); py OxideError; capi int status + error string."),
+     "ErrorKind.code(); py WellfriendError; capi int status + error string."),
     ("diag.warning_severity", "diagnostics", "warning severity model", PUB, PUB, PUB, PUB,
      "SecuritySeverity/ColorSeverity/ValidationSeverity in reports."),
     ("diag.report_versioning", "diagnostics", "JSON report versioning", PUB, PUB, PUB, PUB,
@@ -403,9 +403,9 @@ FEATURES = [
     ("doc.examples", "release", "example programs", PUB, PUB, PUB, PUB,
      "sdk_reports.{rs,py,c} + binding_examples_prompt01.md."),
     ("pkg.metadata", "release", "package metadata", PUB, PUB, PUB, PUB,
-     "Cargo.toml / pyproject.toml / oxide.h; honest capabilities via feature_report."),
+     "Cargo.toml / pyproject.toml / wellfriendpdf.h; honest capabilities via feature_report."),
     ("pkg.semver", "release", "versioning and semver", PUB, PUB, PUB, PUB,
-     "ENGINE_VERSION + REPORT_ENVELOPE_VERSION + oxide_version/oxide_abi_version."),
+     "ENGINE_VERSION + REPORT_ENVELOPE_VERSION + wellfriendpdf_version/wellfriendpdf_abi_version."),
     ("pkg.feature_flags", "release", "feature flags", PUB, PUB, PUB, PUB,
      "cargo features surfaced in feature_report capabilities."),
     ("pkg.platform_matrix", "release", "platform matrix", PART, PART, PART, PART,
@@ -413,7 +413,7 @@ FEATURES = [
     ("pkg.ci_smoke", "release", "CI packaging smoke", PART, PART, PART, PART,
      "local maturin build + cargo build validated. Action: CI wiring is a release prompt."),
     ("pkg.abi_compat", "release", "ABI compatibility checks", PUB, PUB, PUB, PUB,
-     "oxide_abi_version + hand-maintained header; opaque handles keep ABI stable."),
+     "wellfriendpdf_abi_version + hand-maintained header; opaque handles keep ABI stable."),
     ("pkg.memory_leak", "release", "memory leak checks", PUB, PART, PUB, PART,
      "capi tests free every allocation; py returns owned objects. Action: valgrind/asan run is a CI concern (bounded)."),
     ("pkg.release_manifest", "release", "release artifact manifest", PART, PART, PART, PART,

@@ -13,7 +13,7 @@ work.
   pre-existing OCR, Office, and utility module exports. A parser-only staged
   version from HEAD would not compile unless those unrelated untracked modules
   were also staged.
-- `crates/oxide-capi/*`, `crates/oxide-py/*`, `crates/oxide-wasm/src/lib.rs`,
+- `crates/wellfriendpdf-capi/*`, `crates/wellfriendpdf-py/*`, `crates/wellfriendpdf-wasm/src/lib.rs`,
   `crates/server/*`, and `bindings/*` are dirty/untracked from earlier binding,
   OCR, Office, and server work. They were built/tested as part of validation but
   are not parser-scope commit content.
@@ -58,9 +58,9 @@ work.
    git diff --check
    cargo test --workspace
    cargo clippy --workspace --all-targets -- -D warnings
-   cargo build -p oxide-capi
-   cargo build -p oxide-wasm --target wasm32-unknown-unknown
-   python -m maturin build --manifest-path crates/oxide-py/Cargo.toml
+   cargo build -p wellfriendpdf-capi
+   cargo build -p wellfriendpdf-wasm --target wasm32-unknown-unknown
+   python -m maturin build --manifest-path crates/wellfriendpdf-py/Cargo.toml
    ```
 
 4. Stage parser files and parser hunks only, then commit them as one parser
@@ -137,7 +137,7 @@ subject to separating the shared-file hunks noted below:
 
 #### 2. Existing unrelated OCR work
 
-- `Cargo.lock` - adds `oxide-ocr-tesseract` to dependency resolution.
+- `Cargo.lock` - adds `wellfriendpdf-ocr-tesseract` to dependency resolution.
 - `crates/engine/src/extract/mod.rs` - adds OCR policy pass-through.
 - `crates/engine/src/ocr/mod.rs` - OCR policy and backend concurrency changes.
 - `crates/engine/src/ocr/dispatch.rs` - OCR dispatch/containment module.
@@ -145,11 +145,11 @@ subject to separating the shared-file hunks noted below:
 - `crates/engine/examples/ocr_http_backends.rs` - OCR HTTP reference backend.
 - `crates/engine/tests/ocr_containment.rs` - OCR containment tests.
 - `crates/engine/tests/ocr_http_references.rs` - OCR HTTP reference tests.
-- `crates/oxide-ocr-tesseract/src/lib.rs` - Tesseract backend work.
-- `crates/oxide-ocr-tesseract/tests/smoke.rs` - Tesseract smoke tests.
-- `crates/oxide-capi/src/ocr_backend.rs` - C ABI OCR backend seam.
-- `crates/oxide-py/src/ocr_backend.rs` - Python OCR backend seam.
-- `crates/oxide-py/examples/local_ai_ocr_backend.py` - local-AI OCR example.
+- `crates/wellfriendpdf-ocr-tesseract/src/lib.rs` - Tesseract backend work.
+- `crates/wellfriendpdf-ocr-tesseract/tests/smoke.rs` - Tesseract smoke tests.
+- `crates/wellfriendpdf-capi/src/ocr_backend.rs` - C ABI OCR backend seam.
+- `crates/wellfriendpdf-py/src/ocr_backend.rs` - Python OCR backend seam.
+- `crates/wellfriendpdf-py/examples/local_ai_ocr_backend.py` - local-AI OCR example.
 - `crates/server/Cargo.toml` - optional Tesseract OCR server feature.
 - `crates/server/src/lib.rs` - server OCR module export.
 - `crates/server/src/main.rs` - server OCR env initialization.
@@ -160,7 +160,7 @@ subject to separating the shared-file hunks noted below:
 - `docs/self_hosting.md` - OCR seam documentation hunk.
 - OCR hunks inside `crates/cli/src/main.rs` - optional-value `--ocr` policy
   changes.
-- OCR hunks inside `crates/oxide-capi/*` and `crates/oxide-py/*` - binding
+- OCR hunks inside `crates/wellfriendpdf-capi/*` and `crates/wellfriendpdf-py/*` - binding
   exposure for OCR.
 
 #### 3. Existing unrelated Office conversion work
@@ -173,32 +173,32 @@ subject to separating the shared-file hunks noted below:
 - Office hunks inside `crates/cli/src/main.rs` - `pdf-to-xlsx`,
   `pdf-to-pptx`, `pdf-to-docx`, and Office-to-PDF commands.
 - Office tests inside `crates/cli/tests/tool_surface.rs`.
-- Office hunks inside `crates/engine/src/lib.rs`, `crates/oxide-capi/*`,
-  `crates/oxide-py/*`, and `crates/oxide-wasm/src/lib.rs`.
+- Office hunks inside `crates/engine/src/lib.rs`, `crates/wellfriendpdf-capi/*`,
+  `crates/wellfriendpdf-py/*`, and `crates/wellfriendpdf-wasm/src/lib.rs`.
 
 #### 4. Existing unrelated bindings work
 
-- `bindings/dotnet/Oxide.Sdk.Tests/Oxide.Sdk.Tests.csproj`
-- `bindings/dotnet/Oxide.Sdk.Tests/OxideSmokeTests.cs`
-- `bindings/dotnet/Oxide.Sdk/NativeMethods.cs`
-- `bindings/dotnet/Oxide.Sdk/OfficeConverters.cs`
-- `bindings/dotnet/Oxide.Sdk/Oxide.Sdk.csproj`
-- `bindings/dotnet/Oxide.Sdk/OxideDocument.cs`
-- `bindings/dotnet/Oxide.Sdk/OxideException.cs`
-- `bindings/dotnet/Oxide.Sdk/README.md`
+- `bindings/dotnet/WellfriendPdf.Tests/WellfriendPdf.Tests.csproj`
+- `bindings/dotnet/WellfriendPdf.Tests/WellfriendPdfSmokeTests.cs`
+- `bindings/dotnet/WellfriendPdf/NativeMethods.cs`
+- `bindings/dotnet/WellfriendPdf/OfficeConverters.cs`
+- `bindings/dotnet/WellfriendPdf/WellfriendPdf.csproj`
+- `bindings/dotnet/WellfriendPdf/WellfriendDocument.cs`
+- `bindings/dotnet/WellfriendPdf/WellfriendPdfException.cs`
+- `bindings/dotnet/WellfriendPdf/README.md`
 - `bindings/java/README.md`
-- `bindings/java/src/main/java/org/oxidepdf/Oxide.java`
-- `bindings/java/src/test/java/org/oxidepdf/OxideSmokeTest.java`
+- `bindings/java/src/main/java/io/wellfriendpdf/WellfriendPdf.java`
+- `bindings/java/src/test/java/io/wellfriendpdf/WellfriendPdfSmokeTest.java`
 - `docs/dotnet_binding.md`
 - `docs/java_binding.md`
 - `docs/bindings.md` - binding-surface updates.
 - `docs/python_binding.md` - Python binding expansion.
-- `crates/oxide-capi/cbindgen.toml`
-- `crates/oxide-capi/include/oxide.h`
-- `crates/oxide-capi/src/lib.rs`
-- `crates/oxide-py/README.md`
-- `crates/oxide-py/src/lib.rs`
-- `crates/oxide-wasm/src/lib.rs`
+- `crates/wellfriendpdf-capi/cbindgen.toml`
+- `crates/wellfriendpdf-capi/include/wellfriendpdf.h`
+- `crates/wellfriendpdf-capi/src/lib.rs`
+- `crates/wellfriendpdf-py/README.md`
+- `crates/wellfriendpdf-py/src/lib.rs`
+- `crates/wellfriendpdf-wasm/src/lib.rs`
 
 The C ABI/Python/WASM files are mixed with OCR, Office, and Phase 3 utility
 surface work. They are not parser-scope commit content.
@@ -222,7 +222,7 @@ surface work. They are not parser-scope commit content.
 - Phase 3 utility hunks inside `crates/cli/src/main.rs`.
 - Phase 3 utility tests inside `crates/cli/tests/tool_surface.rs`.
 - Phase 3 utility hunks inside `crates/engine/src/lib.rs`,
-  `crates/oxide-capi/*`, `crates/oxide-py/*`, and `crates/oxide-wasm/src/lib.rs`.
+  `crates/wellfriendpdf-capi/*`, `crates/wellfriendpdf-py/*`, and `crates/wellfriendpdf-wasm/src/lib.rs`.
 
 #### 7. Public benchmark/report work
 
@@ -263,7 +263,7 @@ files that also contain known unrelated work.
   checkpoint just because they compile with the current dirty tree.
 - `Cargo.lock` and `crates/engine/Cargo.toml` are unrelated OCR/Office
   dependency changes, not parser dependencies.
-- `crates/oxide-capi/*`, `crates/oxide-py/*`, `crates/oxide-wasm/src/lib.rs`,
+- `crates/wellfriendpdf-capi/*`, `crates/wellfriendpdf-py/*`, `crates/wellfriendpdf-wasm/src/lib.rs`,
   `crates/server/*`, and `bindings/*` remain non-parser work and generated
   output. They must stay out of Prompt 01.
 

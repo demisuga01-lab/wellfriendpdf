@@ -1,14 +1,14 @@
 # PostScript / EPS Output (`pdftops` / `pdftocairo -ps`/`-eps`-equivalent)
 
-`oxide render --format ps` and `--format eps` emit PostScript. This closes the
-last Poppler CLI tool-surface gap — Oxide now has an equivalent for **all 12**
+`wellfriendpdf render --format ps` and `--format eps` emit PostScript. This closes the
+last Poppler CLI tool-surface gap — Wellfriend now has an equivalent for **all 12**
 Poppler command-line utilities.
 
 ```
-oxide render in.pdf --format ps  -o out.ps            # multi-page DSC PostScript
-oxide render in.pdf --format ps  -p 1,3-5 -o out.ps   # a page range
-oxide render in.pdf --format eps -o pages.zip         # one EPS per page (ZIP)
-oxide render in.pdf --format ps  --dpi 150 -o out.ps  # device scale
+wellfriendpdf render in.pdf --format ps  -o out.ps            # multi-page DSC PostScript
+wellfriendpdf render in.pdf --format ps  -p 1,3-5 -o out.ps   # a page range
+wellfriendpdf render in.pdf --format eps -o pages.zip         # one EPS per page (ZIP)
+wellfriendpdf render in.pdf --format ps  --dpi 150 -o out.ps  # device scale
 ```
 
 - **`--format ps`** writes a single, DSC-conformant multi-page `.ps` document
@@ -85,7 +85,7 @@ Multi-page PostScript:
 
 ```
 %!PS-Adobe-3.0
-%%Creator: Oxide PDF Toolkit
+%%Creator: Wellfriend PDF SDK Toolkit
 %%LanguageLevel: 2
 %%BoundingBox: 0 0 <maxW> <maxH>
 %%Pages: <n>
@@ -110,17 +110,17 @@ document.
 Ghostscript (`gswin64c` / `gs`) is available in the dev/test environment and is
 used to validate the output — it is a **dev/test tool only**, NOT a runtime
 dependency (the crate remains pure-Rust). The validation philosophy mirrors the
-SVG backend's (rasterise the vector output, compare PSNR to Oxide's own raster
+SVG backend's (rasterise the vector output, compare PSNR to Wellfriend's own raster
 render):
 
 | Case | Validation | Result |
 |---|---|---|
-| `multi_stream.pdf` p1 (true vector) | PS rasterised by Ghostscript vs Oxide raster | **35.24 dB** |
-| `multi_stream.pdf` p1 (true vector) | EPS rasterised by Ghostscript vs Oxide raster | **35.24 dB** |
-| `image_only.pdf` p1 (rasterize-embed) | `colorimage` PS rasterised vs Oxide raster | **99 dB** (exact) |
+| `multi_stream.pdf` p1 (true vector) | PS rasterised by Ghostscript vs Wellfriend raster | **35.24 dB** |
+| `multi_stream.pdf` p1 (true vector) | EPS rasterised by Ghostscript vs Wellfriend raster | **35.24 dB** |
+| `image_only.pdf` p1 (rasterize-embed) | `colorimage` PS rasterised vs Wellfriend raster | **99 dB** (exact) |
 
 The 35 dB true-vector figure reflects only cross-rasteriser AA differences
-between Oxide's rasteriser and Ghostscript; the fallback is pixel-exact because
+between Wellfriend's rasteriser and Ghostscript; the fallback is pixel-exact because
 it embeds the raster itself. Structural tests assert DSC/EPSF conformance
 (`%!PS-Adobe-3.0`, `%%BoundingBox`, `%%Pages`, per-page `showpage`, EPSF has no
 `setpagedevice`/`showpage`). See `crates/engine/tests/ps_output.rs`.

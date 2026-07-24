@@ -1,6 +1,6 @@
 # Prompt 14 Semantic Merge Policy
 
-Prompt 14 preserves Oxide's deterministic semantic model as the primary
+Prompt 14 preserves Wellfriend's deterministic semantic model as the primary
 evidence source.
 
 ParentTree merge:

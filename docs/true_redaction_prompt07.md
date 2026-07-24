@@ -12,8 +12,8 @@ black rectangle alone is not redaction.
 The CLI command is:
 
 ```powershell
-oxide redact input.pdf --text SECRET --pages 1-2 --out redacted.pdf --json --strict
-oxide redact input.pdf --rect 1:72,700,120,30 --out redacted.pdf
+wellfriendpdf redact input.pdf --text SECRET --pages 1-2 --out redacted.pdf --json --strict
+wellfriendpdf redact input.pdf --rect 1:72,700,120,30 --out redacted.pdf
 ```
 
 ## Text
@@ -61,7 +61,7 @@ and info dictionaries.
 
 Known bounded limits:
 
-- Encoded secrets that are not recoverable as text by Oxide and are not direct
+- Encoded secrets that are not recoverable as text by Wellfriend and are not direct
   raw byte matches require broader Prompt 09 sanitization policy.
 - Non-axis-aligned or unsupported image encodings may be removed conservatively
   or fail in strict mode instead of partially rewritten.

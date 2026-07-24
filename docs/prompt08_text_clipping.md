@@ -29,8 +29,8 @@ Covered interactions:
 
 Tests:
 
-- `cargo test -p oxide-engine --test prompt08_text_clip --jobs 1`
-- `cargo test -p oxide-engine --test prompt08b_type3_cid_tensor --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test prompt08_text_clip --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test prompt08b_type3_cid_tensor --jobs 1`
 
 Artifacts:
 

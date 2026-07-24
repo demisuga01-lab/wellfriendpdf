@@ -1,6 +1,6 @@
 # Prompt 11B Native LittleCMS CMM Backend Closure
 
-Prompt 11B closes the native CMM gap left by Prompt 11. Oxide now has an
+Prompt 11B closes the native CMM gap left by Prompt 11. Wellfriend now has an
 explicit `native-cmm-lcms2` feature that compiles the safe Rust `lcms2` wrapper
 and links LittleCMS/lcms2 through `lcms2-sys`.
 

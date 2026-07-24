@@ -7,7 +7,7 @@
 //! hanging, or recursing unboundedly.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::ContentParser;
+use wellfriendpdf_engine::ContentParser;
 
 fuzz_target!(|data: &[u8]| {
     let _ = std::hint::black_box(ContentParser::parse(data));

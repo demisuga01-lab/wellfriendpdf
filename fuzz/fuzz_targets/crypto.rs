@@ -7,7 +7,7 @@
 //! error or false verification result, never a panic/hang/OOM.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::fuzz::fuzz_crypto;
+use wellfriendpdf_engine::fuzz::fuzz_crypto;
 
 fuzz_target!(|data: &[u8]| {
     fuzz_crypto(data);

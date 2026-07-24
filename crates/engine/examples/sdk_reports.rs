@@ -1,12 +1,12 @@
 //! Cross-language SDK facade demo (Rust side).
 //!
-//! Runs the [`oxide_engine::sdk`] report facade over a PDF and prints a compact
+//! Runs the [`wellfriendpdf_engine::sdk`] report facade over a PDF and prints a compact
 //! summary. This is the Rust counterpart of the Python `sdk_reports.py` and the
 //! C `sdk_reports.c` examples — all three call the SAME facade and receive the
 //! SAME versioned-JSON envelopes.
 //!
 //! ```sh
-//! cargo run -p oxide-engine --example sdk_reports -- input.pdf [out.json]
+//! cargo run -p wellfriendpdf-engine --example sdk_reports -- input.pdf [out.json]
 //! ```
 //!
 //! With a second argument, writes the raw report envelopes to that path as a
@@ -14,7 +14,7 @@
 
 use std::path::PathBuf;
 
-use oxide_engine::sdk;
+use wellfriendpdf_engine::sdk;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args().skip(1);
@@ -63,7 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ),
     ];
 
-    println!("oxide SDK facade — {input}");
+    println!("wellfriendpdf SDK facade — {input}");
     for (name, json) in &reports {
         let v: serde_json::Value = serde_json::from_str(json)?;
         println!(

@@ -1,6 +1,6 @@
 //! Bounded predefined CMap metadata.
 //!
-//! Full Adobe CMap packs are large data sets. Oxide keeps the complete CMap
+//! Full Adobe CMap packs are large data sets. Wellfriend keeps the complete CMap
 //! pack out of the core engine for now, but common UTF-16 predefined CMaps are
 //! valuable because the PDF character code is already Unicode scalar data. This
 //! module classifies those names, exposes their writing mode, and gives reports

@@ -15,9 +15,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use oxide_engine::images::decoder::RawImage;
-use oxide_engine::render::quality::RenderQuality;
-use oxide_engine::{ContentEngine, RenderMode};
+use wellfriendpdf_engine::images::decoder::RawImage;
+use wellfriendpdf_engine::render::quality::RenderQuality;
+use wellfriendpdf_engine::{ContentEngine, RenderMode};
 
 const DPI: u32 = 72;
 const SS: u32 = 4;
@@ -50,7 +50,7 @@ fn find_ghostscript() -> Option<PathBuf> {
 
 fn gs_render(gs: &Path, pdf: &Path, dpi: u32) -> Option<RawImage> {
     let out = std::env::temp_dir().join(format!(
-        "oxide_ref_{}_{}_{}.png",
+        "wellfriendpdf_ref_{}_{}_{}.png",
         std::process::id(),
         dpi,
         pdf.file_stem().and_then(|s| s.to_str()).unwrap_or("x")

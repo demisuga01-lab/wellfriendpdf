@@ -11,8 +11,8 @@
 ## CLI
 
 ```powershell
-cargo build -p oxide-cli -p oxide-engine --bin oxide-codec-worker
-target\debug\oxide.exe codec-isolation-report --filter FlateDecode --sample-text "hello oxide" --policy isolated_required --worker target\debug\oxide-codec-worker.exe
+cargo build -p wellfriendpdf-cli -p wellfriendpdf-engine --bin wellfriendpdf-codec-worker
+target\debug\wellfriendpdf.exe codec-isolation-report --filter FlateDecode --sample-text "hello wellfriendpdf" --policy isolated_required --worker target\debug\wellfriendpdf-codec-worker.exe
 ```
 
 The output is a versioned JSON envelope:
@@ -28,16 +28,16 @@ The output is a versioned JSON envelope:
 
 All bindings expose the same report shape:
 
-- Rust: `oxide_engine::decode_filter_with_isolation`.
-- Python: `oxide.codec_isolation_report(filter, data, policy="in_process")`.
-- C ABI: `oxide_codec_isolation_report_json`.
-- WASM: `OxidePdf.codecIsolationReportJson(filter, bytes, policy)`.
-- .NET: `OxideDocument.CodecIsolationReportJson(filter, bytes, policy)`.
-- Java: `Oxide.codecIsolationReportJson(filter, bytes, policy)`.
+- Rust: `wellfriendpdf_engine::decode_filter_with_isolation`.
+- Python: `wellfriendpdf.codec_isolation_report(filter, data, policy="in_process")`.
+- C ABI: `wellfriendpdf_codec_isolation_report_json`.
+- WASM: `WellfriendPdf.codecIsolationReportJson(filter, bytes, policy)`.
+- .NET: `WellfriendDocument.CodecIsolationReportJson(filter, bytes, policy)`.
+- Java: `WellfriendPdf.codecIsolationReportJson(filter, bytes, policy)`.
 
 ## Deployment Guidance
 
-Ship `oxide-codec-worker` beside `oxide` or set `OXIDE_CODEC_WORKER` to the worker path. Use `isolated_required` for hostile customer PDFs when fail-closed behavior is acceptable. Use `isolated_preferred` only when an explicit in-process fallback is acceptable to the product.
+Ship `wellfriendpdf-codec-worker` beside `wellfriendpdf` or set `WELLFRIENDPDF_CODEC_WORKER` to the worker path. Use `isolated_required` for hostile customer PDFs when fail-closed behavior is acceptable. Use `isolated_preferred` only when an explicit in-process fallback is acceptable to the product.
 
 Do not describe this as a full sandbox. It is crash, timeout, and output-size containment.
 

@@ -59,7 +59,7 @@ for fn in sorted(os.listdir(FILES)):
                 "lr": fp.get("large_region_score"),
                 "edge": fp.get("edge_mae"),
                 "diag": fp.get("diagnostic_reasons"),
-                "oxide_size": fp.get("oxide_size"),
+                "wellfriendpdf_size": fp.get("wellfriendpdf_size"),
                 "ref_size": fp.get("reference_size"),
                 "path": d.get("file"),
             }
@@ -76,7 +76,7 @@ for reason in sorted(by_reason, key=lambda r: -len(by_reason[r])):
     for item in by_reason[reason][:60]:
         print(
             f"    {item['file']} pg{item['page']} ssim={item['ssim']} "
-            f"lr={item['lr']} edge={item['edge']} oxide={item['oxide_size']} ref={item['ref_size']}"
+            f"lr={item['lr']} edge={item['edge']} wellfriendpdf={item['wellfriendpdf_size']} ref={item['ref_size']}"
         )
 
 # Emit the unique fixture file paths for real-bug categories.

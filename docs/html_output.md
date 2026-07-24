@@ -1,15 +1,15 @@
 # HTML / XML Output (`to-html`, `pdftohtml`-equivalent)
 
-`oxide to-html` converts a PDF to HTML or XML, reusing the text pipeline, the
+`wellfriendpdf to-html` converts a PDF to HTML or XML, reusing the text pipeline, the
 raster renderer, and the image encoder — it is **assembly**, not new parsing or
 rendering.
 
 ```
-oxide to-html in.pdf -o out.html                 # complex (default), stdout if no -o
-oxide to-html in.pdf --background -o out.html     # raster bg + selectable text overlay
-oxide to-html in.pdf --xml -o out.xml             # positioned text fragments
-oxide to-html in.pdf --simple -o out.html         # flowing paragraphs
-oxide to-html in.pdf -p 1,3-5 --password p -o out.html
+wellfriendpdf to-html in.pdf -o out.html                 # complex (default), stdout if no -o
+wellfriendpdf to-html in.pdf --background -o out.html     # raster bg + selectable text overlay
+wellfriendpdf to-html in.pdf --xml -o out.xml             # positioned text fragments
+wellfriendpdf to-html in.pdf --simple -o out.html         # flowing paragraphs
+wellfriendpdf to-html in.pdf -p 1,3-5 --password p -o out.html
 ```
 
 Output is a single self-contained HTML/XML document for the selected pages.
@@ -86,7 +86,7 @@ raster-background mode):
   marked `dir="rtl"`.
 - **Multi-column**: both columns' text appears (`generated_two_columns.pdf`).
 - **XML / simple** modes emit the expected structures.
-- **`pdftohtml` text cross-check**: on `tracemonkey.pdf` p3, Oxide's HTML shares
+- **`pdftohtml` text cross-check**: on `tracemonkey.pdf` p3, Wellfriend's HTML shares
   **100%** of Poppler `pdftohtml`'s words (markup differs, as expected; the text
   content agrees).
 

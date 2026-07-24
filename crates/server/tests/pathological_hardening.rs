@@ -22,19 +22,19 @@ mod pathological;
 /// file (OnceLock::set only takes the first). A 2s timeout and tight caps make
 /// the pathological behavior observable quickly.
 fn install_test_config() {
-    let cfg = oxide_server::config::ServerConfig {
+    let cfg = wellfriendpdf_server::config::ServerConfig {
         request_timeout_secs: 2,
         max_render_pixels: 100_000_000, // 100 MP, same as prod default
         max_output_bytes: 8 * 1024 * 1024, // 8 MiB so output explosion is reachable
         max_image_count: 10_000,
         max_pages: 200,
-        ..oxide_server::config::ServerConfig::default()
+        ..wellfriendpdf_server::config::ServerConfig::default()
     };
-    let _ = oxide_server::config::CONFIG.set(cfg);
+    let _ = wellfriendpdf_server::config::CONFIG.set(cfg);
 }
 
 fn make_multipart(filename: &str, pdf: &[u8], extra: &[(&str, &str)]) -> (String, Vec<u8>) {
-    let boundary = "oxide-pathological-boundary";
+    let boundary = "wellfriendpdf-pathological-boundary";
     let mut body: Vec<u8> = Vec::new();
     body.extend_from_slice(format!("--{}\r\n", boundary).as_bytes());
     body.extend_from_slice(
@@ -65,7 +65,7 @@ fn make_multipart(filename: &str, pdf: &[u8], extra: &[(&str, &str)]) -> (String
 
 async fn post_pdf2img(pdf: &[u8], extra: &[(&str, &str)]) -> (StatusCode, Vec<u8>) {
     let (ct, body) = make_multipart("x.pdf", pdf, extra);
-    let app = oxide_server::app::create_app();
+    let app = wellfriendpdf_server::app::create_app();
     let response = app
         .oneshot(
             Request::post("/api/v1/pdf2img")

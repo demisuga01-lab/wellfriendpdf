@@ -31,7 +31,7 @@ Prompt 3 now reaches:
 - 5000-page text, page mode: ok, 39.1s, 24.3 MB peak working set.
 - 5000-page text, aggregate mode: ok, 16.0s, 63.5 MB peak working set.
 
-Plainly: within the fixed 2 GB cap, Oxide now processes the 3-4 GB target-size synthetic PDFs and 5000-page synthetic PDFs. The remaining caveat is scope: this proves the parser/extraction/render path for huge uncompressed content streams and high page counts. It does not prove every possible 4 GB real-world image/filter mix, and signing/incremental writer compatibility APIs can still materialize the full source bytes by design.
+Plainly: within the fixed 2 GB cap, Wellfriend now processes the 3-4 GB target-size synthetic PDFs and 5000-page synthetic PDFs. The remaining caveat is scope: this proves the parser/extraction/render path for huge uncompressed content streams and high page counts. It does not prove every possible 4 GB real-world image/filter mix, and signing/incremental writer compatibility APIs can still materialize the full source bytes by design.
 
 ## What Changed
 
@@ -57,7 +57,7 @@ Plainly: within the fixed 2 GB cap, Oxide now processes the 3-4 GB target-size s
    - `crates/engine/src/text/extractor.rs:76` processes aggregate extraction in bounded chunks.
    - `crates/engine/src/text/extractor.rs:123` derives the window from available parallelism and a conservative memory budget.
    - `crates/cli/src/main.rs:925` applies the same bounded window to CLI default text extraction.
-   - Tunables: `OXIDE_TEXT_PARALLEL_PAGES`, `OXIDE_TEXT_PARALLEL_MEMORY_MB`, and `OXIDE_TEXT_PARALLEL_PAGE_MB`.
+   - Tunables: `WELLFRIENDPDF_TEXT_PARALLEL_PAGES`, `WELLFRIENDPDF_TEXT_PARALLEL_MEMORY_MB`, and `WELLFRIENDPDF_TEXT_PARALLEL_PAGE_MB`.
 
 ## Measurement Method
 
@@ -135,7 +135,7 @@ The 4.0 GB aggregate text run was executed twice under the 2 GB cap:
 
 | Run | Window | Result | Wall | Peak WS | SHA-256 |
 |---|---:|---:|---:|---:|---|
-| `serial-s4096-aggregate` | `OXIDE_TEXT_PARALLEL_PAGES=1` | ok | 14.5s | 20.1 MB | `A39C1DF7EC5CEA6252050340F7D3A979C77D163ECF6B79FF175708F2E6FC7A72` |
+| `serial-s4096-aggregate` | `WELLFRIENDPDF_TEXT_PARALLEL_PAGES=1` | ok | 14.5s | 20.1 MB | `A39C1DF7EC5CEA6252050340F7D3A979C77D163ECF6B79FF175708F2E6FC7A72` |
 | `parallel-s4096-aggregate` | default bounded window | ok | 6.0s | 20.1 MB | `A39C1DF7EC5CEA6252050340F7D3A979C77D163ECF6B79FF175708F2E6FC7A72` |
 
 Result: output is byte-identical, in order, and the bounded parallel run is faster without increasing peak working set.
@@ -144,9 +144,9 @@ Result: output is byte-identical, in order, and the bounded parallel run is fast
 
 Full/source gates:
 
-- `cargo build --release -p oxide-cli`: passed.
+- `cargo build --release -p wellfriendpdf-cli`: passed.
 - Focused engine tokenizer and file-backed reader tests: passed.
-- `cargo test -p oxide-cli`: passed.
+- `cargo test -p wellfriendpdf-cli`: passed.
 - `cargo test --workspace`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `git diff --check`: passed; output contained only CRLF conversion warnings for modified files.
@@ -155,7 +155,7 @@ Accuracy regression slices:
 
 - Field slice: passed, `macro_field_f1 = 0.72503`, `macro_value_f1 = 0.81434`, precision `0.69231`, recall `0.84536`.
 - Table slice independent re-run: passed, `macro_shape_f1 = 0.96232`, `macro_cell_f1 = 0.98737`, `macro_cell_recall = 0.99689`, `macro_cell_precision = 0.98246`, `macro_teds_approx = 0.98111`.
-- 200-file text slice, oxide-only: `char_similarity = 0.92743`, `word_f1 = 1.0`, `line_recall = 1.0`, `spurious_line_ratio = 0.07633`, `reading_order = 0.96019`.
+- 200-file text slice, wellfriendpdf-only: `char_similarity = 0.92743`, `word_f1 = 1.0`, `line_recall = 1.0`, `spurious_line_ratio = 0.07633`, `reading_order = 0.96019`.
 
 Large real-file Prompt 2 vs Prompt 3 text diff:
 
@@ -193,4 +193,4 @@ Fixed cap: 2048 MB resident/process memory.
 2. Filtered content streams still decode to a `Vec<u8>` through the existing filter layer. That is acceptable for the measured target fixture, but a future pass should add streaming Flate/LZW content tokenization.
 3. The signing/writer compatibility path can still lazily materialize the whole source file via `file_bytes()`. Parse/extract/render avoid it.
 4. Image decode memory is still governed by existing pixel/decompression caps. A true image-heavy 4 GB file should be added to the real corpus when available.
-5. The bounded text window is conservative by default. Self-hosters can tune `OXIDE_TEXT_PARALLEL_PAGES`, `OXIDE_TEXT_PARALLEL_MEMORY_MB`, and `OXIDE_TEXT_PARALLEL_PAGE_MB`.
+5. The bounded text window is conservative by default. Self-hosters can tune `WELLFRIENDPDF_TEXT_PARALLEL_PAGES`, `WELLFRIENDPDF_TEXT_PARALLEL_MEMORY_MB`, and `WELLFRIENDPDF_TEXT_PARALLEL_PAGE_MB`.

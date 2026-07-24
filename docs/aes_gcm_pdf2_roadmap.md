@@ -9,4 +9,4 @@ Implementation requires:
 - A pure-Rust AEAD implementation already acceptable under `#![forbid(unsafe_code)]`.
 - Writer tests proving deterministic structure where possible while retaining required random encryption material.
 
-Until those prerequisites exist, Oxide must fail closed or report unsupported. It must not silently treat AES-GCM as AES-CBC.
+Until those prerequisites exist, Wellfriend must fail closed or report unsupported. It must not silently treat AES-GCM as AES-CBC.

@@ -15,8 +15,8 @@ Prompt 18 may begin only when `target/prompt17-annotation-xfdf-media-redaction/p
 - Prompt 03 unified release gate: all 16 steps passed, including C ABI, a built wheel, .NET test/pack, Maven, Gradle, WASM target, and wasm-pack Node/web package smoke.
 - Fresh installed-wheel Python suite: 15 passed, 0 failed.
 - Prompt 02B memory/lifecycle gate: C ABI, .NET, and Java stress smokes passed. Valgrind is unavailable on Windows and is not claimed; Linux ASan/TSan remains the repository CI gate.
-- Retained Prompt 04-16 audit scripts: all passed. Prompt 09B, 10, 11, and 13 reported zero Oxide outliers and zero unclassified failures; Prompt 16 reported 26 fixtures, zero blocked rows, and passing core tests.
-- Prompt 17 Poppler/PDFium/MuPDF/Oxide, qpdf, deterministic, metamorphic, sanitizer-rescan, and redaction-security audits: passed with zero supported-row Oxide outliers, zero unclassified failures, zero security-proof failures, and zero overlay-only success claims.
+- Retained Prompt 04-16 audit scripts: all passed. Prompt 09B, 10, 11, and 13 reported zero Wellfriend outliers and zero unclassified failures; Prompt 16 reported 26 fixtures, zero blocked rows, and passing core tests.
+- Prompt 17 Poppler/PDFium/MuPDF/Wellfriend, qpdf, deterministic, metamorphic, sanitizer-rescan, and redaction-security audits: passed with zero supported-row Wellfriend outliers, zero unclassified failures, zero security-proof failures, and zero overlay-only success claims.
 
 An additional non-authoritative `cargo test --workspace --all-features` experiment was not counted as the workspace gate: it deliberately compiles native codecs while the default-policy isolation test asserts that native codecs are absent. The authoritative default-feature workspace suite passed; the all-feature compilation/lint gate also passed.
 

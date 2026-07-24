@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Run the Prompt 15 semantic intelligence contract benchmark.
 
-The benchmark combines executable Oxide gates, generated PDF fixtures, stable
+The benchmark combines executable Wellfriend gates, generated PDF fixtures, stable
 fixture truth, and availability-aware external references. It never downloads
 models or sends document data to a network service.
 """
@@ -411,7 +411,7 @@ def package_status(module: str, distribution: str | None = None) -> dict[str, An
 
 
 def reference_availability(
-    fixtures: dict[str, Path], oxide_bin: Path, timeout: int
+    fixtures: dict[str, Path], wellfriendpdf_bin: Path, timeout: int
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     tools: dict[str, Any] = {
         "docling": package_status("docling"),
@@ -441,7 +441,7 @@ def reference_availability(
             with pdfplumber.open(fixtures["untagged_text"]) as document:
                 reference_text = "\n".join(page.extract_text() or "" for page in document.pages)
             completed = subprocess.run(
-                [str(oxide_bin), "extract-text", str(fixtures["untagged_text"])],
+                [str(wellfriendpdf_bin), "extract-text", str(fixtures["untagged_text"])],
                 cwd=ROOT,
                 text=True,
                 encoding="utf-8",
@@ -451,15 +451,15 @@ def reference_availability(
                 timeout=timeout,
                 check=True,
             )
-            oxide_text = completed.stdout.strip()
-            exact = " ".join(reference_text.split()) == " ".join(oxide_text.split())
+            wellfriendpdf_text = completed.stdout.strip()
+            exact = " ".join(reference_text.split()) == " ".join(wellfriendpdf_text.split())
             comparison = {
                 "tool": "pdfplumber",
                 "fixture": rel(fixtures["untagged_text"]),
                 "executed": True,
                 "exact_normalized_text_match": exact,
                 "reference_text_sha256": sha256_bytes(reference_text.encode("utf-8")),
-                "oxide_text_sha256": sha256_bytes(oxide_text.encode("utf-8")),
+                "wellfriendpdf_text_sha256": sha256_bytes(wellfriendpdf_text.encode("utf-8")),
             }
             comparisons.append(comparison)
             tools["pdfplumber"].update({"executed": True, "status": "executed"})
@@ -562,7 +562,7 @@ def schema_artifacts(out: Path) -> None:
         {
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "$id": "prompt15.table_proposal.v1",
-            "title": "Oxide Prompt 15 table proposal set",
+            "title": "Wellfriend Prompt 15 table proposal set",
             "type": "object",
             "required": [
                 "schema_version",
@@ -667,7 +667,7 @@ def write_html_report(out: Path, scorecard: dict[str, Any], references: dict[str
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Oxide Prompt 15 Semantic Close-out</title>
+<title>Wellfriend Prompt 15 Semantic Close-out</title>
 <style>
 body {{ margin: 0; color: #1c252b; background: #f5f7f8; font: 15px/1.5 system-ui, sans-serif; }}
 header {{ background: #16323a; color: white; padding: 32px max(24px, calc((100% - 1080px)/2)); }}
@@ -684,7 +684,7 @@ code {{ background: #e8edef; padding: 2px 4px; border-radius: 3px; }}
 </style>
 </head>
 <body>
-<header><h1>Oxide Prompt 15 Semantic Close-out</h1><p>Deterministic extraction, optional proposal hooks, provenance-aware RAG, and availability-aware references.</p></header>
+<header><h1>Wellfriend Prompt 15 Semantic Close-out</h1><p>Deterministic extraction, optional proposal hooks, provenance-aware RAG, and availability-aware references.</p></header>
 <main>
 <section class="summary">
 <div class="metric"><strong>{scorecard['summary']['category_count']}</strong>categories</div>
@@ -710,7 +710,7 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     parser.add_argument("--timeout", type=int, default=360)
     parser.add_argument("--skip-rust-tests", action="store_true")
-    parser.add_argument("--oxide-bin", type=Path)
+    parser.add_argument("--wellfriendpdf-bin", type=Path)
     args = parser.parse_args()
 
     out = args.out.resolve()
@@ -722,17 +722,17 @@ def main() -> int:
         gate_commands = [
             (
                 "prompt15 semantic integration",
-                ["cargo", "test", "-p", "oxide-engine", "--test", "prompt15_semantic_closeout", "--jobs", "1"],
+                ["cargo", "test", "-p", "wellfriendpdf-engine", "--test", "prompt15_semantic_closeout", "--jobs", "1"],
             ),
             (
                 "prompt15 table proposal unit tests",
-                ["cargo", "test", "-p", "oxide-engine", "--lib", "table_intelligence", "--jobs", "1"],
+                ["cargo", "test", "-p", "wellfriendpdf-engine", "--lib", "table_intelligence", "--jobs", "1"],
             ),
             (
                 "prompt15 advanced RAG unit tests",
-                ["cargo", "test", "-p", "oxide-engine", "--lib", "advanced_rag", "--jobs", "1"],
+                ["cargo", "test", "-p", "wellfriendpdf-engine", "--lib", "advanced_rag", "--jobs", "1"],
             ),
-            ("Prompt 15 CLI build", ["cargo", "build", "-p", "oxide-cli", "--jobs", "1"]),
+            ("Prompt 15 CLI build", ["cargo", "build", "-p", "wellfriendpdf-cli", "--jobs", "1"]),
         ]
         for name, command in gate_commands:
             gate = run_command(name, command, args.timeout)
@@ -741,33 +741,33 @@ def main() -> int:
                 write_json(out / "validation-gates-prompt15.json", {"gates": gates})
                 return 1
 
-    oxide_bin = args.oxide_bin
-    if oxide_bin is None:
-        oxide_bin = ROOT / "target" / "debug" / ("oxide.exe" if os.name == "nt" else "oxide")
-    if not oxide_bin.exists():
-        gate = run_command("Prompt 15 CLI bootstrap", ["cargo", "build", "-p", "oxide-cli", "--jobs", "1"], args.timeout)
+    wellfriendpdf_bin = args.wellfriendpdf_bin
+    if wellfriendpdf_bin is None:
+        wellfriendpdf_bin = ROOT / "target" / "debug" / ("wellfriendpdf.exe" if os.name == "nt" else "wellfriendpdf")
+    if not wellfriendpdf_bin.exists():
+        gate = run_command("Prompt 15 CLI bootstrap", ["cargo", "build", "-p", "wellfriendpdf-cli", "--jobs", "1"], args.timeout)
         gates.append(gate)
-        if gate["status"] != "passed" or not oxide_bin.exists():
+        if gate["status"] != "passed" or not wellfriendpdf_bin.exists():
             write_json(out / "validation-gates-prompt15.json", {"gates": gates})
             return 1
 
     cli_samples: dict[str, Any] = {}
     cli_commands = {
-        "well_tagged_summary": [str(oxide_bin), "semantic-export", str(fixtures["well_tagged"]), "--view", "summary"],
-        "semantic_summary": [str(oxide_bin), "semantic-export", str(fixtures["broken_parenttree"]), "--view", "summary"],
-        "orphan_summary": [str(oxide_bin), "semantic-export", str(fixtures["orphan_mcid"]), "--view", "summary"],
-        "conflict_summary": [str(oxide_bin), "semantic-export", str(fixtures["conflicting_mcid"]), "--view", "summary"],
-        "cjk_zh_tokens": [str(oxide_bin), "semantic-export", str(fixtures["cjk_zh"]), "--view", "tokens"],
-        "cjk_ja_tokens": [str(oxide_bin), "semantic-export", str(fixtures["cjk_ja"]), "--view", "tokens"],
-        "cjk_ko_tokens": [str(oxide_bin), "semantic-export", str(fixtures["cjk_ko"]), "--view", "tokens"],
-        "mixed_cjk_tokens": [str(oxide_bin), "semantic-export", str(fixtures["mixed_cjk"]), "--view", "tokens"],
-        "simple_table": [str(oxide_bin), "extract-tables", str(fixtures["simple_table"]), "--format", "json"],
-        "complex_table": [str(oxide_bin), "extract-tables", str(fixtures["complex_table"]), "--format", "json"],
-        "merged_table": [str(oxide_bin), "extract-tables", str(fixtures["merged_table"]), "--format", "json"],
-        "rag_chunks": [str(oxide_bin), "semantic-export", str(fixtures["rag_page"]), "--view", "chunks", "--chunk-mode", "paragraph"],
-        "semantic_search": [str(oxide_bin), "semantic-export", str(fixtures["untagged_text"]), "--view", "search", "--query", "Prompt"],
-        "table_status": [str(oxide_bin), "semantic-export", str(fixtures["simple_table"]), "--view", "status"],
-        "feature_report": [str(oxide_bin), "feature-report"],
+        "well_tagged_summary": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["well_tagged"]), "--view", "summary"],
+        "semantic_summary": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["broken_parenttree"]), "--view", "summary"],
+        "orphan_summary": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["orphan_mcid"]), "--view", "summary"],
+        "conflict_summary": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["conflicting_mcid"]), "--view", "summary"],
+        "cjk_zh_tokens": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["cjk_zh"]), "--view", "tokens"],
+        "cjk_ja_tokens": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["cjk_ja"]), "--view", "tokens"],
+        "cjk_ko_tokens": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["cjk_ko"]), "--view", "tokens"],
+        "mixed_cjk_tokens": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["mixed_cjk"]), "--view", "tokens"],
+        "simple_table": [str(wellfriendpdf_bin), "extract-tables", str(fixtures["simple_table"]), "--format", "json"],
+        "complex_table": [str(wellfriendpdf_bin), "extract-tables", str(fixtures["complex_table"]), "--format", "json"],
+        "merged_table": [str(wellfriendpdf_bin), "extract-tables", str(fixtures["merged_table"]), "--format", "json"],
+        "rag_chunks": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["rag_page"]), "--view", "chunks", "--chunk-mode", "paragraph"],
+        "semantic_search": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["untagged_text"]), "--view", "search", "--query", "Prompt"],
+        "table_status": [str(wellfriendpdf_bin), "semantic-export", str(fixtures["simple_table"]), "--view", "status"],
+        "feature_report": [str(wellfriendpdf_bin), "feature-report"],
     }
     for name, command in cli_commands.items():
         gate, payload = run_json_command(name, command, args.timeout)
@@ -780,7 +780,7 @@ def main() -> int:
     redacted_path = out / "fixtures" / "redacted_output.pdf"
     redact_gate = run_command(
         "redaction fixture",
-        [str(oxide_bin), "redact", str(fixtures["redaction_input"]), "--text", "SECRET", "--strict", "--json", "--output", str(redacted_path)],
+        [str(wellfriendpdf_bin), "redact", str(fixtures["redaction_input"]), "--text", "SECRET", "--strict", "--json", "--output", str(redacted_path)],
         args.timeout,
     )
     gates.append(redact_gate)
@@ -789,7 +789,7 @@ def main() -> int:
         return 1
     verify_redaction = run_command(
         "post-redaction text verification",
-        [str(oxide_bin), "extract-text", str(redacted_path)],
+        [str(wellfriendpdf_bin), "extract-text", str(redacted_path)],
         args.timeout,
     )
     gates.append(verify_redaction)
@@ -798,7 +798,7 @@ def main() -> int:
         write_json(out / "validation-gates-prompt15.json", {"gates": gates})
         return 1
 
-    references, comparisons = reference_availability(fixtures, oxide_bin, args.timeout)
+    references, comparisons = reference_availability(fixtures, wellfriendpdf_bin, args.timeout)
     write_json(out / "semantic-reference-availability-prompt15.json", references)
 
     category_rows = [metric_row(category, index) for index, category in enumerate(CATEGORIES, 1)]
@@ -909,7 +909,7 @@ def main() -> int:
         )
     manifest = {
         "schema_version": PROMPT15_SCHEMA,
-        "corpus_name": "Oxide Prompt 15 deterministic semantic contract corpus",
+        "corpus_name": "Wellfriend Prompt 15 deterministic semantic contract corpus",
         "category_count": len(CATEGORIES),
         "fixture_count": len(manifest_entries),
         "categories": CATEGORIES,
@@ -969,7 +969,7 @@ def main() -> int:
         "prompt": "Combined Prompt 15",
         "artifact_root": rel(out),
         "rows": [
-            {"item": item, "status": status, "owner": "oxide", "evidence": evidence}
+            {"item": item, "status": status, "owner": "wellfriendpdf", "evidence": evidence}
             for item, status, evidence in AUDIT_ROWS
         ],
         "counts": {status: statuses.count(status) for status in sorted(ALLOWED_STATUSES)},
@@ -1070,7 +1070,7 @@ def main() -> int:
         out / "semantic-binding-parity-prompt15.json",
         {
             "schema_version": "prompt15.semantic_binding.v1",
-            "canonical_owner": "oxide_engine::sdk",
+            "canonical_owner": "wellfriendpdf_engine::sdk",
             "report_envelope_version": 1,
             "schema_change": "additive endpoints and additive feature-report section",
             "bindings": bindings,
@@ -1083,12 +1083,12 @@ def main() -> int:
         {
             "schema_version": "prompt15.semantic_binding.v1",
             "cli": [
-                "oxide semantic-export input.pdf --view bundle",
-                "oxide semantic-export input.pdf --view chunks --chunk-mode table-row",
-                "oxide semantic-export input.pdf --view search --query invoice",
+                "wellfriendpdf semantic-export input.pdf --view bundle",
+                "wellfriendpdf semantic-export input.pdf --view chunks --chunk-mode table-row",
+                "wellfriendpdf semantic-export input.pdf --view search --query invoice",
             ],
             "python": ["doc.semantic_bundle()", "doc.advanced_chunks()", "doc.semantic_search('invoice')", "doc.table_proposal_status()"],
-            "c_abi": ["oxide_document_semantic_bundle_json", "oxide_document_advanced_chunks_json", "oxide_document_semantic_search_json"],
+            "c_abi": ["wellfriendpdf_document_semantic_bundle_json", "wellfriendpdf_document_advanced_chunks_json", "wellfriendpdf_document_semantic_search_json"],
             "wasm": ["semanticBundleJson", "advancedChunksJson", "semanticSearchJson", "tableProposalStatusJson"],
             "dotnet": ["SemanticBundleJson", "AdvancedChunksJson", "SemanticSearchJson"],
             "java": ["semanticBundleJson", "advancedChunksJson", "semanticSearchJson"],

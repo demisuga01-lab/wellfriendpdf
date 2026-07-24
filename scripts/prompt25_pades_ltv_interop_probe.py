@@ -41,7 +41,7 @@ def name(common_name: str) -> x509.Name:
     return x509.Name(
         [
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Oxide Prompt25 LTV Test"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Wellfriend Prompt25 LTV Test"),
             x509.NameAttribute(NameOID.COMMON_NAME, common_name),
         ]
     )
@@ -268,12 +268,12 @@ def pyhanko_validate(pdf_bytes: bytes, pki: dict[str, bytes]) -> dict:
     }
 
 
-def run_oxide_signature_verify(pdf_path: Path, root_path: Path, intermediate_path: Path) -> dict:
+def run_wellfriendpdf_signature_verify(pdf_path: Path, root_path: Path, intermediate_path: Path) -> dict:
     cmd = [
         "cargo",
         "run",
         "-p",
-        "oxide-cli",
+        "wellfriendpdf-cli",
         "--",
         "signature-verify",
         "--json",
@@ -301,7 +301,7 @@ def run_oxide_signature_verify(pdf_path: Path, root_path: Path, intermediate_pat
         except json.JSONDecodeError:
             pass
     return {
-        "tool": "oxide-cli",
+        "tool": "wellfriendpdf-cli",
         "command": cmd,
         "exit_code": proc.returncode,
         "stdout_sha256": sha256_hex(proc.stdout.encode("utf-8")),
@@ -364,8 +364,8 @@ def main() -> int:
 
     pyhanko_bt = pyhanko_validate(bt_pdf, pki)
     pyhanko_blt = pyhanko_validate(blt_pdf, pki)
-    oxide_bt = run_oxide_signature_verify(bt_path, paths["root"], paths["intermediate"])
-    oxide_blt = run_oxide_signature_verify(blt_path, paths["root"], paths["intermediate"])
+    wellfriendpdf_bt = run_wellfriendpdf_signature_verify(bt_path, paths["root"], paths["intermediate"])
+    wellfriendpdf_blt = run_wellfriendpdf_signature_verify(blt_path, paths["root"], paths["intermediate"])
 
     payload = {
         "schema": "prompt25.pades-ltv-interoperability.v1",
@@ -390,21 +390,21 @@ def main() -> int:
             "bt": pyhanko_bt,
             "blt": pyhanko_blt,
         },
-        "oxide_validation": {
-            "bt": {**oxide_bt, "prompt25_summary": prompt25_summary(oxide_bt.get("parsed"))},
-            "blt": {**oxide_blt, "prompt25_summary": prompt25_summary(oxide_blt.get("parsed"))},
+        "wellfriendpdf_validation": {
+            "bt": {**wellfriendpdf_bt, "prompt25_summary": prompt25_summary(wellfriendpdf_bt.get("parsed"))},
+            "blt": {**wellfriendpdf_blt, "prompt25_summary": prompt25_summary(wellfriendpdf_blt.get("parsed"))},
         },
     }
     bt_ok = (
         pyhanko_bt.get("trusted") is True
-        and oxide_bt.get("exit_code") == 0
-        and prompt25_summary(oxide_bt.get("parsed")).get("timestamp_status") == "valid"
-        and prompt25_summary(oxide_bt.get("parsed")).get("achieved_pades_level") in {"baseline_t", "baseline_lt"}
+        and wellfriendpdf_bt.get("exit_code") == 0
+        and prompt25_summary(wellfriendpdf_bt.get("parsed")).get("timestamp_status") == "valid"
+        and prompt25_summary(wellfriendpdf_bt.get("parsed")).get("achieved_pades_level") in {"baseline_t", "baseline_lt"}
     )
-    blt_summary = prompt25_summary(oxide_blt.get("parsed"))
+    blt_summary = prompt25_summary(wellfriendpdf_blt.get("parsed"))
     blt_ok = (
         pyhanko_blt.get("trusted") is True
-        and oxide_blt.get("exit_code") in {0, 13}
+        and wellfriendpdf_blt.get("exit_code") in {0, 13}
         and blt_summary.get("timestamp_status") == "valid"
         and blt_summary.get("vri_matched") is True
         and blt_summary.get("achieved_pades_level") in {"baseline_lt", "baseline_l_t"}

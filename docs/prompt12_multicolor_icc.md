@@ -36,5 +36,5 @@ provides a safe alternate color space.
 Remaining native limit:
 
 - if a real multicolor profile requires a pixel format that the safe LittleCMS
-  wrapper does not expose, Oxide reports the profile, channel count, profile
+  wrapper does not expose, Wellfriend reports the profile, channel count, profile
   class, PCS, hash, and reason, and does not transform it.

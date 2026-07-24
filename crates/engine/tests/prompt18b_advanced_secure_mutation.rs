@@ -1,8 +1,8 @@
-use oxide_engine::prompt17::{
+use wellfriendpdf_engine::prompt17::{
     NonAxisRedactionFallbackPolicy, NonAxisRedactionOptions, NonAxisRedactionRequest,
     RedactionCoordinateSpace,
 };
-use oxide_engine::prompt18::{
+use wellfriendpdf_engine::prompt18::{
     analyze_edit_policy_for_target, apply_signature_preserving_form_fill, associated_files_add_pdf,
     associated_files_inventory, associated_files_remove_owner_pdf,
     associated_files_update_owner_pdf, incremental_annotation_update_pdf,
@@ -11,10 +11,12 @@ use oxide_engine::prompt18::{
     AssociatedFileOwnerRemoveRequest, AssociatedFileOwnerType, AssociatedFileOwnerUpdateRequest,
     EditOperation, EditPolicyDecision, IncrementalAnnotationEdit, IncrementalPagePropertyEdit,
 };
-use oxide_engine::{decode_stream_lossless, flate_encode, ContentEngine, PdfObject, VerifyOptions};
+use wellfriendpdf_engine::{
+    decode_stream_lossless, flate_encode, ContentEngine, PdfObject, VerifyOptions,
+};
 
 fn export_fixture(name: &str, bytes: &[u8]) {
-    let Some(root) = std::env::var_os("OXIDE_PROMPT18B_EXPORT_FIXTURES") else {
+    let Some(root) = std::env::var_os("WELLFRIENDPDF_PROMPT18B_EXPORT_FIXTURES") else {
         return;
     };
     let root = std::path::PathBuf::from(root);
@@ -133,9 +135,10 @@ fn packed_indexed_iccbased_predictor_and_promotion_are_executable() {
         promote_inline_images: true,
         signature_policy_override: false,
     };
-    let (output, report) = oxide_engine::redact_masked_images_pdf(&input, &options).unwrap();
+    let (output, report) =
+        wellfriendpdf_engine::redact_masked_images_pdf(&input, &options).unwrap();
     export_fixture("advanced-promoted.pdf", &output);
-    let (again, _) = oxide_engine::redact_masked_images_pdf(&input, &options).unwrap();
+    let (again, _) = wellfriendpdf_engine::redact_masked_images_pdf(&input, &options).unwrap();
     assert_eq!(output, again);
     assert_eq!(report.security_proof_failures, 0);
     let engine = ContentEngine::open_bytes(output).unwrap();
@@ -191,7 +194,8 @@ fn packed_indexed_iccbased_predictor_and_promotion_are_executable() {
 
     let mut direct_options = options.clone();
     direct_options.promote_inline_images = false;
-    let (direct, _) = oxide_engine::redact_masked_images_pdf(&input, &direct_options).unwrap();
+    let (direct, _) =
+        wellfriendpdf_engine::redact_masked_images_pdf(&input, &direct_options).unwrap();
     export_fixture("advanced-direct.pdf", &direct);
     let promoted_render = engine.render_page(1, 72).unwrap().to_raw_image();
     let direct_render = ContentEngine::open_bytes(direct)
@@ -413,13 +417,13 @@ fn prompt25_signature_preserving_form_fill_plans_applies_and_revalidates() {
 #[test]
 fn prompt18b_public_report_has_zero_blocked_or_security_failures() {
     let report: serde_json::Value = serde_json::from_str(
-        &oxide_engine::sdk::prompt18b_report_json(&owners_fixture(), None).unwrap(),
+        &wellfriendpdf_engine::sdk::prompt18b_report_json(&owners_fixture(), None).unwrap(),
     )
     .unwrap();
     assert_eq!(report["report"]["closure"]["failure"]["blocked"], 0);
     assert_eq!(report["report"]["closure"]["failure"]["security_proof"], 0);
     let feature: serde_json::Value =
-        serde_json::from_str(&oxide_engine::sdk::feature_report_json().unwrap()).unwrap();
+        serde_json::from_str(&wellfriendpdf_engine::sdk::feature_report_json().unwrap()).unwrap();
     assert_eq!(
         feature["report"]["prompt18b_advanced_secure_mutation_closure"]["status"],
         "complete_with_exact_limits"

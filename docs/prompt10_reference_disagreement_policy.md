@@ -2,15 +2,15 @@
 
 Prompt 10E keeps the multi-reference rule from Prompt 10: a single-reference
 visual pass is not enough. Supported rendered fixtures are compared across
-Oxide, Poppler, PDFium, and MuPDF, with per-page pairwise metrics and explicit
+Wellfriend, Poppler, PDFium, and MuPDF, with per-page pairwise metrics and explicit
 classification. Policy-only rows are allowed only when they are exact
 operator/payload/security diagnostics and not visual claims.
 
 ## Classifications
 
-- `all_references_agree_oxide_pass`: Oxide and all available references are in
+- `all_references_agree_wellfriendpdf_pass`: Wellfriend and all available references are in
   the accepted visual cluster.
-- `reference_disagreement_oxide_inside_cluster`: references disagree, but Oxide
+- `reference_disagreement_wellfriendpdf_inside_cluster`: references disagree, but Wellfriend
   is inside a reference cluster.
 - `unsupported_reported_security_policy`: the feature is blocked for a specific
   security reason.
@@ -26,10 +26,10 @@ operator/payload/security diagnostics and not visual claims.
 
 The current summary is:
 
-- `all_references_agree_oxide_pass`: 3 pages
-- `reference_disagreement_oxide_inside_cluster`: 1 page
+- `all_references_agree_wellfriendpdf_pass`: 3 pages
+- `reference_disagreement_wellfriendpdf_inside_cluster`: 1 page
 - `unsupported_reported_exotic_case_cid_keyed_cff_clip_geometry`: 1 page
-- Oxide outlier failures: 0
+- Wellfriend outlier failures: 0
 - unclassified failures: 0
 
 Evidence:
@@ -45,9 +45,9 @@ The current summary is:
 
 - rendered pages: 5
 - policy-only rows: 4
-- `all_references_agree_oxide_pass`: 4 pages
+- `all_references_agree_wellfriendpdf_pass`: 4 pages
 - `unsupported_reported_exotic_case_cid_keyed_cff_clip_geometry`: 1 page
-- Oxide outlier failures: 0
+- Wellfriend outlier failures: 0
 - unclassified failures: 0
 
 Evidence:
@@ -63,7 +63,7 @@ The current summary is:
 
 - rendered pages: 4
 - policy-only rows: 15
-- Oxide outlier failures: 0
+- Wellfriend outlier failures: 0
 - unclassified failures: 0
 
 Evidence:
@@ -79,8 +79,8 @@ The current summary is:
 
 - rendered pages: 17
 - fixture rows including policy diagnostics: 24
-- `all_references_agree_oxide_pass`: 17 pages
-- Oxide outlier failures: 0
+- `all_references_agree_wellfriendpdf_pass`: 17 pages
+- Wellfriend outlier failures: 0
 - unclassified failures: 0
 
 Evidence:
@@ -95,7 +95,7 @@ Evidence:
 Prompt 10F closes the final COLRv1 Porter-Duff/Plus and moving-center radial
 gradient rows. The required audit posture remains unchanged:
 
-- Oxide outlier failures: 0
+- Wellfriend outlier failures: 0
 - unclassified failures: 0
 - every reference disagreement classified
 - no broad unsupported COLRv1 composite rows remain

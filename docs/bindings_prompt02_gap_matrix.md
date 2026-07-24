@@ -173,16 +173,16 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| .NET native binary loading (`dotnet.native.loading`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | Resolver checks OXIDE_NATIVE_LIBRARY and RID runtime/native locations. |
-| .NET NuGet metadata and pack smoke (`dotnet.nuget`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | Oxide.Sdk.csproj includes package metadata/readme/license/tags. |
-| .NET output buffer ownership (`dotnet.binary.output`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | OxideBinaryResult copies bytes to managed memory and frees native buffers. |
+| .NET native binary loading (`dotnet.native.loading`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | Resolver checks WELLFRIENDPDF_NATIVE_LIBRARY and RID runtime/native locations. |
+| .NET NuGet metadata and pack smoke (`dotnet.nuget`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | WellfriendPdf.csproj includes package metadata/readme/license/tags. |
+| .NET output buffer ownership (`dotnet.binary.output`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | WellfriendBinaryResult copies bytes to managed memory and frees native buffers. |
 
 ## prompt02-java
 
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Java native binary loading (`java.native.loading`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | FFM loader checks OXIDE_NATIVE_LIBRARY and RID runtime/native locations. |
-| Java Maven package metadata (`java.maven`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | pom.xml records Maven metadata and binds OxideSmokeTest into mvn test; Prompt 02B package smoke runs mvn test/package. |
+| Java native binary loading (`java.native.loading`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | FFM loader checks WELLFRIENDPDF_NATIVE_LIBRARY and RID runtime/native locations. |
+| Java Maven package metadata (`java.maven`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | pom.xml records Maven metadata and binds WellfriendPdfSmokeTest into mvn test; Prompt 02B package smoke runs mvn test/package. |
 | Java output buffer ownership (`java.binary.output`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | BinaryResult copies native buffers into byte[] before freeing them. |
 
 ## prompt02-release
@@ -195,18 +195,18 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| WASM open from bytes and lifecycle (`wasm.input.bytes`) | deferred | deferred | deferred | implemented_public | deferred | deferred | deferred | implemented_public | implemented_public | OxidePdf constructor, openWithPassword, close/isClosed, and use-after-close guard. |
+| WASM open from bytes and lifecycle (`wasm.input.bytes`) | deferred | deferred | deferred | implemented_public | deferred | deferred | deferred | implemented_public | implemented_public | WellfriendPdf constructor, openWithPassword, close/isClosed, and use-after-close guard. |
 | WASM open from host file path (`wasm.input.path`) | deferred | deferred | deferred | unsupported_reported | deferred | deferred | deferred | implemented_public | implemented_public | Browser/WebWorker cannot read host paths; callers pass bytes from File/API/Node fs. |
-| TypeScript declarations (`wasm.typescript`) | deferred | deferred | deferred | implemented_public | deferred | deferred | deferred | implemented_public | implemented_public | crates/oxide-wasm/oxide.d.ts declares reports and output ownership. |
+| TypeScript declarations (`wasm.typescript`) | deferred | deferred | deferred | implemented_public | deferred | deferred | deferred | implemented_public | implemented_public | crates/wellfriendpdf-wasm/wellfriendpdf.d.ts declares reports and output ownership. |
 | WASM package metadata (`wasm.package`) | deferred | deferred | deferred | partial_public | deferred | deferred | deferred | implemented_public | partial_public | package.json and docs added; wasm-pack is required to regenerate publishable pkg glue. |
 
 ## prompt02b-closure
 
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| C ABI open with optional password (`prompt02b.cabi.password_open`) | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | deferred | implemented_public | implemented_public | oxide_document_open_from_bytes_with_password uses UTF-8 pointer+length and preserves existing open ABI. |
-| .NET password-open parity (`prompt02b.dotnet.password_open`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | OxideDocument.Open(path/bytes, string? password) routes through the password-aware C ABI. |
-| Java password-open parity (`prompt02b.java.password_open`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Oxide.Document.open(Path/byte[], String password) routes UTF-8 bytes through the password-aware C ABI. |
+| C ABI open with optional password (`prompt02b.cabi.password_open`) | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | deferred | implemented_public | implemented_public | wellfriendpdf_document_open_from_bytes_with_password uses UTF-8 pointer+length and preserves existing open ABI. |
+| .NET password-open parity (`prompt02b.dotnet.password_open`) | deferred | deferred | deferred | deferred | implemented_public | deferred | deferred | implemented_public | implemented_public | WellfriendDocument.Open(path/bytes, string? password) routes through the password-aware C ABI. |
+| Java password-open parity (`prompt02b.java.password_open`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | WellfriendPdf.Document.open(Path/byte[], String password) routes UTF-8 bytes through the password-aware C ABI. |
 | Java Maven package smoke (`prompt02b.java.maven_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/prompt02b_java_package_smoke.ps1 runs Maven version/test/package with a target-local Maven fallback. |
 | Java Gradle package support (`prompt02b.java.gradle_policy`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Prompt 02C adds build.gradle/settings.gradle plus a target-local Gradle 9.6.1 bootstrap that runs clean test, jar, build, JAR inspection, runtime smoke, and Maven/Gradle equivalence. |
 | Java JAR package verification (`prompt02b.java.jar_verification`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | Package smoke inspects the JAR as a ZIP, rejects test/native/build-junk entries, and runs from the packaged artifact. |
@@ -218,7 +218,7 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 
 | Feature | Rust | Python | C ABI | WASM | .NET | Java | CLI | Docs | Packaging | Action |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Java Gradle build/package/JAR smoke (`prompt02c.java.gradle_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/prompt02c_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/oxide-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts. |
+| Java Gradle build/package/JAR smoke (`prompt02c.java.gradle_package`) | deferred | deferred | deferred | deferred | deferred | implemented_public | deferred | implemented_public | implemented_public | scripts/prompt02c_gradle_package_smoke.ps1 runs Gradle version/test/jar/build, smokes build/libs/wellfriendpdf-sdk-0.1.0.jar, and writes gradle-jar-smoke plus Maven/Gradle equivalence artifacts. |
 
 ## release
 

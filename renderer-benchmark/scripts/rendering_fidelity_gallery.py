@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Create side-by-side visual galleries from renderer benchmark output.
 
-The 0A renderer benchmark stores Poppler PNGs and Oxide's render ZIP per file.
+The 0A renderer benchmark stores Poppler PNGs and Wellfriend's render ZIP per file.
 This helper extracts the worst failed pages and writes contact sheets:
 
-    Oxide | Poppler | amplified diff
+    Wellfriend | Poppler | amplified diff
 
 It is intentionally a reporting helper only; it does not run either renderer.
 """
@@ -66,8 +66,8 @@ def load_failed_pages(results_dir: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def oxide_page_image(artifact_dir: Path, page_number: int) -> Image.Image | None:
-    zip_path = artifact_dir / "oxide.zip"
+def wellfriendpdf_page_image(artifact_dir: Path, page_number: int) -> Image.Image | None:
+    zip_path = artifact_dir / "wellfriendpdf.zip"
     if not zip_path.exists():
         return None
     with zipfile.ZipFile(zip_path) as archive:
@@ -90,25 +90,25 @@ def poppler_page_image(artifact_dir: Path, page_number: int) -> Image.Image | No
 
 
 def write_sheet(
-    oxide: Image.Image,
+    wellfriendpdf: Image.Image,
     poppler: Image.Image,
     out_path: Path,
     label: str,
     diff_scale: int,
     max_width: int,
 ) -> None:
-    width = min(oxide.width, poppler.width)
-    height = min(oxide.height, poppler.height)
-    oxide = oxide.crop((0, 0, width, height))
+    width = min(wellfriendpdf.width, poppler.width)
+    height = min(wellfriendpdf.height, poppler.height)
+    wellfriendpdf = wellfriendpdf.crop((0, 0, width, height))
     poppler = poppler.crop((0, 0, width, height))
-    diff = ImageChops.difference(oxide, poppler).point(lambda value: min(255, value * diff_scale))
+    diff = ImageChops.difference(wellfriendpdf, poppler).point(lambda value: min(255, value * diff_scale))
 
     thumb_h = max(1, int(height * max_width / max(1, width)))
     label_h = 32
     sheet = Image.new("RGB", (max_width * 3, thumb_h + label_h), "white")
     draw = ImageDraw.Draw(sheet)
     for idx, (image, title) in enumerate(
-        [(oxide, "Oxide"), (poppler, "Poppler"), (diff, f"Diff x{diff_scale}")]
+        [(wellfriendpdf, "Wellfriend"), (poppler, "Poppler"), (diff, f"Diff x{diff_scale}")]
     ):
         x = idx * max_width
         sheet.paste(image.resize((max_width, thumb_h)), (x, label_h))
@@ -139,15 +139,15 @@ def main() -> None:
     for rank, row in enumerate(rows, start=1):
         page_number = int(row.get("page") or 1)
         artifact_dir = args.results_dir / "artifacts" / row["id"]
-        oxide = oxide_page_image(artifact_dir, page_number)
+        wellfriendpdf = wellfriendpdf_page_image(artifact_dir, page_number)
         poppler = poppler_page_image(artifact_dir, page_number)
-        if oxide is None or poppler is None:
+        if wellfriendpdf is None or poppler is None:
             continue
         safe_reason = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(row.get("reason") or "diff"))
         out_name = f"{rank:02d}_{row['id']}_p{page_number}_{safe_reason}.png"
         out_path = args.output_dir / out_name
         label = f"{row['id']} p{page_number}"
-        write_sheet(oxide, poppler, out_path, label, args.diff_scale, args.max_width)
+        write_sheet(wellfriendpdf, poppler, out_path, label, args.diff_scale, args.max_width)
         index_lines.append(
             f"| {rank} | `{row['id']}` | {page_number} | {row.get('category')} | "
             f"{row.get('reason')} | [{out_name}]({out_name}) |"

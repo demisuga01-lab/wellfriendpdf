@@ -25,7 +25,7 @@ The accelerated path is `scan_markers_accelerated()`. It uses safe Rust only:
 3. validate the full marker at that offset;
 4. sort candidates exactly like the scalar reference.
 
-No unsafe SIMD is used because `oxide-engine` forbids unsafe code. The implementation is a safe portable acceleration path rather than a CPU-specific SIMD intrinsic path.
+No unsafe SIMD is used because `wellfriendpdf-engine` forbids unsafe code. The implementation is a safe portable acceleration path rather than a CPU-specific SIMD intrinsic path.
 
 ## Parser Adoption
 

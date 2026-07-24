@@ -10,7 +10,7 @@ use std::io::Cursor;
 use std::path::Path;
 
 use crate::content::{Color, ColorSpace, LineCap, LineDash, LineJoin};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::flate_encode;
 use crate::fonts::encoding::{zapf_dingbats_name_to_unicode, Encoding};
 use crate::fonts::glyph_list::glyph_name_to_unicode;
@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 
 const DEFAULT_FONT_SIZE: f64 = 12.0;
 const DEFAULT_LINE_HEIGHT: f64 = 1.2;
-const BUILTIN_UNICODE_RESOURCE_NAME: &str = "OxideUnicode";
+const BUILTIN_UNICODE_RESOURCE_NAME: &str = "WellfriendUnicode";
 const KAPPA: f64 = 0.552_284_749_830_793_6;
 
 /// A high-level PDF document builder.
@@ -145,13 +145,14 @@ impl PdfBuilder {
     ) -> Result<FontFace> {
         let bytes = bytes.into();
         if bytes.is_empty() {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "authoring: custom font bytes are empty".to_string(),
             ));
         }
         TrueTypeMetrics::parse(&bytes)?;
         let id = CustomFontId(self.custom_fonts.len() as u32);
-        let base_name = sanitize_pdf_name(&name.into(), &format!("OxideCustomFont{}", id.0 + 1));
+        let base_name =
+            sanitize_pdf_name(&name.into(), &format!("WellfriendCustomFont{}", id.0 + 1));
         self.custom_fonts.push(CustomFont {
             id,
             base_name,
@@ -230,7 +231,7 @@ impl PdfBuilder {
 
     fn add_raw_image(&mut self, raw: RawImage) -> Result<ImageHandle> {
         if !raw.is_valid() || raw.bits_per_sample != 8 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "authoring: image samples must be non-empty 8-bit data".to_string(),
             ));
         }
@@ -246,7 +247,7 @@ impl PdfBuilder {
 
     fn image(&self, handle: ImageHandle) -> Result<&AuthoredImage> {
         self.images.get(handle.0 as usize).ok_or_else(|| {
-            OxideError::MalformedPdf(format!(
+            WellfriendError::MalformedPdf(format!(
                 "authoring: image handle {} was not registered on this document",
                 handle.0
             ))
@@ -255,7 +256,7 @@ impl PdfBuilder {
 
     fn custom_font(&self, id: CustomFontId) -> Result<&CustomFont> {
         self.custom_fonts.get(id.0 as usize).ok_or_else(|| {
-            OxideError::MalformedPdf(format!(
+            WellfriendError::MalformedPdf(format!(
                 "authoring: custom font handle {} was not registered on this document",
                 id.0
             ))
@@ -265,7 +266,7 @@ impl PdfBuilder {
     /// Serialize the authored document to PDF bytes.
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
         if self.pages.is_empty() {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "authoring: cannot save a PDF with no pages".to_string(),
             ));
         }
@@ -377,7 +378,7 @@ impl ImageColorSpace {
             1 => Ok(Self::DeviceGray),
             3 => Ok(Self::DeviceRGB),
             4 => Ok(Self::DeviceCMYK),
-            _ => Err(OxideError::UnsupportedFeature(format!(
+            _ => Err(WellfriendError::UnsupportedFeature(format!(
                 "authoring: unsupported image channel count {channels}"
             ))),
         }
@@ -1386,7 +1387,7 @@ impl FlowDocument {
         let x = self.margins.left;
         let available_width = self.content_width();
         if table.total_width() > available_width + 0.0001 {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "authoring: table width {} exceeds flow content width {}",
                 fmt_num(table.total_width()),
                 fmt_num(available_width)
@@ -1447,7 +1448,7 @@ impl FlowDocument {
 
     fn ensure_space(&mut self, height: f64) -> Result<()> {
         if height > self.page_size.height - self.margins.top - self.margins.bottom {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "authoring: flow block height {} exceeds usable page height",
                 fmt_num(height)
             )));
@@ -1878,13 +1879,15 @@ impl FontBuildPlan {
             .get(&font)
             .map(String::as_str)
             .ok_or_else(|| {
-                OxideError::MalformedPdf("authoring: font was not registered".to_string())
+                WellfriendError::MalformedPdf("authoring: font was not registered".to_string())
             })
     }
 
     fn embedded_plan(&self, font: FontFace) -> Result<&EmbeddedFontPlan> {
         self.embedded.get(&font).ok_or_else(|| {
-            OxideError::MalformedPdf(format!("authoring: embedded font {font:?} was not planned"))
+            WellfriendError::MalformedPdf(format!(
+                "authoring: embedded font {font:?} was not planned"
+            ))
         })
     }
 
@@ -1894,7 +1897,7 @@ impl FontBuildPlan {
             .get(&ch)
             .copied()
             .ok_or_else(|| {
-                OxideError::MalformedPdf(format!(
+                WellfriendError::MalformedPdf(format!(
                     "authoring: Unicode character {ch:?} has no CID for {font:?}"
                 ))
             })
@@ -1968,7 +1971,7 @@ impl EmbeddedFontPlanBuilder {
 
     fn push_entry(&mut self, glyph_id: u16, unicode: String, width: f64) -> Result<u16> {
         let cid = u16::try_from(self.entries.len() + 1).map_err(|_| {
-            OxideError::ResourceLimit(
+            WellfriendError::ResourceLimit(
                 "authoring: too many unique font CIDs for embedded Type0 font".to_string(),
             )
         })?;
@@ -1994,7 +1997,7 @@ fn font_bytes_for_face(builder: &PdfBuilder, font: FontFace) -> Result<&[u8]> {
     match font {
         FontFace::BuiltinUnicode => builtin_unicode_font_bytes(),
         FontFace::Custom(id) => Ok(&builder.custom_font(id)?.bytes),
-        FontFace::Standard(_) => Err(OxideError::MalformedPdf(
+        FontFace::Standard(_) => Err(WellfriendError::MalformedPdf(
             "authoring: Standard14 font has no embedded font plan".to_string(),
         )),
     }
@@ -2068,7 +2071,7 @@ impl ImageBuildPlan {
             .get(&image)
             .map(String::as_str)
             .ok_or_else(|| {
-                OxideError::MalformedPdf("authoring: image was not registered".to_string())
+                WellfriendError::MalformedPdf("authoring: image was not registered".to_string())
             })
     }
 }
@@ -2107,7 +2110,7 @@ fn page_dict(
     for font in page.fonts_used() {
         let resource = resource_refs.font_plan.resource_name(font)?;
         let Some(number) = resource_refs.font_refs.get(&font).copied() else {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "authoring: font object missing".to_string(),
             ));
         };
@@ -2118,7 +2121,7 @@ fn page_dict(
     for image in page.images_used() {
         let resource = resource_refs.image_plan.resource_name(image)?;
         let Some(number) = resource_refs.image_refs.get(&image).copied() else {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "authoring: image object missing".to_string(),
             ));
         };
@@ -2179,7 +2182,7 @@ fn info_dict(metadata: &PdfMetadata) -> PdfDictionary {
     }
     info.insert(
         "Producer",
-        PdfObject::String(pdf_text_string("Oxide PDF SDK")),
+        PdfObject::String(pdf_text_string("Wellfriend PDF SDK")),
     );
     info
 }
@@ -2224,7 +2227,7 @@ fn smask_image_dict(mask: &AuthoredSoftMask) -> PdfDictionary {
 fn authored_image_from_raw(raw: RawImage) -> Result<AuthoredImage> {
     let expected = raw.byte_count();
     if raw.pixels.len() != expected {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "authoring: image data has {} bytes but expected {expected}",
             raw.pixels.len()
         )));
@@ -2268,7 +2271,7 @@ fn authored_image_from_raw(raw: RawImage) -> Result<AuthoredImage> {
             )
         }
         channels => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "authoring: unsupported raw image channel count {channels}"
             )))
         }
@@ -2288,15 +2291,15 @@ fn authored_image_from_raw(raw: RawImage) -> Result<AuthoredImage> {
 fn decode_png_for_authoring(bytes: &[u8]) -> Result<RawImage> {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
-    let mut reader = decoder
-        .read_info()
-        .map_err(|err| OxideError::MalformedPdf(format!("authoring: cannot read PNG: {err}")))?;
+    let mut reader = decoder.read_info().map_err(|err| {
+        WellfriendError::MalformedPdf(format!("authoring: cannot read PNG: {err}"))
+    })?;
     let mut buf = vec![0; reader.output_buffer_size()];
-    let info = reader
-        .next_frame(&mut buf)
-        .map_err(|err| OxideError::MalformedPdf(format!("authoring: cannot decode PNG: {err}")))?;
+    let info = reader.next_frame(&mut buf).map_err(|err| {
+        WellfriendError::MalformedPdf(format!("authoring: cannot decode PNG: {err}"))
+    })?;
     if info.bit_depth != png::BitDepth::Eight {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "authoring: PNG bit depth {:?} is not supported after expansion",
             info.bit_depth
         )));
@@ -2307,7 +2310,7 @@ fn decode_png_for_authoring(bytes: &[u8]) -> Result<RawImage> {
         png::ColorType::Rgb => 3,
         png::ColorType::Rgba => 4,
         png::ColorType::Indexed => {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "authoring: indexed PNG did not expand to samples".to_string(),
             ))
         }
@@ -2520,7 +2523,7 @@ fn deterministic_subset_font_name(
         .iter()
         .map(|byte| char::from(b'A' + (byte % 26)))
         .collect();
-    let clean_base = sanitize_pdf_name(base_name, "OxideSubsetFont");
+    let clean_base = sanitize_pdf_name(base_name, "WellfriendSubsetFont");
     format!("{tag}+{clean_base}")
 }
 
@@ -2561,7 +2564,7 @@ fn annotate_subset_font_stream(dict: &mut PdfDictionary, selection: &FontProgram
             );
         }
     }
-    dict.insert("OxideSubset", PdfObject::Dictionary(info));
+    dict.insert("WellfriendSubset", PdfObject::Dictionary(info));
 }
 
 fn cid_font_dict(
@@ -2914,7 +2917,7 @@ fn validate_text_for_font(text: &str, font: &FontFace) -> Result<()> {
     if let FontFace::Standard(standard) = font {
         for ch in text.chars() {
             encode_standard_char(*standard, ch).ok_or_else(|| {
-                OxideError::UnsupportedFeature(format!(
+                WellfriendError::UnsupportedFeature(format!(
                     "authoring: character {ch:?} is not encodable in {}; use FontFace::BuiltinUnicode",
                     standard.base_font_name()
                 ))
@@ -2930,7 +2933,7 @@ fn encode_text_for_font(text: &str, font: FontFace, plan: &FontBuildPlan) -> Res
             .chars()
             .map(|ch| {
                 encode_standard_char(standard, ch).ok_or_else(|| {
-                    OxideError::UnsupportedFeature(format!(
+                    WellfriendError::UnsupportedFeature(format!(
                         "authoring: character {ch:?} is not encodable in {}",
                         standard.base_font_name()
                     ))
@@ -3007,7 +3010,7 @@ fn standard_widths(font: StandardFont) -> Result<Vec<f64>> {
 
 fn standard_char_width(font: StandardFont, ch: char) -> Result<f64> {
     let _ = encode_standard_char(font, ch).ok_or_else(|| {
-        OxideError::UnsupportedFeature(format!(
+        WellfriendError::UnsupportedFeature(format!(
             "authoring: character {ch:?} is not encodable in {}",
             font.base_font_name()
         ))
@@ -3041,7 +3044,7 @@ fn decode_symbolic_byte(encoding: &str, byte: u8) -> Option<char> {
 
 fn fallback_glyph_width(font_name: &str, ch: char) -> Result<f64> {
     let bytes = get_fallback_font(font_name).ok_or_else(|| {
-        OxideError::MalformedPdf(format!("authoring: missing fallback font {font_name}"))
+        WellfriendError::MalformedPdf(format!("authoring: missing fallback font {font_name}"))
     })?;
     let metrics = TrueTypeMetrics::parse(bytes)?;
     Ok(metrics.glyph_width(ch))
@@ -3049,7 +3052,7 @@ fn fallback_glyph_width(font_name: &str, ch: char) -> Result<f64> {
 
 fn builtin_unicode_font_bytes() -> Result<&'static [u8]> {
     get_fallback_font("Helvetica").ok_or_else(|| {
-        OxideError::MalformedPdf("authoring: bundled Liberation Sans font missing".to_string())
+        WellfriendError::MalformedPdf("authoring: bundled Liberation Sans font missing".to_string())
     })
 }
 
@@ -3065,7 +3068,7 @@ struct TrueTypeMetrics<'a> {
 impl<'a> TrueTypeMetrics<'a> {
     fn parse(bytes: &'a [u8]) -> Result<Self> {
         let face = ttf_parser::Face::parse(bytes, 0).map_err(|err| {
-            OxideError::MalformedPdf(format!("authoring: cannot parse bundled font: {err:?}"))
+            WellfriendError::MalformedPdf(format!("authoring: cannot parse bundled font: {err:?}"))
         })?;
         let units = f64::from(face.units_per_em());
         let scale = 1000.0 / units;
@@ -3440,13 +3443,13 @@ mod tests {
             .iter()
             .find_map(|object| match &object.object {
                 PdfObject::Stream { dict, raw }
-                    if dict.get_name("OxideSubset").is_none()
+                    if dict.get_name("WellfriendSubset").is_none()
                         && dict.get_integer("Length1").is_some() =>
                 {
                     Some((dict, raw))
                 }
                 PdfObject::Stream { dict, raw }
-                    if matches!(dict.get("OxideSubset"), Some(PdfObject::Dictionary(_))) =>
+                    if matches!(dict.get("WellfriendSubset"), Some(PdfObject::Dictionary(_))) =>
                 {
                     Some((dict, raw))
                 }
@@ -3458,7 +3461,7 @@ mod tests {
             font_file.0.get_integer("Length1").unwrap() as usize,
             font_file.1.len()
         );
-        let subset_info = match font_file.0.get("OxideSubset") {
+        let subset_info = match font_file.0.get("WellfriendSubset") {
             Some(PdfObject::Dictionary(dict)) => dict,
             other => panic!("missing subset info: {other:?}"),
         };
@@ -3525,7 +3528,7 @@ mod tests {
             .iter()
             .find_map(|object| match &object.object {
                 PdfObject::Stream { dict, raw }
-                    if matches!(dict.get("OxideSubset"), Some(PdfObject::Dictionary(_))) =>
+                    if matches!(dict.get("WellfriendSubset"), Some(PdfObject::Dictionary(_))) =>
                 {
                     Some(raw)
                 }

@@ -6,7 +6,7 @@
 //! rendered. Exact glyph shapes need not match Poppler (a substitute font is
 //! used); the win is *presence* of content.
 
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::ContentEngine;
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,

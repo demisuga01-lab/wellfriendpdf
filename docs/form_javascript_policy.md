@@ -1,6 +1,6 @@
 # Form JavaScript Policy
 
-Oxide does not execute arbitrary PDF JavaScript. `form_js_report` inventories
+Wellfriend does not execute arbitrary PDF JavaScript. `form_js_report` inventories
 scripts/actions and the default runtime posture is disabled.
 
 Policy modes:
@@ -8,7 +8,7 @@ Policy modes:
 | Mode | Result |
 |---|---|
 | `inventory_only` | report only; input bytes unchanged |
-| `disable_execution_preserve_source` | source preserved; Oxide execution remains disabled |
+| `disable_execution_preserve_source` | source preserved; Wellfriend execution remains disabled |
 | `remove_javascript_only` | JavaScript actions and the document JavaScript name-tree slot are removed |
 | `remove_all_active_actions` | all action dictionaries/owner slots are removed |
 | `preserve_safe_navigation_only` | only internal `GoTo` and bounded page `Named` actions survive |

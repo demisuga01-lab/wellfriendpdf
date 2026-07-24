@@ -10,9 +10,9 @@ It is not a full-corpus or wild-PDF claim.
 
 The table-slice validation improved every headline metric but left one honest
 gap: on the pure structural measure — **shape-F1** (row/column/cell grid match,
-ignoring cell text) — Oxide scored **0.765, last of three**, behind PyMuPDF
+ignoring cell text) — Wellfriend scored **0.765, last of three**, behind PyMuPDF
 (0.933) and pdfplumber (0.899). The named cause was **table over-detection**:
-Oxide predicted **1,017 tables for 650 truth** (1.56×), over-detecting on
+Wellfriend predicted **1,017 tables for 650 truth** (1.56×), over-detecting on
 122/200 files and never under-detecting. This pass diagnoses that over-detection
 and fixes it, holding the banked cell-F1 / recall / TEDS wins.
 
@@ -22,7 +22,7 @@ and fixes it, holding the banked cell-F1 / recall / TEDS wins.
 | --- | --- |
 | date | 2026-07-02 |
 | baseline commit | `01c592b` (the table-slice-validation commit) |
-| oxide | `oxide 0.1.0`, release build (`target/release/oxide.exe`) |
+| wellfriendpdf | `wellfriendpdf 0.1.0`, release build (`target/release/wellfriendpdf.exe`) |
 | python | 3.14.3 / win32 |
 | slice | `cb.load_entries(test_corpus, 200, "has-tables")` → `pdf_000000`…`pdf_000474`, **650 truth tables** (identical selection rule to the table-slice validation) |
 | scorer | `competitive_benchmark.py::table_score` — **unchanged** (no scorer gaming) |
@@ -36,7 +36,7 @@ exact `78` — matching the published baseline to the digit.
 ## Part A — diagnosis (histogram)
 
 Every predicted table was matched to ground-truth tables by normalized-cell
-containment; each *extra* (unmatched) table was classified. Because Oxide's
+containment; each *extra* (unmatched) table was classified. Because Wellfriend's
 detector already emits **at most one table per page** (ruled *or* borderless),
 there is no intra-page splitting to find — the over-detection is entirely
 **false tables** on non-table pages.
@@ -76,7 +76,7 @@ any real table*.
 The false tables are borderless candidates that are not real grids. The fix adds
 a **"regular dense grid" gate** for borderless tables, applied at the
 **table-reporting boundary** (`ContentEngine::extract_tables`, which backs the
-`oxide extract-tables` CLI command and the Python `extract_tables` binding):
+`wellfriendpdf extract-tables` CLI command and the Python `extract_tables` binding):
 
 A borderless candidate is reported as a table only if
 - it has **≥ 3 populated columns** (two aligned columns are a key/value form,
@@ -121,7 +121,7 @@ Focused diff: `crates/engine/src/analysis/tables.rs` (`is_reportable_table` +
 | files over / under / exact | 122 / 0 / 78 | **22 / 0 / 178** | — | over-detection down 82 % |
 
 Reference structural shape-F1 (same slice, same scorer, unchanged): PyMuPDF
-**0.933**, pdfplumber **0.899**. Oxide's **0.962 now leads** both.
+**0.933**, pdfplumber **0.899**. Wellfriend's **0.962 now leads** both.
 
 The after-fix recall (`0.99689`) equals the oracle "keep every real table" recall
 (`0.99689`) — i.e. the fix dropped **zero** real tables; the residual 29 extra
@@ -155,8 +155,8 @@ Existing tests that lock real capability continue to pass unchanged:
   byte-identical to baseline and `extract-text` does not use table detection;
   the full workspace test suite (text, docmodel, parse, chunk, field suites)
   passes.
-- **Python binding:** `cargo build -p oxide-py` succeeds; loaded and imported
-  (`oxide 0.1.0`); `extract_tables` reflects the fix — `pdf_000400` 11 → **1**
+- **Python binding:** `cargo build -p wellfriendpdf-py` succeeds; loaded and imported
+  (`wellfriendpdf 0.1.0`); `extract_tables` reflects the fix — `pdf_000400` 11 → **1**
   (GT 1), `pdf_000327` 11 → **3** (GT 3), `pdf_000094` 16 → **10** (GT 6).
 - **Green bar:** `cargo test --workspace` all pass (866 engine lib tests + all
   integration, 0 failed); `cargo clippy --workspace --all-targets -- -D warnings`
@@ -166,7 +166,7 @@ Existing tests that lock real capability continue to pass unchanged:
 
 The structural over-detection was real, was fully explained, and is now fixed.
 On the ≤200-file table slice, **structural shape-F1 rose 0.765 → 0.962** — a
-+0.198 gain that moves Oxide from last to first among the three tools (PyMuPDF
++0.198 gain that moves Wellfriend from last to first among the three tools (PyMuPDF
 0.933, pdfplumber 0.899) — while predicted tables fell from 1,017 to 679 (truth
 650), precision rose 0.896 → 0.982, and cell-F1 (0.987), TEDS (0.981), and recall
 (0.99689, zero real tables lost) all held at or above baseline. The single root

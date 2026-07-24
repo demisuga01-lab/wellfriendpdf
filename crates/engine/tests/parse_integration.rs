@@ -9,7 +9,7 @@
 //! `document_model.rs`) whose correct structure is known by construction, so the
 //! assertions are exact rather than eyeballed. No full renderer benchmark.
 
-use oxide_engine::{ContentEngine, PageSource, ParseOptions, SerializeOptions, SourceInfo};
+use wellfriendpdf_engine::{ContentEngine, PageSource, ParseOptions, SerializeOptions, SourceInfo};
 
 // ════════════════════════════════════════════════════════════════════════════
 // Minimal PDF builder (shared shape with the rest of the engine test suite)
@@ -318,7 +318,7 @@ fn p5_json_is_faithful_and_roundtrips() {
     assert!(json.contains("\"pages\""));
     assert!(json.contains("\"body\""));
     // Roundtrip back to an equal model (public-contract guarantee).
-    let back: oxide_engine::Document = serde_json::from_str(&json).expect("roundtrip");
+    let back: wellfriendpdf_engine::Document = serde_json::from_str(&json).expect("roundtrip");
     assert_eq!(back, doc);
 }
 
@@ -426,12 +426,12 @@ fn page_with_link() -> Vec<u8> {
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
          /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R /Annots [6 0 R] >>",
     );
-    let c = text("F1", 12.0, 72.0, 700.0, "Visit the Oxide project page");
+    let c = text("F1", 12.0, 72.0, 700.0, "Visit the Wellfriend project page");
     b.add_stream("", c.as_bytes());
     b.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
     b.add(
         "<< /Type /Annot /Subtype /Link /Rect [72 698 300 714] \
-         /A << /S /URI /URI (https://example.com/oxide) >> >>",
+         /A << /S /URI /URI (https://example.com/wellfriendpdf) >> >>",
     );
     b.build()
 }
@@ -486,7 +486,7 @@ fn p10_link_annotation_attached_to_text() {
     let doc = engine.parse_document(&ParseOptions::default()).unwrap();
     let md = doc.to_markdown(&SerializeOptions::default());
     assert!(
-        md.contains("](https://example.com/oxide)"),
+        md.contains("](https://example.com/wellfriendpdf)"),
         "link survives into markdown:\n{md}"
     );
 }

@@ -1,15 +1,15 @@
 //! Containment for the OCR seam: run an untrusted backend so that a **panic**,
-//! a **hang**, or an **error** inside it can never crash Oxide, corrupt the
+//! a **hang**, or an **error** inside it can never crash Wellfriend, corrupt the
 //! document model, or cross the seam as an unwound panic.
 //!
 //! An OCR backend is, by design, third-party code — a subprocess (Tesseract), a
-//! Python object, a C function pointer, a network client. Oxide makes three
-//! guarantees about calling into it, all enforced *here*, on Oxide's side of the
+//! Python object, a C function pointer, a network client. Wellfriend makes three
+//! guarantees about calling into it, all enforced *here*, on Wellfriend's side of the
 //! trait, so every backend inherits them for free:
 //!
 //! 1. **No panic escapes.** [`recognize_contained`] wraps the backend call in
 //!    [`std::panic::catch_unwind`]; a panicking backend becomes a clean
-//!    [`OxideError`], and the page falls back to the placeholder.
+//!    [`WellfriendError`], and the page falls back to the placeholder.
 //! 2. **The engine owns the timeout.** A backend is never trusted to return. When
 //!    a positive timeout is given, the call runs on a scratch thread and is
 //!    bounded by [`std::sync::mpsc::Receiver::recv_timeout`]; on expiry the
@@ -38,7 +38,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::ocr::{OcrEngine, OcrImage, OcrOptions, OcrPage};
 
 /// Recognize one page image through `engine`, containing panics and (when
@@ -49,7 +49,7 @@ use crate::ocr::{OcrEngine, OcrImage, OcrOptions, OcrPage};
 ///   still applies). This is the zero-overhead path used when the caller does not
 ///   want the extra thread.
 /// - `timeout == Some(d)` with `d > 0` → clone the `Arc` onto a scratch thread
-///   and wait at most `d`; on expiry return [`OxideError::Cancelled`].
+///   and wait at most `d`; on expiry return [`WellfriendError::Cancelled`].
 ///
 /// Never panics. Never blocks longer than `timeout` (when set). The returned
 /// `Err` is the backend's own error, a timeout, or a captured panic message.
@@ -77,7 +77,7 @@ fn recognize_catching(
     let call = std::panic::AssertUnwindSafe(|| engine.recognize(image, opts));
     match std::panic::catch_unwind(call) {
         Ok(result) => result,
-        Err(payload) => Err(OxideError::UnsupportedFeature(format!(
+        Err(payload) => Err(WellfriendError::UnsupportedFeature(format!(
             "OCR backend '{}' panicked: {}",
             engine.name(),
             panic_message(&payload)
@@ -128,7 +128,7 @@ fn recognize_with_timeout(
         Err(mpsc::RecvTimeoutError::Timeout) => {
             // Detach: we cannot safely kill the thread, but it only holds its own
             // clones and its result will be discarded. The page is failed cleanly.
-            Err(OxideError::Cancelled(format!(
+            Err(WellfriendError::Cancelled(format!(
                 "OCR backend '{name}' exceeded the {}ms per-page timeout",
                 timeout.as_millis()
             )))
@@ -137,7 +137,7 @@ fn recognize_with_timeout(
             // The thread died without sending (should be impossible given
             // `catch_unwind`, but handle it rather than hang).
             let _ = handle.join();
-            Err(OxideError::UnsupportedFeature(format!(
+            Err(WellfriendError::UnsupportedFeature(format!(
                 "OCR backend '{name}' terminated without returning a result"
             )))
         }
@@ -226,7 +226,7 @@ mod tests {
             start.elapsed() < Duration::from_secs(2),
             "did not time out promptly"
         );
-        assert!(matches!(e, OxideError::Cancelled(_)), "got: {e}");
+        assert!(matches!(e, WellfriendError::Cancelled(_)), "got: {e}");
     }
 
     #[test]

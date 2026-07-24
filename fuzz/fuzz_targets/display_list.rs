@@ -8,8 +8,8 @@
 //! semantic path on arbitrary bytes.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::render::{build_display_list, render_display_list, RenderMode, Viewport};
-use oxide_engine::{ContentParser, PageResources};
+use wellfriendpdf_engine::render::{build_display_list, render_display_list, RenderMode, Viewport};
+use wellfriendpdf_engine::{ContentParser, PageResources};
 
 fuzz_target!(|data: &[u8]| {
     let Ok(ops) = ContentParser::parse(data) else {

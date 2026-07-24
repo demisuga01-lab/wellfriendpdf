@@ -26,7 +26,7 @@
 //! `o7`) and end-to-end through the *tagged* path (`dm7`), not on synthetic
 //! gridded text here.
 
-use oxide_engine::{ClassifiedType, ContentEngine, DocBlock, DocumentModel, ModelSource};
+use wellfriendpdf_engine::{ClassifiedType, ContentEngine, DocBlock, DocumentModel, ModelSource};
 
 // ════════════════════════════════════════════════════════════════════════════
 // Minimal PDF builder (mirrors crates/engine/tests/{layout_analysis,

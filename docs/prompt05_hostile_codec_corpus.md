@@ -4,7 +4,7 @@ The hostile codec corpus is generated, not committed as binary blobs:
 
 ```powershell
 python scripts\prompt05_hostile_codec_corpus.py generate
-python scripts\prompt05_hostile_codec_corpus.py run --oxide-bin target\debug\oxide.exe
+python scripts\prompt05_hostile_codec_corpus.py run --wellfriendpdf-bin target\debug\wellfriendpdf.exe
 ```
 
 Artifacts:
@@ -25,7 +25,7 @@ traps.
 Each manifest row records category, trigger type, expected result,
 memory/time expectations, worker-isolation expectation, regression flag, raw
 seed path, PDF wrapper path, and generator command. The runner uses
-`oxide parser-report --include-decode` with strict decode and scheduler budgets
+`wellfriendpdf parser-report --include-decode` with strict decode and scheduler budgets
 so malformed inputs produce structured reports instead of panics or silent
 fallback.
 

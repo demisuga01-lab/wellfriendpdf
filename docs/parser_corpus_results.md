@@ -6,7 +6,7 @@ large corpora into the repository.
 Run a bounded local corpus pass with:
 
 ```text
-python scripts/parser_corpus_runner.py --input PATH_TO_CORPUS --oxide-bin target/debug/oxide.exe --output target/parser-corpus/audit.jsonl --summary docs/parser_corpus_results.md --mode audit --limit 200 --max-total-bytes 1073741824 --timeout 30
+python scripts/parser_corpus_runner.py --input PATH_TO_CORPUS --wellfriendpdf-bin target/debug/wellfriendpdf.exe --output target/parser-corpus/audit.jsonl --summary docs/parser_corpus_results.md --mode audit --limit 200 --max-total-bytes 1073741824 --timeout 30
 ```
 
 The runner records category, size, mode, open status, diagnostic counts by

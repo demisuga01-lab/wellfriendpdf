@@ -1,7 +1,7 @@
 # CJK Segmentation Quality
 
 Prompt 14B quality evidence is deterministic fixture evidence plus a
-user-pack benchmark harness. It is not a claim that Oxide bundles a large
+user-pack benchmark harness. It is not a claim that Wellfriend bundles a large
 general-purpose dictionary.
 
 Covered fixture classes:

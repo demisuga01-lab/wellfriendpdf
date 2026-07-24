@@ -5,7 +5,7 @@ behind the explicit `native-cmm-lcms2` feature.
 
 Boundary:
 
-- `oxide-engine` keeps `#![forbid(unsafe_code)]`.
+- `wellfriendpdf-engine` keeps `#![forbid(unsafe_code)]`.
 - Unsafe/native FFI is isolated in the external `lcms2` and `lcms2-sys`
   dependencies.
 - The default engine build has no LittleCMS dependency.

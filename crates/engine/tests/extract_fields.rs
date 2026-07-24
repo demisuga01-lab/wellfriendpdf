@@ -8,9 +8,9 @@
 //! - determinism.
 //!
 //! Source-agnostic KV (the *same* engine on an OCR'd scanned invoice) is proven
-//! in `oxide-ocr-tesseract/tests/smoke.rs` (gated on a local tesseract).
+//! in `wellfriendpdf-ocr-tesseract/tests/smoke.rs` (gated on a local tesseract).
 
-use oxide_engine::{ContentEngine, DocType, ExtractOptions, FieldSource, FieldValue};
+use wellfriendpdf_engine::{ContentEngine, DocType, ExtractOptions, FieldSource, FieldValue};
 
 // ── a tiny PDF builder ───────────────────────────────────────────────────────
 

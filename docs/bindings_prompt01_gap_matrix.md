@@ -11,15 +11,15 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 
 | Feature | Rust | Python | C ABI | CLI | Note / action |
 | --- | --- | --- | --- | --- | --- |
-| document open options (`open.options`) | implemented_public | implemented_public | implemented_public | implemented_public | ContentEngine::open_bytes[/with_password]; sdk::open; py Document(...); capi open_from_bytes. oxide-py tests/test_reports.py |
+| document open options (`open.options`) | implemented_public | implemented_public | implemented_public | implemented_public | ContentEngine::open_bytes[/with_password]; sdk::open; py Document(...); capi open_from_bytes. wellfriendpdf-py tests/test_reports.py |
 | byte-source abstraction (`open.byte_source`) | implemented_public | implemented_public | partial_public | implemented_public | Rust open_bytes/open_path; py bytes+path; capi bytes only (file input via caller read). Action: capi memory-only is intentional; path input is a caller concern. |
-| xref table and xref stream access (`parser.xref`) | partial_public | implemented_public | implemented_public | implemented_public | Surfaced via parser_report (linearization/source_metrics/xref recovery). sdk::parser_report_json; oxide-py tests/test_reports.py; oxide-capi capi_* tests (crates/oxide-capi/src/lib.rs). Raw xref entry walking stays Rust-only (reader::XrefEntry). |
+| xref table and xref stream access (`parser.xref`) | partial_public | implemented_public | implemented_public | implemented_public | Surfaced via parser_report (linearization/source_metrics/xref recovery). sdk::parser_report_json; wellfriendpdf-py tests/test_reports.py; wellfriendpdf-capi capi_* tests (crates/wellfriendpdf-capi/src/lib.rs). Raw xref entry walking stays Rust-only (reader::XrefEntry). |
 | trailer and document ID reporting (`parser.trailer_id`) | implemented_public | implemented_public | implemented_public | implemented_public | document_info (ids/producer) + parser_report. sdk::document_info_json/parser_report_json. |
 | incremental revision enumeration (`parser.revisions`) | implemented_public | implemented_public | implemented_public | implemented_public | parser_report.revision_history. sdk::parser_report_json. |
 | object lookup and typed object access (`parser.object_lookup`) | implemented_internal | missing | missing | implemented_internal | reader::get_object / PdfObject at Rust root only. Action: deferred to a later low-level-access prompt; not exposed to bindings by design (unstable object model). |
 | page tree traversal (`parser.page_tree`) | implemented_public | implemented_public | implemented_public | implemented_public | page_count + page access; document_info page_sizes. py Document len/iter/page; capi page_count. |
 | stream length and offset diagnostics (`parser.stream_offsets`) | partial_public | partial_public | partial_public | implemented_public | parser_report source_metrics + decode budget report. Action: per-stream offset table stays Rust-only. |
-| repair-mode diagnostics (`parser.repair`) | implemented_public | implemented_public | implemented_public | implemented_public | parser_report mode=repair/audit repair_summary. oxide-capi capi_* tests (crates/oxide-capi/src/lib.rs) capi_parametrized_reports. |
+| repair-mode diagnostics (`parser.repair`) | implemented_public | implemented_public | implemented_public | implemented_public | parser_report mode=repair/audit repair_summary. wellfriendpdf-capi capi_* tests (crates/wellfriendpdf-capi/src/lib.rs) capi_parametrized_reports. |
 | linearization status (`parser.linearization`) | implemented_public | implemented_public | implemented_public | implemented_public | parser_report.linearization. sdk::parser_report_json. |
 | encryption status discovery (`parser.encryption_status`) | implemented_public | implemented_public | implemented_public | implemented_public | security_report.encrypted/encryption + document_info. sdk::security_report_json. |
 | object cycle detection (`parser.object_cycle`) | partial_public | partial_public | partial_public | partial_public | Reported via parser_report diagnostics when hit; no standalone report. Action: dedicated cycle report deferred. |
@@ -44,7 +44,7 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | decompression bomb detection (`decode.bomb`) | implemented_public | implemented_public | implemented_public | implemented_public | decode_budget_report exceeds-limit diagnostics; security_report findings. |
 | sandbox policy reporting (`decode.sandbox_policy`) | partial_public | partial_public | partial_public | partial_public | codec sandboxing documented; surfaced via decode diagnostics. Action: standalone policy report deferred. |
 | raw stream versus decoded stream access (`decode.raw_vs_decoded`) | implemented_internal | missing | missing | partial_public | filters::decode_stream[_lossless] at Rust root. Action: raw/decoded stream fetch not exposed to bindings (unstable object handles). |
-| unsupported filter diagnostics (`decode.unsupported_filter`) | implemented_public | implemented_public | implemented_public | implemented_public | DecodeReport diagnostics + OxideError::UnsupportedFeature; honest reporting. |
+| unsupported filter diagnostics (`decode.unsupported_filter`) | implemented_public | implemented_public | implemented_public | implemented_public | DecodeReport diagnostics + WellfriendError::UnsupportedFeature; honest reporting. |
 | decode performance counters (`decode.perf_counters`) | partial_public | partial_public | partial_public | partial_public | DecodeMetrics inside decode reports. Action: full perf-counter export deferred. |
 
 ## Rendering and visual output
@@ -157,7 +157,7 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | Feature | Rust | Python | C ABI | CLI | Note / action |
 | --- | --- | --- | --- | --- | --- |
 | redaction planning (`redact.plan`) | partial_public | partial_public | partial_public | implemented_public | search_text derives redaction geometry inside redact facade. Action: standalone plan API deferred. |
-| redaction apply (`redact.apply`) | implemented_public | implemented_public | implemented_public | implemented_public | sdk::redact_terms_json (search+apply+verify). oxide-py tests/test_reports.py test_redact_removes_and_verifies; oxide-capi capi_* tests (crates/oxide-capi/src/lib.rs) capi_redact_terms. |
+| redaction apply (`redact.apply`) | implemented_public | implemented_public | implemented_public | implemented_public | sdk::redact_terms_json (search+apply+verify). wellfriendpdf-py tests/test_reports.py test_redact_removes_and_verifies; wellfriendpdf-capi capi_* tests (crates/wellfriendpdf-capi/src/lib.rs) capi_redact_terms. |
 | text redaction proof (`redact.text_proof`) | implemented_public | implemented_public | implemented_public | implemented_public | redaction_verification_report embedded in redact report (verified_absent). |
 | image redaction proof (`redact.image_proof`) | partial_public | partial_public | partial_public | implemented_public | ImageRedactionPolicy applied; report notes policy. Action: pixel-level image proof deferred. |
 | partial image redaction status (`redact.partial_image`) | partial_public | partial_public | partial_public | implemented_public | ImageRedactionPolicy::Partial default. Action: per-image status report deferred. |
@@ -196,7 +196,7 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 
 | Feature | Rust | Python | C ABI | CLI | Note / action |
 | --- | --- | --- | --- | --- | --- |
-| security report (`sec.report`) | implemented_public | implemented_public | implemented_public | implemented_public | security_report. engine sdk::tests (crates/engine/src/sdk.rs); oxide-py tests/test_reports.py; oxide-capi capi_* tests (crates/oxide-capi/src/lib.rs); cross-surface parity: rust/python/c-abi smoke JSON compared equal. |
+| security report (`sec.report`) | implemented_public | implemented_public | implemented_public | implemented_public | security_report. engine sdk::tests (crates/engine/src/sdk.rs); wellfriendpdf-py tests/test_reports.py; wellfriendpdf-capi capi_* tests (crates/wellfriendpdf-capi/src/lib.rs); cross-surface parity: rust/python/c-abi smoke JSON compared equal. |
 | permissions report (`sec.permissions`) | implemented_public | implemented_public | implemented_public | implemented_public | document_info.permissions + security_report permissions_note. |
 | AES-256 encryption status (`sec.aes256`) | implemented_public | implemented_public | implemented_public | implemented_public | security_report encryption; encrypt (Rust/py/capi).  |
 | public-key security handler status (`sec.pubkey_handler`) | implemented_public | implemented_public | implemented_public | implemented_public | security_report.public_key_security_handler_detected (honest unsupported note). |
@@ -217,7 +217,7 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | Feature | Rust | Python | C ABI | CLI | Note / action |
 | --- | --- | --- | --- | --- | --- |
 | structured diagnostics schema (`diag.schema`) | implemented_public | implemented_public | implemented_public | implemented_public | versioned JSON envelope (schema_version/kind/report). REPORT_ENVELOPE_VERSION. |
-| error code taxonomy (`diag.error_taxonomy`) | implemented_public | implemented_public | implemented_public | implemented_public | ErrorKind.code(); py OxideError; capi int status + error string. |
+| error code taxonomy (`diag.error_taxonomy`) | implemented_public | implemented_public | implemented_public | implemented_public | ErrorKind.code(); py WellfriendError; capi int status + error string. |
 | warning severity model (`diag.warning_severity`) | implemented_public | implemented_public | implemented_public | implemented_public | SecuritySeverity/ColorSeverity/ValidationSeverity in reports. |
 | JSON report versioning (`diag.report_versioning`) | implemented_public | implemented_public | implemented_public | implemented_public | envelope schema_version + inner report schema_version. report_schema_versioning doc. |
 | human report formatting (`diag.human_format`) | cli_only | missing | missing | implemented_public | CLI pretty/human output. Action: bindings return structured data; human formatting is a caller concern (documented). |
@@ -243,11 +243,11 @@ Statuses: `implemented_public`, `partial_public`, `implemented_internal`, `cli_o
 | snapshot JSON schemas (`test.snapshot_schema`) | implemented_public | implemented_public | implemented_public | implemented_public | report_schema_versioning_prompt01.md + smoke JSON snapshots. |
 | API documentation (`doc.api`) | implemented_public | implemented_public | implemented_public | implemented_public | public_api_rust/python_sdk/c_abi prompt01 docs + rustdoc. |
 | example programs (`doc.examples`) | implemented_public | implemented_public | implemented_public | implemented_public | sdk_reports.{rs,py,c} + binding_examples_prompt01.md. |
-| package metadata (`pkg.metadata`) | implemented_public | implemented_public | implemented_public | implemented_public | Cargo.toml / pyproject.toml / oxide.h; honest capabilities via feature_report. |
-| versioning and semver (`pkg.semver`) | implemented_public | implemented_public | implemented_public | implemented_public | ENGINE_VERSION + REPORT_ENVELOPE_VERSION + oxide_version/oxide_abi_version. |
+| package metadata (`pkg.metadata`) | implemented_public | implemented_public | implemented_public | implemented_public | Cargo.toml / pyproject.toml / wellfriendpdf.h; honest capabilities via feature_report. |
+| versioning and semver (`pkg.semver`) | implemented_public | implemented_public | implemented_public | implemented_public | ENGINE_VERSION + REPORT_ENVELOPE_VERSION + wellfriendpdf_version/wellfriendpdf_abi_version. |
 | feature flags (`pkg.feature_flags`) | implemented_public | implemented_public | implemented_public | implemented_public | cargo features surfaced in feature_report capabilities. |
 | platform matrix (`pkg.platform_matrix`) | partial_public | partial_public | partial_public | partial_public | builds on win-msvc validated here; full platform matrix is CI. Action: platform matrix is a CI/release-prompt concern. |
 | CI packaging smoke (`pkg.ci_smoke`) | partial_public | partial_public | partial_public | partial_public | local maturin build + cargo build validated. Action: CI wiring is a release prompt. |
-| ABI compatibility checks (`pkg.abi_compat`) | implemented_public | implemented_public | implemented_public | implemented_public | oxide_abi_version + hand-maintained header; opaque handles keep ABI stable. |
+| ABI compatibility checks (`pkg.abi_compat`) | implemented_public | implemented_public | implemented_public | implemented_public | wellfriendpdf_abi_version + hand-maintained header; opaque handles keep ABI stable. |
 | memory leak checks (`pkg.memory_leak`) | implemented_public | partial_public | implemented_public | partial_public | capi tests free every allocation; py returns owned objects. Action: valgrind/asan run is a CI concern (bounded). |
 | release artifact manifest (`pkg.release_manifest`) | partial_public | partial_public | partial_public | partial_public | smoke JSON artifacts serve as manifest evidence. Action: formal release manifest is a release prompt. |

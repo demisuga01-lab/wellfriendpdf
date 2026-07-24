@@ -10,7 +10,7 @@
 //! fixtures with a known correct reading order. The metric is reading-order
 //! correctness: does column 1 read fully before column 2 before column 3?
 
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::ContentEngine;
 
 /// Minimal PDF builder (mirrors the helper used by other engine tests).
 struct PdfBuilder {

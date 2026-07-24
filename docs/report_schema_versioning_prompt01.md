@@ -14,8 +14,8 @@ versioned JSON envelope**. This document is the contract.
 ```
 
 - `schema_version` — the **envelope** version, exposed as
-  `oxide_engine::REPORT_ENVELOPE_VERSION` (Rust), `oxide.__report_envelope_version__`
-  (Python), and `oxide_abi_version()` (C). Currently `1`.
+  `wellfriendpdf_engine::REPORT_ENVELOPE_VERSION` (Rust), `wellfriendpdf.__report_envelope_version__`
+  (Python), and `wellfriendpdf_abi_version()` (C). Currently `1`.
 - `kind` — a stable string identifying the report (see table below). Consumers
   should switch on `kind`, not on structural sniffing.
 - `report` — the report payload. Most engine report structs additionally carry
@@ -24,7 +24,7 @@ versioned JSON envelope**. This document is the contract.
   evolve independently of the envelope.
 
 Output-producing operations return the produced bytes separately (the second
-tuple element in Rust, an `OxideBuffer` in C, the first tuple element in Python)
+tuple element in Rust, an `WellfriendBuffer` in C, the first tuple element in Python)
 plus an envelope whose `kind` ends in `_report`.
 
 ## Report kinds
@@ -59,8 +59,8 @@ plus an envelope whose `kind` ends in `_report`.
 
 - **Additive changes** (new optional fields) do **not** bump `schema_version`.
 - **Breaking envelope changes** (renaming `report`/`kind`, changing nesting) bump
-  `REPORT_ENVELOPE_VERSION`, and `oxide_abi_version()` /
-  `oxide.__report_envelope_version__` move in lock-step.
+  `REPORT_ENVELOPE_VERSION`, and `wellfriendpdf_abi_version()` /
+  `wellfriendpdf.__report_envelope_version__` move in lock-step.
 - Inner report structs bump their own `schema_version` for breaking payload
   changes, independent of the envelope.
 

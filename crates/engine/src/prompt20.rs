@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_bidi::{BidiInfo, Level};
 
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{
     decode_stream_lossless_with_limits, flate_encode, DecodeLimits, StreamDecodeStatus,
 };
@@ -268,7 +268,7 @@ pub struct MultiRunTextEditReport {
 /// Analyze newly inserted Unicode text for bounded RTL or vertical reflow.
 ///
 /// `font_bytes` is the exact font that will be embedded or reused. Supplying
-/// `None` selects Oxide's bundled DejaVu Sans, which covers Arabic and Hebrew
+/// `None` selects Wellfriend's bundled DejaVu Sans, which covers Arabic and Hebrew
 /// but intentionally does not claim CJK coverage. Missing glyphs are reported
 /// and make the result unsupported instead of silently substituting `.notdef`.
 pub fn analyze_advanced_text_reflow(
@@ -283,13 +283,13 @@ pub fn analyze_advanced_text_reflow(
             | AdvancedTextMode::ParagraphReflowRtl
             | AdvancedTextMode::ParagraphReflowVertical
     ) {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 text analysis requires a paragraph reflow mode, got {mode:?}"
         )));
     }
     let char_count = text.chars().count();
     if char_count > limits.max_paragraph_chars.min(MAX_PROMPT20_PARAGRAPH_CHARS) {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 paragraph has {char_count} characters; limit is {}",
             limits.max_paragraph_chars.min(MAX_PROMPT20_PARAGRAPH_CHARS)
         )));
@@ -311,13 +311,15 @@ pub fn analyze_advanced_text_reflow(
         let (levels, ranges) = bidi.visual_runs(paragraph, paragraph.range.clone());
         for (run_index, (level, range)) in levels.into_iter().zip(ranges).enumerate() {
             if runs.len() >= limits.max_bidi_runs.min(MAX_PROMPT20_BIDI_RUNS) {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "prompt20 bidi run count exceeds limit {}",
                     limits.max_bidi_runs.min(MAX_PROMPT20_BIDI_RUNS)
                 )));
             }
             let logical = text.get(range.clone()).ok_or_else(|| {
-                OxideError::ParseError("prompt20 bidi run is not on UTF-8 boundaries".to_string())
+                WellfriendError::ParseError(
+                    "prompt20 bidi run is not on UTF-8 boundaries".to_string(),
+                )
             })?;
             let visual = if level.is_rtl() {
                 logical.chars().rev().collect()
@@ -339,10 +341,13 @@ pub fn analyze_advanced_text_reflow(
     let font = font_bytes
         .or_else(|| get_fallback_font("Symbol"))
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature("prompt20 bundled fallback font unavailable".to_string())
+            WellfriendError::UnsupportedFeature(
+                "prompt20 bundled fallback font unavailable".to_string(),
+            )
         })?;
-    let face = ttf_parser::Face::parse(font, 0)
-        .map_err(|_| OxideError::UnsupportedFeature("prompt20 invalid shaping font".to_string()))?;
+    let face = ttf_parser::Face::parse(font, 0).map_err(|_| {
+        WellfriendError::UnsupportedFeature("prompt20 invalid shaping font".to_string())
+    })?;
     let mut glyphs = Vec::new();
     let mut missing = Vec::new();
     let mut complex = false;
@@ -361,7 +366,7 @@ pub fn analyze_advanced_text_reflow(
         complex |= shaped.used_complex_shaping;
         for glyph in shaped.glyphs {
             if glyphs.len() >= limits.max_glyphs.min(MAX_PROMPT20_GLYPHS) {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "prompt20 shaped glyph count exceeds limit {}",
                     limits.max_glyphs.min(MAX_PROMPT20_GLYPHS)
                 )));
@@ -461,19 +466,21 @@ pub fn edit_advanced_text_pdf(
             | AdvancedTextMode::ParagraphReflowRtl
             | AdvancedTextMode::ParagraphReflowVertical
     ) {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 serialized advanced text edit requires a paragraph reflow mode".to_string(),
         ));
     }
     let font = font_bytes
         .or_else(|| get_fallback_font("Symbol"))
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature("prompt20 bundled shaping font unavailable".to_string())
+            WellfriendError::UnsupportedFeature(
+                "prompt20 bundled shaping font unavailable".to_string(),
+            )
         })?;
     let analysis =
         analyze_advanced_text_reflow(new_text, mode, Some(font), TextReflowLimits::default())?;
     if !analysis.missing_glyph_clusters.is_empty() {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 selected font is missing glyphs for UTF-8 clusters {:?}",
             analysis.missing_glyph_clusters
         )));
@@ -520,7 +527,7 @@ pub fn edit_advanced_text_pdf(
         }
     }
     if matches.len() != 1 {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 bounded reflow requires old text in exactly one PDF string token; found {} occurrences",
             matches.len()
         )));
@@ -600,7 +607,7 @@ pub fn edit_advanced_text_pdf(
     });
     let page_object = reader.get_object(page.object_number, page.generation_number)?;
     let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
-        OxideError::MalformedPdf("prompt20 page object is not a dictionary".to_string())
+        WellfriendError::MalformedPdf("prompt20 page object is not a dictionary".to_string())
     })?;
     let mut resource_dict = page.resources.clone();
     let mut font_resources = match resource_dict.get("Font") {
@@ -645,7 +652,7 @@ pub fn edit_advanced_text_pdf(
     let replacement_extracts = extracted.contains(new_text);
     let old_absent = !extracted.contains(old_text);
     if !replacement_extracts || !old_absent || !output.starts_with(input) {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "prompt20 RTL/vertical edit failed proof: replacement_extracts={replacement_extracts}, old_text_absent={old_absent}, prefix_preserved={}",
             output.starts_with(input)
         )));
@@ -752,7 +759,7 @@ pub fn analyze_multi_run_text_range(
         }
     }
     if source_spans.len() > MAX_PROMPT20_BIDI_RUNS {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20b range span count exceeds 4096".to_string(),
         ));
     }
@@ -795,12 +802,12 @@ pub fn edit_multi_run_text_range(
             | AdvancedTextMode::ParagraphReflowRtl
             | AdvancedTextMode::ParagraphReflowVertical
     ) {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20b range edit requires a paragraph reflow mode".to_string(),
         ));
     }
     if request.logical_start > request.logical_end {
-        return Err(OxideError::invalid_input(
+        return Err(WellfriendError::invalid_input(
             "prompt20b logical range start exceeds end",
         ));
     }
@@ -887,7 +894,7 @@ pub fn edit_multi_run_text_range(
         }
     }
     if request.logical_end > total {
-        return Err(OxideError::invalid_input(format!(
+        return Err(WellfriendError::invalid_input(format!(
             "prompt20b logical range {}..{} is outside page logical length {total}",
             request.logical_start, request.logical_end
         )));
@@ -895,7 +902,7 @@ pub fn edit_multi_run_text_range(
     if request.logical_start < request.logical_end {
         selected.sort_by_key(|item| (item.0, item.4.token_start));
         let first = selected.first().ok_or_else(|| {
-            OxideError::UnsupportedFeature(
+            WellfriendError::UnsupportedFeature(
                 "prompt20b range has no provenance-bearing source spans".to_string(),
             )
         })?;
@@ -906,7 +913,7 @@ pub fn edit_multi_run_text_range(
                 .iter()
                 .any(|item| item.0 != first.0 || item.1 != first.1)
         {
-            return Err(OxideError::UnsupportedFeature("prompt20b selection must be contiguous token-boundary text in one content stream; cross-stream or partial-token range rejected".to_string()));
+            return Err(WellfriendError::UnsupportedFeature("prompt20b selection must be contiguous token-boundary text in one content stream; cross-stream or partial-token range rejected".to_string()));
         }
     }
     let (source_number, source_generation, source_object, mut source_data) = if let Some(first) =
@@ -915,7 +922,7 @@ pub fn edit_multi_run_text_range(
         (first.0, first.1, first.2.clone(), first.3.clone())
     } else {
         candidate_insertion.ok_or_else(|| {
-            OxideError::UnsupportedFeature(
+            WellfriendError::UnsupportedFeature(
                 "prompt20b insertion must target a provenance-bearing token boundary".to_string(),
             )
         })?
@@ -935,7 +942,7 @@ pub fn edit_multi_run_text_range(
         ..
     } = source_object
     else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20b range source is not a stream".to_string(),
         ));
     };
@@ -957,7 +964,7 @@ pub fn edit_multi_run_text_range(
         let extracted = reopened.get_page_text(request.page)?;
         let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
         if !old_absent || !output.starts_with(input) {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "prompt20b multi-run delete save/reopen/extract proof failed".to_string(),
             ));
         }
@@ -966,7 +973,9 @@ pub fn edit_multi_run_text_range(
     let font = font_bytes
         .or_else(|| get_fallback_font("Symbol"))
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature("prompt20b bundled shaping font unavailable".to_string())
+            WellfriendError::UnsupportedFeature(
+                "prompt20b bundled shaping font unavailable".to_string(),
+            )
         })?;
     let analysis = analyze_advanced_text_reflow(
         &request.replacement_text,
@@ -975,7 +984,7 @@ pub fn edit_multi_run_text_range(
         TextReflowLimits::default(),
     )?;
     if !analysis.missing_glyph_clusters.is_empty() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20b replacement has missing glyph clusters in selected shaping font".to_string(),
         ));
     }
@@ -1031,7 +1040,7 @@ pub fn edit_multi_run_text_range(
     });
     let page_object = reader.get_object(page.object_number, page.generation_number)?;
     let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
-        OxideError::MalformedPdf("prompt20b page object is not a dictionary".to_string())
+        WellfriendError::MalformedPdf("prompt20b page object is not a dictionary".to_string())
     })?;
     let mut page_resources = page.resources.clone();
     let mut fonts = resolve_prompt20_dict(page_resources.get("Font"), reader)
@@ -1070,7 +1079,7 @@ pub fn edit_multi_run_text_range(
         request.replacement_text.is_empty() || extracted.contains(&request.replacement_text);
     let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
     if !replacement_extracts || !old_absent || !output.starts_with(input) {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20b multi-run save/reopen/extract proof failed".to_string(),
         ));
     }
@@ -1220,12 +1229,12 @@ fn validate_advanced_text_options(options: &AdvancedTextEditOptions) -> Result<(
         || options.font_size <= 0.0
         || options.line_spacing <= 0.0
     {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 text region/font size/line spacing must be finite and positive".to_string(),
         ));
     }
     if options.max_lines_or_columns == 0 || options.max_lines_or_columns > 10_000 {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 line/column limit must be in 1..=10000".to_string(),
         ));
     }
@@ -1248,7 +1257,7 @@ fn generated_glyph_plan(
         let (levels, ranges) = bidi.visual_runs(paragraph, paragraph.range.clone());
         for (level, range) in levels.into_iter().zip(ranges) {
             let run_text = text.get(range).ok_or_else(|| {
-                OxideError::ParseError("prompt20 bidi run is not UTF-8 aligned".to_string())
+                WellfriendError::ParseError("prompt20 bidi run is not UTF-8 aligned".to_string())
             })?;
             let shaped = TextShaper::shape(
                 font,
@@ -1287,7 +1296,7 @@ fn generated_glyph_plan(
                     VerticalGlyphOrientation::Upright
                 };
                 let cid = u16::try_from(glyphs.len() + 1).map_err(|_| {
-                    OxideError::UnsupportedFeature(
+                    WellfriendError::UnsupportedFeature(
                         "prompt20 generated CID count exceeds 65535".to_string(),
                     )
                 })?;
@@ -1328,7 +1337,7 @@ fn layout_generated_glyphs(
             if groups.len() >= options.max_lines_or_columns {
                 match options.overflow_policy {
                     TextOverflowPolicy::Error => {
-                        return Err(OxideError::UnsupportedFeature(format!(
+                        return Err(WellfriendError::UnsupportedFeature(format!(
                             "prompt20 text overflow exceeds {} lines/columns",
                             options.max_lines_or_columns
                         )))
@@ -1344,7 +1353,7 @@ fn layout_generated_glyphs(
         advance += glyph_advance;
     }
     if groups.len() > options.max_lines_or_columns {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 expanded text still exceeds hard line/column limit".to_string(),
         ));
     }
@@ -1392,7 +1401,7 @@ fn build_type0_font_objects(
     type0_number: u32,
 ) -> Result<Vec<IncrementalObject>> {
     let face = ttf_parser::Face::parse(font, 0).map_err(|_| {
-        OxideError::UnsupportedFeature("prompt20 cannot embed malformed sfnt font".to_string())
+        WellfriendError::UnsupportedFeature("prompt20 cannot embed malformed sfnt font".to_string())
     })?;
     let upem = f64::from(face.units_per_em()).max(1.0);
     let units = |value: i16| canonical_number(f64::from(value) / upem * 1000.0);
@@ -1407,7 +1416,7 @@ fn build_type0_font_objects(
     descriptor.insert("Type", PdfObject::Name("FontDescriptor".to_string()));
     descriptor.insert(
         "FontName",
-        PdfObject::Name("OxidePrompt20Unicode".to_string()),
+        PdfObject::Name("WellfriendPrompt20Unicode".to_string()),
     );
     descriptor.insert("Flags", PdfObject::Integer(4));
     descriptor.insert(
@@ -1465,7 +1474,7 @@ fn build_type0_font_objects(
     descendant.insert("Subtype", PdfObject::Name("CIDFontType2".to_string()));
     descendant.insert(
         "BaseFont",
-        PdfObject::Name("OxidePrompt20Unicode".to_string()),
+        PdfObject::Name("WellfriendPrompt20Unicode".to_string()),
     );
     descendant.insert("CIDSystemInfo", PdfObject::Dictionary(cid_system));
     descendant.insert(
@@ -1499,7 +1508,7 @@ fn build_type0_font_objects(
     type0.insert("Subtype", PdfObject::Name("Type0".to_string()));
     type0.insert(
         "BaseFont",
-        PdfObject::Name("OxidePrompt20Unicode".to_string()),
+        PdfObject::Name("WellfriendPrompt20Unicode".to_string()),
     );
     type0.insert(
         "Encoding",
@@ -1565,7 +1574,7 @@ fn build_type0_font_objects(
 
 fn build_to_unicode_cmap(glyphs: &[GeneratedGlyph]) -> String {
     let mut cmap = String::from(
-        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /OxidePrompt20ToUnicode def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /WellfriendPrompt20ToUnicode def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
     );
     for chunk in glyphs.chunks(100) {
         cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
@@ -1658,7 +1667,7 @@ fn reject_unsafe_text_controls(text: &str) -> Result<()> {
             continue;
         }
         if ch == '\0' {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "prompt20 text contains NUL at UTF-8 byte {offset}"
             )));
         }
@@ -1670,7 +1679,7 @@ fn reject_unsafe_text_controls(text: &str) -> Result<()> {
             | '\u{2068}' => depth = depth.saturating_add(1),
             '\u{202C}' | '\u{2069}' => {
                 if depth == 0 {
-                    return Err(OxideError::MalformedPdf(format!(
+                    return Err(WellfriendError::MalformedPdf(format!(
                         "prompt20 unmatched bidi pop control at UTF-8 byte {offset}"
                     )));
                 }
@@ -1680,7 +1689,7 @@ fn reject_unsafe_text_controls(text: &str) -> Result<()> {
         }
     }
     if depth != 0 {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "prompt20 text ends with {depth} unclosed bidi control sequence(s)"
         )));
     }
@@ -1947,7 +1956,7 @@ pub fn apply_same_width_patch(
         .find(|candidate| candidate.eligible)
         .cloned()
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature(format!(
+            WellfriendError::UnsupportedFeature(format!(
                 "prompt20 same-width patch has no eligible occurrence: {}",
                 analysis
                     .candidates
@@ -1964,7 +1973,7 @@ pub fn apply_same_width_patch(
         .fonts
         .get(&selected.font_resource)
         .ok_or_else(|| {
-            OxideError::MalformedPdf(
+            WellfriendError::MalformedPdf(
                 "prompt20 selected patch font resource disappeared".to_string(),
             )
         })?;
@@ -1973,7 +1982,7 @@ pub fn apply_same_width_patch(
     let replacement_token = serialize_pdf_string(&encoded, selected.representation);
     let object = reader.get_object(selected.stream_object, selected.stream_generation)?;
     let PdfObject::Stream { mut dict, raw } = object else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 selected content object is no longer a stream".to_string(),
         ));
     };
@@ -1992,7 +2001,7 @@ pub fn apply_same_width_patch(
     let mut decoded = match decoded_result.status {
         StreamDecodeStatus::Complete => decoded_result.data,
         StreamDecodeStatus::StoppedAtImageFilter(reason) => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "prompt20 selected stream became undecodable: {reason}"
             )))
         }
@@ -2003,7 +2012,7 @@ pub fn apply_same_width_patch(
             .saturating_sub(selected.decoded_byte_start)
         && options.require_same_serialized_length
     {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 selected serialized replacement length changed after eligibility analysis"
                 .to_string(),
         ));
@@ -2049,7 +2058,7 @@ pub fn apply_same_width_patch(
     };
     if !report.original_prefix_preserved || !report.replacement_extracts || !report.old_text_absent
     {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 same-width patch failed reopen/extraction/prefix verification".to_string(),
         ));
     }
@@ -2058,7 +2067,7 @@ pub fn apply_same_width_patch(
 
 fn validate_patch_options(options: &SameWidthPatchOptions) -> Result<()> {
     if !options.advance_tolerance_1000.is_finite() || options.advance_tolerance_1000 < 0.0 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 patch advance tolerance must be finite and non-negative".to_string(),
         ));
     }
@@ -2295,7 +2304,7 @@ fn encode_with_existing_font(resolver: &FontResolver, text: &str) -> Result<(Vec
             }
         }
         let code = found.ok_or_else(|| {
-            OxideError::UnsupportedFeature(format!(
+            WellfriendError::UnsupportedFeature(format!(
                 "prompt20 existing font/CMap cannot encode U+{:04X}",
                 ch as u32
             ))
@@ -2573,7 +2582,7 @@ fn parse_literal_string(data: &[u8], start: usize) -> Result<(Vec<u8>, usize, us
             }
         }
     }
-    Err(OxideError::MalformedPdf(format!(
+    Err(WellfriendError::MalformedPdf(format!(
         "prompt20 unterminated literal string at decoded stream byte {start}"
     )))
 }
@@ -2584,7 +2593,7 @@ fn parse_hex_string(data: &[u8], start: usize) -> Result<(Vec<u8>, usize, usize,
     while index < data.len() && data[index] != b'>' {
         if !data[index].is_ascii_whitespace() {
             nibbles.push(hex_nibble(data[index]).ok_or_else(|| {
-                OxideError::MalformedPdf(format!(
+                WellfriendError::MalformedPdf(format!(
                     "prompt20 invalid hex string digit at decoded stream byte {index}"
                 ))
             })?);
@@ -2592,7 +2601,7 @@ fn parse_hex_string(data: &[u8], start: usize) -> Result<(Vec<u8>, usize, usize,
         index += 1;
     }
     if index >= data.len() {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "prompt20 unterminated hex string at decoded stream byte {start}"
         )));
     }
@@ -2654,12 +2663,12 @@ fn enforce_prompt20_signature_policy(
         EditPolicyDecision::BlockedBySignaturePolicy | EditPolicyDecision::ExplicitOverrideRequired
     ) && !override_requested
     {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 {operation} blocked by signature policy; explicit override required"
         )));
     }
     if policy.full_rewrite_required {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 {operation} requires full rewrite but this operation is structurally incremental"
         )));
     }
@@ -2794,7 +2803,7 @@ pub struct VectorProvenance {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub form_invocation_path: Vec<VectorFormInvocation>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub oxide_groups: Vec<VectorGroupProvenance>,
+    pub wellfriendpdf_groups: Vec<VectorGroupProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3055,7 +3064,7 @@ pub fn list_vector_objects(input: &[u8], page_number: usize) -> Result<VectorObj
             &mut objects,
         )?;
         if objects.len() > 100_000 {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "prompt20 vector object count exceeds limit 100000".to_string(),
             ));
         }
@@ -3116,13 +3125,13 @@ fn collect_form_vector_objects(
     output: &mut Vec<EditableVectorObject>,
 ) -> Result<()> {
     if parent_stack.len() >= 8 {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 vector Form recursion exceeds limit 8".to_string(),
         ));
     }
     for form_use in reachable_form_uses(owner_data, resources, reader)? {
         if active_forms.contains(&(form_use.object_number, form_use.generation)) {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "prompt20 cyclic Form XObject graph reaches {} {} R",
                 form_use.object_number, form_use.generation
             )));
@@ -3334,12 +3343,12 @@ pub fn edit_vector_object(
         .find(|object| object.stable_id == stable_id)
         .cloned()
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature(format!(
+            WellfriendError::UnsupportedFeature(format!(
                 "prompt20 vector stable ID {stable_id} not found on page {page_number}"
             ))
         })?;
     if before.provenance.form_stack.len() > 8 {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 vector Form recursion exceeds limit 8".to_string(),
         ));
     }
@@ -3347,12 +3356,12 @@ pub fn edit_vector_object(
     if before.edit_safety == "shared_annotation_appearance_requires_clone"
         && options.shared_form_policy != SharedFormEditPolicy::CloneEditOneInstance
     {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 annotation appearance stream is shared by multiple annotations; ownership-specific appearance cloning is required".to_string(),
         ));
     }
     if form_invocation.is_some() && options.shared_form_policy == SharedFormEditPolicy::Reject {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 vector is owned by a Form XObject; select shared_form_policy edit_all_uses or clone_edit_one_instance explicitly".to_string(),
         ));
     }
@@ -3435,7 +3444,7 @@ pub fn edit_vector_object(
         before.provenance.generation,
     )?;
     let PdfObject::Stream { mut dict, raw } = stream_object else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 vector provenance does not reference a stream".to_string(),
         ));
     };
@@ -3451,14 +3460,14 @@ pub fn edit_vector_object(
         },
     )?;
     if decoded_result.status != StreamDecodeStatus::Complete {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 vector stream is not losslessly decodable".to_string(),
         ));
     }
     let mut decoded = decoded_result.data;
     let range = before.provenance.operation_byte_start..before.provenance.operation_byte_end;
     if range.end > decoded.len() || range.start > range.end {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 vector provenance range is outside decoded stream".to_string(),
         ));
     }
@@ -3482,50 +3491,52 @@ pub fn edit_vector_object(
         let source_appearance_generation = before.provenance.generation;
         let owner = owner_value.as_str();
         let prefix = owner.strip_prefix("annotation-").ok_or_else(|| {
-            OxideError::MalformedPdf(
+            WellfriendError::MalformedPdf(
                 "prompt20b annotation appearance provenance is malformed".to_string(),
             )
         })?;
         let (annotation_index_text, appearance_tail) =
             prefix.split_once("-appearance-").ok_or_else(|| {
-                OxideError::MalformedPdf(
+                WellfriendError::MalformedPdf(
                     "prompt20b annotation appearance provenance is malformed".to_string(),
                 )
             })?;
         let annotation_index: usize = annotation_index_text.parse().map_err(|_| {
-            OxideError::MalformedPdf(
+            WellfriendError::MalformedPdf(
                 "prompt20b annotation appearance index is malformed".to_string(),
             )
         })?;
         let suffix = format!("-{source_appearance_object}-{source_appearance_generation}");
         let appearance_name = appearance_tail.strip_suffix(&suffix).ok_or_else(|| {
-            OxideError::MalformedPdf(
+            WellfriendError::MalformedPdf(
                 "prompt20b annotation appearance identity is malformed".to_string(),
             )
         })?;
         let page = engine.document().get_page(page_number)?;
         let page_object = reader.get_object(page.object_number, page.generation_number)?;
         let page_dict = page_object.as_dict().ok_or_else(|| {
-            OxideError::MalformedPdf("prompt20b page object is not a dictionary".to_string())
+            WellfriendError::MalformedPdf("prompt20b page object is not a dictionary".to_string())
         })?;
         let annots = reader.resolve(page_dict.get("Annots").cloned().ok_or_else(|| {
-            OxideError::UnsupportedFeature("prompt20b page has no annotations".to_string())
+            WellfriendError::UnsupportedFeature("prompt20b page has no annotations".to_string())
         })?)?;
         let annotation_ref = annots
             .as_array()
             .and_then(|items| items.get(annotation_index))
             .and_then(PdfObject::as_reference)
             .ok_or_else(|| {
-                OxideError::UnsupportedFeature(
+                WellfriendError::UnsupportedFeature(
                     "prompt20b clone-one requires an indirect target annotation".to_string(),
                 )
             })?;
         let annotation_object = reader.get_object(annotation_ref.0, annotation_ref.1)?;
         let mut annotation_dict = annotation_object.as_dict().cloned().ok_or_else(|| {
-            OxideError::MalformedPdf("prompt20b annotation is not a dictionary".to_string())
+            WellfriendError::MalformedPdf("prompt20b annotation is not a dictionary".to_string())
         })?;
         let mut ap = resolve_prompt20_dict(annotation_dict.get("AP"), reader).ok_or_else(|| {
-            OxideError::MalformedPdf("prompt20b annotation AP dictionary is malformed".to_string())
+            WellfriendError::MalformedPdf(
+                "prompt20b annotation AP dictionary is malformed".to_string(),
+            )
         })?;
         let clone_number = reader
             .object_ids()
@@ -3545,7 +3556,7 @@ pub fn edit_vector_object(
             );
         } else if parts.len() == 2 {
             let mut states = resolve_prompt20_dict(ap.get(parts[0]), reader).ok_or_else(|| {
-                OxideError::MalformedPdf(
+                WellfriendError::MalformedPdf(
                     "prompt20b appearance-state dictionary is malformed".to_string(),
                 )
             })?;
@@ -3558,13 +3569,13 @@ pub fn edit_vector_object(
                     },
                 );
             } else {
-                return Err(OxideError::UnsupportedFeature(
+                return Err(WellfriendError::UnsupportedFeature(
                     "prompt20b requested appearance state does not exist".to_string(),
                 ));
             }
             ap.insert(parts[0], PdfObject::Dictionary(states));
         } else {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "prompt20b appearance category/state identity is malformed".to_string(),
             ));
         }
@@ -3603,24 +3614,24 @@ pub fn edit_vector_object(
                 annotation_stack
                     .strip_prefix("annotation:")
                     .ok_or_else(|| {
-                        OxideError::MalformedPdf(
+                        WellfriendError::MalformedPdf(
                             "prompt20b annotation appearance stack is malformed".to_string(),
                         )
                     })?;
             let (annotation_index_text, appearance_name) =
                 annotation_tail.split_once(":appearance:").ok_or_else(|| {
-                    OxideError::MalformedPdf(
+                    WellfriendError::MalformedPdf(
                         "prompt20b annotation appearance stack is malformed".to_string(),
                     )
                 })?;
             let annotation_index: usize = annotation_index_text.parse().map_err(|_| {
-                OxideError::MalformedPdf(
+                WellfriendError::MalformedPdf(
                     "prompt20b annotation appearance index is malformed".to_string(),
                 )
             })?;
             let invocation_path = before.provenance.form_invocation_path.clone();
             let source_appearance = invocation_path.first().ok_or_else(|| {
-                OxideError::UnsupportedFeature(
+                WellfriendError::UnsupportedFeature(
                     "prompt20b nested annotation appearance clone-one requires an invocation path"
                         .to_string(),
                 )
@@ -3630,27 +3641,31 @@ pub fn edit_vector_object(
             let page = engine.document().get_page(page_number)?;
             let page_object = reader.get_object(page.object_number, page.generation_number)?;
             let page_dict = page_object.as_dict().ok_or_else(|| {
-                OxideError::MalformedPdf("prompt20b page object is not a dictionary".to_string())
+                WellfriendError::MalformedPdf(
+                    "prompt20b page object is not a dictionary".to_string(),
+                )
             })?;
             let annots = reader.resolve(page_dict.get("Annots").cloned().ok_or_else(|| {
-                OxideError::UnsupportedFeature("prompt20b page has no annotations".to_string())
+                WellfriendError::UnsupportedFeature("prompt20b page has no annotations".to_string())
             })?)?;
             let annotation_ref = annots
                 .as_array()
                 .and_then(|items| items.get(annotation_index))
                 .and_then(PdfObject::as_reference)
                 .ok_or_else(|| {
-                    OxideError::UnsupportedFeature(
+                    WellfriendError::UnsupportedFeature(
                         "prompt20b clone-one requires an indirect target annotation".to_string(),
                     )
                 })?;
             let annotation_object = reader.get_object(annotation_ref.0, annotation_ref.1)?;
             let mut annotation_dict = annotation_object.as_dict().cloned().ok_or_else(|| {
-                OxideError::MalformedPdf("prompt20b annotation is not a dictionary".to_string())
+                WellfriendError::MalformedPdf(
+                    "prompt20b annotation is not a dictionary".to_string(),
+                )
             })?;
             let mut ap =
                 resolve_prompt20_dict(annotation_dict.get("AP"), reader).ok_or_else(|| {
-                    OxideError::MalformedPdf(
+                    WellfriendError::MalformedPdf(
                         "prompt20b annotation AP dictionary is malformed".to_string(),
                     )
                 })?;
@@ -3684,7 +3699,7 @@ pub fn edit_vector_object(
                     raw: owner_raw,
                 } = owner_object
                 else {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "prompt20b appearance Form invocation owner is not a stream".to_string(),
                     ));
                 };
@@ -3700,7 +3715,7 @@ pub fn edit_vector_object(
                     },
                 )?;
                 if decoded_owner.status != StreamDecodeStatus::Complete {
-                    return Err(OxideError::UnsupportedFeature(
+                    return Err(WellfriendError::UnsupportedFeature(
                         "prompt20b appearance Form invocation owner is not losslessly decodable"
                             .to_string(),
                     ));
@@ -3709,7 +3724,7 @@ pub fn edit_vector_object(
                     invocation.owner_operation_byte_start..invocation.owner_operation_byte_end;
                 if owner_range.end > decoded_owner.data.len() || owner_range.start > owner_range.end
                 {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "prompt20b appearance Form invocation range is outside owner stream"
                             .to_string(),
                     ));
@@ -3765,7 +3780,7 @@ pub fn edit_vector_object(
                 child_number = clone_number;
             }
             let appearance_clone_number = cloned_appearance.ok_or_else(|| {
-                OxideError::UnsupportedFeature(
+                WellfriendError::UnsupportedFeature(
                     "prompt20b nested annotation appearance path did not reach an AP owner"
                         .to_string(),
                 )
@@ -3782,12 +3797,12 @@ pub fn edit_vector_object(
             } else if parts.len() == 2 {
                 let mut states =
                     resolve_prompt20_dict(ap.get(parts[0]), reader).ok_or_else(|| {
-                        OxideError::MalformedPdf(
+                        WellfriendError::MalformedPdf(
                             "prompt20b appearance-state dictionary is malformed".to_string(),
                         )
                     })?;
                 if !states.contains_key(parts[1]) {
-                    return Err(OxideError::UnsupportedFeature(
+                    return Err(WellfriendError::UnsupportedFeature(
                         "prompt20b requested appearance state does not exist".to_string(),
                     ));
                 }
@@ -3800,7 +3815,7 @@ pub fn edit_vector_object(
                 );
                 ap.insert(parts[0], PdfObject::Dictionary(states));
             } else {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "prompt20b appearance category/state identity is malformed".to_string(),
                 ));
             }
@@ -3851,7 +3866,7 @@ pub fn edit_vector_object(
                     raw: owner_raw,
                 } = owner_object
                 else {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "prompt20b Form invocation owner is not a stream".to_string(),
                     ));
                 };
@@ -3867,14 +3882,14 @@ pub fn edit_vector_object(
                     },
                 )?;
                 if decoded_owner.status != StreamDecodeStatus::Complete {
-                    return Err(OxideError::UnsupportedFeature(
+                    return Err(WellfriendError::UnsupportedFeature(
                         "prompt20b Form invocation owner is not losslessly decodable".to_string(),
                     ));
                 }
                 let range =
                     invocation.owner_operation_byte_start..invocation.owner_operation_byte_end;
                 if range.end > decoded_owner.data.len() || range.start > range.end {
-                    return Err(OxideError::MalformedPdf(
+                    return Err(WellfriendError::MalformedPdf(
                         "prompt20b Form invocation range is outside owner stream".to_string(),
                     ));
                 }
@@ -3886,7 +3901,7 @@ pub fn edit_vector_object(
                 let resource_owner = if is_page_owner {
                     page.resources.clone()
                 } else {
-                    resolve_prompt20_dict(owner_dict.get("Resources"), reader).ok_or_else(|| OxideError::UnsupportedFeature("prompt20b nested Form clone-one requires a direct or indirect parent Form Resources dictionary".to_string()))?
+                    resolve_prompt20_dict(owner_dict.get("Resources"), reader).ok_or_else(|| WellfriendError::UnsupportedFeature("prompt20b nested Form clone-one requires a direct or indirect parent Form Resources dictionary".to_string()))?
                 };
                 let mut xobjects = resolve_prompt20_dict(resource_owner.get("XObject"), reader)
                     .unwrap_or_else(crate::PdfDictionary::empty);
@@ -3910,7 +3925,7 @@ pub fn edit_vector_object(
                         .as_dict()
                         .cloned()
                         .ok_or_else(|| {
-                            OxideError::MalformedPdf(
+                            WellfriendError::MalformedPdf(
                                 "prompt20b page object is not a dictionary".to_string(),
                             )
                         })?;
@@ -3961,7 +3976,7 @@ pub fn edit_vector_object(
                 }
             }
             let page_dict = page_update.ok_or_else(|| {
-                OxideError::UnsupportedFeature(
+                WellfriendError::UnsupportedFeature(
                     "prompt20b nested Form clone-one path has no page-owned outer invocation"
                         .to_string(),
                 )
@@ -3981,12 +3996,12 @@ pub fn edit_vector_object(
             return Ok((output.clone(), VectorEditReport { schema_version:PROMPT20_SCHEMA_VERSION.to_string(), stable_id:stable_id.to_string(), operation, before, after:report_after, source_range:[range.start,range.end], replacement_bytes:replacement.len(), unrelated_decoded_prefix_preserved:prefix_preserved, unrelated_decoded_suffix_preserved:suffix_preserved, original_pdf_prefix_preserved:output.starts_with(input), output_reopened:true, output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:options.deterministic, shared_form_policy:options.shared_form_policy, cloned_form:Some([leaf_number,0]), clone_graph, cache_invalidation:prompt20_cache_invalidation(input,&output,false,true,false), exact_limits:vec!["clone-one recursively clones the leaf and each selected parent Form invocation path; unrelated source Forms are retained".to_string(),"nested Form clone-one requires losslessly decodable streams and direct or indirect Resources dictionaries; cyclic/malformed graphs fail closed".to_string()] }));
         }
         let invocation = form_invocation.as_ref().ok_or_else(|| {
-            OxideError::UnsupportedFeature(
+            WellfriendError::UnsupportedFeature(
                 "prompt20 clone_edit_one_instance requires a Form-owned vector object".to_string(),
             )
         })?;
         if invocation.depth != 1 {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "prompt20 clone_edit_one_instance is bounded to top-level page Form invocations; selected depth is {}",
                 invocation.depth
             )));
@@ -4018,7 +4033,7 @@ pub fn edit_vector_object(
         resources.insert("XObject", PdfObject::Dictionary(xobjects));
         let page_object = reader.get_object(page.object_number, page.generation_number)?;
         let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
-            OxideError::MalformedPdf("prompt20 page object is not a dictionary".to_string())
+            WellfriendError::MalformedPdf("prompt20 page object is not a dictionary".to_string())
         })?;
         page_dict.insert("Resources", PdfObject::Dictionary(resources));
 
@@ -4031,7 +4046,7 @@ pub fn edit_vector_object(
             raw: owner_raw,
         } = owner_object
         else {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "prompt20 Form invocation owner is not a stream".to_string(),
             ));
         };
@@ -4047,14 +4062,14 @@ pub fn edit_vector_object(
             },
         )?;
         if owner_decoded.status != StreamDecodeStatus::Complete {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "prompt20 Form invocation owner is not losslessly decodable".to_string(),
             ));
         }
         let owner_range =
             invocation.owner_operation_byte_start..invocation.owner_operation_byte_end;
         if owner_range.end > owner_decoded.data.len() || owner_range.start > owner_range.end {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "prompt20 Form invocation range is outside its owner stream".to_string(),
             ));
         }
@@ -4167,7 +4182,7 @@ fn edit_vector_z_order(
     signature_policy: EditPolicyReport,
 ) -> Result<(Vec<u8>, VectorEditReport)> {
     if before.provenance.form_invocation.is_some() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 bounded z-order currently requires a page-owned operation range; Form z-order changes require ownership-specific group analysis".to_string(),
         ));
     }
@@ -4176,7 +4191,7 @@ fn edit_vector_z_order(
         || before.clipping_path
         || before.clipping_context
     {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 z-order change would cross clipping, marked-content, or OCG semantics"
                 .to_string(),
         ));
@@ -4204,7 +4219,7 @@ fn edit_vector_z_order(
         .iter()
         .position(|object| object.stable_id == before.stable_id)
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature(
+            WellfriendError::UnsupportedFeature(
                 "prompt20 z-order target is not in its page-owned sibling set".to_string(),
             )
         })?;
@@ -4214,7 +4229,7 @@ fn edit_vector_z_order(
         before.provenance.generation,
     )?;
     let PdfObject::Stream { mut dict, raw } = stream_object else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 z-order provenance does not reference a stream".to_string(),
         ));
     };
@@ -4230,13 +4245,13 @@ fn edit_vector_z_order(
         },
     )?;
     if decoded_result.status != StreamDecodeStatus::Complete {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 z-order stream is not losslessly decodable".to_string(),
         ));
     }
     let range = before.provenance.operation_byte_start..before.provenance.operation_byte_end;
     if range.end > decoded_result.data.len() || range.start > range.end {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 z-order operation range is outside decoded stream".to_string(),
         ));
     }
@@ -4245,7 +4260,7 @@ fn edit_vector_z_order(
             .get(selected_index + 1)
             .map(|object| object.provenance.operation_byte_end)
             .ok_or_else(|| {
-                OxideError::UnsupportedFeature(
+                WellfriendError::UnsupportedFeature(
                     "prompt20 vector is already the front sibling".to_string(),
                 )
             })?,
@@ -4254,7 +4269,7 @@ fn edit_vector_z_order(
             .and_then(|index| siblings.get(index))
             .map(|object| object.provenance.operation_byte_start)
             .ok_or_else(|| {
-                OxideError::UnsupportedFeature(
+                WellfriendError::UnsupportedFeature(
                     "prompt20 vector is already the back sibling".to_string(),
                 )
             })?,
@@ -4340,7 +4355,7 @@ fn edit_vector_group_structure(
     signature_policy: EditPolicyReport,
 ) -> Result<(Vec<u8>, VectorEditReport)> {
     if before.provenance.form_invocation.is_some() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 bounded group/ungroup currently requires page-owned operation ranges"
                 .to_string(),
         ));
@@ -4351,7 +4366,7 @@ fn edit_vector_group_structure(
         before.provenance.generation,
     )?;
     let PdfObject::Stream { mut dict, raw } = stream_object else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 group provenance does not reference a stream".to_string(),
         ));
     };
@@ -4367,7 +4382,7 @@ fn edit_vector_group_structure(
         },
     )?;
     if decoded_result.status != StreamDecodeStatus::Complete {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 group stream is not losslessly decodable".to_string(),
         ));
     }
@@ -4390,7 +4405,7 @@ fn edit_vector_group_structure(
             selected_ids.sort();
             selected_ids.dedup();
             if selected_ids.len() < 2 {
-                return Err(OxideError::UnsupportedFeature(
+                return Err(WellfriendError::UnsupportedFeature(
                     "prompt20 group_with requires at least two distinct stable IDs".to_string(),
                 ));
             }
@@ -4400,7 +4415,7 @@ fn edit_vector_group_structure(
                     .iter()
                     .position(|object| object.stable_id == *stable_id)
                     .ok_or_else(|| {
-                        OxideError::UnsupportedFeature(format!(
+                        WellfriendError::UnsupportedFeature(format!(
                             "prompt20 group member {stable_id} is not a sibling in the selected page stream"
                         ))
                     })?;
@@ -4411,7 +4426,7 @@ fn edit_vector_group_structure(
                 .windows(2)
                 .any(|pair| pair[1] != pair[0].saturating_add(1))
             {
-                return Err(OxideError::UnsupportedFeature(
+                return Err(WellfriendError::UnsupportedFeature(
                     "prompt20 bounded grouping requires contiguous sibling vector ranges"
                         .to_string(),
                 ));
@@ -4420,25 +4435,30 @@ fn edit_vector_group_structure(
             let last = &siblings[*indices.last().expect("non-empty group indices")];
             let range = first.provenance.operation_byte_start..last.provenance.operation_byte_end;
             if range.end > decoded_result.data.len() {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "prompt20 group range is outside decoded stream".to_string(),
                 ));
             }
-            let mut replacement = b"/OxideGroup BMC\n".to_vec();
+            let mut replacement = b"/WellfriendGroup BMC\n".to_vec();
             replacement.extend_from_slice(&decoded_result.data[range.clone()]);
             replacement.extend_from_slice(b"\nEMC");
             (range, replacement)
         }
         VectorEditOperation::Ungroup => {
-            let group = before.provenance.oxide_groups.last().ok_or_else(|| {
-                OxideError::UnsupportedFeature(
-                    "prompt20 selected vector is not inside an Oxide bounded group".to_string(),
-                )
-            })?;
+            let group = before
+                .provenance
+                .wellfriendpdf_groups
+                .last()
+                .ok_or_else(|| {
+                    WellfriendError::UnsupportedFeature(
+                        "prompt20 selected vector is not inside an Wellfriend bounded group"
+                            .to_string(),
+                    )
+                })?;
             if group.marker_end > decoded_result.data.len()
                 || group.content_start > group.content_end
             {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "prompt20 group marker range is outside decoded stream".to_string(),
                 ));
             }
@@ -4500,7 +4520,7 @@ fn edit_vector_group_structure(
             clone_graph: Vec::new(),
             cache_invalidation: prompt20_cache_invalidation(input, &output, false, true, false),
             exact_limits: vec![
-                "group/ungroup uses inert Oxide marked-content ownership around contiguous page-owned vector ranges; painting order and graphics are preserved".to_string(),
+                "group/ungroup uses inert Wellfriend marked-content ownership around contiguous page-owned vector ranges; painting order and graphics are preserved".to_string(),
                 "Form-owned, non-contiguous, clipping-sensitive, or cross-stream groups are rejected exactly".to_string(),
             ],
         },
@@ -4515,7 +4535,7 @@ fn reconstruct_vector_objects(
     generation: u16,
 ) -> Result<Vec<EditableVectorObject>> {
     let operations = raw_content_operations(data)?;
-    let group_ranges = oxide_group_ranges(&operations);
+    let group_ranges = wellfriendpdf_group_ranges(&operations);
     let mut output = Vec::new();
     let mut state = VectorGraphicsState::default();
     let mut stack = Vec::new();
@@ -4670,7 +4690,11 @@ fn reconstruct_vector_objects(
                     resource_owner: format!("page-{page}-stream-{object_number}-{generation}"),
                     form_invocation: None,
                     form_invocation_path: Vec::new(),
-                    oxide_groups: oxide_groups_for_range(&group_ranges, start, operation.end),
+                    wellfriendpdf_groups: wellfriendpdf_groups_for_range(
+                        &group_ranges,
+                        start,
+                        operation.end,
+                    ),
                 };
                 let stable_id = vector_stable_id(&provenance, &local_path, paint);
                 output.push(EditableVectorObject {
@@ -4718,17 +4742,21 @@ fn reconstruct_vector_objects(
     Ok(output)
 }
 
-fn oxide_group_ranges(operations: &[RawContentOperation]) -> Vec<VectorGroupProvenance> {
+fn wellfriendpdf_group_ranges(operations: &[RawContentOperation]) -> Vec<VectorGroupProvenance> {
     let mut stack: Vec<Option<(usize, usize, usize)>> = Vec::new();
     let mut output = Vec::new();
     for operation in operations {
         match operation.operator.as_str() {
             "BMC" | "BDC" => {
-                let is_oxide_group = operation.operands.iter().any(
-                    |operand| matches!(operand, LexicalKind::Name(name) if name == "OxideGroup"),
+                let is_wellfriendpdf_group = operation.operands.iter().any(
+                    |operand| matches!(operand, LexicalKind::Name(name) if name == "WellfriendGroup"),
                 );
                 let depth = stack.len() + 1;
-                stack.push(is_oxide_group.then_some((operation.start, operation.end, depth)));
+                stack.push(is_wellfriendpdf_group.then_some((
+                    operation.start,
+                    operation.end,
+                    depth,
+                )));
             }
             "EMC" => {
                 if let Some(Some((marker_start, content_start, depth))) = stack.pop() {
@@ -4748,7 +4776,7 @@ fn oxide_group_ranges(operations: &[RawContentOperation]) -> Vec<VectorGroupProv
     output
 }
 
-fn oxide_groups_for_range(
+fn wellfriendpdf_groups_for_range(
     groups: &[VectorGroupProvenance],
     start: usize,
     end: usize,
@@ -4838,7 +4866,7 @@ fn vector_stable_id(
     hasher.update(serde_json::to_vec(&provenance.form_stack).unwrap_or_default());
     hasher.update(serde_json::to_vec(&provenance.form_invocation).unwrap_or_default());
     hasher.update(serde_json::to_vec(&provenance.form_invocation_path).unwrap_or_default());
-    hasher.update(serde_json::to_vec(&provenance.oxide_groups).unwrap_or_default());
+    hasher.update(serde_json::to_vec(&provenance.wellfriendpdf_groups).unwrap_or_default());
     hasher.update(paint.as_bytes());
     hasher.update(serde_json::to_vec(path).unwrap_or_default());
     let digest = format!("{:x}", hasher.finalize());
@@ -4959,7 +4987,7 @@ fn validate_vector_edit(operation: &VectorEditOperation) -> Result<()> {
         .iter()
         .any(|value| !value.is_finite() || value.abs() > 1.0e9)
     {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 vector edit contains non-finite or out-of-range numbers".to_string(),
         ));
     }
@@ -5052,7 +5080,7 @@ fn mutate_vector(object: &mut EditableVectorObject, operation: &VectorEditOperat
             value,
         } => {
             let target = object.segments.get_mut(*segment).ok_or_else(|| {
-                OxideError::UnsupportedFeature(format!(
+                WellfriendError::UnsupportedFeature(format!(
                     "prompt20 vector segment {segment} is out of range"
                 ))
             })?;
@@ -5196,7 +5224,7 @@ fn edit_vector_segment_point(
             *y = value.y;
         }
         _ => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "prompt20 vector point index {point_index} is invalid for selected segment"
             )))
         }
@@ -5541,10 +5569,12 @@ pub fn fit_annotation_ink_pdf(
     let reader = engine.document().reader();
     let page_object = reader.get_object(page.object_number, page.generation_number)?;
     let page_dict = page_object.as_dict().ok_or_else(|| {
-        OxideError::MalformedPdf("prompt20 page object is not a dictionary".to_string())
+        WellfriendError::MalformedPdf("prompt20 page object is not a dictionary".to_string())
     })?;
     let annots_object = page_dict.get("Annots").ok_or_else(|| {
-        OxideError::UnsupportedFeature(format!("prompt20 page {page_number} has no annotations"))
+        WellfriendError::UnsupportedFeature(format!(
+            "prompt20 page {page_number} has no annotations"
+        ))
     })?;
     let annots = reader.resolve(annots_object.clone())?;
     let annotation_ref = annots
@@ -5552,16 +5582,18 @@ pub fn fit_annotation_ink_pdf(
         .and_then(|items| items.get(annotation_index))
         .and_then(PdfObject::as_reference)
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature(format!(
+            WellfriendError::UnsupportedFeature(format!(
                 "prompt20 annotation {annotation_index} on page {page_number} must be an indirect annotation dictionary"
             ))
         })?;
     let annotation_object = reader.get_object(annotation_ref.0, annotation_ref.1)?;
     let mut annotation = annotation_object.as_dict().cloned().ok_or_else(|| {
-        OxideError::MalformedPdf("prompt20 annotation reference is not a dictionary".to_string())
+        WellfriendError::MalformedPdf(
+            "prompt20 annotation reference is not a dictionary".to_string(),
+        )
     })?;
     if annotation.get_name("Subtype") != Some("Ink") {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 annotation {annotation_index} is not /Subtype /Ink"
         )));
     }
@@ -5569,7 +5601,7 @@ pub fn fit_annotation_ink_pdf(
     let fitted = fit_ink_strokes(&raw_strokes, options)?;
     let rect = pdf_number_array(reader, annotation.get("Rect"))?;
     if rect.len() < 4 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 Ink annotation /Rect must contain four finite numbers".to_string(),
         ));
     }
@@ -5579,7 +5611,7 @@ pub fn fit_annotation_ink_pdf(
     let height = (rect[3] - rect[1]).abs().max(0.1);
     let preserve_raw = !matches!(options.policy, InkFitPolicy::FittedOnly);
     if preserve_raw {
-        annotation.insert("OxideRawInkList", points_to_pdf_object(&raw_strokes));
+        annotation.insert("WellfriendRawInkList", points_to_pdf_object(&raw_strokes));
     } else {
         annotation.insert(
             "InkList",
@@ -5592,9 +5624,9 @@ pub fn fit_annotation_ink_pdf(
             ),
         );
     }
-    annotation.insert("OxideFittedInk", curves_to_pdf_object(&fitted));
+    annotation.insert("WellfriendFittedInk", curves_to_pdf_object(&fitted));
     annotation.insert(
-        "OxideInkFitPolicy",
+        "WellfriendInkFitPolicy",
         PdfObject::Name(format!("{:?}", options.policy)),
     );
     let appearance_number = reader
@@ -5697,9 +5729,9 @@ pub fn fit_annotation_ink_pdf(
         })
         .and_then(|annotation| reopened.document().reader().resolve(annotation).ok())
         .and_then(|annotation| annotation.as_dict().cloned())
-        .is_some_and(|dict| dict.get("AP").is_some() && dict.get("OxideFittedInk").is_some());
+        .is_some_and(|dict| dict.get("AP").is_some() && dict.get("WellfriendFittedInk").is_some());
     if !readback || !output.starts_with(input) {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 fitted Ink annotation failed incremental readback verification".to_string(),
         ));
     }
@@ -5727,8 +5759,8 @@ pub fn fit_annotation_ink_pdf(
             deterministic: true,
             cache_invalidation: prompt20_cache_invalidation(input, &output, false, true, true),
             exact_limits: vec![
-                "PDF /InkList remains a point-list interchange surface; cubic control points are stored in /OxideFittedInk and consumed by the generated appearance".to_string(),
-                "raw points are retained in /OxideRawInkList except under fitted_only policy".to_string(),
+                "PDF /InkList remains a point-list interchange surface; cubic control points are stored in /WellfriendFittedInk and consumed by the generated appearance".to_string(),
+                "raw points are retained in /WellfriendRawInkList except under fitted_only policy".to_string(),
                 "incremental annotation and appearance updates do not assert cryptographic signature validity or viewer acceptance".to_string(),
             ],
         },
@@ -5739,7 +5771,7 @@ pub fn fit_annotation_ink_pdf(
 pub fn fit_ink_stroke(points: &[InkPoint], options: &InkFitOptions) -> Result<InkFitResult> {
     validate_ink_options(options)?;
     if points.len() > options.max_points.min(MAX_PROMPT20_INK_POINTS) {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 ink stroke has {} points; limit is {}",
             points.len(),
             options.max_points.min(MAX_PROMPT20_INK_POINTS)
@@ -5747,12 +5779,12 @@ pub fn fit_ink_stroke(points: &[InkPoint], options: &InkFitOptions) -> Result<In
     }
     for (index, point) in points.iter().enumerate() {
         if !point.x.is_finite() || !point.y.is_finite() {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "prompt20 ink point {index} is NaN or infinite"
             )));
         }
         if point.x.abs() > 1.0e9 || point.y.abs() > 1.0e9 {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "prompt20 ink point {index} exceeds bounded coordinate range +/-1e9"
             )));
         }
@@ -5784,7 +5816,7 @@ pub fn fit_ink_stroke(points: &[InkPoint], options: &InkFitOptions) -> Result<In
         )?;
     }
     if segments.len() > options.max_segments.min(MAX_PROMPT20_INK_SEGMENTS) {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 fitted segment count {} exceeds limit {}",
             segments.len(),
             options.max_segments.min(MAX_PROMPT20_INK_SEGMENTS)
@@ -5794,7 +5826,7 @@ pub fn fit_ink_stroke(points: &[InkPoint], options: &InkFitOptions) -> Result<In
     if options.policy == InkFitPolicy::StrictErrorThreshold
         && maximum_deviation > options.error_threshold + EPSILON
     {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 ink fit maximum deviation {:.6} exceeds strict threshold {:.6}",
             maximum_deviation, options.error_threshold
         )));
@@ -5803,7 +5835,7 @@ pub fn fit_ink_stroke(points: &[InkPoint], options: &InkFitOptions) -> Result<In
     if options.policy == InkFitPolicy::PerformanceThreshold {
         if let Some(limit) = options.performance_threshold_ms {
             if elapsed.as_millis() > u128::from(limit) {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "prompt20 ink fit elapsed {} ms exceeds performance threshold {limit} ms",
                     elapsed.as_millis()
                 )));
@@ -5860,11 +5892,11 @@ pub fn fit_ink_strokes(
 ) -> Result<InkStrokeSetResult> {
     let total_points = strokes.iter().try_fold(0usize, |total, stroke| {
         total.checked_add(stroke.len()).ok_or_else(|| {
-            OxideError::UnsupportedFeature("prompt20 ink point count overflow".to_string())
+            WellfriendError::UnsupportedFeature("prompt20 ink point count overflow".to_string())
         })
     })?;
     if total_points > options.max_points.min(MAX_PROMPT20_INK_POINTS) {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 ink stroke set has {total_points} points; aggregate limit is {}",
             options.max_points.min(MAX_PROMPT20_INK_POINTS)
         )));
@@ -5892,12 +5924,12 @@ pub fn fit_ink_strokes(
 
 fn pdf_number_array(reader: &crate::PdfReader, object: Option<&PdfObject>) -> Result<Vec<f64>> {
     let object = object.ok_or_else(|| {
-        OxideError::MalformedPdf("prompt20 required numeric array is missing".to_string())
+        WellfriendError::MalformedPdf("prompt20 required numeric array is missing".to_string())
     })?;
     let resolved = reader.resolve(object.clone())?;
-    let values = resolved
-        .as_array()
-        .ok_or_else(|| OxideError::MalformedPdf("prompt20 expected numeric array".to_string()))?;
+    let values = resolved.as_array().ok_or_else(|| {
+        WellfriendError::MalformedPdf("prompt20 expected numeric array".to_string())
+    })?;
     values
         .iter()
         .map(|value| {
@@ -5906,7 +5938,7 @@ fn pdf_number_array(reader: &crate::PdfReader, object: Option<&PdfObject>) -> Re
                 .as_number()
                 .filter(|number| number.is_finite())
                 .ok_or_else(|| {
-                    OxideError::MalformedPdf(
+                    WellfriendError::MalformedPdf(
                         "prompt20 numeric array contains a non-finite or non-number value"
                             .to_string(),
                     )
@@ -5920,17 +5952,17 @@ fn pdf_nested_points(
     object: Option<&PdfObject>,
 ) -> Result<Vec<Vec<InkPoint>>> {
     let object = object.ok_or_else(|| {
-        OxideError::MalformedPdf("prompt20 Ink annotation has no /InkList".to_string())
+        WellfriendError::MalformedPdf("prompt20 Ink annotation has no /InkList".to_string())
     })?;
     let resolved = reader.resolve(object.clone())?;
-    let strokes = resolved
-        .as_array()
-        .ok_or_else(|| OxideError::MalformedPdf("prompt20 /InkList is not an array".to_string()))?;
+    let strokes = resolved.as_array().ok_or_else(|| {
+        WellfriendError::MalformedPdf("prompt20 /InkList is not an array".to_string())
+    })?;
     let mut output = Vec::with_capacity(strokes.len());
     for (stroke_index, stroke) in strokes.iter().enumerate() {
         let numbers = pdf_number_array(reader, Some(stroke))?;
         if numbers.len() % 2 != 0 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "prompt20 /InkList stroke {stroke_index} has an odd coordinate count"
             )));
         }
@@ -6058,24 +6090,24 @@ fn validate_ink_options(options: &InkFitOptions) -> Result<()> {
         ("corner_angle_degrees", options.corner_angle_degrees),
     ] {
         if !value.is_finite() || value < 0.0 {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "prompt20 ink {name} must be finite and non-negative"
             )));
         }
     }
     if options.error_threshold <= EPSILON {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "prompt20 ink error_threshold must be greater than zero".to_string(),
         ));
     }
     if options.max_recursion > MAX_PROMPT20_FIT_RECURSION {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 ink max_recursion {} exceeds hard cap {MAX_PROMPT20_FIT_RECURSION}",
             options.max_recursion
         )));
     }
     if options.newton_iterations > 16 {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "prompt20 ink Newton iteration cap is 16".to_string(),
         ));
     }
@@ -6206,13 +6238,13 @@ fn fit_cubic_recursive(
 ) -> Result<()> {
     *maximum_depth = (*maximum_depth).max(depth);
     if depth > options.max_recursion.min(MAX_PROMPT20_FIT_RECURSION) {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 ink fitting exceeded recursion limit {}",
             options.max_recursion.min(MAX_PROMPT20_FIT_RECURSION)
         )));
     }
     if segments.len() >= options.max_segments.min(MAX_PROMPT20_INK_SEGMENTS) {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 ink fitting exceeded segment limit {}",
             options.max_segments.min(MAX_PROMPT20_INK_SEGMENTS)
         )));
@@ -6574,7 +6606,7 @@ pub(crate) fn prompt20_feature_report_value(envelope_version: u32) -> serde_json
             "bundled DejaVu covers Arabic and Hebrew but not arbitrary CJK; vertical Japanese requires a caller-supplied font containing the requested glyphs",
             "same-width patching rejects Type3, shaping, bidi/vertical reorder, clipping text modes, ambiguous CMaps, encryption, and changed encoded/advance structure",
             "reachable shared Forms support explicit edit-all and recursive clone-edit-one for selected invocation chains; pattern program editing and arbitrary shading mesh editing remain exact limits",
-            "group/ungroup is bounded to contiguous page-owned vector ranges using inert Oxide marked content; cross-stream and Form-owned grouping is rejected",
+            "group/ungroup is bounded to contiguous page-owned vector ranges using inert Wellfriend marked content; cross-stream and Form-owned grouping is rejected",
             "z-order is bounded to page-owned objects outside clipping, marked-content, and OCG contexts",
             "cubic fitting does not recover pressure, tilt, velocity, time, or original pen dynamics",
             "structural incremental preservation never implies cryptographic signature validity or viewer acceptance"
@@ -6677,7 +6709,7 @@ impl Prompt20MutationSession {
         max_total_patch_bytes: usize,
     ) -> Result<Self> {
         if max_patches == 0 || max_patches > 100_000 || max_total_patch_bytes == 0 {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "prompt20 mutation session limits are outside the supported range".to_string(),
             ));
         }
@@ -6790,13 +6822,13 @@ impl Prompt20MutationSession {
         if format!("{:x}", Sha256::digest(&self.current)) != patch.after_sha256
             || patch.before_bytes > self.current.len()
         {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "prompt20 undo fingerprint or patch boundary mismatch".to_string(),
             ));
         }
         self.current.truncate(patch.before_bytes);
         if format!("{:x}", Sha256::digest(&self.current)) != patch.before_sha256 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "prompt20 undo did not restore the recorded checkpoint digest".to_string(),
             ));
         }
@@ -6809,13 +6841,13 @@ impl Prompt20MutationSession {
             return Ok(false);
         };
         if format!("{:x}", Sha256::digest(&self.current)) != patch.before_sha256 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "prompt20 redo fingerprint mismatch".to_string(),
             ));
         }
         self.current.extend_from_slice(&patch.appended_suffix);
         if format!("{:x}", Sha256::digest(&self.current)) != patch.after_sha256 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "prompt20 redo did not restore the recorded patch digest".to_string(),
             ));
         }
@@ -6830,7 +6862,7 @@ impl Prompt20MutationSession {
         report: serde_json::Value,
     ) -> Result<&Prompt20MutationPatch> {
         if !output.starts_with(&self.current) {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "prompt20 transaction output is not an incremental prefix-preserving patch"
                     .to_string(),
             ));
@@ -6841,7 +6873,7 @@ impl Prompt20MutationSession {
                 .retain(|checkpoint| checkpoint.sequence <= self.cursor);
         }
         if self.patches.len() >= self.max_patches {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "prompt20 transaction patch count exceeds limit {}",
                 self.max_patches
             )));
@@ -6853,7 +6885,7 @@ impl Prompt20MutationSession {
             .sum::<usize>();
         let appended_suffix = output[self.current.len()..].to_vec();
         if total_patch_bytes.saturating_add(appended_suffix.len()) > self.max_total_patch_bytes {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "prompt20 transaction suffix bytes exceed limit {}",
                 self.max_total_patch_bytes
             )));
@@ -6901,7 +6933,7 @@ impl Prompt20MutationSession {
 
 fn prompt20_report_json_value<T: Serialize>(report: T) -> Result<serde_json::Value> {
     serde_json::to_value(report).map_err(|error| {
-        OxideError::ParseError(format!(
+        WellfriendError::ParseError(format!(
             "prompt20 transaction report serialization failed: {error}"
         ))
     })
@@ -8876,7 +8908,7 @@ mod tests {
         assert_eq!(grouped_inventory.objects.len(), 2);
         assert!(grouped_inventory.objects.iter().all(|object| object
             .provenance
-            .oxide_groups
+            .wellfriendpdf_groups
             .len()
             == 1));
 
@@ -8895,7 +8927,7 @@ mod tests {
         assert!(ungrouped_inventory
             .objects
             .iter()
-            .all(|object| object.provenance.oxide_groups.is_empty()));
+            .all(|object| object.provenance.wellfriendpdf_groups.is_empty()));
     }
 
     #[test]

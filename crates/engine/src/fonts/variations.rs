@@ -24,7 +24,7 @@
 //! 3. **PDF-descriptor-selected** — the `FontDescriptor` carries `/FontWeight`
 //!    (100–900) and/or `/FontStretch` (a name like `/Condensed`). When the
 //!    embedded font is variable and exposes a matching `wght`/`wdth` axis, those
-//!    descriptor values select the instance — the one case where Oxide can
+//!    descriptor values select the instance — the one case where Wellfriend can
 //!    honor a *non-default* instance from PDF metadata. This is the genuine
 //!    correctness win this module adds.
 //!

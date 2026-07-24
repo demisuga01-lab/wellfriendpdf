@@ -6,16 +6,16 @@
     clippy::useless_vec
 )]
 
-use oxide_engine::content::{tokenize_all, ContentToken};
-use oxide_engine::content::{ContentParser, GraphicsState, IDENTITY_MATRIX};
-use oxide_engine::fonts::FontResolver;
-use oxide_engine::{
+use wellfriendpdf_engine::content::{tokenize_all, ContentToken};
+use wellfriendpdf_engine::content::{ContentParser, GraphicsState, IDENTITY_MATRIX};
+use wellfriendpdf_engine::fonts::FontResolver;
+use wellfriendpdf_engine::{
     decode_stream, get_fallback_font, BlendMode, ClipMask, ColorSpaceHandler, ContentEngine,
     DashState, FillRule, ImageEncoder, ImageLocateOptions, ImageLocator, ImageOutputFormat,
-    ImagePainter, LinePainter, OxideError, PageResources, Path, PathPainter, PdfAnalyzer,
-    PdfDocument, PdfObject, PdfReader, PixelBuffer, RawImage, ReadingOrderReconstructor,
-    RenderColor, RenderMode, RenderQuality, SmaskLoader, TextChunk, TextCollector,
-    TextExtractOptions, TextExtractor, TextLayerRecommendation, TextLine, Transform2D, Viewport,
+    ImagePainter, LinePainter, PageResources, Path, PathPainter, PdfAnalyzer, PdfDocument,
+    PdfObject, PdfReader, PixelBuffer, RawImage, ReadingOrderReconstructor, RenderColor,
+    RenderMode, RenderQuality, SmaskLoader, TextChunk, TextCollector, TextExtractOptions,
+    TextExtractor, TextLayerRecommendation, TextLine, Transform2D, Viewport, WellfriendError,
     BLACK, BLUE, GREEN, RED, WHITE,
 };
 
@@ -183,7 +183,7 @@ fn engine_rejects_page_zero() {
     let engine = ContentEngine::open_path("tests/fixtures/minimal.pdf").unwrap();
     assert!(matches!(
         engine.get_page_content(0),
-        Err(OxideError::MalformedPdf(_))
+        Err(WellfriendError::MalformedPdf(_))
     ));
 }
 
@@ -192,7 +192,7 @@ fn engine_rejects_page_beyond_count() {
     let engine = ContentEngine::open_path("tests/fixtures/minimal.pdf").unwrap();
     assert!(matches!(
         engine.get_page_content(99),
-        Err(OxideError::MalformedPdf(_))
+        Err(WellfriendError::MalformedPdf(_))
     ));
 }
 
@@ -266,7 +266,7 @@ fn zero_page_tree_is_valid_but_page_one_is_out_of_range() {
     assert_eq!(engine.page_count().unwrap(), 0);
     assert!(matches!(
         engine.get_page_content(1),
-        Err(OxideError::MalformedPdf(_))
+        Err(WellfriendError::MalformedPdf(_))
     ));
 }
 
@@ -281,7 +281,7 @@ fn encrypted_document_v2_surfaces_encrypted_error() {
     );
     assert!(matches!(
         ContentEngine::open_bytes(pdf),
-        Err(OxideError::EncryptedDocument)
+        Err(WellfriendError::EncryptedDocument)
     ));
 }
 
@@ -893,7 +893,7 @@ fn decode_jpx_bug_fixture_is_graceful() {
     // bug_jpx.pdf is a deliberately truncated/malformed JPEG2000 regression
     // fixture from pdf.js (only ~200 bytes of codestream). Poppler itself fails
     // to open it. Our requirement here is *graceful* behavior: either a clean
-    // decode of the correct dimensions or a clean OxideError — never a panic.
+    // decode of the correct dimensions or a clean WellfriendError — never a panic.
     let engine = ContentEngine::open_bytes(
         include_bytes!("../../../tests/corpus/pdfs/pdfjs/bug_jpx.pdf").to_vec(),
     )
@@ -911,7 +911,7 @@ fn decode_jpx_bug_fixture_is_graceful() {
             assert_eq!(raw.width, img_ref.width);
             assert_eq!(raw.height, img_ref.height);
         }
-        Err(OxideError::MalformedPdf(_)) | Err(OxideError::UnsupportedFeature(_)) => {}
+        Err(WellfriendError::MalformedPdf(_)) | Err(WellfriendError::UnsupportedFeature(_)) => {}
         Err(other) => panic!("unexpected error decoding bug_jpx fixture: {other}"),
     }
 }
@@ -945,7 +945,7 @@ fn extract_image_bytes_jpeg() {
 #[test]
 fn decode_image_inline_without_data_returns_error() {
     let engine = ContentEngine::open_path("tests/fixtures/image_only.pdf").unwrap();
-    let inline_ref = oxide_engine::ImageReference {
+    let inline_ref = wellfriendpdf_engine::ImageReference {
         page_number: 1,
         xobject_name: "inline_1_0".to_string(),
         object_number: 0,
@@ -1427,7 +1427,7 @@ fn pixel_buffer_encode_decode_round_trip() {
 
 #[test]
 fn path_fill_and_encode_as_png() {
-    let vp = oxide_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+    let vp = wellfriendpdf_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
     let ctm = Transform2D::identity();
     let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
 
@@ -1444,7 +1444,7 @@ fn path_fill_and_encode_as_png() {
 
 #[test]
 fn stroke_circle_approximation() {
-    let vp = oxide_engine::Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
+    let vp = wellfriendpdf_engine::Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
     let ctm = Transform2D::identity();
     let mut buf = PixelBuffer::new_filled(200, 200, WHITE);
 
@@ -1473,7 +1473,7 @@ fn stroke_circle_approximation() {
 
 #[test]
 fn fill_multiple_colored_regions() {
-    let vp = oxide_engine::Viewport::new([0.0, 0.0, 300.0, 100.0], 72);
+    let vp = wellfriendpdf_engine::Viewport::new([0.0, 0.0, 300.0, 100.0], 72);
     let ctm = Transform2D::identity();
     let mut buf = PixelBuffer::new_filled(300, 100, WHITE);
 
@@ -1488,7 +1488,7 @@ fn fill_multiple_colored_regions() {
 
 #[test]
 fn path_fill_uses_render_color_from_graphics_state() {
-    use oxide_engine::content::state::{Color as GsColor, ColorSpace};
+    use wellfriendpdf_engine::content::state::{Color as GsColor, ColorSpace};
 
     let fill_color = GsColor {
         space: ColorSpace::DeviceRGB,
@@ -1501,7 +1501,7 @@ fn path_fill_uses_render_color_from_graphics_state() {
     assert!((pixel_color[1] as i32 - 128).abs() <= 1);
     assert_eq!(pixel_color[2], 255);
 
-    let vp = oxide_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+    let vp = wellfriendpdf_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
     let ctm = Transform2D::identity();
     let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
     PathPainter::fill_rect(&mut buf, 20.0, 20.0, 60.0, 60.0, &ctm, &vp, pixel_color);
@@ -1512,7 +1512,7 @@ fn path_fill_uses_render_color_from_graphics_state() {
 
 #[test]
 fn path_stroke_and_fill_combine_correctly() {
-    let vp = oxide_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+    let vp = wellfriendpdf_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
     let ctm = Transform2D::identity();
     let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
 
@@ -1561,7 +1561,7 @@ fn paint_image_from_real_fixture() {
 
 #[test]
 fn image_painter_and_path_painter_combine() {
-    let vp = oxide_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+    let vp = wellfriendpdf_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
     let ctm = Transform2D::identity();
     let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
 
@@ -1609,7 +1609,7 @@ fn render_page_produces_valid_png_for_each_fixture() {
 
 #[test]
 fn render_page_clip_prevents_painting_outside() {
-    let vp = oxide_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+    let vp = wellfriendpdf_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
     let ctm = Transform2D::identity();
     let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
 
@@ -1731,7 +1731,7 @@ fn render_page_invalid_page_returns_error_in_integration() {
 
 #[test]
 fn render_page_with_transparency_produces_blended_pixels() {
-    let vp = oxide_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+    let vp = wellfriendpdf_engine::Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
     let ctm = Transform2D::identity();
     let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
     let color = RenderColor::rgb(1.0, 0.0, 0.0)
@@ -1789,7 +1789,7 @@ fn multiple_dpi_produces_proportionally_larger_images() {
 
 #[test]
 fn fill_alpha_gradient_produces_valid_pixels() {
-    let vp = oxide_engine::Viewport::new([0.0, 0.0, 10.0, 10.0], 72);
+    let vp = wellfriendpdf_engine::Viewport::new([0.0, 0.0, 10.0, 10.0], 72);
     let ctm = Transform2D::identity();
     let mut previous_green = 255u8;
 
@@ -2002,7 +2002,7 @@ fn render_image_pdf_psnr_measurement() {
 
 #[test]
 fn write_golden_creates_parent_directory() {
-    let dir = std::env::temp_dir().join(format!("oxide_test_refs_{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("wellfriendpdf_test_refs_{}", std::process::id()));
     let path = dir.join("nested/test.png");
     let _ = std::fs::remove_dir_all(&dir);
     let img = RawImage {
@@ -2020,7 +2020,7 @@ fn write_golden_creates_parent_directory() {
 #[test]
 fn read_golden_nonexistent_returns_err() {
     let path = std::env::temp_dir().join(format!(
-        "oxide_definitely_missing_xyz123_{}.png",
+        "wellfriendpdf_definitely_missing_xyz123_{}.png",
         std::process::id()
     ));
     let _ = std::fs::remove_file(&path);
@@ -2119,7 +2119,9 @@ fn complete_pipeline_extract_render_compare() {
 // `PdfReader` path. This exercises setup_encryption -> verify_user_password ->
 // compute_encryption_key -> object_key -> RC4 stream decryption end to end.
 
-use oxide_engine::{compute_encryption_key, object_key, CryptMethod, EncryptionInfo, Rc4, PADDING};
+use wellfriendpdf_engine::{
+    compute_encryption_key, object_key, CryptMethod, EncryptionInfo, Rc4, PADDING,
+};
 
 const ENC_FILE_ID: &[u8; 16] = b"0123456789abcdef";
 
@@ -2137,7 +2139,7 @@ fn hex_encode(bytes: &[u8]) -> String {
 fn compute_u_r3(file_key: &[u8], file_id: &[u8]) -> [u8; 32] {
     let mut input = PADDING.to_vec();
     input.extend_from_slice(file_id);
-    let hash = oxide_engine::md5(&input);
+    let hash = wellfriendpdf_engine::md5(&input);
     let mut result = Rc4::apply(file_key, &hash);
     for i in 1u8..=19 {
         let xor_key: Vec<u8> = file_key.iter().map(|&b| b ^ i).collect();
@@ -2279,7 +2281,7 @@ fn decrypt_string_rc4_round_trip_via_object_key() {
     let original = b"Hello PDF World";
     let key = object_key(&file_key, 7, 0, false);
     let encrypted = Rc4::apply(&key, original);
-    let decrypted = oxide_engine::decrypt_string(&encrypted, &file_key, 7, 0, false, false);
+    let decrypted = wellfriendpdf_engine::decrypt_string(&encrypted, &file_key, 7, 0, false, false);
     assert_eq!(decrypted, original.to_vec());
 }
 
@@ -2389,7 +2391,7 @@ fn truly_password_protected_pdf_without_password_returns_encrypted_pdf_error() {
     assert!(
         matches!(
             ContentEngine::open_bytes(pdf),
-            Err(OxideError::EncryptedPdf(_))
+            Err(WellfriendError::EncryptedPdf(_))
         ),
         "a real password-protected PDF should return EncryptedPdf"
     );
@@ -3234,7 +3236,7 @@ fn render_golden_for_all_fixtures() {
 // decryption. No external tools (qpdf, pikepdf) are required.
 // ---------------------------------------------------------------------------
 
-use oxide_engine::r6_hash;
+use wellfriendpdf_engine::r6_hash;
 
 /// Build a self-consistent V5/R6 encrypted PDF whose user password is `password`
 /// and whose single page content stream decrypts to `plaintext`.
@@ -3439,7 +3441,7 @@ fn aes256_r6_wrong_password_returns_encrypted_pdf_error() {
     let pdf = build_aes256_encrypted_pdf(b"correctpass", plaintext);
     let result = ContentEngine::open_bytes_with_password(pdf, b"wrongpass");
     assert!(
-        matches!(result, Err(OxideError::EncryptedPdf(_))),
+        matches!(result, Err(WellfriendError::EncryptedPdf(_))),
         "wrong password should return EncryptedPdf, got: {:?}",
         result.err()
     );

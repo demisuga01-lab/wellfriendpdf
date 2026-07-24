@@ -7,19 +7,19 @@ Evidence root: `target/prompt23-writer-crypto/`
 AES-GCM:
 
 - Internal known-answer style vectors use fixed nonce helper only in tests.
-- Runtime CLI smoke created an AESV4 PDF and decrypted it through Oxide.
-- qpdf 12.3.2 was executed against the Oxide AESV4 encrypted output and
+- Runtime CLI smoke created an AESV4 PDF and decrypted it through WellfriendPdf.
+- qpdf 12.3.2 was executed against the Wellfriend AESV4 encrypted output and
   returned an explicit unsupported encryption-dictionary result for `/R 7` and
   `/V 6`; this is recorded as unsupported, not as a pass.
-- qpdf successfully checked the Oxide-decrypted output.
-- Poppler `pdftoppm` 26.02.0 rendered the Oxide-decrypted output.
+- qpdf successfully checked the Wellfriend-decrypted output.
+- Poppler `pdftoppm` 26.02.0 rendered the Wellfriend-decrypted output.
 - Java JCA 25.0.2 matched independent public vectors for AES-GCM, AES Key
   Wrap, HMAC-SHA256, and HKDF-SHA256.
 
 PubSec:
 
 - A local scoped `/adbe.pkcs7.s5` fixture is generated in engine tests with a synthetic RSA identity and CMS EnvelopedData recipient.
-- The fixture proves Oxide can recover the file key, decrypt the PDF, reject the wrong key, and extract visible text.
+- The fixture proves Wellfriend can recover the file key, decrypt the PDF, reject the wrong key, and extract visible text.
 - Writer fixtures create multi-recipient PubSec PDFs, reopen with each intended recipient, reject a non-recipient key, and rotate recipients by full rewrite so removed recipients fail on the new output.
 - No local independent PDF implementation with demonstrated `/Adobe.PubSec`
   `/adbe.pkcs7.s5` create/open support and compatible fixture was available in
@@ -28,7 +28,7 @@ PubSec:
 
 PDF-MAC:
 
-- Oxide creates and verifies the standalone AESV4 PDF-MAC fixture.
+- Wellfriend creates and verifies the standalone AESV4 PDF-MAC fixture.
 - qpdf 12.3.2 was executed against the PDF-MAC output and returned the same
   unsupported `/R 7` and `/V 6` encryption-dictionary result, so qpdf is not a
   compatible ISO/TS 32004 validator in this environment.

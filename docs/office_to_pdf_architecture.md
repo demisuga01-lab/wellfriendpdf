@@ -6,10 +6,10 @@ external-renderer integration.
 
 ## Decision
 
-Oxide ships a native, pure-Rust default path for all three Office directions:
+Wellfriend ships a native, pure-Rust default path for all three Office directions:
 
-- XLSX to PDF: native grid layout into Oxide's PDF authoring/writer machinery.
-- PPTX to PDF: native slide-to-page layout into Oxide's PDF writer.
+- XLSX to PDF: native grid layout into Wellfriend's PDF authoring/writer machinery.
+- PPTX to PDF: native slide-to-page layout into Wellfriend's PDF writer.
 - DOCX to PDF: native flowing-document layout with the same honest ceiling as
   PDF-to-DOCX: strong structural conversion, not full Word-compatible layout
   reproduction.
@@ -28,7 +28,7 @@ LibreOffice help documents `--convert-to` and PDF export filters, so an optional
 backend would be practical for deployments that want maximum Office-layout
 fidelity and are willing to install LibreOffice.
 
-Oxide's core identity, however, is a pure-Rust PDF engine. Making LibreOffice a
+Wellfriend's core identity, however, is a pure-Rust PDF engine. Making LibreOffice a
 default dependency would change this conversion into orchestration around a
 large external runtime. The default path therefore stays native and self-hosted
 without hidden external process requirements.
@@ -67,7 +67,7 @@ animation, SmartArt, chart, or effect rendering.
 
 DOCX is the hardest reverse direction because it requires paginating flowing
 content. The native path parses paragraphs, headings, lists, tables, and images,
-then lays them out through Oxide's `FlowDocument` and PDF writer. This gives a
+then lays them out through Wellfriend's `FlowDocument` and PDF writer. This gives a
 useful self-hosted baseline that preserves document structure, but it is not a
 replacement for Word's full layout engine.
 
@@ -84,6 +84,6 @@ serve users who need higher layout fidelity and can accept the external runtime.
   page accumulation. The current implementation materializes XML parts and emits
   PDF pages as layout windows are processed; future work can replace individual
   XML scans with streaming pull parsing without changing public APIs.
-- Malformed OOXML produces typed Oxide errors, not panics.
-- Produced PDFs must open through Oxide's parser and ordinary PDF readers.
+- Malformed OOXML produces typed Wellfriend errors, not panics.
+- Produced PDFs must open through Wellfriend's parser and ordinary PDF readers.
 - Extraction accuracy slices are not touched by this phase.

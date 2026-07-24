@@ -30,10 +30,10 @@ Python:
 
 C ABI, WASM, .NET, Java:
 
-- C ABI exposes `oxide_document_open_pubsec_from_bytes`, `oxide_document_open_pubsec_pfx_from_bytes`, and `oxide_document_pubsec_encrypt_pdf` with explicit byte lengths and owned output buffers.
-- C ABI exposes `oxide_document_pdf_mac_report_json`, `oxide_document_pdf_mac_verify_json`, and `oxide_document_pdf_mac_create_pdf` for PDF-MAC posture reporting, verification, and owned output creation.
-- .NET exposes `OxideDocument.OpenPubSec(...)`, `OpenPubSecPfx(...)`, `PubSecEncryptPdf(...)`, `PdfMacReportJson()`, `PdfMacVerifyJson()`, and `PdfMacCreate()` on the existing `SafeHandle` lifecycle.
-- Java exposes `Oxide.Document.openPubSec(...)`, `openPubSecPfx(...)`, `pubsecEncryptPdf(...)`, `pdfMacReportJson()`, `pdfMacVerifyJson()`, and `pdfMacCreate()` on the existing `AutoCloseable` lifecycle.
+- C ABI exposes `wellfriendpdf_document_open_pubsec_from_bytes`, `wellfriendpdf_document_open_pubsec_pfx_from_bytes`, and `wellfriendpdf_document_pubsec_encrypt_pdf` with explicit byte lengths and owned output buffers.
+- C ABI exposes `wellfriendpdf_document_pdf_mac_report_json`, `wellfriendpdf_document_pdf_mac_verify_json`, and `wellfriendpdf_document_pdf_mac_create_pdf` for PDF-MAC posture reporting, verification, and owned output creation.
+- .NET exposes `WellfriendDocument.OpenPubSec(...)`, `OpenPubSecPfx(...)`, `PubSecEncryptPdf(...)`, `PdfMacReportJson()`, `PdfMacVerifyJson()`, and `PdfMacCreate()` on the existing `SafeHandle` lifecycle.
+- Java exposes `WellfriendPdf.Document.openPubSec(...)`, `openPubSecPfx(...)`, `pubsecEncryptPdf(...)`, `pdfMacReportJson()`, `pdfMacVerifyJson()`, and `pdfMacCreate()` on the existing `AutoCloseable` lifecycle.
 - WASM keeps file/keystore-backed private-key operations out of scope; report surfaces remain available and browser-host assumptions are not added.
 
 Remaining binding limits:

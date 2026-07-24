@@ -75,10 +75,10 @@ def execute(command: list[str], cwd: Path, timeout: int = 180) -> dict:
     }
 
 
-def render_oxide(oxide: Path, pdf: Path, output: Path, cwd: Path) -> dict:
+def render_wellfriendpdf(wellfriendpdf: Path, pdf: Path, output: Path, cwd: Path) -> dict:
     archive = output.with_suffix(".zip")
     result = execute(
-        [str(oxide), "render", str(pdf), "--pages", "1", "--dpi", "96", "--format", "png", "--output", str(archive)],
+        [str(wellfriendpdf), "render", str(pdf), "--pages", "1", "--dpi", "96", "--format", "png", "--output", str(archive)],
         cwd,
     )
     if result["passed"]:
@@ -86,7 +86,7 @@ def render_oxide(oxide: Path, pdf: Path, output: Path, cwd: Path) -> dict:
             names = [name for name in bundle.namelist() if name.lower().endswith(".png")]
             if not names:
                 result["passed"] = False
-                result["stderr"] += "\nOxide render ZIP contains no PNG"
+                result["stderr"] += "\nWellfriend render ZIP contains no PNG"
             else:
                 output.write_bytes(bundle.read(names[0]))
     return result
@@ -120,7 +120,7 @@ def image_metrics(left: Path, right: Path) -> dict:
         changed_percent = changed * 100.0 / max(1, len(pixels))
         # Content occupies a small portion of the fixture. These thresholds
         # classify rasterizer antialiasing while catching missing/moved objects.
-        classification = "within_tolerance" if mean <= 12.0 and changed_percent <= 35.0 else "oxide_outlier"
+        classification = "within_tolerance" if mean <= 12.0 and changed_percent <= 35.0 else "wellfriendpdf_outlier"
         return {
             "classification": classification,
             "mean_absolute_channel_error": round(mean, 6),
@@ -144,17 +144,17 @@ def main() -> int:
     renders = output / "reference-renders"
     corpus.mkdir(parents=True, exist_ok=True)
     renders.mkdir(parents=True, exist_ok=True)
-    oxide = repo / "target" / "debug" / ("oxide.exe" if __import__("os").name == "nt" else "oxide")
+    wellfriendpdf = repo / "target" / "debug" / ("wellfriendpdf.exe" if __import__("os").name == "nt" else "wellfriendpdf")
     fixture = corpus / "prompt20-text-vector-ink.pdf"
     fixture.write_bytes(pdf_fixture())
 
     mutations: dict[str, dict] = {}
     outputs: dict[str, Path] = {"source": fixture}
     commands = {
-        "same_width": [str(oxide), "edit-text", str(fixture), "--query", "ABC", "--replacement", "DEF", "--mode", "same-width-patch", "--pages", "1", "--output", str(corpus / "same-width.pdf"), "--json"],
-        "rtl": [str(oxide), "edit-text", str(fixture), "--query", "ABC", "--replacement", "فاتورة 123", "--mode", "rtl-reflow", "--pages", "1", "--output", str(corpus / "rtl.pdf"), "--json"],
-        "vertical": [str(oxide), "edit-text", str(fixture), "--query", "ABC", "--replacement", "VERTICAL", "--mode", "vertical-reflow", "--pages", "1", "--output", str(corpus / "vertical.pdf"), "--json"],
-        "ink": [str(oxide), "ink-fit", str(fixture), "--page", "1", "--annotation", "0", "--output", str(corpus / "ink-fitted.pdf"), "--report", str(corpus / "ink-report.json")],
+        "same_width": [str(wellfriendpdf), "edit-text", str(fixture), "--query", "ABC", "--replacement", "DEF", "--mode", "same-width-patch", "--pages", "1", "--output", str(corpus / "same-width.pdf"), "--json"],
+        "rtl": [str(wellfriendpdf), "edit-text", str(fixture), "--query", "ABC", "--replacement", "فاتورة 123", "--mode", "rtl-reflow", "--pages", "1", "--output", str(corpus / "rtl.pdf"), "--json"],
+        "vertical": [str(wellfriendpdf), "edit-text", str(fixture), "--query", "ABC", "--replacement", "VERTICAL", "--mode", "vertical-reflow", "--pages", "1", "--output", str(corpus / "vertical.pdf"), "--json"],
+        "ink": [str(wellfriendpdf), "ink-fit", str(fixture), "--page", "1", "--annotation", "0", "--output", str(corpus / "ink-fitted.pdf"), "--report", str(corpus / "ink-report.json")],
     }
     for name, command in commands.items():
         result = execute(command, repo)
@@ -183,7 +183,7 @@ def main() -> int:
             outputs[name] = path
 
     vector_list = corpus / "vector-list.json"
-    mutations["vector_list"] = execute([str(oxide), "vector-list", str(fixture), "--page", "1", "--output", str(vector_list)], repo)
+    mutations["vector_list"] = execute([str(wellfriendpdf), "vector-list", str(fixture), "--page", "1", "--output", str(vector_list)], repo)
     if mutations["vector_list"]["passed"]:
         inventory = json.loads(vector_list.read_text(encoding="utf-8"))
         operation = corpus / "vector-operation.json"
@@ -191,13 +191,13 @@ def main() -> int:
         vector_output = corpus / "vector-edited.pdf"
         vector_report = corpus / "vector-report.json"
         mutations["vector"] = execute(
-            [str(oxide), "vector-edit", str(fixture), "--page", "1", "--id", inventory["objects"][0]["stable_id"], "--operation", str(operation), "--output", str(vector_output), "--report", str(vector_report)],
+            [str(wellfriendpdf), "vector-edit", str(fixture), "--page", "1", "--id", inventory["objects"][0]["stable_id"], "--operation", str(operation), "--output", str(vector_output), "--report", str(vector_report)],
             repo,
         )
         vector_repeat = corpus / "vector-edited-repeat.pdf"
         vector_repeat_report = corpus / "vector-report-repeat.json"
         vector_repeat_result = execute(
-            [str(oxide), "vector-edit", str(fixture), "--page", "1", "--id", inventory["objects"][0]["stable_id"], "--operation", str(operation), "--output", str(vector_repeat), "--report", str(vector_repeat_report)],
+            [str(wellfriendpdf), "vector-edit", str(fixture), "--page", "1", "--id", inventory["objects"][0]["stable_id"], "--operation", str(operation), "--output", str(vector_repeat), "--report", str(vector_repeat_report)],
             repo,
         )
         mutations["vector"]["repeat_exit_code"] = vector_repeat_result["exit_code"]
@@ -220,24 +220,24 @@ def main() -> int:
         "mupdf": mupdf_candidate if mupdf_candidate.exists() else None,
     }
     cases = []
-    oxide_outliers = 0
+    wellfriendpdf_outliers = 0
     unclassified = 0
     for case_name, pdf in outputs.items():
         case_dir = renders / case_name
         case_dir.mkdir(exist_ok=True)
-        oxide_png = case_dir / "oxide.png"
-        oxide_result = render_oxide(oxide, pdf, oxide_png, repo)
-        rendered = {"oxide": oxide_result}
+        wellfriendpdf_png = case_dir / "wellfriendpdf.png"
+        wellfriendpdf_result = render_wellfriendpdf(wellfriendpdf, pdf, wellfriendpdf_png, repo)
+        rendered = {"wellfriendpdf": wellfriendpdf_result}
         metrics = {}
         for engine_name, tool in tools.items():
             target = case_dir / f"{engine_name}.png"
             result = render_reference(engine_name, tool, pdf, target, repo)
             rendered[engine_name] = result
-            if oxide_result["passed"] and result.get("passed") and target.exists():
-                metric = image_metrics(oxide_png, target)
-                metrics[f"oxide_vs_{engine_name}"] = metric
-                if metric["classification"] == "oxide_outlier":
-                    oxide_outliers += 1
+            if wellfriendpdf_result["passed"] and result.get("passed") and target.exists():
+                metric = image_metrics(wellfriendpdf_png, target)
+                metrics[f"wellfriendpdf_vs_{engine_name}"] = metric
+                if metric["classification"] == "wellfriendpdf_outlier":
+                    wellfriendpdf_outliers += 1
                 elif metric["classification"] not in {"within_tolerance"}:
                     unclassified += 1
         qpdf = shutil.which("qpdf")
@@ -271,7 +271,7 @@ def main() -> int:
         "extraction": extraction,
         "tools": {name: str(path) if path else None for name, path in tools.items()},
         "pdfbox": "unavailable_not_counted_as_pass",
-        "supported_case_oxide_outliers": oxide_outliers,
+        "supported_case_wellfriendpdf_outliers": wellfriendpdf_outliers,
         "unclassified_failures": unclassified,
         "mutation_failures": sum(1 for value in mutations.values() if not value.get("passed")),
         "determinism_failures": sum(
@@ -282,14 +282,14 @@ def main() -> int:
         "security_failures": 0,
     }
     result["passed"] = (
-        result["supported_case_oxide_outliers"] == 0
+        result["supported_case_wellfriendpdf_outliers"] == 0
         and result["unclassified_failures"] == 0
         and result["mutation_failures"] == 0
         and result["determinism_failures"] == 0
     )
     destination = output / "prompt20-reference-execution.json"
     destination.write_text(json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(json.dumps({"output": str(destination), "passed": result["passed"], "outliers": oxide_outliers, "mutation_failures": result["mutation_failures"]}, indent=2))
+    print(json.dumps({"output": str(destination), "passed": result["passed"], "outliers": wellfriendpdf_outliers, "mutation_failures": result["mutation_failures"]}, indent=2))
     return 0 if result["passed"] else 1
 
 

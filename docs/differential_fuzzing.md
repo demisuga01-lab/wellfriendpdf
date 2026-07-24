@@ -1,8 +1,8 @@
 # Differential Fuzzing
 
-Continuous crash fuzzing proves Oxide does not crash or hang. Differential
+Continuous crash fuzzing proves Wellfriend does not crash or hang. Differential
 fuzzing adds a correctness gate: it feeds the same generated or mutated PDFs to
-Oxide and mature reference tools, then fails on high-signal disagreements.
+Wellfriend and mature reference tools, then fails on high-signal disagreements.
 
 ## References
 
@@ -10,7 +10,7 @@ The CI harness uses developer/test tools only:
 
 - `qpdf` for structural validity and page count.
 - Poppler `pdftotext` for tolerant text-extraction comparison.
-- Oxide's own CLI for info, extraction, and writer round-trip output.
+- Wellfriend's own CLI for info, extraction, and writer round-trip output.
 
 These are not runtime dependencies of the SDK.
 
@@ -19,13 +19,13 @@ These are not runtime dependencies of the SDK.
 The default harness in [`scripts/differential_fuzz.py`](../scripts/differential_fuzz.py)
 checks:
 
-- Page count: `oxide info --json` must agree with `qpdf --show-npages` when
+- Page count: `wellfriendpdf info --json` must agree with `qpdf --show-npages` when
   qpdf accepts the file.
-- Structural validity: qpdf-valid files must be accepted by Oxide. Oxide
+- Structural validity: qpdf-valid files must be accepted by WellfriendPdf. Wellfriend
   accepting a qpdf-invalid file is logged as a leniency note, not a failure.
-- Text extraction: Oxide and Poppler text are compared by normalized token
+- Text extraction: Wellfriend and Poppler text are compared by normalized token
   overlap, not byte-for-byte whitespace or reading-order exactness.
-- Writer round-trip: `oxide optimize` output must pass `qpdf --check` and keep
+- Writer round-trip: `wellfriendpdf optimize` output must pass `qpdf --check` and keep
   the original page count.
 
 Render differential fuzzing is intentionally not part of the default gate; the
@@ -66,10 +66,10 @@ python scripts\differential_fuzz.py --cases 0 --output target\differential-regre
 For every disagreement:
 
 1. Reproduce locally from the saved input.
-2. Decide whether Oxide or the reference is correct against the PDF spec.
-3. If Oxide is wrong, fix the bug and add the minimized PDF to
+2. Decide whether Wellfriend or the reference is correct against the PDF spec.
+3. If Wellfriend is wrong, fix the bug and add the minimized PDF to
    `differential/regressions/`.
 4. If the difference is legitimate, document or suppress that false-positive
    class so the harness remains signal-rich.
 
-Confirmed Oxide regressions are permanent CI seeds.
+Confirmed Wellfriend regressions are permanent CI seeds.

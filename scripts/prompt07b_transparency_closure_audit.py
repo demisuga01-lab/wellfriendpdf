@@ -258,15 +258,15 @@ def generate_prompt07b_corpus() -> list[dict[str, Any]]:
 
 def prompt07b_classification(raw: str) -> str:
     mapping = {
-        "all_references_agree_oxide_pass": "all_references_agree_and_oxide_passes",
-        "all_references_agree_oxide_mismatch": "all_references_agree_and_oxide_mismatches",
-        "references_disagree_oxide_between_references": "references_disagree_and_oxide_within_cluster",
-        "needs_manual_review": "references_disagree_and_oxide_outlier",
+        "all_references_agree_wellfriendpdf_pass": "all_references_agree_and_wellfriendpdf_passes",
+        "all_references_agree_wellfriendpdf_mismatch": "all_references_agree_and_wellfriendpdf_mismatches",
+        "references_disagree_wellfriendpdf_between_references": "references_disagree_and_wellfriendpdf_within_cluster",
+        "needs_manual_review": "references_disagree_and_wellfriendpdf_outlier",
         "reference_tool_failure": "malformed_or_reference_failure",
-        "oxide_render_failure": "all_references_agree_and_oxide_mismatches",
+        "wellfriendpdf_render_failure": "all_references_agree_and_wellfriendpdf_mismatches",
     }
-    if raw.startswith("references_disagree_oxide_matches_"):
-        return "references_disagree_and_oxide_within_cluster"
+    if raw.startswith("references_disagree_wellfriendpdf_matches_"):
+        return "references_disagree_and_wellfriendpdf_within_cluster"
     return mapping.get(raw, raw)
 
 
@@ -291,7 +291,7 @@ def closure_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
             else "not_run"
             for ident in ids
         ]
-        if all(c in {"all_references_agree_and_oxide_passes", "references_disagree_and_oxide_within_cluster"} for c in classes):
+        if all(c in {"all_references_agree_and_wellfriendpdf_passes", "references_disagree_and_wellfriendpdf_within_cluster"} for c in classes):
             return "closed", classes
         return "partial", classes
 
@@ -299,7 +299,7 @@ def closure_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
     specs = [
         (
             "alpha_image",
-            "all_references_agree_oxide_mismatch",
+            "all_references_agree_wellfriendpdf_mismatch",
             ["alpha_image"],
             "image XObject paint now multiplies decoded/SMask alpha by graphics-state /ca",
             "none for DeviceRGB alpha constants",
@@ -344,7 +344,7 @@ def closure_rows(results: dict[str, Any]) -> list[dict[str, Any]]:
             "multi_reference_closure",
             "one alpha_image outlier plus documented partial rows",
             ["alpha_image", "image_smask_matte", "knockout_overlap_exact"],
-            "Poppler/PDFium/MuPDF/Oxide audit rerun with Prompt 07 plus Prompt 07B closure fixtures",
+            "Poppler/PDFium/MuPDF/Wellfriend audit rerun with Prompt 07 plus Prompt 07B closure fixtures",
             "malformed recursive reference failure remains classified as malformed/reference failure",
         ),
     ]
@@ -399,8 +399,8 @@ def write_prompt07b_artifacts(entries: list[dict[str, Any]], tools_payload: dict
         for page in results.get("pages", [])
         if page["prompt07b_classification"]
         in {
-            "references_disagree_and_oxide_within_cluster",
-            "references_disagree_and_oxide_outlier",
+            "references_disagree_and_wellfriendpdf_within_cluster",
+            "references_disagree_and_wellfriendpdf_outlier",
             "malformed_or_reference_failure",
         }
     ]
@@ -422,11 +422,11 @@ def write_prompt07b_artifacts(entries: list[dict[str, Any]], tools_payload: dict
             "kind": "prompt07b_transparency_matrix",
             "rows": rows,
             "closure_fixture_count": len([e for e in entries if e["category"].startswith("closure/")]),
-            "oxide_outlier_failures": [
+            "wellfriendpdf_outlier_failures": [
                 page["id"]
                 for page in results.get("pages", [])
                 if page["prompt07b_classification"]
-                in {"all_references_agree_and_oxide_mismatches", "references_disagree_and_oxide_outlier"}
+                in {"all_references_agree_and_wellfriendpdf_mismatches", "references_disagree_and_wellfriendpdf_outlier"}
             ],
         },
     )
@@ -486,7 +486,7 @@ def write_prompt07b_artifacts(entries: list[dict[str, Any]], tools_payload: dict
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--manifest", type=Path, default=p07.TOOL_MANIFEST)
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
@@ -494,7 +494,7 @@ def main() -> int:
     manifest_payload = p07.load_tool_manifest(args.manifest)
     manifest_payload["_manifest_path"] = args.manifest
     entries = generate_prompt07b_corpus()
-    base = p07.oxide_base_command(args.oxide_bin)
+    base = p07.wellfriendpdf_base_command(args.wellfriendpdf_bin)
     results = p07.run_phase(entries, manifest_payload["tools"], base, "prompt07b", args.dpi, args.timeout)
     results["starting_checkpoint"] = p07.run_command(["git", "rev-parse", "--short", "HEAD"], 10)
     results["prompt07b_note"] = "Prompt 07B closure audit for alpha image, matte/background, luminosity color spaces, group color spaces, and knockout overlap."

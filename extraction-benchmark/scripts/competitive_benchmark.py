@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Competitive extraction benchmark for capped synthetic corpus runs.
 
-Measurement only: runs Oxide and installable competitors in isolated
+Measurement only: runs Wellfriend and installable competitors in isolated
 subprocesses, scores outputs against paired JSON ground truth, writes raw JSONL
 under target/competitive-benchmark, and renders docs/competitive_benchmark.md.
 """
@@ -114,9 +114,9 @@ if text is None:
 if text is None: raise RuntimeError("; ".join(errors) or "pdftext failed")
 open(sys.argv[2],"w",encoding="utf-8",errors="replace").write(text or "")
 '''
-PY_PDF_OXIDE_TEXT = r'''
+PY_PDF_WELLFRIENDPDF_TEXT = r'''
 import sys
-from pdf_oxide import PdfDocument
+from pdf_wellfriendpdf import PdfDocument
 doc=PdfDocument(sys.argv[1]); parts=[]
 try:
     pc=getattr(doc,"page_count",None); n=pc() if callable(pc) else int(pc)
@@ -227,8 +227,8 @@ class Tool:
 
 def exe(name:str)->str: return name+".exe" if os.name=="nt" and not name.endswith(".exe") else name
 
-def default_oxide()->Path:
-    rel=REPO/"target"/"release"/exe("oxide"); dbg=REPO/"target"/"debug"/exe("oxide")
+def default_wellfriendpdf()->Path:
+    rel=REPO/"target"/"release"/exe("wellfriendpdf"); dbg=REPO/"target"/"debug"/exe("wellfriendpdf")
     return rel if rel.exists() else dbg
 
 def python_for(tool_name,args):
@@ -237,16 +237,16 @@ def python_for(tool_name,args):
     return sys.executable
 def pycmd(code,pdf,out,_args): return [sys.executable,"-c",code,str(pdf),str(out)]
 def tool_pycmd(tool_name,code,pdf,out,args): return [python_for(tool_name,args),"-c",code,str(pdf),str(out)]
-def oxide_text(pdf,out,args): return [str(Path(args.oxide_bin)),"extract-text",str(pdf),"--output",str(out)]
-def oxide_tables(pdf,out,args): return [str(Path(args.oxide_bin)),"extract-tables",str(pdf),"--format","json","--output",str(out)]
-def oxide_fields(pdf,out,args): return [str(Path(args.oxide_bin)),"extract-fields",str(pdf),"--format","json","--output",str(out)]
-def oxide_images(pdf,out,args): return [str(Path(args.oxide_bin)),"extract-images",str(pdf),"--format","original","--output",str(out)]
+def wellfriendpdf_text(pdf,out,args): return [str(Path(args.wellfriendpdf_bin)),"extract-text",str(pdf),"--output",str(out)]
+def wellfriendpdf_tables(pdf,out,args): return [str(Path(args.wellfriendpdf_bin)),"extract-tables",str(pdf),"--format","json","--output",str(out)]
+def wellfriendpdf_fields(pdf,out,args): return [str(Path(args.wellfriendpdf_bin)),"extract-fields",str(pdf),"--format","json","--output",str(out)]
+def wellfriendpdf_images(pdf,out,args): return [str(Path(args.wellfriendpdf_bin)),"extract-images",str(pdf),"--format","original","--output",str(out)]
 def poppler_text(pdf,out,args): return ["pdftotext","-layout",str(pdf),str(out)]
 def poppler_images(pdf,out,args): return ["pdfimages","-list",str(pdf)]
 
 def text_tools(): return [
-    Tool("oxide","local",None,"MIT OR Apache-2.0",oxide_text),
-    Tool("pdf_oxide","python","pdf_oxide","MIT",lambda p,o,a:pycmd(PY_PDF_OXIDE_TEXT,p,o,a)),
+    Tool("wellfriendpdf","local",None,"MIT OR Apache-2.0",wellfriendpdf_text),
+    Tool("pdf_wellfriendpdf","python","pdf_wellfriendpdf","MIT",lambda p,o,a:pycmd(PY_PDF_WELLFRIENDPDF_TEXT,p,o,a)),
     Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_TEXT,p,o,a),"PyMuPDF"),
     Tool("pypdfium2","python","pypdfium2","Apache-2.0/BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDFIUM2_TEXT,p,o,a)),
     Tool("pdfminer.six","python","pdfminer","MIT",lambda p,o,a:pycmd(PY_PDFMINER_TEXT,p,o,a),"pdfminer.six"),
@@ -257,9 +257,9 @@ def text_tools(): return [
     Tool("markitdown","python","markitdown","MIT",lambda p,o,a:pycmd(PY_MARKITDOWN_TEXT,p,o,a)),
     Tool("docling","python","docling","MIT",lambda p,o,a:tool_pycmd("docling",PY_DOCLING_TEXT,p,o,a)),
     Tool("poppler","cli",None,"GPL-2.0-or-later",poppler_text)]
-def table_tools(): return [Tool("oxide","local",None,"MIT OR Apache-2.0",oxide_tables),Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_TABLES,p,o,a),"PyMuPDF"),Tool("pdfplumber","python","pdfplumber","MIT",lambda p,o,a:pycmd(PY_PDFPLUMBER_TABLES,p,o,a))]
-def field_tools(): return [Tool("oxide","local",None,"MIT OR Apache-2.0",oxide_fields),Tool("pypdf","python","pypdf","BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDF_FIELDS,p,o,a))]
-def image_tools(): return [Tool("oxide","local",None,"MIT OR Apache-2.0",oxide_images),Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_IMAGES,p,o,a),"PyMuPDF"),Tool("pdfplumber","python","pdfplumber","MIT",lambda p,o,a:pycmd(PY_PDFPLUMBER_IMAGES,p,o,a)),Tool("pypdf","python","pypdf","BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDF_IMAGES,p,o,a)),Tool("poppler","cli",None,"GPL-2.0-or-later",poppler_images)]
+def table_tools(): return [Tool("wellfriendpdf","local",None,"MIT OR Apache-2.0",wellfriendpdf_tables),Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_TABLES,p,o,a),"PyMuPDF"),Tool("pdfplumber","python","pdfplumber","MIT",lambda p,o,a:pycmd(PY_PDFPLUMBER_TABLES,p,o,a))]
+def field_tools(): return [Tool("wellfriendpdf","local",None,"MIT OR Apache-2.0",wellfriendpdf_fields),Tool("pypdf","python","pypdf","BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDF_FIELDS,p,o,a))]
+def image_tools(): return [Tool("wellfriendpdf","local",None,"MIT OR Apache-2.0",wellfriendpdf_images),Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_IMAGES,p,o,a),"PyMuPDF"),Tool("pdfplumber","python","pdfplumber","MIT",lambda p,o,a:pycmd(PY_PDFPLUMBER_IMAGES,p,o,a)),Tool("pypdf","python","pypdf","BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDF_IMAGES,p,o,a)),Tool("poppler","cli",None,"GPL-2.0-or-later",poppler_images)]
 
 def cap(s,n=600): return "" if not s else (s if len(s)<=n else s[:n]+" ...")
 def run_cap(cmd,timeout=20):
@@ -269,8 +269,8 @@ def run_cap(cmd,timeout=20):
     except Exception as e: return False,str(e)
 
 def detect_one(t,args):
-    if t.name=="oxide":
-        p=Path(args.oxide_bin); ok=p.exists(); ver=None
+    if t.name=="wellfriendpdf":
+        p=Path(args.wellfriendpdf_bin); ok=p.exists(); ver=None
         if ok: _ok,out=run_cap([str(p),"--version"]); ver=out.splitlines()[0] if out else None
         return {"available":ok,"version":ver,"reason":None if ok else f"missing {p}","license":t.license}
     if t.name=="poppler":
@@ -472,7 +472,7 @@ def run_tables(entry,t,args,work):
     out=work/(t.name+".tables.json"); r=monitored(t.cmd(entry["pdf"],out,args),args); rec=rec_result(r); payload=read_json(out) if r.ok and out.exists() else None
     if r.ok and payload is not None:
         pred=[]
-        if t.name=="oxide":
+        if t.name=="wellfriendpdf":
             for p in payload.get("pages",[]):
                 for tb in p.get("tables",[]): pred.append({"rows":tb.get("rows") or []})
         else: pred=payload.get("tables") or []
@@ -485,9 +485,9 @@ def run_fields(entry,t,args,work):
     elif r.ok: rec.update({"ok":False,"failure_kind":"bad-json"})
     unlink(out); return rec
 def run_images(entry,t,args,work):
-    out=work/(t.name+(".images.zip" if t.name=="oxide" else ".images.json")); r=monitored(t.cmd(entry["pdf"],out,args),args); rec=rec_result(r); pred=None
+    out=work/(t.name+(".images.zip" if t.name=="wellfriendpdf" else ".images.json")); r=monitored(t.cmd(entry["pdf"],out,args),args); rec=rec_result(r); pred=None
     if r.ok:
-        if t.name=="oxide":
+        if t.name=="wellfriendpdf":
             try:
                 with zipfile.ZipFile(out) as z: pred=len([n for n in z.namelist() if not n.endswith("/")])
             except Exception: rec.update({"ok":False,"failure_kind":"bad-zip"})
@@ -611,38 +611,38 @@ def matrix():
         try: data=json.loads(PUBLIC_MATRIX.read_text(encoding="utf-8"))
         except Exception: data={}
     else: data={}
-    tools=["oxide","pdf_oxide","pymupdf","pypdfium2","pymupdf4llm","pdftext","pdfminer.six","pdfplumber","markitdown","pypdf","docling","qpdf","poppler"]
+    tools=["wellfriendpdf","pdf_wellfriendpdf","pymupdf","pypdfium2","pymupdf4llm","pdftext","pdfminer.six","pdfplumber","markitdown","pypdf","docling","qpdf","poppler"]
     rows=[]
     existing={c.get("name"):c.get("tools",{}) for c in data.get("capabilities",[])}
     def add(name,vals):
         base={t:"no" for t in tools}; base.update(existing.get(name,{})); base.update(vals); rows.append((name,base))
-    add("plain text extraction",{"oxide":"yes","pdf_oxide":"yes","pymupdf":"yes","pypdfium2":"yes","pymupdf4llm":"yes","pdftext":"yes","pdfminer.six":"yes","pdfplumber":"yes","markitdown":"yes","pypdf":"yes","docling":"yes","poppler":"yes"})
-    add("chars/words/lines with geometry",{"oxide":"partial","pdf_oxide":"yes","pymupdf":"yes","pypdfium2":"partial","pdftext":"yes","pdfminer.six":"partial","pdfplumber":"yes","docling":"yes","poppler":"partial"})
-    add("layout/reading-order structure",{"oxide":"yes","pdf_oxide":"yes","pymupdf4llm":"yes","pdftext":"yes","docling":"yes","pymupdf":"partial","pdfplumber":"partial"})
-    add("table extraction",{"oxide":"yes","pdf_oxide":"yes","pymupdf":"yes","pdfplumber":"yes","pymupdf4llm":"yes","docling":"yes","pdftext":"partial"})
-    add("image extraction/counting",{"oxide":"yes","pdf_oxide":"yes","pymupdf":"yes","pypdfium2":"partial","pdfminer.six":"partial","pdfplumber":"partial","pypdf":"partial","poppler":"yes"})
-    add("form field read/fill",{"oxide":"partial","pdf_oxide":"yes","pymupdf":"yes","pypdf":"partial","qpdf":"partial","poppler":"partial","docling":"partial"})
-    add("markdown conversion",{"oxide":"partial","pdf_oxide":"yes","pymupdf4llm":"yes","markitdown":"yes","docling":"yes"})
-    add("region/scoped extraction",{"oxide":"yes","pdf_oxide":"yes","pymupdf":"yes","pdfplumber":"yes","pypdfium2":"partial","docling":"partial"})
-    add("extraction profiles",{"oxide":"yes","pdf_oxide":"yes","pymupdf4llm":"partial","docling":"partial"})
-    add("Python/developer API",{"oxide":"yes","pdf_oxide":"yes","pymupdf":"yes","pypdfium2":"yes","pymupdf4llm":"yes","pdftext":"yes","pdfminer.six":"yes","pdfplumber":"yes","markitdown":"yes","pypdf":"yes","docling":"yes"})
-    add("OCR",{"oxide":"partial","pdf_oxide":"yes","pymupdf":"partial","pymupdf4llm":"partial","markitdown":"partial","docling":"yes","poppler":"partial"})
-    add("repair/linearization/validation",{"oxide":"yes","qpdf":"yes","poppler":"partial","pypdf":"partial","pymupdf":"partial"})
-    add("digital signatures/PDF-A/PDF-UA",{"oxide":"yes","pymupdf":"partial","pypdf":"partial"})
-    add("MCP/AI assistant integration",{"oxide":"no","pdf_oxide":"yes","markitdown":"partial","docling":"partial"})
-    lacks=set(data.get("oxide_lacks",[])); lacks.update(["Docling-class ML layout/OCR is not built into Oxide; this release binary is not OCR-enabled.","MCP server/assistant integration advertised by pdf_oxide.","qpdf remains the stronger dedicated structural validator and repair reference."])
-    lacks.discard("Region/scoped extraction comparable to pdf_oxide within/region, PyMuPDF clip, or pdfplumber crop.")
+    add("plain text extraction",{"wellfriendpdf":"yes","pdf_wellfriendpdf":"yes","pymupdf":"yes","pypdfium2":"yes","pymupdf4llm":"yes","pdftext":"yes","pdfminer.six":"yes","pdfplumber":"yes","markitdown":"yes","pypdf":"yes","docling":"yes","poppler":"yes"})
+    add("chars/words/lines with geometry",{"wellfriendpdf":"partial","pdf_wellfriendpdf":"yes","pymupdf":"yes","pypdfium2":"partial","pdftext":"yes","pdfminer.six":"partial","pdfplumber":"yes","docling":"yes","poppler":"partial"})
+    add("layout/reading-order structure",{"wellfriendpdf":"yes","pdf_wellfriendpdf":"yes","pymupdf4llm":"yes","pdftext":"yes","docling":"yes","pymupdf":"partial","pdfplumber":"partial"})
+    add("table extraction",{"wellfriendpdf":"yes","pdf_wellfriendpdf":"yes","pymupdf":"yes","pdfplumber":"yes","pymupdf4llm":"yes","docling":"yes","pdftext":"partial"})
+    add("image extraction/counting",{"wellfriendpdf":"yes","pdf_wellfriendpdf":"yes","pymupdf":"yes","pypdfium2":"partial","pdfminer.six":"partial","pdfplumber":"partial","pypdf":"partial","poppler":"yes"})
+    add("form field read/fill",{"wellfriendpdf":"partial","pdf_wellfriendpdf":"yes","pymupdf":"yes","pypdf":"partial","qpdf":"partial","poppler":"partial","docling":"partial"})
+    add("markdown conversion",{"wellfriendpdf":"partial","pdf_wellfriendpdf":"yes","pymupdf4llm":"yes","markitdown":"yes","docling":"yes"})
+    add("region/scoped extraction",{"wellfriendpdf":"yes","pdf_wellfriendpdf":"yes","pymupdf":"yes","pdfplumber":"yes","pypdfium2":"partial","docling":"partial"})
+    add("extraction profiles",{"wellfriendpdf":"yes","pdf_wellfriendpdf":"yes","pymupdf4llm":"partial","docling":"partial"})
+    add("Python/developer API",{"wellfriendpdf":"yes","pdf_wellfriendpdf":"yes","pymupdf":"yes","pypdfium2":"yes","pymupdf4llm":"yes","pdftext":"yes","pdfminer.six":"yes","pdfplumber":"yes","markitdown":"yes","pypdf":"yes","docling":"yes"})
+    add("OCR",{"wellfriendpdf":"partial","pdf_wellfriendpdf":"yes","pymupdf":"partial","pymupdf4llm":"partial","markitdown":"partial","docling":"yes","poppler":"partial"})
+    add("repair/linearization/validation",{"wellfriendpdf":"yes","qpdf":"yes","poppler":"partial","pypdf":"partial","pymupdf":"partial"})
+    add("digital signatures/PDF-A/PDF-UA",{"wellfriendpdf":"yes","pymupdf":"partial","pypdf":"partial"})
+    add("MCP/AI assistant integration",{"wellfriendpdf":"no","pdf_wellfriendpdf":"yes","markitdown":"partial","docling":"partial"})
+    lacks=set(data.get("wellfriendpdf_lacks",[])); lacks.update(["Docling-class ML layout/OCR is not built into Wellfriend; this release binary is not OCR-enabled.","MCP server/assistant integration advertised by pdf_wellfriendpdf.","qpdf remains the stronger dedicated structural validator and repair reference."])
+    lacks.discard("Region/scoped extraction comparable to pdf_wellfriendpdf within/region, PyMuPDF clip, or pdfplumber crop.")
     lacks.discard("ExtractionProfile-style public presets and lazy Python page properties such as page.text/page.words/page.tables/page.images.")
-    lacks.discard("Region/scoped extraction API comparable to pdf_oxide page.region()/within() and pdfplumber crop().")
-    lacks.discard("Documented extraction-profile presets comparable to pdf_oxide ExtractionProfile and PyMuPDF4LLM's high-level extraction modes.")
+    lacks.discard("Region/scoped extraction API comparable to pdf_wellfriendpdf page.region()/within() and pdfplumber crop().")
+    lacks.discard("Documented extraction-profile presets comparable to pdf_wellfriendpdf ExtractionProfile and PyMuPDF4LLM's high-level extraction modes.")
     lacks.discard("Lazy Python page properties such as page.text/page.words/page.tables/page.images.")
     lacks.discard("Markdown heading detection is present only as heuristic document-model output, not an explicit page.markdown(detect_headings=True)-style API.")
-    strengths=set(data.get("oxide_differentiators",[])); strengths.update(["Self-host HTTP API with auth, rate limits, resource caps, and async render/image jobs.","Pure-Rust core with CLI, Rust library, Python binding, C ABI, and WASM surfaces.","Single product surface spans parse, tables, fields, images, render, edit, optimize, repair, linearize, redact, encrypt, and signatures.","PDF/A/PDF/UA and digital-signature surfaces exceed most extraction-only tools.","Region extraction, extraction profiles, and markdown heading detection are exposed across Rust, CLI, and Python."])
+    strengths=set(data.get("wellfriendpdf_differentiators",[])); strengths.update(["Self-host HTTP API with auth, rate limits, resource caps, and async render/image jobs.","Pure-Rust core with CLI, Rust library, Python binding, C ABI, and WASM surfaces.","Single product surface spans parse, tables, fields, images, render, edit, optimize, repair, linearize, redact, encrypt, and signatures.","PDF/A/PDF/UA and digital-signature surfaces exceed most extraction-only tools.","Region extraction, extraction profiles, and markdown heading detection are exposed across Rust, CLI, and Python."])
     sources=data.get("sources",{}); sources.update({"docling":["https://docling-project.github.io/docling/"],"qpdf":["https://qpdf.readthedocs.io/"],"poppler":["https://poppler.freedesktop.org/"]})
     return {"tools":tools,"rows":rows,"lacks":sorted(lacks),"strengths":sorted(strengths),"sources":sources}
 def write_report(s,records,path):
     c=s["corpus"]; m=matrix(); L=[]; w=L.append
-    w("# Competitive Benchmark: Oxide vs Major PDF Tools\n")
+    w("# Competitive Benchmark: Wellfriend vs Major PDF Tools\n")
     w("## Synthetic Corpus Caveat Up Front\n")
     w(f"This run uses {c['files']} synthetic procedurally generated PDFs with paired JSON ground truth. It measures speed and correctness against known labels, but it is not a wild-PDF robustness benchmark. A high pass rate here does not prove robustness against malformed, scanned, handwritten, camera-captured, or adversarial PDFs.\n")
     w("## Provenance\n"); w(md(["item","value"],[["generated",s["generated_at"]],["commit",s.get("repo_commit")],["python",s.get("python")],["platform",s.get("platform")],["timeout",str(s["args"].get("timeout"))+"s"],["memory cap",str(s["args"].get("max_memory_mb"))+" MB"],["pass definition","subprocess exits 0 before timeout/memory cap and writes the expected output artifact"]])); w("")
@@ -665,35 +665,35 @@ def write_report(s,records,path):
     w("### Field / Key-Value Accuracy\n"); w(md(["tool","scored","strict field F1","recall","precision","value-only F1"],[[t,r.get("scored"),fmt(r.get("field_f1")),fmt(r.get("field_recall")),fmt(r.get("field_precision")),fmt(r.get("field_value_f1"))] for t,r in rank(s["field_accuracy"],"field_f1",True)])); w("\nStrict field F1 requires key and value to match; value-only F1 shows values found under different labels.\n")
     w("### Image Count Accuracy\n"); w(md(["tool","scored","count accuracy","mean abs error"],[[t,r.get("scored"),fmt(r.get("image_count_accuracy")),fmt(r.get("image_count_error"))] for t,r in rank(s["image_accuracy"],"image_count_accuracy",True)])); w("")
     w("## Capability Matrix\n"); w(md(["capability"]+m["tools"],[[name]+[vals.get(t,"no") for t in m["tools"]] for name,vals in m["rows"]])); w("")
-    w("### What Oxide Lacks\n"); [w("- "+x) for x in m["lacks"]]; w("")
-    w("### What Oxide Uniquely Has / Where It Is Strong\n"); [w("- "+x) for x in m["strengths"]]; w("")
+    w("### What Wellfriend Lacks\n"); [w("- "+x) for x in m["lacks"]]; w("")
+    w("### What Wellfriend Uniquely Has / Where It Is Strong\n"); [w("- "+x) for x in m["strengths"]]; w("")
     w("Capability source notes: "+"; ".join(f"{k}: {', '.join(v)}" for k,v in sorted(m["sources"].items()) if isinstance(v,list))); w("")
     w("## Blunt Verdict\n"); verdict(s,w); w("")
     w("## Prioritized Fix List\n"); fixes(s,w); w("")
     path.parent.mkdir(parents=True,exist_ok=True); path.write_text("\n".join(L)+"\n",encoding="utf-8")
 def verdict(s,w):
-    op=s["text_perf"].get("oxide",{}); oa=s["text_accuracy"].get("oxide",{})
+    op=s["text_perf"].get("wellfriendpdf",{}); oa=s["text_accuracy"].get("wellfriendpdf",{})
     faster=[t for t,r in s["text_perf"].items() if r.get("mean_s") is not None and op.get("mean_s") is not None and r["mean_s"]<op["mean_s"]]
     better_char=[t for t,r in s["text_accuracy"].items() if r.get("char_similarity") is not None and oa.get("char_similarity") is not None and r["char_similarity"]>oa["char_similarity"]]
     better_word=[t for t,r in s["text_accuracy"].items() if r.get("word_f1") is not None and oa.get("word_f1") is not None and r["word_f1"]>oa["word_f1"]]
-    w(("Oxide is not the fastest text extractor. Faster mean wall-time tools: "+", ".join(faster)+".") if faster else "Oxide is fastest by mean text wall time among tools that ran, on this capped synthetic corpus.")
-    w(("Oxide does not lead text character fidelity. Higher mean char-sim tools: "+", ".join(better_char)+".") if better_char else "Oxide leads or ties text char-sim among tools that ran, but this does not prove wild-PDF robustness.")
-    w(("Higher mean word-F1 tools: "+", ".join(better_word)+".") if better_word else "Oxide leads or ties text word-F1 among tools that ran.")
-    tab=s["table_accuracy"].get("oxide",{}); fld=s["field_accuracy"].get("oxide",{})
-    if tab.get("table_cell_f1") is not None: w(f"Oxide table cell-F1 is {fmt(tab.get('table_cell_f1'))}; precision is {fmt(tab.get('table_cell_precision'))} and TEDS-approx is {fmt(tab.get('table_teds_approx'))}, so structure quality is reported beside content recall.")
-    if fld.get("field_f1") is not None: w(f"Oxide strict field-F1 is {fmt(fld.get('field_f1'))}; compare value-only F1 to see label-mapping weakness.")
+    w(("Wellfriend is not the fastest text extractor. Faster mean wall-time tools: "+", ".join(faster)+".") if faster else "Wellfriend is fastest by mean text wall time among tools that ran, on this capped synthetic corpus.")
+    w(("Wellfriend does not lead text character fidelity. Higher mean char-sim tools: "+", ".join(better_char)+".") if better_char else "Wellfriend leads or ties text char-sim among tools that ran, but this does not prove wild-PDF robustness.")
+    w(("Higher mean word-F1 tools: "+", ".join(better_word)+".") if better_word else "Wellfriend leads or ties text word-F1 among tools that ran.")
+    tab=s["table_accuracy"].get("wellfriendpdf",{}); fld=s["field_accuracy"].get("wellfriendpdf",{})
+    if tab.get("table_cell_f1") is not None: w(f"Wellfriend table cell-F1 is {fmt(tab.get('table_cell_f1'))}; precision is {fmt(tab.get('table_cell_precision'))} and TEDS-approx is {fmt(tab.get('table_teds_approx'))}, so structure quality is reported beside content recall.")
+    if fld.get("field_f1") is not None: w(f"Wellfriend strict field-F1 is {fmt(fld.get('field_f1'))}; compare value-only F1 to see label-mapping weakness.")
     if not s["availability"].get("docling",{}).get("available"):
         w("Docling remains the biggest unmeasured structure rival in this run; no Docling numbers are guessed.")
 def fixes(s,w):
-    items=[]; ox=s["text_accuracy"].get("oxide",{}); best=max((r.get("word_f1") or 0 for r in s["text_accuracy"].values()),default=0)
-    if ox.get("word_f1") is not None and best>ox["word_f1"]: items.append(("text accuracy",f"Close word-F1 gap: Oxide {fmt(ox['word_f1'])} vs best {fmt(best)}."))
-    op=s["text_perf"].get("oxide",{}); bests=min((r.get("mean_s") for r in s["text_perf"].values() if r.get("mean_s") is not None),default=None)
-    if bests is not None and op.get("mean_s") is not None and op["mean_s"]>bests: items.append(("text speed",f"Reduce mean text extraction time: Oxide {fmt(op['mean_s'])}s vs best {fmt(bests)}s."))
-    tab=s["table_accuracy"].get("oxide",{})
+    items=[]; ox=s["text_accuracy"].get("wellfriendpdf",{}); best=max((r.get("word_f1") or 0 for r in s["text_accuracy"].values()),default=0)
+    if ox.get("word_f1") is not None and best>ox["word_f1"]: items.append(("text accuracy",f"Close word-F1 gap: Wellfriend {fmt(ox['word_f1'])} vs best {fmt(best)}."))
+    op=s["text_perf"].get("wellfriendpdf",{}); bests=min((r.get("mean_s") for r in s["text_perf"].values() if r.get("mean_s") is not None),default=None)
+    if bests is not None and op.get("mean_s") is not None and op["mean_s"]>bests: items.append(("text speed",f"Reduce mean text extraction time: Wellfriend {fmt(op['mean_s'])}s vs best {fmt(bests)}s."))
+    tab=s["table_accuracy"].get("wellfriendpdf",{})
     if tab.get("table_cell_f1") is not None and tab["table_cell_f1"]<0.9: items.append(("table extraction",f"Improve precision/recall; current cell-F1 {fmt(tab['table_cell_f1'])}."))
-    fld=s["field_accuracy"].get("oxide",{})
+    fld=s["field_accuracy"].get("wellfriendpdf",{})
     if fld.get("field_f1") is not None and fld["field_f1"]<0.9: items.append(("field mapping",f"Improve strict KV mapping; field-F1 {fmt(fld['field_f1'])}, value-only F1 {fmt(fld.get('field_value_f1'))}."))
-    img=s["image_accuracy"].get("oxide",{})
+    img=s["image_accuracy"].get("wellfriendpdf",{})
     if img.get("image_count_accuracy") is not None and img["image_count_accuracy"]<0.98: items.append(("image detection",f"Improve image count parity; count accuracy {fmt(img['image_count_accuracy'])}."))
     items.append(("real-world robustness","Keep robustness claims tied to the dedicated 200-PDF robustness report."))
     if not s["availability"].get("docling",{}).get("available"):
@@ -701,7 +701,7 @@ def fixes(s,w):
     for i,(name,body) in enumerate(items,1): w(f"{i}. **{name}**: {body}")
 def args():
     p=argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--corpus",default=str(DEFAULT_CORPUS)); p.add_argument("--oxide-bin",default=str(default_oxide())); p.add_argument("--output-dir",default=str(DEFAULT_OUTPUT)); p.add_argument("--report",default=str(DEFAULT_REPORT))
+    p.add_argument("--corpus",default=str(DEFAULT_CORPUS)); p.add_argument("--wellfriendpdf-bin",default=str(default_wellfriendpdf())); p.add_argument("--output-dir",default=str(DEFAULT_OUTPUT)); p.add_argument("--report",default=str(DEFAULT_REPORT))
     p.add_argument("--timeout",type=int,default=60); p.add_argument("--max-memory-mb",type=int,default=2048); p.add_argument("--poll-interval-ms",type=int,default=100)
     p.add_argument("--limit",type=int); p.add_argument("--category"); p.add_argument("--batch-start",type=int,default=0); p.add_argument("--batch-size",type=int)
     p.add_argument("--tools"); p.add_argument("--tasks",help="comma-separated task list: text,tables,fields,images. Default: text,tables,fields")

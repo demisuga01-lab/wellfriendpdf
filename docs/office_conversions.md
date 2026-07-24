@@ -8,10 +8,10 @@ decision is in `docs/office_to_pdf_architecture.md`.
 
 Entry points:
 
-- Rust: `oxide_engine::pdf_to_xlsx(&engine, &XlsxOptions { ... })`
-- CLI: `oxide pdf-to-xlsx input.pdf --out output.xlsx --layout pages`
-- Python: `oxide.pdf_to_xlsx("input.pdf", output="output.xlsx", layout="pages")`
-- C ABI: `oxide_document_to_xlsx(document, "pages", &out, &error)`
+- Rust: `wellfriendpdf_engine::pdf_to_xlsx(&engine, &XlsxOptions { ... })`
+- CLI: `wellfriendpdf pdf-to-xlsx input.pdf --out output.xlsx --layout pages`
+- Python: `wellfriendpdf.pdf_to_xlsx("input.pdf", output="output.xlsx", layout="pages")`
+- C ABI: `wellfriendpdf_document_to_xlsx(document, "pages", &out, &error)`
 
 Layout policies:
 
@@ -40,10 +40,10 @@ Validation on this host:
 
 Entry points:
 
-- Rust: `oxide_engine::pdf_to_pptx(&engine, &PptxOptions { ... })`
-- CLI: `oxide pdf-to-pptx input.pdf --out output.pptx`
-- Python: `oxide.pdf_to_pptx("input.pdf", output="output.pptx")`
-- C ABI: `oxide_document_to_pptx(document, 1, &out, &error)`
+- Rust: `wellfriendpdf_engine::pdf_to_pptx(&engine, &PptxOptions { ... })`
+- CLI: `wellfriendpdf pdf-to-pptx input.pdf --out output.pptx`
+- Python: `wellfriendpdf.pdf_to_pptx("input.pdf", output="output.pptx")`
+- C ABI: `wellfriendpdf_document_to_pptx(document, 1, &out, &error)`
 
 Default policy:
 
@@ -72,11 +72,11 @@ Validation on this host:
 
 Entry points:
 
-- Rust: `oxide_engine::pdf_to_docx(&engine, &DocxOptions { ... })`
-- CLI: `oxide pdf-to-docx input.pdf --out output.docx`
-- CLI page-faithful mode: `oxide pdf-to-docx input.pdf --layout page-faithful --out output.docx`
-- Python: `oxide.pdf_to_docx("input.pdf", output="output.docx")`
-- C ABI: `oxide_document_to_docx(document, 1, &out, &error)`
+- Rust: `wellfriendpdf_engine::pdf_to_docx(&engine, &DocxOptions { ... })`
+- CLI: `wellfriendpdf pdf-to-docx input.pdf --out output.docx`
+- CLI page-faithful mode: `wellfriendpdf pdf-to-docx input.pdf --layout page-faithful --out output.docx`
+- Python: `wellfriendpdf.pdf_to_docx("input.pdf", output="output.docx")`
+- C ABI: `wellfriendpdf_document_to_docx(document, 1, &out, &error)`
 
 Default policy:
 
@@ -91,7 +91,7 @@ Default policy:
   model carries spans.
 - Decodable PDF image XObjects become inline DOCX pictures.
 
-Fidelity ceiling: PDF-to-DOCX is a layout reconstruction problem. Oxide targets
+Fidelity ceiling: PDF-to-DOCX is a layout reconstruction problem. Wellfriend targets
 strong, editable structure and useful reading order, not pixel-perfect Word
 layout or indistinguishability from a document originally authored in Word.
 Known weak cases remain sidebars, complex floats, multi-section headers/footers,
@@ -102,7 +102,7 @@ Validation on this host:
 - Focused round-trip test uses `tracemonkey.pdf`.
 - Generated DOCX ZIP contains `word/document.xml`, styles, numbering, and
   native paragraphs/tables.
-- The produced DOCX is parsed back by Oxide's native DOCX-to-PDF path and the
+- The produced DOCX is parsed back by Wellfriend's native DOCX-to-PDF path and the
   generated PDF reopens through `ContentEngine`.
 
 ## Office to PDF
@@ -110,14 +110,14 @@ Validation on this host:
 Entry points:
 
 - Rust: `docx_to_pdf`, `xlsx_to_pdf`, `pptx_to_pdf`
-- CLI: `oxide docx-to-pdf input.docx --out output.pdf`
-- CLI: `oxide xlsx-to-pdf input.xlsx --out output.pdf`
-- CLI: `oxide pptx-to-pdf input.pptx --out output.pdf`
-- Python: `oxide.docx_to_pdf(...)`, `oxide.xlsx_to_pdf(...)`,
-  `oxide.pptx_to_pdf(...)`
-- C ABI: `oxide_docx_to_pdf`, `oxide_xlsx_to_pdf`, `oxide_pptx_to_pdf`
+- CLI: `wellfriendpdf docx-to-pdf input.docx --out output.pdf`
+- CLI: `wellfriendpdf xlsx-to-pdf input.xlsx --out output.pdf`
+- CLI: `wellfriendpdf pptx-to-pdf input.pptx --out output.pdf`
+- Python: `wellfriendpdf.docx_to_pdf(...)`, `wellfriendpdf.xlsx_to_pdf(...)`,
+  `wellfriendpdf.pptx_to_pdf(...)`
+- C ABI: `wellfriendpdf_docx_to_pdf`, `wellfriendpdf_xlsx_to_pdf`, `wellfriendpdf_pptx_to_pdf`
 
-The default implementation is native and uses Oxide's PDF authoring/writer
+The default implementation is native and uses Wellfriend's PDF authoring/writer
 machinery. LibreOffice is documented as a possible future optional backend, but
 it is not a default dependency.
 

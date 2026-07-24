@@ -2,10 +2,10 @@
 
 Date: 2026-06-25
 
-This Prompt 3 run improved Oxide's strict field-F1 on the deterministic first 200
+This Prompt 3 run improved Wellfriend's strict field-F1 on the deterministic first 200
 `has-fields` files from `0.1035` to `0.6635` (indicative, ~200-file subset).
 The dominant failure was not AcroForm parsing: the corpus fields are mostly
-rendered key-value text recovered as paragraphs or tables. Oxide was missing
+rendered key-value text recovered as paragraphs or tables. Wellfriend was missing
 common labels, pairing label cells with neighboring labels, and failing to split
 collapsed cells containing several `Label: value` pairs.
 
@@ -36,7 +36,7 @@ Sample inspection showed the misses clustered into four buckets:
   `Account: AC-... Period: ... Closing Balance: ...` were split only at the first
   colon, so most fields were lost.
 - Schema mapping: many remaining values are now found under a semantically
-  related key, especially benchmark `due` versus Oxide `due_date`, and `total`
+  related key, especially benchmark `due` versus Wellfriend `due_date`, and `total`
   versus `total_due`.
 
 ## Changes
@@ -80,12 +80,12 @@ and recall moved up together.
 
 ## Validation
 
-- `cargo test -p oxide-engine spatial::tests -- --nocapture`
-- `cargo test -p oxide-engine profile::tests -- --nocapture`
-- `cargo test -p oxide-engine --test extract_fields -- --nocapture`
-- `cargo build --release -p oxide-cli`
+- `cargo test -p wellfriendpdf-engine spatial::tests -- --nocapture`
+- `cargo test -p wellfriendpdf-engine profile::tests -- --nocapture`
+- `cargo test -p wellfriendpdf-engine --test extract_fields -- --nocapture`
+- `cargo build --release -p wellfriendpdf-cli`
 - Field benchmark:
-  `python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools oxide --tasks fields --output-dir target\competitive-benchmark\prompt3-fields-after --report target\competitive-benchmark\prompt3-fields-after.md --max-workers 4 --timeout 60 --max-memory-mb 2048`
+  `python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools wellfriendpdf --tasks fields --output-dir target\competitive-benchmark\prompt3-fields-after --report target\competitive-benchmark\prompt3-fields-after.md --max-workers 4 --timeout 60 --max-memory-mb 2048`
 - Clean first-200 text/table check: text word-F1 `1.0000`, line recall
   `1.0000`; no table-scored files in that slice.
 - Has-tables 200-file check: table cell-F1 `0.85754`, recall `0.95775`,

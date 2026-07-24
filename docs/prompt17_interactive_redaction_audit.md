@@ -48,6 +48,6 @@ Final executed validation:
 - the Prompt 02B C ABI/.NET/Java memory-lifecycle stress gate passed;
 - all retained Prompt 04-16 audit entrypoints passed;
 - the Prompt 17 focused suite passed 7/7;
-- qpdf reopened all mutated outputs, all deterministic/metamorphic checks passed, and Poppler/PDFium/MuPDF/Oxide all rendered the generated static appearances with zero supported-row Oxide outliers.
+- qpdf reopened all mutated outputs, all deterministic/metamorphic checks passed, and Poppler/PDFium/MuPDF/Wellfriend all rendered the generated static appearances with zero supported-row Wellfriend outliers.
 
 The generated Prompt 17 verdict records zero blocked rows, unclassified failures, security-proof failures, and overlay-only success claims. The Windows harness records the configured 4 GiB cap and serial validation posture; it does not claim a portable measured subprocess peak RSS. Unavailable Valgrind/Windows-local ASan/TSan commands are not counted as passed; the repository's Linux sanitizer workflow remains the recorded external gate. The required commit and clean post-commit status are the final closure steps.

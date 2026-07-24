@@ -12,7 +12,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
 
-use oxide_engine::{ContentEngine, HtmlMode, HtmlOptions};
+use wellfriendpdf_engine::{ContentEngine, HtmlMode, HtmlOptions};
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -207,7 +207,7 @@ fn rtl_text_is_present_and_marked() {
     };
     let e = engine_path(&path);
     let html = e.export_html(&[1], &HtmlOptions::default()).unwrap();
-    // The Oxide text extraction yields Arabic; that text must appear in the HTML
+    // The Wellfriend text extraction yields Arabic; that text must appear in the HTML
     // and at least one fragment must be flagged dir="rtl".
     let plain = e.get_page_text(1).unwrap_or_default();
     let arabic: String = plain
@@ -257,8 +257,8 @@ fn cross_check_text_against_pdftohtml() {
     let name = "tracemonkey.pdf";
     let page = 3usize;
     let e = engine(name);
-    let oxide_html = e.export_html(&[page], &HtmlOptions::default()).unwrap();
-    let oxide_words = words(&oxide_html);
+    let wellfriendpdf_html = e.export_html(&[page], &HtmlOptions::default()).unwrap();
+    let wellfriendpdf_words = words(&wellfriendpdf_html);
 
     // pdftohtml -stdout -f P -l P -i (ignore images) -c (complex) the page.
     let out = Command::new(&tool)
@@ -282,12 +282,12 @@ fn cross_check_text_against_pdftohtml() {
         return;
     }
 
-    // Loose agreement: most of Poppler's words appear in Oxide's output.
-    let common = poppler_words.intersection(&oxide_words).count();
+    // Loose agreement: most of Poppler's words appear in Wellfriend's output.
+    let common = poppler_words.intersection(&wellfriendpdf_words).count();
     let ratio = common as f64 / poppler_words.len() as f64;
     assert!(
         ratio >= 0.6,
-        "Oxide HTML shares only {:.0}% of pdftohtml's words ({common}/{})",
+        "Wellfriend HTML shares only {:.0}% of pdftohtml's words ({common}/{})",
         ratio * 100.0,
         poppler_words.len()
     );

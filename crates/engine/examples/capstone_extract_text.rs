@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use oxide_engine::{ContentEngine, Result};
+use wellfriendpdf_engine::{ContentEngine, Result};
 
 fn main() -> Result<()> {
     let path = std::env::args()

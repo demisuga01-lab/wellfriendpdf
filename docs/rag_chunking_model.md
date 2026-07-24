@@ -35,7 +35,7 @@ low-confidence, hidden/OCR, or unknown provenance to callers.
 
 ## Recommended Use
 
-- Use `oxide chunk` for production RAG ingestion.
+- Use `wellfriendpdf chunk` for production RAG ingestion.
 - Use `extract-text --structured --format model-json` when an application needs character quads or match geometry.
 - Use `ContentEngine::search_text` for query-time source highlighting.
 
@@ -48,7 +48,7 @@ low-confidence, hidden/OCR, or unknown provenance to callers.
 ## Prompt 15 Advanced Path
 
 `crate::advanced_rag` is now the additive provenance-aware path. Use
-`oxide chunk --advanced` or `oxide semantic-export --view chunks` when chunks
+`wellfriendpdf chunk --advanced` or `wellfriendpdf semantic-export --view chunks` when chunks
 need source spans, bboxes/quads, MCIDs, ParentTree status, CJK dictionary
 metadata, stable hashes, table/cell IDs, and explicit security posture. The
 legacy chunk schema remains available and unchanged.

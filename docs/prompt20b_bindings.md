@@ -10,9 +10,9 @@ language-specific editing engines.
   `annotation-appearance-clone-one`.
 - Python: `prompt20b_report`, `prompt20b_text_range_analyze`, and
   `edit_text_range`.
-- C ABI: `oxide_document_prompt20b_report_json`,
-  `oxide_document_prompt20b_text_range_analyze_json`, and
-  `oxide_document_prompt20b_text_range_edit_json`.
+- C ABI: `wellfriendpdf_document_prompt20b_report_json`,
+  `wellfriendpdf_document_prompt20b_text_range_analyze_json`, and
+  `wellfriendpdf_document_prompt20b_text_range_edit_json`.
 - WASM: `prompt20bReportJson`, `prompt20bTextRangeAnalyzeJson`, and
   `editTextRange`.
 - .NET and Java expose equivalent owned JSON and owned output-byte surfaces.

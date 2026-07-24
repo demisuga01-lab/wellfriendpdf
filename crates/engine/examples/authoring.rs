@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     AuthorPageSize, Color, FlowDocument, Margins, ParagraphStyle, StandardFont, TableBuilder,
     TableColumn, TextAlign, TextStyle,
 };
 
-fn main() -> oxide_engine::Result<()> {
+fn main() -> wellfriendpdf_engine::Result<()> {
     let out = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
@@ -16,10 +16,10 @@ fn main() -> oxide_engine::Result<()> {
 
     let mut flow = FlowDocument::new(AuthorPageSize::LETTER, Margins::all(72.0));
     flow.builder_mut()
-        .set_title("Oxide authored capstone")
-        .set_author("Oxide PDF SDK")
+        .set_title("Wellfriend authored capstone")
+        .set_author("Wellfriend PDF SDK")
         .set_subject("PDF authoring API smoke")
-        .set_creator("oxide-engine examples/authoring.rs");
+        .set_creator("wellfriendpdf-engine examples/authoring.rs");
 
     let custom_font = flow.builder_mut().register_font_bytes(
         "LiberationSerifCapstone",
@@ -34,7 +34,7 @@ fn main() -> oxide_engine::Result<()> {
         .align(TextAlign::Left)
         .line_height(1.28);
 
-    flow.add_heading("Oxide PDF Authoring", 1)?;
+    flow.add_heading("Wellfriend PDF SDK Authoring", 1)?;
     flow.add_paragraph(
         "This capstone document was created from scratch with the authoring API. It combines flowing text, a custom embedded TrueType font, an RGBA image soft mask, vector drawing, and a table that can continue across pages.",
         &body,

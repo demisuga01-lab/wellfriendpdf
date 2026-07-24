@@ -5,7 +5,7 @@ Measurement only. Reuses competitive_benchmark.py's EXACT scoring functions
 possible, then:
   1. Recomputes the macro-averaged field metrics from records.jsonl and checks
      them against summary.json (catches any reporting drift).
-  2. Re-runs oxide extract-fields on the SAME first-200 has-fields slice and
+  2. Re-runs wellfriendpdf extract-fields on the SAME first-200 has-fields slice and
      produces a key-level miss breakdown to identify the dominant failure mode.
 
 It never touches more than the 200 selected files.
@@ -25,7 +25,7 @@ import competitive_benchmark as cb  # noqa: E402
 
 REPO = cb.REPO
 CORPUS = REPO / "test_corpus"
-OXIDE = REPO / "target" / "release" / cb.exe("oxide")
+WELLFRIENDPDF = REPO / "target" / "release" / cb.exe("wellfriendpdf")
 RUN_DIR = REPO / "target" / "competitive-benchmark" / "fieldslice-validation"
 LIMIT = 200
 
@@ -41,7 +41,7 @@ def recompute_from_records():
         by_id[r["id"]] = r
     summary = json.loads(summ_path.read_text(encoding="utf-8"))
     out = {}
-    for tool in ("oxide", "pypdf"):
+    for tool in ("wellfriendpdf", "pypdf"):
         rows = [r["fields"][tool] for r in by_id.values()
                 if r.get("fields", {}).get(tool, {}).get("ok")]
         def mean(key):
@@ -59,12 +59,12 @@ def recompute_from_records():
     return out, summary.get("field_accuracy", {})
 
 
-def run_oxide(pdf: Path) -> dict | None:
+def run_wellfriendpdf(pdf: Path) -> dict | None:
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
         outp = Path(tf.name)
     try:
         p = subprocess.run(
-            [str(OXIDE), "extract-fields", str(pdf), "--format", "json",
+            [str(WELLFRIENDPDF), "extract-fields", str(pdf), "--format", "json",
              "--output", str(outp)],
             cwd=REPO, capture_output=True, text=True, timeout=60,
         )
@@ -95,7 +95,7 @@ def failure_modes():
     zero_field_files = []
     for e in entries:
         truth = e["label"].get("fields") or {}
-        payload = run_oxide(e["pdf"]) or {"fields": []}
+        payload = run_wellfriendpdf(e["pdf"]) or {"fields": []}
         sc = cb.field_score(truth, payload)
         per_file_f1.append(sc["field_f1"])
         per_file_val_f1.append(sc["field_value_f1"])
@@ -149,11 +149,11 @@ def failure_modes():
 def main():
     print("== Recompute macro metrics from records.jsonl vs summary.json ==")
     recomputed, summary = recompute_from_records()
-    for tool in ("oxide", "pypdf"):
+    for tool in ("wellfriendpdf", "pypdf"):
         print(f"[{tool}] recomputed: {recomputed[tool]}")
         print(f"[{tool}] summary   : {summary.get(tool)}")
     print()
-    print("== Independent oxide re-run + failure-mode breakdown (<=200 files) ==")
+    print("== Independent wellfriendpdf re-run + failure-mode breakdown (<=200 files) ==")
     fm = failure_modes()
     print(json.dumps(fm, indent=2, ensure_ascii=False))
 

@@ -1,6 +1,6 @@
 # Prompt 12 BPC And Rendering Intents
 
-Oxide reports and cache-keys all four ICC rendering intents:
+Wellfriend reports and cache-keys all four ICC rendering intents:
 
 - perceptual
 - relative colorimetric

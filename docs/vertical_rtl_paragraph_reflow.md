@@ -18,7 +18,7 @@ resource names.
 
 The true-edit path currently requires the old paragraph to occupy exactly one
 decoded PDF string token. A paragraph split across independent strings must be
-selected through a future multi-token provenance operation; Oxide returns an
+selected through a future multi-token provenance operation; Wellfriend returns an
 exact error and does not silently use an overlay. The bundled DejaVu font covers
 Arabic and Hebrew but not arbitrary CJK, so vertical Japanese requires a
 caller-supplied font containing the requested glyphs. Missing glyphs fail
@@ -27,10 +27,10 @@ closed with cluster diagnostics.
 Rust example:
 
 ```rust
-let (bytes, report) = oxide_engine::edit_advanced_text_pdf(
+let (bytes, report) = wellfriendpdf_engine::edit_advanced_text_pdf(
     &input, 1, "Invoice", "فاتورة 123",
-    oxide_engine::AdvancedTextMode::ParagraphReflowRtl,
-    &oxide_engine::AdvancedTextEditOptions::default(), None,
+    wellfriendpdf_engine::AdvancedTextMode::ParagraphReflowRtl,
+    &wellfriendpdf_engine::AdvancedTextEditOptions::default(), None,
 )?;
 assert!(report.replacement_extracts && report.old_text_absent);
 ```

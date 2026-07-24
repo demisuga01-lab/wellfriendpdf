@@ -1,13 +1,13 @@
 # PDF Editing
 
-Oxide can add visible content to existing PDFs, write annotations, fill and
+Wellfriend can add visible content to existing PDFs, write annotations, fill and
 flatten AcroForms, and perform true redaction. Additive edits append new content
 streams as overlays or prepend them as underlays, then merge only the needed page
 resources. Redaction is different: it rewrites affected page content streams so
 the removed text/image/path operators are no longer present.
 
 ```rust
-use oxide_engine::{
+use wellfriendpdf_engine::{
     EditMode, HeaderFooterOptions, PdfEditor, WatermarkOptions,
 };
 
@@ -19,7 +19,7 @@ editor
 
 let rewritten = editor.save_to_bytes(EditMode::FullRewrite)?;
 let incremental = editor.save_to_bytes(EditMode::Incremental)?;
-# Ok::<(), oxide_engine::OxideError>(())
+# Ok::<(), wellfriendpdf_engine::WellfriendError>(())
 ```
 
 ## Content Layers
@@ -51,7 +51,7 @@ full-rewrite only. Incremental updates preserve the old revision bytes by
 design, so they would retain the sensitive content in the original byte prefix.
 
 Validation should always re-extract text after redaction. The committed tests
-assert that the redacted string is absent from Oxide extraction and that
+assert that the redacted string is absent from Wellfriend extraction and that
 intersecting image invocations are removed/blanked, not only covered.
 
 `RedactionOptions::scrub_metadata` also removes redacted strings from PDF string
@@ -64,7 +64,7 @@ The editor can add highlight, text-note, stamp, and URI link annotations, edit
 annotation contents by page index, and delete annotations intersecting a
 rectangle. Added annotations include `/Rect`, `/Subtype`, metadata, color, and
 normal `/AP` appearance streams where applicable. The visual highlight/stamp is
-also appended to page content so Oxide's current renderer shows the result even
+also appended to page content so Wellfriend's current renderer shows the result even
 though non-widget annotation rendering is still conservative.
 
 ## Forms
@@ -98,7 +98,7 @@ source objects, matching the writer's existing generation-0 output model.
 Run:
 
 ```bash
-cargo run -p oxide-engine --example editing -- target/editing-demo
+cargo run -p wellfriendpdf-engine --example editing -- target/editing-demo
 ```
 
 The example writes `editing-base.pdf`, `editing-full-rewrite.pdf`, and

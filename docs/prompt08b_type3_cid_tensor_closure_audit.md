@@ -66,10 +66,10 @@ Prompt 08B reclassification:
 - Prompt 08 fixture count: 26.
 - Prompt 08 artifacts live under `target/prompt08-text-shading-patterns/`.
 - Prompt 08 classification counts:
-  - `all_references_agree_oxide_passes`: 19
-  - `references_disagree_oxide_within_cluster`: 3
+  - `all_references_agree_wellfriendpdf_passes`: 19
+  - `references_disagree_wellfriendpdf_within_cluster`: 3
   - `unsupported_reported_expected`: 3
   - `malformed_reference_failure`: 1
-  - Oxide outlier failures: 0
+  - Wellfriend outlier failures: 0
 - Poppler/PDFium/MuPDF availability is recorded in `target/prompt08-text-shading-patterns/reference-tool-manifest.json`.
 - Prompt 08B must regenerate a separate 08B corpus, render results, visual metrics, fallback taxonomy, and HTML report rather than relying on Prompt 08 artifacts.

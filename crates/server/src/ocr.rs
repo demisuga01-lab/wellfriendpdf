@@ -19,7 +19,7 @@
 //! deployment supplies one:
 //!
 //! - Build with `--features ocr`: [`init_from_env`] then auto-registers the
-//!   Tesseract backend when `OXIDE_OCR=1` (or `auto`/`force`) is set in the
+//!   Tesseract backend when `WELLFRIENDPDF_OCR=1` (or `auto`/`force`) is set in the
 //!   environment, discovering the `tesseract` binary on `PATH`.
 //! - Embed the server crate and call [`set_backend`] directly with any
 //!   [`OcrEngine`] before starting the router.
@@ -29,13 +29,13 @@
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use oxide_engine::{OcrPolicy, ParseOptions};
+use wellfriendpdf_engine::{OcrPolicy, ParseOptions};
 
 /// A registered backend + the policy to apply. `None` inside the `OnceLock`
 /// means "explicitly no OCR" (registration ran but found nothing); an unset
 /// `OnceLock` means registration has not run yet — both read as "no OCR".
 struct OcrHook {
-    engine: Arc<dyn oxide_engine::OcrEngine>,
+    engine: Arc<dyn wellfriendpdf_engine::OcrEngine>,
     policy: OcrPolicy,
 }
 
@@ -47,7 +47,7 @@ static OCR_HOOK: OnceLock<Option<OcrHook>> = OnceLock::new();
 ///
 /// Call once, before building the router. Safe to skip entirely — the server
 /// then serves digital-born-only.
-pub fn set_backend(engine: Arc<dyn oxide_engine::OcrEngine>, policy: OcrPolicy) -> bool {
+pub fn set_backend(engine: Arc<dyn wellfriendpdf_engine::OcrEngine>, policy: OcrPolicy) -> bool {
     OCR_HOOK.set(Some(OcrHook { engine, policy })).is_ok()
 }
 
@@ -81,7 +81,7 @@ pub fn apply_to(opts: &mut ParseOptions) {
 /// [`apply_to`]; no-op when no backend is registered. (`ExtractOptions` has no
 /// per-page timeout field — it forwards `ocr`/`ocr_policy` into `ParseOptions`
 /// internally, where the parse step's own containment still applies.)
-pub fn apply_to_extract(opts: &mut oxide_engine::ExtractOptions) {
+pub fn apply_to_extract(opts: &mut wellfriendpdf_engine::ExtractOptions) {
     if let Some(Some(hook)) = OCR_HOOK.get() {
         opts.ocr = Some(Arc::clone(&hook.engine));
         opts.ocr_policy = hook.policy;
@@ -89,18 +89,18 @@ pub fn apply_to_extract(opts: &mut oxide_engine::ExtractOptions) {
 }
 
 /// Initialize the OCR hook from the environment at startup. With the `ocr`
-/// feature, reads `OXIDE_OCR` (`off`/`auto`/`force`; `1`/`on`/`true` ⇒ `auto`)
+/// feature, reads `WELLFRIENDPDF_OCR` (`off`/`auto`/`force`; `1`/`on`/`true` ⇒ `auto`)
 /// and, when not `off`, discovers and registers the Tesseract backend. Without
 /// the feature this is a no-op (any backend must be registered via
 /// [`set_backend`]). Logs the outcome. Never panics; a discovery failure leaves
 /// the server digital-born-only with a warning.
 pub fn init_from_env() {
-    let raw = std::env::var("OXIDE_OCR").unwrap_or_default();
+    let raw = std::env::var("WELLFRIENDPDF_OCR").unwrap_or_default();
     let policy = match OcrPolicy::parse(&raw) {
         Some(p) => p,
         None if raw.trim().is_empty() => OcrPolicy::Off,
         None => {
-            tracing::warn!("OXIDE_OCR='{raw}' is not off/auto/force; OCR stays disabled");
+            tracing::warn!("WELLFRIENDPDF_OCR='{raw}' is not off/auto/force; OCR stays disabled");
             OcrPolicy::Off
         }
     };
@@ -110,8 +110,8 @@ pub fn init_from_env() {
 
     #[cfg(feature = "ocr")]
     {
-        use oxide_engine::OcrEngine as _;
-        match oxide_ocr_tesseract::TesseractEngine::new() {
+        use wellfriendpdf_engine::OcrEngine as _;
+        match wellfriendpdf_ocr_tesseract::TesseractEngine::new() {
             Ok(engine) => {
                 let name = engine.name().to_string();
                 set_backend(Arc::new(engine), policy);
@@ -119,7 +119,7 @@ pub fn init_from_env() {
             }
             Err(e) => {
                 tracing::warn!(
-                    "OXIDE_OCR requested but the Tesseract backend could not start ({e}); \
+                    "WELLFRIENDPDF_OCR requested but the Tesseract backend could not start ({e}); \
                      scanned pages will degrade to placeholders"
                 );
             }
@@ -128,7 +128,7 @@ pub fn init_from_env() {
     #[cfg(not(feature = "ocr"))]
     {
         tracing::warn!(
-            "OXIDE_OCR requested but this server was built without the `ocr` feature; \
+            "WELLFRIENDPDF_OCR requested but this server was built without the `ocr` feature; \
              rebuild with `--features ocr` or register a backend via set_backend()"
         );
     }

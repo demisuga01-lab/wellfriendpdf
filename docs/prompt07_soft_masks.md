@@ -34,8 +34,8 @@ The denial test is `renderer_offscreen_surface_fails_closed_over_budget`.
 Prompt 07B adds focused fixtures for `image_smask_matte`,
 `softmask_alpha_bc_background`, `softmask_luminosity_devicegray`,
 `softmask_luminosity_devicergb`, and `softmask_luminosity_devicecmyk`. The
-multi-reference audit classifies these as either Oxide passing against agreeing
-references or Oxide inside a reference-disagreement cluster.
+multi-reference audit classifies these as either Wellfriend passing against agreeing
+references or Wellfriend inside a reference-disagreement cluster.
 
 Advanced ICC/device-link matte conversion and exact ICC/calibrated luminosity
 CMM parity remain unsupported-reported CMM work. Unsupported or malformed mask

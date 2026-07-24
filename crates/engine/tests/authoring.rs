@@ -1,7 +1,9 @@
 use std::io::Cursor;
 
-use oxide_engine::authoring::{FlowDocument, PageSize, PdfBuilder, TableBuilder, TableColumn};
-use oxide_engine::{
+use wellfriendpdf_engine::authoring::{
+    FlowDocument, PageSize, PdfBuilder, TableBuilder, TableColumn,
+};
+use wellfriendpdf_engine::{
     Color, ContentEngine, FontFace, GraphicsStyle, ParagraphStyle, StandardFont, TextAlign,
     TextStyle, WriterMode,
 };
@@ -9,8 +11,8 @@ use oxide_engine::{
 fn authored_sample() -> Vec<u8> {
     let mut doc = PdfBuilder::new();
     doc.set_title("Authoring smoke")
-        .set_author("Oxide")
-        .set_creator("oxide-engine test");
+        .set_author("Wellfriend")
+        .set_creator("wellfriendpdf-engine test");
 
     let title = TextStyle::standard(StandardFont::HelveticaBold, 22.0)
         .fill(Color::device_rgb(0.05, 0.1, 0.2));
@@ -155,7 +157,7 @@ fn custom_truetype_font_embeds_and_extracts_unicode() {
 fn flow_layout_page_breaks_table_and_repeats_header() {
     let mut flow = FlowDocument::new(
         PageSize::custom(300.0, 220.0),
-        oxide_engine::Margins::all(24.0),
+        wellfriendpdf_engine::Margins::all(24.0),
     );
     flow.builder_mut().set_title("Flow table smoke");
     flow.add_heading("Flow report", 1).unwrap();

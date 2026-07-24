@@ -1,12 +1,12 @@
 # Python Binding
 
-Oxide now has a PyO3/maturin binding in `crates/oxide-py` that installs a Python
-module named `oxide`.
+Wellfriend now has a PyO3/maturin binding in `crates/wellfriendpdf-py` that installs a Python
+module named `wellfriendpdf`.
 
 ```python
-import oxide
+import wellfriendpdf
 
-doc = oxide.open("invoice.pdf")
+doc = wellfriendpdf.open("invoice.pdf")
 print(doc.page_count)
 print(doc.extract_text())
 print(doc.page(1).tables)
@@ -15,28 +15,28 @@ print(doc.page(1).region(0, 0, 306, 792).text)
 print(doc.to_markdown(detect_headings=True, profile="rag-chunks"))
 png = doc.page(1).render(dpi=150)
 
-oxide.pdf_to_images("input.pdf", "pages", pages="1-3", format="jpg", dpi=150)
-combined = oxide.images_to_pdf(["scan1.jpg", "scan2.png"], output="combined.pdf")
-xlsx = oxide.pdf_to_xlsx("tables.pdf", output="tables.xlsx", layout="pages")
-pptx = oxide.pdf_to_pptx("report.pdf", output="slides.pptx")
-docx = oxide.pdf_to_docx("report.pdf", output="report.docx")
-pdf = oxide.docx_to_pdf("report.docx", output="from_docx.pdf")
-numbered = oxide.add_page_numbers("input.pdf", output="numbered.pdf")
+wellfriendpdf.pdf_to_images("input.pdf", "pages", pages="1-3", format="jpg", dpi=150)
+combined = wellfriendpdf.images_to_pdf(["scan1.jpg", "scan2.png"], output="combined.pdf")
+xlsx = wellfriendpdf.pdf_to_xlsx("tables.pdf", output="tables.xlsx", layout="pages")
+pptx = wellfriendpdf.pdf_to_pptx("report.pdf", output="slides.pptx")
+docx = wellfriendpdf.pdf_to_docx("report.pdf", output="report.docx")
+pdf = wellfriendpdf.docx_to_pdf("report.docx", output="from_docx.pdf")
+numbered = wellfriendpdf.add_page_numbers("input.pdf", output="numbered.pdf")
 ```
 
 The API is intentionally Python-native: text is `str`, rendered pages and images
 are `bytes`, and tables/fields/document models are returned as lists and dicts.
-Malformed-input errors become `oxide.OxideError`; Rust panics are caught at the
+Malformed-input errors become `wellfriendpdf.WellfriendError`; Rust panics are caught at the
 FFI boundary and converted to the same exception type.
 
 ## Build
 
 ```powershell
 python -m pip install maturin
-cd crates\oxide-py
+cd crates\wellfriendpdf-py
 python -m maturin build
-python -m pip install target\wheels\oxide_pdf-0.1.0-*.whl
-python -c "import oxide; print(oxide.__version__)"
+python -m pip install target\wheels\wellfriendpdf-0.1.0-*.whl
+python -c "import wellfriendpdf; print(wellfriendpdf.__version__)"
 ```
 
 Verified locally on Windows with Python 3.14.3. Prebuilt cross-platform wheels
@@ -58,7 +58,7 @@ are not claimed yet; CI wheel publishing is future packaging work.
   `to_markdown(..., ocr=backend)`, and `to_html(..., ocr=backend)`, where
   `backend` is any Python object with
   `recognize(image_bytes, info) -> list[dict]`. See
-  `crates/oxide-py/examples/local_ai_ocr_backend.py` and
+  `crates/wellfriendpdf-py/examples/local_ai_ocr_backend.py` and
   `docs/ocr_backends.md`.
 - Structural and utility helpers:
   `merge_pdfs`, `extract_pages`, `rotate_pdf`, `encrypt_pdf`, `decrypt_pdf`,
@@ -70,7 +70,7 @@ are not claimed yet; CI wheel publishing is future packaging work.
 `pdf_to_xlsx` accepts `layout="pages"` or `layout="tables"`. `pdf_to_pptx`
 maps each PDF page to one editable slide and can disable image export with
 `include_images=False`. `pdf_to_docx` reconstructs a flowing editable document;
-Office-to-PDF helpers use Oxide's native writer and do not require LibreOffice.
+Office-to-PDF helpers use Wellfriend's native writer and do not require LibreOffice.
 
 Region coordinates are PDF user-space points with origin at the page's
 bottom-left. Scoped extraction includes an item when its center is inside the

@@ -18,7 +18,7 @@ claim that those unrelated edits are release-ready.
 | Clippy | Workspace lint gate for all targets | `cargo clippy --workspace --all-targets -- -D warnings` passed in this session. |
 | Continuous private fuzzing | cargo-fuzz target matrix, persistent corpus cache, deterministic regression replay on push/PR, scheduled/manual deeper runs | `.github/workflows/fuzz.yml` is live. All 16 committed fuzz corpora replayed cleanly in this session. |
 | Differential fuzzing | Wrong-output checks against qpdf and Poppler for page count, structural validity, text similarity, and writer round-trip | `.github/workflows/differential-fuzz.yml` is live. A 20-case smoke passed with 16 accepted notes and 0 high-signal disagreements. |
-| Property-based testing | Round-trip identities, writer-mode equivalence, AES-256 preserve-content, no-panic arbitrary bytes, document-model invariants | `.github/workflows/property-tests.yml` is live. `cargo test -p oxide-engine --test property_invariants` passed 6 properties. |
+| Property-based testing | Round-trip identities, writer-mode equivalence, AES-256 preserve-content, no-panic arbitrary bytes, document-model invariants | `.github/workflows/property-tests.yml` is live. `cargo test -p wellfriendpdf-engine --test property_invariants` passed 6 properties. |
 | Grammar-aware fuzzing | Valid-but-adversarial PDFs that reach content interpretation, renderer, editing, linearization, PDF/A, and signature validation paths | `structured_pdf` is in the fuzz target matrix. Its committed corpus replay passed, reaching 10,945 coverage/features in the smoke output. |
 | Real-world and hostile corpus sweep | Cross-pillar safety over parse, info, verify-sig, render, optimize, and linearize in isolated subprocesses | 265 files, 1,590 operations, 0 crashes, 0 timeouts, 100% crash-free and timeout-free. |
 | Indicative wild-PDF robustness benchmark | Text-extraction survival over the Prompt 1 corpus with isolated subprocesses, timeout, memory cap, and checkpointing | 200 files, 100.0% survival, 0 hard failures, 25 clean handled errors in the latest Prompt 8 smoke. |
@@ -32,12 +32,12 @@ Commands run during this consolidation pass:
 ```powershell
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test -p oxide-engine --test property_invariants
+cargo test -p wellfriendpdf-engine --test property_invariants
 python scripts\differential_fuzz.py --cases 20 --output target\hardening6-differential-smoke
 python scripts\ci_fuzz.py --targets all --mode regression --no-build
 python scripts\ci_fuzz.py --targets content_tokenizer,crypto,signature_validation --mode regression --no-build
-python scripts\ga5_corpus_hardening.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --output-dir target\hardening6-corpus-60s --limit 265 --timeout-sec 60 --include-hostile
-python robustness-benchmark\scripts\robustness_benchmark.py --oxide-bin target\debug\oxide.exe --output-dir target\roadmap-prompt8\robustness_smoke --report target\roadmap-prompt8\robustness_smoke.md --tools oxide --timeout 60 --max-memory-mb 2048 --max-workers 4 --limit 200
+python scripts\ga5_corpus_hardening.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --output-dir target\hardening6-corpus-60s --limit 265 --timeout-sec 60 --include-hostile
+python robustness-benchmark\scripts\robustness_benchmark.py --wellfriendpdf-bin target\debug\wellfriendpdf.exe --output-dir target\roadmap-prompt8\robustness_smoke --report target\roadmap-prompt8\robustness_smoke.md --tools wellfriendpdf --timeout 60 --max-memory-mb 2048 --max-workers 4 --limit 200
 cargo audit --deny warnings --ignore RUSTSEC-2023-0071
 cargo deny check advisories licenses bans sources
 ```
@@ -87,8 +87,8 @@ Current guarantees and controls:
   by default, sanitized errors, rate limiting, job caps, timeouts, and resource
   limits.
 - Untrusted input is bounded end-to-end: the render layer has DPI and
-  render-pixel caps (`OXIDE_MAX_RENDER_PIXELS`, default 100M), and the decode
-  layer has an independent pixel cap (`OXIDE_MAX_DECODE_PIXELS`, default 100M)
+  render-pixel caps (`WELLFRIENDPDF_MAX_RENDER_PIXELS`, default 100M), and the decode
+  layer has an independent pixel cap (`WELLFRIENDPDF_MAX_DECODE_PIXELS`, default 100M)
   enforced *before* allocation in image bit-depth expansion and the CCITT/JBIG2
   sinks, plus output ceilings on the Flate/LZW/RunLength stream filters. A
   hostile image header declaring enormous dimensions is a clean error, not an

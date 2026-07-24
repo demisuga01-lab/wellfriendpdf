@@ -1,6 +1,6 @@
 # Document parsing: the canonical model and the `parse` command
 
-Oxide parses a PDF into **one canonical document model** and serializes it to
+Wellfriend parses a PDF into **one canonical document model** and serializes it to
 clean, structured output for AI/RAG pipelines and data automation:
 
 ```
@@ -16,7 +16,7 @@ recovered.
 ## CLI
 
 ```
-oxide parse --input f.pdf --format markdown|json|html [options]
+wellfriendpdf parse --input f.pdf --format markdown|json|html [options]
 ```
 
 | Option | Default | Meaning |
@@ -180,7 +180,7 @@ diff, and snapshot-test.
 ## Engine API
 
 ```rust
-use oxide_engine::{ContentEngine, ParseOptions, SerializeOptions};
+use wellfriendpdf_engine::{ContentEngine, ParseOptions, SerializeOptions};
 
 let engine = ContentEngine::open_path("input.pdf")?;
 let doc = engine.parse_document(&ParseOptions::default())?;   // -> Document

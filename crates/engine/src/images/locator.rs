@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::content::Operand;
 use crate::engine::ContentEngine;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 
@@ -214,7 +214,7 @@ impl ImageLocator {
 
         match reader.get_object(image.object_number, image.generation_number)? {
             PdfObject::Stream { raw, .. } => Ok(Some(raw)),
-            _ => Err(OxideError::MalformedPdf(format!(
+            _ => Err(WellfriendError::MalformedPdf(format!(
                 "image object {} is not a stream",
                 image.object_number
             ))),

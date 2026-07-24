@@ -27,5 +27,5 @@ Post-change strict workspace Clippy and the full default-feature workspace test
 pass. Final C ABI, .NET, Maven, Gradle, Python wheel, wasm32 check, wasm-pack web
 and Node packages pass. The direct Prompt 20 harness has zero mutation failures,
 zero security failures, zero unclassified failures, and zero supported-case
-Oxide outliers across Poppler, PDFium, and MuPDF. Prompt 21 may begin after the
+Wellfriend outliers across Poppler, PDFium, and MuPDF. Prompt 21 may begin after the
 required clean commit is created.

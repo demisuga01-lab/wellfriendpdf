@@ -3,12 +3,12 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
 
-  <groupId>org.oxidepdf</groupId>
-  <artifactId>oxide-sdk</artifactId>
+  <groupId>io.wellfriendpdf</groupId>
+  <artifactId>wellfriendpdf-sdk</artifactId>
   <version>0.1.0</version>
-  <name>Oxide Java SDK</name>
-  <description>Java FFM binding for the Oxide PDF SDK.</description>
-  <url>https://github.com/oxide-pdf/oxide</url>
+  <name>Wellfriend PDF SDK Java Binding</name>
+  <description>Java FFM binding for the Wellfriend PDF SDK.</description>
+  <url>https://github.com/demisuga01-lab/wellfriendpdf-sdk</url>
 
   <licenses>
     <license>
@@ -57,12 +57,12 @@
           </execution>
         </executions>
         <configuration>
-          <mainClass>org.oxidepdf.OxideSmokeTest</mainClass>
+          <mainClass>io.wellfriendpdf.WellfriendPdfSmokeTest</mainClass>
           <classpathScope>test</classpathScope>
           <includeProjectDependencies>true</includeProjectDependencies>
           <includePluginDependencies>false</includePluginDependencies>
           <executable>java</executable>
-          <commandlineArgs>--enable-preview --enable-native-access=ALL-UNNAMED -cp %classpath org.oxidepdf.OxideSmokeTest</commandlineArgs>
+          <commandlineArgs>--enable-preview --enable-native-access=ALL-UNNAMED -cp %classpath io.wellfriendpdf.WellfriendPdfSmokeTest</commandlineArgs>
         </configuration>
       </plugin>
       <plugin>
@@ -80,7 +80,7 @@
         <configuration>
           <archive>
             <manifestEntries>
-              <Automatic-Module-Name>org.oxidepdf</Automatic-Module-Name>
+              <Automatic-Module-Name>io.wellfriendpdf</Automatic-Module-Name>
             </manifestEntries>
           </archive>
         </configuration>

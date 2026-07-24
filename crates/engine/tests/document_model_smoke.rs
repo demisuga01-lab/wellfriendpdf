@@ -21,7 +21,7 @@
 //! The test prints a table and asserts only on conservative *aggregate* floors,
 //! so it documents real accuracy without being brittle to a single block.
 
-use oxide_engine::{ClassifiedType, ContentEngine, DocumentModel};
+use wellfriendpdf_engine::{ClassifiedType, ContentEngine, DocumentModel};
 
 // ════════════════════════════════════════════════════════════════════════════
 // PDF builders (shared shape with the other engine tests)

@@ -4,7 +4,7 @@ This is the Prompt 7 table-structure pass. The numbers below are indicative (app
 
 ## Summary
 
-Oxide's table quality improved from a high-recall/low-precision shape to a more balanced extractor on the indicative 200-file has-tables subset. Table cell-F1 moved from 0.858 to 0.936, precision from 0.808 to 0.896, recall from 0.958 to 0.997, and TEDS-approx from 0.669 to 0.893. The dominant issue was over-detection: boxed prose/cards, sparse ruled regions, and repeated page furniture were being emitted as tables, while real tables often included title or note rows that damaged structure scoring. The fix tightens candidate acceptance, trims sparse title/furniture rows, and rejects prose-like borderless grids without changing the scorer.
+Wellfriend's table quality improved from a high-recall/low-precision shape to a more balanced extractor on the indicative 200-file has-tables subset. Table cell-F1 moved from 0.858 to 0.936, precision from 0.808 to 0.896, recall from 0.958 to 0.997, and TEDS-approx from 0.669 to 0.893. The dominant issue was over-detection: boxed prose/cards, sparse ruled regions, and repeated page furniture were being emitted as tables, while real tables often included title or note rows that damaged structure scoring. The fix tightens candidate acceptance, trims sparse title/furniture rows, and rejects prose-like borderless grids without changing the scorer.
 
 ## Provenance
 
@@ -14,11 +14,11 @@ Oxide's table quality improved from a high-recall/low-precision shape to a more 
 | corpus | `test_corpus/`, `has-tables`, first 200 files by deterministic harness order |
 | harness | `extraction-benchmark/scripts/competitive_benchmark.py` |
 | task | `tables` |
-| command | `python extraction-benchmark/scripts/competitive_benchmark.py --corpus E:/wellpdfsdk/test_corpus --output-dir target/roadmap-prompt7/after1 --report target/roadmap-prompt7/after1.md --oxide-bin target/debug/oxide.exe --category has-tables --limit 200 --tasks tables --tools oxide,pymupdf,pdfplumber --max-workers 4 --timeout 60 --max-memory-mb 2048 --checkpoint-every 25` |
+| command | `python extraction-benchmark/scripts/competitive_benchmark.py --corpus E:/wellpdfsdk/test_corpus --output-dir target/roadmap-prompt7/after1 --report target/roadmap-prompt7/after1.md --wellfriendpdf-bin target/debug/wellfriendpdf.exe --category has-tables --limit 200 --tasks tables --tools wellfriendpdf,pymupdf,pdfplumber --max-workers 4 --timeout 60 --max-memory-mb 2048 --checkpoint-every 25` |
 | timeout | 60s per subprocess |
 | memory cap | 2048 MB |
 | concurrency | 4 workers |
-| Oxide | `oxide 0.1.0` |
+| Wellfriend | `wellfriendpdf 0.1.0` |
 | PyMuPDF | `1.27.2.3` |
 | pdfplumber | `0.11.9` |
 
@@ -26,8 +26,8 @@ Oxide's table quality improved from a high-recall/low-precision shape to a more 
 
 | run | tool | scored | cell-F1 | recall | precision | TEDS-approx |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
-| baseline | oxide | 200 | 0.858 | 0.958 | 0.808 | 0.669 |
-| after | oxide | 200 | 0.936 | 0.997 | 0.896 | 0.893 |
+| baseline | wellfriendpdf | 200 | 0.858 | 0.958 | 0.808 | 0.669 |
+| after | wellfriendpdf | 200 | 0.936 | 0.997 | 0.896 | 0.893 |
 | after reference | PyMuPDF | 200 | 0.846 | 0.840 | 0.854 | 0.867 |
 | after reference | pdfplumber | 200 | 0.851 | 0.854 | 0.848 | 0.863 |
 
@@ -64,7 +64,7 @@ This is detection/structure logic only. The scorer was not loosened.
 
 ## Residual Gap
 
-Oxide now beats PyMuPDF and pdfplumber on this indicative subset for cell-F1, precision, recall, and TEDS-approx, but over-detection is not eliminated. Files such as `pdf_000400`, `pdf_000191`, and `pdf_000106` still contain residual false table fragments, mostly from complex ruled page furniture that has enough grid evidence to pass the stricter filter. Prompt 10 should validate whether this pattern persists on the full corpus before adding heavier page-region merging or semantic filtering.
+Wellfriend now beats PyMuPDF and pdfplumber on this indicative subset for cell-F1, precision, recall, and TEDS-approx, but over-detection is not eliminated. Files such as `pdf_000400`, `pdf_000191`, and `pdf_000106` still contain residual false table fragments, mostly from complex ruled page furniture that has enough grid evidence to pass the stricter filter. Prompt 10 should validate whether this pattern persists on the full corpus before adding heavier page-region merging or semantic filtering.
 
 ## Regression Coverage
 
@@ -78,7 +78,7 @@ Additional validation:
 
 | check | result |
 | --- | --- |
-| table subset benchmark | Oxide after metrics: cell-F1 0.936, precision 0.896, recall 0.997, TEDS-approx 0.893 |
+| table subset benchmark | Wellfriend after metrics: cell-F1 0.936, precision 0.896, recall 0.997, TEDS-approx 0.893 |
 | text/field smoke on same 200 has-tables files | 200 text records scored, 155 field records scored, no subprocess failures |
-| robustness smoke | Oxide survived 200/200 indicative robustness files; 87.5% parsed text artifacts, 25 clean handled errors |
+| robustness smoke | Wellfriend survived 200/200 indicative robustness files; 87.5% parsed text artifacts, 25 clean handled errors |
 

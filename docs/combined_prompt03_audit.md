@@ -12,26 +12,26 @@
 ## Package Surfaces Found
 
 - Rust SDK facade: `crates/engine/src/sdk.rs`, package metadata in `crates/engine/Cargo.toml`.
-- CLI: `crates/cli`, binary name `oxide`.
-- Python: `crates/oxide-py`, PyO3/maturin metadata in `pyproject.toml`.
-- C ABI: `crates/oxide-capi`, public header `crates/oxide-capi/include/oxide.h`.
-- WASM: `crates/oxide-wasm`, wasm-bindgen wrapper and browser example folder.
-- .NET: `bindings/dotnet/Oxide.Sdk` plus test project.
+- CLI: `crates/cli`, binary name `wellfriendpdf`.
+- Python: `crates/wellfriendpdf-py`, PyO3/maturin metadata in `pyproject.toml`.
+- C ABI: `crates/wellfriendpdf-capi`, public header `crates/wellfriendpdf-capi/include/wellfriendpdf.h`.
+- WASM: `crates/wellfriendpdf-wasm`, wasm-bindgen wrapper and browser example folder.
+- .NET: `bindings/dotnet/WellfriendPdf` plus test project.
 - Java Maven/Gradle: `bindings/java/pom.xml`, `bindings/java/build.gradle`, and Prompt 02B/02C package smoke scripts.
 
 ## Examples Found
 
 - Rust examples: `getting_started.rs`, `inspect.rs`, `parse_to_markdown.rs`, `sdk_reports.rs`, `compliance.rs`, `editing.rs`, `authoring.rs`, `render_bench.rs`.
 - CLI examples: existing CLI help and smoke commands plus new `examples/cli/codec_isolation_report.ps1`.
-- Python examples: `crates/oxide-py/examples/sdk_reports.py`, `local_ai_ocr_backend.py`.
+- Python examples: `crates/wellfriendpdf-py/examples/sdk_reports.py`, `local_ai_ocr_backend.py`.
 - C examples: `parse_document.c`, `extract_text.c`, `sdk_reports.c`.
-- WASM example: `crates/oxide-wasm/examples/browser`.
+- WASM example: `crates/wellfriendpdf-wasm/examples/browser`.
 - .NET examples: `bindings/dotnet/examples/Prompt02Reports.cs`.
 - Java examples: `bindings/java/examples/Prompt02Reports.java`.
 
 ## Docs Found
 
-- SDK and binding docs: `docs/oxide_sdk.md`, `docs/binding_examples_prompt01.md`, `docs/bindings_prompt02_audit.md`, `docs/package_platform_matrix_prompt02.md`.
+- SDK and binding docs: `docs/wellfriendpdf_sdk.md`, `docs/binding_examples_prompt01.md`, `docs/bindings_prompt02_audit.md`, `docs/package_platform_matrix_prompt02.md`.
 - Language docs: `docs/python_binding.md`, `docs/dotnet_binding.md`, `docs/java_binding.md`, `docs/c_abi_prompt01.md`.
 - Packaging docs: `docs/packaging.md`, `docs/release.md`.
 - Security/decode docs: `docs/decode_security_scorecard.md`, `docs/codec_sandboxing.md`, `docs/security_policy.md`.
@@ -50,11 +50,11 @@
 
 ## Current Packaging Commands
 
-- Rust crate/package: `cargo package -p oxide-engine --allow-dirty`.
-- CLI/native/C ABI: `cargo build -p oxide-cli -p oxide-capi -p oxide-engine --bin oxide-codec-worker`.
-- Python wheel: `python -m maturin build --manifest-path crates/oxide-py/Cargo.toml`.
-- WASM: `cargo check -p oxide-wasm --target wasm32-unknown-unknown`; package with `scripts/prompt03b_wasm_pack_gate.ps1`.
-- .NET: `dotnet test bindings/dotnet/Oxide.Sdk.Tests/Oxide.Sdk.Tests.csproj`; `dotnet pack bindings/dotnet/Oxide.Sdk/Oxide.Sdk.csproj`.
+- Rust crate/package: `cargo package -p wellfriendpdf-engine --allow-dirty`.
+- CLI/native/C ABI: `cargo build -p wellfriendpdf-cli -p wellfriendpdf-capi -p wellfriendpdf-engine --bin wellfriendpdf-codec-worker`.
+- Python wheel: `python -m maturin build --manifest-path crates/wellfriendpdf-py/Cargo.toml`.
+- WASM: `cargo check -p wellfriendpdf-wasm --target wasm32-unknown-unknown`; package with `scripts/prompt03b_wasm_pack_gate.ps1`.
+- .NET: `dotnet test bindings/dotnet/WellfriendPdf.Tests/WellfriendPdf.Tests.csproj`; `dotnet pack bindings/dotnet/WellfriendPdf/WellfriendPdf.csproj`.
 - Java Maven: `scripts/prompt02b_java_package_smoke.ps1`.
 - Java Gradle: `scripts/prompt02c_gradle_package_smoke.ps1`.
 

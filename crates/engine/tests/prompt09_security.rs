@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
-use oxide_engine::{
+use wellfriendpdf_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+use wellfriendpdf_engine::{
     canonicalize_pdf, encrypt, sanitize_pdf, security_report, validate_standards_profile, Color,
     ContentEngine, PdfBuilder, SanitizerOptions, SignatureValidity, StandardFont, StandardsProfile,
     ValidationStatus,
@@ -16,9 +16,9 @@ fn fixture(name: &str) -> PathBuf {
 
 fn authored_pdf() -> Vec<u8> {
     let mut doc = PdfBuilder::new();
-    let style = oxide_engine::TextStyle::standard(StandardFont::Helvetica, 12.0)
+    let style = wellfriendpdf_engine::TextStyle::standard(StandardFont::Helvetica, 12.0)
         .fill(Color::device_rgb(0.1, 0.1, 0.1));
-    let page = doc.add_page(oxide_engine::authoring::PageSize::LETTER);
+    let page = doc.add_page(wellfriendpdf_engine::authoring::PageSize::LETTER);
     page.draw_text("Prompt 09 security smoke", 72.0, 720.0, &style)
         .unwrap();
     doc.to_bytes().unwrap()

@@ -3,7 +3,7 @@
 
 This script intentionally records unavailable tools as unsupported evidence,
 not as passes. The positive rows come from independent Python libraries that
-parse or validate the committed Prompt 24 fixtures without calling Oxide.
+parse or validate the committed Prompt 24 fixtures without calling WellfriendPdf.
 """
 
 from __future__ import annotations

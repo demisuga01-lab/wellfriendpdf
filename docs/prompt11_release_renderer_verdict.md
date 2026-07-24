@@ -6,8 +6,8 @@ covered corpus when the generated artifacts report:
 - renderer fuzz targets compile
 - short fuzz smoke runs complete or unavailable tooling is precisely reported
 - metamorphic full/tile/band/cache/progressive tests pass
-- Poppler/PDFium/MuPDF/Oxide close-out artifacts classify every row
-- Oxide outlier failures are zero
+- Poppler/PDFium/MuPDF/Wellfriend close-out artifacts classify every row
+- Wellfriend outlier failures are zero
 - unclassified failures are zero
 - fallback taxonomy rows name exact features and later owners
 

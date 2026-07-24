@@ -30,7 +30,7 @@ address sanitizer.
 
 ## Why engine "features" do not help
 
-`oxide-engine`'s Cargo features (`parse`, `render`, `structural`, `sign`,
+`wellfriendpdf-engine`'s Cargo features (`parse`, `render`, `structural`, `sign`,
 `pdfa`, `edit`, `create`, `extract`, `ocr`) are all defined as empty (`[]`) —
 they are capability/reporting flags, not compile gates. The heavy dependencies
 (`reqwest`/`tokio`/`hyper`, image codecs, `rustybuzz`, `cms`/`x509`/`pkix-*`) are
@@ -41,7 +41,7 @@ the LLVM codegen memory profile.
 ## The two failing configurations (reproduced at HEAD, 4 GiB cap)
 
 1. `--sanitizer address -D --no-trace-compares --codegen-units 16` →
-   `rustc-LLVM ERROR: out of memory` compiling `oxide-engine` with
+   `rustc-LLVM ERROR: out of memory` compiling `wellfriendpdf-engine` with
    `-Cdebuginfo=2 -Ccodegen-units=16`. Under the 4 GiB process-tree cap this
    exceeds available memory (`hit_memory_cap=true`).
 2. `--sanitizer none …` → cargo-fuzz still injects SanitizerCoverage

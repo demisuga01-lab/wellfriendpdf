@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use crate::decode_scanner::find_marker_accelerated;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 
 pub trait ParserResolver {
@@ -52,7 +52,7 @@ impl<'a> PdfParser<'a> {
         resolver: Option<&'a dyn ParserResolver>,
     ) -> Result<Self> {
         if offset > data.len() {
-            return Err(OxideError::ParseError(format!(
+            return Err(WellfriendError::ParseError(format!(
                 "offset {offset} is beyond input length {}",
                 data.len()
             )));
@@ -72,7 +72,7 @@ impl<'a> PdfParser<'a> {
     pub fn parse_object(&mut self) -> Result<PdfObject> {
         self.skip_ws_and_comments();
         let byte = self.peek_byte().ok_or_else(|| {
-            OxideError::ParseError("unexpected end of input while parsing object".to_string())
+            WellfriendError::ParseError("unexpected end of input while parsing object".to_string())
         })?;
 
         match byte {
@@ -85,7 +85,7 @@ impl<'a> PdfParser<'a> {
             b'f' if self.consume_keyword(b"false") => Ok(PdfObject::Boolean(false)),
             b'n' if self.consume_keyword(b"null") => Ok(PdfObject::Null),
             b'+' | b'-' | b'.' | b'0'..=b'9' => self.parse_number_or_reference(),
-            other => Err(OxideError::ParseError(format!(
+            other => Err(WellfriendError::ParseError(format!(
                 "unexpected byte 0x{other:02X} while parsing object"
             ))),
         }
@@ -97,7 +97,7 @@ impl<'a> PdfParser<'a> {
     /// is exceeded.
     fn enter_nesting(&mut self) -> Result<()> {
         if self.depth >= MAX_PARSE_DEPTH {
-            return Err(OxideError::ParseError(format!(
+            return Err(WellfriendError::ParseError(format!(
                 "object nesting exceeded depth limit {MAX_PARSE_DEPTH}"
             )));
         }
@@ -115,21 +115,21 @@ impl<'a> PdfParser<'a> {
         self.skip_ws_and_comments();
         let generation = self.parse_unsigned_integer_token()?;
         let number = u32::try_from(number).map_err(|_| {
-            OxideError::ParseError(format!("object number {number} does not fit in u32"))
+            WellfriendError::ParseError(format!("object number {number} does not fit in u32"))
         })?;
         let generation = u16::try_from(generation).map_err(|_| {
-            OxideError::ParseError(format!("generation {generation} does not fit in u16"))
+            WellfriendError::ParseError(format!("generation {generation} does not fit in u16"))
         })?;
         self.skip_ws_and_comments();
         if !self.consume_keyword(b"obj") {
-            return Err(OxideError::ParseError(
+            return Err(WellfriendError::ParseError(
                 "indirect object header is missing obj keyword".to_string(),
             ));
         }
         let object = self.parse_object()?;
         self.skip_ws_and_comments();
         if !self.consume_keyword(b"endobj") {
-            return Err(OxideError::ParseError(format!(
+            return Err(WellfriendError::ParseError(format!(
                 "object {number} {generation} is missing endobj"
             )));
         }
@@ -146,14 +146,14 @@ impl<'a> PdfParser<'a> {
         self.skip_ws_and_comments();
         let generation = self.parse_unsigned_integer_token()?;
         let number = u32::try_from(number).map_err(|_| {
-            OxideError::ParseError(format!("object number {number} does not fit in u32"))
+            WellfriendError::ParseError(format!("object number {number} does not fit in u32"))
         })?;
         let generation = u16::try_from(generation).map_err(|_| {
-            OxideError::ParseError(format!("generation {generation} does not fit in u16"))
+            WellfriendError::ParseError(format!("generation {generation} does not fit in u16"))
         })?;
         self.skip_ws_and_comments();
         if !self.consume_keyword(b"obj") {
-            return Err(OxideError::ParseError(
+            return Err(WellfriendError::ParseError(
                 "indirect object header is missing obj keyword".to_string(),
             ));
         }
@@ -161,7 +161,7 @@ impl<'a> PdfParser<'a> {
         let dict = self.parse_dictionary()?;
         self.skip_ws_and_comments();
         if !self.consume_keyword(b"stream") {
-            return Err(OxideError::ParseError(format!(
+            return Err(WellfriendError::ParseError(format!(
                 "object {number} {generation} is not a stream"
             )));
         }
@@ -210,13 +210,13 @@ impl<'a> PdfParser<'a> {
             }
             if self.peek_byte().is_none() {
                 self.leave_nesting();
-                return Err(OxideError::ParseError(
+                return Err(WellfriendError::ParseError(
                     "unterminated dictionary".to_string(),
                 ));
             }
             if self.peek_byte() != Some(b'/') {
                 self.leave_nesting();
-                return Err(OxideError::ParseError(
+                return Err(WellfriendError::ParseError(
                     "dictionary key must be a name".to_string(),
                 ));
             }
@@ -260,7 +260,9 @@ impl<'a> PdfParser<'a> {
                 },
                 None => {
                     self.leave_nesting();
-                    return Err(OxideError::ParseError("unterminated array".to_string()));
+                    return Err(WellfriendError::ParseError(
+                        "unterminated array".to_string(),
+                    ));
                 }
             }
         }
@@ -293,7 +295,7 @@ impl<'a> PdfParser<'a> {
             }
         }
 
-        Err(OxideError::ParseError(
+        Err(WellfriendError::ParseError(
             "unterminated literal string".to_string(),
         ))
     }
@@ -339,9 +341,9 @@ impl<'a> PdfParser<'a> {
         let mut high: Option<u8> = None;
 
         loop {
-            let byte = self
-                .next_byte()
-                .ok_or_else(|| OxideError::ParseError("unterminated hex string".to_string()))?;
+            let byte = self.next_byte().ok_or_else(|| {
+                WellfriendError::ParseError("unterminated hex string".to_string())
+            })?;
             if byte == b'>' {
                 break;
             }
@@ -349,7 +351,7 @@ impl<'a> PdfParser<'a> {
                 continue;
             }
             let value = hex_value(byte).ok_or_else(|| {
-                OxideError::ParseError(format!("invalid hex string digit 0x{byte:02X}"))
+                WellfriendError::ParseError(format!("invalid hex string digit 0x{byte:02X}"))
             })?;
             match high.take() {
                 Some(high_nibble) => out.push((high_nibble << 4) | value),
@@ -392,7 +394,7 @@ impl<'a> PdfParser<'a> {
         }
 
         String::from_utf8(out)
-            .map_err(|err| OxideError::ParseError(format!("name is not UTF-8: {err}")))
+            .map_err(|err| WellfriendError::ParseError(format!("name is not UTF-8: {err}")))
     }
 
     fn parse_number_or_reference(&mut self) -> Result<PdfObject> {
@@ -407,10 +409,10 @@ impl<'a> PdfParser<'a> {
         }
 
         let text = std::str::from_utf8(&token)
-            .map_err(|err| OxideError::ParseError(format!("invalid real token: {err}")))?;
+            .map_err(|err| WellfriendError::ParseError(format!("invalid real token: {err}")))?;
         let value = text
             .parse::<f64>()
-            .map_err(|err| OxideError::ParseError(format!("invalid real number: {err}")))?;
+            .map_err(|err| WellfriendError::ParseError(format!("invalid real number: {err}")))?;
         Ok(PdfObject::Real(value))
     }
 
@@ -462,11 +464,12 @@ impl<'a> PdfParser<'a> {
 
         let stream_start = self.pos;
         if let Some(length) = self.resolve_stream_length(dict)? {
-            let length = usize::try_from(length)
-                .map_err(|_| OxideError::MalformedPdf("stream Length is too large".to_string()))?;
-            let stream_end = stream_start
-                .checked_add(length)
-                .ok_or_else(|| OxideError::MalformedPdf("stream Length overflows".to_string()))?;
+            let length = usize::try_from(length).map_err(|_| {
+                WellfriendError::MalformedPdf("stream Length is too large".to_string())
+            })?;
+            let stream_end = stream_start.checked_add(length).ok_or_else(|| {
+                WellfriendError::MalformedPdf("stream Length overflows".to_string())
+            })?;
             if stream_end <= self.data.len() {
                 let after_raw = skip_eol(self.data, stream_end);
                 if bytes_at(self.data, after_raw, b"endstream") {
@@ -492,13 +495,13 @@ impl<'a> PdfParser<'a> {
                 };
                 match resolver.resolve_for_parser(length_obj)? {
                     PdfObject::Integer(value) => Ok(Some(value)),
-                    other => Err(OxideError::MalformedPdf(format!(
+                    other => Err(WellfriendError::MalformedPdf(format!(
                         "stream Length reference resolved to {}",
                         other.variant_name()
                     ))),
                 }
             }
-            other => Err(OxideError::MalformedPdf(format!(
+            other => Err(WellfriendError::MalformedPdf(format!(
                 "stream Length must be integer or reference, got {}",
                 other.variant_name()
             ))),
@@ -515,7 +518,7 @@ impl<'a> PdfParser<'a> {
                 return Ok(raw);
             }
         }
-        Err(OxideError::ParseError(
+        Err(WellfriendError::ParseError(
             "stream is missing endstream".to_string(),
         ))
     }
@@ -523,14 +526,14 @@ impl<'a> PdfParser<'a> {
     fn parse_unsigned_integer_token(&mut self) -> Result<u64> {
         let token = self.parse_number_token()?;
         if token.contains(&b'.') || token.starts_with(b"-") {
-            return Err(OxideError::ParseError(
+            return Err(WellfriendError::ParseError(
                 "expected unsigned integer token".to_string(),
             ));
         }
         let text = std::str::from_utf8(&token)
-            .map_err(|err| OxideError::ParseError(format!("invalid integer token: {err}")))?;
+            .map_err(|err| WellfriendError::ParseError(format!("invalid integer token: {err}")))?;
         text.parse::<u64>()
-            .map_err(|err| OxideError::ParseError(format!("invalid unsigned integer: {err}")))
+            .map_err(|err| WellfriendError::ParseError(format!("invalid unsigned integer: {err}")))
     }
 
     fn parse_number_token(&mut self) -> Result<Vec<u8>> {
@@ -556,7 +559,9 @@ impl<'a> PdfParser<'a> {
         }
         if !saw_digit {
             self.pos = start;
-            return Err(OxideError::ParseError("expected numeric token".to_string()));
+            return Err(WellfriendError::ParseError(
+                "expected numeric token".to_string(),
+            ));
         }
         Ok(self.data[start..self.pos].to_vec())
     }
@@ -566,7 +571,7 @@ impl<'a> PdfParser<'a> {
             self.pos += expected.len();
             Ok(())
         } else {
-            Err(OxideError::ParseError(format!(
+            Err(WellfriendError::ParseError(format!(
                 "expected {}",
                 String::from_utf8_lossy(expected)
             )))
@@ -576,10 +581,10 @@ impl<'a> PdfParser<'a> {
     fn expect_byte(&mut self, expected: u8) -> Result<()> {
         match self.next_byte() {
             Some(byte) if byte == expected => Ok(()),
-            Some(byte) => Err(OxideError::ParseError(format!(
+            Some(byte) => Err(WellfriendError::ParseError(format!(
                 "expected byte 0x{expected:02X}, got 0x{byte:02X}"
             ))),
-            None => Err(OxideError::ParseError(format!(
+            None => Err(WellfriendError::ParseError(format!(
                 "expected byte 0x{expected:02X}, got EOF"
             ))),
         }
@@ -636,9 +641,9 @@ impl<'a> PdfParser<'a> {
 
 fn parse_i64_token(token: &[u8]) -> Result<i64> {
     let text = std::str::from_utf8(token)
-        .map_err(|err| OxideError::ParseError(format!("invalid integer token: {err}")))?;
+        .map_err(|err| WellfriendError::ParseError(format!("invalid integer token: {err}")))?;
     text.parse::<i64>()
-        .map_err(|err| OxideError::ParseError(format!("invalid integer: {err}")))
+        .map_err(|err| WellfriendError::ParseError(format!("invalid integer: {err}")))
 }
 
 fn skip_eol(data: &[u8], pos: usize) -> usize {
@@ -751,7 +756,7 @@ mod tests {
         let mut parser = PdfParser::new(&input, 0).unwrap();
         let err = parser.parse_object().unwrap_err();
         assert!(
-            matches!(err, OxideError::ParseError(ref msg) if msg.contains("depth limit")),
+            matches!(err, WellfriendError::ParseError(ref msg) if msg.contains("depth limit")),
             "expected depth-limit ParseError, got {err:?}"
         );
     }
@@ -765,7 +770,7 @@ mod tests {
         let mut parser = PdfParser::new(&input, 0).unwrap();
         let err = parser.parse_object().unwrap_err();
         assert!(
-            matches!(err, OxideError::ParseError(ref msg) if msg.contains("depth limit")),
+            matches!(err, WellfriendError::ParseError(ref msg) if msg.contains("depth limit")),
             "expected depth-limit ParseError, got {err:?}"
         );
     }
@@ -801,7 +806,7 @@ mod tests {
         let mut parser = PdfParser::new(&input, 0).unwrap();
         let err = parser.parse_object().unwrap_err();
         assert!(
-            matches!(err, OxideError::ParseError(ref msg) if msg.contains("depth limit")),
+            matches!(err, WellfriendError::ParseError(ref msg) if msg.contains("depth limit")),
             "expected depth-limit ParseError, got {err:?}"
         );
     }

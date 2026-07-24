@@ -14,7 +14,7 @@ use crate::content::{
 use crate::document::{PdfDocument, PdfPage};
 use crate::editable::{EditableBuildOptions, EditableDocument};
 use crate::engine::{ContentEngine, PageResources};
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_lossless, flate_encode, DecodeLimits, StreamDecodeStatus};
 use crate::fonts::FontResolver;
 use crate::images::decoder::{ImageDecoder, RawImage};
@@ -380,7 +380,7 @@ pub fn replace_text_pdf(
     options: TextReplacementOptions,
 ) -> Result<(Vec<u8>, TextReplacementReport)> {
     if query.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "text replacement query must not be empty".to_string(),
         ));
     }
@@ -428,7 +428,7 @@ pub fn replace_text_pdf(
         }
     }
     if regions.is_empty() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "text replacement found matches but no usable glyph quads".to_string(),
         ));
     }
@@ -506,7 +506,7 @@ pub fn edit_paragraph_reflow_pdf(
     options: ParagraphReflowOptions,
 ) -> Result<(Vec<u8>, ParagraphReflowReport)> {
     if query.is_empty() {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "paragraph edit query must not be empty".to_string(),
         ));
     }
@@ -550,7 +550,7 @@ pub fn edit_paragraph_reflow_pdf(
         ));
     }
     if matches!(options.mode, ParagraphEditSerializationMode::Unsupported) {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "paragraph edit mode was explicitly set to unsupported".to_string(),
         ));
     }
@@ -594,7 +594,7 @@ pub fn edit_paragraph_reflow_pdf(
         .id
         .clone();
     if !model.replace_paragraph_text(&block_id, &paragraph_id, &after_paragraph) {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "editable paragraph target disappeared during edit".to_string(),
         ));
     }
@@ -614,7 +614,7 @@ pub fn edit_paragraph_reflow_pdf(
             union_optional_rects(block, query_rect)
         })
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature(
+            WellfriendError::UnsupportedFeature(
                 "paragraph reflow edit found text but no usable geometry".to_string(),
             )
         })?;
@@ -987,7 +987,7 @@ impl PdfEditor {
     ) -> Result<&mut Self> {
         self.validate_page(page_number)?;
         if polygon.len() < 3 || polygon.len() > 16_384 {
-            return Err(OxideError::ResourceLimit(
+            return Err(WellfriendError::ResourceLimit(
                 "redaction polygon must contain between 3 and 16384 points".to_string(),
             ));
         }
@@ -995,13 +995,13 @@ impl PdfEditor {
             .iter()
             .any(|(x, y)| !x.is_finite() || !y.is_finite())
         {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "redaction polygon contains a non-finite coordinate".to_string(),
             ));
         }
         let rect = rect_from_points(&polygon);
         if rect.width <= 0.0 || rect.height <= 0.0 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "redaction polygon has an empty bounding box".to_string(),
             ));
         }
@@ -1158,7 +1158,7 @@ impl PdfEditor {
 
     /// Bake common annotation appearances into page content and remove the
     /// flattened annotations. Unsupported annotation subtypes are removed with a
-    /// conservative fallback only for visual markers that Oxide can synthesize.
+    /// conservative fallback only for visual markers that Wellfriend can synthesize.
     pub fn flatten_annotations(&mut self) -> &mut Self {
         self.flatten_annotations = true;
         self
@@ -1179,7 +1179,7 @@ impl PdfEditor {
 
     pub fn save_to_bytes(&self, mode: EditMode) -> Result<Vec<u8>> {
         if mode == EditMode::Incremental && !self.redactions.is_empty() {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "redaction requires full rewrite; incremental output preserves old revision bytes"
                     .to_string(),
             ));
@@ -1306,7 +1306,7 @@ impl PdfEditor {
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             let page = by_page.get(&page_number).ok_or_else(|| {
-                OxideError::MalformedPdf(format!("page {page_number} is out of range"))
+                WellfriendError::MalformedPdf(format!("page {page_number} is out of range"))
             })?;
             let page_object = changes.current_object(
                 self.document.reader(),
@@ -1314,7 +1314,7 @@ impl PdfEditor {
                 page.generation_number,
             )?;
             let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
-                OxideError::MalformedPdf(format!(
+                WellfriendError::MalformedPdf(format!(
                     "page object {} {} is not a dictionary",
                     page.object_number, page.generation_number
                 ))
@@ -1427,7 +1427,7 @@ impl PdfEditor {
 
     fn validate_page(&self, page_number: usize) -> Result<()> {
         if page_number == 0 || page_number > self.document.get_pages()?.len() {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "page {page_number} is out of range"
             )));
         }
@@ -1442,7 +1442,7 @@ impl PdfEditor {
                 let mut seen = BTreeSet::new();
                 for &page in pages {
                     if page == 0 || page > total {
-                        return Err(OxideError::MalformedPdf(format!(
+                        return Err(WellfriendError::MalformedPdf(format!(
                             "page {page} is out of range"
                         )));
                     }
@@ -1511,11 +1511,15 @@ impl PdfEditor {
     fn remove_embedded_file_name_tree(&self, changes: &mut ChangeSet) -> Result<()> {
         let reader = self.document.reader();
         let (root, generation) = reader.root_reference().ok_or_else(|| {
-            OxideError::MalformedPdf("attachment removal: trailer is missing /Root".to_string())
+            WellfriendError::MalformedPdf(
+                "attachment removal: trailer is missing /Root".to_string(),
+            )
         })?;
         let object = changes.current_object(reader, root, generation)?;
         let mut catalog = object.as_dict().cloned().ok_or_else(|| {
-            OxideError::MalformedPdf("attachment removal: /Root is not a dictionary".to_string())
+            WellfriendError::MalformedPdf(
+                "attachment removal: /Root is not a dictionary".to_string(),
+            )
         })?;
         let Some(names_obj) = catalog.get("Names").cloned() else {
             changes.insert_existing(root, generation, PdfObject::Dictionary(catalog));
@@ -1589,7 +1593,7 @@ impl PdfEditor {
 
         for name in self.form_fills.keys() {
             if !matched.contains(name) {
-                return Err(OxideError::MalformedPdf(format!(
+                return Err(WellfriendError::MalformedPdf(format!(
                     "form field '{name}' was not found"
                 )));
             }
@@ -1679,7 +1683,7 @@ fn apply_paragraph_operation(
     match operation {
         ParagraphEditOperation::Replace { replacement } => {
             let Some((start, end)) = find_query_char_range(before, query, case_sensitive) else {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "paragraph replace target was not found".to_string(),
                 ));
             };
@@ -1729,15 +1733,15 @@ fn splice_char_range(
 ) -> Result<String> {
     let len = input.chars().count();
     if start_chars > end_chars || end_chars > len {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "paragraph edit range {start_chars}..{end_chars} is outside text length {len}"
         )));
     }
     let start = char_to_byte(input, start_chars).ok_or_else(|| {
-        OxideError::MalformedPdf("paragraph edit start offset is invalid".to_string())
+        WellfriendError::MalformedPdf("paragraph edit start offset is invalid".to_string())
     })?;
     let end = char_to_byte(input, end_chars).ok_or_else(|| {
-        OxideError::MalformedPdf("paragraph edit end offset is invalid".to_string())
+        WellfriendError::MalformedPdf("paragraph edit end offset is invalid".to_string())
     })?;
     let mut out = String::with_capacity(input.len() + replacement.len());
     out.push_str(&input[..start]);
@@ -1832,7 +1836,7 @@ fn reflow_lines(
             lines.push(current);
             current = token;
             if lines.len() >= cap {
-                return Err(OxideError::UnsupportedFeature(format!(
+                return Err(WellfriendError::UnsupportedFeature(format!(
                     "paragraph reflow overflow: rewritten paragraph exceeds {cap} line(s)"
                 )));
             }
@@ -1844,7 +1848,7 @@ fn reflow_lines(
         lines.push(current);
     }
     if lines.len() > cap {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "paragraph reflow overflow: rewritten paragraph exceeds {cap} line(s)"
         )));
     }
@@ -2481,7 +2485,7 @@ fn rewrite_page_content_for_redaction(
                             retained_xobjects.insert(name);
                         }
                         if !rewritten && policy == ImageRedactionPolicy::Fail {
-                            return Err(OxideError::UnsupportedFeature(
+                            return Err(WellfriendError::UnsupportedFeature(
                                 "inline image redaction failed closed: the filter, color space, bit depth, transform, or sample layout has no bounded deterministic rewrite"
                                     .to_string(),
                             ));
@@ -2614,7 +2618,7 @@ fn rewrite_page_content_for_redaction(
                             }
                         }
                         if !handled && policy == ImageRedactionPolicy::Fail {
-                            return Err(OxideError::UnsupportedFeature(
+                            return Err(WellfriendError::UnsupportedFeature(
                                 "partial image redaction could not prove a secure sample-space rewrite; use remove policy for conservative invocation removal"
                                     .to_string(),
                             ));
@@ -3008,16 +3012,20 @@ fn serialize_inline_image_group(operations: &[ContentOperation], out: &mut Vec<u
     let id = operations
         .iter()
         .find(|operation| operation.operator == "ID")
-        .ok_or_else(|| OxideError::MalformedPdf("inline image has no ID operator".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("inline image has no ID operator".to_string())
+        })?;
     let data = operations
         .iter()
         .find(|operation| operation.operator == "inline_image_data")
         .and_then(|operation| operation.string_bytes(0))
-        .ok_or_else(|| OxideError::MalformedPdf("inline image has no captured data".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("inline image has no captured data".to_string())
+        })?;
     out.extend_from_slice(b"BI\n");
     for pair in id.operands.chunks(2) {
         if pair.len() != 2 {
-            return Err(OxideError::MalformedPdf(
+            return Err(WellfriendError::MalformedPdf(
                 "inline image parameter list is not key/value paired".to_string(),
             ));
         }
@@ -3056,12 +3064,16 @@ fn rewrite_inline_image_group(
     let id = operations
         .iter()
         .find(|operation| operation.operator == "ID")
-        .ok_or_else(|| OxideError::MalformedPdf("inline image has no ID operator".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("inline image has no ID operator".to_string())
+        })?;
     let data = operations
         .iter()
         .find(|operation| operation.operator == "inline_image_data")
         .and_then(|operation| operation.string_bytes(0))
-        .ok_or_else(|| OxideError::MalformedPdf("inline image has no captured data".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("inline image has no captured data".to_string())
+        })?;
     if data.len() > MAX_INLINE_BYTES || id.operands.len() % 2 != 0 {
         return Ok((false, None));
     }
@@ -3313,7 +3325,7 @@ fn inline_decode_params(
             if let Some(first) = out.first_mut() {
                 *first = Some(inline_operand_dictionary(entries)?);
             } else {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "inline DecodeParms present without a Filter".to_string(),
                 ));
             }
@@ -3323,16 +3335,16 @@ fn inline_decode_params(
             .iter()
             .map(|item| match item {
                 Operand::Dictionary(entries) => Ok(Some(inline_operand_dictionary(entries)?)),
-                _ => Err(OxideError::MalformedPdf(
+                _ => Err(WellfriendError::MalformedPdf(
                     "inline DecodeParms array entries must be dictionaries".to_string(),
                 )),
             })
             .collect(),
-        Operand::Array(items) => Err(OxideError::MalformedPdf(format!(
+        Operand::Array(items) => Err(WellfriendError::MalformedPdf(format!(
             "inline DecodeParms count {} does not match Filter count {filter_count}",
             items.len()
         ))),
-        _ => Err(OxideError::MalformedPdf(
+        _ => Err(WellfriendError::MalformedPdf(
             "inline DecodeParms must be a dictionary or matching array".to_string(),
         )),
     }
@@ -3342,7 +3354,7 @@ fn inline_operand_dictionary(entries: &[(String, Operand)]) -> Result<PdfDiction
     let mut dict = PdfDictionary::empty();
     for (key, value) in entries {
         let value = operand_to_pdf_object_for_inline(value).ok_or_else(|| {
-            OxideError::MalformedPdf(format!(
+            WellfriendError::MalformedPdf(format!(
                 "inline dictionary /{key} contains an unsupported value"
             ))
         })?;
@@ -3630,7 +3642,7 @@ fn redacted_image_xobject(
         return Ok(None);
     }
     let inverse = invert_affine(&image_ctm).ok_or_else(|| {
-        OxideError::UnsupportedFeature(
+        WellfriendError::UnsupportedFeature(
             "partial image redaction rejected a singular or non-finite image transform".to_string(),
         )
     })?;
@@ -3659,10 +3671,10 @@ fn redacted_image_xobject(
         .ok()
         .and_then(|w| w.checked_mul(height as usize))
         .and_then(|pixels| pixels.checked_mul(channels))
-        .ok_or_else(|| OxideError::ResourceLimit("image sample count overflow".to_string()))?;
+        .ok_or_else(|| WellfriendError::ResourceLimit("image sample count overflow".to_string()))?;
     let mut samples = unpack_samples_exact(&decoded.data, width, height, channels, bpc)?;
     if samples.len() != expected_samples {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "decoded image sample length does not match dimensions".to_string(),
         ));
     }
@@ -3682,7 +3694,7 @@ fn redacted_image_xobject(
             .iter()
             .any(|(x, y)| !x.is_finite() || !y.is_finite())
         {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "partial image redaction produced non-finite sample coordinates".to_string(),
             ));
         }
@@ -3775,7 +3787,7 @@ fn secure_image_sample_layout(
             "DeviceGray" | "G" => Ok(SecureImageLayout::Device { channels: 1 }),
             "DeviceRGB" | "RGB" => Ok(SecureImageLayout::Device { channels: 3 }),
             "DeviceCMYK" | "CMYK" => Ok(SecureImageLayout::Device { channels: 4 }),
-            _ => Err(OxideError::UnsupportedFeature(format!(
+            _ => Err(WellfriendError::UnsupportedFeature(format!(
                 "secure image rewrite does not resolve named color space /{name}"
             ))),
         },
@@ -3785,14 +3797,16 @@ fn secure_image_sample_layout(
                     .as_integer()
                     .and_then(|value| u8::try_from(value).ok())
                     .ok_or_else(|| {
-                        OxideError::MalformedPdf("Indexed /hival is outside 0..255".to_string())
+                        WellfriendError::MalformedPdf(
+                            "Indexed /hival is outside 0..255".to_string(),
+                        )
                     })?;
                 let base_channels = match items[1].as_name() {
                     Some("DeviceGray" | "G") => 1,
                     Some("DeviceRGB" | "RGB") => 3,
                     Some("DeviceCMYK" | "CMYK") => 4,
                     _ => {
-                        return Err(OxideError::UnsupportedFeature(
+                        return Err(WellfriendError::UnsupportedFeature(
                             "secure Indexed rewrite supports DeviceGray/RGB/CMYK bases".to_string(),
                         ))
                     }
@@ -3809,20 +3823,20 @@ fn secure_image_sample_layout(
                     .and_then(|value| usize::try_from(value).ok())
                     .filter(|value| matches!(value, 1 | 3 | 4))
                     .ok_or_else(|| {
-                        OxideError::UnsupportedFeature(
+                        WellfriendError::UnsupportedFeature(
                             "ICCBased secure rewrite requires profile /N 1, 3, or 4".to_string(),
                         )
                     })?;
                 Ok(SecureImageLayout::IccBased { channels })
             }
-            Some(other) => Err(OxideError::UnsupportedFeature(format!(
+            Some(other) => Err(WellfriendError::UnsupportedFeature(format!(
                 "secure image rewrite does not support array color space {other}"
             ))),
-            None => Err(OxideError::MalformedPdf(
+            None => Err(WellfriendError::MalformedPdf(
                 "image ColorSpace array has no family name".to_string(),
             )),
         },
-        _ => Err(OxideError::MalformedPdf(
+        _ => Err(WellfriendError::MalformedPdf(
             "non-stencil image has no supported ColorSpace".to_string(),
         )),
     }
@@ -3836,22 +3850,22 @@ fn unpack_samples_exact(
     bpc: u8,
 ) -> Result<Vec<u8>> {
     if !matches!(bpc, 1 | 2 | 4 | 8) || channels == 0 {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "packed sample rewrite supports 1, 2, 4, or 8 bits".to_string(),
         ));
     }
     let samples_per_row = (width as usize)
         .checked_mul(channels)
-        .ok_or_else(|| OxideError::ResourceLimit("packed row sample overflow".to_string()))?;
+        .ok_or_else(|| WellfriendError::ResourceLimit("packed row sample overflow".to_string()))?;
     let row_bytes = samples_per_row
         .checked_mul(bpc as usize)
         .map(|bits| bits.div_ceil(8))
-        .ok_or_else(|| OxideError::ResourceLimit("packed row byte overflow".to_string()))?;
+        .ok_or_else(|| WellfriendError::ResourceLimit("packed row byte overflow".to_string()))?;
     let expected = row_bytes
         .checked_mul(height as usize)
-        .ok_or_else(|| OxideError::ResourceLimit("packed image byte overflow".to_string()))?;
+        .ok_or_else(|| WellfriendError::ResourceLimit("packed image byte overflow".to_string()))?;
     if bytes.len() != expected {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "packed image decoded length {} does not equal row-padded length {expected}",
             bytes.len()
         )));
@@ -3877,19 +3891,21 @@ fn pack_samples_exact(
 ) -> Result<Vec<u8>> {
     let samples_per_row = (width as usize)
         .checked_mul(channels)
-        .ok_or_else(|| OxideError::ResourceLimit("packed row sample overflow".to_string()))?;
+        .ok_or_else(|| WellfriendError::ResourceLimit("packed row sample overflow".to_string()))?;
     let expected_samples = samples_per_row
         .checked_mul(height as usize)
-        .ok_or_else(|| OxideError::ResourceLimit("packed image sample overflow".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::ResourceLimit("packed image sample overflow".to_string())
+        })?;
     if samples.len() != expected_samples {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "packed rewrite sample buffer length mismatch".to_string(),
         ));
     }
     let row_bytes = samples_per_row
         .checked_mul(bpc as usize)
         .map(|bits| bits.div_ceil(8))
-        .ok_or_else(|| OxideError::ResourceLimit("packed row byte overflow".to_string()))?;
+        .ok_or_else(|| WellfriendError::ResourceLimit("packed row byte overflow".to_string()))?;
     let mask = ((1u16 << bpc) - 1) as u8;
     let mut out = vec![0u8; row_bytes.saturating_mul(height as usize)];
     for y in 0..height as usize {
@@ -3929,7 +3945,7 @@ fn secure_replacement_samples(
                 let start = index as usize * base_channels;
                 let end = start + base_channels;
                 let color = lookup.get(start..end).ok_or_else(|| {
-                    OxideError::MalformedPdf("Indexed lookup table is too short".to_string())
+                    WellfriendError::MalformedPdf("Indexed lookup table is too short".to_string())
                 })?;
                 let distance = color
                     .iter()
@@ -3986,7 +4002,7 @@ fn indexed_lookup_bytes(dict: &PdfDictionary, reader: &PdfReader) -> Result<Vec<
         .or_else(|| dict.get("CS"))
         .and_then(PdfObject::as_array)
         .ok_or_else(|| {
-            OxideError::MalformedPdf("Indexed ColorSpace is not an array".to_string())
+            WellfriendError::MalformedPdf("Indexed ColorSpace is not an array".to_string())
         })?;
     match items.get(3) {
         Some(PdfObject::String(bytes)) => Ok(bytes.clone()),
@@ -3995,17 +4011,17 @@ fn indexed_lookup_bytes(dict: &PdfDictionary, reader: &PdfReader) -> Result<Vec<
             stream @ PdfObject::Stream { .. } => {
                 let decoded = decode_stream_lossless(&stream, reader)?;
                 if !matches!(decoded.status, StreamDecodeStatus::Complete) {
-                    return Err(OxideError::UnsupportedFeature(
+                    return Err(WellfriendError::UnsupportedFeature(
                         "Indexed lookup uses an unsupported image codec".to_string(),
                     ));
                 }
                 Ok(decoded.data)
             }
-            _ => Err(OxideError::MalformedPdf(
+            _ => Err(WellfriendError::MalformedPdf(
                 "Indexed lookup is not a string or stream".to_string(),
             )),
         },
-        None => Err(OxideError::MalformedPdf(
+        None => Err(WellfriendError::MalformedPdf(
             "Indexed ColorSpace has no lookup table".to_string(),
         )),
     }
@@ -4028,7 +4044,7 @@ fn redacted_associated_mask(
 ) -> Result<PdfObject> {
     let object = reader.get_object(mask_ref.0, mask_ref.1)?;
     let PdfObject::Stream { dict, .. } = &object else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "associated image mask is not a stream".to_string(),
         ));
     };
@@ -4039,20 +4055,20 @@ fn redacted_associated_mask(
         .get_integer("BitsPerComponent")
         .unwrap_or(if stencil { 1 } else { 8 }) as u8;
     if width == 0 || height == 0 || !matches!(bpc, 1 | 8) {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "associated mask rewrite supports bounded 1-bit stencils and 8-bit gray masks"
                 .to_string(),
         ));
     }
     let decoded = decode_stream_lossless(&object, reader)?;
     if !matches!(decoded.status, StreamDecodeStatus::Complete) {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "associated mask codec has no safe lossless decoder".to_string(),
         ));
     }
     let mut samples = unpack_samples_exact(&decoded.data, width, height, 1, bpc)?;
     let inverse = invert_affine(&image_ctm).ok_or_else(|| {
-        OxideError::UnsupportedFeature("associated mask transform is singular".to_string())
+        WellfriendError::UnsupportedFeature("associated mask transform is singular".to_string())
     })?;
     let max = ((1u16 << bpc) - 1) as u8;
     let transparent = if stencil && !soft_mask && !pdf_decode_paints_ones(dict.get("Decode")) {
@@ -4735,7 +4751,7 @@ fn apply_annotation_edits(
                 if let Some((number, generation)) = annots.get(*index).copied() {
                     let object = changes.current_object(reader, number, generation)?;
                     let mut dict = object.as_dict().cloned().ok_or_else(|| {
-                        OxideError::MalformedPdf(format!(
+                        WellfriendError::MalformedPdf(format!(
                             "annotation {number} {generation} is not a dictionary"
                         ))
                     })?;
@@ -4990,7 +5006,7 @@ fn collect_acroform_fields(reader: &PdfReader, pages: &[PdfPage]) -> Result<Vec<
         .root_reference()
         .and_then(|(n, g)| reader.get_and_resolve(n, g).ok())
         .and_then(|obj| obj.as_dict().cloned())
-        .ok_or_else(|| OxideError::MalformedPdf("catalog is missing".to_string()))?;
+        .ok_or_else(|| WellfriendError::MalformedPdf("catalog is missing".to_string()))?;
     let Some(acroform_obj) = catalog.get("AcroForm") else {
         return Ok(Vec::new());
     };
@@ -5141,11 +5157,11 @@ fn update_field_value(
 
 fn remove_acroform_from_catalog(reader: &PdfReader, changes: &mut ChangeSet) -> Result<()> {
     let (root, generation) = reader.root_reference().ok_or_else(|| {
-        OxideError::MalformedPdf("flatten forms: trailer is missing /Root".to_string())
+        WellfriendError::MalformedPdf("flatten forms: trailer is missing /Root".to_string())
     })?;
     let object = changes.current_object(reader, root, generation)?;
     let mut catalog = object.as_dict().cloned().ok_or_else(|| {
-        OxideError::MalformedPdf("flatten forms: /Root is not a dictionary".to_string())
+        WellfriendError::MalformedPdf("flatten forms: /Root is not a dictionary".to_string())
     })?;
     catalog.remove("AcroForm");
     changes.insert_existing(root, generation, PdfObject::Dictionary(catalog));
@@ -5502,14 +5518,14 @@ fn next_resource_name(dict: &PdfDictionary, prefix: &str) -> String {
 
 fn write_full_rewrite(reader: &PdfReader, changes: Vec<IncrementalObject>) -> Result<Vec<u8>> {
     if reader.is_encrypted() {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "editing full rewrite does not re-encrypt encrypted inputs".to_string(),
         ));
     }
     let mut changed = BTreeMap::new();
     for object in changes {
         if object.generation != 0 {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "editing full rewrite currently supports generation-0 updates only".to_string(),
             ));
         }
@@ -5519,7 +5535,7 @@ fn write_full_rewrite(reader: &PdfReader, changes: Vec<IncrementalObject>) -> Re
     let mut objects = BTreeMap::new();
     for (number, generation) in reader.object_ids() {
         if generation != 0 {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "editing full rewrite currently supports generation-0 source objects only"
                     .to_string(),
             ));
@@ -5535,17 +5551,17 @@ fn write_full_rewrite(reader: &PdfReader, changes: Vec<IncrementalObject>) -> Re
     }
 
     let (root, root_generation) = reader.root_reference().ok_or_else(|| {
-        OxideError::MalformedPdf("editing full rewrite: trailer is missing /Root".to_string())
+        WellfriendError::MalformedPdf("editing full rewrite: trailer is missing /Root".to_string())
     })?;
     if root_generation != 0 {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "editing full rewrite currently supports generation-0 /Root only".to_string(),
         ));
     }
     let info = match reader.info_reference() {
         Some((number, 0)) => Some(number),
         Some(_) => {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "editing full rewrite currently supports generation-0 /Info only".to_string(),
             ))
         }
@@ -5628,7 +5644,7 @@ fn image_color_space(channels: u8) -> Result<&'static str> {
         1 => Ok("DeviceGray"),
         3 => Ok("DeviceRGB"),
         4 => Ok("DeviceCMYK"),
-        _ => Err(OxideError::UnsupportedFeature(format!(
+        _ => Err(WellfriendError::UnsupportedFeature(format!(
             "editing: unsupported image channel count {channels}"
         ))),
     }
@@ -5636,7 +5652,7 @@ fn image_color_space(channels: u8) -> Result<&'static str> {
 
 fn edit_image_from_raw(raw: RawImage) -> Result<EditImage> {
     if !raw.is_valid() || raw.bits_per_sample != 8 {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "editing: image samples must be non-empty 8-bit data".to_string(),
         ));
     }
@@ -5651,7 +5667,7 @@ fn edit_image_from_raw(raw: RawImage) -> Result<EditImage> {
             }
         }
         other => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "editing: unsupported raw image channel count {other}"
             )))
         }

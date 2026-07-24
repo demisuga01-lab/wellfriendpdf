@@ -1,4 +1,5 @@
-use oxide_engine::{
+use std::fs;
+use wellfriendpdf_engine::{
     cjk_dictionary_entries_sha256, cjk_dictionary_rag_token_chunks, cjk_dictionary_token_search,
     merge_layout_proposals_deterministic, segment_cjk_dictionary_text_with_provider,
     CjkDictionaryPackManifest, CjkDictionaryProvider, CjkDictionaryProviderLimits,
@@ -6,7 +7,6 @@ use oxide_engine::{
     LayoutLocalBackendConfig, LayoutMergePolicy, LayoutProposalSet, MockCloudLayoutBackend,
     MockLocalLayoutBackend, ParentTreeRecoveryStatus,
 };
-use std::fs;
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,
@@ -132,15 +132,15 @@ fn layout_mock_backends_merge_deterministically_and_cloud_fails_closed() {
 
     let allowed_input = LayoutBackendInput {
         allow_cloud_upload: true,
-        payload: oxide_engine::LayoutInputPayloadKind::TextSpans,
-        privacy_mode: oxide_engine::LayoutPrivacyMode::CloudExplicitOptIn,
+        payload: wellfriendpdf_engine::LayoutInputPayloadKind::TextSpans,
+        privacy_mode: wellfriendpdf_engine::LayoutPrivacyMode::CloudExplicitOptIn,
         text_available: true,
         ..LayoutBackendInput::metadata_only(vec![1])
     };
     let cloud = MockCloudLayoutBackend::new(CloudLayoutBackendConfig {
         enabled: true,
         endpoint: Some("https://layout.invalid/mock".to_string()),
-        api_key_env: Some("OXIDE_LAYOUT_API_KEY".to_string()),
+        api_key_env: Some("WELLFRIENDPDF_LAYOUT_API_KEY".to_string()),
         payload_policy: LayoutCloudPayloadPolicy::TextOnly,
         user_acknowledged_privacy: true,
         ..Default::default()
@@ -161,7 +161,7 @@ fn malformed_layout_proposal_schema_is_rejected() {
     })
     .propose(&LayoutBackendInput::metadata_only(vec![1]));
     set.proposed_regions[0].confidence = 1.5;
-    let report = oxide_engine::validate_layout_proposal_set(&LayoutProposalSet {
+    let report = wellfriendpdf_engine::validate_layout_proposal_set(&LayoutProposalSet {
         deterministic_merge_outcome: "test_invalid_schema".to_string(),
         ..set
     });
@@ -171,8 +171,10 @@ fn malformed_layout_proposal_schema_is_rejected() {
 
 #[test]
 fn prompt14b_external_dictionary_pack_loads_segments_and_reports_metadata() {
-    let dir =
-        std::env::temp_dir().join(format!("oxide-prompt14b-dictionary-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!(
+        "wellfriendpdf-prompt14b-dictionary-{}",
+        std::process::id()
+    ));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let entries = concat!(
@@ -258,7 +260,7 @@ fn prompt14b_external_dictionary_pack_loads_segments_and_reports_metadata() {
 #[test]
 fn prompt14b_dictionary_pack_hash_mismatch_fails_closed() {
     let dir = std::env::temp_dir().join(format!(
-        "oxide-prompt14b-dictionary-bad-{}",
+        "wellfriendpdf-prompt14b-dictionary-bad-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&dir);
@@ -297,7 +299,7 @@ fn prompt14b_dictionary_pack_hash_mismatch_fails_closed() {
 #[test]
 fn prompt14b_dictionary_pack_malformed_tsv_fails_closed() {
     let dir = std::env::temp_dir().join(format!(
-        "oxide-prompt14b-dictionary-malformed-{}",
+        "wellfriendpdf-prompt14b-dictionary-malformed-{}",
         std::process::id()
     ));
     let _ = fs::remove_dir_all(&dir);

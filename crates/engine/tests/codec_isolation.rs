@@ -2,16 +2,16 @@ use std::thread;
 
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
-use oxide_engine::{
+use std::io::Write as _;
+use std::path::PathBuf;
+use wellfriendpdf_engine::{
     codec_backend_registry, codec_dimension_report, decode_filter_with_isolation,
     native_codec_dependency_allowlist, select_codec_backend, validate_codec_registry_policy,
     CodecBackendPreference, CodecIsolationConfig, CodecIsolationPolicy,
 };
-use std::io::Write as _;
-use std::path::PathBuf;
 
 fn worker_path() -> PathBuf {
-    PathBuf::from(env!("CARGO_BIN_EXE_oxide-codec-worker"))
+    PathBuf::from(env!("CARGO_BIN_EXE_wellfriendpdf-codec-worker"))
 }
 
 fn flate_bytes(data: &[u8]) -> Vec<u8> {
@@ -166,7 +166,7 @@ fn codec_isolation_report_exposes_backend_boundary_fields() {
     assert_eq!(result.decoded.as_deref(), Some(&b"boundary fields"[..]));
     assert_eq!(
         result.report.backend_selection.selected_backend.as_deref(),
-        Some("oxide-rust-flate2")
+        Some("wellfriendpdf-rust-flate2")
     );
     assert_eq!(
         result

@@ -1,6 +1,6 @@
 # Semantic Document Model
 
-Oxide has two related semantic surfaces:
+Wellfriend has two related semantic surfaces:
 
 - The canonical parse/document model for Markdown, HTML, JSON, Office conversion, and RAG chunking.
 - The Prompt 06 semantic text model for geometry-backed search, redaction preview, and extraction diagnostics.

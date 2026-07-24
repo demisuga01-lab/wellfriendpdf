@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use oxide_engine::{ContentEngine, PdfDocument};
+use wellfriendpdf_engine::{ContentEngine, PdfDocument};
 
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

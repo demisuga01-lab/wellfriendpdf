@@ -1,6 +1,6 @@
 # Prompt 07B FDF/XFDF Form Exchange
 
-Oxide now supports bounded AcroForm field exchange through JSON, FDF, and XFDF.
+Wellfriend now supports bounded AcroForm field exchange through JSON, FDF, and XFDF.
 The supported scope is intentionally fields-only.
 
 ## Supported
@@ -20,8 +20,8 @@ The supported scope is intentionally fields-only.
 - CLI:
 
 ```powershell
-oxide forms-export input.pdf --format xfdf --output fields.xfdf
-oxide forms-import input.pdf fields.xfdf --format xfdf --out filled.pdf --json
+wellfriendpdf forms-export input.pdf --format xfdf --output fields.xfdf
+wellfriendpdf forms-import input.pdf fields.xfdf --format xfdf --out filled.pdf --json
 ```
 
 ## Limits

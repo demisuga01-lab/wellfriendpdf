@@ -1,9 +1,9 @@
-use oxide_engine::{
+use std::path::PathBuf;
+use wellfriendpdf_engine::{
     flatten_calculated_values_pdf, form_action_graph, form_javascript_inventory,
     form_js_sanitize_pdf, word_pagination_audit, Color, ContentEngine, DocxLayout, FormJsLimits,
     FormJsPolicyMode, FormJsSanitizerOptions, PdfBuilder, StandardFont,
 };
-use std::path::PathBuf;
 
 fn build_pdf(objects: Vec<String>) -> Vec<u8> {
     let mut pdf = b"%PDF-1.7\n".to_vec();
@@ -102,7 +102,7 @@ fn safe_calculation_flatten_updates_value_then_removes_scripts() {
     let reopened = ContentEngine::open_bytes(flattened).unwrap();
     let rescan = form_javascript_inventory(&reopened, &FormJsLimits::default()).unwrap();
     assert!(rescan.actions.is_empty());
-    let forms = oxide_engine::forms_report(&reopened).unwrap();
+    let forms = wellfriendpdf_engine::forms_report(&reopened).unwrap();
     assert!(forms
         .fields
         .iter()
@@ -112,14 +112,18 @@ fn safe_calculation_flatten_updates_value_then_removes_scripts() {
 #[test]
 fn docx_page_faithful_emits_mixed_size_sections_deterministically() {
     let mut builder = PdfBuilder::new();
-    let style = oxide_engine::TextStyle::standard(StandardFont::Helvetica, 12.0)
+    let style = wellfriendpdf_engine::TextStyle::standard(StandardFont::Helvetica, 12.0)
         .fill(Color::device_rgb(0.1, 0.1, 0.1));
     builder
-        .add_page(oxide_engine::authoring::PageSize::custom(300.0, 400.0))
+        .add_page(wellfriendpdf_engine::authoring::PageSize::custom(
+            300.0, 400.0,
+        ))
         .draw_text("Portrait page", 24.0, 360.0, &style)
         .unwrap();
     builder
-        .add_page(oxide_engine::authoring::PageSize::custom(500.0, 280.0))
+        .add_page(wellfriendpdf_engine::authoring::PageSize::custom(
+            500.0, 280.0,
+        ))
         .draw_text("Landscape page", 24.0, 240.0, &style)
         .unwrap();
     let engine = ContentEngine::open_bytes(builder.to_bytes().unwrap()).unwrap();

@@ -16,8 +16,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use ocr_http_backends::{CloudHttpOcrBackend, CloudHttpOcrConfig, LocalHttpOcrBackend};
-use oxide_engine::ocr::dispatch::recognize_contained;
-use oxide_engine::{ErrorKind, OcrEngine, OcrImage, OcrOptions};
+use wellfriendpdf_engine::ocr::dispatch::recognize_contained;
+use wellfriendpdf_engine::{ErrorKind, OcrEngine, OcrImage, OcrOptions};
 
 struct StubRequest {
     headers: Vec<(String, String)>,

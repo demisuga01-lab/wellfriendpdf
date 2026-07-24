@@ -1,7 +1,7 @@
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::images::decoder::RawImage;
 
-/// Decode an embedded PDF JBIG2 stream into Oxide's grayscale RawImage.
+/// Decode an embedded PDF JBIG2 stream into Wellfriend's grayscale RawImage.
 ///
 /// The underlying decoder supports PDF embedded organization, optional global
 /// segments, generic regions, symbol dictionaries, text regions, halftone
@@ -9,7 +9,7 @@ use crate::images::decoder::RawImage;
 /// constructs are surfaced as decode errors rather than panics.
 pub fn decode(data: &[u8], globals: Option<&[u8]>) -> Result<RawImage> {
     let image = hayro_jbig2::Image::new_embedded(data, globals)
-        .map_err(|err| OxideError::MalformedPdf(format!("JBIG2Decode parse failed: {err}")))?;
+        .map_err(|err| WellfriendError::MalformedPdf(format!("JBIG2Decode parse failed: {err}")))?;
 
     // H-6: bound the codestream-declared region dimensions before allocating the
     // grayscale sink, so a crafted multi-gigapixel JBIG2 page cannot force a huge
@@ -18,7 +18,7 @@ pub fn decode(data: &[u8], globals: Option<&[u8]>) -> Result<RawImage> {
     let mut sink = GrayscaleSink::new(image.width(), image.height());
     image
         .decode(&mut sink)
-        .map_err(|err| OxideError::MalformedPdf(format!("JBIG2Decode failed: {err}")))?;
+        .map_err(|err| WellfriendError::MalformedPdf(format!("JBIG2Decode failed: {err}")))?;
     Ok(sink.finish())
 }
 

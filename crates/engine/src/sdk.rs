@@ -1,7 +1,7 @@
 //! Stable SDK facade for cross-language bindings.
 //!
 //! This module is the single, stable, versioned-JSON report layer that the
-//! Python (`oxide-py`) and C ABI (`oxide-capi`) bindings call. It exists so the
+//! Python (`wellfriendpdf-py`) and C ABI (`wellfriendpdf-capi`) bindings call. It exists so the
 //! bindings do not each reimplement report wiring against the flat crate root —
 //! divergent binding behavior is the fastest way to create long-term SDK rot.
 //!
@@ -59,8 +59,8 @@ use crate::{
         validate_pdfx_profile, StandardsValidationOptions,
     },
     versioning::resource_dedup_report,
-    ContentEngine, DocumentInfo, OxideError, Result, TextQuad, TextSearchOptions,
-    TextSemanticOptions,
+    ContentEngine, DocumentInfo, Result, TextQuad, TextSearchOptions, TextSemanticOptions,
+    WellfriendError,
 };
 
 /// Version of the JSON envelope wrapping every SDK report. Bump only when the
@@ -79,8 +79,8 @@ fn envelope<T: Serialize>(kind: &str, report: &T) -> Result<String> {
     serde_json::to_string(&out).map_err(json_err)
 }
 
-fn json_err(err: serde_json::Error) -> crate::OxideError {
-    crate::OxideError::invalid_input(format!("JSON serialization error: {err}"))
+fn json_err(err: serde_json::Error) -> crate::WellfriendError {
+    crate::WellfriendError::invalid_input(format!("JSON serialization error: {err}"))
 }
 
 fn open(bytes: &[u8], password: Option<&[u8]>) -> Result<ContentEngine> {
@@ -425,7 +425,7 @@ pub fn form_js_sanitize_json(
         .map(serde_json::from_str::<crate::prompt19::FormJsSanitizerOptions>)
         .transpose()
         .map_err(|error| {
-            OxideError::invalid_input(format!("invalid Prompt 19 sanitizer options: {error}"))
+            WellfriendError::invalid_input(format!("invalid Prompt 19 sanitizer options: {error}"))
         })?
         .unwrap_or_default();
     let (output, report) =
@@ -443,7 +443,7 @@ pub fn form_js_flatten_values_json(
         .map(serde_json::from_str::<crate::prompt19::FormJsSanitizerOptions>)
         .transpose()
         .map_err(|error| {
-            OxideError::invalid_input(format!("invalid Prompt 19 flatten options: {error}"))
+            WellfriendError::invalid_input(format!("invalid Prompt 19 flatten options: {error}"))
         })?
         .unwrap_or_default();
     options.mode = crate::prompt19::FormJsPolicyMode::FlattenCalculatedValuesThenRemove;
@@ -472,7 +472,7 @@ pub fn word_pagination_audit_json(
 ) -> Result<String> {
     let engine = open(bytes, password)?;
     let layout = crate::office::DocxLayout::parse(layout).ok_or_else(|| {
-        OxideError::invalid_input("unknown DOCX layout; use flowing, page-faithful, or hybrid")
+        WellfriendError::invalid_input("unknown DOCX layout; use flowing, page-faithful, or hybrid")
     })?;
     envelope(
         "word_pagination_audit",
@@ -699,7 +699,7 @@ pub fn prompt22_optimize_pdf_json(
 
 pub fn prompt22_office_inspect_json(bytes: &[u8], format: &str) -> Result<String> {
     let format = crate::office::OfficeFormat::parse(format).ok_or_else(|| {
-        OxideError::invalid_input(format!(
+        WellfriendError::invalid_input(format!(
             "unsupported Office format '{format}', expected docx, pptx, or xlsx"
         ))
     })?;
@@ -711,7 +711,7 @@ pub fn prompt22_office_inspect_json(bytes: &[u8], format: &str) -> Result<String
 
 pub fn prompt22_office_to_pdf_json(bytes: &[u8], format: &str) -> Result<(Vec<u8>, String)> {
     let format = crate::office::OfficeFormat::parse(format).ok_or_else(|| {
-        OxideError::invalid_input(format!(
+        WellfriendError::invalid_input(format!(
             "unsupported Office format '{format}', expected docx, pptx, or xlsx"
         ))
     })?;
@@ -797,7 +797,7 @@ pub fn prompt20_text_edit_json(
             ));
         }
         other => {
-            return Err(OxideError::invalid_input(format!(
+            return Err(WellfriendError::invalid_input(format!(
                 "unknown Prompt 20 text edit mode '{other}'"
             )))
         }
@@ -1247,7 +1247,7 @@ fn prompt09_renderer_report_value() -> serde_json::Value {
             "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/cache-performance-matrix.json"
         },
         "closure_gates": {
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
             "memory_cap_mb": 4096,
             "public_report_schema": "additive_feature_report_prompt09"
@@ -1299,7 +1299,7 @@ fn prompt09b_validation_report_value() -> serde_json::Value {
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
             "artifact": "target/prompt09-annotation-ocg-progressive-cache/multi-reference-render-results-prompt09b.json",
             "diff_metrics": "target/prompt09-annotation-ocg-progressive-cache/multi-reference-diff-metrics-prompt09b.json",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "public_report_parity": {
@@ -1355,7 +1355,7 @@ fn prompt10_renderer_report_value() -> serde_json::Value {
         "rtl_raster_shaping": {
             "status": "generated_text_complex_shaping_boundary_documented",
             "fixture_categories": ["arabic", "hebrew", "mixed_bidi", "pre_shaped_pdf_text", "rtl_annotation_appearance"],
-            "painting_boundary": "existing PDF content streams preserve encoded glyph order and PDF text-state positioning; Oxide does not blindly reshape painted PDF glyph streams",
+            "painting_boundary": "existing PDF content streams preserve encoded glyph order and PDF text-state positioning; Wellfriend does not blindly reshape painted PDF glyph streams",
             "generated_text_boundary": "rustybuzz is used for generated/fallback text paths that own Unicode-to-glyph layout",
             "shaped_scripts": ["Arabic", "Hebrew", "Indic complex-script families"]
         },
@@ -1480,9 +1480,9 @@ fn prompt10b_closure_report_value() -> serde_json::Value {
             "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10b-multi-reference-diff-metrics.json",
             "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10b-reference-disagreement-summary.json",
             "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10b-html-report/index.html",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
-            "reference_disagreements": ["sbix PNG reference disagreement with Oxide inside PDFium/MuPDF cluster"],
+            "reference_disagreements": ["sbix PNG reference disagreement with Wellfriend inside PDFium/MuPDF cluster"],
             "unsupported_rows": ["advanced CID-keyed CFF clipping geometry"]
         },
         "public_report_parity": {
@@ -1493,7 +1493,7 @@ fn prompt10b_closure_report_value() -> serde_json::Value {
         "closure_gates": {
             "memory_cap_mb": 4096,
             "public_report_schema": "additive_feature_report_prompt10b",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
@@ -1653,7 +1653,7 @@ fn prompt10c_closure_report_value() -> serde_json::Value {
             "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10c.json",
             "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10c.json",
             "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10c-html-report/index.html",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "public_report_parity": {
@@ -1664,7 +1664,7 @@ fn prompt10c_closure_report_value() -> serde_json::Value {
         "closure_gates": {
             "memory_cap_mb": 4096,
             "public_report_schema": "additive_feature_report_prompt10c",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
@@ -1832,7 +1832,7 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
             "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10d.json",
             "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10d.json",
             "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10d-html-report/index.html",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "public_report_parity": {
@@ -1843,7 +1843,7 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
         "closure_gates": {
             "memory_cap_mb": 4096,
             "public_report_schema": "additive_feature_report_prompt10d",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
@@ -1977,7 +1977,7 @@ fn prompt10e_closure_report_value() -> serde_json::Value {
             "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10e.json",
             "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10e.json",
             "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10e-html-report/index.html",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "public_report_parity": {
@@ -1988,7 +1988,7 @@ fn prompt10e_closure_report_value() -> serde_json::Value {
         "closure_gates": {
             "memory_cap_mb": 4096,
             "public_report_schema": "additive_feature_report_prompt10e",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
@@ -2084,7 +2084,7 @@ fn prompt10f_closure_report_value() -> serde_json::Value {
             "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10f.json",
             "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10f.json",
             "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10f-html-report/index.html",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "public_report_parity": {
@@ -2095,7 +2095,7 @@ fn prompt10f_closure_report_value() -> serde_json::Value {
         "closure_gates": {
             "memory_cap_mb": 4096,
             "public_report_schema": "additive_feature_report_prompt10f",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
@@ -2142,7 +2142,7 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
         },
         "renderer_closeout": {
             "status": "implemented",
-            "reference_engines": ["Poppler", "PDFium", "MuPDF", "Oxide"],
+            "reference_engines": ["Poppler", "PDFium", "MuPDF", "Wellfriend"],
             "corpus_manifest": "target/prompt11-renderer-cmm-closeout/renderer-closeout-corpus-manifest-prompt11.json",
             "render_results": "target/prompt11-renderer-cmm-closeout/renderer-closeout-render-results-prompt11.json",
             "diff_metrics": "target/prompt11-renderer-cmm-closeout/renderer-closeout-diff-metrics-prompt11.json",
@@ -2151,7 +2151,7 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
             "performance_memory": "target/prompt11-renderer-cmm-closeout/renderer-closeout-performance-memory-prompt11.json",
             "html_report": "target/prompt11-renderer-cmm-closeout/renderer-closeout-html-report/index.html",
             "visual_threshold": "mean_abs_channel_difference <= 2.0 OR changed_pixel_threshold8_percentage <= 0.02",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
             "verdict": "advanced CMM/prepress may begin with exact CMM limits carried forward"
         },
@@ -2159,7 +2159,7 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
             "decision": "littlecms_native_backend_hard_blocked_pending_audited_native_boundary",
             "backend_candidate": "LittleCMS lcms2",
             "license_posture": "generally compatible but not vendored_or_linked_in_prompt11",
-            "security_posture": "no unsafe/native boundary inside oxide-engine default build",
+            "security_posture": "no unsafe/native boundary inside wellfriendpdf-engine default build",
             "dependency_policy": "no silent native dependency",
             "feature_flag": "reserved_native-cmm-lcms2_not_compiled",
             "default_build_posture": "no_native_cmm_dependency",
@@ -2204,7 +2204,7 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
         "closure_gates": {
             "memory_cap_mb": 4096,
             "public_report_schema": "additive_feature_report_prompt11",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
             "native_cmm_backend_status": "hard_blocked_precise",
             "default_build_native_dependency": false,
@@ -2400,9 +2400,9 @@ fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_j
         },
         "reference_audit": {
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
-            "disagreement_policy": "spot/DeviceN flattening differences are classified; Oxide internal plate artifacts prove plate state"
+            "disagreement_policy": "spot/DeviceN flattening differences are classified; Wellfriend internal plate artifacts prove plate state"
         },
         "remaining_exact_limits": [
             "Prompt 13 owns bounded overprint close-out; Prompt 12 remains the CMM/plate baseline",
@@ -2483,9 +2483,9 @@ fn prompt12b_nchannel_plate_reference_closure_report_value() -> serde_json::Valu
             "poppler": "required_and_run_by_prompt12b_audit",
             "pdfium": "required_and_run_by_prompt12b_audit",
             "mupdf": "required_and_run_by_prompt12b_audit",
-            "oxide_default": "run",
-            "oxide_native_lcms2": if native.available { "run_current_feature_build" } else { "run_when_feature_gate_enabled_in_validation" },
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_default": "run",
+            "wellfriendpdf_native_lcms2": if native.available { "run_current_feature_build" } else { "run_when_feature_gate_enabled_in_validation" },
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "native_fallback_backend_status": {
@@ -2512,7 +2512,7 @@ fn prompt12b_nchannel_plate_reference_closure_report_value() -> serde_json::Valu
             "wasm_build_portable": true,
             "pdfium_reference_run_required": true,
             "mupdf_reference_run_required": true,
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         }
     })
@@ -2592,13 +2592,13 @@ fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value
                 "reference_renderer_status"
             ],
             "references": {
-                "oxide_default": "run",
-                "oxide_native_lcms2": if native.available { "run_current_feature_build" } else { "feature_build_required_or_reported_unavailable" },
+                "wellfriendpdf_default": "run",
+                "wellfriendpdf_native_lcms2": if native.available { "run_current_feature_build" } else { "feature_build_required_or_reported_unavailable" },
                 "poppler": "required_and_run_when_target_local_tool_available",
                 "pdfium": "required_and_run_when_target_local_tool_available",
                 "mupdf": "required_and_run_when_target_local_tool_available"
             },
-            "oxide_outliers": 0,
+            "wellfriendpdf_outliers": 0,
             "unclassified_failures": 0
         },
         "advanced_cmm_prepress_scorecard": {
@@ -2634,13 +2634,13 @@ fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value
             "poppler": "required_and_run_by_prompt13_benchmark",
             "pdfium": "required_and_run_by_prompt13_benchmark",
             "mupdf": "required_and_run_by_prompt13_benchmark",
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
-            "disagreement_policy": "reference_renderer_differences_are_classified; Oxide_outlier_failures_must_be_zero"
+            "disagreement_policy": "reference_renderer_differences_are_classified; Wellfriend_outlier_failures_must_be_zero"
         },
         "remaining_exact_limits": [
             "certification-grade PDF/X validation remains later standards work",
-            "vendor-specific RIP behavior not covered by Poppler/PDFium/MuPDF/Oxide evidence is not claimed",
+            "vendor-specific RIP behavior not covered by Poppler/PDFium/MuPDF/Wellfriend evidence is not claimed",
             "profiles or image layouts whose high-channel pixel format is not exposed by the safe native wrapper are unsupported_reported_exact",
             "malformed recursive resource bombs fail closed under scheduler and resource caps"
         ],
@@ -2651,7 +2651,7 @@ fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value
             "wasm_build_portable": true,
             "pdfium_reference_run_required": true,
             "mupdf_reference_run_required": true,
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         }
     })
@@ -2734,7 +2734,7 @@ pub fn feature_report_json() -> Result<String> {
                 "policy_doc": "docs/prompt06_compatibility_fallback_policy.md"
             },
             "failure_taxonomy": {
-                "status": "json_taxonomy_for_reference_and_oxide_failures",
+                "status": "json_taxonomy_for_reference_and_wellfriendpdf_failures",
                 "artifact": "target/prompt06-renderer-native-replay/failure-taxonomy.json",
                 "doc": "docs/prompt06_renderer_failure_taxonomy.md"
             },
@@ -2866,7 +2866,7 @@ pub fn feature_report_json() -> Result<String> {
                 "fixture_count": 47,
                 "memory_cap_mb": 4096,
                 "classification_artifact": "target/prompt07-transparency-compositing/prompt07b-reference-disagreement-summary.json",
-                "oxide_outlier_failures": 0,
+                "wellfriendpdf_outlier_failures": 0,
                 "unclassified_failures": 0
             },
             "known_limits": [
@@ -2892,7 +2892,7 @@ pub fn feature_report_json() -> Result<String> {
                 "status": "closed",
                 "root_cause": "image_painter_ignored_graphics_state_nonstroking_alpha",
                 "fixture": "alpha_image",
-                "classification": "all_references_agree_and_oxide_passes"
+                "classification": "all_references_agree_and_wellfriendpdf_passes"
             },
             "soft_mask_matte_background": {
                 "status": "closed",
@@ -2932,11 +2932,11 @@ pub fn feature_report_json() -> Result<String> {
             "reference_audit": {
                 "fixture_count": 47,
                 "classification_counts": {
-                    "all_references_agree_and_oxide_passes": 41,
-                    "references_disagree_and_oxide_within_cluster": 5,
+                    "all_references_agree_and_wellfriendpdf_passes": 41,
+                    "references_disagree_and_wellfriendpdf_within_cluster": 5,
                     "malformed_or_reference_failure": 1
                 },
-                "oxide_outlier_failures": 0,
+                "wellfriendpdf_outlier_failures": 0,
                 "unclassified_failures": 0,
                 "memory_cap_mb": 4096
             },
@@ -3042,12 +3042,12 @@ pub fn feature_report_json() -> Result<String> {
                 "memory_cap_mb": 4096,
                 "classification_artifact": "target/prompt08-text-shading-patterns/reference-disagreement-summary.json",
                 "classification_counts": {
-                    "all_references_agree_oxide_passes": 19,
-                    "references_disagree_oxide_within_cluster": 3,
+                    "all_references_agree_wellfriendpdf_passes": 19,
+                    "references_disagree_wellfriendpdf_within_cluster": 3,
                     "unsupported_reported_expected": 3,
                     "malformed_reference_failure": 1
                 },
-                "oxide_outlier_failures": 0,
+                "wellfriendpdf_outlier_failures": 0,
                 "prompt08_cluster_tolerance_acceptances": 2
             },
             "fallback_taxonomy": {
@@ -3091,7 +3091,7 @@ pub fn feature_report_json() -> Result<String> {
                     "multi_glyph_accumulation_until_ET",
                     "fail_closed_for_image_only_or_resource_heavy_charprocs"
                 ],
-                "reference_cluster_status": "Poppler/PDFium/MuPDF render the generated Type3 Tr clipping fixtures without the Type3 clip; Oxide native output is recorded as unsupported_reported_expected reference limitation rather than bbox fallback"
+                "reference_cluster_status": "Poppler/PDFium/MuPDF render the generated Type3 Tr clipping fixtures without the Type3 clip; Wellfriend native output is recorded as unsupported_reported_expected reference limitation rather than bbox fallback"
             },
             "cid_cmap_text_clipping": {
                 "status": "native_common_identity_h_embedded_outline_path",
@@ -3123,10 +3123,10 @@ pub fn feature_report_json() -> Result<String> {
                 "reference_engines": ["Poppler", "PDFium", "MuPDF"],
                 "memory_cap_mb": 4096,
                 "classification_counts": {
-                    "all_references_agree_oxide_passes": 11,
+                    "all_references_agree_wellfriendpdf_passes": 11,
                     "unsupported_reported_expected": 10
                 },
-                "oxide_outlier_failures": 0,
+                "wellfriendpdf_outlier_failures": 0,
                 "unclassified_failures": 0
             },
             "fallback_taxonomy": {
@@ -3698,7 +3698,7 @@ pub fn redact_terms_json(
         .cloned()
         .collect();
     if terms.is_empty() {
-        return Err(crate::OxideError::invalid_input(
+        return Err(crate::WellfriendError::invalid_input(
             "redact_terms requires at least one non-empty term",
         ));
     }
@@ -3729,14 +3729,14 @@ pub fn redact_terms_json(
         }
     }
     if applied.is_empty() {
-        return Err(crate::OxideError::invalid_input(
+        return Err(crate::WellfriendError::invalid_input(
             "redact_terms found no matching text to redact",
         ));
     }
     let out = editor.save_to_bytes(EditMode::FullRewrite)?;
     let verification = redaction_verification_report(&out, &terms)?;
     if strict && !verification.verified_absent {
-        return Err(crate::OxideError::invalid_input(
+        return Err(crate::WellfriendError::invalid_input(
             "strict redaction verification failed: a requested term remains extractable",
         ));
     }
@@ -3771,7 +3771,7 @@ fn parse_rich_media_mode(value: Option<&str>) -> Result<crate::prompt17::RichMed
             Ok(RichMediaPolicyMode::FlattenStaticPoster)
         }
         Some("custom") => Ok(RichMediaPolicyMode::Custom),
-        Some(other) => Err(crate::OxideError::invalid_input(format!(
+        Some(other) => Err(crate::WellfriendError::invalid_input(format!(
             "unknown rich-media policy '{other}'; use inventory_only, preserve_inert, remove_active_content, remove_all_media, flatten_static_poster, or custom"
         ))),
     }
@@ -3801,7 +3801,7 @@ fn parse_prompt18_edit_operation(value: &str) -> Result<crate::prompt18::EditOpe
         "canonicalize" => Ok(EditOperation::Canonicalize),
         "full_rewrite" => Ok(EditOperation::FullRewrite),
         "incremental" | "incremental_save" => Ok(EditOperation::IncrementalSave),
-        other => Err(crate::OxideError::MalformedPdf(format!(
+        other => Err(crate::WellfriendError::MalformedPdf(format!(
             "unknown Prompt 18 edit operation {other}"
         ))),
     }
@@ -3813,7 +3813,7 @@ fn parse_xfa_script_policy(value: Option<&str>) -> Result<crate::xfa::XfaScriptP
         Some("formcalc-safe-subset" | "formcalc_safe_subset" | "formcalc") => {
             Ok(crate::xfa::XfaScriptPolicy::FormCalcSafeSubset)
         }
-        Some(other) => Err(crate::OxideError::invalid_input(format!(
+        Some(other) => Err(crate::WellfriendError::invalid_input(format!(
             "unknown XFA script policy '{other}'; use disabled or formcalc-safe-subset"
         ))),
     }
@@ -3835,7 +3835,7 @@ fn parse_xfa_flatten_mode(value: Option<&str>) -> Result<crate::xfa::XfaFlattenM
         Some("fail-on-unsupported" | "fail_on_unsupported") => {
             Ok(crate::xfa::XfaFlattenMode::FailOnUnsupported)
         }
-        Some(other) => Err(crate::OxideError::invalid_input(format!(
+        Some(other) => Err(crate::WellfriendError::invalid_input(format!(
             "unknown XFA flatten mode '{other}'"
         ))),
     }
@@ -3855,7 +3855,7 @@ fn parse_xfa_sanitizer_mode(value: Option<&str>) -> Result<crate::xfa::XfaSaniti
         Some("flatten-then-remove" | "flatten_then_remove") => {
             Ok(crate::xfa::XfaSanitizerMode::FlattenThenRemove)
         }
-        Some(other) => Err(crate::OxideError::invalid_input(format!(
+        Some(other) => Err(crate::WellfriendError::invalid_input(format!(
             "unknown XFA sanitizer mode '{other}'"
         ))),
     }
@@ -4086,7 +4086,7 @@ mod tests {
         );
         assert_eq!(
             v["report"]["prompt07b_transparency_closure"]["reference_audit"]
-                ["oxide_outlier_failures"],
+                ["wellfriendpdf_outlier_failures"],
             0
         );
         assert!(
@@ -4120,7 +4120,7 @@ mod tests {
         );
         assert_eq!(
             v["report"]["prompt08b_type3_cid_tensor_closure"]["reference_audit"]
-                ["oxide_outlier_failures"],
+                ["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
@@ -4146,7 +4146,7 @@ mod tests {
         );
         assert_eq!(
             v["report"]["prompt09b_annotation_progressive_cache_validation"]
-                ["multi_reference_audit"]["oxide_outlier_failures"],
+                ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
@@ -4179,7 +4179,7 @@ mod tests {
         );
         assert_eq!(
             v["report"]["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]["multi_reference_audit"]
-                ["oxide_outlier_failures"],
+                ["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
@@ -4192,7 +4192,7 @@ mod tests {
         );
         assert_eq!(
             v["report"]["prompt10c_color_glyph_hinting_cff_closure"]["multi_reference_audit"]
-                ["oxide_outlier_failures"],
+                ["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
@@ -4276,7 +4276,7 @@ mod tests {
         );
         assert_eq!(
             v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_closeout"]
-                ["oxide_outlier_failures"],
+                ["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
@@ -4341,7 +4341,10 @@ mod tests {
             prompt13["closure_gates"]["public_report_schema"],
             "additive_feature_report_prompt13"
         );
-        assert_eq!(prompt13["reference_audit"]["oxide_outlier_failures"], 0);
+        assert_eq!(
+            prompt13["reference_audit"]["wellfriendpdf_outlier_failures"],
+            0
+        );
         assert_eq!(prompt13["reference_audit"]["unclassified_failures"], 0);
         let prompt14 = &v["report"]["prompt14_semantic_intelligence_parenttree_cjk_ml_layout"];
         assert_eq!(prompt14["status"], "complete");

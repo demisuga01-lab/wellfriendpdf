@@ -41,8 +41,10 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-use oxide_engine::{OcrEngine, OcrImage, OcrOptions, OcrPage, OcrWord, OxideError, Result};
 use serde_json::{json, Value};
+use wellfriendpdf_engine::{
+    OcrEngine, OcrImage, OcrOptions, OcrPage, OcrWord, Result, WellfriendError,
+};
 
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_BACKOFF: Duration = Duration::from_millis(250);
@@ -58,20 +60,20 @@ struct HttpEndpoint {
 impl HttpEndpoint {
     fn parse(endpoint: &str) -> Result<Self> {
         if endpoint.trim().is_empty() {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "OCR HTTP endpoint is required; no default provider endpoint is bundled"
                     .to_string(),
             ));
         }
         if endpoint.starts_with("https://") {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "this reference backend uses plain http:// for local stub tests; replace \
                  post_json with a TLS-capable client for production HTTPS providers"
                     .to_string(),
             ));
         }
         let Some(rest) = endpoint.strip_prefix("http://") else {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "OCR HTTP endpoint must be an explicit http:// URL".to_string(),
             ));
         };
@@ -81,7 +83,7 @@ impl HttpEndpoint {
             None => (rest, "/".to_string()),
         };
         if authority.is_empty() {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "OCR HTTP endpoint URL is missing a host".to_string(),
             ));
         }
@@ -106,13 +108,13 @@ impl HttpEndpoint {
 fn parse_authority(authority: &str) -> Result<(String, u16)> {
     if let Some(host) = authority.strip_prefix('[') {
         let Some((host, rest)) = host.split_once(']') else {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "invalid bracketed IPv6 OCR endpoint".to_string(),
             ));
         };
         let port = if let Some(port) = rest.strip_prefix(':') {
             port.parse::<u16>().map_err(|_| {
-                OxideError::UnsupportedFeature("invalid OCR endpoint port".to_string())
+                WellfriendError::UnsupportedFeature("invalid OCR endpoint port".to_string())
             })?
         } else {
             80
@@ -123,7 +125,7 @@ fn parse_authority(authority: &str) -> Result<(String, u16)> {
     match authority.rsplit_once(':') {
         Some((host, port)) if !host.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
             let port = port.parse::<u16>().map_err(|_| {
-                OxideError::UnsupportedFeature("invalid OCR endpoint port".to_string())
+                WellfriendError::UnsupportedFeature("invalid OCR endpoint port".to_string())
             })?;
             Ok((host.to_string(), port))
         }
@@ -145,7 +147,7 @@ struct HttpOcrBackend {
 impl HttpOcrBackend {
     fn recognize(&self, image: &OcrImage, opts: &OcrOptions) -> Result<OcrPage> {
         if !image.is_valid() {
-            return Err(OxideError::ParseError(
+            return Err(WellfriendError::ParseError(
                 "OCR image is empty or malformed".to_string(),
             ));
         }
@@ -161,7 +163,9 @@ impl HttpOcrBackend {
             "languages": &opts.languages,
             "psm": opts.psm,
         }))
-        .map_err(|e| OxideError::ParseError(format!("could not encode OCR HTTP request: {e}")))?;
+        .map_err(|e| {
+            WellfriendError::ParseError(format!("could not encode OCR HTTP request: {e}"))
+        })?;
 
         let response = self.post_with_retries(&body)?;
         parse_response_words(&response)
@@ -179,7 +183,7 @@ impl HttpOcrBackend {
             match response.status {
                 200..=299 => return Ok(response.body),
                 401 | 403 => {
-                    return Err(OxideError::UnsupportedFeature(format!(
+                    return Err(WellfriendError::UnsupportedFeature(format!(
                         "OCR HTTP backend '{}' was rejected by the endpoint (HTTP {}); \
                          check the configured auth header",
                         self.name, response.status
@@ -190,7 +194,7 @@ impl HttpOcrBackend {
                     std::thread::sleep(scale_duration(self.retry_backoff, attempt));
                 }
                 429 => {
-                    return Err(OxideError::Cancelled(format!(
+                    return Err(WellfriendError::Cancelled(format!(
                         "OCR HTTP backend '{}' was rate-limited after {} attempt(s)",
                         self.name,
                         attempt + 1
@@ -198,7 +202,7 @@ impl HttpOcrBackend {
                 }
                 status => {
                     let snippet = String::from_utf8_lossy(&response.body);
-                    return Err(OxideError::ParseError(format!(
+                    return Err(WellfriendError::ParseError(format!(
                         "OCR HTTP backend '{}' returned HTTP {status}: {}",
                         self.name,
                         snippet.trim()
@@ -224,7 +228,7 @@ impl LocalHttpOcrBackend {
     pub fn new(endpoint: impl AsRef<str>) -> Result<Self> {
         let endpoint = HttpEndpoint::parse(endpoint.as_ref())?;
         if !endpoint.is_loopback() {
-            return Err(OxideError::UnsupportedFeature(
+            return Err(WellfriendError::UnsupportedFeature(
                 "LocalHttpOcrBackend only accepts localhost/loopback endpoints; use \
                  CloudHttpOcrBackend for non-local providers"
                     .to_string(),
@@ -366,19 +370,19 @@ fn post_json(
         .to_socket_addrs()?
         .next()
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature(format!(
+            WellfriendError::UnsupportedFeature(format!(
                 "could not resolve OCR endpoint host '{}'",
                 endpoint.host
             ))
         })?;
     let mut stream = TcpStream::connect_timeout(&addr, timeout).map_err(|e| {
         if e.kind() == std::io::ErrorKind::TimedOut {
-            OxideError::Cancelled(format!(
+            WellfriendError::Cancelled(format!(
                 "OCR HTTP endpoint connect exceeded {}ms",
                 timeout.as_millis()
             ))
         } else {
-            OxideError::Io(e)
+            WellfriendError::Io(e)
         }
     })?;
     let remaining = timeout
@@ -410,11 +414,11 @@ fn post_json(
     parse_http_response(&raw)
 }
 
-fn timeout_or_io(e: std::io::Error) -> OxideError {
+fn timeout_or_io(e: std::io::Error) -> WellfriendError {
     if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock {
-        OxideError::Cancelled("OCR HTTP request exceeded its configured timeout".to_string())
+        WellfriendError::Cancelled("OCR HTTP request exceeded its configured timeout".to_string())
     } else {
-        OxideError::Io(e)
+        WellfriendError::Io(e)
     }
 }
 
@@ -422,7 +426,7 @@ fn parse_http_response(raw: &[u8]) -> Result<HttpResponse> {
     let split = raw
         .windows(4)
         .position(|w| w == b"\r\n\r\n")
-        .ok_or_else(|| OxideError::ParseError("malformed OCR HTTP response".to_string()))?;
+        .ok_or_else(|| WellfriendError::ParseError("malformed OCR HTTP response".to_string()))?;
     let (head, body_with_sep) = raw.split_at(split);
     let body = body_with_sep[4..].to_vec();
     let head = String::from_utf8_lossy(head);
@@ -431,18 +435,21 @@ fn parse_http_response(raw: &[u8]) -> Result<HttpResponse> {
         .next()
         .and_then(|line| line.split_whitespace().nth(1))
         .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| OxideError::ParseError("missing OCR HTTP status code".to_string()))?;
+        .ok_or_else(|| WellfriendError::ParseError("missing OCR HTTP status code".to_string()))?;
     Ok(HttpResponse { status, body })
 }
 
 fn parse_response_words(body: &[u8]) -> Result<OcrPage> {
-    let value: Value = serde_json::from_slice(body)
-        .map_err(|e| OxideError::ParseError(format!("OCR HTTP response is not valid JSON: {e}")))?;
+    let value: Value = serde_json::from_slice(body).map_err(|e| {
+        WellfriendError::ParseError(format!("OCR HTTP response is not valid JSON: {e}"))
+    })?;
     let words = value
         .get("words")
         .and_then(Value::as_array)
         .ok_or_else(|| {
-            OxideError::ParseError("OCR HTTP response must contain a 'words' array".to_string())
+            WellfriendError::ParseError(
+                "OCR HTTP response must contain a 'words' array".to_string(),
+            )
         })?;
 
     let mut out = Vec::with_capacity(words.len());
@@ -451,22 +458,21 @@ fn parse_response_words(body: &[u8]) -> Result<OcrPage> {
             .get("text")
             .and_then(Value::as_str)
             .ok_or_else(|| {
-                OxideError::ParseError("OCR HTTP word is missing string 'text'".to_string())
+                WellfriendError::ParseError("OCR HTTP word is missing string 'text'".to_string())
             })?
             .to_string();
-        let bbox_values = item
-            .get("bbox")
-            .and_then(Value::as_array)
-            .ok_or_else(|| OxideError::ParseError("OCR HTTP word is missing 'bbox'".to_string()))?;
+        let bbox_values = item.get("bbox").and_then(Value::as_array).ok_or_else(|| {
+            WellfriendError::ParseError("OCR HTTP word is missing 'bbox'".to_string())
+        })?;
         if bbox_values.len() != 4 {
-            return Err(OxideError::ParseError(
+            return Err(WellfriendError::ParseError(
                 "OCR HTTP word bbox must have four numbers".to_string(),
             ));
         }
         let mut bbox = [0.0f64; 4];
         for (i, v) in bbox_values.iter().enumerate() {
             bbox[i] = v.as_f64().ok_or_else(|| {
-                OxideError::ParseError("OCR HTTP bbox values must be numeric".to_string())
+                WellfriendError::ParseError("OCR HTTP bbox values must be numeric".to_string())
             })?;
         }
         let confidence = item

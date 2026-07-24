@@ -15,7 +15,7 @@ model, table cell token views, and figure/caption token views.
 
 Built-in dictionary policy:
 
-- name: `oxide-prompt14-synthetic-cjk-test-dictionary`
+- name: `wellfriendpdf-prompt14-synthetic-cjk-test-dictionary`
 - license: `CC0-1.0 synthetic fixture terms`
 - scope: small test/fixture terms for Chinese, Japanese, Korean, and mixed text
 - no large third-party dictionary is bundled

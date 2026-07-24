@@ -30,8 +30,8 @@ def main() -> None:
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name(
         [
-            x509.NameAttribute(NameOID.COMMON_NAME, "Oxide Prompt24 ECDSA Signer"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Oxide Test CA"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "Wellfriend Prompt24 ECDSA Signer"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Wellfriend Test CA"),
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
         ]
     )
@@ -65,7 +65,7 @@ def main() -> None:
     try:
         temporary_p12.write_bytes(
             pkcs12.serialize_key_and_certificates(
-                name=b"oxide-prompt24-ecdsa",
+                name=b"wellfriendpdf-prompt24-ecdsa",
                 key=key,
                 cert=cert,
                 cas=None,

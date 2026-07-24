@@ -5,14 +5,14 @@
     "max_render_pages": 1,
     "pdftotext": "E:\\wellpdfsdk\\target\\tools\\poppler\\poppler-26.02.0\\Library\\bin\\pdftotext.exe",
     "pdftoppm": "E:\\wellpdfsdk\\target\\tools\\poppler\\poppler-26.02.0\\Library\\bin\\pdftoppm.exe",
-    "oxide_bin": "E:\\wellpdfsdk\\target\\release\\oxide.exe",
+    "wellfriendpdf_bin": "E:\\wellpdfsdk\\target\\release\\wellfriendpdf.exe",
     "command_timeout": 60,
     "render_timeout": 120
   },
   "manifest": {
     "version": 1,
     "generated_at": "2026-06-14T01:04:01.118189+00:00",
-    "description": "Tagged corpus for Poppler-vs-Oxide parity measurements.",
+    "description": "Tagged corpus for Poppler-vs-Wellfriend parity measurements.",
     "sources": {
       "existing-engine-fixture": {
         "path": "crates/engine/tests/fixtures",
@@ -173,7 +173,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -187,7 +187,7 @@
           "char_ratio": 0.6666666666666666
         },
         "poppler_chars": 18,
-        "oxide_chars": 18
+        "wellfriendpdf_chars": 18
       },
       "render": {
         "poppler": {
@@ -199,27 +199,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: Couldn't find a font for 'HeiseiMin-W3', subst is 'Helvetica'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.022,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_90ms_rksj_h_sample\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_90ms_rksj_h_sample\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 37.469,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -284,7 +284,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -298,7 +298,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 6,
-        "oxide_chars": 6
+        "wellfriendpdf_chars": 6
       },
       "render": {
         "poppler": {
@@ -310,27 +310,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.01,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_IdentityToUnicodeMap_charCodeOf\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_IdentityToUnicodeMap_charCodeOf\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 16.211,
             "error": null,
             "poppler_size": [
               417,
               105
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               417,
               105
             ],
@@ -394,7 +394,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -408,7 +408,7 @@
           "char_ratio": 0.029850746268656716
         },
         "poppler_chars": 33,
-        "oxide_chars": 34
+        "wellfriendpdf_chars": 34
       },
       "render": {
         "poppler": {
@@ -420,27 +420,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: Couldn't find a font for '<ba><da><cc><e5>', subst is 'Helvetica'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.015,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_SimFang-variant\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_SimFang-variant\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 30.7,
             "error": null,
             "poppler_size": [
               964,
               1304
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               964,
               1304
             ],
@@ -504,7 +504,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -518,7 +518,7 @@
           "char_ratio": 0.0
         },
         "poppler_chars": 737,
-        "oxide_chars": 1055
+        "wellfriendpdf_chars": 1055
       },
       "render": {
         "poppler": {
@@ -530,27 +530,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: Couldn't find a font for '<cb><ce><cc><e5>', subst is 'Helvetica'\nSyntax Error: Couldn't find a font for '<b7><c2><cb><ce>_GB2312', subst is 'Helvetica'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.026,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_XiaoBiaoSong\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_XiaoBiaoSong\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 15.885,
             "error": null,
             "poppler_size": [
               964,
               1304
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               964,
               1304
             ],
@@ -614,7 +614,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -628,7 +628,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 12,
-        "oxide_chars": 12
+        "wellfriendpdf_chars": 12
       },
       "render": {
         "poppler": {
@@ -640,27 +640,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.017,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_cidfont_cmap_overflow\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_cidfont_cmap_overflow\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 18.518,
             "error": null,
             "poppler_size": [
               834,
               313
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               834,
               313
             ],
@@ -724,7 +724,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -738,7 +738,7 @@
           "char_ratio": 0.09302325581395349
         },
         "poppler_chars": 24,
-        "oxide_chars": 19
+        "wellfriendpdf_chars": 19
       },
       "render": {
         "poppler": {
@@ -750,27 +750,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: Couldn't find a font for 'Ryumin-Light-90ms-RKSJ-H', subst is 'Helvetica'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.01,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue13343\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue13343\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 19.836,
             "error": null,
             "poppler_size": [
               417,
               105
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               417,
               105
             ],
@@ -835,7 +835,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -849,7 +849,7 @@
           "char_ratio": 0.0
         },
         "poppler_chars": 5,
-        "oxide_chars": 5
+        "wellfriendpdf_chars": 5
       },
       "render": {
         "poppler": {
@@ -861,27 +861,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.018,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_noembed-eucjp\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_noembed-eucjp\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 29.859,
             "error": null,
             "poppler_size": [
               1240,
               1755
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1240,
               1755
             ],
@@ -945,7 +945,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -959,7 +959,7 @@
           "char_ratio": 0.5555555555555556
         },
         "poppler_chars": 16,
-        "oxide_chars": 20
+        "wellfriendpdf_chars": 20
       },
       "render": {
         "poppler": {
@@ -971,27 +971,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: Couldn't find a font for 'Ryumin-Light-H', subst is 'Helvetica'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.031,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_noembed-jis7\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_noembed-jis7\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 33.904,
             "error": null,
             "poppler_size": [
               1240,
               1755
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1240,
               1755
             ],
@@ -1055,7 +1055,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -1069,7 +1069,7 @@
           "char_ratio": 0.0
         },
         "poppler_chars": 5,
-        "oxide_chars": 5
+        "wellfriendpdf_chars": 5
       },
       "render": {
         "poppler": {
@@ -1081,27 +1081,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.026,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_noembed-sjis\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_noembed-sjis\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 29.859,
             "error": null,
             "poppler_size": [
               1240,
               1755
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1240,
               1755
             ],
@@ -1165,7 +1165,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -1179,7 +1179,7 @@
           "char_ratio": 0.0
         },
         "poppler_chars": 9,
-        "oxide_chars": 8
+        "wellfriendpdf_chars": 8
       },
       "render": {
         "poppler": {
@@ -1191,27 +1191,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.013,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_vertical\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_vertical\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 26.525,
             "error": null,
             "poppler_size": [
               520,
               669
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               520,
               669
             ],
@@ -1275,7 +1275,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -1289,7 +1289,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -1301,27 +1301,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.023,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_vector_bars\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_vector_bars\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 22.942,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -1384,7 +1384,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -1398,7 +1398,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -1410,27 +1410,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.018,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_coons-allflags-withfunction\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_coons-allflags-withfunction\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 0.646,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -1493,7 +1493,7 @@
           "stderr": "Syntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -1507,7 +1507,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -1519,27 +1519,27 @@
           "stderr": "Syntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mismatch in PostScript function\nSyntax Error: Type mis\n... truncated 6387167 chars ...",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.027,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_function_based_shading\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_function_based_shading\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 6.607,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -1602,7 +1602,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -1616,7 +1616,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -1628,27 +1628,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.026,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_gradientfill\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_gradientfill\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 56.443,
             "error": null,
             "poppler_size": [
               1241,
               1754
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1241,
               1754
             ],
@@ -1710,7 +1710,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -1724,7 +1724,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 25,
-        "oxide_chars": 25
+        "wellfriendpdf_chars": 25
       },
       "render": {
         "poppler": {
@@ -1736,27 +1736,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.494,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue18032\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue18032\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 17.678,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -1821,7 +1821,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -1835,7 +1835,7 @@
           "char_ratio": 0.20953933958418264
         },
         "poppler_chars": 1761,
-        "oxide_chars": 692
+        "wellfriendpdf_chars": 692
       },
       "render": {
         "poppler": {
@@ -1847,27 +1847,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.104,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_knockout_groups_test\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_knockout_groups_test\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 22.022,
             "error": null,
             "poppler_size": [
               1334,
               1271
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1334,
               1271
             ],
@@ -1933,7 +1933,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -1947,7 +1947,7 @@
           "char_ratio": 0.7948820471811275
         },
         "poppler_chars": 1264,
-        "oxide_chars": 1237
+        "wellfriendpdf_chars": 1237
       },
       "render": {
         "poppler": {
@@ -1959,27 +1959,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.076,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_radial_gradients\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_radial_gradients\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 23.086,
             "error": null,
             "poppler_size": [
               1240,
               1755
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1240,
               1755
             ],
@@ -2045,7 +2045,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -2059,7 +2059,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -2071,27 +2071,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.058,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_smask_alpha_oob\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_smask_alpha_oob\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 11.699,
             "error": null,
             "poppler_size": [
               1250,
               1250
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1250,
               1250
             ],
@@ -2153,7 +2153,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -2167,7 +2167,7 @@
           "char_ratio": 0.9767441860465116
         },
         "poppler_chars": 21,
-        "oxide_chars": 22
+        "wellfriendpdf_chars": 22
       },
       "render": {
         "poppler": {
@@ -2179,27 +2179,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.049,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_smaskdim\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_smaskdim\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 31.783,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -2264,7 +2264,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -2278,7 +2278,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -2290,27 +2290,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.017,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_tensor-allflags-withfunction\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_tensor-allflags-withfunction\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 0.646,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -2373,7 +2373,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -2387,7 +2387,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -2399,27 +2399,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.02,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_tiling_patterns_variations\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_tiling_patterns_variations\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 8.844,
             "error": null,
             "poppler_size": [
               1250,
               1667
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1250,
               1667
             ],
@@ -2481,7 +2481,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -2495,7 +2495,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -2507,27 +2507,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.015,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_transparent\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_transparent\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 29.088,
             "error": null,
             "poppler_size": [
               417,
               417
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               417,
               417
             ],
@@ -2589,7 +2589,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -2600,7 +2600,7 @@
         },
         "similarity": null,
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -2612,7 +2612,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -2668,7 +2668,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -2679,7 +2679,7 @@
         },
         "similarity": null,
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -2691,7 +2691,7 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -2747,7 +2747,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -2761,7 +2761,7 @@
           "char_ratio": 0.09590706470349858
         },
         "poppler_chars": 3716,
-        "oxide_chars": 3687
+        "wellfriendpdf_chars": 3687
       },
       "render": {
         "poppler": {
@@ -2773,27 +2773,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 1.275,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue14297\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue14297\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 13.413,
             "error": null,
             "poppler_size": [
               2481,
               1754
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               2481,
               1754
             ],
@@ -2857,7 +2857,7 @@
           "stderr": "Syntax Error: Unknown operator 'p'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -2868,7 +2868,7 @@
         },
         "similarity": null,
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -2880,7 +2880,7 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: Unknown operator 'p'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -2936,7 +2936,7 @@
           "stderr": "Command Line Error: Incorrect password\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -2947,7 +2947,7 @@
         },
         "similarity": null,
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -2959,7 +2959,7 @@
           "stderr": "Command Line Error: Incorrect password\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -3015,7 +3015,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -3026,7 +3026,7 @@
         },
         "similarity": null,
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -3038,7 +3038,7 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": false,
           "exit_code": 1,
           "timed_out": false,
@@ -3094,7 +3094,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -3108,7 +3108,7 @@
           "char_ratio": 0.7721356553620532
         },
         "poppler_chars": 2753,
-        "oxide_chars": 2702
+        "wellfriendpdf_chars": 2702
       },
       "render": {
         "poppler": {
@@ -3120,27 +3120,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.555,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_form_160f\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_form_160f\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 14.09,
             "error": null,
             "poppler_size": [
               1241,
               1754
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1241,
               1754
             ],
@@ -3204,7 +3204,7 @@
           "stderr": "Syntax Error: Missing 'Tf' operator in field's DA string\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -3218,7 +3218,7 @@
           "char_ratio": 0.9885057471264368
         },
         "poppler_chars": 87,
-        "oxide_chars": 87
+        "wellfriendpdf_chars": 87
       },
       "render": {
         "poppler": {
@@ -3230,27 +3230,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: Missing 'Tf' operator in field's DA string\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.022,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_form_textfield\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_form_textfield\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 28.946,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -3315,7 +3315,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -3329,7 +3329,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 5,
-        "oxide_chars": 5
+        "wellfriendpdf_chars": 5
       },
       "render": {
         "poppler": {
@@ -3341,27 +3341,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.015,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_acroform_calculation_order\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_acroform_calculation_order\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 31.431,
             "error": null,
             "poppler_size": [
               417,
               417
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               417,
               417
             ],
@@ -3425,7 +3425,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -3439,7 +3439,7 @@
           "char_ratio": 0.6585956416464891
         },
         "poppler_chars": 209,
-        "oxide_chars": 204
+        "wellfriendpdf_chars": 204
       },
       "render": {
         "poppler": {
@@ -3451,27 +3451,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.022,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_annotation-button-widget\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_annotation-button-widget\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 25.494,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -3536,7 +3536,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -3550,7 +3550,7 @@
           "char_ratio": 0.6198830409356725
         },
         "poppler_chars": 236,
-        "oxide_chars": 106
+        "wellfriendpdf_chars": 106
       },
       "render": {
         "poppler": {
@@ -3562,27 +3562,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.02,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_annotation-choice-widget\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_annotation-choice-widget\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 23.381,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -3647,7 +3647,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -3661,7 +3661,7 @@
           "char_ratio": 0.32186234817813764
         },
         "poppler_chars": 829,
-        "oxide_chars": 159
+        "wellfriendpdf_chars": 159
       },
       "render": {
         "poppler": {
@@ -3673,27 +3673,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.022,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_annotation-text-widget\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_annotation-text-widget\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 19.541,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -3758,7 +3758,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -3772,7 +3772,7 @@
           "char_ratio": 0.0
         },
         "poppler_chars": 1,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -3784,27 +3784,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.01,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_bug1802506\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_bug1802506\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": "inf",
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               558,
               304
             ],
@@ -3867,7 +3867,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -3881,7 +3881,7 @@
           "char_ratio": 0.0
         },
         "poppler_chars": 1,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -3893,27 +3893,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.012,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_checkbox_no_appearance\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_checkbox_no_appearance\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": "inf",
             "error": null,
             "poppler_size": [
               417,
               417
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               417,
               417
             ],
@@ -3975,7 +3975,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -3989,7 +3989,7 @@
           "char_ratio": 0.9846153846153847
         },
         "poppler_chars": 64,
-        "oxide_chars": 66
+        "wellfriendpdf_chars": 66
       },
       "render": {
         "poppler": {
@@ -4001,27 +4001,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.025,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_file_pdfjs_form\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_file_pdfjs_form\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 27.738,
             "error": null,
             "poppler_size": [
               1241,
               1754
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1241,
               1754
             ],
@@ -4085,7 +4085,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -4099,7 +4099,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 4,
-        "oxide_chars": 4
+        "wellfriendpdf_chars": 4
       },
       "render": {
         "poppler": {
@@ -4111,27 +4111,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.021,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_form_two_pages\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_form_two_pages\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 25.952,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -4197,7 +4197,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -4211,7 +4211,7 @@
           "char_ratio": 0.43844670889562104
         },
         "poppler_chars": 9222,
-        "oxide_chars": 8933
+        "wellfriendpdf_chars": 8933
       },
       "render": {
         "poppler": {
@@ -4223,27 +4223,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.064,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_prefilled_f1040\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_prefilled_f1040\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 14.06,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -4309,7 +4309,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -4323,7 +4323,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -4335,27 +4335,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.019,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_textfields\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_textfields\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 19.685,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -4418,7 +4418,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -4432,7 +4432,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -4444,13 +4444,13 @@
           "stderr": "Syntax Error: Malformed JP2 file format: first box must be JPEG 2000 signature box<0a>\nSyntax Warning: Unable to read header\nSyntax Warning: Did no succeed opening JPX Stream as JP2, trying as J2K.\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.016,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_bug_jpx\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_bug_jpx\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [],
@@ -4506,7 +4506,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -4520,7 +4520,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -4532,27 +4532,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.009,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_jp2k-resetprob\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_jp2k-resetprob\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 4.019,
             "error": null,
             "poppler_size": [
               63,
               43
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               63,
               43
             ],
@@ -4614,7 +4614,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -4628,7 +4628,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 22678,
-        "oxide_chars": 22798
+        "wellfriendpdf_chars": 22798
       },
       "render": {
         "poppler": {
@@ -4640,27 +4640,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.028,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_120_pages\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_120_pages\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-001.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 27.05,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -4727,7 +4727,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -4741,7 +4741,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 55,
-        "oxide_chars": 55
+        "wellfriendpdf_chars": 55
       },
       "render": {
         "poppler": {
@@ -4753,27 +4753,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.019,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_doc_1_3_pages\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_doc_1_3_pages\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 35.307,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -4840,7 +4840,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -4854,7 +4854,7 @@
           "char_ratio": 0.875
         },
         "poppler_chars": 7,
-        "oxide_chars": 9
+        "wellfriendpdf_chars": 9
       },
       "render": {
         "poppler": {
@@ -4866,27 +4866,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.023,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_three_pages_with_number\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_three_pages_with_number\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 33.063,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -4953,7 +4953,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -4967,7 +4967,7 @@
           "char_ratio": 0.796199277602421
         },
         "poppler_chars": 82767,
-        "oxide_chars": 77397
+        "wellfriendpdf_chars": 77397
       },
       "render": {
         "poppler": {
@@ -4979,27 +4979,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.159,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_tracemonkey\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_tracemonkey\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-01.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 13.615,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -5066,7 +5066,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -5080,7 +5080,7 @@
           "char_ratio": 0.13124533929903057
         },
         "poppler_chars": 686,
-        "oxide_chars": 655
+        "wellfriendpdf_chars": 655
       },
       "render": {
         "poppler": {
@@ -5092,27 +5092,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.025,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_two_columns\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_two_columns\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 22.229,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -5177,7 +5177,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -5191,7 +5191,7 @@
           "char_ratio": 0.02493173453638846
         },
         "poppler_chars": 63379,
-        "oxide_chars": 2611
+        "wellfriendpdf_chars": 2611
       },
       "render": {
         "poppler": {
@@ -5203,27 +5203,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.032,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_TAMReview\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_TAMReview\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-01.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 15.2,
             "error": null,
             "poppler_size": [
               1240,
               1755
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1240,
               1755
             ],
@@ -5289,7 +5289,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -5303,7 +5303,7 @@
           "char_ratio": 0.9715248950908674
         },
         "poppler_chars": 708094,
-        "oxide_chars": 696279
+        "wellfriendpdf_chars": 696279
       },
       "render": {
         "poppler": {
@@ -5315,27 +5315,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.188,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_freeculture\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_freeculture\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-001.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 3.541,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1020,
               1531
             ],
@@ -5401,7 +5401,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -5415,7 +5415,7 @@
           "char_ratio": 0.5555555555555556
         },
         "poppler_chars": 13,
-        "oxide_chars": 5
+        "wellfriendpdf_chars": 5
       },
       "render": {
         "poppler": {
@@ -5427,27 +5427,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.015,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue20930\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue20930\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 23.683,
             "error": null,
             "poppler_size": [
               834,
               1042
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               834,
               1042
             ],
@@ -5511,7 +5511,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -5525,7 +5525,7 @@
           "char_ratio": 0.9973333333333333
         },
         "poppler_chars": 374,
-        "oxide_chars": 376
+        "wellfriendpdf_chars": 376
       },
       "render": {
         "poppler": {
@@ -5537,27 +5537,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: Couldn't find a font for 'ArialUnicodeMS-UniJIS-UTF16-H', subst is 'Helvetica'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.081,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_mixedfonts\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_mixedfonts\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 19.1,
             "error": null,
             "poppler_size": [
               1241,
               1754
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1241,
               1754
             ],
@@ -5621,7 +5621,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -5635,7 +5635,7 @@
           "char_ratio": 0.9090909090909091
         },
         "poppler_chars": 17,
-        "oxide_chars": 16
+        "wellfriendpdf_chars": 16
       },
       "render": {
         "poppler": {
@@ -5647,27 +5647,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.013,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_openoffice\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_openoffice\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 10.126,
             "error": null,
             "poppler_size": [
               417,
               105
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               417,
               105
             ],
@@ -5731,7 +5731,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -5745,7 +5745,7 @@
           "char_ratio": 0.9878048780487805
         },
         "poppler_chars": 81,
-        "oxide_chars": 83
+        "wellfriendpdf_chars": 83
       },
       "render": {
         "poppler": {
@@ -5757,27 +5757,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.031,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_paragraph_and_link\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_paragraph_and_link\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 31.965,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -5843,7 +5843,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -5857,7 +5857,7 @@
           "char_ratio": 0.08400188768286927
         },
         "poppler_chars": 2124,
-        "oxide_chars": 2114
+        "wellfriendpdf_chars": 2114
       },
       "render": {
         "poppler": {
@@ -5869,27 +5869,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.22,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_pdfjs_wikipedia\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_pdfjs_wikipedia\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 15.609,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -5954,7 +5954,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -5968,7 +5968,7 @@
           "char_ratio": 0.9879518072289156
         },
         "poppler_chars": 41,
-        "oxide_chars": 42
+        "wellfriendpdf_chars": 42
       },
       "render": {
         "poppler": {
@@ -5980,27 +5980,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.025,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_two_paragraphs\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_two_paragraphs\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 30.071,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -6065,7 +6065,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -6079,7 +6079,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 134,
-        "oxide_chars": 134
+        "wellfriendpdf_chars": 134
       },
       "render": {
         "poppler": {
@@ -6091,27 +6091,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.022,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_rtl_placeholder\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_rtl_placeholder\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 27.73,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -6176,7 +6176,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -6190,7 +6190,7 @@
           "char_ratio": 0.10650887573964497
         },
         "poppler_chars": 87,
-        "oxide_chars": 82
+        "wellfriendpdf_chars": 82
       },
       "render": {
         "poppler": {
@@ -6202,27 +6202,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.027,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_ArabicCIDTrueType\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_ArabicCIDTrueType\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 18.111,
             "error": null,
             "poppler_size": [
               1240,
               1755
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1240,
               1755
             ],
@@ -6286,7 +6286,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -6300,7 +6300,7 @@
           "char_ratio": 0.2614593077642657
         },
         "poppler_chars": 2210,
-        "oxide_chars": 2066
+        "wellfriendpdf_chars": 2066
       },
       "render": {
         "poppler": {
@@ -6312,27 +6312,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: Couldn't find a font for 'TraditionalArabic', subst is 'Helvetica'\nSyntax Error: non-embedded font using identity encoding: TraditionalArabic\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.48,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_ThuluthFeatures\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_ThuluthFeatures\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 12.786,
             "error": null,
             "poppler_size": [
               1753,
               1240
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1753,
               1240
             ],
@@ -6396,7 +6396,7 @@
           "stderr": "Syntax Warning: Invalid 'begincidrange' operator in ToUnicode CMap\nSyntax Warning: Invalid 'begincidrange' operator in ToUnicode CMap\nSyntax Warning: Invalid 'begincidrange' operator in ToUnicode CMap\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -6410,7 +6410,7 @@
           "char_ratio": 0.3032258064516129
         },
         "poppler_chars": 106,
-        "oxide_chars": 204
+        "wellfriendpdf_chars": 204
       },
       "render": {
         "poppler": {
@@ -6422,27 +6422,27 @@
           "stderr": "Syntax Warning: Invalid 'begincidrange' operator in ToUnicode CMap\nSyntax Warning: Invalid 'begincidrange' operator in ToUnicode CMap\nSyntax Warning: Invalid 'begincidrange' operator in ToUnicode CMap\nSyntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\nSyntax Error: non-embedded font using identity encoding: ArialBlack,Bold\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.021,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue5801\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue5801\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 11.592,
             "error": null,
             "poppler_size": [
               1063,
               438
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1063,
               438
             ],
@@ -6506,7 +6506,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -6520,7 +6520,7 @@
           "char_ratio": 0.05063291139240506
         },
         "poppler_chars": 126,
-        "oxide_chars": 190
+        "wellfriendpdf_chars": 190
       },
       "render": {
         "poppler": {
@@ -6532,27 +6532,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.213,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue5874\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_issue5874\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 19.294,
             "error": null,
             "poppler_size": [
               875,
               1241
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               875,
               1241
             ],
@@ -6616,7 +6616,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -6630,7 +6630,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -6642,27 +6642,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.023,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_image_only\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_image_only\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": "inf",
             "error": null,
             "poppler_size": [
               417,
               417
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               417,
               417
             ],
@@ -6724,7 +6724,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -6738,7 +6738,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -6750,27 +6750,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.064,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_image_only\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_image_only\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 23.626,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -6833,7 +6833,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -6847,7 +6847,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -6859,27 +6859,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.019,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_ccitt_EndOfBlock_false\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_ccitt_EndOfBlock_false\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 9.653,
             "error": null,
             "poppler_size": [
               1241,
               1754
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1241,
               1754
             ],
@@ -6941,7 +6941,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -6955,7 +6955,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -6967,27 +6967,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.046,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_image-rotated-black-white-ratio\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_image-rotated-black-white-ratio\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 16.238,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -7050,7 +7050,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -7064,7 +7064,7 @@
           "char_ratio": 0.0
         },
         "poppler_chars": 17,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -7076,27 +7076,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.187,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_images\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_images\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 11.917,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -7159,7 +7159,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -7173,7 +7173,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -7185,27 +7185,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.065,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_images_1bit_grayscale\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_images_1bit_grayscale\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 10.868,
             "error": null,
             "poppler_size": [
               1241,
               1754
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1241,
               1754
             ],
@@ -7267,7 +7267,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -7281,7 +7281,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -7293,27 +7293,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.017,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_jbig2_symbol_offset\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_jbig2_symbol_offset\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 20.048,
             "error": null,
             "poppler_size": [
               1241,
               1754
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1241,
               1754
             ],
@@ -7375,7 +7375,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -7389,7 +7389,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 6,
-        "oxide_chars": 6
+        "wellfriendpdf_chars": 6
       },
       "render": {
         "poppler": {
@@ -7401,27 +7401,27 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.174,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_scan-bad\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_scan-bad\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 40.63,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -7486,7 +7486,7 @@
           "stderr": "Syntax Error (1274): Missing 'endstream' or incorrect stream length\nSyntax Error: Unknown operator 'endstream'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -7500,7 +7500,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 0
+        "wellfriendpdf_chars": 0
       },
       "render": {
         "poppler": {
@@ -7512,27 +7512,27 @@
           "stderr": "Syntax Error (1274): Missing 'endstream' or incorrect stream length\nSyntax Error: Unknown operator 'endstream'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.019,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_xobject-image\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\pdfjs_xobject-image\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 1.761,
             "error": null,
             "poppler_size": [
               417,
               209
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               417,
               209
             ],
@@ -7594,7 +7594,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -7608,7 +7608,7 @@
           "char_ratio": 0.7647058823529411
         },
         "poppler_chars": 253,
-        "oxide_chars": 257
+        "wellfriendpdf_chars": 257
       },
       "render": {
         "poppler": {
@@ -7620,27 +7620,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.039,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_basicapi\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_basicapi\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 25.296,
             "error": null,
             "poppler_size": [
               1241,
               1754
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1241,
               1754
             ],
@@ -7706,7 +7706,7 @@
           "stderr": "Syntax Error: Unknown font tag 'F1'\nSyntax Error: No font in show\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -7720,7 +7720,7 @@
           "char_ratio": 0.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 2
+        "wellfriendpdf_chars": 2
       },
       "render": {
         "poppler": {
@@ -7732,27 +7732,27 @@
           "stderr": "Syntax Error: Unknown font tag 'F1'\nSyntax Error: No font in show\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.017,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_flate\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_flate\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 41.991,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -7817,7 +7817,7 @@
           "stderr": "Syntax Error: Unknown font tag 'F1'\nSyntax Error: No font in show\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -7831,7 +7831,7 @@
           "char_ratio": 0.0
         },
         "poppler_chars": 0,
-        "oxide_chars": 2
+        "wellfriendpdf_chars": 2
       },
       "render": {
         "poppler": {
@@ -7843,27 +7843,27 @@
           "stderr": "Syntax Error: Unknown font tag 'F1'\nSyntax Error: No font in show\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.012,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_minimal\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_minimal\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": "inf",
             "error": null,
             "poppler_size": [
               417,
               417
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               417,
               417
             ],
@@ -7927,7 +7927,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -7941,7 +7941,7 @@
           "char_ratio": 1.0
         },
         "poppler_chars": 11,
-        "oxide_chars": 11
+        "wellfriendpdf_chars": 11
       },
       "render": {
         "poppler": {
@@ -7953,27 +7953,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.024,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_multi_stream\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\existing_multi_stream\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 37.894,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -8038,7 +8038,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -8052,7 +8052,7 @@
           "char_ratio": 0.9955947136563876
         },
         "poppler_chars": 113,
-        "oxide_chars": 114
+        "wellfriendpdf_chars": 114
       },
       "render": {
         "poppler": {
@@ -8064,27 +8064,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.019,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_basic_text\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_basic_text\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 27.923,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],
@@ -8149,7 +8149,7 @@
           "stderr": "",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
@@ -8163,7 +8163,7 @@
           "char_ratio": 0.837037037037037
         },
         "poppler_chars": 135,
-        "oxide_chars": 135
+        "wellfriendpdf_chars": 135
       },
       "render": {
         "poppler": {
@@ -8175,27 +8175,27 @@
           "stderr": "Syntax Error: No display font for 'Symbol'\nSyntax Error: No display font for 'ArialUnicode'\n",
           "error": null
         },
-        "oxide": {
+        "wellfriendpdf": {
           "ok": true,
           "exit_code": 0,
           "timed_out": false,
           "duration_seconds": 0.027,
           "stdout": "",
-          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_rotated_text\\render\\oxide_pages.zip\n",
+          "stderr": "Rendered 1 page(s) at 150 DPI -> E:\\wellpdfsdk\\target\\poppler_compare\\baseline\\work\\generated_rotated_text\\render\\wellfriendpdf_pages.zip\n",
           "error": null
         },
         "pages": [
           {
             "page_index": 1,
             "poppler_image": "poppler_page-1.ppm",
-            "oxide_image": "page-001.png",
+            "wellfriendpdf_image": "page-001.png",
             "psnr": 26.795,
             "error": null,
             "poppler_size": [
               1275,
               1650
             ],
-            "oxide_size": [
+            "wellfriendpdf_size": [
               1275,
               1651
             ],

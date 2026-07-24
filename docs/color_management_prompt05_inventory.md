@@ -2,7 +2,7 @@
 
 Starting checkpoint: `16af5ac Complete Prompt 04E final font parity audit`.
 
-Prompt 05 found that Oxide already had a useful internal color layer:
+Prompt 05 found that Wellfriend already had a useful internal color layer:
 `render::cmm` handled qcms-backed ICC preview transforms and deterministic
 DeviceCMYK/Cal/Lab fallback conversion; `render::colorspace` resolved
 Separation and DeviceN through tint transforms; `render::function` evaluated PDF

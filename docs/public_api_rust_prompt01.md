@@ -1,6 +1,6 @@
 # Rust Public API — Prompt 01 Stabilization
 
-Prompt 01 adds one stable public module, [`oxide_engine::sdk`], as the shared
+Prompt 01 adds one stable public module, [`wellfriendpdf_engine::sdk`], as the shared
 versioned-JSON report facade for the Python and C ABI bindings. It does **not**
 rewrite the engine; it normalizes and safely exposes reports that already exist.
 
@@ -10,9 +10,9 @@ Three tiers, unchanged in spirit from the pre-existing layout:
 
 | Tier | What | Stability |
 | --- | --- | --- |
-| **Curated integration** | `oxide_engine::prelude` | The recommended embedder surface. |
-| **SDK facade (new)** | `oxide_engine::sdk` | Stable, versioned-JSON report layer that bindings call. |
-| **Flat crate root** | `oxide_engine::*` | Rich low-level building blocks (parser, renderer, writer, object model). Useful but pre-1.0. |
+| **Curated integration** | `wellfriendpdf_engine::prelude` | The recommended embedder surface. |
+| **SDK facade (new)** | `wellfriendpdf_engine::sdk` | Stable, versioned-JSON report layer that bindings call. |
+| **Flat crate root** | `wellfriendpdf_engine::*` | Rich low-level building blocks (parser, renderer, writer, object model). Useful but pre-1.0. |
 | **Crate-private** | `crate::...` internals | Not public. |
 
 Bindings depend on the **SDK facade**, not on the flat root, so their behavior
@@ -69,10 +69,10 @@ for advanced Rust callers who need full control.
 
 ## Error normalization
 
-The facade returns the engine's [`OxideError`], whose [`ErrorKind`] gives a
+The facade returns the engine's [`WellfriendError`], whose [`ErrorKind`] gives a
 stable taxonomy: `io`, `malformed_pdf`, `parse`, `missing_object`,
 `unsupported_feature`, `encrypted`, `cancelled`, `resource_limit`. A new
-convenience constructor `OxideError::invalid_input(msg)` (categorized as
+convenience constructor `WellfriendError::invalid_input(msg)` (categorized as
 `parse`) is added for argument-validation failures in the facade and bindings.
 
 ## Feature availability
@@ -93,5 +93,5 @@ byte-deterministic output (the tests assert two runs are byte-equal). The full
 - `crates/engine/src/sdk.rs` `#[cfg(test)] mod tests` — 12 downstream-style
   tests that call the facade with bytes and assert the envelope + a report field,
   including invalid input and deterministic-canonicalize.
-- `cargo run -p oxide-engine --example sdk_reports` — runnable example that
+- `cargo run -p wellfriendpdf-engine --example sdk_reports` — runnable example that
   drives every facade area and can emit the smoke JSON.

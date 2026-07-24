@@ -12,7 +12,7 @@
 //!
 //! Keeping the metrics in pure Rust (not the Python harness) makes them
 //! unit-testable in `cargo test` and reusable; the head-to-head harness shells
-//! out to `oxide eval-score` (see [`score_json`]) so every tool — Oxide and each
+//! out to `wellfriendpdf eval-score` (see [`score_json`]) so every tool — Wellfriend and each
 //! competitor — is scored by the *same* implementation.
 
 pub mod fields;
@@ -26,13 +26,13 @@ pub use table::{cell_f1, teds_approx, GridTable, Prf};
 pub use text::{cer, char_accuracy, reading_order_similarity, wer, word_accuracy};
 
 // ════════════════════════════════════════════════════════════════════════════
-// JSON scoring entry point (driven by the `oxide eval-score` CLI)
+// JSON scoring entry point (driven by the `wellfriendpdf eval-score` CLI)
 // ════════════════════════════════════════════════════════════════════════════
 
 /// One scoring request: a reference (ground-truth) side and a hypothesis (a
 /// tool's output), each optional per capability. Fields absent on both sides are
 /// simply not scored. This is the JSON the benchmark harness feeds to
-/// `oxide eval-score`.
+/// `wellfriendpdf eval-score`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ScoreInput {
     /// Reading-ordered plain text.
@@ -162,7 +162,7 @@ pub fn score(input: &ScoreInput) -> ScoreOutput {
 }
 
 /// Parse a [`ScoreInput`] from JSON, score it, and return [`ScoreOutput`] JSON.
-/// The `oxide eval-score` CLI is a thin wrapper over this; the harness pipes one
+/// The `wellfriendpdf eval-score` CLI is a thin wrapper over this; the harness pipes one
 /// JSON object per tool/doc through it so every tool is scored identically.
 pub fn score_json(input_json: &str) -> Result<String, String> {
     let input: ScoreInput =

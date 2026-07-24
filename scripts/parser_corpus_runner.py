@@ -66,12 +66,12 @@ def infer_category(root: Path, pdf: Path) -> str:
 
 
 def run_one(
-    oxide_bin: Path, pdf: Path, mode: str, timeout: float, category: str
+    wellfriendpdf_bin: Path, pdf: Path, mode: str, timeout: float, category: str
 ) -> dict[str, object]:
     start = time.perf_counter()
     try:
         proc = subprocess.run(
-            [str(oxide_bin), "parser-report", str(pdf), "--mode", mode, "--json"],
+            [str(wellfriendpdf_bin), "parser-report", str(pdf), "--mode", mode, "--json"],
             check=False,
             capture_output=True,
             text=True,
@@ -154,7 +154,7 @@ def write_summary(path: Path, records: list[dict[str, object]]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--input", type=Path, required=True)
-    parser.add_argument("--oxide-bin", type=Path, default=Path("target/debug/oxide.exe"))
+    parser.add_argument("--wellfriendpdf-bin", type=Path, default=Path("target/debug/wellfriendpdf.exe"))
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--summary", type=Path)
     parser.add_argument("--mode", choices=["strict", "repair", "audit"], default="audit")
@@ -166,8 +166,8 @@ def main() -> int:
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
-    if not args.oxide_bin.exists():
-        raise SystemExit(f"oxide binary not found: {args.oxide_bin}")
+    if not args.wellfriendpdf_bin.exists():
+        raise SystemExit(f"wellfriendpdf binary not found: {args.wellfriendpdf_bin}")
     resume_seen = load_resume_seen(args.output) if args.resume else set()
     pdfs = iter_pdfs(
         args.input,
@@ -182,7 +182,7 @@ def main() -> int:
     with args.output.open(mode, encoding="utf-8") as out:
         for pdf in pdfs:
             record = run_one(
-                args.oxide_bin,
+                args.wellfriendpdf_bin,
                 pdf,
                 args.mode,
                 args.timeout,

@@ -156,7 +156,7 @@ Full workspace gates:
 
 - `cargo test --workspace`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- `cargo build --release -p oxide-cli`: passed after the final source changes.
+- `cargo build --release -p wellfriendpdf-cli`: passed after the final source changes.
 
 Focused parity:
 
@@ -167,7 +167,7 @@ Accuracy regression slices:
 
 - Field slice: passed, `macro_field_f1 = 0.72503`, `macro_value_f1 = 0.81434`, precision `0.69231`, recall `0.84536`.
 - Table slice: passed, `macro_shape_f1 = 0.96232`, `macro_cell_f1 = 0.98737`, `macro_cell_recall = 0.99689`, `macro_cell_precision = 0.98246`, `macro_teds_approx = 0.98111`.
-- 200-file text slice, oxide-only: `char_similarity = 0.92743`, `word_f1 = 1.0`, `line_recall = 1.0`, `spurious_line_ratio = 0.07633`, `reading_order = 0.96019`.
+- 200-file text slice, wellfriendpdf-only: `char_similarity = 0.92743`, `word_f1 = 1.0`, `line_recall = 1.0`, `spurious_line_ratio = 0.07633`, `reading_order = 0.96019`.
 
 Large real-file before/after text diff:
 

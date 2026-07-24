@@ -143,8 +143,8 @@ def write_nonproduction_signing_material(out_root: Path) -> tuple[Path, Path]:
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = issuer = x509.Name(
         [
-            x509.NameAttribute(NameOID.COMMON_NAME, "Oxide Benchmark Test Signer"),
-            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Oxide Nonproduction Fixture"),
+            x509.NameAttribute(NameOID.COMMON_NAME, "Wellfriend Benchmark Test Signer"),
+            x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Wellfriend Nonproduction Fixture"),
             x509.NameAttribute(NameOID.COUNTRY_NAME, "US"),
         ]
     )
@@ -174,11 +174,11 @@ def main() -> int:
     parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args()
 
-    oxide = RELEASE / f"oxide{EXE}"
+    wellfriendpdf = RELEASE / f"wellfriendpdf{EXE}"
     authoring = RELEASE / "examples" / f"authoring{EXE}"
     compliance = RELEASE / "examples" / f"compliance{EXE}"
     sign_document = RELEASE / "examples" / f"sign_document{EXE}"
-    required = [oxide, authoring, compliance, sign_document]
+    required = [wellfriendpdf, authoring, compliance, sign_document]
     missing = [str(path) for path in required if not path.exists()]
     if missing:
         print(f"missing release benchmark binary: {missing}", file=sys.stderr)
@@ -193,16 +193,16 @@ def main() -> int:
     operations = [
         (
             "parse_json_cli",
-            [str(oxide), "parse", str(basic), "--format", "json", "--output", str(out_root / "parse.json")],
+            [str(wellfriendpdf), "parse", str(basic), "--format", "json", "--output", str(out_root / "parse.json")],
         ),
         (
             "extract_text_cli",
-            [str(oxide), "extract-text", str(basic), "--output", str(out_root / "text.txt")],
+            [str(wellfriendpdf), "extract-text", str(basic), "--output", str(out_root / "text.txt")],
         ),
         (
             "render_png_cli",
             [
-                str(oxide),
+                str(wellfriendpdf),
                 "render",
                 str(basic),
                 "--format",
@@ -227,16 +227,16 @@ def main() -> int:
         ),
         (
             "optimize_cli",
-            [str(oxide), "optimize", str(multi), "--output", str(out_root / "optimized.pdf"), "--json"],
+            [str(wellfriendpdf), "optimize", str(multi), "--output", str(out_root / "optimized.pdf"), "--json"],
         ),
         (
             "linearize_cli",
-            [str(oxide), "linearize", str(basic), "--output", str(out_root / "linearized.pdf")],
+            [str(wellfriendpdf), "linearize", str(basic), "--output", str(out_root / "linearized.pdf")],
         ),
         (
             "encrypt_aes256_cli",
             [
-                str(oxide),
+                str(wellfriendpdf),
                 "encrypt",
                 str(basic),
                 "--output",
@@ -259,7 +259,7 @@ def main() -> int:
         "cpu_count": os.cpu_count(),
         "python": sys.version.split()[0],
         "tool_versions": {
-            "oxide": version([str(oxide), "--version"]),
+            "wellfriendpdf": version([str(wellfriendpdf), "--version"]),
             "qpdf": version(["qpdf", "--version"]),
             "pdftoppm": version(["pdftoppm", "-v"]),
             "verapdf": version([str(REPO / "target" / "tools" / "verapdf" / "app" / "verapdf.bat"), "--version"]),

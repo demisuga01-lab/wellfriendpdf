@@ -6,15 +6,15 @@ allowed to reinterpret report schemas or drop warnings.
 
 ## Error Taxonomy
 
-The engine reports structured errors through `OxideError` and C ABI status
+The engine reports structured errors through `WellfriendError` and C ABI status
 codes:
 
 - `0`: success
 - `2`: handled engine or input error
 - `3`: panic boundary
 
-.NET raises `OxideException` with the native status. Java raises
-`Oxide.OxideException` with the native status. WASM maps handled errors to
+.NET raises `WellfriendPdfException` with the native status. Java raises
+`WellfriendPdf.WellfriendPdfException` with the native status. WASM maps handled errors to
 `JsValue` strings and installs the panic hook when enabled.
 
 ## Report Envelope

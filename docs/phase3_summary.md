@@ -27,7 +27,7 @@ thin binding wrappers instead of reimplementing engine logic per surface.
 
 ## Surface Coverage
 
-- Rust: new helpers are exported from `oxide_engine::utilities` and the crate
+- Rust: new helpers are exported from `wellfriendpdf_engine::utilities` and the crate
   root.
 - CLI: commands added for all Phase 3 utilities, with JSON summaries for
   scriptable workflows.

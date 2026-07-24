@@ -15,9 +15,9 @@ Implemented behavior:
 
 Tests:
 
-- `cargo test -p oxide-engine --test patterns --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test patterns --jobs 1`
 - Prompt 08 text-clip pattern interaction in
-  `cargo test -p oxide-engine --test prompt08_text_clip --jobs 1`
+  `cargo test -p wellfriendpdf-engine --test prompt08_text_clip --jobs 1`
 
 Artifacts:
 

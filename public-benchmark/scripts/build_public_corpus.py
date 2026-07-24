@@ -30,7 +30,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CORPUS_DIR = REPO_ROOT / "public-benchmark" / "corpus" / "pdfs"
 DEFAULT_MANIFEST = REPO_ROOT / "public-benchmark" / "manifests" / "public_corpus_manifest.json"
-USER_AGENT = "OxidePublicBenchmark/1.0 (+https://github.com/oxide-pdf/oxide)"
+USER_AGENT = "WellfriendPublicBenchmark/1.0 (+https://github.com/demisuga01-lab/wellfriendpdf-sdk)"
 
 
 @dataclass(frozen=True)
@@ -448,7 +448,7 @@ def write_manifest(path: Path, entries: list[dict[str, Any]], failures: list[dic
         "failure_count": len(failures),
         "corpus_storage": "public-benchmark/corpus/ is gitignored; do not commit downloaded PDFs.",
         "sources": {
-            "pdf_oxide_comparable": ["veraPDF corpus", "Mozilla pdf.js test/pdfs", "DARPA SafeDocs"],
+            "pdf_wellfriendpdf_comparable": ["veraPDF corpus", "Mozilla pdf.js test/pdfs", "DARPA SafeDocs"],
             "scale_fill": ["arXiv public API"],
             "repo_seed": "tests/corpus manifest entries are optionally copied into the ignored local corpus",
         },

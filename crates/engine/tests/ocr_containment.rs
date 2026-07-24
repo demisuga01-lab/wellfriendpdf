@@ -19,7 +19,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     ContentEngine, OcrEngine, OcrImage, OcrOptions, OcrPage, OcrPolicy, OcrWord, ParseOptions,
     SerializeOptions,
 };
@@ -128,7 +128,11 @@ struct WindowProbe {
 }
 
 impl OcrEngine for WindowProbe {
-    fn recognize(&self, image: &OcrImage, _o: &OcrOptions) -> oxide_engine::Result<OcrPage> {
+    fn recognize(
+        &self,
+        image: &OcrImage,
+        _o: &OcrOptions,
+    ) -> wellfriendpdf_engine::Result<OcrPage> {
         assert!(image.is_valid(), "seam handed an invalid image");
         self.calls.fetch_add(1, Ordering::SeqCst);
         let now = self.live.fetch_add(1, Ordering::SeqCst) + 1;
@@ -187,7 +191,7 @@ struct PanicOnPage3 {
     seen: Arc<AtomicUsize>,
 }
 impl OcrEngine for PanicOnPage3 {
-    fn recognize(&self, _i: &OcrImage, _o: &OcrOptions) -> oxide_engine::Result<OcrPage> {
+    fn recognize(&self, _i: &OcrImage, _o: &OcrOptions) -> wellfriendpdf_engine::Result<OcrPage> {
         let n = self.seen.fetch_add(1, Ordering::SeqCst) + 1;
         if n == 3 {
             panic!("simulated backend crash on page 3");
@@ -235,7 +239,7 @@ struct HangOnPage2 {
     seen: Arc<AtomicUsize>,
 }
 impl OcrEngine for HangOnPage2 {
-    fn recognize(&self, _i: &OcrImage, _o: &OcrOptions) -> oxide_engine::Result<OcrPage> {
+    fn recognize(&self, _i: &OcrImage, _o: &OcrOptions) -> wellfriendpdf_engine::Result<OcrPage> {
         let n = self.seen.fetch_add(1, Ordering::SeqCst) + 1;
         if n == 2 {
             std::thread::sleep(Duration::from_secs(30));
@@ -282,7 +286,7 @@ fn a_hung_backend_is_bounded_by_the_engine_timeout() {
 /// must tolerate without panicking.
 struct GarbageEngine;
 impl OcrEngine for GarbageEngine {
-    fn recognize(&self, _i: &OcrImage, _o: &OcrOptions) -> oxide_engine::Result<OcrPage> {
+    fn recognize(&self, _i: &OcrImage, _o: &OcrOptions) -> wellfriendpdf_engine::Result<OcrPage> {
         Ok(OcrPage::new(vec![
             OcrWord {
                 text: "ok".to_string(),

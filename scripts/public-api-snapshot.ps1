@@ -1,6 +1,6 @@
 param(
-    [string]$Package = "oxide-engine",
-    [string]$Output = "docs/public-api-oxide-engine.txt"
+    [string]$Package = "wellfriendpdf-engine",
+    [string]$Output = "docs/public-api-wellfriendpdf-engine.txt"
 )
 
 $ErrorActionPreference = "Stop"

@@ -40,7 +40,7 @@ impl JobSystem {
 
         // Result files live in a per-process subdir of the system temp dir,
         // namespaced so concurrent test servers don't collide. Tests override
-        // via `config.job_result_dir` (or the OXIDE_JOB_RESULT_DIR env var) for
+        // via `config.job_result_dir` (or the WELLFRIENDPDF_JOB_RESULT_DIR env var) for
         // isolation/inspection.
         let result_dir = resolve_result_dir(config.job_result_dir.as_deref());
         if let Err(e) = std::fs::create_dir_all(&result_dir) {
@@ -167,13 +167,13 @@ fn resolve_result_dir(configured: Option<&str>) -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    if let Ok(dir) = std::env::var("OXIDE_JOB_RESULT_DIR") {
+    if let Ok(dir) = std::env::var("WELLFRIENDPDF_JOB_RESULT_DIR") {
         if !dir.is_empty() {
             return PathBuf::from(dir);
         }
     }
     let pid = std::process::id();
-    std::env::temp_dir().join(format!("oxide-jobs-{}", pid))
+    std::env::temp_dir().join(format!("wellfriendpdf-jobs-{}", pid))
 }
 
 /// One worker: pull jobs off the shared queue and process them. Robust to a

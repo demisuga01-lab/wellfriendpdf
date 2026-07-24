@@ -1,4 +1,4 @@
-using Oxide.Sdk;
+using WellfriendPdf;
 
 if (args.Length != 1)
 {
@@ -6,7 +6,7 @@ if (args.Length != 1)
     return 2;
 }
 
-using var document = OxideDocument.Open(File.ReadAllBytes(args[0]));
+using var document = WellfriendDocument.Open(File.ReadAllBytes(args[0]));
 Console.WriteLine(document.FormJavaScriptReportJson());
 Console.WriteLine(document.InteractiveDataReportJson());
 Console.WriteLine(document.Prompt19ReportJson());

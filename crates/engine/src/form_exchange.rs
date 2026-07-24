@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::ContentEngine;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::info::decode_pdf_text_string;
 use crate::{forms_report, EditMode, PdfEditor};
 
@@ -80,7 +80,7 @@ pub fn export_form_data(engine: &ContentEngine, format: FormDataFormat) -> Resul
 
 pub fn parse_form_data(bytes: &[u8], format: FormDataFormat) -> Result<FormDataSet> {
     if bytes.len() > MAX_FORM_DATA_BYTES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "form data input is {} bytes, exceeding cap {MAX_FORM_DATA_BYTES}",
             bytes.len()
         )));
@@ -91,7 +91,7 @@ pub fn parse_form_data(bytes: &[u8], format: FormDataFormat) -> Result<FormDataS
         FormDataFormat::Xfdf => parse_xfdf_form_data(bytes)?,
     };
     if data.fields.len() > MAX_FORM_FIELDS {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "form data has {} fields, exceeding cap {MAX_FORM_FIELDS}",
             data.fields.len()
         )));
@@ -200,7 +200,7 @@ fn parse_json_form_data(bytes: &[u8]) -> Result<FormDataSet> {
         return serde_json::from_value(value).map_err(json_error);
     }
     let Some(map) = value.as_object() else {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "JSON form data must be an object or {\"fields\":[...]}".to_string(),
         ));
     };
@@ -217,8 +217,8 @@ fn parse_json_form_data(bytes: &[u8]) -> Result<FormDataSet> {
     Ok(FormDataSet { fields })
 }
 
-fn json_error(error: serde_json::Error) -> OxideError {
-    OxideError::MalformedPdf(format!("invalid JSON form data: {error}"))
+fn json_error(error: serde_json::Error) -> WellfriendError {
+    WellfriendError::MalformedPdf(format!("invalid JSON form data: {error}"))
 }
 
 fn parse_fdf_form_data(bytes: &[u8]) -> Result<FormDataSet> {
@@ -240,14 +240,14 @@ fn parse_fdf_form_data(bytes: &[u8]) -> Result<FormDataSet> {
 
 fn parse_xfdf_form_data(bytes: &[u8]) -> Result<FormDataSet> {
     let text = std::str::from_utf8(bytes)
-        .map_err(|err| OxideError::MalformedPdf(format!("XFDF is not UTF-8: {err}")))?;
+        .map_err(|err| WellfriendError::MalformedPdf(format!("XFDF is not UTF-8: {err}")))?;
     let lower = text.to_ascii_lowercase();
     if lower.contains("<!doctype")
         || lower.contains("<!entity")
         || lower.contains("system")
         || lower.contains("public")
     {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "XFDF external entities and DTDs are not supported".to_string(),
         ));
     }
@@ -255,10 +255,9 @@ fn parse_xfdf_form_data(bytes: &[u8]) -> Result<FormDataSet> {
     let mut pos = 0usize;
     while let Some(rel) = text[pos..].find("<field") {
         let start = pos + rel;
-        let tag_end = text[start..]
-            .find('>')
-            .map(|i| start + i)
-            .ok_or_else(|| OxideError::MalformedPdf("XFDF field tag is not closed".to_string()))?;
+        let tag_end = text[start..].find('>').map(|i| start + i).ok_or_else(|| {
+            WellfriendError::MalformedPdf("XFDF field tag is not closed".to_string())
+        })?;
         let tag = &text[start..=tag_end];
         let Some(name) = attr_value(tag, "name") else {
             pos = tag_end + 1;
@@ -267,7 +266,7 @@ fn parse_xfdf_form_data(bytes: &[u8]) -> Result<FormDataSet> {
         let close = text[tag_end + 1..]
             .find("</field>")
             .map(|i| tag_end + 1 + i)
-            .ok_or_else(|| OxideError::MalformedPdf("XFDF field is not closed".to_string()))?;
+            .ok_or_else(|| WellfriendError::MalformedPdf("XFDF field is not closed".to_string()))?;
         let body = &text[tag_end + 1..close];
         let value = if let Some(vs) = body.find("<value>") {
             let content_start = vs + "<value>".len();
@@ -318,7 +317,7 @@ fn parse_pdf_scalar(bytes: &[u8], start: usize) -> Result<(String, usize)> {
             }
             Ok((String::from_utf8_lossy(&bytes[begin..pos]).to_string(), pos))
         }
-        _ => Err(OxideError::MalformedPdf(
+        _ => Err(WellfriendError::MalformedPdf(
             "FDF scalar value must be a PDF string or name".to_string(),
         )),
     }
@@ -359,7 +358,7 @@ fn parse_literal_string(bytes: &[u8], start: usize) -> Result<(String, usize)> {
             other => out.push(other),
         }
     }
-    Err(OxideError::MalformedPdf(
+    Err(WellfriendError::MalformedPdf(
         "unterminated FDF literal string".to_string(),
     ))
 }
@@ -377,10 +376,10 @@ fn parse_hex_string(bytes: &[u8], start: usize) -> Result<(String, usize)> {
             let mut out = Vec::with_capacity(hex.len() / 2);
             for pair in hex.chunks_exact(2) {
                 let hi = hex_value(pair[0]).ok_or_else(|| {
-                    OxideError::MalformedPdf("invalid FDF hex string".to_string())
+                    WellfriendError::MalformedPdf("invalid FDF hex string".to_string())
                 })?;
                 let lo = hex_value(pair[1]).ok_or_else(|| {
-                    OxideError::MalformedPdf("invalid FDF hex string".to_string())
+                    WellfriendError::MalformedPdf("invalid FDF hex string".to_string())
                 })?;
                 out.push((hi << 4) | lo);
             }
@@ -390,7 +389,7 @@ fn parse_hex_string(bytes: &[u8], start: usize) -> Result<(String, usize)> {
             hex.push(byte);
         }
     }
-    Err(OxideError::MalformedPdf(
+    Err(WellfriendError::MalformedPdf(
         "unterminated FDF hex string".to_string(),
     ))
 }

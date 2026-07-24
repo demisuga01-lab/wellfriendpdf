@@ -1,11 +1,11 @@
 # Packaging and Distribution
 
 This document records the installable surfaces and release-readiness checks for
-Oxide.
+WellfriendPdf.
 
 ## Feature Flags
 
-`oxide-engine` now exposes capability-group features:
+`wellfriendpdf-engine` now exposes capability-group features:
 
 | Feature | Enables |
 | --- | --- |
@@ -26,29 +26,29 @@ feature because the modules are still tightly connected. Prompt 10 therefore
 lands the documented matrix and independent compile checks; dependency slimming
 is a packaging follow-up before a `1.0` release.
 
-`oxide-cli` has `ocr` and `full`; OCR remains off by default.
+`wellfriendpdf-cli` has `ocr` and `full`; OCR remains off by default.
 
 ## Publishable Crates
 
 | Crate | Publish status |
 | --- | --- |
-| `oxide-engine` | Publishable library crate |
-| `oxide-cli` | Publishable CLI crate |
-| `oxide-server` | Publishable HTTP server crate |
-| `oxide-capi` | `publish = false`; distributed as built C ABI artifacts |
-| `oxide-wasm` | `publish = false`; distributed as an npm-style wasm-bindgen package |
-| `oxide-ocr-tesseract` | `publish = false`; optional backend crate for this workspace |
+| `wellfriendpdf-engine` | Publishable library crate |
+| `wellfriendpdf-cli` | Publishable CLI crate |
+| `wellfriendpdf-server` | Publishable HTTP server crate |
+| `wellfriendpdf-capi` | `publish = false`; distributed as built C ABI artifacts |
+| `wellfriendpdf-wasm` | `publish = false`; distributed as an npm-style wasm-bindgen package |
+| `wellfriendpdf-ocr-tesseract` | `publish = false`; optional backend crate for this workspace |
 
 Dry-run commands:
 
 ```sh
-cargo publish -p oxide-engine --dry-run
-cargo publish -p oxide-cli --dry-run
-cargo publish -p oxide-server --dry-run
+cargo publish -p wellfriendpdf-engine --dry-run
+cargo publish -p wellfriendpdf-cli --dry-run
+cargo publish -p wellfriendpdf-server --dry-run
 ```
 
-For a first crates.io release, publish `oxide-engine` first. The CLI and server
-dry-runs require `oxide-engine = 0.1.0` to exist in the crates.io index because
+For a first crates.io release, publish `wellfriendpdf-engine` first. The CLI and server
+dry-runs require `wellfriendpdf-engine = 0.1.0` to exist in the crates.io index because
 Cargo verifies publishable dependencies against the registry rather than the
 workspace path.
 
@@ -69,36 +69,36 @@ cargo deny check licenses sources
 CLI:
 
 ```sh
-cargo build --release -p oxide-cli
-target/release/oxide --version
+cargo build --release -p wellfriendpdf-cli
+target/release/wellfriendpdf --version
 ```
 
 C ABI:
 
 ```sh
-cargo build --release -p oxide-capi
+cargo build --release -p wellfriendpdf-capi
 ```
 
-Header: `crates/oxide-capi/include/oxide.h`.
+Header: `crates/wellfriendpdf-capi/include/wellfriendpdf.h`.
 
 WASM:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo build -p oxide-wasm --target wasm32-unknown-unknown --release
-wasm-bindgen --target web --out-dir crates/oxide-wasm/examples/browser/pkg target/wasm32-unknown-unknown/release/oxide_wasm.wasm
+cargo build -p wellfriendpdf-wasm --target wasm32-unknown-unknown --release
+wasm-bindgen --target web --out-dir crates/wellfriendpdf-wasm/examples/browser/pkg target/wasm32-unknown-unknown/release/wellfriendpdf_wasm.wasm
 ```
 
 Docker:
 
 ```sh
-docker build -t oxide-server:latest .
+docker build -t wellfriendpdf-server:latest .
 docker compose up
 ```
 
 The compose file is local-development oriented and explicitly sets
-`OXIDE_ALLOW_UNAUTHENTICATED=true` so it boots with empty `OXIDE_API_KEYS`.
-Production deployments must set strong `OXIDE_API_KEYS` and remove that dev
+`WELLFRIENDPDF_ALLOW_UNAUTHENTICATED=true` so it boots with empty `WELLFRIENDPDF_API_KEYS`.
+Production deployments must set strong `WELLFRIENDPDF_API_KEYS` and remove that dev
 override.
 
 ## Release Checklist
@@ -117,16 +117,16 @@ override.
 Feature matrix:
 
 ```sh
-cargo check -p oxide-engine --no-default-features --features parse
-cargo check -p oxide-engine --no-default-features --features render
-cargo check -p oxide-engine --no-default-features --features create
-cargo check -p oxide-engine --no-default-features --features edit
-cargo check -p oxide-engine --no-default-features --features structural
-cargo check -p oxide-engine --no-default-features --features sign
-cargo check -p oxide-engine --no-default-features --features pdfa
-cargo check -p oxide-engine --no-default-features --features extract,ocr
-cargo check -p oxide-engine --no-default-features --features full
-cargo check -p oxide-cli --no-default-features
-cargo check -p oxide-cli --features full
-cargo check -p oxide-wasm --target wasm32-unknown-unknown
+cargo check -p wellfriendpdf-engine --no-default-features --features parse
+cargo check -p wellfriendpdf-engine --no-default-features --features render
+cargo check -p wellfriendpdf-engine --no-default-features --features create
+cargo check -p wellfriendpdf-engine --no-default-features --features edit
+cargo check -p wellfriendpdf-engine --no-default-features --features structural
+cargo check -p wellfriendpdf-engine --no-default-features --features sign
+cargo check -p wellfriendpdf-engine --no-default-features --features pdfa
+cargo check -p wellfriendpdf-engine --no-default-features --features extract,ocr
+cargo check -p wellfriendpdf-engine --no-default-features --features full
+cargo check -p wellfriendpdf-cli --no-default-features
+cargo check -p wellfriendpdf-cli --features full
+cargo check -p wellfriendpdf-wasm --target wasm32-unknown-unknown
 ```

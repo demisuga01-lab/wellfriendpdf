@@ -31,7 +31,7 @@ WITH REASON means intentionally bounded and documented.
 | Codec sandboxing | DEFERRED WITH REASON | `docs/codec_sandboxing.md` Outcome C decision, Rust dependency audit | OS isolation revisited if native codec dependency or fuzz evidence appears |
 | Decoded-stream cache | DONE | `DecodeCache` LRU with byte budget, max entry, metrics, tests | not wired as a global image-pixel cache by design |
 | Work-stealing scheduler | DONE | `DecodeMemoryBudget`, `ScheduledDecodeJob`, Rayon ordered execution, tests | broad render/extraction adoption deferred to subsystem scheduler integration |
-| SIMD scanner | DEFERRED WITH REASON | scalar scanner abstraction, accelerated fallback status, equality tests, bench script | no unsafe SIMD in `oxide-engine` because unsafe code is forbidden |
+| SIMD scanner | DEFERRED WITH REASON | scalar scanner abstraction, accelerated fallback status, equality tests, bench script | no unsafe SIMD in `wellfriendpdf-engine` because unsafe code is forbidden |
 | Fuzz campaign harness | DONE | `scripts/run_decode_fuzz_campaign.py`, seed folders, README | long overnight results are local/operator-run, not committed |
 | Hostile codec corpus runner | DONE | `scripts/codec_corpus_runner.py` | raw codec samples are cataloged; full raw decode CLI is not exposed |
 | Parser-report integration | DONE | opt-in `decode` section and top-level mapped diagnostics | full-document stream decode is opt-in to avoid surprising cost |
@@ -42,7 +42,7 @@ WITH REASON means intentionally bounded and documented.
 Nothing remains as a hidden Prompt 02 leftover. The exact bounded future items are:
 
 - direct Python/C ABI decode diagnostic exposure during a binding-surface pass;
-- OS-level codec isolation if Oxide adopts native codec libraries or fuzz/corpus
+- OS-level codec isolation if Wellfriend adopts native codec libraries or fuzz/corpus
   evidence justifies process containment;
 - safe SIMD implementation only if it can respect the engine's no-unsafe policy
   or live behind an explicitly reviewed feature boundary;

@@ -6,4 +6,4 @@ pdfminer.six
 pdfplumber
 markitdown
 pypdf
-pdf_oxide
+pdf_wellfriendpdf

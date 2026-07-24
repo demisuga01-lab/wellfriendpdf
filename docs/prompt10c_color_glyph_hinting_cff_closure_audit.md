@@ -33,5 +33,5 @@ Prompt 10C is complete only when no in-scope row is `blocked`.
 | multi-reference audit status | `implemented` | `reference-disagreement-summary-prompt10c.json` |
 | public report parity status | `implemented` | `public-feature-report-prompt10c.json` |
 
-The Prompt 10C summary records zero Oxide outlier failures and zero unclassified
+The Prompt 10C summary records zero Wellfriend outlier failures and zero unclassified
 failures.

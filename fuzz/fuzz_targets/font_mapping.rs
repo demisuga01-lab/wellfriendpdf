@@ -3,7 +3,7 @@
 //! selection, and generated-text shaping.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::fuzz::fuzz_font_mapping;
+use wellfriendpdf_engine::fuzz::fuzz_font_mapping;
 
 fuzz_target!(|data: &[u8]| {
     fuzz_font_mapping(data);

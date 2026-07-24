@@ -13,7 +13,7 @@
 ## Current Codec Worker Architecture
 
 - Parent/worker implementation lives in `crates/engine/src/codec_isolation.rs`.
-- Worker binary lives in `crates/engine/src/bin/oxide-codec-worker.rs`.
+- Worker binary lives in `crates/engine/src/bin/wellfriendpdf-codec-worker.rs`.
 - Current worker protocol version is `CODEC_WORKER_PROTOCOL_VERSION = 1`.
 - Current policies are `in_process`, `isolated_preferred`, `isolated_required`, `report_only`, and `disabled`.
 - Current worker-supported filters are `FlateDecode`, `ASCIIHexDecode`, `ASCII85Decode`, `RunLengthDecode`, and `LZWDecode`.
@@ -97,7 +97,7 @@
 - A 1 GiB process-tree RAM cap was too low for rebuild-heavy validation on this host: `rustc`, `wasm-pack`, Python extension rebuild, and the Gradle test JVM could exceed that cap.
 - Validation was rerun with a 4 GiB process-tree RAM cap using a Windows Job Object, `CARGO_BUILD_JOBS=1`, `CARGO_INCREMENTAL=0`, and `RUST_TEST_THREADS=1`.
 - Under the 4 GiB cap, `cargo test --workspace --jobs 1 --quiet` passed.
-- Under the 4 GiB cap, `cargo check -p oxide-wasm --target wasm32-unknown-unknown --jobs 1 --quiet` passed.
+- Under the 4 GiB cap, `cargo check -p wellfriendpdf-wasm --target wasm32-unknown-unknown --jobs 1 --quiet` passed.
 - Under the 4 GiB cap, `cargo check --manifest-path fuzz/Cargo.toml --bins --jobs 1 --quiet` passed.
-- Under the 4 GiB cap, `cargo build -p oxide-py --jobs 1 --quiet` passed, and `python -m pytest crates/oxide-py/tests/test_reports.py -q` passed against the freshly built extension copied to an ignored temporary import directory.
+- Under the 4 GiB cap, `cargo build -p wellfriendpdf-py --jobs 1 --quiet` passed, and `python -m pytest crates/wellfriendpdf-py/tests/test_reports.py -q` passed against the freshly built extension copied to an ignored temporary import directory.
 - Under the 4 GiB cap, `scripts/prompt03_release_gate.ps1` passed, including cargo package/build, codec isolation CLI/tests, Python wheel build, .NET test/pack, Java Maven/Gradle smokes, and wasm-pack packaging.

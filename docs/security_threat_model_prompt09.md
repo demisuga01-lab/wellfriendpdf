@@ -22,7 +22,7 @@
 - Fuzz, structure-aware mutation, metamorphic checks, and differential smokes.
 - Deterministic canonical output for auditability.
 - Prompt 11B native CMM keeps LittleCMS/lcms2 behind the explicit
-  `native-cmm-lcms2` feature, preserves `oxide-engine` `forbid(unsafe_code)`,
+  `native-cmm-lcms2` feature, preserves `wellfriendpdf-engine` `forbid(unsafe_code)`,
   applies ICC size/channel validation, and reports fallback/native backend state
   across bindings.
 
@@ -39,7 +39,7 @@
 
 Combined Prompt 04 keeps the engine's codec default pure Rust and adds a central native codec registry/allowlist policy. Native/C codec dependencies remain denied by default, native in-process decode is forbidden by default, and future native backends must be feature-gated, worker-required, allowlisted, and report-visible.
 
-RLBox/WASM codec sandboxing is explicitly hard-blocked for this repository state by `target/prompt04-codec-boundary-scheduler/rlbox-wasm-feasibility.json`; Oxide must not claim RLBox production support until a reproducible cross-platform prototype exists.
+RLBox/WASM codec sandboxing is explicitly hard-blocked for this repository state by `target/prompt04-codec-boundary-scheduler/rlbox-wasm-feasibility.json`; Wellfriend must not claim RLBox production support until a reproducible cross-platform prototype exists.
 
 Prompt 05 extends the codec threat model from renderer decode into extraction,
 image extraction, parser-report decode probes, and attachment extraction. These

@@ -5,10 +5,10 @@ Poppler, PDFium, and MuPDF. Poppler-only passing output is not enough.
 
 ## Rules
 
-- If all three references agree and Oxide differs, treat it as an Oxide bug or
+- If all three references agree and Wellfriend differs, treat it as an Wellfriend bug or
   unsupported edge case.
 - If references disagree, record the disagreement and classify which reference
-  Oxide matches, if any.
+  Wellfriend matches, if any.
 - If a reference renderer fails to execute, fix the reference bootstrap before
   claiming Prompt 07 parity.
 - If a fixture includes patterns or shadings, classify the paint-source gap as

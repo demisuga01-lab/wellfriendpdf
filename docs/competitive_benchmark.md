@@ -1,4 +1,4 @@
-# Competitive Benchmark: Oxide vs Major PDF Tools
+# Competitive Benchmark: Wellfriend vs Major PDF Tools
 
 ## 200-PDF Capped Scorecard
 
@@ -44,8 +44,8 @@ This run uses 200 synthetic procedurally generated PDFs with paired JSON ground 
 | --- | --- | --- | --- |
 | docling | yes | 2.107.0 | MIT |
 | markitdown | yes | 0.1.6 | MIT |
-| oxide | yes | oxide 0.1.0 | MIT OR Apache-2.0 |
-| pdf_oxide | yes | 0.3.68 | MIT |
+| wellfriendpdf | yes | wellfriendpdf 0.1.0 | MIT OR Apache-2.0 |
+| pdf_wellfriendpdf | yes | 0.3.68 | MIT |
 | pdfminer.six | yes | 20251230 | MIT |
 | pdfplumber | yes | 0.11.9 | MIT |
 | pdftext | yes | 0.6.3 | Apache-2.0 |
@@ -61,11 +61,11 @@ This run uses 200 synthetic procedurally generated PDFs with paired JSON ground 
 
 | ranked tool | pass % | mean s | p50 s | p95 s | p99 s | mem p95 MB | docs/sec |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| oxide | 100.000 | 0.118 | 0.108 | 0.191 | 0.294 | 1.996 | 8.4613 |
+| wellfriendpdf | 100.000 | 0.118 | 0.108 | 0.191 | 0.294 | 1.996 | 8.4613 |
 | poppler | 100.000 | 0.159 | 0.109 | 0.456 | 0.691 | 7.942 | 6.2943 |
 | pymupdf | 100.000 | 0.383 | 0.310 | 0.983 | 1.222 | 54.157 | 2.6128 |
 | pdfminer.six | 100.000 | 0.422 | 0.311 | 1.080 | 1.468 | 43.028 | 2.3702 |
-| pdf_oxide | 100.000 | 0.431 | 0.311 | 1.139 | 1.529 | 119.175 | 2.3223 |
+| pdf_wellfriendpdf | 100.000 | 0.431 | 0.311 | 1.139 | 1.529 | 119.175 | 2.3223 |
 | pdfplumber | 100.000 | 0.445 | 0.311 | 1.073 | 1.433 | 39.430 | 2.2449 |
 | pypdfium2 | 100.000 | 0.480 | 0.318 | 0.993 | 1.964 | 35.755 | 2.0852 |
 | pypdf | 100.000 | 0.496 | 0.312 | 1.218 | 1.852 | 49.983 | 2.0142 |
@@ -81,11 +81,11 @@ Files nobody passed for text extraction: 0.
 #### has-images
 | tool | attempted | pass % | mean s | p95 s |
 | --- | --- | --- | --- | --- |
-| oxide | 200 | 100.000 | 0.118 | 0.191 |
+| wellfriendpdf | 200 | 100.000 | 0.118 | 0.191 |
 | poppler | 200 | 100.000 | 0.159 | 0.456 |
 | pymupdf | 200 | 100.000 | 0.383 | 0.983 |
 | pdfminer.six | 200 | 100.000 | 0.422 | 1.080 |
-| pdf_oxide | 200 | 100.000 | 0.431 | 1.139 |
+| pdf_wellfriendpdf | 200 | 100.000 | 0.431 | 1.139 |
 | pdfplumber | 200 | 100.000 | 0.445 | 1.073 |
 | pypdfium2 | 200 | 100.000 | 0.480 | 0.993 |
 | pypdf | 200 | 100.000 | 0.496 | 1.218 |
@@ -97,11 +97,11 @@ Files nobody passed for text extraction: 0.
 #### image-heavy
 | tool | attempted | pass % | mean s | p95 s |
 | --- | --- | --- | --- | --- |
-| oxide | 200 | 100.000 | 0.118 | 0.191 |
+| wellfriendpdf | 200 | 100.000 | 0.118 | 0.191 |
 | poppler | 200 | 100.000 | 0.159 | 0.456 |
 | pymupdf | 200 | 100.000 | 0.383 | 0.983 |
 | pdfminer.six | 200 | 100.000 | 0.422 | 1.080 |
-| pdf_oxide | 200 | 100.000 | 0.431 | 1.139 |
+| pdf_wellfriendpdf | 200 | 100.000 | 0.431 | 1.139 |
 | pdfplumber | 200 | 100.000 | 0.445 | 1.073 |
 | pypdfium2 | 200 | 100.000 | 0.480 | 0.993 |
 | pypdf | 200 | 100.000 | 0.496 | 1.218 |
@@ -113,14 +113,14 @@ Files nobody passed for text extraction: 0.
 #### image-heavy-count
 | tool | attempted | pass % | mean s | p95 s |
 | --- | --- | --- | --- | --- |
-| oxide | 70 | 100.000 | 0.117 | 0.123 |
+| wellfriendpdf | 70 | 100.000 | 0.117 | 0.123 |
 | poppler | 70 | 100.000 | 0.170 | 0.469 |
 | pymupdf | 70 | 100.000 | 0.425 | 0.968 |
 | pdfminer.six | 70 | 100.000 | 0.425 | 0.954 |
 | pdfplumber | 70 | 100.000 | 0.430 | 0.850 |
 | pypdfium2 | 70 | 100.000 | 0.479 | 1.021 |
 | pypdf | 70 | 100.000 | 0.505 | 1.048 |
-| pdf_oxide | 70 | 100.000 | 0.526 | 1.240 |
+| pdf_wellfriendpdf | 70 | 100.000 | 0.526 | 1.240 |
 | pdftext | 70 | 100.000 | 0.951 | 1.979 |
 | markitdown | 70 | 100.000 | 2.398 | 4.203 |
 | pymupdf4llm | 70 | 100.000 | 5.325 | 12.758 |
@@ -129,14 +129,14 @@ Files nobody passed for text extraction: 0.
 #### large-file
 | tool | attempted | pass % | mean s | p95 s |
 | --- | --- | --- | --- | --- |
-| oxide | 65 | 100.000 | 0.118 | 0.124 |
+| wellfriendpdf | 65 | 100.000 | 0.118 | 0.124 |
 | poppler | 65 | 100.000 | 0.174 | 0.456 |
 | pdfminer.six | 65 | 100.000 | 0.431 | 0.985 |
 | pdfplumber | 65 | 100.000 | 0.432 | 0.857 |
 | pymupdf | 65 | 100.000 | 0.444 | 1.009 |
 | pypdfium2 | 65 | 100.000 | 0.486 | 1.034 |
 | pypdf | 65 | 100.000 | 0.505 | 1.046 |
-| pdf_oxide | 65 | 100.000 | 0.529 | 1.254 |
+| pdf_wellfriendpdf | 65 | 100.000 | 0.529 | 1.254 |
 | pdftext | 65 | 100.000 | 0.914 | 1.764 |
 | markitdown | 65 | 100.000 | 2.235 | 4.136 |
 | pymupdf4llm | 65 | 100.000 | 5.525 | 13.373 |
@@ -145,14 +145,14 @@ Files nobody passed for text extraction: 0.
 #### medium-doc
 | tool | attempted | pass % | mean s | p95 s |
 | --- | --- | --- | --- | --- |
-| oxide | 44 | 100.000 | 0.125 | 0.202 |
+| wellfriendpdf | 44 | 100.000 | 0.125 | 0.202 |
 | poppler | 44 | 100.000 | 0.165 | 0.485 |
 | pdfplumber | 44 | 100.000 | 0.426 | 0.882 |
 | pdfminer.six | 44 | 100.000 | 0.436 | 0.883 |
 | pymupdf | 44 | 100.000 | 0.458 | 1.063 |
 | pypdfium2 | 44 | 100.000 | 0.489 | 1.036 |
 | pypdf | 44 | 100.000 | 0.526 | 1.281 |
-| pdf_oxide | 44 | 100.000 | 0.591 | 1.424 |
+| pdf_wellfriendpdf | 44 | 100.000 | 0.591 | 1.424 |
 | pdftext | 44 | 100.000 | 0.850 | 1.773 |
 | markitdown | 44 | 100.000 | 2.181 | 3.873 |
 | pymupdf4llm | 44 | 100.000 | 6.256 | 14.627 |
@@ -161,10 +161,10 @@ Files nobody passed for text extraction: 0.
 #### short-doc
 | tool | attempted | pass % | mean s | p95 s |
 | --- | --- | --- | --- | --- |
-| oxide | 156 | 100.000 | 0.116 | 0.189 |
+| wellfriendpdf | 156 | 100.000 | 0.116 | 0.189 |
 | poppler | 156 | 100.000 | 0.157 | 0.425 |
 | pymupdf | 156 | 100.000 | 0.361 | 0.873 |
-| pdf_oxide | 156 | 100.000 | 0.385 | 0.929 |
+| pdf_wellfriendpdf | 156 | 100.000 | 0.385 | 0.929 |
 | pdfminer.six | 156 | 100.000 | 0.418 | 1.145 |
 | pdfplumber | 156 | 100.000 | 0.451 | 1.150 |
 | pypdfium2 | 156 | 100.000 | 0.477 | 0.893 |
@@ -180,8 +180,8 @@ Text scoring normalizes whitespace, then reports character similarity, token F1,
 
 | tool | scored | char sim | word F1 | line recall | spurious ratio | order |
 | --- | --- | --- | --- | --- | --- | --- |
-| oxide | 200 | 0.927 | 1.000 | 1.000 | 0.076 | 0.960 |
-| pdf_oxide | 200 | 0.925 | 1.000 | 1.000 | 0.078 | 0.960 |
+| wellfriendpdf | 200 | 0.927 | 1.000 | 1.000 | 0.076 | 0.960 |
+| pdf_wellfriendpdf | 200 | 0.925 | 1.000 | 1.000 | 0.078 | 0.960 |
 | pdfminer.six | 200 | 0.906 | 1.000 | 1.000 | 0.000 | 0.956 |
 | pdfplumber | 200 | 0.937 | 1.000 | 1.000 | 0.076 | 0.960 |
 | pypdf | 200 | 0.996 | 1.000 | 1.000 | 0.000 | 0.999 |
@@ -201,11 +201,11 @@ This capped scorecard slice is image-heavy and contains no table ground truth, s
 
 | tool | scored | cell F1 | recall | precision | TEDS approx | shape F1 |
 | --- | --- | --- | --- | --- | --- | --- |
-| oxide | 200 | 0.936 | 0.997 | 0.896 | 0.893 | 0.765 |
+| wellfriendpdf | 200 | 0.936 | 0.997 | 0.896 | 0.893 | 0.765 |
 | pdfplumber | 200 | 0.851 | 0.854 | 0.848 | 0.863 | 0.899 |
 | pymupdf | 200 | 0.846 | 0.840 | 0.854 | 0.867 | 0.933 |
 
-Oxide leads all four headline metrics (cell-F1, recall, precision, TEDS-approx) but **trails on the pure structural shape-F1** (0.765 vs pymupdf 0.933 / pdfplumber 0.899) because it over-detects tables (1017 predicted vs 650 truth, over-detecting on 122/200 files, never under-detecting). docling was not importable in the benchmark venv (NOT-RUN); pdf_oxide has no table adapter in this harness. See the table-slice report for the before/after vs the 0.857 / 0.806 / 0.960 / 0.667 baseline.
+Wellfriend leads all four headline metrics (cell-F1, recall, precision, TEDS-approx) but **trails on the pure structural shape-F1** (0.765 vs pymupdf 0.933 / pdfplumber 0.899) because it over-detects tables (1017 predicted vs 650 truth, over-detecting on 122/200 files, never under-detecting). docling was not importable in the benchmark venv (NOT-RUN); pdf_wellfriendpdf has no table adapter in this harness. See the table-slice report for the before/after vs the 0.857 / 0.806 / 0.960 / 0.667 baseline.
 
 ### Field / Key-Value Accuracy
 
@@ -213,16 +213,16 @@ This capped scorecard slice is image-heavy and contains no field ground truth, s
 
 | tool | scored | strict field F1 | recall | precision | value-only F1 |
 | --- | --- | --- | --- | --- | --- |
-| oxide | 200 | 0.725 | 0.845 | 0.692 | 0.814 |
+| wellfriendpdf | 200 | 0.725 | 0.845 | 0.692 | 0.814 |
 | pypdf | 200 | 0.000 | 0.000 | 0.000 | 0.000 |
 
-Strict field F1 requires key and value to match; value-only F1 shows values found under different labels. pypdf scores 0 because it reads AcroForm widgets and **0 of the 200 slice PDFs contain any** — the ground-truth fields are rendered key-value text, so this is a capability/source mismatch, not a head-to-head quality loss. pymupdf/pdf_oxide (AcroForm) share that gap; docling was not importable in the benchmark venv (NOT-RUN). See the field-slice report for the before/after vs the 0.104 baseline.
+Strict field F1 requires key and value to match; value-only F1 shows values found under different labels. pypdf scores 0 because it reads AcroForm widgets and **0 of the 200 slice PDFs contain any** — the ground-truth fields are rendered key-value text, so this is a capability/source mismatch, not a head-to-head quality loss. pymupdf/pdf_wellfriendpdf (AcroForm) share that gap; docling was not importable in the benchmark venv (NOT-RUN). See the field-slice report for the before/after vs the 0.104 baseline.
 
 ### Image Count Accuracy
 
 | tool | scored | count accuracy | mean abs error |
 | --- | --- | --- | --- |
-| oxide | 200 | 1.000 | 0.000 |
+| wellfriendpdf | 200 | 1.000 | 0.000 |
 | pymupdf | 200 | 1.000 | 0.000 |
 | pdfplumber | 200 | 1.000 | 0.000 |
 | pypdf | 200 | 1.000 | 0.000 |
@@ -230,7 +230,7 @@ Strict field F1 requires key and value to match; value-only F1 shows values foun
 
 ## Capability Matrix
 
-| capability | oxide | pdf_oxide | pymupdf | pypdfium2 | pymupdf4llm | pdftext | pdfminer.six | pdfplumber | markitdown | pypdf | docling | qpdf | poppler |
+| capability | wellfriendpdf | pdf_wellfriendpdf | pymupdf | pypdfium2 | pymupdf4llm | pdftext | pdfminer.six | pdfplumber | markitdown | pypdf | docling | qpdf | poppler |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | plain text extraction | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | yes | no | yes |
 | chars/words/lines with geometry | partial | yes | yes | partial | partial | yes | partial | yes | no | partial | yes | no | partial |
@@ -247,17 +247,17 @@ Strict field F1 requires key and value to match; value-only F1 shows values foun
 | digital signatures/PDF-A/PDF-UA | yes | no | partial | no | no | no | no | no | no | partial | no | no | no |
 | MCP/AI assistant integration | no | yes | no | no | no | no | no | no | partial | no | partial | no | no |
 
-### What Oxide Lacks
+### What Wellfriend Lacks
 
-- Broad published language binding set comparable to pdf_oxide's Python/Go/JS/C#/.NET/Java/WASM positioning.
-- Built-in OCR runtime; Oxide OCR is optional and Tesseract-backed rather than bundled.
-- Docling-class ML layout/OCR is not built into Oxide; this release binary is not OCR-enabled.
-- Documented XFA form data support comparable to pdf_oxide's advertised XFA capability.
+- Broad published language binding set comparable to pdf_wellfriendpdf's Python/Go/JS/C#/.NET/Java/WASM positioning.
+- Built-in OCR runtime; Wellfriend OCR is optional and Tesseract-backed rather than bundled.
+- Docling-class ML layout/OCR is not built into Wellfriend; this release binary is not OCR-enabled.
+- Documented XFA form data support comparable to pdf_wellfriendpdf's advertised XFA capability.
 - MCP server / AI assistant integration.
-- MCP server/assistant integration advertised by pdf_oxide.
+- MCP server/assistant integration advertised by pdf_wellfriendpdf.
 - qpdf remains the stronger dedicated structural validator and repair reference.
 
-### What Oxide Uniquely Has / Where It Is Strong
+### What Wellfriend Uniquely Has / Where It Is Strong
 
 - C ABI and WASM bindings in-tree in addition to the Rust library and CLI.
 - Digital signature signing, verification, coverage, trust, timestamp/LTV reporting, and offline DSS material support.
@@ -272,13 +272,13 @@ Strict field F1 requires key and value to match; value-only F1 shows values foun
 - Self-host HTTP server with async job API, auth, rate limiting, file/time/output caps, and JSON endpoints.
 - Single product surface spans parse, tables, fields, images, render, edit, optimize, repair, linearize, redact, encrypt, and signatures.
 
-Capability source notes: docling: https://docling-project.github.io/docling/; markitdown: https://github.com/microsoft/markitdown, https://pypi.org/project/markitdown/; oxide: docs/api_overview.md, docs/self_hosting.md, docs/signatures.md, docs/tables.md, docs/semantic_extraction.md; pdf_oxide: https://docs.rs/pdf_oxide/latest/pdf_oxide/, https://pdf.oxide.fyi/; pdfminer.six: https://pdfminersix.readthedocs.io/; pdfplumber: https://github.com/jsvine/pdfplumber; pdftext: https://pypi.org/project/pdftext/, https://github.com/datalab-to/pdftext; poppler: https://poppler.freedesktop.org/; pymupdf: https://pymupdf.readthedocs.io/, https://pymupdf.io/; pymupdf4llm: https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/, https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/api.html; pypdf: https://pypdf.readthedocs.io/, https://github.com/py-pdf/pypdf; pypdfium2: https://pypdfium2.readthedocs.io/, https://github.com/pypdfium2-team/pypdfium2; qpdf: https://qpdf.readthedocs.io/
+Capability source notes: docling: https://docling-project.github.io/docling/; markitdown: https://github.com/microsoft/markitdown, https://pypi.org/project/markitdown/; wellfriendpdf: docs/api_overview.md, docs/self_hosting.md, docs/signatures.md, docs/tables.md, docs/semantic_extraction.md; pdf_wellfriendpdf: https://docs.rs/pdf_wellfriendpdf/latest/pdf_wellfriendpdf/, https://pdf.wellfriendpdf.fyi/; pdfminer.six: https://pdfminersix.readthedocs.io/; pdfplumber: https://github.com/jsvine/pdfplumber; pdftext: https://pypi.org/project/pdftext/, https://github.com/datalab-to/pdftext; poppler: https://poppler.freedesktop.org/; pymupdf: https://pymupdf.readthedocs.io/, https://pymupdf.io/; pymupdf4llm: https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/, https://pymupdf.readthedocs.io/en/latest/pymupdf4llm/api.html; pypdf: https://pypdf.readthedocs.io/, https://github.com/py-pdf/pypdf; pypdfium2: https://pypdfium2.readthedocs.io/, https://github.com/pypdfium2-team/pypdfium2; qpdf: https://qpdf.readthedocs.io/
 
 ## Blunt Verdict
 
-Oxide is fastest by mean text wall time among tools that ran: 0.118s mean, ahead of Poppler at 0.159s.
-Oxide does not lead text character fidelity. Oxide char-sim is 0.927; higher char-sim tools are pdfplumber, pymupdf, pypdfium2, pypdf, and pdftext.
-Oxide leads or ties text word-F1 among tools that ran.
+Wellfriend is fastest by mean text wall time among tools that ran: 0.118s mean, ahead of Poppler at 0.159s.
+Wellfriend does not lead text character fidelity. Wellfriend char-sim is 0.927; higher char-sim tools are pdfplumber, pymupdf, pypdfium2, pypdf, and pdftext.
+Wellfriend leads or ties text word-F1 among tools that ran.
 Docling was measured through Python 3.12 and passed all 200 PDFs for text, but it was much slower here and scored poorly on this synthetic text metric.
 
 ## Before / After Snapshot
@@ -293,7 +293,7 @@ Docling was measured through Python 3.12 and passed all 200 PDFs for text, but i
 
 ## State Of The Project
 
-Oxide has a proper CLI and developer API: the CLI has structured output and classified errors, and the Python binding exposes the expected document/page ergonomics. The code/docs side of enterprise hardening is in place: MSRV is pinned, the RSA advisory decision is documented, and the stability/security docs are current. This is not a claim of certification or external audit.
+Wellfriend has a proper CLI and developer API: the CLI has structured output and classified errors, and the Python binding exposes the expected document/page ergonomics. The code/docs side of enterprise hardening is in place: MSRV is pinned, the RSA advisory decision is documented, and the stability/security docs are current. This is not a claim of certification or external audit.
 
 ## Prioritized Fix List
 

@@ -2,8 +2,8 @@
 
 Prompt 12B runs the prepress visual corpus through:
 
-- Oxide default/fallback
-- Oxide native LittleCMS where the native feature gate is enabled in validation
+- Wellfriend default/fallback
+- Wellfriend native LittleCMS where the native feature gate is enabled in validation
 - Poppler
 - PDFium
 - MuPDF
@@ -28,6 +28,6 @@ Artifacts:
 - `target/prompt12-prepress-cmm/prompt12b-html-report/index.html`
 
 Spot and DeviceN visual preview disagreements are classified separately from
-Oxide internal plate data. External reference renderers generally expose
+Wellfriend internal plate data. External reference renderers generally expose
 flattened previews rather than true plate framebuffers, so the pass condition is
-zero Oxide outliers where references agree and zero unclassified failures.
+zero Wellfriend outliers where references agree and zero unclassified failures.

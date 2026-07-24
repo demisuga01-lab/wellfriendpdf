@@ -1,6 +1,6 @@
 # Robustness Benchmark: Wild-PDF Survival
 
-**Plain-language summary.** On this indicative (approx 200-file subset) robustness run, Oxide survived 100.0% of attempted files and produced parsed text artifacts for 87.5%. The main Prompt 2 targets are: corrupt xref/trailer recovery (18), encryption edge (7). Clean handled errors are separated from crashes/timeouts/OOMs because a clean rejection is acceptable for malformed input, while a hard failure is not.
+**Plain-language summary.** On this indicative (approx 200-file subset) robustness run, Wellfriend survived 100.0% of attempted files and produced parsed text artifacts for 87.5%. The main Prompt 2 targets are: corrupt xref/trailer recovery (18), encryption edge (7). Clean handled errors are separated from crashes/timeouts/OOMs because a clean rejection is acceptable for malformed input, while a hard failure is not.
 
 ## Scope And Corpus
 
@@ -70,8 +70,8 @@ This is a SMALL indicative robustness corpus, not a final robustness claim. It h
 | --- | --- | --- | --- |
 | docling | available, not run | 2.107.0 | installed but skipped in default run because it is a heavyweight ML converter; pass --include-heavy to run it |
 | markitdown | available, not run | 0.1.6 | MIT |
-| oxide | yes | oxide 0.1.0 | MIT OR Apache-2.0 |
-| pdf_oxide | yes | 0.3.68 | MIT |
+| wellfriendpdf | yes | wellfriendpdf 0.1.0 | MIT OR Apache-2.0 |
+| pdf_wellfriendpdf | yes | 0.3.68 | MIT |
 | pdfminer.six | available, not run | 20251230 | MIT |
 | pdfplumber | available, not run | 0.11.9 | MIT |
 | pdftext | available, not run | 0.6.3 | Apache-2.0 |
@@ -87,42 +87,42 @@ Rates below use the indicative (approx 200-file subset). Survival = PASS + CLEAN
 
 | rank | tool | survival % | parsed pass % | parsed | clean errors | hard failures | crash | timeout | OOM | mean s |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 1 | pdf_oxide | 100.0 | 90.5 | 181 | 19 | 0 | 0 | 0 | 0 | 0.2398 |
+| 1 | pdf_wellfriendpdf | 100.0 | 90.5 | 181 | 19 | 0 | 0 | 0 | 0 | 0.2398 |
 | 2 | pymupdf | 100.0 | 90.5 | 181 | 19 | 0 | 0 | 0 | 0 | 0.23106 |
-| 3 | oxide | 100.0 | 87.5 | 175 | 25 | 0 | 0 | 0 | 0 | 0.19964 |
+| 3 | wellfriendpdf | 100.0 | 87.5 | 175 | 25 | 0 | 0 | 0 | 0 | 0.19964 |
 | 4 | pypdfium2 | 100.0 | 87.0 | 174 | 26 | 0 | 0 | 0 | 0 | 0.33785 |
 | 5 | poppler | 99.5 | 87.0 | 174 | 25 | 1 | 0 | 1 | 0 | 0.42683 |
 
-Leader comparison set: pdf_oxide 100.0%, pymupdf 100.0%, pypdfium2 100.0%, poppler 99.5%.
+Leader comparison set: pdf_wellfriendpdf 100.0%, pymupdf 100.0%, pypdfium2 100.0%, poppler 99.5%.
 
-## Oxide Hard-Fails But A Competitor Survives
+## Wellfriend Hard-Fails But A Competitor Survives
 
-No Oxide crash/timeout/OOM/missing-output hard failures had a competitor survival on this run.
+No Wellfriend crash/timeout/OOM/missing-output hard failures had a competitor survival on this run.
 
-## Oxide Clean-Errors But A Competitor Parses
+## Wellfriend Clean-Errors But A Competitor Parses
 
 These are not crash bugs, but they are best-effort recovery gaps for Prompt 2 if the category is common.
 
-| file | tag | root cause | competitors parsed | Oxide error |
+| file | tag | root cause | competitors parsed | Wellfriend error |
 | --- | --- | --- | --- | --- |
-| tests/corpus/pdfs/pdfjs/issue15893_reduced.pdf | encryption-edge | encryption edge | pdf_oxide | oxide: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
-| tests/corpus/pdfs/pdfjs/print_protection.pdf | encryption-edge | encryption edge | pymupdf | oxide: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
-| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum4_unicode-test-U2F874-correct-d30412e54245.pdf | font-encoding | encryption edge | pdf_oxide | oxide: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
-| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum4_unicode-test-U2F874-wrong-b5ff24d38f77.pdf | font-encoding | encryption edge | pdf_oxide | oxide: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
-| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum5_unicode-corrigendum5-fixed-70421a50fd5e.pdf | font-encoding | encryption edge | pdf_oxide | oxide: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
-| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum5_unicode-corrigendum5-unicode32-once-628f77af77af.pdf | font-encoding | encryption edge | pdf_oxide | oxide: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
-| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum5_unicode-corrigendum5-unicode32-twice-a8224fe8278f.pdf | font-encoding | encryption edge | pdf_oxide | oxide: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
-| renderer-benchmark/corpus/hostile/hostile_006_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | oxide: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
-| renderer-benchmark/corpus/hostile/hostile_016_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | oxide: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
-| renderer-benchmark/corpus/hostile/hostile_026_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | oxide: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
-| renderer-benchmark/corpus/hostile/hostile_036_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | oxide: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
-| renderer-benchmark/corpus/hostile/hostile_046_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | oxide: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
-| renderer-benchmark/corpus/hostile/hostile_056_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | oxide: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
+| tests/corpus/pdfs/pdfjs/issue15893_reduced.pdf | encryption-edge | encryption edge | pdf_wellfriendpdf | wellfriendpdf: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
+| tests/corpus/pdfs/pdfjs/print_protection.pdf | encryption-edge | encryption edge | pymupdf | wellfriendpdf: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
+| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum4_unicode-test-U2F874-correct-d30412e54245.pdf | font-encoding | encryption edge | pdf_wellfriendpdf | wellfriendpdf: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
+| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum4_unicode-test-U2F874-wrong-b5ff24d38f77.pdf | font-encoding | encryption edge | pdf_wellfriendpdf | wellfriendpdf: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
+| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum5_unicode-corrigendum5-fixed-70421a50fd5e.pdf | font-encoding | encryption edge | pdf_wellfriendpdf | wellfriendpdf: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
+| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum5_unicode-corrigendum5-unicode32-once-628f77af77af.pdf | font-encoding | encryption edge | pdf_wellfriendpdf | wellfriendpdf: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
+| public-benchmark/corpus/pdfs/darpa-safedocs/darpa-safedocs_Unicode_passwords_corrigendum5_unicode-corrigendum5-unicode32-twice-a8224fe8278f.pdf | font-encoding | encryption edge | pdf_wellfriendpdf | wellfriendpdf: parse/format error: encrypted PDF: PDF is password-protected; provide the correct password  |
+| renderer-benchmark/corpus/hostile/hostile_006_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | wellfriendpdf: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
+| renderer-benchmark/corpus/hostile/hostile_016_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | wellfriendpdf: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
+| renderer-benchmark/corpus/hostile/hostile_026_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | wellfriendpdf: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
+| renderer-benchmark/corpus/hostile/hostile_036_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | wellfriendpdf: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
+| renderer-benchmark/corpus/hostile/hostile_046_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | wellfriendpdf: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
+| renderer-benchmark/corpus/hostile/hostile_056_huge-length.pdf | pathological | corrupt xref/trailer recovery | pymupdf | wellfriendpdf: parse/format error: malformed PDF: xref stream object 1 0 is not /Type /XRef  |
 
-## Oxide Root-Cause Grouping
+## Wellfriend Root-Cause Grouping
 
 Clean errors are included here but are distinguished from hard failures.
-| category | all Oxide non-pass files | hard-failure subset |
+| category | all Wellfriend non-pass files | hard-failure subset |
 | --- | --- | --- |
 | corrupt xref/trailer recovery | 18 | 0 |
 | encryption edge | 7 | 0 |
@@ -155,11 +155,11 @@ This run is capped at 200 PDFs and is text-extraction-only. It does not score te
 
 ## Final Capped Verdict
 
-Oxide had 100.0% survival on this 200-PDF robustness corpus: no crashes, panics, timeouts, or OOMs. Its parsed-pass rate was 87.5%, behind pdf_oxide and PyMuPDF at 90.5%, because Oxide returned clean errors on more files. That is robust behavior for malformed input, but it is still a best-effort recovery gap.
+Wellfriend had 100.0% survival on this 200-PDF robustness corpus: no crashes, panics, timeouts, or OOMs. Its parsed-pass rate was 87.5%, behind pdf_wellfriendpdf and PyMuPDF at 90.5%, because Wellfriend returned clean errors on more files. That is robust behavior for malformed input, but it is still a best-effort recovery gap.
 
 ## Prioritized Backlog
 
-1. **Corrupt xref/trailer recovery**: 18 Oxide clean-error files; competitors parsed some of them.
-2. **Encryption edge cases**: 7 Oxide clean-error files; keep failures clean, then improve empty-password/handler handling where safe.
+1. **Corrupt xref/trailer recovery**: 18 Wellfriend clean-error files; competitors parsed some of them.
+2. **Encryption edge cases**: 7 Wellfriend clean-error files; keep failures clean, then improve empty-password/handler handling where safe.
 3. **Broader long-run evidence**: maintain the no-crash property over time and add external security review before any enterprise-grade certification claim.
 

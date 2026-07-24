@@ -21,7 +21,7 @@ use serde::Serialize;
 use crate::crypto::md5;
 use crate::decode_scheduler::{estimate_stream_decode_bytes, DecodeSchedulerContext};
 use crate::document::PdfDocument;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_with_limits, DecodeLimits};
 use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
@@ -247,7 +247,7 @@ pub fn extract_attachment_with_limits(
     let stream_obj =
         reader.get_and_resolve(attachment.stream_object, attachment.stream_generation)?;
     if !matches!(stream_obj, PdfObject::Stream { .. }) {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "embedded file object {} {} is not a stream",
             attachment.stream_object, attachment.stream_generation
         )));

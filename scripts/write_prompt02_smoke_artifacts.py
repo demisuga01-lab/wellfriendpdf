@@ -23,19 +23,19 @@ def write_json(path: Path, payload: dict) -> None:
 
 
 def wasm_smoke() -> dict:
-    debug_wasm = ROOT / "target" / "wasm32-unknown-unknown" / "debug" / "oxide_wasm.wasm"
-    release_wasm = ROOT / "target" / "wasm32-unknown-unknown" / "release" / "oxide_wasm.wasm"
+    debug_wasm = ROOT / "target" / "wasm32-unknown-unknown" / "debug" / "wellfriendpdf_wasm.wasm"
+    release_wasm = ROOT / "target" / "wasm32-unknown-unknown" / "release" / "wellfriendpdf_wasm.wasm"
     built = release_wasm if release_wasm.exists() else debug_wasm if debug_wasm.exists() else None
-    node_glue = OUT / "wasm-node-pkg" / "oxide_wasm.js"
+    node_glue = OUT / "wasm-node-pkg" / "wellfriendpdf_wasm.js"
     runtime = run_wasm_node_smoke(node_glue) if node_glue.exists() else None
     return {
         "surface": "wasm",
         "status": "pass" if built and runtime and runtime["status"] == "pass" else "partial" if built else "missing",
-        "command": "cargo build -p oxide-wasm --target wasm32-unknown-unknown",
+        "command": "cargo build -p wellfriendpdf-wasm --target wasm32-unknown-unknown",
         "wasm_artifact": str(built.relative_to(ROOT)) if built else None,
-        "typescript_declarations": (ROOT / "crates" / "oxide-wasm" / "oxide.d.ts").exists(),
-        "package_json": (ROOT / "crates" / "oxide-wasm" / "package.json").exists(),
-        "browser_example": (ROOT / "crates" / "oxide-wasm" / "examples" / "browser" / "index.html").exists(),
+        "typescript_declarations": (ROOT / "crates" / "wellfriendpdf-wasm" / "wellfriendpdf.d.ts").exists(),
+        "package_json": (ROOT / "crates" / "wellfriendpdf-wasm" / "package.json").exists(),
+        "browser_example": (ROOT / "crates" / "wellfriendpdf-wasm" / "examples" / "browser" / "index.html").exists(),
         "runtime_smoke": runtime or {
             "status": "not_run",
             "reason": "Node wasm-bindgen glue not generated under target/prompt02-binding-parity/wasm-node-pkg",
@@ -46,9 +46,9 @@ def wasm_smoke() -> dict:
 def run_wasm_node_smoke(node_glue: Path) -> dict:
     js = """
 const fs = require('fs');
-const wasm = require('./target/prompt02-binding-parity/wasm-node-pkg/oxide_wasm.js');
+const wasm = require('./target/prompt02-binding-parity/wasm-node-pkg/wellfriendpdf_wasm.js');
 const bytes = fs.readFileSync('crates/engine/tests/fixtures/tracemonkey.pdf');
-const pdf = new wasm.OxidePdf(bytes);
+const pdf = new wasm.WellfriendPdf(bytes);
 const sec = pdf.securityReportJson();
 const san = pdf.sanitize('balanced');
 if (!sec.includes('schema_version')) throw new Error('security report missing schema_version');
@@ -121,8 +121,8 @@ def compare_reports(dotnet: dict | None, java: dict | None) -> dict:
             "dotnet": dotnet.get("abi_version"),
             "java": java.get("abi_version"),
         },
-        "c_abi_basis": "oxide-capi facade tests exercise the same exported functions directly",
-        "wasm_basis": "oxide-wasm methods call oxide_engine::sdk directly; runtime hash comparison awaits regenerated wasm-bindgen glue",
+        "c_abi_basis": "wellfriendpdf-capi facade tests exercise the same exported functions directly",
+        "wasm_basis": "wellfriendpdf-wasm methods call wellfriendpdf_engine::sdk directly; runtime hash comparison awaits regenerated wasm-bindgen glue",
     }
 
 
@@ -138,7 +138,7 @@ def main() -> None:
             {
                 "surface": "dotnet",
                 "status": "missing",
-                "reason": "Run dotnet tests with OXIDE_PROMPT02_ARTIFACT_DIR=target/prompt02-binding-parity",
+                "reason": "Run dotnet tests with WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR=target/prompt02-binding-parity",
             },
         )
     if not java:
@@ -147,7 +147,7 @@ def main() -> None:
             {
                 "surface": "java",
                 "status": "missing",
-                "reason": "Run Java smoke with OXIDE_PROMPT02_ARTIFACT_DIR=target/prompt02-binding-parity",
+                "reason": "Run Java smoke with WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR=target/prompt02-binding-parity",
             },
         )
     write_json(OUT / "cross-binding-parity.json", compare_reports(dotnet, java))

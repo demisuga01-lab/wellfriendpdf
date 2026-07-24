@@ -17,9 +17,9 @@ Implemented behavior:
 
 Tests:
 
-- `cargo test -p oxide-engine --test shadings --jobs 1`
-- `cargo test -p oxide-engine render::shading::tests --jobs 1`
-- `cargo test -p oxide-engine --test prompt08b_type3_cid_tensor --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test shadings --jobs 1`
+- `cargo test -p wellfriendpdf-engine render::shading::tests --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test prompt08b_type3_cid_tensor --jobs 1`
 
 Artifacts:
 

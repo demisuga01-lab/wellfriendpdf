@@ -21,7 +21,7 @@ Prompt 09 removes or nulls:
 - `/XFA`.
 - Metadata streams/references when metadata scrubbing is enabled.
 
-After rewriting, Oxide reopens and rescans the output. Strict mode reports failure if risky content remains reachable.
+After rewriting, Wellfriend reopens and rescans the output. Strict mode reports failure if risky content remains reachable.
 
 ## Limits
 

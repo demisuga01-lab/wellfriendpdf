@@ -1,21 +1,21 @@
 # WASM SDK Prompt 02
 
-The WASM SDK is built from `crates/oxide-wasm` and targets browser, Node, and
+The WASM SDK is built from `crates/wellfriendpdf-wasm` and targets browser, Node, and
 WebWorker environments. It accepts caller-provided bytes and routes report and
-output operations through `oxide_engine::sdk`.
+output operations through `wellfriendpdf_engine::sdk`.
 
 ## Package Shape
 
-- Rust crate: `crates/oxide-wasm`
-- JS package metadata: `crates/oxide-wasm/package.json`
-- TypeScript declarations: `crates/oxide-wasm/oxide.d.ts`
-- Browser example: `crates/oxide-wasm/examples/browser`
+- Rust crate: `crates/wellfriendpdf-wasm`
+- JS package metadata: `crates/wellfriendpdf-wasm/package.json`
+- TypeScript declarations: `crates/wellfriendpdf-wasm/wellfriendpdf.d.ts`
+- Browser example: `crates/wellfriendpdf-wasm/examples/browser`
 
 Build:
 
 ```sh
-cargo build -p oxide-wasm --target wasm32-unknown-unknown
-wasm-pack build crates/oxide-wasm --target web --out-dir pkg
+cargo build -p wellfriendpdf-wasm --target wasm32-unknown-unknown
+wasm-pack build crates/wellfriendpdf-wasm --target web --out-dir pkg
 ```
 
 `cargo build` verifies the Rust/WASM code. `wasm-pack` or `wasm-bindgen` must
@@ -25,12 +25,12 @@ regenerate JS glue before publishing or using newly added methods.
 
 Lifecycle and capability queries:
 
-- `new OxidePdf(bytes)`
-- `OxidePdf.openWithPassword(bytes, password)`
+- `new WellfriendPdf(bytes)`
+- `WellfriendPdf.openWithPassword(bytes, password)`
 - `close()`, `isClosed()`
-- `OxidePdf.sdkVersion()`, `OxidePdf.abiVersion()`
-- `OxidePdf.featureReportJson()`
-- `OxidePdf.decodeBudgetReportJson(filter, width, height, components)`
+- `WellfriendPdf.sdkVersion()`, `WellfriendPdf.abiVersion()`
+- `WellfriendPdf.featureReportJson()`
+- `WellfriendPdf.decodeBudgetReportJson(filter, width, height, components)`
 
 Reports:
 

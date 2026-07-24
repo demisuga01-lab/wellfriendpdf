@@ -13,7 +13,7 @@ use crate::attachments::{extract_attachment_with_limits, list_attachments, sanit
 use crate::document::PdfDocument;
 use crate::editing::{AnnotationOptions, EditMode, ImageRect, PdfEditor};
 use crate::engine::ContentEngine;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::prompt17::{
@@ -558,10 +558,10 @@ pub fn associated_file_extract(
         .iter()
         .find(|record| record.stable_id == stable_id)
         .ok_or_else(|| {
-            OxideError::MalformedPdf(format!("unknown associated-file id {stable_id}"))
+            WellfriendError::MalformedPdf(format!("unknown associated-file id {stable_id}"))
         })?;
     if !record.internal {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "external file specifications are inventoried but never fetched or executed"
                 .to_string(),
         ));
@@ -569,7 +569,7 @@ pub fn associated_file_extract(
     let safe = sanitize_associated_filename(&record.filename)?;
     let stream_ref =
         parse_ref_id(record.stream_ref.as_deref().unwrap_or_default()).ok_or_else(|| {
-            OxideError::MalformedPdf("associated file has no stream reference".to_string())
+            WellfriendError::MalformedPdf("associated file has no stream reference".to_string())
         })?;
     let attachment = crate::attachments::Attachment {
         index: 1,
@@ -600,7 +600,7 @@ pub fn associated_files_add_pdf(
     payload: &[u8],
 ) -> Result<(Vec<u8>, AssociatedFilesMutationReport)> {
     if payload.len() > MAX_ASSOCIATED_FILE_BYTES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "associated file payload {} exceeds {} bytes",
             payload.len(),
             MAX_ASSOCIATED_FILE_BYTES
@@ -701,7 +701,10 @@ fn associated_files_add_owner_pdf(
         next += 1;
         let mut params = PdfDictionary::empty();
         params.insert("Size", PdfObject::Integer(payload.len() as i64));
-        params.insert("OxideSHA256", PdfObject::String(digest.as_bytes().to_vec()));
+        params.insert(
+            "WellfriendSHA256",
+            PdfObject::String(digest.as_bytes().to_vec()),
+        );
         let mut stream = PdfDictionary::empty();
         stream.insert("Type", PdfObject::Name("EmbeddedFile".to_string()));
         stream.insert("Subtype", PdfObject::Name(pdf_name(&request.mime)));
@@ -747,7 +750,9 @@ fn associated_files_add_owner_pdf(
     let owner_object = objects
         .iter_mut()
         .find(|object| object.number == owner_number)
-        .ok_or_else(|| OxideError::MalformedPdf("associated-file owner is missing".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("associated-file owner is missing".to_string())
+        })?;
     attach_filespec_to_owner(&mut owner_object.object, owner, spec_number)?;
     let output = PdfWriter::new(objects, root)
         .with_info(info)
@@ -780,7 +785,7 @@ fn resolve_owner_output_number(
         return Ok(root);
     }
     let old = owner_ref.and_then(parse_ref_id).ok_or_else(|| {
-        OxideError::MalformedPdf(format!(
+        WellfriendError::MalformedPdf(format!(
             "owner_ref is required for {owner:?} associated-file mutation"
         ))
     })?;
@@ -789,13 +794,13 @@ fn resolve_owner_output_number(
         .map(classify_owner)
         .unwrap_or(AssociatedFileOwnerType::OrphanFileSpec);
     if actual != owner {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "owner_ref {}-{} is {actual:?}, not {owner:?}",
             old.0, old.1
         )));
     }
     remapped_object_number(reader, old.0).ok_or_else(|| {
-        OxideError::MalformedPdf("associated-file owner could not be remapped".to_string())
+        WellfriendError::MalformedPdf("associated-file owner could not be remapped".to_string())
     })
 }
 
@@ -805,7 +810,7 @@ fn attach_filespec_to_owner(
     spec_number: u32,
 ) -> Result<()> {
     let dict = object_dict_mut(object).ok_or_else(|| {
-        OxideError::MalformedPdf("associated-file owner is not a dictionary".to_string())
+        WellfriendError::MalformedPdf("associated-file owner is not a dictionary".to_string())
     })?;
     let spec = reference(spec_number, 0);
     match owner {
@@ -819,7 +824,7 @@ fn attach_filespec_to_owner(
         | AssociatedFileOwnerType::XObject
         | AssociatedFileOwnerType::FormXObject => append_unique_reference(dict, "AF", spec),
         _ => {
-            return Err(OxideError::UnsupportedFeature(format!(
+            return Err(WellfriendError::UnsupportedFeature(format!(
                 "owner-specific mutation is not supported for {owner:?}"
             )))
         }
@@ -910,14 +915,16 @@ pub fn associated_files_remove_owner_pdf(
                 && (request.owner_ref.is_none() || record.owner_ref == request.owner_ref)
         })
         .ok_or_else(|| {
-            OxideError::MalformedPdf("associated-file owner association was not found".to_string())
+            WellfriendError::MalformedPdf(
+                "associated-file owner association was not found".to_string(),
+            )
         })?;
     let old_spec = record
         .file_spec_ref
         .as_deref()
         .and_then(parse_ref_id)
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature(
+            WellfriendError::UnsupportedFeature(
                 "owner-specific removal requires an indirect FileSpec".to_string(),
             )
         })?;
@@ -925,14 +932,16 @@ pub fn associated_files_remove_owner_pdf(
     let mut noop = |_number: u32, _object: &mut PdfObject| {};
     let (mut objects, root, info) = rewrite_document_objects(reader, &mut noop)?;
     let spec_number = remapped_object_number(reader, old_spec.0).ok_or_else(|| {
-        OxideError::MalformedPdf("associated FileSpec could not be remapped".to_string())
+        WellfriendError::MalformedPdf("associated FileSpec could not be remapped".to_string())
     })?;
     let owner_ref = request.owner_ref.as_deref().or(record.owner_ref.as_deref());
     let owner_number = resolve_owner_output_number(reader, root, request.owner, owner_ref)?;
     let owner_object = objects
         .iter_mut()
         .find(|object| object.number == owner_number)
-        .ok_or_else(|| OxideError::MalformedPdf("associated-file owner is missing".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("associated-file owner is missing".to_string())
+        })?;
     detach_filespec_from_owner(&mut owner_object.object, request.owner, spec_number)?;
     remove_unreachable_filespec_and_streams(&mut objects, spec_number);
     let output = PdfWriter::new(objects, root)
@@ -955,7 +964,7 @@ pub fn associated_files_update_owner_pdf(
         "owner-specific associated-file update",
     )?;
     if payload.len() > MAX_ASSOCIATED_FILE_BYTES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "associated file payload {} exceeds {} bytes",
             payload.len(),
             MAX_ASSOCIATED_FILE_BYTES
@@ -977,14 +986,16 @@ pub fn associated_files_update_owner_pdf(
                 && (request.owner_ref.is_none() || record.owner_ref == request.owner_ref)
         })
         .ok_or_else(|| {
-            OxideError::MalformedPdf("associated-file owner association was not found".to_string())
+            WellfriendError::MalformedPdf(
+                "associated-file owner association was not found".to_string(),
+            )
         })?;
     let old_spec = record
         .file_spec_ref
         .as_deref()
         .and_then(parse_ref_id)
         .ok_or_else(|| {
-            OxideError::UnsupportedFeature(
+            WellfriendError::UnsupportedFeature(
                 "owner-specific update requires an indirect FileSpec".to_string(),
             )
         })?;
@@ -1007,7 +1018,7 @@ pub fn associated_files_update_owner_pdf(
     let mut noop = |_number: u32, _object: &mut PdfObject| {};
     let (mut objects, root, info) = rewrite_document_objects(reader, &mut noop)?;
     let old_spec_number = remapped_object_number(reader, old_spec.0).ok_or_else(|| {
-        OxideError::MalformedPdf("associated FileSpec could not be remapped".to_string())
+        WellfriendError::MalformedPdf("associated FileSpec could not be remapped".to_string())
     })?;
     let mut next = objects
         .iter()
@@ -1021,7 +1032,10 @@ pub fn associated_files_update_owner_pdf(
     let digest = sha256_hex(payload);
     let mut params = PdfDictionary::empty();
     params.insert("Size", PdfObject::Integer(payload.len() as i64));
-    params.insert("OxideSHA256", PdfObject::String(digest.as_bytes().to_vec()));
+    params.insert(
+        "WellfriendSHA256",
+        PdfObject::String(digest.as_bytes().to_vec()),
+    );
     let mut stream = PdfDictionary::empty();
     stream.insert("Type", PdfObject::Name("EmbeddedFile".to_string()));
     stream.insert("Subtype", PdfObject::Name(pdf_name(&mime)));
@@ -1057,7 +1071,9 @@ pub fn associated_files_update_owner_pdf(
     let owner_object = objects
         .iter_mut()
         .find(|object| object.number == owner_number)
-        .ok_or_else(|| OxideError::MalformedPdf("associated-file owner is missing".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("associated-file owner is missing".to_string())
+        })?;
     replace_filespec_on_owner(
         &mut owner_object.object,
         request.owner,
@@ -1079,7 +1095,7 @@ fn detach_filespec_from_owner(
     spec_number: u32,
 ) -> Result<()> {
     let dict = object_dict_mut(object).ok_or_else(|| {
-        OxideError::MalformedPdf("associated-file owner is not a dictionary".to_string())
+        WellfriendError::MalformedPdf("associated-file owner is not a dictionary".to_string())
     })?;
     remove_reference_from_array(dict, "AF", spec_number);
     if owner == AssociatedFileOwnerType::Annotation
@@ -1181,7 +1197,7 @@ pub fn associated_files_sanitize_pdf(
     options: &AssociatedFileSanitizerOptions,
 ) -> Result<(Vec<u8>, AssociatedFilesMutationReport)> {
     if options.incremental {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "secure attachment removal requires full rewrite because an incremental revision leaves removed payload bytes recoverable"
                 .to_string(),
         ));
@@ -1460,7 +1476,7 @@ pub fn incremental_metadata_update_pdf(
         EditPolicyDecision::BlockedBySignaturePolicy | EditPolicyDecision::ExplicitOverrideRequired
     ) && !signature_policy_override
     {
-        return Err(OxideError::UnsupportedFeature(
+        return Err(WellfriendError::UnsupportedFeature(
             "incremental metadata edit blocked by signature policy; explicit override required"
                 .to_string(),
         ));
@@ -1475,7 +1491,7 @@ pub fn incremental_metadata_update_pdf(
                 .unwrap_or_else(PdfDictionary::empty);
             (number, generation, info)
         }
-        None => return Err(OxideError::UnsupportedFeature(
+        None => return Err(WellfriendError::UnsupportedFeature(
             "incremental metadata update currently requires an existing trailer /Info dictionary"
                 .to_string(),
         )),
@@ -1490,12 +1506,12 @@ pub fn incremental_metadata_update_pdf(
         }],
     )?;
     if !output.starts_with(input) {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "incremental writer did not preserve original prefix".to_string(),
         ));
     }
     ContentEngine::open_bytes(output.clone()).map_err(|error| {
-        OxideError::MalformedPdf(format!("incremental output failed reopen: {error}"))
+        WellfriendError::MalformedPdf(format!("incremental output failed reopen: {error}"))
     })?;
     report.original_prefix_preserved = true;
     report.byte_range_covered_bytes_untouched = true;
@@ -1608,7 +1624,7 @@ pub fn apply_signature_preserving_form_fill(
 ) -> Result<(Vec<u8>, SignaturePreservingEditResult)> {
     let plan = plan_signature_preserving_form_fill(input, field_name, value, options)?;
     if !plan.allowed && !explicit_invalidation_override {
-        return Err(OxideError::UnsupportedFeature(plan.reason.clone()));
+        return Err(WellfriendError::UnsupportedFeature(plan.reason.clone()));
     }
     let (output, mutation) = incremental_form_value_update_pdf(
         input,
@@ -1618,7 +1634,7 @@ pub fn apply_signature_preserving_form_fill(
     )?;
     let post_edit = validate_after_signature_preserving_edit(input, &output, options)?;
     if !post_edit.original_prefix_preserved {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "signature-preserving edit did not preserve the original byte prefix".to_string(),
         ));
     }
@@ -1814,7 +1830,7 @@ pub fn incremental_page_property_update_pdf(
         | IncrementalPagePropertyEdit::CropBox { page, .. } => *page,
     };
     let page = pages.get(page_number.saturating_sub(1)).ok_or_else(|| {
-        OxideError::MalformedPdf(format!("page {page_number} is outside the document"))
+        WellfriendError::MalformedPdf(format!("page {page_number} is outside the document"))
     })?;
     let mut dict = engine
         .document()
@@ -1822,11 +1838,13 @@ pub fn incremental_page_property_update_pdf(
         .get_object(page.object_number, page.generation_number)?
         .as_dict()
         .cloned()
-        .ok_or_else(|| OxideError::MalformedPdf("page object is not a dictionary".to_string()))?;
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf("page object is not a dictionary".to_string())
+        })?;
     match edit {
         IncrementalPagePropertyEdit::Rotate { degrees, .. } => {
             if degrees % 90 != 0 {
-                return Err(OxideError::MalformedPdf(
+                return Err(WellfriendError::MalformedPdf(
                     "page rotation must be a multiple of 90 degrees".to_string(),
                 ));
             }
@@ -1840,7 +1858,9 @@ pub fn incremental_page_property_update_pdf(
                 || value[2] <= value[0]
                 || value[3] <= value[1]
             {
-                return Err(OxideError::MalformedPdf("invalid page CropBox".to_string()));
+                return Err(WellfriendError::MalformedPdf(
+                    "invalid page CropBox".to_string(),
+                ));
             }
             dict.insert(
                 "CropBox",
@@ -1881,7 +1901,7 @@ fn enforce_mutation_policy(
         EditPolicyDecision::BlockedBySignaturePolicy | EditPolicyDecision::ExplicitOverrideRequired
     ) && !signature_policy_override
     {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "{label} blocked by DocMDP/FieldMDP structural signature policy"
         )));
     }
@@ -1897,7 +1917,7 @@ fn enforce_full_rewrite_signed_policy(
     let engine = ContentEngine::open_bytes(input.to_vec())?;
     let policy = analyze_edit_policy(&engine, operation)?;
     if policy.impact.signature_count > 0 && !signature_policy_override {
-        return Err(OxideError::UnsupportedFeature(format!(
+        return Err(WellfriendError::UnsupportedFeature(format!(
             "{label} requires a full rewrite and is blocked for a signed input without explicit override"
         )));
     }
@@ -1912,7 +1932,7 @@ fn finish_incremental_report(
     visible_after_reopen: bool,
 ) -> Result<IncrementalMutationReport> {
     if !output.starts_with(input) {
-        return Err(OxideError::MalformedPdf(
+        return Err(WellfriendError::MalformedPdf(
             "incremental mutation did not preserve the exact original prefix".to_string(),
         ));
     }
@@ -2041,7 +2061,7 @@ pub(crate) fn prompt18b_feature_report_value(envelope_version: u32) -> serde_jso
             "docmdp_fieldmdp_enforcement": "implemented_with_limits",
             "incremental_form_annotation_page": "implemented_with_limits"
         },
-        "failure": {"blocked": 0, "unclassified": 0, "security_proof": 0, "oxide_outliers": 0},
+        "failure": {"blocked": 0, "unclassified": 0, "security_proof": 0, "wellfriendpdf_outliers": 0},
         "limits": {
             "decoded_pixels": MAX_IMAGE_MASK_PIXELS,
             "mask_recursion": MAX_MASK_RECURSION,
@@ -2132,7 +2152,7 @@ fn collect_embedded_entries(input: &[u8]) -> Result<Vec<EmbeddedEntry>> {
         .filter(|record| record.internal)
     {
         if entries.len() >= MAX_ASSOCIATED_FILES {
-            return Err(OxideError::ResourceLimit(format!(
+            return Err(WellfriendError::ResourceLimit(format!(
                 "associated file count exceeds {MAX_ASSOCIATED_FILES}"
             )));
         }
@@ -2159,7 +2179,7 @@ fn write_embedded_entries(
     added_count: usize,
 ) -> Result<(Vec<u8>, AssociatedFilesMutationReport)> {
     if entries.len() > MAX_ASSOCIATED_FILES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "associated file count {} exceeds {MAX_ASSOCIATED_FILES}",
             entries.len()
         )));
@@ -2168,10 +2188,10 @@ fn write_embedded_entries(
         .iter()
         .try_fold(0usize, |sum, entry| sum.checked_add(entry.bytes.len()))
         .ok_or_else(|| {
-            OxideError::ResourceLimit("associated file byte total overflow".to_string())
+            WellfriendError::ResourceLimit("associated file byte total overflow".to_string())
         })?;
     if total > MAX_ASSOCIATED_TOTAL_BYTES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "associated file total {total} exceeds {MAX_ASSOCIATED_TOTAL_BYTES}"
         )));
     }
@@ -2278,7 +2298,7 @@ fn write_embedded_entries(
     let catalog_index = objects
         .iter()
         .position(|object| object.number == root)
-        .ok_or_else(|| OxideError::MalformedPdf("rewritten catalog is missing".to_string()))?;
+        .ok_or_else(|| WellfriendError::MalformedPdf("rewritten catalog is missing".to_string()))?;
     let existing_names = objects[catalog_index]
         .object
         .as_dict()
@@ -2291,7 +2311,7 @@ fn write_embedded_entries(
                 .find(|object| object.number == number)
                 .and_then(|object| object.object.as_dict_mut())
                 .ok_or_else(|| {
-                    OxideError::MalformedPdf(
+                    WellfriendError::MalformedPdf(
                         "catalog /Names reference is not a dictionary".to_string(),
                     )
                 })?;
@@ -2312,7 +2332,9 @@ fn write_embedded_entries(
                 .object
                 .as_dict_mut()
                 .ok_or_else(|| {
-                    OxideError::MalformedPdf("rewritten catalog is not a dictionary".to_string())
+                    WellfriendError::MalformedPdf(
+                        "rewritten catalog is not a dictionary".to_string(),
+                    )
                 })?
                 .insert("Names", PdfObject::Dictionary(names));
         }
@@ -2693,7 +2715,7 @@ fn classify_associated_file(name: &str, mime: Option<&str>) -> String {
 
 fn sanitize_associated_filename(name: &str) -> Result<String> {
     if name.len() > MAX_ASSOCIATED_FILENAME_BYTES {
-        return Err(OxideError::ResourceLimit(format!(
+        return Err(WellfriendError::ResourceLimit(format!(
             "associated filename exceeds {MAX_ASSOCIATED_FILENAME_BYTES} bytes"
         )));
     }
@@ -2705,7 +2727,7 @@ fn sanitize_associated_filename(name: &str) -> Result<String> {
     ];
     let base = stem.split('.').next().unwrap_or(&stem);
     if reserved.contains(&base) {
-        return Err(OxideError::MalformedPdf(format!(
+        return Err(WellfriendError::MalformedPdf(format!(
             "associated filename {name:?} resolves to a reserved platform name"
         )));
     }

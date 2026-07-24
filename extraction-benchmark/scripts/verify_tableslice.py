@@ -6,8 +6,8 @@ scorer divergence is possible, then:
      against summary.json (catches reporting drift).
   2. Aggregates structural detail from the per-file records: macro shape-F1,
      pooled/micro cell precision & recall, table over/under-detection counts.
-  3. Re-runs oxide extract-tables on the SAME first-200 has-tables slice and
-     re-scores with table_score() to reproduce the oxide aggregate a second way.
+  3. Re-runs wellfriendpdf extract-tables on the SAME first-200 has-tables slice and
+     re-scores with table_score() to reproduce the wellfriendpdf aggregate a second way.
 
 Never touches more than the 200 selected files.
 """
@@ -25,10 +25,10 @@ import competitive_benchmark as cb  # noqa: E402
 
 REPO = cb.REPO
 CORPUS = REPO / "test_corpus"
-OXIDE = REPO / "target" / "release" / cb.exe("oxide")
+WELLFRIENDPDF = REPO / "target" / "release" / cb.exe("wellfriendpdf")
 RUN_DIR = REPO / "target" / "competitive-benchmark" / "tableslice-validation"
 LIMIT = 200
-TOOLS = ("oxide", "pymupdf", "pdfplumber")
+TOOLS = ("wellfriendpdf", "pymupdf", "pdfplumber")
 
 
 def load_records():
@@ -79,12 +79,12 @@ def recompute_and_struct():
     return out, summary.get("table_accuracy", {})
 
 
-def run_oxide_tables(pdf: Path):
+def run_wellfriendpdf_tables(pdf: Path):
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as tf:
         outp = Path(tf.name)
     try:
         p = subprocess.run(
-            [str(OXIDE), "extract-tables", str(pdf), "--format", "json",
+            [str(WELLFRIENDPDF), "extract-tables", str(pdf), "--format", "json",
              "--output", str(outp)],
             cwd=REPO, capture_output=True, text=True, timeout=60,
         )
@@ -105,12 +105,12 @@ def run_oxide_tables(pdf: Path):
             pass
 
 
-def independent_oxide_rescore():
+def independent_wellfriendpdf_rescore():
     entries = cb.load_entries(CORPUS, LIMIT, "has-tables")
     assert len(entries) <= 200, f"slice exceeded 200: {len(entries)}"
     f1, rec, prec, shape, teds = [], [], [], [], []
     for e in entries:
-        pred = run_oxide_tables(e["pdf"]) or []
+        pred = run_wellfriendpdf_tables(e["pdf"]) or []
         sc = cb.table_score(e["label"].get("tables") or [], pred)
         f1.append(sc["table_cell_f1"]); rec.append(sc["table_cell_recall"])
         prec.append(sc["table_cell_precision"]); shape.append(sc["table_shape_f1"])
@@ -132,8 +132,8 @@ def main():
         print(f"[{tool}] recomputed: {json.dumps(recomputed[tool])}")
         print(f"[{tool}] summary   : {json.dumps(summary.get(tool))}")
     print()
-    print("== Independent oxide extract-tables re-run + re-score (<=200 files) ==")
-    print(json.dumps(independent_oxide_rescore(), indent=2))
+    print("== Independent wellfriendpdf extract-tables re-run + re-score (<=200 files) ==")
+    print(json.dumps(independent_wellfriendpdf_rescore(), indent=2))
 
 
 if __name__ == "__main__":

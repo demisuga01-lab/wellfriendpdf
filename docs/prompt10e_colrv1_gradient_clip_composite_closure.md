@@ -26,7 +26,7 @@ gradient solving.
 ## Evidence
 
 The Prompt 10E harness generates self-contained COLRv1 fonts/PDFs and compares
-Oxide, Poppler, PDFium, and MuPDF output.
+Wellfriend, Poppler, PDFium, and MuPDF output.
 
 Primary artifacts:
 
@@ -45,7 +45,7 @@ Primary artifacts:
 - `prompt10e-html-report/index.html`
 
 Prompt 10E rendered 17 pages, classified 24 rendered/policy fixture rows, and
-recorded 0 Oxide outlier failures and 0 unclassified failures.
+recorded 0 Wellfriend outlier failures and 0 unclassified failures.
 
 ## Superseded Prompt 10E Limits
 

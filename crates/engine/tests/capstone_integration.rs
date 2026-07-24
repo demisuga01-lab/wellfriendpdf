@@ -3,19 +3,19 @@ use std::sync::OnceLock;
 
 use der::asn1::GeneralizedTime;
 use der::{DateTime, Encode};
-use oxide_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
-use oxide_engine::structural::{encrypt, linearize};
-use oxide_engine::{
-    convert_to_pdfa_checked, get_fallback_font, AuthorPageSize as PageSize, ContentEngine,
-    EditMode, ExtractOptions, ImageRect, PdfAProfile, PdfBuilder, PdfDocument, PdfEditor,
-    PdfSigner, RedactionOptions, SignatureOptions, SignatureValidity, StandardFont, TextStyle,
-};
 use rsa::pkcs1v15::SigningKey as RsaSigningKey;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
 use rsa::rand_core::OsRng;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::Sha256;
 use spki::SubjectPublicKeyInfoOwned;
+use wellfriendpdf_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
+use wellfriendpdf_engine::structural::{encrypt, linearize};
+use wellfriendpdf_engine::{
+    convert_to_pdfa_checked, get_fallback_font, AuthorPageSize as PageSize, ContentEngine,
+    EditMode, ExtractOptions, ImageRect, PdfAProfile, PdfBuilder, PdfDocument, PdfEditor,
+    PdfSigner, RedactionOptions, SignatureOptions, SignatureValidity, StandardFont, TextStyle,
+};
 use x509_cert::builder::{Builder, CertificateBuilder, Profile};
 use x509_cert::name::Name;
 use x509_cert::serial_number::SerialNumber;
@@ -30,7 +30,8 @@ fn test_signer() -> PdfSigner {
         let public_key = RsaPublicKey::from(&private_key);
         let spki_der = public_key.to_public_key_der().expect("SPKI DER");
         let spki = SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("SPKI parse");
-        let subject = Name::from_str("CN=Oxide Capstone Test Signer,O=Oxide,C=US").expect("name");
+        let subject =
+            Name::from_str("CN=Wellfriend Capstone Test Signer,O=Wellfriend,C=US").expect("name");
         let validity = Validity {
             not_before: Time::GeneralTime(GeneralizedTime::from_date_time(
                 DateTime::new(2026, 1, 1, 0, 0, 0).unwrap(),
@@ -109,7 +110,7 @@ fn create_edit_encrypt_decrypt_extract_roundtrip() {
 fn pdfa_linearize_sign_verify_workflow_composes() {
     let mut doc = PdfBuilder::new();
     doc.set_title("Capstone archival source")
-        .set_author("Oxide")
+        .set_author("Wellfriend")
         .set_creator("capstone integration test");
     let font = doc
         .register_truetype_font_bytes(
@@ -139,7 +140,7 @@ fn pdfa_linearize_sign_verify_workflow_composes() {
             &test_signer(),
             &SignatureOptions {
                 field_name: "CapstoneSig".to_string(),
-                signer_name: Some("Oxide Capstone".to_string()),
+                signer_name: Some("Wellfriend Capstone".to_string()),
                 reason: Some("release readiness integration".to_string()),
                 signing_time: Some("D:20260622000000Z".to_string()),
                 ..SignatureOptions::default()

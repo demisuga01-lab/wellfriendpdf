@@ -20,7 +20,7 @@ reopens the result. Nested clone-one is rejected exactly.
 
 Z-order moves are bounded to page-owned objects outside clipping,
 marked-content, and OCG contexts. Grouping is bounded to contiguous page-owned
-vector ranges and uses inert `/OxideGroup BMC ... EMC` ownership markers, so it
+vector ranges and uses inert `/WellfriendGroup BMC ... EMC` ownership markers, so it
 does not alter painting. Cross-stream, non-contiguous, and Form-owned groups
 fail closed.
 
@@ -31,7 +31,7 @@ Example operation JSON:
 ```
 
 ```text
-oxide vector-edit input.pdf --page 1 --id vector-... --operation rotate.json --output edited.pdf
+wellfriendpdf vector-edit input.pdf --page 1 --id vector-... --operation rotate.json --output edited.pdf
 ```
 
 For a shared Form, the options JSON includes:

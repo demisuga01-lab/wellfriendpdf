@@ -25,11 +25,11 @@ def fmt(v, nd=3):
 
 def measure_startup_and_size():
     out = {}
-    ox = os.path.join(REPO, "target", "release", "oxide.exe")
+    ox = os.path.join(REPO, "target", "release", "wellfriendpdf.exe")
     if not os.path.exists(ox):
-        ox = os.path.join(REPO, "target", "debug", "oxide.exe")
+        ox = os.path.join(REPO, "target", "debug", "wellfriendpdf.exe")
     if os.path.exists(ox):
-        out["oxide_binary_mb"] = round(os.path.getsize(ox) / 1048576, 1)
+        out["wellfriendpdf_binary_mb"] = round(os.path.getsize(ox) / 1048576, 1)
 
         def t(cmd):
             best = 9e9
@@ -39,7 +39,7 @@ def measure_startup_and_size():
                 best = min(best, time.perf_counter() - s)
             return best * 1000
         try:
-            out["oxide_startup_ms"] = round(t([ox, "--version"]), 1)
+            out["wellfriendpdf_startup_ms"] = round(t([ox, "--version"]), 1)
             out["python_import_pymupdf_ms"] = round(t([sys.executable, "-c", "import fitz"]), 1)
         except Exception:  # noqa: BLE001
             pass
@@ -54,7 +54,7 @@ def main():
 
     L = []
     w = L.append
-    w("# Oxide Extraction-Quality Benchmark\n")
+    w("# Wellfriend Extraction-Quality Benchmark\n")
     w("> **Generated** by `extraction-benchmark/scripts/write_report.py` from "
       "`results/results.json`. Re-run with `generate_corpus.py` → "
       "`extraction_benchmark.py` → `write_report.py`. This is the **extraction** "
@@ -66,8 +66,8 @@ def main():
     w("| Tool | Role | Status |")
     w("| --- | --- | --- |")
     roles = {
-        "oxide": "this project (structured extraction)",
-        "oxide_ocr": "Oxide built with the `ocr` feature (Tesseract path)",
+        "wellfriendpdf": "this project (structured extraction)",
+        "wellfriendpdf_ocr": "Wellfriend built with the `ocr` feature (Tesseract path)",
         "pymupdf": "PyMuPDF — text + table extraction",
         "pdftotext": "Poppler `pdftotext` — plain-text baseline",
         "qpdf": "qpdf — structural operations",
@@ -81,7 +81,7 @@ def main():
             status = "run" if present else "absent (skipped)"
         w(f"| `{t}` | {role} | {status} |")
     w("")
-    w("Every tool is scored by the **same** pure-Rust metrics (`oxide eval-score`) "
+    w("Every tool is scored by the **same** pure-Rust metrics (`wellfriendpdf eval-score`) "
       "so the numbers are directly comparable. Docling was not installable in this "
       "environment; its rows below are marked accordingly and never fabricated.\n")
 
@@ -101,19 +101,19 @@ def main():
     w("## Text extraction + reading order\n")
     w("Character accuracy = `1 − CER` (edit distance / reference chars); reading "
       "order = normalized Kendall-tau over block order (1.0 = perfect, 0.5 = "
-      "random). Scanned rows: **Oxide uses OCR**; PyMuPDF/Poppler have no OCR and "
+      "random). Scanned rows: **Wellfriend uses OCR**; PyMuPDF/Poppler have no OCR and "
       "recover nothing (the OCR-capability gap, shown honestly).\n")
-    w("| Document | Mode | Oxide char-acc | PyMuPDF | pdftotext | Oxide order |")
+    w("| Document | Mode | Wellfriend char-acc | PyMuPDF | pdftotext | Wellfriend order |")
     w("| --- | --- | --- | --- | --- | --- |")
     for name, rec in sorted(docs.items()):
         t = rec["tools"]
         def ca(k):
             e = t.get(k, {})
             return fmt(e.get("char_accuracy")) if "char_accuracy" in e else ("err" if k in t else "—")
-        ro = t.get("oxide_text", {}).get("reading_order")
-        if "oxide_text" not in t and "pymupdf_text" not in t:
+        ro = t.get("wellfriendpdf_text", {}).get("reading_order")
+        if "wellfriendpdf_text" not in t and "pymupdf_text" not in t:
             continue
-        w(f"| {name} | {rec['mode']} | {ca('oxide_text')} | {ca('pymupdf_text')} | "
+        w(f"| {name} | {rec['mode']} | {ca('wellfriendpdf_text')} | {ca('pymupdf_text')} | "
           f"{ca('pdftotext_text')} | {fmt(ro) if ro is not None else '—'} |")
     w("")
 
@@ -121,13 +121,13 @@ def main():
     w("## Tables (cell-F1 / TEDS)\n")
     w("Cell-F1 = correct cells (right text, right row/col); TEDS ≈ "
       "tree-edit-distance similarity (table-extraction standard, approximated).\n")
-    w("| Document | Mode | Oxide cell-F1 | Oxide TEDS | PyMuPDF cell-F1 | PyMuPDF TEDS |")
+    w("| Document | Mode | Wellfriend cell-F1 | Wellfriend TEDS | PyMuPDF cell-F1 | PyMuPDF TEDS |")
     w("| --- | --- | --- | --- | --- | --- |")
     for name, rec in sorted(docs.items()):
         t = rec["tools"]
-        if "oxide_tables" not in t and "pymupdf_tables" not in t:
+        if "wellfriendpdf_tables" not in t and "pymupdf_tables" not in t:
             continue
-        ox = t.get("oxide_tables", {})
+        ox = t.get("wellfriendpdf_tables", {})
         mu = t.get("pymupdf_tables", {})
         w(f"| {name} | {rec['mode']} | {fmt(ox.get('table_cell_f1'))} | "
           f"{fmt(ox.get('table_teds'))} | {fmt(mu.get('table_cell_f1'))} | "
@@ -137,12 +137,12 @@ def main():
     # KV.
     w("## Key-value / field extraction (field-F1)\n")
     w("SROIE/FUNSD-style field-F1 with normalized values (dates as ISO, amounts as "
-      "decimal+currency). PyMuPDF/Poppler do **no** KV extraction — Oxide-only "
+      "decimal+currency). PyMuPDF/Poppler do **no** KV extraction — Wellfriend-only "
       "capability vs ground truth.\n")
-    w("| Document | Mode | Oxide F1 | Precision | Recall |")
+    w("| Document | Mode | Wellfriend F1 | Precision | Recall |")
     w("| --- | --- | --- | --- | --- |")
     for name, rec in sorted(docs.items()):
-        e = rec["tools"].get("oxide_fields", {})
+        e = rec["tools"].get("wellfriendpdf_fields", {})
         if e.get("field_f1") is None:
             continue
         w(f"| {name} | {rec['mode']} | {fmt(e.get('field_f1'))} | "
@@ -150,11 +150,11 @@ def main():
     w("")
 
     # Structure.
-    w("## Block-type / structure accuracy (Oxide)\n")
+    w("## Block-type / structure accuracy (Wellfriend)\n")
     w("| Document | Block-type accuracy |")
     w("| --- | --- |")
     for name, rec in sorted(docs.items()):
-        e = rec["tools"].get("oxide_structure", {})
+        e = rec["tools"].get("wellfriendpdf_structure", {})
         if e.get("block_type_accuracy") is None:
             continue
         w(f"| {name} | {fmt(e.get('block_type_accuracy'))} |")
@@ -166,15 +166,15 @@ def main():
     if tools.get("qpdf"):
         w("| Check | Result |")
         w("| --- | --- |")
-        w(f"| Oxide page count | {s.get('oxide_page_count')} |")
+        w(f"| Wellfriend page count | {s.get('wellfriendpdf_page_count')} |")
         w(f"| qpdf page count | {s.get('qpdf_page_count')} |")
         w(f"| Page counts agree | {s.get('page_count_agree')} |")
         w(f"| qpdf linearize OK | {s.get('qpdf_linearize_ok')} |")
         w(f"| qpdf `--check` on linearized | {s.get('qpdf_check_linearized_ok')} |")
-        w(f"| Oxide split OK | {s.get('oxide_split_ok')} |")
-        w(f"| Oxide split parts | {s.get('oxide_split_parts')} |")
-        w(f"| qpdf validated Oxide split parts (of 5) | {s.get('qpdf_validated_oxide_parts_of_5')} |")
-        w("\nqpdf **validates Oxide's output** (split parts pass `qpdf --check`) and "
+        w(f"| Wellfriend split OK | {s.get('wellfriendpdf_split_ok')} |")
+        w(f"| Wellfriend split parts | {s.get('wellfriendpdf_split_parts')} |")
+        w(f"| qpdf validated Wellfriend split parts (of 5) | {s.get('qpdf_validated_wellfriendpdf_parts_of_5')} |")
+        w("\nqpdf **validates Wellfriend's output** (split parts pass `qpdf --check`) and "
           "page counts agree — round-trip structural integrity confirmed.\n")
     else:
         w("qpdf not available — structural-ops comparison skipped.\n")
@@ -182,11 +182,11 @@ def main():
     # Speed / memory / size.
     w("## Speed, footprint, deployment\n")
     if perf:
-        w("| Metric | Oxide | Python + PyMuPDF |")
+        w("| Metric | Wellfriend | Python + PyMuPDF |")
         w("| --- | --- | --- |")
-        w(f"| Process startup | {fmt(perf.get('oxide_startup_ms'), 1)} ms | "
+        w(f"| Process startup | {fmt(perf.get('wellfriendpdf_startup_ms'), 1)} ms | "
           f"{fmt(perf.get('python_import_pymupdf_ms'), 1)} ms (interpreter + import) |")
-        w(f"| Distribution | single {fmt(perf.get('oxide_binary_mb'), 1)} MB static binary, "
+        w(f"| Distribution | single {fmt(perf.get('wellfriendpdf_binary_mb'), 1)} MB static binary, "
           "no runtime | Python runtime + C-extension wheels |")
         w("")
     # Per-call extraction time (mean over digital docs).
@@ -194,19 +194,19 @@ def main():
     w("Per-call text-extraction time (mean over digital docs):\n")
     w("| Tool | Mean ms/doc |")
     w("| --- | --- |")
-    for tool in ["oxide_text", "pymupdf_text", "pdftotext_text"]:
+    for tool in ["wellfriendpdf_text", "pymupdf_text", "pdftotext_text"]:
         times = [rec["tools"][tool]["time_s"] for rec in docs.values()
                  if tool in rec["tools"] and "time_s" in rec["tools"][tool] and rec["mode"] == "digital"]
         if times:
             w(f"| `{tool}` | {statistics.mean(times) * 1000:.1f} |")
-    w("\n> Note: Oxide's per-call time includes **process spawn** (CLI); PyMuPDF runs "
+    w("\n> Note: Wellfriend's per-call time includes **process spawn** (CLI); PyMuPDF runs "
       "in-process. For many-small-doc throughput PyMuPDF's in-process call is "
-      "faster, but Oxide wins decisively on **startup, deployment footprint, and "
+      "faster, but Wellfriend wins decisively on **startup, deployment footprint, and "
       "no-runtime embeddability** (single static binary vs a Python+native stack; "
       "Docling adds a multi-GB torch stack on top).\n")
 
     # Honest verdict.
-    w("## Where Oxide wins / ties / trails (honest)\n")
+    w("## Where Wellfriend wins / ties / trails (honest)\n")
     w("**Wins**\n")
     w("- **Deployment & startup**: single ~12 MB static binary, ~5 ms startup vs a "
       "Python runtime (~20 ms) + PyMuPDF import (~125 ms); no torch/ML stack at all "
@@ -221,9 +221,9 @@ def main():
     w("- **Key-value extraction**: field-F1 1.0 on the digital invoice, 0.857 on "
       "the scanned invoice, and 0.800 on the receipt; a capability PyMuPDF/Poppler "
       "simply do not have.\n")
-    w("- **OCR path is source-agnostic**: Oxide recovers text (0.94 char-acc) and "
+    w("- **OCR path is source-agnostic**: Wellfriend recovers text (0.94 char-acc) and "
       "fields from **scanned** pages where PyMuPDF/Poppler score 0 (no OCR).\n")
-    w("- **Structural ops**: qpdf cross-validates Oxide's split output; page counts "
+    w("- **Structural ops**: qpdf cross-validates Wellfriend's split output; page counts "
       "agree; qpdf-class integrity.\n")
     w("\n**Ties**\n")
     w("- Clean digital text accuracy is near-parity with PyMuPDF (both ~0.99 on the "
@@ -254,7 +254,7 @@ def main():
     w("3. **Scanned structure labels**: block-type structure accuracy on scanned "
       "paper/table pages remains weak because OCR prose blocks do not yet receive "
       "the same semantic labels as tagged digital content.\n")
-    w("4. **Figure-heavy pages**: Oxide's figure/alt emission lowers raw text "
+    w("4. **Figure-heavy pages**: Wellfriend's figure/alt emission lowers raw text "
       "char-accuracy vs a plain dump on the `figure` doc; revisit how figure "
       "placeholder text is counted / emitted for RAG.\n")
     w("5. **Receipt fields** (F1 0.800): merchant/payment lines remain imperfect; "
@@ -263,9 +263,9 @@ def main():
       "the direct structured-Markdown comparison.\n")
 
     w("\n## Bottom line\n")
-    w("On the axes Oxide is built for - **digital-born structure + reading order, "
+    w("On the axes Wellfriend is built for - **digital-born structure + reading order, "
       "clean-table extraction, key-value fields, structural ops, and pure-Rust "
-      "deployment/speed/footprint** - Oxide is **competitive-or-better** vs "
+      "deployment/speed/footprint** - Wellfriend is **competitive-or-better** vs "
       "PyMuPDF/Poppler/qpdf in this corpus, and uniquely offers KV + OCR + RAG "
       "chunking in one static binary. The benchmark-named synthetic scanned "
       "table/KV gaps are now substantially closed, while hardest real-world messy "

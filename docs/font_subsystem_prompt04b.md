@@ -7,7 +7,7 @@ the current pure-Rust engine, and makes the remaining boundaries explicit.
 
 | Area | Outcome | Evidence |
 |---|---|---|
-| FreeType-grade hinting | Outcome B/C: keep pure Rust because `oxide-engine` forbids unsafe code; use existing analytic coverage plus bounded light grid fitting for TrueType outlines | `crates/engine/src/lib.rs` has `#![forbid(unsafe_code)]`; glyph tests cover deterministic cache and hint policy |
+| FreeType-grade hinting | Outcome B/C: keep pure Rust because `wellfriendpdf-engine` forbids unsafe code; use existing analytic coverage plus bounded light grid fitting for TrueType outlines | `crates/engine/src/lib.rs` has `#![forbid(unsafe_code)]`; glyph tests cover deterministic cache and hint policy |
 | HarfBuzz-style generated output | Outcome B: rustybuzz remains the shaping backend and authoring now consumes shaped glyph IDs for complex scripts | `FontBuildPlan` stores shaped CID entries, `/ActualText`, CIDToGIDMap, `/W`, and ToUnicode cluster entries |
 | True font subsetting | Outcome B/C: Type0 CID subset maps are generated, but sfnt glyph-program rewriting remains disabled until a safe subset writer is added | authoring emits used-CID `/W`, CIDToGIDMap, ToUnicode, and full font program fallback with `font.subset.sfnt_deferred` diagnostics |
 | Predefined CJK CMaps | Outcome B: bounded common UTF-16 predefined CMaps are classified and treated as two-byte Unicode-preserving CMaps | `Identity-H/V`, `UniJIS-UTF16-H/V`, `UniGB-UTF16-H/V`, `UniCNS-UTF16-H/V`, and `UniKS-UTF16-H/V` |
@@ -102,28 +102,28 @@ Prompt 04 baseline on the text/font Poppler slice:
 - visual pass: 45.83%
 - weighted score: 45.21
 - determinism: 5/5
-- peak Oxide memory: 11.72 MB
+- peak Wellfriend memory: 11.72 MB
 
-Prompt 04B reran the same capped slice after rebuilding `target\release\oxide.exe`:
+Prompt 04B reran the same capped slice after rebuilding `target\release\wellfriendpdf.exe`:
 
 - files: 24
 - visual pass: 45.83%
 - weighted score: 45.21
 - determinism: 5/5
-- peak Oxide memory: 11.28 MB
+- peak Wellfriend memory: 11.28 MB
 - artifact path: `target/prompt04b-font-render-benchmark/`
 
 This is not a visual-fidelity improvement over Prompt 04. The code changes close
 authoring, reporting, CMap, vertical-advance, and diagnostic gaps, but the
 remaining Poppler slice failures are still dominated by renderer/rasterizer and
 font-substitution differences. The `real_pdfjs_vertical` artifact is also a good
-example of why the score cannot be chased blindly: Oxide renders visible vertical
+example of why the score cannot be chased blindly: Wellfriend renders visible vertical
 text while the Poppler reference image for that fixture is effectively blank.
 
 ## Known Limits
 
 - Native FreeType bytecode hinting and native HarfBuzz bindings are not linked
-  into `oxide-engine`; the engine crate remains safe Rust only.
+  into `wellfriendpdf-engine`; the engine crate remains safe Rust only.
 - True sfnt glyph-program subsetting remains a named implementation campaign.
 - Predefined legacy CJK CMap packs are not vendored.
 - Indic generated-output shaping requires a deterministic registered/bundled
@@ -145,7 +145,7 @@ The Prompt 04C benchmark reran the same 24-file Poppler font/text slice:
 
 - visual pass: 45.83% -> 45.83%
 - weighted score: 45.21 -> 45.21
-- peak Oxide memory: 11.28 MB -> 11.54 MB
+- peak Wellfriend memory: 11.28 MB -> 11.54 MB
 - artifact path: `target/prompt04c-font-render-benchmark-v2/`
 
 The subsetting production-output gap is closed for the bounded TrueType/glyf

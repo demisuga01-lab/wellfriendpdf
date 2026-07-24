@@ -2,7 +2,7 @@
 """Prompt 12B prepress n-channel and plate closure audit.
 
 The script is intentionally artifact-first: it creates a small Prompt 12B corpus,
-renders it through Oxide plus the Prompt 06B target-local Poppler/PDFium/MuPDF
+renders it through Wellfriend plus the Prompt 06B target-local Poppler/PDFium/MuPDF
 tools, captures the shared feature-report surface, and writes the closure JSON
 matrices required by the prompt.
 """
@@ -26,7 +26,7 @@ CORPUS_DIR = OUT_DIR / "prompt12b-corpus"
 RENDER_DIR = OUT_DIR / "prompt12b-renders"
 DIFF_DIR = OUT_DIR / "prompt12b-diffs"
 LOG_DIR = OUT_DIR / "prompt12b-logs"
-OXIDE_REPORT_DIR = OUT_DIR / "prompt12b-oxide-reports"
+WELLFRIENDPDF_REPORT_DIR = OUT_DIR / "prompt12b-wellfriendpdf-reports"
 HTML_REPORT = OUT_DIR / "prompt12b-html-report" / "index.html"
 PROMPT06B_MANIFEST = Path("target/prompt06-renderer-native-replay/reference-tool-manifest-prompt06b.json")
 
@@ -211,8 +211,8 @@ def load_prompt06b() -> Any:
     module.RENDER_DIR = RENDER_DIR
     module.DIFF_DIR = DIFF_DIR
     module.LOG_DIR = LOG_DIR
-    module.OXIDE_REPORT_DIR = OXIDE_REPORT_DIR
-    for path in [RENDER_DIR, DIFF_DIR, LOG_DIR, OXIDE_REPORT_DIR, HTML_REPORT.parent]:
+    module.WELLFRIENDPDF_REPORT_DIR = WELLFRIENDPDF_REPORT_DIR
+    for path in [RENDER_DIR, DIFF_DIR, LOG_DIR, WELLFRIENDPDF_REPORT_DIR, HTML_REPORT.parent]:
         path.mkdir(parents=True, exist_ok=True)
     return module
 
@@ -247,7 +247,7 @@ def bootstrap_manifest(dpi: int, timeout: int) -> dict[str, Any]:
 
 
 def feature_report(native: bool, timeout: int) -> dict[str, Any]:
-    cmd = ["cargo", "run", "-p", "oxide-cli"]
+    cmd = ["cargo", "run", "-p", "wellfriendpdf-cli"]
     if native:
         cmd.extend(["--features", "native-cmm-lcms2"])
     cmd.extend(["--quiet", "--", "feature-report"])
@@ -266,7 +266,7 @@ def feature_report(native: bool, timeout: int) -> dict[str, Any]:
 def render_audit(fixtures: list[dict[str, Any]], args: argparse.Namespace) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     p06 = load_prompt06b()
     manifest = bootstrap_manifest(args.dpi, args.timeout)
-    oxide_base = p06.oxide_base_command(args.oxide_bin)
+    wellfriendpdf_base = p06.wellfriendpdf_base_command(args.wellfriendpdf_bin)
     render_pages: list[dict[str, Any]] = []
     metrics_pages: list[dict[str, Any]] = []
     classification_counts: dict[str, int] = {}
@@ -278,7 +278,7 @@ def render_audit(fixtures: list[dict[str, Any]], args: argparse.Namespace) -> tu
             "category": "prepress_prompt12b",
         }
         renders = {
-            "oxide": p06.render_oxide(oxide_base, entry, args.dpi, args.timeout),
+            "wellfriendpdf": p06.render_wellfriendpdf(wellfriendpdf_base, entry, args.dpi, args.timeout),
             "poppler": p06.render_reference("poppler", manifest["tools"]["poppler"], entry, args.dpi, args.timeout),
             "pdfium": p06.render_reference("pdfium", manifest["tools"]["pdfium"], entry, args.dpi, args.timeout),
             "mupdf": p06.render_reference("mupdf", manifest["tools"]["mupdf"], entry, args.dpi, args.timeout),
@@ -295,7 +295,7 @@ def render_audit(fixtures: list[dict[str, Any]], args: argparse.Namespace) -> tu
         raw_classification = p06.classify_page(entry["category"], renders, pair_metrics)
         classification = (
             "prepress_preview_reference_disagreement_classified"
-            if raw_classification in {"all_references_agree_oxide_mismatch", "needs_manual_review"}
+            if raw_classification in {"all_references_agree_wellfriendpdf_mismatch", "needs_manual_review"}
             else raw_classification
         )
         classification_counts[classification] = classification_counts.get(classification, 0) + 1
@@ -313,9 +313,9 @@ def render_audit(fixtures: list[dict[str, Any]], args: argparse.Namespace) -> tu
         "kind": "prepress_reference_disagreement_summary_prompt12b",
         "fixture_count": len(fixtures),
         "classification_counts": classification_counts,
-        "oxide_outlier_failures": 0,
+        "wellfriendpdf_outlier_failures": 0,
         "unclassified_failures": 0,
-        "policy": "spot and DeviceN visual preview disagreements are classified separately from Oxide internal plate data",
+        "policy": "spot and DeviceN visual preview disagreements are classified separately from Wellfriend internal plate data",
     }
     return render_pages, metrics_pages, summary
 
@@ -328,7 +328,7 @@ def write_html(render_pages: list[dict[str, Any]], summary: dict[str, Any]) -> N
             "<tr>"
             f"<td>{html.escape(page['id'])}</td>"
             f"<td>{html.escape(page['classification'])}</td>"
-            f"<td>{html.escape(renders['oxide']['status'])}</td>"
+            f"<td>{html.escape(renders['wellfriendpdf']['status'])}</td>"
             f"<td>{html.escape(renders['poppler']['status'])}</td>"
             f"<td>{html.escape(renders['pdfium']['status'])}</td>"
             f"<td>{html.escape(renders['mupdf']['status'])}</td>"
@@ -340,9 +340,9 @@ def write_html(render_pages: list[dict[str, Any]], summary: dict[str, Any]) -> N
         "<style>body{font-family:system-ui,sans-serif;margin:24px}table{border-collapse:collapse}"
         "td,th{border:1px solid #ccc;padding:6px 8px}th{background:#eee}</style>"
         "<h1>Prompt 12B Prepress Audit</h1>"
-        f"<p>Fixtures: {summary['fixture_count']}; Oxide outliers: {summary['oxide_outlier_failures']}; "
+        f"<p>Fixtures: {summary['fixture_count']}; Wellfriend outliers: {summary['wellfriendpdf_outlier_failures']}; "
         f"unclassified failures: {summary['unclassified_failures']}.</p>"
-        "<table><tr><th>Fixture</th><th>Classification</th><th>Oxide</th><th>Poppler</th>"
+        "<table><tr><th>Fixture</th><th>Classification</th><th>Wellfriend</th><th>Poppler</th>"
         "<th>PDFium</th><th>MuPDF</th></tr>"
         + "\n".join(rows)
         + "</table>\n",
@@ -529,7 +529,7 @@ def main() -> int:
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--native-smoke", action="store_true")
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     args = parser.parse_args()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     fixtures = create_corpus()

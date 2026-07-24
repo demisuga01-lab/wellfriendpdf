@@ -14,7 +14,7 @@ Implemented behavior:
 
 Tests:
 
-- `cargo test -p oxide-engine --test shadings --jobs 1`
+- `cargo test -p wellfriendpdf-engine --test shadings --jobs 1`
 - Prompt 08 audit fixtures: `axial_horizontal`, `axial_diagonal_extend`,
   `axial_transformed_clipped`, `radial_simple`, `radial_offset_extend`, and
   `radial_degenerate_reported`.

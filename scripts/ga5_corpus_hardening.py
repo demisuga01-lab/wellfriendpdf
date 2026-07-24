@@ -77,7 +77,7 @@ def selected_entries(manifest: dict[str, Any], limit: int, include_hostile: bool
     return entries[:limit]
 
 
-def run_entry(entry: dict[str, Any], oxide: Path, out_dir: Path, timeout: int) -> dict[str, Any]:
+def run_entry(entry: dict[str, Any], wellfriendpdf: Path, out_dir: Path, timeout: int) -> dict[str, Any]:
     pdf = Path(entry["path"])
     safe_id = str(entry.get("id") or pdf.stem).replace("/", "_").replace("\\", "_")
     work = out_dir / safe_id
@@ -86,11 +86,11 @@ def run_entry(entry: dict[str, Any], oxide: Path, out_dir: Path, timeout: int) -
     input_qpdf_clean = qpdf_check(pdf, timeout)
 
     commands = {
-        "info": [str(oxide), "info", "--json", str(pdf)],
-        "parse": [str(oxide), "parse", "-f", "json", "-o", str(work / "parse.json"), str(pdf)],
-        "verify_sig": [str(oxide), "verify-sig", "--json", str(pdf)],
+        "info": [str(wellfriendpdf), "info", "--json", str(pdf)],
+        "parse": [str(wellfriendpdf), "parse", "-f", "json", "-o", str(work / "parse.json"), str(pdf)],
+        "verify_sig": [str(wellfriendpdf), "verify-sig", "--json", str(pdf)],
         "render_p1": [
-            str(oxide),
+            str(wellfriendpdf),
             "render",
             "-p",
             "1",
@@ -100,8 +100,8 @@ def run_entry(entry: dict[str, Any], oxide: Path, out_dir: Path, timeout: int) -
             str(work / "page1.zip"),
             str(pdf),
         ],
-        "optimize": [str(oxide), "optimize", "-o", str(work / "optimized.pdf"), str(pdf)],
-        "linearize": [str(oxide), "linearize", "-o", str(work / "linearized.pdf"), str(pdf)],
+        "optimize": [str(wellfriendpdf), "optimize", "-o", str(work / "optimized.pdf"), str(pdf)],
+        "linearize": [str(wellfriendpdf), "linearize", "-o", str(work / "linearized.pdf"), str(pdf)],
     }
 
     for name, cmd in commands.items():
@@ -182,7 +182,7 @@ def summarize(results: list[dict[str, Any]]) -> dict[str, Any]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", default="renderer-benchmark/corpus/manifest.json")
-    parser.add_argument("--oxide-bin", default="target/release/oxide.exe")
+    parser.add_argument("--wellfriendpdf-bin", default="target/release/wellfriendpdf.exe")
     parser.add_argument("--output-dir", default="target/ga5-corpus-hardening")
     parser.add_argument("--limit", type=int, default=80)
     parser.add_argument("--timeout-sec", type=int, default=20)
@@ -193,18 +193,18 @@ def main() -> None:
     entries = selected_entries(manifest, args.limit, args.include_hostile)
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    oxide = Path(args.oxide_bin)
+    wellfriendpdf = Path(args.wellfriendpdf_bin)
 
     results = []
     for idx, entry in enumerate(entries, start=1):
         print(f"[{idx}/{len(entries)}] {entry.get('id')} ({entry.get('category')})", flush=True)
-        result = run_entry(entry, oxide, out_dir, args.timeout_sec)
+        result = run_entry(entry, wellfriendpdf, out_dir, args.timeout_sec)
         results.append(result)
         (out_dir / f"{result['id']}.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
 
     aggregate = {
         "manifest": args.manifest,
-        "oxide_bin": args.oxide_bin,
+        "wellfriendpdf_bin": args.wellfriendpdf_bin,
         "limit": args.limit,
         "timeout_sec": args.timeout_sec,
         "include_hostile": args.include_hostile,

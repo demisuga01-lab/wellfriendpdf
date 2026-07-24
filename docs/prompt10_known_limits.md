@@ -12,7 +12,7 @@ geometry-exposure, or performance boundaries.
   network/file/javascript URLs, `foreignObject`, animation, CSS imports, remote
   fonts, external images, filters, masks, path bombs, and recursive references
   are not executed or fetched.
-- Safe static SVG path and shape glyphs render through Oxide's path painter.
+- Safe static SVG path and shape glyphs render through Wellfriend's path painter.
   SVG gradients, `clipPath`, filters, masks, recursive `<use>`, CSS blocks, and
   URL paint servers remain exact unsupported/security rows.
 - CBDT/CBLC non-PNG or ambiguous compressed payloads are unsupported unless the
@@ -39,4 +39,4 @@ geometry-exposure, or performance boundaries.
   exposed by the font parser.
 - Korean and Hebrew rendered-page fixture gaps are closed.
 - Prompt 10B, Prompt 10C, Prompt 10D, Prompt 10E, and Prompt 10F multi-reference audits
-  have zero Oxide outlier failures and zero unclassified failures.
+  have zero Wellfriend outlier failures and zero unclassified failures.

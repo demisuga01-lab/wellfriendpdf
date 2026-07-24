@@ -1,7 +1,7 @@
 # Development notes
 
-Operational/process notes for working on the Oxide PDF Toolkit. Nothing here is
-part of the shipped product (the `oxide-engine`/`oxide-cli`/`oxide-server`
+Operational/process notes for working on the Wellfriend PDF SDK Toolkit. Nothing here is
+part of the shipped product (the `wellfriendpdf-engine`/`wellfriendpdf-cli`/`wellfriendpdf-server`
 crates); it documents local-only files and dev scaffolding.
 
 ## `CLAUDE-CODE-CLI.bat` — local-only, never commit

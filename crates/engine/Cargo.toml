@@ -1,13 +1,13 @@
 [package]
-name = "oxide-engine"
+name = "wellfriendpdf-engine"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Pure-Rust PDF parsing, rendering, authoring, editing, compliance, and signing engine."
-repository = "https://github.com/oxide-pdf/oxide"
-documentation = "https://docs.rs/oxide-engine"
-homepage = "https://github.com/oxide-pdf/oxide"
+repository = "https://github.com/demisuga01-lab/wellfriendpdf-sdk"
+documentation = "https://docs.rs/wellfriendpdf-engine"
+homepage = "https://github.com/demisuga01-lab/wellfriendpdf-sdk"
 keywords = ["pdf", "parser", "rendering", "documents", "signatures"]
 categories = ["parser-implementations", "rendering", "text-processing"]
 include = ["src/**/*", "examples/**/*", "fonts/*.ttf", "fonts/LICENSE-*.txt", "fonts/README.md"]

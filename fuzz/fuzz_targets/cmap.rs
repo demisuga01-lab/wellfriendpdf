@@ -6,7 +6,7 @@
 //! or loop forever on malformed ranges, arrays, comments, or hex strings.
 
 use libfuzzer_sys::fuzz_target;
-use oxide_engine::fuzz::fuzz_parse_cmap;
+use wellfriendpdf_engine::fuzz::fuzz_parse_cmap;
 
 fuzz_target!(|data: &[u8]| {
     fuzz_parse_cmap(data);

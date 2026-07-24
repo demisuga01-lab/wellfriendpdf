@@ -1,23 +1,23 @@
 # Digital Signatures (`sign` API + `verify-sig`, `pdfsig`-equivalent)
 
-Oxide can apply a standard RSA/SHA-256 detached CMS signature, embed
+Wellfriend can apply a standard RSA/SHA-256 detached CMS signature, embed
 caller-supplied PAdES timestamp/LTV material, and cryptographically verify
 digital signatures in a PDF. Signing is exposed as the Rust API
 `ContentEngine::sign` / `sign_document`; verification is exposed as
-`oxide verify-sig`.
+`wellfriendpdf verify-sig`.
 
 ```text
-oxide verify-sig signed.pdf
-oxide verify-sig signed.pdf --json
-oxide verify-sig signed.pdf --password p
+wellfriendpdf verify-sig signed.pdf
+wellfriendpdf verify-sig signed.pdf --json
+wellfriendpdf verify-sig signed.pdf --password p
 ```
 
 ## Signing API
 
 ```rust
-use oxide_engine::{ContentEngine, PdfSigner, SignatureOptions};
+use wellfriendpdf_engine::{ContentEngine, PdfSigner, SignatureOptions};
 
-# fn main() -> oxide_engine::Result<()> {
+# fn main() -> wellfriendpdf_engine::Result<()> {
 let input = std::fs::read("input.pdf")?;
 let key_pem = std::fs::read_to_string("signer-key.pem")?;
 let cert_pem = std::fs::read_to_string("signer-cert.pem")?;
@@ -49,7 +49,7 @@ The committed example `crates/engine/examples/sign_document.rs` signs a PDF from
 PEM key/cert files:
 
 ```text
-cargo run -p oxide-engine --example sign_document -- input.pdf key.pem cert.pem signed.pdf
+cargo run -p wellfriendpdf-engine --example sign_document -- input.pdf key.pem cert.pem signed.pdf
 ```
 
 ## Verification Pipeline
@@ -69,7 +69,7 @@ cargo run -p oxide-engine --example sign_document -- input.pdf key.pem cert.pem 
 
 ## PAdES / LTV
 
-Oxide includes the offline PAdES/LTV substrate:
+Wellfriend includes the offline PAdES/LTV substrate:
 
 - `SignatureOptions::timestamp_token_der` embeds a caller-supplied DER RFC 3161
   `TimeStampToken` (`ContentInfo`) as the CMS `signatureTimeStampToken`
@@ -109,11 +109,11 @@ Still caller policy / follow-up:
   retry/timeout policy. The APIs are offline-first; callers supply DER
   tokens/responses.
 - OCSP response signature/freshness policy and CRL issuer/signature validation.
-  Oxide parses embedded CRLs to check whether the signer serial is listed, but
+  Wellfriend parses embedded CRLs to check whether the signer serial is listed, but
   it does not turn CRL trust into a final legal trust verdict.
 - Timestamp imprint and TSA trust validation. Tokens are embedded and parsed as
   CMS `ContentInfo`; imprint/TSA trust remains policy-owned.
-- PAdES-B-LTA document/archive timestamps. Oxide reports B-B/B-T/B-LT today.
+- PAdES-B-LTA document/archive timestamps. Wellfriend reports B-B/B-T/B-LT today.
 - ECDSA / EdDSA / RSA-PSS verification and signing. The signer currently
   applies RSA/SHA-256 and the verifier supports RSA PKCS#1 v1.5.
 

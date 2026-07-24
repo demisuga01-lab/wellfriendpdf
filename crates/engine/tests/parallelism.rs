@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::thread;
 
-use oxide_engine::{ContentEngine, TextExtractOptions, TextExtractor, TextFormatter};
+use wellfriendpdf_engine::{ContentEngine, TextExtractOptions, TextExtractor, TextFormatter};
 
 const TRACEMONKEY: &str = "tests/fixtures/tracemonkey.pdf";
 const MULTI_PAGE_120: &str = "../../tests/corpus/pdfs/generated/generated_120_pages.pdf";

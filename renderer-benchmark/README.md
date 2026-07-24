@@ -1,11 +1,11 @@
 # Renderer Benchmark 0A
 
-This directory contains the renderer-compatibility benchmark for Oxide vs
+This directory contains the renderer-compatibility benchmark for Wellfriend vs
 reference renderers. Benchmark 0A is separate from Benchmark 0B:
 
-- **0A renderer compatibility:** Oxide-rendered pages vs Poppler-rendered pages,
+- **0A renderer compatibility:** Wellfriend-rendered pages vs Poppler-rendered pages,
   with optional PDFium when a compatible CLI is present.
-- **0B compression safety:** Oxide(original) vs Oxide(compressed), using stricter
+- **0B compression safety:** Wellfriend(original) vs Wellfriend(compressed), using stricter
   same-renderer thresholds. This is scaffolded only; it does not prove renderer
   compatibility.
 
@@ -41,11 +41,11 @@ expansion.
 ## Run Benchmark 0A
 
 ```powershell
-cargo build --release -p oxide-cli
+cargo build --release -p wellfriendpdf-cli
 py -3 renderer-benchmark\scripts\renderer_benchmark.py `
   --manifest renderer-benchmark\corpus\manifest.json `
   --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --dpi 144 `
   --timeout-sec 20 `
   --max-memory-mb 1024 `
@@ -81,11 +81,11 @@ large files. A practical run should raise the seed cap from 3 pages/file to a
 documented cap such as 20 or 50 pages/file:
 
 ```powershell
-cargo build --release -p oxide-cli
+cargo build --release -p wellfriendpdf-cli
 py -3 renderer-benchmark\scripts\renderer_benchmark.py `
   --manifest renderer-benchmark\corpus\manifest.json `
   --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --dpi 144 `
   --timeout-sec 20 `
   --max-memory-mb 1024 `
@@ -104,7 +104,7 @@ Then run:
 
 ```powershell
 py -3 renderer-benchmark\scripts\run_0b_compression_safety.py `
-  --oxide-bin target\release\oxide.exe `
+  --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --pairs-dir renderer-benchmark\corpus\wellpdf-before-after `
   --output-dir renderer-benchmark\results\run-0b
 ```

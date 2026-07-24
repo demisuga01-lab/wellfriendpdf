@@ -1,4 +1,4 @@
-# Oxide PDF SDK — Systematic Security Audit Findings
+# Wellfriend PDF SDK — Systematic Security Audit Findings
 
 **Type:** Read-only, findings-only vulnerability assessment.
 **Date:** 2026-06-23.
@@ -32,7 +32,7 @@ finding is backed by quoted code at `file:line`. No source was modified.
 >   the stream dictionary). Tests in `editing.rs` (`h2_alt_text_tests`) and the
 >   end-to-end `redaction_scrubs_secret_from_document_metadata`.
 > - **H-4 / H-5 / H-6 (unbounded image/CCITT/JBIG2 decode allocations) — FIXED.**
->   A configurable decode-layer pixel cap (`OXIDE_MAX_DECODE_PIXELS`, default
+>   A configurable decode-layer pixel cap (`WELLFRIENDPDF_MAX_DECODE_PIXELS`, default
 >   100M, mirroring the render cap) is now enforced *before* any pixel buffer is
 >   allocated, in `build_raw_image` (H-4), the CCITT sink (H-5), and the JBIG2
 >   sink (H-6); LZW/RunLength filter output is also capped like Flate. Oversized
@@ -201,7 +201,7 @@ in `crates/engine/src/reader.rs:445-582`.
 - **Description.** Best practice is that a PDF signature's `/ByteRange = [a b c d]`
   must satisfy `a == 0` (covers from the file start), the excluded gap `[b..c]`
   must be **exactly** the `/Contents` hex string and nothing else, and
-  `c + d == filesize`. Oxide validates only the last condition, and even that
+  `c + d == filesize`. Wellfriend validates only the last condition, and even that
   with a 3-byte slack:
   ```rust
   // signature.rs:1620
@@ -274,7 +274,7 @@ in `crates/engine/src/reader.rs:445-582`.
 - **Description.** ISO 32000-2 §7.6.4.4 specifies that after deriving the file
   key the decrypted `/Perms` block should be checked so that bytes `[0..4]`
   equal `/P` and byte `[8]` matches `EncryptMetadata`, detecting tampering with
-  the permission dictionary. Oxide checks only the `adb` magic, and even a magic
+  the permission dictionary. Wellfriend checks only the `adb` magic, and even a magic
   mismatch is non-fatal:
   ```rust
   // reader.rs:559
@@ -387,7 +387,7 @@ in `crates/engine/src/reader.rs:445-582`.
 ### M-3 — Image bit-depth normalization allocates from unbounded PDF dimensions (OOM)
 
 > **STATUS: RESOLVED** (H-4, commit `823fa39`) — `ensure_decode_budget` caps
-> `width×height` (`OXIDE_MAX_DECODE_PIXELS`) before allocation in `build_raw_image`;
+> `width×height` (`WELLFRIENDPDF_MAX_DECODE_PIXELS`) before allocation in `build_raw_image`;
 > tests `h4_build_raw_image_rejects_decode_bomb_before_allocating`,
 > `ensure_decode_budget_rejects_oversized_dimensions`.
 - **Severity:** High
@@ -406,7 +406,7 @@ in `crates/engine/src/reader.rs:445-582`.
   `ImageDecoder::decode` (`decoder.rs:103-111`) and `decode_inline`
   (`decoder.rs:162-170`); reachable from rendering, `pdf2img`, and the server
   `extract-images` endpoint. The render-layer pixel cap
-  (`OXIDE_MAX_RENDER_PIXELS`) does **not** gate embedded-image decode. (bpc 8/16
+  (`WELLFRIENDPDF_MAX_RENDER_PIXELS`) does **not** gate embedded-image decode. (bpc 8/16
   are sized from the actual `raw` buffer — safe.)
 - **Evidence.**
   ```rust
@@ -520,7 +520,7 @@ in `crates/engine/src/reader.rs:445-582`.
 - **Class:** 3.5 — rate-limit enforcement.
 - **Description.** The limiter keys on the API key, falling back to the literal
   `"anonymous"` when none is present; there is no per-IP component. With
-  `OXIDE_ALLOW_UNAUTHENTICATED=true` every caller shares one bucket (one abuser
+  `WELLFRIENDPDF_ALLOW_UNAUTHENTICATED=true` every caller shares one bucket (one abuser
   starves all dev traffic). When auth is enabled (production default),
   unauthenticated requests are rejected by the outermost auth layer first, so
   this only bites in dev mode.
@@ -546,7 +546,7 @@ in `crates/engine/src/reader.rs:445-582`.
   (`persist_result`).
 - **Class:** 3.5 / 3.4 — data exposure at rest.
 - **Description.** Completed job outputs are written to
-  `std::env::temp_dir()/oxide-jobs-<pid>/<job_id>.bin` via `std::fs::write` with
+  `std::env::temp_dir()/wellfriendpdf-jobs-<pid>/<job_id>.bin` via `std::fs::write` with
   default permissions. Job IDs are unguessable (good — protects HTTP
   enumeration), but on a shared host any local user who can read the system temp
   dir can read other tenants' outputs directly off disk. No `0700`/`0600` mode is
@@ -558,10 +558,10 @@ in `crates/engine/src/reader.rs:445-582`.
 
 ### L-10 — OCR temp file uses a predictable, non-`O_EXCL` name
 - **Severity:** Low
-- **Location:** `oxide-ocr-tesseract/src/lib.rs:253-265` (`TempPgm::write`).
+- **Location:** `wellfriendpdf-ocr-tesseract/src/lib.rs:253-265` (`TempPgm::write`).
 - **Class:** 3.4 / 3.7 — temp-file race / symlink.
 - **Description.** The temp path is
-  `std::env::temp_dir()/oxide-ocr-{pid}-{seq}.pgm`, created with `File::create`
+  `std::env::temp_dir()/wellfriendpdf-ocr-{pid}-{seq}.pgm`, created with `File::create`
   (`O_CREAT|O_TRUNC`, **not** `O_EXCL`) and a fully predictable name (PID + a
   process-global counter). On a multi-user host with a shared temp dir, a local
   attacker who pre-creates the path as a symlink gains a truncate/overwrite
@@ -572,7 +572,7 @@ in `crates/engine/src/reader.rs:445-582`.
 
 ### Info — C-ABI free functions are outside `catch_unwind`
 - **Severity:** Info (latent, currently unreachable)
-- **Location:** `oxide-capi/src/lib.rs:81,94,107,118` (the four `*_free` fns).
+- **Location:** `wellfriendpdf-capi/src/lib.rs:81,94,107,118` (the four `*_free` fns).
 - **Class:** 3.6.
 - **Description.** The 8 data-returning C-ABI functions and `*_open_from_bytes`
   are wrapped in `catch_unwind`, but the four free functions are not. A panic in
@@ -602,7 +602,7 @@ in `crates/engine/src/reader.rs:445-582`.
   traversal unit tests.
 - **OCR command injection blocked (3.7).** The backend is invoked via
   `Command::new(binary).args(vec)` with positional argv — no shell, no string
-  interpolation (`oxide-ocr-tesseract/src/lib.rs:181-182`). Untrusted language
+  interpolation (`wellfriendpdf-ocr-tesseract/src/lib.rs:181-182`). Untrusted language
   codes/paths are single argv elements. Bounded by a 60s timeout with drained
   pipes (`:178-240`).
 - **C-ABI memory safety (3.6).** Null checks on every pointer
@@ -799,9 +799,9 @@ in `crates/engine/src/reader.rs:445-582`.
 - **Class:** 4.3.
 - **Finding.** A full-workspace `unsafe` sweep confirms the docs
   (`attack_surface.md:79`, `robustness.md:232`): **all real `unsafe` is in
-  `crates/oxide-capi/src/lib.rs`** (the `extern "C"` fn signatures plus
+  `crates/wellfriendpdf-capi/src/lib.rs`** (the `extern "C"` fn signatures plus
   raw-pointer/`Box`/`CString`/`slice::from_raw_parts` blocks). Crates `engine`,
-  `cli`, `server`, `oxide-wasm`, and `oxide-ocr-tesseract` contain **zero** real
+  `cli`, `server`, `wellfriendpdf-wasm`, and `wellfriendpdf-ocr-tesseract` contain **zero** real
   `unsafe` — the only matches elsewhere are the literal word inside comments
   (`images/jpx.rs:10` `#![forbid(unsafe_code)]` in a doc line; `config.rs:228`).
   The FFI `unsafe` is **sound**: null checks, `catch_unwind` on all

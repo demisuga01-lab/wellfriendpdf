@@ -1,15 +1,15 @@
 //! Validation for the SVG vector output backend.
 //!
-//! The correctness bar (per the round spec): rasterize Oxide's SVG with the
+//! The correctness bar (per the round spec): rasterize Wellfriend's SVG with the
 //! pure-Rust `resvg`/`usvg`/`tiny-skia` stack and compare it (PSNR) against
-//! Oxide's OWN raster render of the same page. High similarity proves the SVG
+//! Wellfriend's OWN raster render of the same page. High similarity proves the SVG
 //! faithfully represents the page. We also assert the vector-vs-raster-fallback
 //! decision is correct and cross-check structure against `pdftocairo -svg`.
 
 use std::path::PathBuf;
 use std::process::Command;
 
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::ContentEngine;
 
 const DPI: u32 = 96;
 
@@ -27,9 +27,9 @@ fn engine(name: &str) -> ContentEngine {
 /// Rasterize an SVG string to RGBA8 pixels of the given size using resvg.
 fn rasterize_svg(svg: &str, width: u32, height: u32) -> Vec<u8> {
     let opt = resvg::usvg::Options::default();
-    let tree = resvg::usvg::Tree::from_str(svg, &opt).expect("usvg parses Oxide SVG");
+    let tree = resvg::usvg::Tree::from_str(svg, &opt).expect("usvg parses Wellfriend SVG");
     let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height).expect("alloc pixmap");
-    // White background so the comparison matches Oxide's white page background.
+    // White background so the comparison matches Wellfriend's white page background.
     pixmap.fill(resvg::tiny_skia::Color::WHITE);
     resvg::render(
         &tree,
@@ -73,8 +73,8 @@ fn psnr_rgba(a: &[u8], b: &[u8]) -> f64 {
     20.0 * (255.0f64).log10() - 10.0 * mse.log10()
 }
 
-/// Oxide raster render of a page as RGBA8 at DPI.
-fn oxide_raster_rgba(engine: &ContentEngine, page: usize) -> (Vec<u8>, u32, u32) {
+/// Wellfriend raster render of a page as RGBA8 at DPI.
+fn wellfriendpdf_raster_rgba(engine: &ContentEngine, page: usize) -> (Vec<u8>, u32, u32) {
     let buf = engine.render_page(page, DPI).unwrap();
     let raw = buf.to_raw_image_rgba();
     (raw.pixels, raw.width, raw.height)
@@ -145,7 +145,7 @@ fn pure_vector_page_emits_true_vector_not_raster() {
 }
 
 #[test]
-fn svg_rasterizes_close_to_oxide_raster() {
+fn svg_rasterizes_close_to_wellfriendpdf_raster() {
     // Compare on pages with ACTUAL visible marks (a blank page trivially matches
     // and proves nothing). Each entry is (fixture, page) chosen because the
     // raster render has meaningful non-white content:
@@ -162,7 +162,7 @@ fn svg_rasterizes_close_to_oxide_raster() {
         if page > e.page_count().unwrap() {
             continue;
         }
-        let (raster, w, h) = oxide_raster_rgba(&e, page);
+        let (raster, w, h) = wellfriendpdf_raster_rgba(&e, page);
         // Guard: ensure the page actually has marks, so a high PSNR is meaningful.
         let nonwhite = raster
             .chunks_exact(4)
@@ -211,21 +211,21 @@ fn cross_check_pdftocairo_svg_renders_similarly() {
         eprintln!("NOTE: pdftocairo not found; skipping SVG cross-check");
         return;
     };
-    // Render Oxide raster and Poppler's SVG (rasterized) for tracemonkey p1,
-    // and confirm Oxide's own SVG rasterizes at least as close to Oxide raster
+    // Render Wellfriend raster and Poppler's SVG (rasterized) for tracemonkey p1,
+    // and confirm Wellfriend's own SVG rasterizes at least as close to Wellfriend raster
     // as a sanity floor. (Cross-engine SVG-to-SVG pixel parity is not the bar;
     // both representing the same page is.)
     let name = "tracemonkey.pdf";
     let page = 3; // p3 has visible vector content (p1 is blank in raster).
     let e = engine(name);
-    let (raster, w, h) = oxide_raster_rgba(&e, page);
+    let (raster, w, h) = wellfriendpdf_raster_rgba(&e, page);
 
-    let oxide_svg = e.render_page_svg(page, DPI).unwrap();
-    let oxide_svg_raster = rasterize_svg(&oxide_svg.svg, w, h);
-    let oxide_psnr = psnr_rgba(&raster, &oxide_svg_raster);
+    let wellfriendpdf_svg = e.render_page_svg(page, DPI).unwrap();
+    let wellfriendpdf_svg_raster = rasterize_svg(&wellfriendpdf_svg.svg, w, h);
+    let wellfriendpdf_psnr = psnr_rgba(&raster, &wellfriendpdf_svg_raster);
 
     // Generate Poppler SVG and rasterize it too (sanity: it parses & renders).
-    let tmp = std::env::temp_dir().join("oxide_pdftocairo_xcheck");
+    let tmp = std::env::temp_dir().join("wellfriendpdftocairo_xcheck");
     let _ = std::fs::create_dir_all(&tmp);
     let out_prefix = tmp.join("pop");
     let status = Command::new(&tool)
@@ -252,8 +252,8 @@ fn cross_check_pdftocairo_svg_renders_similarly() {
     let _ = std::fs::remove_dir_all(&tmp);
 
     assert!(
-        oxide_psnr >= 25.0,
-        "Oxide SVG of {name} p{page} rasterizes too far from Oxide raster: {oxide_psnr:.2} dB"
+        wellfriendpdf_psnr >= 25.0,
+        "Wellfriend SVG of {name} p{page} rasterizes too far from Wellfriend raster: {wellfriendpdf_psnr:.2} dB"
     );
-    eprintln!("Oxide SVG vs raster PSNR ({name} p{page}): {oxide_psnr:.2} dB");
+    eprintln!("Wellfriend SVG vs raster PSNR ({name} p{page}): {wellfriendpdf_psnr:.2} dB");
 }

@@ -1,7 +1,7 @@
 //! Engine-level page-classifier tests: run the real classifier (collector +
 //! graphics) over synthetic PDFs whose nature is known by construction.
 
-use oxide_engine::{classify_page, ClassifyConfig, ContentEngine, PageSource};
+use wellfriendpdf_engine::{classify_page, ClassifyConfig, ContentEngine, PageSource};
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,

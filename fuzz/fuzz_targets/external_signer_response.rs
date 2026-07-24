@@ -3,5 +3,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    oxide_engine::fuzz::fuzz_external_signer_response(data);
+    wellfriendpdf_engine::fuzz::fuzz_external_signer_response(data);
 });

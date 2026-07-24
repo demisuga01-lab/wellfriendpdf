@@ -17,7 +17,7 @@ Update: GA Prompt 4 reran the same 265-entry slice after targeted renderer and b
 
 ## Backends
 
-- Oxide: `target\release\oxide.exe`
+- Wellfriend: `target\release\wellfriendpdf.exe`
 - Poppler: `{'pdfinfo': 'pdfinfo version 26.02.0\nCopyright 2005-2026 The Poppler Developers - http://poppler.freedesktop.org\nCopyright 1996-2011, 2022 Glyph & Cog, LLC', 'pdftoppm': 'pdftoppm version 26.02.0\nCopyright 2005-2026 The Poppler Developers - http://poppler.freedesktop.org\nCopyright 1996-2011, 2022 Glyph & Cog, LLC'}`
 - PDFium: not available; skipped cleanly
 
@@ -29,7 +29,7 @@ Update: GA Prompt 4 reran the same 265-entry slice after targeted renderer and b
 - Hostile crash-free: **100.0%**
 - Hostile timeout-safe: **100.0%**
 - Hostile memory-bounded: **100.0%**
-- Median speed ratio Poppler/Oxide: **2.7069**
+- Median speed ratio Poppler/Wellfriend: **2.7069**
 - Determinism: {'sampled_files': 24, 'stable_files': 24, 'stable_percent': 100.0, 'unstable': []}
 
 ## Sub-Scores
@@ -54,7 +54,7 @@ Update: GA Prompt 4 reran the same 265-entry slice after targeted renderer and b
 - page:low_ssim: 5
 - large_region_difference: 4
 - poppler_render_failed: 4
-- oxide_render_failed: 2
+- wellfriendpdf_render_failed: 2
 - page:rendered_page_missing: 2
 - rendered_page_missing: 2
 - edge_or_text_shift: 1

@@ -7,8 +7,8 @@ Supported bounded generation includes FreeText; Line/Square/Circle/Polygon/PolyL
 Valid static AP for PrinterMark, TrapNet, Watermark, 3D, RichMedia, Movie, Sound, Screen, and unknown subtypes is preserved and can be flattened. A deterministic `INERT` placeholder is available only under explicit policy.
 
 ```text
-oxide annotation-appearance-generate input.pdf --output appearances.pdf --json
-oxide annotation-appearance-report input.pdf
+wellfriendpdf annotation-appearance-generate input.pdf --output appearances.pdf --json
+wellfriendpdf annotation-appearance-report input.pdf
 ```
 
-Exact limits: FreeText uses sanitized plain text with bounded Helvetica/WinAnsi layout; advanced CSS, full bidi shaping, CJK font fallback embedding, exact proprietary stamp art, and pixel-identical Acrobat-private cloudy-border geometry are reported limits. Oxide's cloud geometry is a bounded deterministic vector approximation. Unsupported generation never silently succeeds.
+Exact limits: FreeText uses sanitized plain text with bounded Helvetica/WinAnsi layout; advanced CSS, full bidi shaping, CJK font fallback embedding, exact proprietary stamp art, and pixel-identical Acrobat-private cloudy-border geometry are reported limits. Wellfriend's cloud geometry is a bounded deterministic vector approximation. Unsupported generation never silently succeeds.

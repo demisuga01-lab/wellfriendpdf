@@ -1,6 +1,6 @@
 # Stream Decode Foundation
 
-This document is the Prompt 02 inventory and design record for Oxide's PDF
+This document is the Prompt 02 inventory and design record for Wellfriend's PDF
 stream decoding layer. It covers the current central decoder path, filter
 support, resource limits, tests, fuzzing, cache posture, and the places where
 future work should extend the design without adding a second decode stack.
@@ -49,7 +49,7 @@ for valid documents under the caps.
 | Lossless decoded bytes per document | 2 GiB | `DecodeLimits` and scheduler/reporting surfaces |
 | Filter chain depth | 16 filters | `decode_stream_parts`, `decode_stream_reader_with_cap` |
 | Predictor row bytes | 64 MiB | buffered and streaming predictor paths |
-| Image pixels | `OXIDE_MAX_DECODE_PIXELS` or engine default | `ensure_decode_budget` before pixel sink allocation |
+| Image pixels | `WELLFRIENDPDF_MAX_DECODE_PIXELS` or engine default | `ensure_decode_budget` before pixel sink allocation |
 | Image decoded byte addressability | platform `usize` | `ensure_decode_budget` |
 | Object stream cache | bounded by reader cache budget | `BoundedObjectStreamCache` in `reader.rs` |
 | General decode cache | 32 MiB budget, 4 MiB entry cap | `DecodeCache` utility |
@@ -62,7 +62,7 @@ request-level limits through `DecodeLimits`. Public profiles are:
 - `DecodeLimits::strict_low_memory()` for constrained service workers.
 - `DecodeLimits::audit_generous()` for finite forensic inspection.
 
-The CLI exposes this through `oxide parser-report --include-decode
+The CLI exposes this through `wellfriendpdf parser-report --include-decode
 --decode-profile default|low-memory|audit` plus high-value overrides for stream
 MiB, chain depth, image megapixels, and decode cache MiB.
 
@@ -84,7 +84,7 @@ status, and a stable human message.
 `parser-report` exposes the report only when requested:
 
 ```sh
-oxide parser-report input.pdf --mode audit --json --include-decode
+wellfriendpdf parser-report input.pdf --mode audit --json --include-decode
 ```
 
 Example shape:
@@ -174,7 +174,7 @@ Prompt 02B adds `decode_scanner`:
 - explicit documentation that scanner candidates are raw byte candidates, not
   parser-valid objects.
 
-No unsafe SIMD was added because `oxide-engine` has `#![forbid(unsafe_code)]`.
+No unsafe SIMD was added because `wellfriendpdf-engine` has `#![forbid(unsafe_code)]`.
 The future SIMD path must either use a safe portable implementation or stay
 feature-gated outside the core engine. `scripts/scan_marker_bench.py` provides a
 small benchmark harness for measuring whether scanner acceleration is worthwhile.

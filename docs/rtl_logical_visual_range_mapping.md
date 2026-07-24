@@ -6,7 +6,7 @@ Existing PDF codes/CIDs/GIDs remain source provenance. Only inserted Unicode is 
 
 Prompt 20B range mapping records logical offsets before visual ordering. RTL
 selection spans must be supplied as logical ranges or as visual selections that
-the caller has already resolved to one unambiguous logical range. Oxide does
+the caller has already resolved to one unambiguous logical range. Wellfriend does
 not sort glyphs by x coordinate to infer text order.
 
 For newly generated replacement text, bidi runs, shaped clusters, glyph order,

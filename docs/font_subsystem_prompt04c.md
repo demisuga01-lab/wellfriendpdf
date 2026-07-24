@@ -31,7 +31,7 @@ Fallback:
 - Malformed table directories, `loca`, `glyf`, composite data, or unsupported table shape.
 - Resource-limit hits such as invalid glyph count or composite-depth overflow.
 
-Fallback is explicit in the embedded font stream under `/OxideSubset`, with code/reason fields. The main stable diagnostic codes are:
+Fallback is explicit in the embedded font stream under `/WellfriendSubset`, with code/reason fields. The main stable diagnostic codes are:
 
 - `font.subset.fallback.unsupported_format`
 - `font.subset.fallback.malformed_glyf`
@@ -46,7 +46,7 @@ Prompt 04C reran the same 24-file Prompt 04B slice. See `docs/font_prompt04c_fai
 | Prompt 04B | 45.21 | 45.83% | `target/prompt04b-font-render-benchmark/` |
 | Prompt 04C v2 | 45.21 | 45.83% | `target/prompt04c-font-render-benchmark-v2/` |
 
-The score did not move. Prompt 04C is therefore a production generated-output closure, not a visual-benchmark closure. The remaining score blockers are existing-PDF rendering fidelity gaps in Type1C/CFF positioning/rasterization, CJK/RTL raster drift, and two blank-reference mismatches where Poppler produced blank pages while Oxide rendered content.
+The score did not move. Prompt 04C is therefore a production generated-output closure, not a visual-benchmark closure. The remaining score blockers are existing-PDF rendering fidelity gaps in Type1C/CFF positioning/rasterization, CJK/RTL raster drift, and two blank-reference mismatches where Poppler produced blank pages while Wellfriend rendered content.
 
 ## Native FreeType/HarfBuzz Decision
 

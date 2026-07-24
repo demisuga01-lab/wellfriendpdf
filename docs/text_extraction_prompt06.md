@@ -23,8 +23,8 @@ New engine APIs:
 
 CLI:
 
-- `oxide extract-text input.pdf --structured --format model-json`.
-- `oxide extract-text input.pdf --semantic --format model-json`.
+- `wellfriendpdf extract-text input.pdf --structured --format model-json`.
+- `wellfriendpdf extract-text input.pdf --semantic --format model-json`.
 
 The older formats remain stable:
 

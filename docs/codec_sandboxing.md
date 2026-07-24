@@ -3,7 +3,7 @@
 PDF image codecs are untrusted-input attack surfaces. A small stream can declare
 huge geometry, a malformed arithmetic-coded stream can stress CPU paths, and
 symbol-dictionary codecs such as JBIG2 have a history of security-sensitive
-failures. Oxide treats stream decoding as hostile by default.
+failures. Wellfriend treats stream decoding as hostile by default.
 
 ## Prompt 02B Dependency Audit
 
@@ -15,11 +15,11 @@ metadata. The current decoder adapters use Rust crates:
 - `hayro-ccitt` for CCITT fax;
 - `hayro-jbig2` for JBIG2.
 
-Oxide does not link Poppler, PDFium, OpenJPEG, libjpeg, jbig2dec, or other C/C++
+Wellfriend does not link Poppler, PDFium, OpenJPEG, libjpeg, jbig2dec, or other C/C++
 codec libraries for these paths. The engine crate itself also has
 `#![forbid(unsafe_code)]`. Prompt 02B did not perform a line-by-line audit of
 all transitive dependency internals, so the claim is limited to the integration
-boundary: Oxide invokes Rust crates in-process and enforces Oxide-owned caps
+boundary: Wellfriend invokes Rust crates in-process and enforces Wellfriend-owned caps
 before or around decode.
 
 ## Current Codec Boundaries
@@ -32,8 +32,8 @@ before or around decode.
 | JBIG2Decode | `hayro-jbig2` | No | Embedded image parse, image budget, bounded sink | Supported defensively; no JBIG2 writing or lossy symbol substitution. |
 
 The selected codec crates are Rust dependencies and do not require a C compiler,
-cmake, or platform dynamic libraries. Oxide still treats them as attack surface:
-errors are converted to `OxideError`, output geometry is checked, and pixel sinks
+cmake, or platform dynamic libraries. Wellfriend still treats them as attack surface:
+errors are converted to `WellfriendError`, output geometry is checked, and pixel sinks
 clip to expected output length.
 
 ## Threat Model
@@ -53,7 +53,7 @@ The defensive model covers:
 
 ## What Is Not Claimed
 
-Oxide does not currently isolate codecs in a subprocess, RLBox sandbox, WASM
+Wellfriend does not currently isolate codecs in a subprocess, RLBox sandbox, WASM
 sandbox, seccomp profile, or OS job object. The current protection is in-process,
 pure Rust decoding plus resource limits and fuzz/property tests. This is an
 important safety boundary, but it is not equivalent to process isolation.
@@ -62,15 +62,15 @@ Prompt 02B makes this an explicit Outcome C decision:
 
 - in-process decoding remains the default because the active risky-codec paths
   are Rust dependencies rather than native libraries;
-- output, pixel, predictor, and filter-chain caps are enforced at Oxide
+- output, pixel, predictor, and filter-chain caps are enforced at Wellfriend
   boundaries;
 - public decode diagnostics and parser-report JSON expose cap hits and codec
   failures;
-- subprocess/RLBox isolation is deferred until Oxide introduces a native codec
+- subprocess/RLBox isolation is deferred until Wellfriend introduces a native codec
   dependency or fuzz/corpus evidence shows an in-process Rust codec needs OS
   containment.
 
-Oxide also does not write JBIG2. In particular, it does not perform lossy JBIG2
+Wellfriend also does not write JBIG2. In particular, it does not perform lossy JBIG2
 symbol substitution or any JBIG2 re-encoding that could alter document meaning.
 If JBIG2 writing is ever added, it should be handled as a separate security and
 correctness project.
@@ -102,7 +102,7 @@ codec adapters under `crates/engine/src/images/`.
 
 ## Prompt 04 Update
 
-Prompt 03 added `oxide-codec-worker` subprocess containment for the supported
+Prompt 03 added `wellfriendpdf-codec-worker` subprocess containment for the supported
 lossless worker codecs. Prompt 04 keeps that worker boundary and adds the
 long-term native/C codec policy:
 

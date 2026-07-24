@@ -18,5 +18,5 @@ Evidence:
 - `reference-disagreement-summary-prompt10c.json`
 
 The Prompt 10C rendered corpus includes Korean, Hebrew, COLRv1, sbix, and
-CID-keyed CFF regression rows. It records zero Oxide outlier failures and zero
+CID-keyed CFF regression rows. It records zero Wellfriend outlier failures and zero
 unclassified failures under the pure-Rust posture.

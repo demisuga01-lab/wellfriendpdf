@@ -7,7 +7,7 @@ use axum::{
     Json,
 };
 use bytes::Bytes;
-use oxide_engine::{
+use wellfriendpdf_engine::{
     ContentEngine, ImageEncoder, ImageLocateOptions, ImageLocator, ImageOutputFormat,
     ImageReference, SmaskLoader,
 };
@@ -361,7 +361,7 @@ fn encode_image(
     engine: &ContentEngine,
     img_ref: &ImageReference,
     params: &ExtractImagesParams,
-) -> oxide_engine::Result<(Vec<u8>, &'static str)> {
+) -> wellfriendpdf_engine::Result<(Vec<u8>, &'static str)> {
     // XObject images can sometimes be emitted with their original compressed
     // bytes; inline images are always decoded from their captured data.
     if !img_ref.is_inline {

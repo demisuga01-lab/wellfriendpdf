@@ -120,7 +120,7 @@ pub(crate) fn native_cmm_status() -> NativeCmmStatus {
         default_build_native_dependency: false,
         wasm_native_unavailable: cfg!(target_arch = "wasm32") || !compiled,
         unsafe_boundary: if compiled {
-            "oxide-engine remains forbid(unsafe_code); unsafe/native FFI is isolated in lcms2/lcms2-sys dependencies"
+            "wellfriendpdf-engine remains forbid(unsafe_code); unsafe/native FFI is isolated in lcms2/lcms2-sys dependencies"
         } else {
             "no native CMM dependency compiled"
         },

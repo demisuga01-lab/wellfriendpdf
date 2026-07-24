@@ -1,11 +1,11 @@
-# Oxide — Positioning: the Rust-native document parser
+# Wellfriend — Positioning: the Rust-native document parser
 
-> **Scope.** This document positions Oxide as a **document parser / structured
+> **Scope.** This document positions Wellfriend as a **document parser / structured
 > extractor** (PDF → Markdown / JSON / RAG chunks / key-value fields), competing
 > with Docling, PyMuPDF, and qpdf on the *extraction* axis. It is **not** a
-> positioning of Oxide as a pixel-faithful *renderer* — for visual fidelity see
-> `docs/oxide_vs_poppler.md`, which is candid that Oxide trails Poppler/PDFium
-> for visual proofing. Keep the two axes separate: **Oxide leads on
+> positioning of Wellfriend as a pixel-faithful *renderer* — for visual fidelity see
+> `docs/wellfriendpdf_vs_poppler.md`, which is candid that Wellfriend trails Poppler/PDFium
+> for visual proofing. Keep the two axes separate: **Wellfriend leads on
 > extraction/embedding/safety/deployment; it trails on render fidelity and on
 > ML-grade understanding of messy scans.**
 >
@@ -14,7 +14,7 @@
 
 ## What it is
 
-**Oxide is a Rust-native document parser**: a single, pure-Rust core that turns a
+**Wellfriend is a Rust-native document parser**: a single, pure-Rust core that turns a
 PDF into a structured document model and serializes it to clean **Markdown**,
 lossless **JSON**, semantic **HTML**, **RAG-ready chunks**, and **key-value
 fields** — with **qpdf-class structural operations** (merge / split /
@@ -32,8 +32,8 @@ extract-pages) alongside. It has:
 - **Pure-Rust, single static binary.** No Python, no torch/ML stack, no
   Poppler/Ghostscript. One ~12 MB binary, ~6 ms cold start.
 - **Embeddable four ways.** Rust library (the engine API), C ABI
-  (`oxide-capi`), WebAssembly (`oxide-wasm`, in-browser), and a self-hostable
-  HTTP server (`oxide-server`). See `docs/bindings.md` and `docs/self_hosting.md`.
+  (`wellfriendpdf-capi`), WebAssembly (`wellfriendpdf-wasm`, in-browser), and a self-hostable
+  HTTP server (`wellfriendpdf-server`). See `docs/bindings.md` and `docs/self_hosting.md`.
 - **MIT OR Apache-2.0** — permissive, non-copyleft (contrast Poppler's
   GPL-family licensing). See `docs/licenses.md`.
 
@@ -46,10 +46,10 @@ extract-pages) alongside. It has:
 | **Clean digital tables** | cell-F1 **1.0** / TEDS **1.0** (ties PyMuPDF); higher text accuracy than `pdftotext` on the table page (1.0 vs 0.298). |
 | **Key-value extraction** | field-F1 **1.0** on the digital invoice — a capability PyMuPDF/Poppler do not have at all. Receipt 0.75 (honest partial). |
 | **OCR is source-agnostic** | Recovers scanned text at **0.94** char-accuracy and fields where PyMuPDF/Poppler score **0** (no OCR). |
-| **Structural integrity** | qpdf cross-validates Oxide's split output (parts pass `qpdf --check`; page counts agree) — qpdf-class round-trip integrity. |
+| **Structural integrity** | qpdf cross-validates Wellfriend's split output (parts pass `qpdf --check`; page counts agree) — qpdf-class round-trip integrity. |
 | **Reach / embeddability** | Same canonical extraction in Rust, C, the browser (WASM), and over HTTP — Docling cannot run in a browser; PyMuPDF/Poppler are not WASM-first. |
 | **Privacy / self-hosting** | Runs entirely on your own hardware; documents never leave the machine; no per-page cloud fees. See `docs/self_hosting.md`. |
-| **Memory safety** | Pure-Rust core; the renderer benchmark's hostile-input sweep was crash/timeout/OOM-clean (`docs/oxide_vs_poppler.md`). |
+| **Memory safety** | Pure-Rust core; the renderer benchmark's hostile-input sweep was crash/timeout/OOM-clean (`docs/wellfriendpdf_vs_poppler.md`). |
 
 Clean digital **text** accuracy is near-parity with PyMuPDF (both ~0.99 on the
 paper) — a tie, stated as such.
@@ -65,28 +65,28 @@ paper) — a tie, stated as such.
 - **Scanned key-value recall.** Invoice field-F1 drops from 1.0 (digital) to
   **0.4** on the OCR'd scan (OCR noise + single-line label/value merge). An
   ML-layout model (Docling-class) would likely do better on messy scans.
-- **OCR quality is bounded by Tesseract.** Oxide's OCR is as good as the
+- **OCR quality is bounded by Tesseract.** Wellfriend's OCR is as good as the
   Tesseract engine and the input scan quality; it is not a learned document
   model. Pure-Rust preprocessing (deskew / binarize / denoise) helps but does
   not close the gap to ML OCR on hard scans.
 - **Block-type labeling on some layouts.** Structure/block-type accuracy is
   uneven across document kinds (e.g. strong on tables/figures, weak on a dense
   paper) — see the per-document table in the benchmark.
-- **Per-call CLI latency.** Oxide's per-document CLI time (17.8 ms) includes
+- **Per-call CLI latency.** Wellfriend's per-document CLI time (17.8 ms) includes
   **process spawn**; PyMuPDF (3.6 ms) runs in-process. For many-small-doc
   throughput in a long-lived Python process, PyMuPDF's in-process call is
-  faster. Embed the Oxide **library** (no spawn) to erase this for in-process
+  faster. Embed the Wellfriend **library** (no spawn) to erase this for in-process
   pipelines; the CLI wins on startup, footprint, and zero-runtime deployment.
 - **Docling head-to-head is not measured locally.** Docling's heavy
   ML/torch dependencies were not installable in the benchmark environment; its
   rows are marked *not run* and never fabricated. The breadth of model-based
   understanding on exotic/messy layouts is Docling's expected strength and
   remains unverified here.
-- **Renderer fidelity (different axis).** Oxide is *not* positioned as a
-  visual-proof renderer; for that, `docs/oxide_vs_poppler.md` recommends
-  Poppler/PDFium. Oxide rendering exists primarily to feed OCR and previews.
+- **Renderer fidelity (different axis).** Wellfriend is *not* positioned as a
+  visual-proof renderer; for that, `docs/wellfriendpdf_vs_poppler.md` recommends
+  Poppler/PDFium. Wellfriend rendering exists primarily to feed OCR and previews.
   The last recorded visual-fidelity figure is **33.40%** visual-page pass
-  (`docs/oxide_vs_poppler.md`, 2026-06-18). A fresh full renderer-benchmark run
+  (`docs/wellfriendpdf_vs_poppler.md`, 2026-06-18). A fresh full renderer-benchmark run
   measuring the cumulative effect of the later render R&D was **deferred** in
   the foundation pass (it renders thousands of pages over a ~332 MB corpus and
   is not gating the parser/extraction story) — that number is therefore *not*
@@ -95,7 +95,7 @@ paper) — a tie, stated as such.
 
 ### Structural-write operations
 
-Oxide's CLI/library structural operations now include merge, split,
+Wellfriend's CLI/library structural operations now include merge, split,
 extract-pages, encrypt, rotate, optimize, repair, and a guarded
 qpdf-validated linearization implementation for the supported structural subset.
 The server remains intentionally
@@ -108,7 +108,7 @@ from-scratch xref/trailer rebuild for the most damaged repair inputs.
 
 ## Who it's for
 
-Oxide fits teams that want **self-hosted, private, fast, embeddable structured
+Wellfriend fits teams that want **self-hosted, private, fast, embeddable structured
 PDF extraction in Rust** — especially:
 
 - **RAG / LLM ingestion pipelines** that need clean Markdown + token-sized,
@@ -130,7 +130,7 @@ Everything cited here is regenerated by the extraction benchmark:
 
 ```sh
 python extraction-benchmark/scripts/generate_corpus.py
-python extraction-benchmark/scripts/extraction_benchmark.py   # needs target/debug/oxide built --features ocr for OCR rows
+python extraction-benchmark/scripts/extraction_benchmark.py   # needs target/debug/wellfriendpdf built --features ocr for OCR rows
 python extraction-benchmark/scripts/write_report.py           # writes docs/parser_benchmark.md
 ```
 

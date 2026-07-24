@@ -1,7 +1,7 @@
 # Prompt 10 SVG Color Glyph Security
 
 SVG-in-OpenType remains a security-sensitive color glyph format. Prompt 10D
-renders a narrow static subset inside Oxide's path renderer and continues to
+renders a narrow static subset inside Wellfriend's path renderer and continues to
 block active or dynamic SVG behavior.
 
 ## Rendered Static Subset

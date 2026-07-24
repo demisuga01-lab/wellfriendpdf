@@ -45,13 +45,13 @@ def run_command(cmd: list[str], timeout: float) -> tuple[int | None, str, str, f
         return None, exc.stdout or "", exc.stderr or "timeout", time.perf_counter() - start
 
 
-def oxide_report(oxide: str, pdf: Path, mode: str, timeout: float) -> dict[str, Any]:
+def wellfriendpdf_report(wellfriendpdf: str, pdf: Path, mode: str, timeout: float) -> dict[str, Any]:
     code, out, err, elapsed = run_command(
-        [oxide, "parser-report", str(pdf), "--mode", mode, "--json"],
+        [wellfriendpdf, "parser-report", str(pdf), "--mode", mode, "--json"],
         timeout,
     )
     record: dict[str, Any] = {
-        "tool": "oxide",
+        "tool": "wellfriendpdf",
         "available": True,
         "returncode": code,
         "elapsed_sec": elapsed,
@@ -71,7 +71,7 @@ def oxide_report(oxide: str, pdf: Path, mode: str, timeout: float) -> dict[str, 
                 }
             )
         except json.JSONDecodeError:
-            record.update({"open": False, "error": "invalid oxide JSON", "stderr": err})
+            record.update({"open": False, "error": "invalid wellfriendpdf JSON", "stderr": err})
     else:
         record.update({"open": False, "stderr": err[-1000:]})
     return record
@@ -136,25 +136,25 @@ def mutool_check(pdf: Path, timeout: float) -> dict[str, Any]:
 
 
 def categorize(record: dict[str, Any]) -> list[str]:
-    oxide = record["tools"]["oxide"]
+    wellfriendpdf = record["tools"]["wellfriendpdf"]
     categories: list[str] = []
     for name, tool in record["tools"].items():
-        if name == "oxide" or not tool.get("available"):
+        if name == "wellfriendpdf" or not tool.get("available"):
             continue
-        if oxide.get("open") and not tool.get("open"):
+        if wellfriendpdf.get("open") and not tool.get("open"):
             categories.append(f"{name}_external_only_fail")
-        elif not oxide.get("open") and tool.get("open"):
-            categories.append(f"{name}_oxide_only_fail")
+        elif not wellfriendpdf.get("open") and tool.get("open"):
+            categories.append(f"{name}_wellfriendpdf_only_fail")
         if (
-            oxide.get("page_count") is not None
+            wellfriendpdf.get("page_count") is not None
             and tool.get("page_count") is not None
-            and oxide.get("page_count") != tool.get("page_count")
+            and wellfriendpdf.get("page_count") != tool.get("page_count")
         ):
             categories.append(f"{name}_page_count_mismatch")
         if (
-            oxide.get("linearized") is not None
+            wellfriendpdf.get("linearized") is not None
             and tool.get("linearized") is not None
-            and oxide.get("linearized") != tool.get("linearized")
+            and wellfriendpdf.get("linearized") != tool.get("linearized")
         ):
             categories.append(f"{name}_linearization_mismatch")
     return categories
@@ -192,7 +192,7 @@ def write_markdown(path: Path, records: list[dict[str, Any]]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("paths", nargs="+", type=Path)
-    parser.add_argument("--oxide", default=str(Path("target") / "debug" / "oxide.exe"))
+    parser.add_argument("--wellfriendpdf", default=str(Path("target") / "debug" / "wellfriendpdf.exe"))
     parser.add_argument("--mode", choices=["strict", "repair", "audit"], default="audit")
     parser.add_argument("--limit", type=int, default=25)
     parser.add_argument("--timeout", type=float, default=15.0)
@@ -211,7 +211,7 @@ def main() -> int:
     with args.json_out.open("w", encoding="utf-8") as handle:
         for pdf in files:
             tools = {
-                "oxide": oxide_report(args.oxide, pdf, args.mode, args.timeout),
+                "wellfriendpdf": wellfriendpdf_report(args.wellfriendpdf, pdf, args.mode, args.timeout),
                 "qpdf": qpdf_check(pdf, args.timeout),
                 "pdfinfo": pdfinfo_check(pdf, args.timeout),
                 "mutool": mutool_check(pdf, args.timeout),

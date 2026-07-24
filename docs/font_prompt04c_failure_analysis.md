@@ -3,14 +3,14 @@
 Prompt 04C reran the exact Prompt 04B Poppler text/font slice:
 
 ```powershell
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --oxide-bin target\release\oxide.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04c-font-render-benchmark-v2 --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04c-font-render-benchmark-v2 --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Poppler was available through `pdftoppm`/`pdfinfo` 26.02.0. PDFium was not configured and was skipped. The rerun used the rebuilt release CLI after Prompt 04C code changes.
 
 ## Summary
 
-| Run | Files | Visual pass | Weighted score | Peak Oxide memory |
+| Run | Files | Visual pass | Weighted score | Peak Wellfriend memory |
 | --- | ---: | ---: | ---: | ---: |
 | Prompt 04B | 24 | 45.83% | 45.21 | 11.28 MB |
 | Prompt 04C v2 | 24 | 45.83% | 45.21 | 11.54 MB |
@@ -31,13 +31,13 @@ The local movement came from skipping true `.notdef`/control-code painting for n
 | `tests/corpus/pdfs/pdfjs/IdentityToUnicodeMap_charCodeOf.pdf` | real-cjk-text | large_region_difference | Text appears visually close in stored artifacts; threshold dominated by raster/edge metric sensitivity. |
 | `tests/corpus/pdfs/pdfjs/XiaoBiaoSong.pdf` | real-cjk-text | large_region_difference | CJK glyph/raster/metric drift, not a missing Prompt 04C CMap. |
 | `tests/corpus/pdfs/pdfjs/ThuluthFeatures.pdf` | real-rtl-text | large_region_difference | Arabic/RTL visual fidelity remains renderer/raster/shaping-display work for existing PDFs. Generated shaped output is handled separately. |
-| `tests/corpus/pdfs/pdfjs/issue5801.pdf` | real-rtl-text | blank_page_mismatch | Poppler reference renders blank while Oxide renders content; not safe to suppress Oxide output as a font fix. |
-| `renderer-benchmark/corpus/real-world/pdfjs-full/arial_unicode_en_cidfont.pdf` | real-cjk-text | blank_page_mismatch | Poppler reference renders blank while Oxide renders text; not safe to suppress Oxide output as a font fix. |
+| `tests/corpus/pdfs/pdfjs/issue5801.pdf` | real-rtl-text | blank_page_mismatch | Poppler reference renders blank while Wellfriend renders content; not safe to suppress Wellfriend output as a font fix. |
+| `renderer-benchmark/corpus/real-world/pdfjs-full/arial_unicode_en_cidfont.pdf` | real-cjk-text | blank_page_mismatch | Poppler reference renders blank while Wellfriend renders text; not safe to suppress Wellfriend output as a font fix. |
 | `renderer-benchmark/corpus/real-world/pdfjs-full/font_ascent_descent.pdf` | real-font-edge | large_region_difference | Embedded Type1C custom glyph names render, but text matrix/advance/raster behavior is still far from Poppler. |
 | `renderer-benchmark/corpus/real-world/pdfjs-full/glyph_accent.pdf` | real-font-edge | large_region_difference | Accent/Type1C placement remains a CFF/Type1 glyph positioning fidelity gap. |
 
 ## Dominant Buckets
 
-The dominant failing bucket is not generated-output font embedding. True sfnt/glyf subsetting has no effect on rendering existing benchmark PDFs. The measured visual blockers are existing-PDF CJK/RTL/Type1C raster and positioning differences plus two blank-reference mismatches where suppressing Oxide output would be incorrect.
+The dominant failing bucket is not generated-output font embedding. True sfnt/glyf subsetting has no effect on rendering existing benchmark PDFs. The measured visual blockers are existing-PDF CJK/RTL/Type1C raster and positioning differences plus two blank-reference mismatches where suppressing Wellfriend output would be incorrect.
 
 Prompt 04C therefore closes the production generated-output blocker by implementing true glyf subsetting, but the benchmark-improvement acceptance gate remains unmet. Moving that score materially requires a separate renderer/font-raster fidelity pass focused on CFF/Type1C advances, text matrix placement, and optional native or higher-fidelity raster/hinting decisions.

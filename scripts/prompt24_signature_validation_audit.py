@@ -477,9 +477,9 @@ def main() -> None:
         "Prompt 24 binding parity results",
         rust_sdk="signature_report_with_options_json uses shared VerifyOptions JSON parser",
         python="PyDocument.signature_report_with_options and verify_signatures_with_options expose shared options JSON; fresh maturin wheel smoke passed",
-        c_abi="oxide_document_signatures_with_options_json exposes shared options JSON",
-        dotnet="OxideDocument.SignatureReportWithOptionsJson passes runtime smoke with native library configured",
-        java="Oxide.Document.signatureReportWithOptionsJson compiles and direct Java smoke runs; Maven/Gradle unavailable on PATH",
+        c_abi="wellfriendpdf_document_signatures_with_options_json exposes shared options JSON",
+        dotnet="WellfriendDocument.SignatureReportWithOptionsJson passes runtime smoke with native library configured",
+        java="WellfriendPdf.Document.signatureReportWithOptionsJson compiles and direct Java smoke runs; Maven/Gradle unavailable on PATH",
         wasm="signatureReportWithOptionsJson exposes offline/caller-supplied options JSON",
         limits=[
             "no opaque trust-store/evidence handles per binding",
@@ -505,34 +505,34 @@ def main() -> None:
                 "result": "timed_out_after_904_seconds_not_a_pass",
             },
             {
-                "command": "cargo test -p oxide-engine --test signatures",
+                "command": "cargo test -p wellfriendpdf-engine --test signatures",
                 "result": "passed_14_tests",
             },
-            {"command": "cargo test -p oxide-capi --all-targets", "result": "passed_21_tests"},
-            {"command": "cargo test -p oxide-py --all-targets", "result": "passed_0_tests"},
+            {"command": "cargo test -p wellfriendpdf-capi --all-targets", "result": "passed_21_tests"},
+            {"command": "cargo test -p wellfriendpdf-py --all-targets", "result": "passed_0_tests"},
             {
-                "command": "cargo test -p oxide-cli --all-targets",
+                "command": "cargo test -p wellfriendpdf-cli --all-targets",
                 "result": "passed_49_tests",
             },
-            {"command": "cargo test -p oxide-wasm --all-targets", "result": "passed_0_tests"},
+            {"command": "cargo test -p wellfriendpdf-wasm --all-targets", "result": "passed_0_tests"},
             {
-                "command": "cargo check -p oxide-wasm --target wasm32-unknown-unknown",
+                "command": "cargo check -p wellfriendpdf-wasm --target wasm32-unknown-unknown",
                 "result": "passed",
             },
             {
-                "command": "cargo build -p oxide-capi",
+                "command": "cargo build -p wellfriendpdf-capi",
                 "result": "passed",
             },
             {
-                "command": "dotnet test bindings/dotnet/Oxide.Sdk.Tests/Oxide.Sdk.Tests.csproj",
-                "result": "passed_6_tests_with_OXIDE_NATIVE_LIBRARY",
+                "command": "dotnet test bindings/dotnet/WellfriendPdf.Tests/WellfriendPdf.Tests.csproj",
+                "result": "passed_6_tests_with_WELLFRIENDPDF_NATIVE_LIBRARY",
             },
             {
-                "command": "javac/java direct OxideSmokeTest",
+                "command": "javac/java direct WellfriendPdfSmokeTest",
                 "result": "passed_with_native_access_warning",
             },
             {
-                "command": "python -m maturin build --manifest-path crates/oxide-py/Cargo.toml",
+                "command": "python -m maturin build --manifest-path crates/wellfriendpdf-py/Cargo.toml",
                 "result": "passed_wheel_built",
             },
             {

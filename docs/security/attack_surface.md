@@ -8,7 +8,7 @@ This map enumerates untrusted entry points and the controls that defend them.
 | --- | --- | --- |
 | `ContentEngine::open_bytes/open_path` | Untrusted PDF bytes/files | Parser errors are classified, no JS execution, fuzz/property/corpus coverage. |
 | Text extraction, document model, chunks, fields | Parsed PDF content streams, fonts, geometry | Bounded page operations, semantic/layout tests, differential/property checks. |
-| Rendering | Page graphics, fonts, images, forms, transparency | Render-pixel + DPI caps (`OXIDE_MAX_RENDER_PIXELS`) **and** decode-layer pixel caps (`OXIDE_MAX_DECODE_PIXELS`, enforced before allocation in image bit-depth expansion and the CCITT/JBIG2 sinks) + Flate/LZW/RunLength output ceilings, hostile render tests, image/font fuzz targets, grammar-aware `structured_pdf` target. |
+| Rendering | Page graphics, fonts, images, forms, transparency | Render-pixel + DPI caps (`WELLFRIENDPDF_MAX_RENDER_PIXELS`) **and** decode-layer pixel caps (`WELLFRIENDPDF_MAX_DECODE_PIXELS`, enforced before allocation in image bit-depth expansion and the CCITT/JBIG2 sinks) + Flate/LZW/RunLength output ceilings, hostile render tests, image/font fuzz targets, grammar-aware `structured_pdf` target. |
 | Structural writer/rewrite/optimize/repair/linearize | Parsed object graph | Writer fuzz targets, qpdf checks, property writer-mode invariants, linearization checks. |
 | Editing/redaction/form flattening | Existing PDFs plus edit operations | Full rewrite/incremental tests, editing fuzz target, redaction extraction tests. |
 | PDF/A/UA validation/conversion | Parsed PDFs and metadata | Compliance tests, PDF/A fuzz target, veraPDF-oriented docs/tests. |
@@ -17,7 +17,7 @@ This map enumerates untrusted entry points and the controls that defend them.
 
 ## CLI
 
-The `oxide` CLI accepts file paths and writes output files. It inherits library
+The `wellfriendpdf` CLI accepts file paths and writes output files. It inherits library
 resource controls and returns process errors instead of panics for malformed
 inputs. Shell command injection is not used for PDF processing.
 
@@ -25,12 +25,12 @@ inputs. Shell command injection is not used for PDF processing.
 
 The C ABI is the only place with Rust `unsafe` pointer boundaries:
 
-- `oxide_document_open_from_bytes`
-- `oxide_document_open_from_bytes_with_password`
-- `oxide_document_free`
-- `oxide_string_free`
-- `oxide_error_free`
-- `oxide_buffer_free`
+- `wellfriendpdf_document_open_from_bytes`
+- `wellfriendpdf_document_open_from_bytes_with_password`
+- `wellfriendpdf_document_free`
+- `wellfriendpdf_string_free`
+- `wellfriendpdf_error_free`
+- `wellfriendpdf_buffer_free`
 - page count, extraction, render, parse, and field accessors
 
 Defenses:
@@ -80,5 +80,5 @@ deployment-controlled.
 ## Unsafe Inventory
 
 The core engine contains no `unsafe` blocks and enforces `#![forbid(unsafe_code)]`. Unsafe usage is isolated to
-`crates/oxide-capi/src/lib.rs` for FFI pointer conversion and ownership transfer.
+`crates/wellfriendpdf-capi/src/lib.rs` for FFI pointer conversion and ownership transfer.
 Tests exercise the C ABI null/error/free paths.

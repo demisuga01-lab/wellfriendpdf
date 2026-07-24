@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prompt H Oxide-vs-Poppler performance proof harness.
+"""Prompt H Wellfriend-vs-Poppler performance proof harness.
 
 This is intentionally separate from the renderer visual benchmark. It measures
 equivalent CLI work on the same PDFs with release binaries:
@@ -9,7 +9,7 @@ equivalent CLI work on the same PDFs with release binaries:
 * all-page text/render throughput where reasonable
 * image extraction
 * peak working set / RSS
-* Oxide single-thread and multi-thread, with Poppler as the single-thread CLI
+* Wellfriend single-thread and multi-thread, with Poppler as the single-thread CLI
 
 Outputs:
   docs/perf_prompt_h_results.json
@@ -210,10 +210,10 @@ CASES: tuple[Case, ...] = (
 )
 
 
-def read_page_count(oxide_bin: Path, pdf: Path) -> int | None:
+def read_page_count(wellfriendpdf_bin: Path, pdf: Path) -> int | None:
     try:
         proc = subprocess.run(
-            [str(oxide_bin), "info", str(pdf), "--json"],
+            [str(wellfriendpdf_bin), "info", str(pdf), "--json"],
             cwd=REPO_ROOT,
             text=True,
             stdout=subprocess.PIPE,
@@ -232,35 +232,35 @@ def command_builder(
     engine: str,
     op: str,
     pdf: Path,
-    oxide_bin: Path,
+    wellfriendpdf_bin: Path,
     poppler: dict[str, Path],
     dpi: int,
 ):
     def build(td: Path) -> list[str]:
-        if engine == "oxide":
+        if engine == "wellfriendpdf":
             if op == "info":
-                return [str(oxide_bin), "info", str(pdf), "--json"]
+                return [str(wellfriendpdf_bin), "info", str(pdf), "--json"]
             if op == "text_page1":
                 return [
-                    str(oxide_bin),
+                    str(wellfriendpdf_bin),
                     "extract-text",
                     str(pdf),
                     "--pages",
                     "1",
                     "--output",
-                    str(td / "oxide.txt"),
+                    str(td / "wellfriendpdf.txt"),
                 ]
             if op == "text_all":
                 return [
-                    str(oxide_bin),
+                    str(wellfriendpdf_bin),
                     "extract-text",
                     str(pdf),
                     "--output",
-                    str(td / "oxide.txt"),
+                    str(td / "wellfriendpdf.txt"),
                 ]
             if op == "render_page1":
                 return [
-                    str(oxide_bin),
+                    str(wellfriendpdf_bin),
                     "render",
                     str(pdf),
                     "--pages",
@@ -270,11 +270,11 @@ def command_builder(
                     "--format",
                     "png",
                     "--output",
-                    str(td / "oxide.zip"),
+                    str(td / "wellfriendpdf.zip"),
                 ]
             if op == "render_all":
                 return [
-                    str(oxide_bin),
+                    str(wellfriendpdf_bin),
                     "render",
                     str(pdf),
                     "--dpi",
@@ -282,17 +282,17 @@ def command_builder(
                     "--format",
                     "png",
                     "--output",
-                    str(td / "oxide.zip"),
+                    str(td / "wellfriendpdf.zip"),
                 ]
             if op == "images":
                 return [
-                    str(oxide_bin),
+                    str(wellfriendpdf_bin),
                     "extract-images",
                     str(pdf),
                     "--format",
                     "original",
                     "--output",
-                    str(td / "oxide.zip"),
+                    str(td / "wellfriendpdf.zip"),
                 ]
         else:
             if op == "info":
@@ -396,7 +396,7 @@ def summarize_ratios(rows: list[dict]) -> list[dict]:
         pop = group.get("poppler")
         if not pop or pop["median_s"] <= 0:
             continue
-        for label in ("oxide@1", "oxide@N"):
+        for label in ("wellfriendpdf@1", "wellfriendpdf@N"):
             ox = group.get(label)
             if ox and ox["median_s"] > 0:
                 ratios.append(
@@ -404,8 +404,8 @@ def summarize_ratios(rows: list[dict]) -> list[dict]:
                         "case": case,
                         "op": op,
                         "comparison": label,
-                        "speed_ratio_poppler_over_oxide": pop["median_s"] / ox["median_s"],
-                        "winner": "oxide" if ox["median_s"] < pop["median_s"] else "poppler",
+                        "speed_ratio_poppler_over_wellfriendpdf": pop["median_s"] / ox["median_s"],
+                        "winner": "wellfriendpdf" if ox["median_s"] < pop["median_s"] else "poppler",
                     }
                 )
     return ratios
@@ -426,7 +426,7 @@ def write_markdown(results: dict, out_path: Path) -> None:
         f"- Logical CPUs: {results['cpu_count']}",
         f"- Memory: {results['memory_mb']} MB",
         f"- Rust: `{results['rustc']}`",
-        f"- Oxide: `{results['oxide_bin']}`",
+        f"- Wellfriend: `{results['wellfriendpdf_bin']}`",
         f"- Poppler: `{results['poppler_version'].splitlines()[0]}`",
         f"- DPI: {results['dpi']}",
         f"- Repeats: {results['repeats']} (median reported; first run is cold-start proxy)",
@@ -458,7 +458,7 @@ def write_markdown(results: dict, out_path: Path) -> None:
             "",
             "## Speed Ratios",
             "",
-            "`speed_ratio_poppler_over_oxide` is Poppler median time divided by Oxide median time; values above 1 mean Oxide is faster.",
+            "`speed_ratio_poppler_over_wellfriendpdf` is Poppler median time divided by Wellfriend median time; values above 1 mean Wellfriend is faster.",
             "",
             "| case | op | comparison | ratio | winner |",
             "|---|---|---|---:|---|",
@@ -470,7 +470,7 @@ def write_markdown(results: dict, out_path: Path) -> None:
                 case=ratio["case"],
                 op=ratio["op"],
                 comparison=ratio["comparison"],
-                ratio=ratio["speed_ratio_poppler_over_oxide"],
+                ratio=ratio["speed_ratio_poppler_over_wellfriendpdf"],
                 winner=ratio["winner"],
             )
         )
@@ -483,7 +483,7 @@ def main() -> None:
         "--poppler-bin-dir",
         default=str(REPO_ROOT / "target" / "tools" / "poppler" / "poppler-26.02.0" / "Library" / "bin"),
     )
-    parser.add_argument("--oxide-bin", default=str(REPO_ROOT / "target" / "release" / exe("oxide")))
+    parser.add_argument("--wellfriendpdf-bin", default=str(REPO_ROOT / "target" / "release" / exe("wellfriendpdf")))
     parser.add_argument("--dpi", type=int, default=150)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--threads", type=int, default=os.cpu_count() or 4)
@@ -491,9 +491,9 @@ def main() -> None:
     parser.add_argument("--cases", nargs="*")
     args = parser.parse_args()
 
-    oxide_bin = Path(args.oxide_bin)
-    if not oxide_bin.exists():
-        raise SystemExit(f"missing Oxide release binary: {oxide_bin}")
+    wellfriendpdf_bin = Path(args.wellfriendpdf_bin)
+    if not wellfriendpdf_bin.exists():
+        raise SystemExit(f"missing Wellfriend release binary: {wellfriendpdf_bin}")
 
     poppler_dir = Path(args.poppler_bin_dir)
     poppler = {
@@ -547,17 +547,17 @@ def main() -> None:
         if not pdf.exists():
             print(f"missing {case.key}: {pdf}")
             continue
-        pages = read_page_count(oxide_bin, pdf)
+        pages = read_page_count(wellfriendpdf_bin, pdf)
         for op in case.ops:
             engines: list[tuple[str, str, int | None]] = [
-                ("oxide", "oxide@1", 1),
-                ("oxide", "oxide@N", args.threads),
+                ("wellfriendpdf", "wellfriendpdf@1", 1),
+                ("wellfriendpdf", "wellfriendpdf@N", args.threads),
                 ("poppler", "poppler", None),
             ]
             if op in ("info", "images"):
-                engines = [("oxide", "oxide@1", 1), ("poppler", "poppler", None)]
+                engines = [("wellfriendpdf", "wellfriendpdf@1", 1), ("poppler", "poppler", None)]
             for engine, label, threads in engines:
-                build = command_builder(engine, op, pdf, oxide_bin, poppler, args.dpi)
+                build = command_builder(engine, op, pdf, wellfriendpdf_bin, poppler, args.dpi)
                 measured = measure(build, threads, args.repeats, args.timeout_sec)
                 row = {
                     "case": case.key,
@@ -583,7 +583,7 @@ def main() -> None:
         "memory_mb": memory_mb,
         "rustc": version_text(["rustc", "--version"]),
         "cargo": version_text(["cargo", "--version"]),
-        "oxide_bin": str(oxide_bin),
+        "wellfriendpdf_bin": str(wellfriendpdf_bin),
         "poppler_bin_dir": str(poppler_dir),
         "poppler_version": version_text([str(poppler["pdftoppm"]), "-v"]),
         "dpi": args.dpi,

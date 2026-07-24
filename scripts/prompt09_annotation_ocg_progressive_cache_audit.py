@@ -227,7 +227,7 @@ def classify_items(kind: str, items: list[str], implemented: set[str], unsupport
             status = "bounded_unsupported_report"
             later_owner = "later_exact_renderer_or_binding_phase"
         else:
-            classification = "reference_disagreement_oxide_inside_cluster"
+            classification = "reference_disagreement_wellfriendpdf_inside_cluster"
             status = "implemented_with_reference_cluster_classification"
             later_owner = None
         rows.append(
@@ -237,7 +237,7 @@ def classify_items(kind: str, items: list[str], implemented: set[str], unsupport
                 "status": status,
                 "classification": classification,
                 "fixture_pdf": None,
-                "oxide_image": None,
+                "wellfriendpdf_image": None,
                 "poppler_image": None,
                 "pdfium_image": None,
                 "mupdf_image": None,
@@ -269,7 +269,7 @@ def reference_manifest() -> dict[str, Any]:
 def run_feature_report(skip: bool) -> dict[str, Any]:
     if skip:
         return {"status": "skipped"}
-    cmd = ["cargo", "run", "-p", "oxide-cli", "--quiet", "--", "feature-report", "--pretty", "--output", str(FEATURE_REPORT)]
+    cmd = ["cargo", "run", "-p", "wellfriendpdf-cli", "--quiet", "--", "feature-report", "--pretty", "--output", str(FEATURE_REPORT)]
     started = time.time()
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
     return {
@@ -411,8 +411,8 @@ def main() -> int:
     write_json(CACHE_REPORT, {"cache_key_fields": ["page_number", "dpi", "render_mode", "tile", "visibility_fingerprint"], "eviction": "deterministic_lru_by_clock"})
     write_json(PROGRESSIVE_REPORT, {"granularity": "tile", "resume_token": "page_options_tile_index_visibility_fingerprint", "partial_surface_model": "in_process_completed_tiles"})
     write_json(RENDER_RESULTS, {"fixtures": fixtures, "status": "representative_fixtures_generated"})
-    write_json(DIFF_METRICS, {"status": "matrix_classified", "oxide_outlier_failures": 0, "unclassified_failures": 0})
-    write_json(DISAGREEMENT_SUMMARY, {"oxide_outlier_failures": 0, "unclassified_failures": 0, "rows": len(annotation_rows) + len(ocg_rows) + len(progressive_rows) + len(cache_rows)})
+    write_json(DIFF_METRICS, {"status": "matrix_classified", "wellfriendpdf_outlier_failures": 0, "unclassified_failures": 0})
+    write_json(DISAGREEMENT_SUMMARY, {"wellfriendpdf_outlier_failures": 0, "unclassified_failures": 0, "rows": len(annotation_rows) + len(ocg_rows) + len(progressive_rows) + len(cache_rows)})
     feature = run_feature_report(args.skip_feature_report)
     if args.skip_feature_report:
         write_json(FEATURE_REPORT, {"status": "skipped"})
@@ -422,7 +422,7 @@ def main() -> int:
         "<!doctype html><meta charset='utf-8'><title>Prompt 09 Audit</title>"
         "<h1>Prompt 09 Annotation / OCG / Progressive / Cache Audit</h1>"
         f"<p>Rows: {len(annotation_rows) + len(ocg_rows) + len(progressive_rows) + len(cache_rows)}</p>"
-        f"<p>Oxide outliers: 0. Unclassified: 0. Feature report: {feature.get('status')}</p>",
+        f"<p>Wellfriend outliers: 0. Unclassified: 0. Feature report: {feature.get('status')}</p>",
         encoding="utf-8",
     )
     write_json(OUT_DIR / "prompt09-audit-summary.json", {"feature_report": feature, "html_report": rel(HTML_REPORT)})

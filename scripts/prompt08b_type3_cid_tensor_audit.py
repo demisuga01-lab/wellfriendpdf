@@ -358,7 +358,7 @@ def configure_runner() -> None:
     p06.RENDER_DIR = OUT_DIR / "renders"
     p06.DIFF_DIR = OUT_DIR / "diffs"
     p06.LOG_DIR = OUT_DIR / "logs"
-    p06.OXIDE_REPORT_DIR = OUT_DIR / "oxide-render-reports"
+    p06.WELLFRIENDPDF_REPORT_DIR = OUT_DIR / "wellfriendpdf-render-reports"
     p06.TOOL_MANIFEST = TOOL_MANIFEST_OUT
     p06.CORPUS_MANIFEST = CORPUS_OUT
     p06.RENDER_RESULTS = RESULTS_OUT
@@ -380,29 +380,29 @@ def copy_tool_manifest() -> dict[str, Any]:
 
 def prompt08b_classification(raw: str, category: str, metrics: dict[str, Any]) -> tuple[str, str | None]:
     if category.endswith("_unsupported"):
-        if raw in {"reference_tool_failure", "oxide_render_failure"}:
+        if raw in {"reference_tool_failure", "wellfriendpdf_render_failure"}:
             return "malformed_reference_failure", None
         return "unsupported_reported_expected", None
-    if category == "type3_text_clipping" and raw == "all_references_agree_oxide_mismatch":
+    if category == "type3_text_clipping" and raw == "all_references_agree_wellfriendpdf_mismatch":
         return (
             "unsupported_reported_expected",
-            "reference_cluster_omits_type3_tr_clip_oxide_native_path_collected",
+            "reference_cluster_omits_type3_tr_clip_wellfriendpdf_native_path_collected",
         )
-    if raw == "all_references_agree_oxide_pass":
-        return "all_references_agree_oxide_passes", None
-    if raw == "all_references_agree_oxide_mismatch" and p08.oxide_within_reference_spread(metrics):
-        return "all_references_agree_oxide_passes", "prompt08b_cluster_tolerance"
+    if raw == "all_references_agree_wellfriendpdf_pass":
+        return "all_references_agree_wellfriendpdf_passes", None
+    if raw == "all_references_agree_wellfriendpdf_mismatch" and p08.wellfriendpdf_within_reference_spread(metrics):
+        return "all_references_agree_wellfriendpdf_passes", "prompt08b_cluster_tolerance"
     if raw in {
-        "references_disagree_oxide_between_references",
-        "references_disagree_oxide_matches_poppler",
-        "references_disagree_oxide_matches_pdfium",
-        "references_disagree_oxide_matches_mupdf",
+        "references_disagree_wellfriendpdf_between_references",
+        "references_disagree_wellfriendpdf_matches_poppler",
+        "references_disagree_wellfriendpdf_matches_pdfium",
+        "references_disagree_wellfriendpdf_matches_mupdf",
     }:
-        return "references_disagree_oxide_within_cluster", None
+        return "references_disagree_wellfriendpdf_within_cluster", None
     if raw == "reference_tool_failure":
         return "malformed_reference_failure", None
-    if raw in {"all_references_agree_oxide_mismatch", "needs_manual_review", "dimension_mismatch", "oxide_render_failure"}:
-        return "oxide_outlier_failure", None
+    if raw in {"all_references_agree_wellfriendpdf_mismatch", "needs_manual_review", "dimension_mismatch", "wellfriendpdf_render_failure"}:
+        return "wellfriendpdf_outlier_failure", None
     return raw, None
 
 
@@ -420,8 +420,8 @@ def safe_image_metrics(a: str, ap: str | None, b: str, bp: str | None, ident: st
         }
 
 
-def render_and_compare(entries: list[dict[str, Any]], manifest: dict[str, Any], oxide_bin: str | None, dpi: int, timeout: int) -> dict[str, Any]:
-    base = p06.oxide_base_command(oxide_bin)
+def render_and_compare(entries: list[dict[str, Any]], manifest: dict[str, Any], wellfriendpdf_bin: str | None, dpi: int, timeout: int) -> dict[str, Any]:
+    base = p06.wellfriendpdf_base_command(wellfriendpdf_bin)
     pages: list[dict[str, Any]] = []
     metrics_pages: list[dict[str, Any]] = []
     counts: dict[str, int] = {}
@@ -429,7 +429,7 @@ def render_and_compare(entries: list[dict[str, Any]], manifest: dict[str, Any], 
 
     for entry in entries:
         renders = {
-            "oxide": p06.render_oxide(base, entry, dpi, timeout),
+            "wellfriendpdf": p06.render_wellfriendpdf(base, entry, dpi, timeout),
             "poppler": p06.render_reference("poppler", manifest["tools"]["poppler"], entry, dpi, timeout),
             "pdfium": p06.render_reference("pdfium", manifest["tools"]["pdfium"], entry, dpi, timeout),
             "mupdf": p06.render_reference("mupdf", manifest["tools"]["mupdf"], entry, dpi, timeout),
@@ -469,10 +469,10 @@ def render_and_compare(entries: list[dict[str, Any]], manifest: dict[str, Any], 
         "classification_counts": counts,
         "raw_prompt06b_classification_counts": raw_counts,
         "pair_summary": p06.pair_summary(metrics_pages),
-        "oxide_outlier_failures": counts.get("oxide_outlier_failure", 0),
+        "wellfriendpdf_outlier_failures": counts.get("wellfriendpdf_outlier_failure", 0),
         "unclassified_failures": sum(v for k, v in counts.items() if k not in {
-            "all_references_agree_oxide_passes",
-            "references_disagree_oxide_within_cluster",
+            "all_references_agree_wellfriendpdf_passes",
+            "references_disagree_wellfriendpdf_within_cluster",
             "unsupported_reported_expected",
             "malformed_reference_failure",
             "blocked_environment",
@@ -544,8 +544,8 @@ def write_static_artifacts(entries: list[dict[str, Any]]) -> None:
     )
 
 
-def write_feature_report(oxide_bin: str | None, timeout: int) -> None:
-    base = p06.oxide_base_command(oxide_bin)
+def write_feature_report(wellfriendpdf_bin: str | None, timeout: int) -> None:
+    base = p06.wellfriendpdf_base_command(wellfriendpdf_bin)
     result = p08.run_full_command([*base, "feature-report"], timeout=timeout)
     payload: dict[str, Any] = {"kind": "prompt08b_public_feature_report", "command": result}
     try:
@@ -557,7 +557,7 @@ def write_feature_report(oxide_bin: str | None, timeout: int) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
@@ -581,10 +581,10 @@ def main() -> int:
         },
     )
     write_static_artifacts(entries)
-    summary = render_and_compare(entries, manifest, args.oxide_bin, args.dpi, args.timeout)
-    write_feature_report(args.oxide_bin, args.timeout)
+    summary = render_and_compare(entries, manifest, args.wellfriendpdf_bin, args.dpi, args.timeout)
+    write_feature_report(args.wellfriendpdf_bin, args.timeout)
     print(json.dumps({
-        "status": "passed" if summary["oxide_outlier_failures"] == 0 and summary["unclassified_failures"] == 0 else "failed",
+        "status": "passed" if summary["wellfriendpdf_outlier_failures"] == 0 and summary["unclassified_failures"] == 0 else "failed",
         "fixture_count": len(entries),
         "classification_counts": summary["classification_counts"],
         "artifacts": {
@@ -594,7 +594,7 @@ def main() -> int:
             "html": rel(HTML_OUT),
         },
     }, indent=2, sort_keys=True))
-    return 0 if summary["oxide_outlier_failures"] == 0 and summary["unclassified_failures"] == 0 else 1
+    return 0 if summary["wellfriendpdf_outlier_failures"] == 0 and summary["unclassified_failures"] == 0 else 1
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-# Oxide Extraction-Quality Benchmark
+# Wellfriend Extraction-Quality Benchmark
 
 > **Generated** by `extraction-benchmark/scripts/write_report.py` from `results/results.json`. Re-run with `generate_corpus.py` → `extraction_benchmark.py` → `write_report.py`. This is the **extraction** benchmark; the rendering-fidelity benchmark lives separately under `renderer-benchmark/`.
 
@@ -6,14 +6,14 @@
 
 | Tool | Role | Status |
 | --- | --- | --- |
-| `oxide` | this project (structured extraction) | run |
-| `oxide_ocr` | Oxide built with the `ocr` feature (Tesseract path) | run |
+| `wellfriendpdf` | this project (structured extraction) | run |
+| `wellfriendpdf_ocr` | Wellfriend built with the `ocr` feature (Tesseract path) | run |
 | `pymupdf` | PyMuPDF — text + table extraction | run |
 | `pdftotext` | Poppler `pdftotext` — plain-text baseline | run |
 | `qpdf` | qpdf — structural operations | run |
 | `docling` | Docling — ML structured extraction / RAG | **not run locally** (heavy ML/torch deps; compared vs published behavior) |
 
-Every tool is scored by the **same** pure-Rust metrics (`oxide eval-score`) so the numbers are directly comparable. Docling was not installable in this environment; its rows below are marked accordingly and never fabricated.
+Every tool is scored by the **same** pure-Rust metrics (`wellfriendpdf eval-score`) so the numbers are directly comparable. Docling was not installable in this environment; its rows below are marked accordingly and never fabricated.
 
 ## Eval corpus
 
@@ -33,9 +33,9 @@ Synthetic, self-authored, ground-truth-labeled documents (PDF + labels authored 
 
 ## Text extraction + reading order
 
-Character accuracy = `1 − CER` (edit distance / reference chars); reading order = normalized Kendall-tau over block order (1.0 = perfect, 0.5 = random). Scanned rows: **Oxide uses OCR**; PyMuPDF/Poppler have no OCR and recover nothing (the OCR-capability gap, shown honestly).
+Character accuracy = `1 − CER` (edit distance / reference chars); reading order = normalized Kendall-tau over block order (1.0 = perfect, 0.5 = random). Scanned rows: **Wellfriend uses OCR**; PyMuPDF/Poppler have no OCR and recover nothing (the OCR-capability gap, shown honestly).
 
-| Document | Mode | Oxide char-acc | PyMuPDF | pdftotext | Oxide order |
+| Document | Mode | Wellfriend char-acc | PyMuPDF | pdftotext | Wellfriend order |
 | --- | --- | --- | --- | --- | --- |
 | figure | digital | 0.598 | 0.990 | 0.833 | 1.000 |
 | paper | digital | 0.993 | 0.998 | 0.956 | 1.000 |
@@ -48,7 +48,7 @@ Character accuracy = `1 − CER` (edit distance / reference chars); reading orde
 
 Cell-F1 = correct cells (right text, right row/col); TEDS ≈ tree-edit-distance similarity (table-extraction standard, approximated).
 
-| Document | Mode | Oxide cell-F1 | Oxide TEDS | PyMuPDF cell-F1 | PyMuPDF TEDS |
+| Document | Mode | Wellfriend cell-F1 | Wellfriend TEDS | PyMuPDF cell-F1 | PyMuPDF TEDS |
 | --- | --- | --- | --- | --- | --- |
 | invoice | digital | 1.000 | 1.000 | 0.000 | 0.000 |
 | invoice_scanned | scanned | 1.000 | 1.000 | 0.000 | 0.000 |
@@ -57,15 +57,15 @@ Cell-F1 = correct cells (right text, right row/col); TEDS ≈ tree-edit-distance
 
 ## Key-value / field extraction (field-F1)
 
-SROIE/FUNSD-style field-F1 with normalized values (dates as ISO, amounts as decimal+currency). PyMuPDF/Poppler do **no** KV extraction — Oxide-only capability vs ground truth.
+SROIE/FUNSD-style field-F1 with normalized values (dates as ISO, amounts as decimal+currency). PyMuPDF/Poppler do **no** KV extraction — Wellfriend-only capability vs ground truth.
 
-| Document | Mode | Oxide F1 | Precision | Recall |
+| Document | Mode | Wellfriend F1 | Precision | Recall |
 | --- | --- | --- | --- | --- |
 | invoice | digital | 1.000 | 1.000 | 1.000 |
 | invoice_scanned | scanned | 0.857 | 0.857 | 0.857 |
 | receipt | digital | 0.800 | 0.800 | 0.800 |
 
-## Block-type / structure accuracy (Oxide)
+## Block-type / structure accuracy (Wellfriend)
 
 | Document | Block-type accuracy |
 | --- | --- |
@@ -80,20 +80,20 @@ SROIE/FUNSD-style field-F1 with normalized values (dates as ISO, amounts as deci
 
 | Check | Result |
 | --- | --- |
-| Oxide page count | 14 |
+| Wellfriend page count | 14 |
 | qpdf page count | 14 |
 | Page counts agree | True |
 | qpdf linearize OK | True |
 | qpdf `--check` on linearized | True |
-| Oxide split OK | True |
-| Oxide split parts | 14 |
-| qpdf validated Oxide split parts (of 5) | 5 |
+| Wellfriend split OK | True |
+| Wellfriend split parts | 14 |
+| qpdf validated Wellfriend split parts (of 5) | 5 |
 
-qpdf **validates Oxide's output** (split parts pass `qpdf --check`) and page counts agree — round-trip structural integrity confirmed.
+qpdf **validates Wellfriend's output** (split parts pass `qpdf --check`) and page counts agree — round-trip structural integrity confirmed.
 
 ## Speed, footprint, deployment
 
-| Metric | Oxide | Python + PyMuPDF |
+| Metric | Wellfriend | Python + PyMuPDF |
 | --- | --- | --- |
 | Process startup | 6.5 ms | 138.3 ms (interpreter + import) |
 | Distribution | single 12.7 MB static binary, no runtime | Python runtime + C-extension wheels |
@@ -102,13 +102,13 @@ Per-call text-extraction time (mean over digital docs):
 
 | Tool | Mean ms/doc |
 | --- | --- |
-| `oxide_text` | 17.3 |
+| `wellfriendpdf_text` | 17.3 |
 | `pymupdf_text` | 11.1 |
 | `pdftotext_text` | 38.6 |
 
-> Note: Oxide's per-call time includes **process spawn** (CLI); PyMuPDF runs in-process. For many-small-doc throughput PyMuPDF's in-process call is faster, but Oxide wins decisively on **startup, deployment footprint, and no-runtime embeddability** (single static binary vs a Python+native stack; Docling adds a multi-GB torch stack on top).
+> Note: Wellfriend's per-call time includes **process spawn** (CLI); PyMuPDF runs in-process. For many-small-doc throughput PyMuPDF's in-process call is faster, but Wellfriend wins decisively on **startup, deployment footprint, and no-runtime embeddability** (single static binary vs a Python+native stack; Docling adds a multi-GB torch stack on top).
 
-## Where Oxide wins / ties / trails (honest)
+## Where Wellfriend wins / ties / trails (honest)
 
 **Wins**
 
@@ -122,9 +122,9 @@ Per-call text-extraction time (mean over digital docs):
 
 - **Key-value extraction**: field-F1 1.0 on the digital invoice, 0.857 on the scanned invoice, and 0.800 on the receipt; a capability PyMuPDF/Poppler simply do not have.
 
-- **OCR path is source-agnostic**: Oxide recovers text (0.94 char-acc) and fields from **scanned** pages where PyMuPDF/Poppler score 0 (no OCR).
+- **OCR path is source-agnostic**: Wellfriend recovers text (0.94 char-acc) and fields from **scanned** pages where PyMuPDF/Poppler score 0 (no OCR).
 
-- **Structural ops**: qpdf cross-validates Oxide's split output; page counts agree; qpdf-class integrity.
+- **Structural ops**: qpdf cross-validates Wellfriend's split output; page counts agree; qpdf-class integrity.
 
 
 **Ties**
@@ -150,7 +150,7 @@ The prompt-targeted synthetic scan gaps are now closed in this corpus; these are
 
 3. **Scanned structure labels**: block-type structure accuracy on scanned paper/table pages remains weak because OCR prose blocks do not yet receive the same semantic labels as tagged digital content.
 
-4. **Figure-heavy pages**: Oxide's figure/alt emission lowers raw text char-accuracy vs a plain dump on the `figure` doc; revisit how figure placeholder text is counted / emitted for RAG.
+4. **Figure-heavy pages**: Wellfriend's figure/alt emission lowers raw text char-accuracy vs a plain dump on the `figure` doc; revisit how figure placeholder text is counted / emitted for RAG.
 
 5. **Receipt fields** (F1 0.800): merchant/payment lines remain imperfect; tune the receipt profile against more receipts before calling it complete.
 
@@ -159,4 +159,4 @@ The prompt-targeted synthetic scan gaps are now closed in this corpus; these are
 
 ## Bottom line
 
-On the axes Oxide is built for - **digital-born structure + reading order, clean-table extraction, key-value fields, structural ops, and pure-Rust deployment/speed/footprint** - Oxide is **competitive-or-better** vs PyMuPDF/Poppler/qpdf in this corpus, and uniquely offers KV + OCR + RAG chunking in one static binary. The benchmark-named synthetic scanned table/KV gaps are now substantially closed, while hardest real-world messy scans and the un-run Docling head-to-head remain recorded honestly above.
+On the axes Wellfriend is built for - **digital-born structure + reading order, clean-table extraction, key-value fields, structural ops, and pure-Rust deployment/speed/footprint** - Wellfriend is **competitive-or-better** vs PyMuPDF/Poppler/qpdf in this corpus, and uniquely offers KV + OCR + RAG chunking in one static binary. The benchmark-named synthetic scanned table/KV gaps are now substantially closed, while hardest real-world messy scans and the un-run Docling head-to-head remain recorded honestly above.

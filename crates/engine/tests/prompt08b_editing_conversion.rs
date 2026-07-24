@@ -1,6 +1,6 @@
 use std::io::{Cursor, Read};
 
-use oxide_engine::{
+use wellfriendpdf_engine::{
     edit_paragraph_reflow_pdf, pdf_to_docx, resource_dedup_report, resource_digest, AuthorPageSize,
     ContentEngine, DeterministicSaveOptions, DocxLayout, DocxOptions, EditMode, EditTextStyle,
     EditableBuildOptions, ImageRect, OverlayLayer, ParagraphEditOperation, ParagraphReflowOptions,

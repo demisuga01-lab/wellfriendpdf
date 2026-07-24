@@ -28,7 +28,7 @@ FIXTURE_DIR = OUT_DIR / "prompt10d-fixtures"
 RENDER_DIR = OUT_DIR / "prompt10d-renders"
 DIFF_DIR = OUT_DIR / "prompt10d-diffs"
 LOG_DIR = OUT_DIR / "prompt10d-logs"
-OXIDE_REPORT_DIR = OUT_DIR / "prompt10d-oxide-render-reports"
+WELLFRIENDPDF_REPORT_DIR = OUT_DIR / "prompt10d-wellfriendpdf-render-reports"
 HTML_REPORT = OUT_DIR / "prompt10d-html-report" / "index.html"
 TOOL_MANIFEST = OUT_DIR / "reference-tool-manifest-prompt10.json"
 
@@ -57,9 +57,9 @@ MATRIX_FILES = {
 }
 
 PAIR_NAMES = [
-    ("oxide", "poppler"),
-    ("oxide", "pdfium"),
-    ("oxide", "mupdf"),
+    ("wellfriendpdf", "poppler"),
+    ("wellfriendpdf", "pdfium"),
+    ("wellfriendpdf", "mupdf"),
     ("poppler", "pdfium"),
     ("poppler", "mupdf"),
     ("pdfium", "mupdf"),
@@ -135,8 +135,8 @@ def load_prompt06b() -> Any:
     module.RENDER_DIR = RENDER_DIR
     module.DIFF_DIR = DIFF_DIR
     module.LOG_DIR = LOG_DIR
-    module.OXIDE_REPORT_DIR = OXIDE_REPORT_DIR
-    for path in [RENDER_DIR, DIFF_DIR, LOG_DIR, OXIDE_REPORT_DIR, HTML_REPORT.parent]:
+    module.WELLFRIENDPDF_REPORT_DIR = WELLFRIENDPDF_REPORT_DIR
+    for path in [RENDER_DIR, DIFF_DIR, LOG_DIR, WELLFRIENDPDF_REPORT_DIR, HTML_REPORT.parent]:
         path.mkdir(parents=True, exist_ok=True)
     return module
 
@@ -344,17 +344,17 @@ def generate_fixtures(p10b: Any) -> tuple[list[dict[str, Any]], dict[str, Any]]:
 def render_compare(
     entries: list[dict[str, Any]],
     manifest: dict[str, Any],
-    oxide_bin: str | None,
+    wellfriendpdf_bin: str | None,
     dpi: int,
     timeout: int,
 ) -> dict[str, Any]:
     p06 = load_prompt06b()
-    base = p06.oxide_base_command(oxide_bin)
+    base = p06.wellfriendpdf_base_command(wellfriendpdf_bin)
     pages: list[dict[str, Any]] = []
     metrics_pages: list[dict[str, Any]] = []
     for entry in entries:
         renders = {
-            "oxide": p06.render_oxide(base, entry, dpi, timeout),
+            "wellfriendpdf": p06.render_wellfriendpdf(base, entry, dpi, timeout),
             "poppler": p06.render_reference("poppler", manifest["tools"]["poppler"], entry, dpi, timeout),
             "pdfium": p06.render_reference("pdfium", manifest["tools"]["pdfium"], entry, dpi, timeout),
             "mupdf": p06.render_reference("mupdf", manifest["tools"]["mupdf"], entry, dpi, timeout),
@@ -391,10 +391,10 @@ def render_compare(
         "page_count": len(pages),
         "fixture_count": len(pages) + 15,
         "classification_counts": counts(page["prompt10d_classification"] for page in pages),
-        "oxide_outlier_failures": sum(
+        "wellfriendpdf_outlier_failures": sum(
             1
             for page in pages
-            if page["prompt10d_classification"] in {"oxide_outlier_failure", "oxide_render_failure"}
+            if page["prompt10d_classification"] in {"wellfriendpdf_outlier_failure", "wellfriendpdf_render_failure"}
         ),
         "unclassified_failures": sum(1 for page in pages if page["prompt10d_classification"] == "unclassified_failure"),
         "reference_disagreements": [
@@ -425,20 +425,20 @@ def render_compare(
 
 
 def classify_prompt10d(raw: str, entry: dict[str, Any], pair_metrics: dict[str, Any]) -> str:
-    if raw == "all_references_agree_oxide_pass":
+    if raw == "all_references_agree_wellfriendpdf_pass":
         return raw
-    oxide_pairs = [pair_metrics[pair] for pair in ["oxide_vs_poppler", "oxide_vs_pdfium", "oxide_vs_mupdf"]]
-    oxide_matches = sum(1 for pair in oxide_pairs if pair.get("threshold_pass"))
-    if oxide_matches >= 1:
-        return "reference_disagreement_oxide_inside_cluster"
-    if all(pair.get("status") == "computed" for pair in oxide_pairs):
-        max_mean = max(float(pair.get("mean_abs_error", 999.0)) for pair in oxide_pairs)
-        max_changed8 = max(float(pair.get("changed_pixel_threshold8_percentage", 1.0)) for pair in oxide_pairs)
+    wellfriendpdf_pairs = [pair_metrics[pair] for pair in ["wellfriendpdf_vs_poppler", "wellfriendpdf_vs_pdfium", "wellfriendpdf_vs_mupdf"]]
+    wellfriendpdf_matches = sum(1 for pair in wellfriendpdf_pairs if pair.get("threshold_pass"))
+    if wellfriendpdf_matches >= 1:
+        return "reference_disagreement_wellfriendpdf_inside_cluster"
+    if all(pair.get("status") == "computed" for pair in wellfriendpdf_pairs):
+        max_mean = max(float(pair.get("mean_abs_error", 999.0)) for pair in wellfriendpdf_pairs)
+        max_changed8 = max(float(pair.get("changed_pixel_threshold8_percentage", 1.0)) for pair in wellfriendpdf_pairs)
         if max_mean <= 10.0 and max_changed8 <= 0.15:
-            return "reference_disagreement_oxide_within_prompt10d_threshold"
+            return "reference_disagreement_wellfriendpdf_within_prompt10d_threshold"
     if raw.startswith("references_disagree"):
         return "reference_disagreement_classified"
-    return "oxide_outlier_failure" if "oxide" in raw else "unclassified_failure"
+    return "wellfriendpdf_outlier_failure" if "wellfriendpdf" in raw else "unclassified_failure"
 
 
 def counts(values: Any) -> dict[str, int]:
@@ -458,13 +458,13 @@ def render_html(pages: list[dict[str, Any]], summary: dict[str, Any]) -> None:
             f"<td>{html.escape(page['category'])}</td>"
             f"<td>{html.escape(page['prompt10d_classification'])}</td>"
             f"<td>{html.escape(page['raw_classification'])}</td>"
-            f"<td>{html.escape(page['renders']['oxide']['status'])}</td>"
+            f"<td>{html.escape(page['renders']['wellfriendpdf']['status'])}</td>"
             f"<td>{html.escape(page['renders']['poppler']['status'])}</td>"
             f"<td>{html.escape(page['renders']['pdfium']['status'])}</td>"
             f"<td>{html.escape(page['renders']['mupdf']['status'])}</td>"
-            f"<td>{pairs['oxide_vs_poppler'].get('changed_pixel_threshold8_percentage', '')}</td>"
-            f"<td>{pairs['oxide_vs_pdfium'].get('changed_pixel_threshold8_percentage', '')}</td>"
-            f"<td>{pairs['oxide_vs_mupdf'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_poppler'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_pdfium'].get('changed_pixel_threshold8_percentage', '')}</td>"
+            f"<td>{pairs['wellfriendpdf_vs_mupdf'].get('changed_pixel_threshold8_percentage', '')}</td>"
             "</tr>"
         )
     HTML_REPORT.parent.mkdir(parents=True, exist_ok=True)
@@ -476,12 +476,12 @@ def render_html(pages: list[dict[str, Any]], summary: dict[str, Any]) -> None:
         "th{background:#f1f5f9;text-align:left}</style>"
         "<h1>Prompt 10D Closure Harness</h1>"
         f"<p>Rendered pages: {summary['page_count']}. Fixture rows: {summary['fixture_count']}. "
-        f"Oxide outliers: {summary['oxide_outlier_failures']}. "
+        f"Wellfriend outliers: {summary['wellfriendpdf_outlier_failures']}. "
         f"Unclassified: {summary['unclassified_failures']}.</p>"
         "<h2>Classification Counts</h2><pre>"
         f"{html.escape(json.dumps(summary['classification_counts'], indent=2, sort_keys=True))}</pre>"
         "<h2>Rendered Pages</h2><table><tr><th>Fixture</th><th>Category</th><th>Prompt 10D</th>"
-        "<th>Raw</th><th>Oxide</th><th>Poppler</th><th>PDFium</th><th>MuPDF</th>"
+        "<th>Raw</th><th>Wellfriend</th><th>Poppler</th><th>PDFium</th><th>MuPDF</th>"
         "<th>Ox/Pop changed8</th><th>Ox/PDFium changed8</th><th>Ox/MuPDF changed8</th></tr>"
         + "\n".join(rows)
         + "</table>",
@@ -628,7 +628,7 @@ def write_closure_audit(render_payload: dict[str, Any] | None) -> None:
             "schema_version": 1,
             "kind": "prompt10d_closure_audit",
             "status": "complete",
-            "oxide_outlier_failures": summary.get("oxide_outlier_failures", 0),
+            "wellfriendpdf_outlier_failures": summary.get("wellfriendpdf_outlier_failures", 0),
             "unclassified_failures": summary.get("unclassified_failures", 0),
             "rows": [{"blocker": name, "status": status, "artifact": artifact} for name, status, artifact in rows],
         },
@@ -640,7 +640,7 @@ def run_feature_report(timeout: int) -> dict[str, Any]:
         "cargo",
         "run",
         "-p",
-        "oxide-cli",
+        "wellfriendpdf-cli",
         "--quiet",
         "--",
         "feature-report",
@@ -665,7 +665,7 @@ def run_feature_report(timeout: int) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--timeout", type=int, default=120)
     parser.add_argument("--skip-render", action="store_true")
@@ -678,7 +678,7 @@ def main() -> int:
     render_payload = None
     if not args.skip_render:
         manifest = bootstrap_reference_manifest(args.dpi, args.timeout)
-        render_payload = render_compare(entries, manifest, args.oxide_bin, args.dpi, args.timeout)
+        render_payload = render_compare(entries, manifest, args.wellfriendpdf_bin, args.dpi, args.timeout)
     write_matrices(metadata, render_payload)
     if not args.skip_feature_report:
         run_feature_report(args.timeout)

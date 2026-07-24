@@ -1,6 +1,6 @@
 //! The **canonical document model** and the unified `parse` entry point.
 //!
-//! This module is the *spine* of Oxide's document-parser pivot. Every
+//! This module is the *spine* of Wellfriend's document-parser pivot. Every
 //! extraction path — digital-born ([`crate::docmodel`] tags-first / geometric),
 //! and (in a later stage) OCR — converges on the single [`Document`] type
 //! defined here, and the output stage (Markdown / JSON / HTML / CSV) is written
@@ -107,7 +107,7 @@ pub struct ParseOptions {
     /// placeholder note + the full-page scan figure. When `Some`, each scanned
     /// page is rasterized, preprocessed, recognized, and fed through the *same*
     /// document-model pipeline as digital-born text. The trait lives in the
-    /// pure-Rust core; a concrete engine (e.g. `oxide-ocr-tesseract`) is injected.
+    /// pure-Rust core; a concrete engine (e.g. `wellfriendpdf-ocr-tesseract`) is injected.
     pub ocr: Option<std::sync::Arc<dyn crate::ocr::OcrEngine>>,
     /// **Which** pages the injected [`Self::ocr`] engine runs on. Only consulted
     /// when [`Self::ocr`] is `Some` (with no engine there is nothing to run):

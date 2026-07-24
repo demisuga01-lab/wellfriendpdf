@@ -21,6 +21,6 @@ Bounded limits:
 CLI:
 
 ```powershell
-oxide pdf-to-xlsx input.pdf --layout pages --out output.xlsx --json
-oxide pdf-to-xlsx input.pdf --layout tables --out tables.xlsx
+wellfriendpdf pdf-to-xlsx input.pdf --layout pages --out output.xlsx --json
+wellfriendpdf pdf-to-xlsx input.pdf --layout tables --out tables.xlsx
 ```

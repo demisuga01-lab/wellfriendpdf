@@ -14,8 +14,8 @@ The worktree was clean before Prompt 05B edits.
 Anchor benchmark command:
 
 ```powershell
-cargo build --release -p oxide-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt05-color-baseline-manifest.json --oxide-bin target\release\oxide.exe --dpi 96 --timeout-sec 30 --max-memory-mb 2048 --max-pages-per-file 1 --output-dir target\prompt05b-color-before --determinism-sample 4 --threshold-profile renderer
+cargo build --release -p wellfriendpdf-cli
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt05-color-baseline-manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --dpi 96 --timeout-sec 30 --max-memory-mb 2048 --max-pages-per-file 1 --output-dir target\prompt05b-color-before --determinism-sample 4 --threshold-profile renderer
 ```
 
 Prompt 05B reproduced the Prompt 05 anchor:
@@ -27,7 +27,7 @@ Prompt 05B reproduced the Prompt 05 anchor:
 | weighted score | 59.0 |
 | visual pass | 60.87% |
 | file pass | 58.33% |
-| peak Oxide memory | 19.48 MB |
+| peak Wellfriend memory | 19.48 MB |
 | determinism | 4/4 stable |
 | Poppler | 26.02.0 |
 | PDFium | not available |
@@ -42,7 +42,7 @@ After the Prompt 05B changes, the same anchor was rerun under
 | weighted score | 59.0 | 59.0 |
 | visual pass | 60.87% | 60.87% |
 | file pass | 58.33% | 58.33% |
-| peak Oxide memory | 19.48 MB | 19.47 MB |
+| peak Wellfriend memory | 19.48 MB | 19.47 MB |
 | determinism | 4/4 stable | 4/4 stable |
 
 The remaining benchmark failures are concentrated in pdf.js color/function/image
@@ -73,7 +73,7 @@ does not rewrite mesh geometry, color-key masks, or general image decoding.
 
 ## CMM Backend Decision
 
-Outcome B is final for Prompt 05B. Oxide keeps the no-unsafe default engine
+Outcome B is final for Prompt 05B. Wellfriend keeps the no-unsafe default engine
 boundary and uses qcms as the safe Rust ICC transform backend. LittleCMS is not
 integrated because it would add native FFI/build/WASM policy work that is not
 required to close this bounded Prompt 05B target. The backend decision is now

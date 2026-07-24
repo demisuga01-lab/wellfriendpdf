@@ -96,9 +96,9 @@ def pdf_bytes(hostile_stream: bytes, fixture_id: str) -> bytes:
         (3, b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 72 72] /Contents 4 0 R /Resources << >> >>"),
         (4, empty_content),
         (5, hostile_stream),
-        (6, f"<< /Producer (Oxide Prompt05) /Fixture ({fixture_id}) >>".encode("ascii")),
+        (6, f"<< /Producer (Wellfriend Prompt05) /Fixture ({fixture_id}) >>".encode("ascii")),
     ]
-    out = bytearray(b"%PDF-1.7\n% Oxide Prompt05 generated fixture\n")
+    out = bytearray(b"%PDF-1.7\n% Wellfriend Prompt05 generated fixture\n")
     max_obj = max(number for number, _ in objects)
     offsets = [0] * (max_obj + 1)
     for number, body in objects:
@@ -162,7 +162,7 @@ def generate() -> dict[str, Any]:
     return manifest
 
 
-def parser_report_command(pdf: Path, oxide_bin: str | None) -> list[str]:
+def parser_report_command(pdf: Path, wellfriendpdf_bin: str | None) -> list[str]:
     args = [
         "parser-report",
         str(pdf),
@@ -177,14 +177,14 @@ def parser_report_command(pdf: Path, oxide_bin: str | None) -> list[str]:
         "--max-diagnostics",
         "200",
     ]
-    if oxide_bin:
-        return [oxide_bin, *args]
-    return ["cargo", "run", "-p", "oxide-cli", "--quiet", "--", *args]
+    if wellfriendpdf_bin:
+        return [wellfriendpdf_bin, *args]
+    return ["cargo", "run", "-p", "wellfriendpdf-cli", "--quiet", "--", *args]
 
 
-def run_one(entry: dict[str, Any], oxide_bin: str | None, timeout_sec: int) -> dict[str, Any]:
+def run_one(entry: dict[str, Any], wellfriendpdf_bin: str | None, timeout_sec: int) -> dict[str, Any]:
     pdf = Path(entry["pdf_path"])
-    cmd = parser_report_command(pdf, oxide_bin)
+    cmd = parser_report_command(pdf, wellfriendpdf_bin)
     started = time.perf_counter()
     try:
         proc = subprocess.run(
@@ -247,9 +247,9 @@ def run_one(entry: dict[str, Any], oxide_bin: str | None, timeout_sec: int) -> d
     }
 
 
-def run(manifest_path: Path, oxide_bin: str | None, timeout_sec: int) -> dict[str, Any]:
+def run(manifest_path: Path, wellfriendpdf_bin: str | None, timeout_sec: int) -> dict[str, Any]:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    results = [run_one(entry, oxide_bin, timeout_sec) for entry in manifest["entries"]]
+    results = [run_one(entry, wellfriendpdf_bin, timeout_sec) for entry in manifest["entries"]]
     passed = sum(1 for result in results if result["status"] == "pass")
     report = {
         "schema_version": 1,
@@ -259,7 +259,7 @@ def run(manifest_path: Path, oxide_bin: str | None, timeout_sec: int) -> dict[st
         "failed": len(results) - passed,
         "pass_rate": passed / len(results) if results else 0.0,
         "timeout_sec": timeout_sec,
-        "oxide_bin": oxide_bin,
+        "wellfriendpdf_bin": wellfriendpdf_bin,
         "results": results,
     }
     RUN_REPORT.parent.mkdir(parents=True, exist_ok=True)
@@ -273,10 +273,10 @@ def main() -> int:
     sub.add_parser("generate")
     run_parser = sub.add_parser("run")
     run_parser.add_argument("--manifest", type=Path, default=MANIFEST)
-    run_parser.add_argument("--oxide-bin")
+    run_parser.add_argument("--wellfriendpdf-bin")
     run_parser.add_argument("--timeout-sec", type=int, default=15)
     all_parser = sub.add_parser("all")
-    all_parser.add_argument("--oxide-bin")
+    all_parser.add_argument("--wellfriendpdf-bin")
     all_parser.add_argument("--timeout-sec", type=int, default=15)
     args = parser.parse_args()
 
@@ -285,12 +285,12 @@ def main() -> int:
         print(json.dumps({"manifest": str(MANIFEST), "fixtures": manifest["fixture_count"]}))
         return 0
     if args.command == "run":
-        report = run(args.manifest, args.oxide_bin, args.timeout_sec)
+        report = run(args.manifest, args.wellfriendpdf_bin, args.timeout_sec)
         print(json.dumps({"run_report": str(RUN_REPORT), "passed": report["passed"], "failed": report["failed"]}))
         return 0 if report["failed"] == 0 else 1
     if args.command == "all":
         generate()
-        report = run(MANIFEST, args.oxide_bin, args.timeout_sec)
+        report = run(MANIFEST, args.wellfriendpdf_bin, args.timeout_sec)
         print(json.dumps({"manifest": str(MANIFEST), "run_report": str(RUN_REPORT), "passed": report["passed"], "failed": report["failed"]}))
         return 0 if report["failed"] == 0 else 1
     return 2

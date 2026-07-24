@@ -1,5 +1,5 @@
 param(
-    [string]$OxideBin = "",
+    [string]$WellfriendBin = "",
     [int]$Dpi = 72,
     [int]$TimeoutSeconds = 120
 )
@@ -24,8 +24,8 @@ $argsList = @(
     "--dpi", "$Dpi",
     "--timeout", "$TimeoutSeconds"
 )
-if (-not [string]::IsNullOrWhiteSpace($OxideBin)) {
-    $argsList += @("--oxide-bin", $OxideBin)
+if (-not [string]::IsNullOrWhiteSpace($WellfriendBin)) {
+    $argsList += @("--wellfriendpdf-bin", $WellfriendBin)
 }
 
 & python @argsList

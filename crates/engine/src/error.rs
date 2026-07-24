@@ -2,10 +2,10 @@
 ///
 /// Variants are intentionally coarse enough for stable programmatic handling
 /// while their display strings carry the operation-specific detail. Prefer
-/// matching [`OxideError::kind`] or [`OxideError::code`] in application logic
+/// matching [`WellfriendError::kind`] or [`WellfriendError::code`] in application logic
 /// when you do not need a variant's fields.
 #[derive(thiserror::Error, Debug)]
-pub enum OxideError {
+pub enum WellfriendError {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
     #[error("malformed PDF: {0}")]
@@ -30,7 +30,7 @@ pub enum OxideError {
 
 /// Stable high-level error categories for integrators.
 ///
-/// `OxideError` variants may carry detailed context; this category enum is the
+/// `WellfriendError` variants may carry detailed context; this category enum is the
 /// compact taxonomy suitable for metrics, HTTP mapping, retry policy, and SDK
 /// bindings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -78,7 +78,7 @@ impl ErrorKind {
     }
 }
 
-impl OxideError {
+impl WellfriendError {
     /// Return this error's stable high-level category.
     pub const fn kind(&self) -> ErrorKind {
         match self {
@@ -116,16 +116,16 @@ impl OxideError {
     }
 }
 
-pub type OxideResult<T> = std::result::Result<T, OxideError>;
-pub type Result<T> = OxideResult<T>;
+pub type WellfriendResult<T> = std::result::Result<T, WellfriendError>;
+pub type Result<T> = WellfriendResult<T>;
 
 #[cfg(test)]
 mod tests {
-    use super::{ErrorKind, OxideError};
+    use super::{ErrorKind, WellfriendError};
 
     #[test]
     fn error_kind_and_code_are_stable() {
-        let err = OxideError::UnsupportedFeature("JBIG2".to_string());
+        let err = WellfriendError::UnsupportedFeature("JBIG2".to_string());
         assert_eq!(err.kind(), ErrorKind::UnsupportedFeature);
         assert_eq!(err.code(), "unsupported_feature");
         assert!(err.is_input_error());
@@ -133,7 +133,7 @@ mod tests {
 
     #[test]
     fn io_is_not_classified_as_input_error() {
-        let err = OxideError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"));
+        let err = WellfriendError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, "missing"));
         assert_eq!(err.kind(), ErrorKind::Io);
         assert_eq!(err.code(), "io");
         assert!(!err.is_input_error());

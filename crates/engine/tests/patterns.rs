@@ -4,7 +4,7 @@
 //! fills a rectangle with it, renders, and asserts pixel colors at points that
 //! fall in different tile phases.
 
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::ContentEngine;
 
 /// Minimal numbered-object PDF builder with correct xref offsets.
 struct PdfBuilder {

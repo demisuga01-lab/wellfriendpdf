@@ -24,23 +24,23 @@ const result = {
 };
 
 try {
-  const oxide = require(packageDir);
+  const wellfriendpdf = require(packageDir);
   result.apis_tested.push("package import");
 
-  const feature = JSON.parse(oxide.OxidePdf.featureReportJson());
-  result.apis_tested.push("OxidePdf.featureReportJson");
+  const feature = JSON.parse(wellfriendpdf.WellfriendPdf.featureReportJson());
+  result.apis_tested.push("WellfriendPdf.featureReportJson");
   result.feature_has_codec_isolation = JSON.stringify(feature).includes("codec_isolation");
   result.feature_has_prompt15 = JSON.stringify(feature).includes(
     "prompt15_semantic_binding_rag_benchmark_closeout",
   );
 
-  const tableStatus = JSON.parse(oxide.OxidePdf.tableProposalStatusJson());
+  const tableStatus = JSON.parse(wellfriendpdf.WellfriendPdf.tableProposalStatusJson());
   result.table_status_kind = tableStatus.kind;
-  result.apis_tested.push("OxidePdf.tableProposalStatusJson");
+  result.apis_tested.push("WellfriendPdf.tableProposalStatusJson");
 
   const bytes = new Uint8Array(readFileSync(fixture));
-  const pdf = new oxide.OxidePdf(bytes);
-  result.apis_tested.push("new OxidePdf(bytes)");
+  const pdf = new wellfriendpdf.WellfriendPdf(bytes);
+  result.apis_tested.push("new WellfriendPdf(bytes)");
   result.page_count = pdf.pageCount();
   result.apis_tested.push("pageCount");
 
@@ -90,8 +90,8 @@ try {
   if ((rangeModel.report?.source_spans?.length ?? 0) === 0) {
     const textFixture = resolve(dirname(fixture), "multi_stream.pdf");
     if (existsSync(textFixture)) {
-      prompt20bPdf = new oxide.OxidePdf(new Uint8Array(readFileSync(textFixture)));
-      result.apis_tested.push("new OxidePdf(multi_stream for Prompt20B)");
+      prompt20bPdf = new wellfriendpdf.WellfriendPdf(new Uint8Array(readFileSync(textFixture)));
+      result.apis_tested.push("new WellfriendPdf(multi_stream for Prompt20B)");
       rangeModel = JSON.parse(prompt20bPdf.prompt20bTextRangeAnalyzeJson(1));
     }
   }
@@ -132,7 +132,7 @@ try {
   }
 
   const codec = JSON.parse(
-    oxide.OxidePdf.codecIsolationReportJson(
+    wellfriendpdf.WellfriendPdf.codecIsolationReportJson(
       "FlateDecode",
       new Uint8Array([0x78, 0x9c, 0xcb, 0x48, 0xcd, 0xc9, 0xc9, 0x57, 0xc8, 0xaf, 0xc8, 0x4c, 0x49, 0x05, 0x00, 0x19, 0xdd, 0x04, 0x4e]),
       "in_process",
@@ -143,7 +143,7 @@ try {
   result.apis_tested.push("codecIsolationReportJson");
 
   try {
-    new oxide.OxidePdf(new Uint8Array([0x25, 0x50, 0x44, 0x46]));
+    new wellfriendpdf.WellfriendPdf(new Uint8Array([0x25, 0x50, 0x44, 0x46]));
     result.invalid_input_error = null;
     result.errors.push("invalid input unexpectedly opened");
   } catch (error) {

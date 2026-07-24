@@ -32,7 +32,7 @@ CLI-only action scanner or a second OOXML package writer.
 | paragraph/table/image reconstruction | `crates/engine/src/parse.rs`, `crates/engine/src/analysis/tables.rs`, `crates/engine/src/images` |
 | DOCX OOXML package and readback | `crates/engine/src/office.rs` |
 | stable report facade | `crates/engine/src/sdk.rs` |
-| CLI and bindings | `crates/cli/src/main.rs`, `crates/oxide-py`, `crates/oxide-capi`, `crates/oxide-wasm`, `bindings/dotnet`, `bindings/java` |
+| CLI and bindings | `crates/cli/src/main.rs`, `crates/wellfriendpdf-py`, `crates/wellfriendpdf-capi`, `crates/wellfriendpdf-wasm`, `bindings/dotnet`, `bindings/java` |
 | prompt evidence conventions | `scripts/prompt18_secure_mutation_audit.py`, `scripts/prompt18b_advanced_secure_mutation_audit.py` |
 
 ## Implemented architecture

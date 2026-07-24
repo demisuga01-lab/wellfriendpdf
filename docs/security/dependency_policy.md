@@ -28,7 +28,7 @@ explicit legal review.
 ## Advisory Exceptions
 
 `RUSTSEC-2023-0071` for RustCrypto `rsa` is an explicit, documented exception
-because no fixed upgrade is currently available. Oxide does not expose RSA
+because no fixed upgrade is currently available. Wellfriend does not expose RSA
 private-key operations as a built-in remotely timed signing oracle; RSA signing
 is local API/CLI behavior and must not be wrapped by deployments as an
 attacker-driven timing oracle without an additional mitigation. This exception

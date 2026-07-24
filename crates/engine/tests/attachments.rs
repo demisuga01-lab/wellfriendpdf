@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-use oxide_engine::{sanitize_filename, ContentEngine};
+use wellfriendpdf_engine::{sanitize_filename, ContentEngine};
 
 const NAMETREE_PAYLOAD: &[u8] = b"Hello, embedded world!\nThis is a name-tree attachment.\n";
 const NAMETREE_MD5_HEX: &str = "8AAF29AB3BEB5EF2EC29722EEC52A835";
@@ -137,7 +137,7 @@ fn path_traversal_name_is_sanitized_on_extraction() {
     assert!(!safe.contains('/') && !safe.contains('\\') && !safe.contains(".."));
 
     // And actually writing it into a temp dir must stay inside that dir.
-    let dir = std::env::temp_dir().join("oxide_attach_traversal_test");
+    let dir = std::env::temp_dir().join("wellfriendpdf_attach_traversal_test");
     let _ = std::fs::create_dir_all(&dir);
     let target = dir.join(&safe);
     let bytes = e.extract_attachment(&atts[0]).unwrap();
@@ -203,12 +203,12 @@ fn cross_check_pdfdetach_list_and_bytes() {
         assert_eq!(
             atts.len(),
             poppler_count,
-            "{fix}: Oxide attachment count disagrees with pdfdetach"
+            "{fix}: Wellfriend attachment count disagrees with pdfdetach"
         );
     }
 
-    // Byte-level agreement: pdfdetach -saveall vs Oxide extraction on nametree.
-    let dir = std::env::temp_dir().join("oxide_pdfdetach_xcheck");
+    // Byte-level agreement: pdfdetach -saveall vs Wellfriend extraction on nametree.
+    let dir = std::env::temp_dir().join("wellfriendpdfdetach_xcheck");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let status = Command::new(&tool)
@@ -223,10 +223,10 @@ fn cross_check_pdfdetach_list_and_bytes() {
 
     let e = engine("attach_nametree.pdf");
     let atts = e.list_attachments().unwrap();
-    let oxide_bytes = e.extract_attachment(&atts[0]).unwrap();
+    let wellfriendpdf_bytes = e.extract_attachment(&atts[0]).unwrap();
     assert_eq!(
-        oxide_bytes, poppler_bytes,
-        "Oxide-extracted bytes must equal pdfdetach-extracted bytes"
+        wellfriendpdf_bytes, poppler_bytes,
+        "Wellfriend-extracted bytes must equal pdfdetach-extracted bytes"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

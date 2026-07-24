@@ -4,7 +4,7 @@ The heavy endpoints (`pdf2img`, `extract-images`) have **asynchronous job
 variants** under `/api/v1/jobs/...`. They exist for large/slow inputs that would
 otherwise hold an HTTP connection open for the whole render/extract — fragile
 across client/proxy/load-balancer timeouts, and capped outright by the
-per-request timeout (`OXIDE_REQUEST_TIMEOUT_SECS`). A job runs in the background,
+per-request timeout (`WELLFRIENDPDF_REQUEST_TIMEOUT_SECS`). A job runs in the background,
 untied to a single request's lifetime: submit returns immediately with a job id,
 the client polls status, then downloads the result when complete.
 
@@ -18,10 +18,10 @@ Routing is **explicit**: the client chooses. There is no automatic redirect or
 size-based conversion (a possible future enhancement — see below).
 
 - **Sync** (`/api/v1/pdf2img`): small/fast jobs — a handful of pages, expected to
-  finish well within `OXIDE_REQUEST_TIMEOUT_SECS` (default 30s).
+  finish well within `WELLFRIENDPDF_REQUEST_TIMEOUT_SECS` (default 30s).
 - **Async** (`/api/v1/jobs/pdf2img`): large jobs — many pages, high DPI, or any
   input you expect to take longer than the sync timeout. The per-job timeout
-  (`OXIDE_JOB_TIMEOUT_SECS`, default 300s) is much larger.
+  (`WELLFRIENDPDF_JOB_TIMEOUT_SECS`, default 300s) is much larger.
 
 > The `extract-images` **JSON metadata mode** (`Accept: application/json`) is
 > lightweight (it never decodes image bytes) and is **sync-only**. The async
@@ -47,8 +47,8 @@ returns **202 Accepted**:
 }
 ```
 
-If the queue is full (`OXIDE_JOB_QUEUE_CAPACITY`) or the store is at its cap
-(`OXIDE_MAX_JOBS`), submission is rejected with **503 Service Unavailable** +
+If the queue is full (`WELLFRIENDPDF_JOB_QUEUE_CAPACITY`) or the store is at its cap
+(`WELLFRIENDPDF_MAX_JOBS`), submission is rejected with **503 Service Unavailable** +
 `Retry-After: 10` and `{"error":"queue_full"}`. This is backpressure — retry
 shortly; it is distinct from 413 (input too large, retrying won't help).
 
@@ -106,7 +106,7 @@ Download a completed job's output.
                                                      TTL
 ```
 
-A completed or failed job is retained for `OXIDE_JOB_RETENTION_SECS` (default 1
+A completed or failed job is retained for `WELLFRIENDPDF_JOB_RETENTION_SECS` (default 1
 hour) so the client can poll/download, then a background cleanup task drops the
 job state and deletes its result file from disk. After that the id returns 404.
 
@@ -115,7 +115,7 @@ job state and deletes its result file from disk. After that the id returns 404.
 - Job ids are **128 bits of OS randomness**, hex-encoded (32 chars) — not
   enumerable.
 - Every job records the **submitting identity** (the API key, or `anonymous`
-  when running with `OXIDE_ALLOW_UNAUTHENTICATED`). Status and result are scoped
+  when running with `WELLFRIENDPDF_ALLOW_UNAUTHENTICATED`). Status and result are scoped
   to that identity.
 - A request for a job owned by a **different** key returns **404, not 403**, so
   the endpoint never confirms the existence of another caller's job.
@@ -127,13 +127,13 @@ dimension; nothing grows without limit:
 
 | Bound                         | Config var                  | On breach |
 |-------------------------------|-----------------------------|-----------|
-| Queue length                  | `OXIDE_JOB_QUEUE_CAPACITY`  | 503 on submit |
-| Worker concurrency            | `OXIDE_JOB_WORKERS`         | jobs wait in queue |
-| Per-job wall-clock            | `OXIDE_JOB_TIMEOUT_SECS`    | job → failed (`timeout`) |
-| Retained jobs (count)         | `OXIDE_MAX_JOBS`            | 503 on submit |
-| Retention window              | `OXIDE_JOB_RETENTION_SECS`  | job reaped → 404 |
-| Per-job output bytes          | `OXIDE_MAX_OUTPUT_BYTES`    | job → failed (`resource_limit`) |
-| Render pixels / image count   | `OXIDE_MAX_RENDER_PIXELS` / `OXIDE_MAX_IMAGE_COUNT` | job → failed |
+| Queue length                  | `WELLFRIENDPDF_JOB_QUEUE_CAPACITY`  | 503 on submit |
+| Worker concurrency            | `WELLFRIENDPDF_JOB_WORKERS`         | jobs wait in queue |
+| Per-job wall-clock            | `WELLFRIENDPDF_JOB_TIMEOUT_SECS`    | job → failed (`timeout`) |
+| Retained jobs (count)         | `WELLFRIENDPDF_MAX_JOBS`            | 503 on submit |
+| Retention window              | `WELLFRIENDPDF_JOB_RETENTION_SECS`  | job reaped → 404 |
+| Per-job output bytes          | `WELLFRIENDPDF_MAX_OUTPUT_BYTES`    | job → failed (`resource_limit`) |
+| Render pixels / image count   | `WELLFRIENDPDF_MAX_RENDER_PIXELS` / `WELLFRIENDPDF_MAX_IMAGE_COUNT` | job → failed |
 
 The per-job timeout reuses the **same cooperative cancellation** as the sync
 path (the engine polls a cancel flag in its hot loops and bails, freeing the

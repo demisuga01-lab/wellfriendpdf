@@ -20,7 +20,7 @@ empty payloads.
 
 ## Surface Rules
 
-- Rust and WASM call `oxide_engine::sdk` directly.
+- Rust and WASM call `wellfriendpdf_engine::sdk` directly.
 - Python and C ABI retain the Prompt 01 facade path.
 - .NET and Java call C ABI functions and return JSON strings unchanged.
 - Output operations return `{ bytes, reportJson }` or equivalent records; the
@@ -28,10 +28,10 @@ empty payloads.
 
 ## Version Queries
 
-- WASM: `OxidePdf.sdkVersion()`, `OxidePdf.abiVersion()`
-- .NET: `OxideDocument.EngineVersion()`, `OxideDocument.AbiVersion`
-- Java: `Oxide.engineVersion()`, `Oxide.abiVersion()`
-- C ABI: `oxide_version()`, `oxide_abi_version()`
+- WASM: `WellfriendPdf.sdkVersion()`, `WellfriendPdf.abiVersion()`
+- .NET: `WellfriendDocument.EngineVersion()`, `WellfriendDocument.AbiVersion`
+- Java: `WellfriendPdf.engineVersion()`, `WellfriendPdf.abiVersion()`
+- C ABI: `wellfriendpdf_version()`, `wellfriendpdf_abi_version()`
 
 An envelope-shape change must bump the report envelope version and update the
 gap matrix, docs, and parity fixtures in the same change.

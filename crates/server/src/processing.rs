@@ -17,7 +17,7 @@ use std::future::Future;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use oxide_engine::CancelToken;
+use wellfriendpdf_engine::CancelToken;
 
 use crate::config::ServerConfig;
 use crate::error::ServerError;

@@ -25,19 +25,19 @@ use std::time::{Duration, Instant};
 
 use der::asn1::GeneralizedTime;
 use der::{DateTime, Encode};
-use oxide_engine::{
-    verify_options_from_json, CancelToken, ContentEngine, Coverage, EvidenceBundle,
-    IntermediateStore, LtvMaterial, PadesLevel, PdfSigner, RetrievalPolicy, RevocationStatus,
-    SignatureOptions, SignatureRevocationMode, SignatureStatus, SignatureTrust,
-    SignatureValidationIndication, SignatureValidationPolicyProfile, SignatureValidationState,
-    SignatureValidationSubindication, SignatureValidity, TrustStore, VerifyOptions,
-};
 use rsa::pkcs1v15::SigningKey as RsaSigningKey;
 use rsa::pkcs8::{EncodePrivateKey, EncodePublicKey};
 use rsa::rand_core::OsRng;
 use rsa::{RsaPrivateKey, RsaPublicKey};
 use sha2::Sha256;
 use spki::SubjectPublicKeyInfoOwned;
+use wellfriendpdf_engine::{
+    verify_options_from_json, CancelToken, ContentEngine, Coverage, EvidenceBundle,
+    IntermediateStore, LtvMaterial, PadesLevel, PdfSigner, RetrievalPolicy, RevocationStatus,
+    SignatureOptions, SignatureRevocationMode, SignatureStatus, SignatureTrust,
+    SignatureValidationIndication, SignatureValidationPolicyProfile, SignatureValidationState,
+    SignatureValidationSubindication, SignatureValidity, TrustStore, VerifyOptions,
+};
 use x509_cert::builder::{Builder, CertificateBuilder, Profile};
 use x509_cert::name::Name;
 use x509_cert::serial_number::SerialNumber;
@@ -65,8 +65,9 @@ fn generated_signer_material() -> &'static (Vec<u8>, Vec<u8>) {
         let public_key = RsaPublicKey::from(&private_key);
         let spki_der = public_key.to_public_key_der().expect("SPKI DER");
         let spki = SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("SPKI parse");
-        let subject = Name::from_str("CN=Oxide SDK Signing Test,O=Oxide SDK Test Fixtures,C=US")
-            .expect("name");
+        let subject =
+            Name::from_str("CN=Wellfriend SDK Signing Test,O=Wellfriend SDK Test Fixtures,C=US")
+                .expect("name");
         let validity = Validity {
             not_before: Time::GeneralTime(GeneralizedTime::from_date_time(
                 DateTime::new(2026, 1, 1, 0, 0, 0).unwrap(),
@@ -114,7 +115,11 @@ fn test_timestamp_token_der() -> Vec<u8> {
 
     let token = ContentInfo {
         content_type: const_oid::db::rfc5911::ID_DATA,
-        content: Any::new(Tag::OctetString, b"oxide-test-rfc3161-token".to_vec()).unwrap(),
+        content: Any::new(
+            Tag::OctetString,
+            b"wellfriendpdf-test-rfc3161-token".to_vec(),
+        )
+        .unwrap(),
     };
     token.to_der().unwrap()
 }
@@ -198,8 +203,8 @@ fn rsa_signing_appends_valid_incremental_signature() {
     let original = fixture_bytes("minimal.pdf");
     let e = ContentEngine::open_bytes(original.clone()).unwrap();
     let options = SignatureOptions {
-        field_name: "OxideSig1".to_string(),
-        signer_name: Some("Oxide SDK Signing Test".to_string()),
+        field_name: "WellfriendSig1".to_string(),
+        signer_name: Some("Wellfriend SDK Signing Test".to_string()),
         reason: Some("integration test".to_string()),
         location: Some("test suite".to_string()),
         signing_time: Some("D:20260622000000Z".to_string()),
@@ -218,15 +223,18 @@ fn rsa_signing_appends_valid_incremental_signature() {
     let reports = signed_engine.verify_signatures().unwrap();
     assert_eq!(reports.len(), 1);
     let r = &reports[0];
-    assert_eq!(r.field_name.as_deref(), Some("OxideSig1"));
-    assert_eq!(r.signer_name.as_deref(), Some("Oxide SDK Signing Test"));
+    assert_eq!(r.field_name.as_deref(), Some("WellfriendSig1"));
+    assert_eq!(
+        r.signer_name.as_deref(),
+        Some("Wellfriend SDK Signing Test")
+    );
     assert_eq!(r.reason.as_deref(), Some("integration test"));
     assert_eq!(r.location.as_deref(), Some("test suite"));
     assert_eq!(r.validity, SignatureValidity::Valid, "{r:#?}");
     assert_eq!(r.coverage, Coverage::WholeFile);
     assert_eq!(r.digest_algorithm.as_deref(), Some("SHA-256"));
     let cert = r.certificate.as_ref().expect("signer cert reported");
-    assert!(cert.subject.contains("Oxide SDK Signing Test"));
+    assert!(cert.subject.contains("Wellfriend SDK Signing Test"));
     assert_eq!(cert.serial_hex, "20260801");
 
     let mut tampered = signed;
@@ -246,8 +254,8 @@ fn timestamp_and_dss_ltv_material_are_reported_offline() {
     let signer = test_signer();
     let e = ContentEngine::open_bytes(original).unwrap();
     let options = SignatureOptions {
-        field_name: "OxideLtvSig".to_string(),
-        signer_name: Some("Oxide SDK LTV Test".to_string()),
+        field_name: "WellfriendLtvSig".to_string(),
+        signer_name: Some("Wellfriend SDK LTV Test".to_string()),
         reason: Some("ltv integration test".to_string()),
         signing_time: Some("D:20260622000000Z".to_string()),
         timestamp_token_der: Some(test_timestamp_token_der()),
@@ -322,6 +330,7 @@ fn valid_signature_is_cryptographically_valid_with_cert_details() {
     assert_eq!(r.digest_algorithm.as_deref(), Some("SHA-256"));
 
     let cert = r.certificate.as_ref().expect("signer cert reported");
+    // Historical fixture certificate generated before the public rename.
     assert!(
         cert.subject.contains("Oxide Test Signer"),
         "subject was {}",
@@ -848,7 +857,7 @@ fn sign_minimal_with_signer(signer: &PdfSigner) -> Vec<u8> {
     e.sign(
         signer,
         &SignatureOptions {
-            field_name: "OxideTrust".to_string(),
+            field_name: "WellfriendTrust".to_string(),
             signing_time: Some("D:20260622000000Z".to_string()),
             ..SignatureOptions::default()
         },
@@ -1077,7 +1086,7 @@ fn json_algorithm_policy_rejects_a_recognized_signature_scheme() {
 
 #[test]
 fn signature_with_unrelated_trust_anchor_is_not_trusted() {
-    // sig_valid.pdf is signed by "Oxide Test Signer". Pinning a DIFFERENT,
+    // sig_valid.pdf is signed by "Wellfriend Test Signer". Pinning a DIFFERENT,
     // valid certificate (our test_signer) as the only anchor must not produce a
     // trusted verdict — trust requires an actual chain to a configured anchor.
     let e = ContentEngine::open_bytes(fixture_bytes("sig_valid.pdf")).unwrap();

@@ -1,12 +1,12 @@
 # Vector Output — SVG (`pdftocairo -svg`-equivalent)
 
-`oxide render --format svg` emits one SVG document per page. SVG preserves
+`wellfriendpdf render --format svg` emits one SVG document per page. SVG preserves
 scalability for web, print-prep, and vector-editing workflows.
 
 ```
-oxide render in.pdf --format svg -o pages.zip            # all pages, ZIP of .svg
-oxide render in.pdf --format svg -p 1,3-5 -o pages.zip   # a page range
-oxide render in.pdf --format svg --dpi 150 -o pages.zip  # device scale
+wellfriendpdf render in.pdf --format svg -o pages.zip            # all pages, ZIP of .svg
+wellfriendpdf render in.pdf --format svg -p 1,3-5 -o pages.zip   # a page range
+wellfriendpdf render in.pdf --format svg --dpi 150 -o pages.zip  # device scale
 ```
 
 Output follows the existing `render` convention: one `page-NNN.svg` per page
@@ -71,12 +71,12 @@ fallback pages are decided per page by a one-pass content scan
 
 ## Validation
 
-`crates/engine/tests/svg_output.rs` rasterizes Oxide's SVG with the pure-Rust
+`crates/engine/tests/svg_output.rs` rasterizes Wellfriend's SVG with the pure-Rust
 `resvg`/`usvg`/`tiny-skia` stack (a **dev/test-only** dependency — never linked
 into the product binaries) and compares it (PSNR, alpha-composited on white)
-against Oxide's own raster render, on pages with **actual visible marks**:
+against Wellfriend's own raster render, on pages with **actual visible marks**:
 
-| Page | Mode | PSNR vs Oxide raster |
+| Page | Mode | PSNR vs Wellfriend raster |
 |---|---|---:|
 | `multi_stream.pdf` p1 | true vector | **38.82 dB** |
 | `tracemonkey.pdf` p3 | true vector | **32.41 dB** |

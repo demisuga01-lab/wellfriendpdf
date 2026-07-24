@@ -540,7 +540,8 @@ fn prompt26_fuzz_signer() -> &'static PdfSigner {
         let spki_der = public_key.to_public_key_der().expect("fuzz SPKI DER");
         let spki =
             SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("fuzz SPKI parse");
-        let subject = Name::from_str("CN=Oxide Prompt26 Fuzz,O=Oxide,C=US").expect("fuzz subject");
+        let subject =
+            Name::from_str("CN=Wellfriend Prompt26 Fuzz,O=Wellfriend,C=US").expect("fuzz subject");
         let validity = Validity {
             not_before: Time::from(
                 GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(1_704_067_200))
@@ -795,7 +796,7 @@ pub fn structured_pdf_samples_for_seed(data: &[u8]) -> Vec<Vec<u8>> {
 /// Drive the font-program parsers with arbitrary bytes (TrueType / CFF /
 /// OpenType / bare-CFF paths via the glyph-outline extractor). Font parsing is
 /// a classic crash source; this exercises `ttf-parser` + the bare-CFF fallback
-/// through Oxide's wrappers, plus a few glyph lookups.
+/// through Wellfriend's wrappers, plus a few glyph lookups.
 pub fn fuzz_parse_font(data: &[u8]) {
     // units-per-em probe (sfnt + bare-CFF detection).
     let _ = std::hint::black_box(crate::render::glyph_outline::get_upem(data));

@@ -1,6 +1,6 @@
 # Prompt 03 Rendering Architecture
 
-Prompt 03 moves Oxide's renderer toward a display-list and device-based
+Prompt 03 moves Wellfriend's renderer toward a display-list and device-based
 architecture without claiming PDFium, Poppler, or MuPDF parity. The existing
 renderer already contains several high-fidelity pieces from earlier work; this
 pass adds the missing replayable vector display-list seam and documents the
@@ -124,7 +124,7 @@ New unit coverage:
 Focused command:
 
 ```powershell
-cargo test -p oxide-engine display_list --lib
+cargo test -p wellfriendpdf-engine display_list --lib
 ```
 
 Result during Prompt 03 implementation: 7 passed.
@@ -136,7 +136,7 @@ Baseline before Prompt 03 edits:
 ```powershell
 python renderer-benchmark\scripts\renderer_benchmark.py `
   --manifest renderer-benchmark\corpus\manifest.json `
-  --oxide-bin target\debug\oxide.exe `
+  --wellfriendpdf-bin target\debug\wellfriendpdf.exe `
   --dpi 72 --timeout-sec 20 --max-memory-mb 1024 `
   --max-pages-per-file 1 --limit 5 --determinism-sample 2 `
   --threshold-profile renderer `
@@ -148,7 +148,7 @@ After Prompt 03 display-list architecture:
 ```powershell
 python renderer-benchmark\scripts\renderer_benchmark.py `
   --manifest renderer-benchmark\corpus\manifest.json `
-  --oxide-bin target\debug\oxide.exe `
+  --wellfriendpdf-bin target\debug\wellfriendpdf.exe `
   --dpi 72 --timeout-sec 20 --max-memory-mb 1024 `
   --max-pages-per-file 1 --limit 5 --determinism-sample 2 `
   --threshold-profile renderer `

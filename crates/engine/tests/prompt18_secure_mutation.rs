@@ -1,15 +1,15 @@
-use oxide_engine::images::decoder::ImageDecoder;
-use oxide_engine::prompt17::{
+use wellfriendpdf_engine::images::decoder::ImageDecoder;
+use wellfriendpdf_engine::prompt17::{
     NonAxisRedactionFallbackPolicy, NonAxisRedactionOptions, NonAxisRedactionRequest,
     RedactionCoordinateSpace,
 };
-use oxide_engine::prompt18::{
+use wellfriendpdf_engine::prompt18::{
     analyze_edit_policy, associated_file_extract, associated_files_add_pdf,
     associated_files_inventory, associated_files_sanitize_pdf, incremental_metadata_update_pdf,
     mask_redaction_inventory, AssociatedFileAddRequest, AssociatedFileSanitizerOptions,
     AssociatedFileSanitizerPolicy, EditOperation, EditPolicyDecision,
 };
-use oxide_engine::ContentEngine;
+use wellfriendpdf_engine::ContentEngine;
 
 struct PdfBuilder {
     objects: Vec<Vec<u8>>,
@@ -141,8 +141,9 @@ fn masked_and_inline_redaction_reopen_are_deterministic_and_reachable_data_is_sc
         signature_policy_override: false,
     };
     let (first, report) =
-        oxide_engine::prompt18::redact_masked_images_pdf(&input, &options).unwrap();
-    let (second, _) = oxide_engine::prompt18::redact_masked_images_pdf(&input, &options).unwrap();
+        wellfriendpdf_engine::prompt18::redact_masked_images_pdf(&input, &options).unwrap();
+    let (second, _) =
+        wellfriendpdf_engine::prompt18::redact_masked_images_pdf(&input, &options).unwrap();
     assert_eq!(first, second);
     assert!(report.output_reopened);
     assert_eq!(report.security_proof_failures, 0);
@@ -188,8 +189,8 @@ fn associated_file_add_extract_dedup_remove_and_rescan_are_real_mutations() {
         filename: "../evidence.txt".to_string(),
         description: Some("bounded evidence".to_string()),
         mime: "text/plain".to_string(),
-        relationship: Some(oxide_engine::AfRelationship::Data),
-        owner: Some(oxide_engine::AssociatedFileOwnerType::Catalog),
+        relationship: Some(wellfriendpdf_engine::AfRelationship::Data),
+        owner: Some(wellfriendpdf_engine::AssociatedFileOwnerType::Catalog),
         owner_ref: None,
         deterministic: true,
         signature_policy_override: false,
@@ -246,8 +247,8 @@ fn associated_file_add_preserves_unrelated_indirect_name_trees() {
         filename: "data.txt".to_string(),
         description: None,
         mime: "text/plain".to_string(),
-        relationship: Some(oxide_engine::AfRelationship::Data),
-        owner: Some(oxide_engine::AssociatedFileOwnerType::Catalog),
+        relationship: Some(wellfriendpdf_engine::AfRelationship::Data),
+        owner: Some(wellfriendpdf_engine::AssociatedFileOwnerType::Catalog),
         owner_ref: None,
         deterministic: true,
         signature_policy_override: false,
@@ -312,12 +313,13 @@ fn docmdp_fieldmdp_are_structural_and_do_not_overclaim_crypto() {
 #[test]
 fn sdk_and_feature_report_have_prompt18_parity() {
     let input = fixture();
-    let report: serde_json::Value =
-        serde_json::from_str(&oxide_engine::sdk::prompt18_report_json(&input, None).unwrap())
-            .unwrap();
+    let report: serde_json::Value = serde_json::from_str(
+        &wellfriendpdf_engine::sdk::prompt18_report_json(&input, None).unwrap(),
+    )
+    .unwrap();
     assert_eq!(report["kind"], "prompt18_report");
     let feature: serde_json::Value =
-        serde_json::from_str(&oxide_engine::sdk::feature_report_json().unwrap()).unwrap();
+        serde_json::from_str(&wellfriendpdf_engine::sdk::feature_report_json().unwrap()).unwrap();
     let section = &feature["report"]["prompt18_mask_inline_associated_signature_safe_edits"];
     assert_eq!(section["failure"]["blocked"], 0);
     assert_eq!(section["security"]["signature_crypto_overclaim"], 0);

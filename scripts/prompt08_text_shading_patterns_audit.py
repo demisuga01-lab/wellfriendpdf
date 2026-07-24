@@ -645,7 +645,7 @@ def configure_prompt06b_runner() -> None:
     p06.RENDER_DIR = OUT_DIR / "renders"
     p06.DIFF_DIR = OUT_DIR / "diffs"
     p06.LOG_DIR = OUT_DIR / "logs"
-    p06.OXIDE_REPORT_DIR = OUT_DIR / "oxide-render-reports"
+    p06.WELLFRIENDPDF_REPORT_DIR = OUT_DIR / "wellfriendpdf-render-reports"
     p06.TOOL_MANIFEST = TOOL_MANIFEST_OUT
     p06.CORPUS_MANIFEST = CORPUS_OUT
     p06.RENDER_RESULTS = RESULTS_OUT
@@ -658,44 +658,44 @@ def configure_prompt06b_runner() -> None:
 
 def prompt08_classification(raw: str, category: str, metrics: dict[str, Any]) -> tuple[str, str | None]:
     if category == "malformed_or_unsupported_reported":
-        if raw in {"reference_tool_failure", "oxide_render_failure"}:
+        if raw in {"reference_tool_failure", "wellfriendpdf_render_failure"}:
             return "malformed_reference_failure", None
         return "unsupported_reported_expected", None
-    if raw == "all_references_agree_oxide_pass":
-        return "all_references_agree_oxide_passes", None
-    if raw == "all_references_agree_oxide_mismatch" and oxide_within_reference_spread(metrics):
+    if raw == "all_references_agree_wellfriendpdf_pass":
+        return "all_references_agree_wellfriendpdf_passes", None
+    if raw == "all_references_agree_wellfriendpdf_mismatch" and wellfriendpdf_within_reference_spread(metrics):
         return (
-            "all_references_agree_oxide_passes",
-            "prompt08_cluster_tolerance: oxide matched one reference and stayed within reference changed-pixel spread",
+            "all_references_agree_wellfriendpdf_passes",
+            "prompt08_cluster_tolerance: wellfriendpdf matched one reference and stayed within reference changed-pixel spread",
         )
     if raw in {
-        "references_disagree_oxide_between_references",
-        "references_disagree_oxide_matches_poppler",
-        "references_disagree_oxide_matches_pdfium",
-        "references_disagree_oxide_matches_mupdf",
+        "references_disagree_wellfriendpdf_between_references",
+        "references_disagree_wellfriendpdf_matches_poppler",
+        "references_disagree_wellfriendpdf_matches_pdfium",
+        "references_disagree_wellfriendpdf_matches_mupdf",
     }:
-        return "references_disagree_oxide_within_cluster", None
-    if raw in {"all_references_agree_oxide_mismatch", "needs_manual_review", "dimension_mismatch"}:
-        return "oxide_outlier_failure", None
+        return "references_disagree_wellfriendpdf_within_cluster", None
+    if raw in {"all_references_agree_wellfriendpdf_mismatch", "needs_manual_review", "dimension_mismatch"}:
+        return "wellfriendpdf_outlier_failure", None
     if raw in {"reference_tool_failure"}:
         return "malformed_reference_failure", None
     return raw, None
 
 
-def oxide_within_reference_spread(metrics: dict[str, Any]) -> bool:
+def wellfriendpdf_within_reference_spread(metrics: dict[str, Any]) -> bool:
     ref_keys = ["poppler_vs_pdfium", "poppler_vs_mupdf", "pdfium_vs_mupdf"]
-    oxide_keys = ["oxide_vs_poppler", "oxide_vs_pdfium", "oxide_vs_mupdf"]
+    wellfriendpdf_keys = ["wellfriendpdf_vs_poppler", "wellfriendpdf_vs_pdfium", "wellfriendpdf_vs_mupdf"]
     ref = [metrics[key] for key in ref_keys]
-    oxide = [metrics[key] for key in oxide_keys]
-    if not all(metric.get("status") == "computed" for metric in ref + oxide):
+    wellfriendpdf = [metrics[key] for key in wellfriendpdf_keys]
+    if not all(metric.get("status") == "computed" for metric in ref + wellfriendpdf):
         return False
-    if not any(metric.get("threshold_pass") for metric in oxide):
+    if not any(metric.get("threshold_pass") for metric in wellfriendpdf):
         return False
     max_ref_changed = max(float(metric.get("changed_pixel_threshold8_percentage") or 0.0) for metric in ref)
-    max_oxide_changed = max(float(metric.get("changed_pixel_threshold8_percentage") or 0.0) for metric in oxide)
+    max_wellfriendpdf_changed = max(float(metric.get("changed_pixel_threshold8_percentage") or 0.0) for metric in wellfriendpdf)
     max_ref_mean = max(float(metric.get("mean_abs_error") or 0.0) for metric in ref)
-    max_oxide_mean = max(float(metric.get("mean_abs_error") or 0.0) for metric in oxide)
-    return max_oxide_changed <= max_ref_changed + 0.01 and max_oxide_mean <= max_ref_mean + 1.10
+    max_wellfriendpdf_mean = max(float(metric.get("mean_abs_error") or 0.0) for metric in wellfriendpdf)
+    return max_wellfriendpdf_changed <= max_ref_changed + 0.01 and max_wellfriendpdf_mean <= max_ref_mean + 1.10
 
 
 def copy_tool_manifest() -> dict[str, Any]:
@@ -764,11 +764,11 @@ def write_static_matrices(entries: list[dict[str, Any]]) -> None:
 def render_and_compare(
     entries: list[dict[str, Any]],
     manifest: dict[str, Any],
-    oxide_bin: str | None,
+    wellfriendpdf_bin: str | None,
     dpi: int,
     timeout: int,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    base = p06.oxide_base_command(oxide_bin)
+    base = p06.wellfriendpdf_base_command(wellfriendpdf_bin)
     pages: list[dict[str, Any]] = []
     metrics_pages: list[dict[str, Any]] = []
     classification_counts: dict[str, int] = {}
@@ -776,7 +776,7 @@ def render_and_compare(
 
     for entry in entries:
         renders = {
-            "oxide": p06.render_oxide(base, entry, dpi, timeout),
+            "wellfriendpdf": p06.render_wellfriendpdf(base, entry, dpi, timeout),
             "poppler": p06.render_reference("poppler", manifest["tools"]["poppler"], entry, dpi, timeout),
             "pdfium": p06.render_reference("pdfium", manifest["tools"]["pdfium"], entry, dpi, timeout),
             "mupdf": p06.render_reference("mupdf", manifest["tools"]["mupdf"], entry, dpi, timeout),
@@ -825,7 +825,7 @@ def render_and_compare(
         "classification_counts": classification_counts,
         "raw_prompt06b_classification_counts": raw_classification_counts,
         "pair_summary": pair_summary,
-        "oxide_outlier_failures": classification_counts.get("oxide_outlier_failure", 0),
+        "wellfriendpdf_outlier_failures": classification_counts.get("wellfriendpdf_outlier_failure", 0),
         "malformed_reference_failures": classification_counts.get("malformed_reference_failure", 0),
         "prompt08_cluster_tolerance_acceptances": sum(
             1 for page in pages if "classification_note" in page
@@ -865,8 +865,8 @@ def safe_image_metrics(
         }
 
 
-def write_feature_report(oxide_bin: str | None, timeout: int) -> None:
-    base = p06.oxide_base_command(oxide_bin)
+def write_feature_report(wellfriendpdf_bin: str | None, timeout: int) -> None:
+    base = p06.wellfriendpdf_base_command(wellfriendpdf_bin)
     result = run_full_command([*base, "feature-report"], timeout=timeout)
     payload: dict[str, Any] = {
         "kind": "prompt08_public_feature_report",
@@ -920,7 +920,7 @@ def run_full_command(cmd: list[str], timeout: int) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--oxide-bin")
+    parser.add_argument("--wellfriendpdf-bin")
     parser.add_argument("--dpi", type=int, default=72)
     parser.add_argument("--timeout", type=int, default=120)
     args = parser.parse_args()
@@ -944,8 +944,8 @@ def main() -> int:
         },
     )
     write_static_matrices(entries)
-    render_and_compare(entries, manifest, args.oxide_bin, args.dpi, args.timeout)
-    write_feature_report(args.oxide_bin, args.timeout)
+    render_and_compare(entries, manifest, args.wellfriendpdf_bin, args.dpi, args.timeout)
+    write_feature_report(args.wellfriendpdf_bin, args.timeout)
     return 0
 
 

@@ -31,8 +31,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | available | reason/license                                                 |
 | ------------ | --------- | -------------------------------------------------------------- |
-| oxide        | yes       | MIT OR Apache-2.0                                              |
-| pdf_oxide    | yes       | MIT                                                            |
+| wellfriendpdf        | yes       | MIT OR Apache-2.0                                              |
+| pdf_wellfriendpdf    | yes       | MIT                                                            |
 | pymupdf      | yes       | AGPL-3.0/commercial                                            |
 | pypdfium2    | yes       | Apache-2.0/BSD-3-Clause                                        |
 | pymupdf4llm  | yes       | AGPL-3.0/commercial                                            |
@@ -50,8 +50,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | pass %  | mean s | p50 s | p95 s | p99 s | mem p95 MB |
 | ------------ | ------- | ------ | ----- | ----- | ----- | ---------- |
-| oxide        | 95.000  | 0.063  | 0.034 | 0.097 | 0.379 | 5.471      |
-| pdf_oxide    | 100.000 | 0.167  | 0.161 | 0.186 | 0.188 | 3.882      |
+| wellfriendpdf        | 95.000  | 0.063  | 0.034 | 0.097 | 0.379 | 5.471      |
+| pdf_wellfriendpdf    | 100.000 | 0.167  | 0.161 | 0.186 | 0.188 | 3.882      |
 | pymupdf      | 95.000  | 0.187  | 0.185 | 0.210 | 0.212 | 3.947      |
 | pypdfium2    | 95.000  | 0.286  | 0.287 | 0.342 | 0.362 | 3.980      |
 | pymupdf4llm  | 95.000  | 1.068  | 1.039 | 1.293 | 1.421 | 3.921      |
@@ -67,8 +67,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | files | pass %  | mean s | p95 s |
 | ------------ | ----- | ------- | ------ | ----- |
-| oxide        | 4     | 100.000 | 0.037  | 0.051 |
-| pdf_oxide    | 4     | 100.000 | 0.167  | 0.182 |
+| wellfriendpdf        | 4     | 100.000 | 0.037  | 0.051 |
+| pdf_wellfriendpdf    | 4     | 100.000 | 0.167  | 0.182 |
 | pymupdf      | 4     | 100.000 | 0.185  | 0.186 |
 | pypdfium2    | 4     | 100.000 | 0.321  | 0.363 |
 | pymupdf4llm  | 4     | 100.000 | 1.115  | 1.393 |
@@ -82,8 +82,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | files | pass %  | mean s | p95 s |
 | ------------ | ----- | ------- | ------ | ----- |
-| oxide        | 13    | 100.000 | 0.073  | 0.214 |
-| pdf_oxide    | 13    | 100.000 | 0.168  | 0.187 |
+| wellfriendpdf        | 13    | 100.000 | 0.073  | 0.214 |
+| pdf_wellfriendpdf    | 13    | 100.000 | 0.168  | 0.187 |
 | pymupdf      | 13    | 100.000 | 0.187  | 0.211 |
 | pypdfium2    | 13    | 100.000 | 0.275  | 0.300 |
 | pymupdf4llm  | 13    | 100.000 | 1.037  | 1.213 |
@@ -97,8 +97,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | files | pass %  | mean s | p95 s |
 | ------------ | ----- | ------- | ------ | ----- |
-| oxide        | 5     | 80.000  | 0.037  | 0.051 |
-| pdf_oxide    | 5     | 100.000 | 0.166  | 0.180 |
+| wellfriendpdf        | 5     | 80.000  | 0.037  | 0.051 |
+| pdf_wellfriendpdf    | 5     | 100.000 | 0.166  | 0.180 |
 | pymupdf      | 5     | 80.000  | 0.185  | 0.186 |
 | pypdfium2    | 5     | 80.000  | 0.321  | 0.363 |
 | pymupdf4llm  | 5     | 80.000  | 1.115  | 1.393 |
@@ -112,8 +112,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | files | pass %  | mean s | p95 s |
 | ------------ | ----- | ------- | ------ | ----- |
-| oxide        | 3     | 66.667  | 0.045  | 0.057 |
-| pdf_oxide    | 3     | 100.000 | 0.162  | 0.164 |
+| wellfriendpdf        | 3     | 66.667  | 0.045  | 0.057 |
+| pdf_wellfriendpdf    | 3     | 100.000 | 0.162  | 0.164 |
 | pymupdf      | 3     | 66.667  | 0.185  | 0.187 |
 | pypdfium2    | 3     | 66.667  | 0.286  | 0.310 |
 | pymupdf4llm  | 3     | 66.667  | 1.171  | 1.205 |
@@ -127,8 +127,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | files | pass %  | mean s | p95 s |
 | ------------ | ----- | ------- | ------ | ----- |
-| oxide        | 6     | 100.000 | 0.045  | 0.058 |
-| pdf_oxide    | 6     | 100.000 | 0.168  | 0.188 |
+| wellfriendpdf        | 6     | 100.000 | 0.045  | 0.058 |
+| pdf_wellfriendpdf    | 6     | 100.000 | 0.168  | 0.188 |
 | pymupdf      | 6     | 100.000 | 0.186  | 0.204 |
 | pypdfium2    | 6     | 100.000 | 0.276  | 0.308 |
 | pymupdf4llm  | 6     | 100.000 | 1.016  | 1.153 |
@@ -142,8 +142,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | files | pass %  | mean s | p95 s |
 | ------------ | ----- | ------- | ------ | ----- |
-| oxide        | 6     | 100.000 | 0.045  | 0.058 |
-| pdf_oxide    | 6     | 100.000 | 0.168  | 0.188 |
+| wellfriendpdf        | 6     | 100.000 | 0.045  | 0.058 |
+| pdf_wellfriendpdf    | 6     | 100.000 | 0.168  | 0.188 |
 | pymupdf      | 6     | 100.000 | 0.186  | 0.204 |
 | pypdfium2    | 6     | 100.000 | 0.276  | 0.308 |
 | pymupdf4llm  | 6     | 100.000 | 1.016  | 1.153 |
@@ -157,8 +157,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | files | pass %  | mean s | p95 s |
 | ------------ | ----- | ------- | ------ | ----- |
-| oxide        | 7     | 100.000 | 0.098  | 0.331 |
-| pdf_oxide    | 7     | 100.000 | 0.167  | 0.185 |
+| wellfriendpdf        | 7     | 100.000 | 0.098  | 0.331 |
+| pdf_wellfriendpdf    | 7     | 100.000 | 0.167  | 0.185 |
 | pymupdf      | 7     | 100.000 | 0.189  | 0.205 |
 | pypdfium2    | 7     | 100.000 | 0.274  | 0.290 |
 | pymupdf4llm  | 7     | 100.000 | 1.055  | 1.227 |
@@ -172,8 +172,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | files | pass %  | mean s | p95 s |
 | ------------ | ----- | ------- | ------ | ----- |
-| oxide        | 3     | 66.667  | 0.045  | 0.057 |
-| pdf_oxide    | 3     | 100.000 | 0.162  | 0.164 |
+| wellfriendpdf        | 3     | 66.667  | 0.045  | 0.057 |
+| pdf_wellfriendpdf    | 3     | 100.000 | 0.162  | 0.164 |
 | pymupdf      | 3     | 66.667  | 0.185  | 0.187 |
 | pypdfium2    | 3     | 66.667  | 0.286  | 0.310 |
 | pymupdf4llm  | 3     | 66.667  | 1.171  | 1.205 |
@@ -189,8 +189,8 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 - Reference tool selection: {'pymupdf': 16}
 | tool         | files | mean word ratio | mean char ratio |
 | ------------ | ----- | --------------- | --------------- |
-| oxide        | 16    | 0.656           | 0.741           |
-| pdf_oxide    | 16    | 0.750           | 0.710           |
+| wellfriendpdf        | 16    | 0.656           | 0.741           |
+| pdf_wellfriendpdf    | 16    | 0.750           | 0.710           |
 | pypdfium2    | 16    | 0.840           | 0.801           |
 | pymupdf4llm  | 16    | 0.788           | 0.710           |
 | pdftext      | 16    | 0.808           | 0.795           |
@@ -201,7 +201,7 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 ## Capability Matrix
 
-| capability                                   | oxide   | pdf_oxide | pymupdf | pypdfium2 | pymupdf4llm | pdftext | pdfminer.six | pdfplumber | markitdown | pypdf   |
+| capability                                   | wellfriendpdf   | pdf_wellfriendpdf | pymupdf | pypdfium2 | pymupdf4llm | pdftext | pdfminer.six | pdfplumber | markitdown | pypdf   |
 | -------------------------------------------- | ------- | --------- | ------- | --------- | ----------- | ------- | ------------ | ---------- | ---------- | ------- |
 | plain text extraction                        | yes     | yes       | yes     | yes       | yes         | yes     | yes          | yes        | yes        | yes     |
 | chars/words/lines with geometry              | partial | yes       | yes     | partial   | partial     | yes     | partial      | yes        | no         | partial |
@@ -230,16 +230,16 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 ## Feature Gaps Found
 
-- Region/scoped extraction API comparable to pdf_oxide page.region()/within() and pdfplumber crop().
-- Documented extraction-profile presets comparable to pdf_oxide ExtractionProfile and PyMuPDF4LLM's high-level extraction modes.
+- Region/scoped extraction API comparable to pdf_wellfriendpdf page.region()/within() and pdfplumber crop().
+- Documented extraction-profile presets comparable to pdf_wellfriendpdf ExtractionProfile and PyMuPDF4LLM's high-level extraction modes.
 - Lazy Python page properties such as page.text/page.words/page.tables/page.images.
-- Broad published language binding set comparable to pdf_oxide's Python/Go/JS/C#/.NET/Java/WASM positioning.
+- Broad published language binding set comparable to pdf_wellfriendpdf's Python/Go/JS/C#/.NET/Java/WASM positioning.
 - MCP server / AI assistant integration.
-- Built-in OCR runtime; Oxide OCR is optional and Tesseract-backed rather than bundled.
-- Documented XFA form data support comparable to pdf_oxide's advertised XFA capability.
+- Built-in OCR runtime; Wellfriend OCR is optional and Tesseract-backed rather than bundled.
+- Documented XFA form data support comparable to pdf_wellfriendpdf's advertised XFA capability.
 - Markdown heading detection is present only as heuristic document-model output, not an explicit page.markdown(detect_headings=True)-style API.
 
-## Oxide Differentiators Found
+## Wellfriend Differentiators Found
 
 - Self-host HTTP server with async job API, auth, rate limiting, file/time/output caps, and JSON endpoints.
 - PDF/A and PDF/UA validation/conversion surfaces in the Rust API/CLI.
@@ -251,18 +251,18 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 ## Prioritized Work List
 
-1. **fidelity**: Oxide failed files that another extractor passed. Evidence: `["darpa-safedocs_Unicode_passwords_corrigendum4_unicode-test-U2F874-correct"]`
-2. **text-quality**: Some tools diverged materially from the reference text sample; inspect Oxide if listed. Evidence: `{"oxide": {"mean_word_ratio": 0.6557, "mean_char_ratio": 0.74114, "files": 16}, "pdf_oxide": {"mean_word_ratio": 0.74966, "mean_char_ratio": 0.70997, "files": 16}, "pypdfium2": {"mean_word_ratio": 0.83969, "mean_char_ratio": 0.80096, "files": 16}, "pymupdf4llm": {"mean_word_ratio": 0.78765, "mean_char_ratio": 0.7104, "files": 16}, "pdftext": {"mean_word_ratio": 0.80844, "mean_char_ratio": 0.79488, "files": 16}, "pdfminer.six": {"mean_word_ratio": 0.73808, "mean_char_ratio": 0.73916, "files": 16}, "pdfplumber": {"mean_word_ratio": 0.73792, "mean_char_ratio": 0.73656, "files": 16}, "markitdown": {"mean_word_ratio": 0.73808, "mean_char_ratio": 0.73916, "files": 16}, "pypdf": {"mean_word_ratio": 0.73346, "mean_char_ratio": 0.76905, "files": 16}}`
+1. **fidelity**: Wellfriend failed files that another extractor passed. Evidence: `["darpa-safedocs_Unicode_passwords_corrigendum4_unicode-test-U2F874-correct"]`
+2. **text-quality**: Some tools diverged materially from the reference text sample; inspect Wellfriend if listed. Evidence: `{"wellfriendpdf": {"mean_word_ratio": 0.6557, "mean_char_ratio": 0.74114, "files": 16}, "pdf_wellfriendpdf": {"mean_word_ratio": 0.74966, "mean_char_ratio": 0.70997, "files": 16}, "pypdfium2": {"mean_word_ratio": 0.83969, "mean_char_ratio": 0.80096, "files": 16}, "pymupdf4llm": {"mean_word_ratio": 0.78765, "mean_char_ratio": 0.7104, "files": 16}, "pdftext": {"mean_word_ratio": 0.80844, "mean_char_ratio": 0.79488, "files": 16}, "pdfminer.six": {"mean_word_ratio": 0.73808, "mean_char_ratio": 0.73916, "files": 16}, "pdfplumber": {"mean_word_ratio": 0.73792, "mean_char_ratio": 0.73656, "files": 16}, "markitdown": {"mean_word_ratio": 0.73808, "mean_char_ratio": 0.73916, "files": 16}, "pypdf": {"mean_word_ratio": 0.73346, "mean_char_ratio": 0.76905, "files": 16}}`
 
 ## Provenance
 
 - Python: `3.14.3`
 - Platform: `win32`
-- Oxide binary: `target\release\oxide.exe`
+- Wellfriend binary: `target\release\wellfriendpdf.exe`
 - Manifest: `public-benchmark\manifests\public_corpus_manifest.json`
 - Output JSON: `public-benchmark\results\raw\smoke-20\results.json`
 
 ## Source Notes
 
-- pdf_oxide publishes a comparable 3,830-PDF benchmark using veraPDF, Mozilla pdf.js, and DARPA SafeDocs with single-thread, 60s timeout, no warm-up methodology.
+- pdf_wellfriendpdf publishes a comparable 3,830-PDF benchmark using veraPDF, Mozilla pdf.js, and DARPA SafeDocs with single-thread, 60s timeout, no warm-up methodology.
 - The corpus script also uses arXiv for scale and diversity. arXiv paper license metadata varies by paper; PDFs remain local-only.

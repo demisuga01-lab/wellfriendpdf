@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::ContentEngine;
-use crate::error::{OxideError, Result};
+use crate::error::{Result, WellfriendError};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 use crate::semantic::{SemanticElement, SemanticMcid};
@@ -1027,7 +1027,7 @@ pub fn prompt14_semantic_intelligence_report_value() -> serde_json::Value {
         "semantic_regression": {
             "raw_text_changed_by_segmentation": false,
             "deterministic_extraction_requires_ml": false,
-            "oxide_semantic_regression_count": 0,
+            "wellfriendpdf_semantic_regression_count": 0,
             "unclassified_failure_count": 0
         },
         "remaining_exact_limits": [
@@ -1041,7 +1041,7 @@ pub fn prompt14_semantic_intelligence_report_value() -> serde_json::Value {
             "schema_change": "additive_section_only",
             "ml_required_for_core_extraction": false,
             "cloud_upload_default": false,
-            "oxide_outlier_failures": 0,
+            "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         }
     })
@@ -1260,7 +1260,7 @@ fn normalized_pages(engine: &ContentEngine, pages: &[usize]) -> Result<Vec<usize
     };
     for &page in &out {
         if page == 0 || page > total {
-            return Err(OxideError::MalformedPdf(format!(
+            return Err(WellfriendError::MalformedPdf(format!(
                 "page {page} out of range (document has {total})"
             )));
         }

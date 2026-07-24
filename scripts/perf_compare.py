@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
-"""Oxide-vs-Poppler performance comparison (Mega-Prompt 15, Part B).
+"""Wellfriend-vs-Poppler performance comparison (Mega-Prompt 15, Part B).
 
 The parity harness (scripts/poppler_compare.py) measures *correctness*
-(text similarity, render PSNR). scripts/perf_bench.py measures Oxide's own
+(text similarity, render PSNR). scripts/perf_bench.py measures Wellfriend's own
 1-vs-N-thread speed and peak memory but does NOT compare against Poppler.
 This harness fills that gap: it times the SAME operations on the SAME inputs
 for both engines and records best-of-N wall-clock time and peak memory.
 
 Operations compared (same input, same DPI):
-  * text   : oxide extract-text   vs poppler pdftotext
-  * render : oxide render @150dpi  vs poppler pdftoppm -r 150  (ALL pages)
-  * images : oxide extract-images  vs poppler pdfimages
+  * text   : wellfriendpdf extract-text   vs poppler pdftotext
+  * render : wellfriendpdf render @150dpi  vs poppler pdftoppm -r 150  (ALL pages)
+  * images : wellfriendpdf extract-images  vs poppler pdfimages
 
-Threads: Oxide honours RAYON_NUM_THREADS; we run it at 1 thread AND at N
-threads so the per-core comparison (Oxide@1 vs Poppler, both single-threaded)
-and the multi-thread advantage (Oxide@N vs Poppler) are both visible and
+Threads: Wellfriend honours RAYON_NUM_THREADS; we run it at 1 thread AND at N
+threads so the per-core comparison (Wellfriend@1 vs Poppler, both single-threaded)
+and the multi-thread advantage (Wellfriend@N vs Poppler) are both visible and
 honest. Poppler's CLI tools are single-threaded, so Poppler is run once.
 
 Peak memory: Windows GetProcessMemoryInfo.PeakWorkingSetSize (OS high-water
 mark, exact); Unix /proc VmHWM. Same sampler as perf_bench.py.
 
-NOTE: outputs are not byte-identical between engines (oxide render = PNG-in-ZIP,
-pdftoppm = PPM files; oxide extract-images = ZIP, pdfimages = loose files), so
+NOTE: outputs are not byte-identical between engines (wellfriendpdf render = PNG-in-ZIP,
+pdftoppm = PPM files; wellfriendpdf extract-images = ZIP, pdfimages = loose files), so
 these are wall-clock/throughput comparisons of equivalent work, not of
 identical artifacts. Correctness/parity is measured separately by the parity
 harness. Use RELEASE builds.
@@ -160,19 +160,19 @@ def best_of(builder, env_threads, cwd, repeats):
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Oxide vs Poppler perf comparison")
+    ap = argparse.ArgumentParser(description="Wellfriend vs Poppler perf comparison")
     ap.add_argument("--poppler-bin-dir", required=True)
-    ap.add_argument("--oxide-bin",
-                    default=str(REPO_ROOT / "target" / "release" / exe("oxide")))
+    ap.add_argument("--wellfriendpdf-bin",
+                    default=str(REPO_ROOT / "target" / "release" / exe("wellfriendpdf")))
     ap.add_argument("--repeats", type=int, default=3)
     ap.add_argument("--dpi", type=int, default=150)
     ap.add_argument("--max-threads", type=int, default=os.cpu_count() or 4)
     ap.add_argument("--cases", nargs="*")
     args = ap.parse_args()
 
-    oxide = Path(args.oxide_bin)
-    if not oxide.exists():
-        sys.exit(f"oxide binary not found: {oxide} (build with cargo build --release)")
+    wellfriendpdf = Path(args.wellfriendpdf_bin)
+    if not wellfriendpdf.exists():
+        sys.exit(f"wellfriendpdf binary not found: {wellfriendpdf} (build with cargo build --release)")
     pbin = Path(args.poppler_bin_dir).resolve()
     pdftotext = pbin / exe("pdftotext")
     pdftoppm = pbin / exe("pdftoppm")
@@ -188,7 +188,7 @@ def main():
         "dpi": args.dpi,
         "repeats": args.repeats,
         "n_threads": n,
-        "oxide_bin": str(oxide),
+        "wellfriendpdf_bin": str(wellfriendpdf),
         "poppler_bin_dir": str(pbin),
         "rows": [],
     }
@@ -199,7 +199,7 @@ def main():
             "time_s": t, "peak_bytes": peak, "rc": rc, "pages": pages,
         })
 
-    print(f"# Oxide vs Poppler — platform={platform.platform()} "
+    print(f"# Wellfriend vs Poppler — platform={platform.platform()} "
           f"cpus={os.cpu_count()} dpi={args.dpi} repeats={args.repeats}\n")
     hdr = f"{'case':<14}{'op':<9}{'engine':<16}{'thr':>4}{'time_s':>10}{'peak_MB':>10}{'rc':>4}"
     print(hdr)
@@ -207,7 +207,7 @@ def main():
 
     def emit(case, op, engine, threads, t, peak, rc, pages=None):
         add(case, op, engine, threads, t, peak, rc, pages)
-        label = f"oxide@{threads}" if engine == "oxide" else "poppler"
+        label = f"wellfriendpdf@{threads}" if engine == "wellfriendpdf" else "poppler"
         print(f"{case:<14}{op:<9}{label:<16}{threads:>4}{t:>10.3f}{mb(peak):>10.1f}{rc:>4}")
 
     selected = [c for c in CASES if not args.cases or c[0] in args.cases]
@@ -219,15 +219,15 @@ def main():
         for op in ops:
             if op == "text":
                 ot, opk, orc = best_of(
-                    lambda td: [str(oxide), "extract-text", str(pdf),
+                    lambda td: [str(wellfriendpdf), "extract-text", str(pdf),
                                 "--output", str(td / "o.txt")],
                     1, str(REPO_ROOT), args.repeats)
-                emit(key, op, "oxide", 1, ot, opk, orc)
+                emit(key, op, "wellfriendpdf", 1, ot, opk, orc)
                 otn, opkn, orcn = best_of(
-                    lambda td: [str(oxide), "extract-text", str(pdf),
+                    lambda td: [str(wellfriendpdf), "extract-text", str(pdf),
                                 "--output", str(td / "o.txt")],
                     n, str(REPO_ROOT), args.repeats)
-                emit(key, op, "oxide", n, otn, opkn, orcn)
+                emit(key, op, "wellfriendpdf", n, otn, opkn, orcn)
                 pt, ppk, prc = best_of(
                     lambda td: [str(pdftotext), "-enc", "UTF-8", "-nopgbrk",
                                 str(pdf), str(td / "p.txt")],
@@ -235,17 +235,17 @@ def main():
                 emit(key, op, "poppler", 1, pt, ppk, prc)
             elif op == "render":
                 ot, opk, orc = best_of(
-                    lambda td: [str(oxide), "render", str(pdf),
+                    lambda td: [str(wellfriendpdf), "render", str(pdf),
                                 "--output", str(td / "o.zip"),
                                 "--dpi", str(args.dpi), "--format", "png"],
                     1, str(REPO_ROOT), args.repeats)
-                emit(key, op, "oxide", 1, ot, opk, orc)
+                emit(key, op, "wellfriendpdf", 1, ot, opk, orc)
                 otn, opkn, orcn = best_of(
-                    lambda td: [str(oxide), "render", str(pdf),
+                    lambda td: [str(wellfriendpdf), "render", str(pdf),
                                 "--output", str(td / "o.zip"),
                                 "--dpi", str(args.dpi), "--format", "png"],
                     n, str(REPO_ROOT), args.repeats)
-                emit(key, op, "oxide", n, otn, opkn, orcn)
+                emit(key, op, "wellfriendpdf", n, otn, opkn, orcn)
                 pt, ppk, prc = best_of(
                     lambda td: [str(pdftoppm), "-r", str(args.dpi),
                                 str(pdf), str(td / "pg")],
@@ -253,11 +253,11 @@ def main():
                 emit(key, op, "poppler", 1, pt, ppk, prc)
             elif op == "images":
                 ot, opk, orc = best_of(
-                    lambda td: [str(oxide), "extract-images", str(pdf),
+                    lambda td: [str(wellfriendpdf), "extract-images", str(pdf),
                                 "--output", str(td / "o.zip"),
                                 "--format", "original"],
                     1, str(REPO_ROOT), args.repeats)
-                emit(key, op, "oxide", 1, ot, opk, orc)
+                emit(key, op, "wellfriendpdf", 1, ot, opk, orc)
                 pt, ppk, prc = best_of(
                     lambda td: [str(pdfimages), str(pdf), str(td / "im")],
                     None, str(pbin), args.repeats)
