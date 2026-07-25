@@ -760,6 +760,13 @@ mod tests {
             b"%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF",
         );
     }
+
+    #[test]
+    fn structured_pdf_fuzz_seed_does_not_overflow_path_bounds() {
+        fuzz_structured_pdf(
+            b"structured-pdf-seed-v1 q qnots df-seed-N1 q qnots pdfa linearizType\n",
+        );
+    }
 }
 
 /// Generate structurally valid PDFs with adversarial-but-bounded content and
@@ -859,40 +866,64 @@ fn drive_structured_pdf(bytes: &[u8], data: &[u8]) {
     let Ok(engine) = ContentEngine::open_bytes(bytes.to_vec()) else {
         return;
     };
-    let page_count = engine.page_count().unwrap_or(0).min(4);
-    for page in 1..=page_count {
-        let _ = std::hint::black_box(engine.get_page_content(page));
-        let _ = std::hint::black_box(engine.get_page_text(page));
-        let _ = std::hint::black_box(engine.render_page_png_fast(page, 36));
+    let page_count = engine.page_count().unwrap_or(0).min(2);
+    let selector = data.first().copied().unwrap_or(0) % 6;
+    match selector {
+        0 => {
+            for page in 1..=page_count.min(1) {
+                let _ = std::hint::black_box(engine.get_page_content(page));
+                let _ = std::hint::black_box(engine.get_page_text(page));
+                let _ = std::hint::black_box(engine.render_page_png_fast(page, 18));
+            }
+        }
+        1 if page_count > 0 => {
+            let pages: Vec<usize> = (1..=page_count).collect();
+            let _ = std::hint::black_box(engine.build_document_model(&pages));
+        }
+        2 => {
+            if let Ok(mut editor) = PdfEditor::open_bytes(bytes.to_vec()) {
+                let rect = ImageRect::new(
+                    bounded_coord(data.first().copied().unwrap_or(0), 180.0),
+                    bounded_coord(data.get(1).copied().unwrap_or(0), 180.0),
+                    4.0 + f64::from(data.get(2).copied().unwrap_or(8) % 48),
+                    4.0 + f64::from(data.get(3).copied().unwrap_or(8) % 48),
+                );
+                let _ = editor.draw_rect(1, rect, EditRectStyle::default(), OverlayLayer::Overlay);
+                let _ = editor.redact(1, rect, RedactionOptions::default());
+                editor.flatten_forms();
+                let _ = std::hint::black_box(editor.save_to_bytes(EditMode::FullRewrite));
+            }
+        }
+        3 => {
+            let _ = std::hint::black_box(crate::structural::linearize::linearize(&engine));
+            let _ = std::hint::black_box(engine.verify_signatures());
+        }
+        4 => {
+            let profile = structured_pdf_profile(data);
+            let _ = std::hint::black_box(validate_pdfa(engine.document(), profile));
+        }
+        _ => {
+            let profile = structured_pdf_profile(data);
+            let _ = std::hint::black_box(convert_to_pdfa(engine.document(), profile));
+        }
     }
-    if page_count > 0 {
-        let pages: Vec<usize> = (1..=page_count).collect();
-        let _ = std::hint::black_box(engine.build_document_model(&pages));
-    }
+}
 
-    if let Ok(mut editor) = PdfEditor::open_bytes(bytes.to_vec()) {
-        let rect = ImageRect::new(
-            bounded_coord(data.first().copied().unwrap_or(0), 180.0),
-            bounded_coord(data.get(1).copied().unwrap_or(0), 180.0),
-            4.0 + f64::from(data.get(2).copied().unwrap_or(8) % 48),
-            4.0 + f64::from(data.get(3).copied().unwrap_or(8) % 48),
-        );
-        let _ = editor.draw_rect(1, rect, EditRectStyle::default(), OverlayLayer::Overlay);
-        let _ = editor.redact(1, rect, RedactionOptions::default());
-        editor.flatten_forms();
-        let _ = std::hint::black_box(editor.save_to_bytes(EditMode::FullRewrite));
+fn structured_pdf_profile(data: &[u8]) -> PdfAProfile {
+    match data.get(1).copied().unwrap_or(0) % 3 {
+        0 => PdfAProfile::PdfA1B,
+        1 => PdfAProfile::PdfA2B,
+        _ => PdfAProfile::PdfA3B,
     }
+}
 
-    let _ = std::hint::black_box(crate::structural::linearize::linearize(&engine));
-    let _ = std::hint::black_box(engine.verify_signatures());
-    for profile in [
+#[allow(dead_code)]
+fn _structured_pdf_supported_profiles() -> [PdfAProfile; 3] {
+    [
         PdfAProfile::PdfA1B,
         PdfAProfile::PdfA2B,
         PdfAProfile::PdfA3B,
-    ] {
-        let _ = std::hint::black_box(validate_pdfa(engine.document(), profile));
-        let _ = std::hint::black_box(convert_to_pdfa(engine.document(), profile));
-    }
+    ]
 }
 
 fn authored_adversarial_pdf(data: &[u8]) -> Option<Vec<u8>> {

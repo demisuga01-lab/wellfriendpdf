@@ -6,7 +6,7 @@ rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 publish = false
 description = "wasm-bindgen wrapper for wellfriendpdf-engine browser integrations."
-repository = "https://github.com/demisuga01-lab/wellfriendpdf-sdk"
+repository = "https://github.com/demisuga01-lab/wellfriendpdf"
 
 [lib]
 crate-type = ["cdylib", "rlib"]

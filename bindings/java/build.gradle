@@ -65,7 +65,7 @@ publishing {
             pom {
                 name = "Wellfriend PDF SDK Java Binding"
                 description = project.description
-                url = "https://github.com/demisuga01-lab/wellfriendpdf-sdk"
+                url = "https://github.com/demisuga01-lab/wellfriendpdf"
                 licenses {
                     license {
                         name = "MIT OR Apache-2.0"

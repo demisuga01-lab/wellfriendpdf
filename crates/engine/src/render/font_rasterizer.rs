@@ -1888,6 +1888,13 @@ mod tests {
             "{}/../../renderer-benchmark/corpus/real-world/pdfjs-full/text_clip_cff_cid.pdf",
             env!("CARGO_MANIFEST_DIR")
         );
+        if !std::path::Path::new(&path).exists() {
+            eprintln!(
+                "skipping optional CID-keyed CFF external corpus fixture: {}",
+                path
+            );
+            return;
+        }
         let engine = ContentEngine::open_path(path).expect("open CID-keyed CFF fixture");
         let resources = engine.get_page_resources(1).expect("page resources");
         let reader = engine.document().reader();

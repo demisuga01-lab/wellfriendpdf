@@ -1,0 +1,93 @@
+name: Release fuzz architecture
+
+on:
+  workflow_dispatch:
+    inputs:
+      group:
+        description: Fuzz group to run
+        required: false
+        default: release-critical
+      seconds:
+        description: Timed fuzz seconds per target for manual release runs
+        required: false
+        default: "0"
+  schedule:
+    # Nightly/scheduled fuzz is deliberately separate from PR smoke.
+    - cron: "41 2 * * 2"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_BUILD_JOBS: "1"
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  PROMPT27_FUZZ_MEMORY_MB: "16384"
+  PROMPT27_FUZZ_MAX_LEN: "262144"
+
+jobs:
+  inventory:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Build fuzz inventory
+        run: |
+          python scripts/release_fuzz_matrix.py \
+            --output target/prompt27-verapdf-crypto-fuzz/release-fuzz-target-inventory.json \
+            --markdown-output target/prompt27-verapdf-crypto-fuzz/release-fuzz-target-inventory.md
+      - name: Upload inventory
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-fuzz-inventory-${{ github.run_id }}
+          path: target/prompt27-verapdf-crypto-fuzz
+
+  release-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ github.event_name == 'schedule' && 240 || 120 }}
+    needs: inventory
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Install nightly Rust
+        run: rustup toolchain install nightly --profile minimal
+      - name: Cache cargo fuzz build
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            fuzz/target
+          key: release-fuzz-${{ runner.os }}-${{ hashFiles('fuzz/Cargo.toml', 'fuzz/Cargo.lock') }}
+          restore-keys: |
+            release-fuzz-${{ runner.os }}-
+      - name: Install cargo-fuzz
+        run: |
+          if ! cargo fuzz --version >/dev/null 2>&1; then
+            cargo install cargo-fuzz --locked
+          fi
+      - name: Run release fuzz tier
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            group="release-critical"
+            seconds="900"
+          else
+            group="${{ inputs.group }}"
+            seconds="${{ inputs.seconds }}"
+          fi
+          python scripts/release_fuzz_runner.py \
+            --group "${group}" \
+            --seconds "${seconds}" \
+            --smoke-runs 64 \
+            --memory-mb "${PROMPT27_FUZZ_MEMORY_MB}" \
+            --max-len "${PROMPT27_FUZZ_MAX_LEN}" \
+            --json-output target/prompt27-verapdf-crypto-fuzz/release-fuzz-runner-smoke.json \
+            --markdown-output target/prompt27-verapdf-crypto-fuzz/release-fuzz-runner-smoke.md
+      - name: Upload fuzz artifacts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-fuzz-${{ github.run_id }}
+          if-no-files-found: ignore
+          path: |
+            target/prompt27-verapdf-crypto-fuzz
+            fuzz/artifacts

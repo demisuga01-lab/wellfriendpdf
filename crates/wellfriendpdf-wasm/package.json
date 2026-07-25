@@ -6,7 +6,7 @@
   "license": "MIT OR Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/demisuga01-lab/wellfriendpdf-sdk"
+    "url": "https://github.com/demisuga01-lab/wellfriendpdf"
   },
   "files": [
     "pkg",

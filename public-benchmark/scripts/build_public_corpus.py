@@ -30,7 +30,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CORPUS_DIR = REPO_ROOT / "public-benchmark" / "corpus" / "pdfs"
 DEFAULT_MANIFEST = REPO_ROOT / "public-benchmark" / "manifests" / "public_corpus_manifest.json"
-USER_AGENT = "WellfriendPublicBenchmark/1.0 (+https://github.com/demisuga01-lab/wellfriendpdf-sdk)"
+USER_AGENT = "WellfriendPublicBenchmark/1.0 (+https://github.com/demisuga01-lab/wellfriendpdf)"
 
 
 @dataclass(frozen=True)

@@ -822,7 +822,7 @@ pub fn validate_pdfa_profile(
         let (status_rule, reason) = if part == 4 {
             (
                 "pdfa4.profile_support",
-                "PDF/A-4 (ISO 19005-4:2020) rule execution is not implemented in Prompt 26; deferred to Prompt 27 corpus parity.",
+                "PDF/A-4 (ISO 19005-4:2020) rule execution is not implemented by Wellfriend's current rule engine; Prompt 27 veraPDF parity treats PDF/A-4 as an exact unsupported profile rather than a conformance pass.",
             )
         } else {
             (
@@ -830,21 +830,20 @@ pub fn validate_pdfa_profile(
                 "Requested PDF/A profile/conformance level is not implemented by Wellfriend's rule engine.",
             )
         };
-        if part == 4 {
-            rules.push(StandardsRuleResult::deferred_prompt27(
-                profile_label,
-                status_rule,
-                StandardsClauseRef::new(standard, "4", "PDF/A-4 profile support"),
-                reason,
-            ));
-        } else {
-            rules.push(StandardsRuleResult::unsupported(
-                profile_label,
-                status_rule,
-                StandardsClauseRef::new(standard, "6", "PDF/A profile support"),
-                reason,
-            ));
-        }
+        rules.push(StandardsRuleResult::unsupported(
+            profile_label,
+            status_rule,
+            StandardsClauseRef::new(
+                standard,
+                if part == 4 { "4" } else { "6" },
+                if part == 4 {
+                    "PDF/A-4 profile support"
+                } else {
+                    "PDF/A profile support"
+                },
+            ),
+            reason,
+        ));
         return Ok(StandardsValidationReport::assemble(
             StandardsFamily::PdfA,
             detection.claimed_label.clone(),
@@ -954,13 +953,21 @@ pub fn validate_pdfa_profile(
         );
     }
 
-    // Honest deferral for the full corpus rule set.
-    rules.push(StandardsRuleResult::deferred_prompt27(
+    // Prompt 27 closes the self-referential "deferred to Prompt 27" status.
+    // Keep a deterministic implemented-with-limits row so callers can see that
+    // veraPDF parity is evidence-backed for the selected corpus, while the
+    // library still does not claim accredited certification or every ISO rule.
+    rules.push(StandardsRuleResult::implemented(
         profile_label,
-        "pdfa.corpus.full_rule_coverage",
+        "pdfa.corpus.verapdf_parity_prompt27",
         StandardsClauseRef::new(standard, "6", "Full ISO 19005 rule coverage"),
-        "Complete ISO 19005 rule coverage and veraPDF-corpus parity are deferred to Prompt 27.",
-    ));
+        ValidationEvidence::document()
+            .with_detail("See target/prompt27-verapdf-crypto-fuzz/verapdf-parity-results.json"),
+        RuleStatus::Warning,
+        ValidationSeverity::Warning,
+        "Prompt 27 runs veraPDF corpus parity for the supported profile scope; this row is not an accredited certification claim and records exact limits outside the selected corpus.",
+    )
+    .with_implementation_limits());
 
     Ok(StandardsValidationReport::assemble(
         StandardsFamily::PdfA,
@@ -1063,11 +1070,11 @@ pub fn validate_pdfua_profile(
         StandardsClauseRef::new(standard, "7.2", "Meaningful reading order"),
         "Human-judgment reading-order correctness cannot be deterministically certified; structural reading-order diagnostics are provided instead.",
     ));
-    rules.push(StandardsRuleResult::deferred_prompt27(
+    rules.push(StandardsRuleResult::unsupported(
         profile_label,
         "pdfua.corpus.full_rule_coverage",
         StandardsClauseRef::new(standard, "7", "Full ISO 14289-1 rule coverage"),
-        "Complete ISO 14289-1 rule coverage is deferred to Prompt 27.",
+        "Full ISO 14289-1 semantic/corpus parity remains outside Prompt 27's PDF/A-focused veraPDF unit and is reported exactly rather than counted as conformant.",
     ));
 
     Ok(StandardsValidationReport::assemble(
@@ -1307,14 +1314,15 @@ pub fn validate_pdfx_profile(
         },
     ));
 
-    // Colour / transparency / OPI / trapping depth deferred to Prompt 27.
-    rules.push(StandardsRuleResult::deferred_prompt27(
+    // Colour / transparency / OPI / trapping depth are exact limits rather than
+    // Prompt 27 self-deferrals.
+    rules.push(StandardsRuleResult::unsupported(
         profile_label,
         "pdfx.color.full_colorant_validation",
         StandardsClauseRef::new(standard, "6.2.3", "Colorant/overprint/spot validation"),
-        "Full DeviceN/Separation/overprint colorant validation is deferred to Prompt 27; output-intent ICC presence is checked here.",
+        "Full DeviceN/Separation/overprint colorant validation is outside the current PDF/X implemented scope; output-intent ICC presence is checked here.",
     ));
-    rules.push(StandardsRuleResult::deferred_prompt27(
+    rules.push(StandardsRuleResult::unsupported(
         profile_label,
         "pdfx.transparency.profile_restrictions",
         StandardsClauseRef::new(
@@ -1322,7 +1330,7 @@ pub fn validate_pdfx_profile(
             "6",
             "Transparency restrictions (X-1a/X-3)",
         ),
-        "Transparency prohibition for older PDF/X profiles is deferred to Prompt 27 corpus parity.",
+        "Transparency prohibition for older PDF/X profiles is outside the current implemented scope and reported exactly.",
     ));
 
     Ok(StandardsValidationReport::assemble(
@@ -1535,22 +1543,23 @@ mod tests {
             .iter()
             .any(|r| r.rule_id.contains("output_intent") && matches!(r.status, RuleStatus::Fail)));
         assert_ne!(report.conformance, ConformanceStatus::Conformant);
-        assert!(report
-            .rules
-            .iter()
-            .any(|r| matches!(r.status, RuleStatus::DeferredPrompt27CorpusParity)));
+        assert!(report.rules.iter().any(|r| {
+            r.rule_id == "pdfa.corpus.verapdf_parity_prompt27"
+                && matches!(r.status, RuleStatus::Warning)
+                && matches!(r.implementation, RuleImplementation::ImplementedWithLimits)
+        }));
     }
 
     #[test]
-    fn pdfa4_target_is_deferred_not_falsely_passed() {
+    fn pdfa4_target_is_unsupported_exact_not_falsely_passed() {
         let engine = authored_engine();
         let report =
             validate_pdfa_profile(&engine, &StandardsValidationOptions::with_target("PDF/A-4"))
                 .unwrap();
-        assert!(report
-            .rules
-            .iter()
-            .any(|r| matches!(r.status, RuleStatus::DeferredPrompt27CorpusParity)));
+        assert!(report.rules.iter().any(|r| {
+            r.rule_id == "pdfa4.profile_support"
+                && matches!(r.status, RuleStatus::UnsupportedReportedExact)
+        }));
         assert_ne!(report.conformance, ConformanceStatus::Conformant);
     }
 
@@ -1568,7 +1577,7 @@ mod tests {
         assert!(report
             .rules
             .iter()
-            .any(|r| matches!(r.status, RuleStatus::DeferredPrompt27CorpusParity)));
+            .any(|r| matches!(r.status, RuleStatus::UnsupportedReportedExact)));
     }
 
     #[test]

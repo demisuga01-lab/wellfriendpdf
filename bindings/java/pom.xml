@@ -8,7 +8,7 @@
   <version>0.1.0</version>
   <name>Wellfriend PDF SDK Java Binding</name>
   <description>Java FFM binding for the Wellfriend PDF SDK.</description>
-  <url>https://github.com/demisuga01-lab/wellfriendpdf-sdk</url>
+  <url>https://github.com/demisuga01-lab/wellfriendpdf</url>
 
   <licenses>
     <license>

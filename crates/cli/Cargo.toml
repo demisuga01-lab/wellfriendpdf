@@ -5,8 +5,8 @@ edition = "2021"
 rust-version = "1.95"
 license = "MIT OR Apache-2.0"
 description = "Command-line interface for the Wellfriend pure-Rust PDF toolkit."
-repository = "https://github.com/demisuga01-lab/wellfriendpdf-sdk"
-homepage = "https://github.com/demisuga01-lab/wellfriendpdf-sdk"
+repository = "https://github.com/demisuga01-lab/wellfriendpdf"
+homepage = "https://github.com/demisuga01-lab/wellfriendpdf"
 keywords = ["pdf", "cli", "documents"]
 categories = ["command-line-utilities"]
 

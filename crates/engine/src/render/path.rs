@@ -575,8 +575,8 @@ fn fill_flat_with_compositor(
 
     let x0 = safe_floor_i32(min_x).max(0);
     let y0 = safe_floor_i32(min_y).max(0);
-    let x1 = (safe_ceil_i32(max_x) + 1).min(bw);
-    let y1 = (safe_ceil_i32(max_y) + 1).min(bh);
+    let x1 = safe_ceil_i32(max_x).saturating_add(1).min(bw);
+    let y1 = safe_ceil_i32(max_y).saturating_add(1).min(bh);
     if x1 <= x0 || y1 <= y0 {
         return;
     }
