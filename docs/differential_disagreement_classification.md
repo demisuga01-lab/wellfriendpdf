@@ -1,0 +1,21 @@
+# Differential disagreement classification
+
+Differential mismatches are normalized before they can affect the Prompt 29 release verdict.
+
+Valid classifications include:
+
+- `wellfriend_bug`
+- `external_tool_bug_or_limitation`
+- `reference_disagreement`
+- `malformed_unspecified_behavior`
+- `unsupported_exact`
+- `standards_policy_difference`
+- `expected_strict_mode`
+- `expected_repair_mode`
+- `needs_manual_review`
+- `deferred_prompt30`
+- `unclassified`
+
+Prompt 29 may close with low-risk manual-review rows only when they are not high-severity Wellfriend regressions. It may not close with an unclassified high-severity Wellfriend failure, crash, hang, OOM, sanitizer failure, or security issue.
+
+The Prompt 29 differential scorecard records attempted file count, disagreement count, and high-severity unclassified count.
