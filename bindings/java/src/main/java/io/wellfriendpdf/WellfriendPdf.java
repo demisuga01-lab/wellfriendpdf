@@ -842,6 +842,11 @@ public final class WellfriendPdf {
             return Native.documentReport(handle, Native.PROMPT20B_REPORT, "prompt20b_report");
         }
 
+        public String prompt31ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT31_REPORT, "prompt31_report");
+        }
+
         public String prompt21ReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.PROMPT21_REPORT, "prompt21_report");
@@ -965,6 +970,35 @@ public final class WellfriendPdf {
         public BinaryResult editTextRange(String requestJson) {
             ensureOpen();
             return Native.prompt20bTextRangeEdit(handle, requestJson);
+        }
+
+        public String prompt31ProvenanceJson(long page, String sourceText, String replacementText) {
+            ensureOpen();
+            if (page < 1) throw new IllegalArgumentException("page must be one-based");
+            return Native.prompt31Provenance(handle, page, sourceText, replacementText);
+        }
+
+        public String prompt31EditEligibilityJson(String requestJson) {
+            ensureOpen();
+            return Native.prompt31EditEligibility(handle, requestJson);
+        }
+
+        public BinaryResult prompt31OperatorTextEdit(String requestJson) {
+            ensureOpen();
+            return Native.prompt31OperatorTextEdit(handle, requestJson);
+        }
+
+        public String prompt31PathProvenanceJson(long page) {
+            ensureOpen();
+            if (page < 1) throw new IllegalArgumentException("page must be one-based");
+            return Native.prompt31PathProvenance(handle, page);
+        }
+
+        public BinaryResult prompt31PathEdit(
+            long page, String stableId, String operationJson, String optionsJson
+        ) {
+            ensureOpen();
+            return Native.prompt31PathEdit(handle, page, stableId, operationJson, optionsJson);
         }
 
         public String prompt20VectorListJson(long page) {
@@ -1452,6 +1486,7 @@ public final class WellfriendPdf {
         private static final MethodHandle PROMPT19_REPORT = documentReport("wellfriendpdf_document_prompt19_report_json");
         private static final MethodHandle PROMPT20_REPORT = documentReport("wellfriendpdf_document_prompt20_report_json");
         private static final MethodHandle PROMPT20B_REPORT = documentReport("wellfriendpdf_document_prompt20b_report_json");
+        private static final MethodHandle PROMPT31_REPORT = documentReport("wellfriendpdf_document_prompt31_report_json");
         private static final MethodHandle PROMPT21_REPORT = documentReport("wellfriendpdf_document_prompt21_report_json");
         private static final MethodHandle PROMPT21_RASTER_VECTOR_REPORT = downcall(
             "wellfriendpdf_document_prompt21_raster_vector_report_json",
@@ -1708,6 +1743,32 @@ public final class WellfriendPdf {
         private static final MethodHandle PROMPT20B_TEXT_RANGE_EDIT = downcall(
             "wellfriendpdf_document_prompt20b_text_range_edit_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT31_PROVENANCE = downcall(
+            "wellfriendpdf_document_prompt31_provenance_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT31_EDIT_ELIGIBILITY = downcall(
+            "wellfriendpdf_document_prompt31_edit_eligibility_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT31_OPERATOR_TEXT_EDIT = downcall(
+            "wellfriendpdf_document_prompt31_operator_text_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT31_PATH_PROVENANCE = downcall(
+            "wellfriendpdf_document_prompt31_path_provenance_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT31_PATH_EDIT = downcall(
+            "wellfriendpdf_document_prompt31_path_edit_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle PROMPT20_VECTOR_LIST = downcall(
@@ -2505,6 +2566,84 @@ public final class WellfriendPdf {
                 return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
             } catch (WellfriendPdfException ex) { throw ex;
             } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt20b_text_range_edit failed", ex); }
+        }
+
+        private static String prompt31Provenance(
+            MemorySegment handle, long page, String sourceText, String replacementText
+        ) {
+            Objects.requireNonNull(sourceText, "sourceText");
+            Objects.requireNonNull(replacementText, "replacementText");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment source = arena.allocateFrom(sourceText);
+                MemorySegment replacement = arena.allocateFrom(replacementText);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT31_PROVENANCE.invokeExact(
+                    handle, page, source, replacement, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt31_provenance failed", ex); }
+        }
+
+        private static String prompt31EditEligibility(MemorySegment handle, String requestJson) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT31_EDIT_ELIGIBILITY.invokeExact(handle, request, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt31_edit_eligibility failed", ex); }
+        }
+
+        private static BinaryResult prompt31OperatorTextEdit(MemorySegment handle, String requestJson) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT31_OPERATOR_TEXT_EDIT.invokeExact(handle, request, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt31_operator_text_edit failed", ex); }
+        }
+
+        private static String prompt31PathProvenance(MemorySegment handle, long page) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT31_PATH_PROVENANCE.invokeExact(handle, page, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt31_path_provenance failed", ex); }
+        }
+
+        private static BinaryResult prompt31PathEdit(
+            MemorySegment handle, long page, String stableId, String operationJson,
+            String optionsJson
+        ) {
+            Objects.requireNonNull(stableId, "stableId");
+            Objects.requireNonNull(operationJson, "operationJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment id = arena.allocateFrom(stableId);
+                MemorySegment operation = arena.allocateFrom(operationJson);
+                MemorySegment options = optionsJson == null || optionsJson.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(optionsJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT31_PATH_EDIT.invokeExact(
+                    handle, page, id, operation, options, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt31_path_edit failed", ex); }
         }
 
         private static BinaryResult prompt20TextEdit(

@@ -942,6 +942,11 @@ mod wasm_api {
             self.report(|b| sdk::prompt20b_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = prompt31ReportJson)]
+        pub fn prompt31_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt31_report_json(b, None))
+        }
+
         #[wasm_bindgen(js_name = prompt21ReportJson)]
         pub fn prompt21_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::prompt21_report_json(b, None))
@@ -1006,6 +1011,41 @@ mod wasm_api {
         #[wasm_bindgen(js_name = prompt20bTextRangeAnalyzeJson)]
         pub fn prompt20b_text_range_analyze_json(&self, page: usize) -> Result<String, JsValue> {
             self.report(|b| sdk::prompt20b_text_range_analyze_json(b, page, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt31ProvenanceJson)]
+        pub fn prompt31_provenance_json(
+            &self,
+            page: usize,
+            source_text: String,
+            replacement_text: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| {
+                sdk::prompt31_provenance_json(b, page, &source_text, &replacement_text, None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = prompt31EditEligibilityJson)]
+        pub fn prompt31_edit_eligibility_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt31_edit_eligibility_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt31PathProvenanceJson)]
+        pub fn prompt31_path_provenance_json(&self, page: usize) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt31_path_provenance_json(b, page, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt31ImageEligibilityJson)]
+        pub fn prompt31_image_eligibility_json(
+            &self,
+            page: usize,
+            occurrence: Option<String>,
+        ) -> Result<String, JsValue> {
+            let _ = occurrence.as_deref();
+            self.report(|b| sdk::prompt31_image_eligibility_json(b, page, None))
         }
 
         #[wasm_bindgen(js_name = prompt20VectorListJson)]
@@ -1179,6 +1219,34 @@ mod wasm_api {
                     old_text,
                     new_text,
                     mode,
+                    options_json.as_deref(),
+                    None,
+                )
+            })
+        }
+
+        #[wasm_bindgen(js_name = prompt31OperatorTextEdit)]
+        pub fn prompt31_operator_text_edit(
+            &self,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt31_operator_text_edit_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt31PathEdit)]
+        pub fn prompt31_path_edit(
+            &self,
+            page: usize,
+            stable_id: &str,
+            operation_json: &str,
+            options_json: Option<String>,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| {
+                sdk::prompt31_path_edit_json(
+                    b,
+                    page,
+                    stable_id,
+                    operation_json,
                     options_json.as_deref(),
                     None,
                 )

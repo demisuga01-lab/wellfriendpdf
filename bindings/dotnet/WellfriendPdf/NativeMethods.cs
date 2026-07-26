@@ -732,6 +732,32 @@ internal static partial class NativeMethods
         DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt31_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt31_provenance_json(
+        DocumentHandle document, UIntPtr page, IntPtr sourceText, IntPtr replacementText,
+        out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt31_edit_eligibility_json(
+        DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt31_operator_text_edit_json(
+        DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt31_path_provenance_json(
+        DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt31_path_edit_json(
+        DocumentHandle document, UIntPtr page, IntPtr stableId, IntPtr operationJson,
+        IntPtr optionsJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_prompt20_vector_list_json(
         DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
 

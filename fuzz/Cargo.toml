@@ -305,3 +305,10 @@ path = "fuzz_targets/post_signature_modification.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "prompt31_operator_edit"
+path = "fuzz_targets/prompt31_operator_edit.rs"
+test = false
+doc = false
+bench = false

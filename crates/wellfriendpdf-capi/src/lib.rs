@@ -3421,6 +3421,166 @@ pub unsafe extern "C" fn wellfriendpdf_document_prompt20_ink_fit_json(
         })
     }
 }
+
+/// Return Prompt 31's canonical provenance/operator-editing architecture report.
+///
+/// # Safety
+/// `document` must be live and output pointers writable; release the returned
+/// JSON with `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt31_report_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt31_report_json(bytes, None)
+        })
+    }
+}
+
+/// Resolve Prompt 31 parser-backed source provenance for a text selection.
+///
+/// # Safety
+/// `source_text` and `replacement_text` are NUL-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt31_provenance_json(
+    document: *const WellfriendDocument,
+    page: usize,
+    source_text: *const c_char,
+    replacement_text: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let source = unsafe { required_c_string(source_text, "source_text") };
+    let replacement = unsafe { required_c_string(replacement_text, "replacement_text") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt31_provenance_json(
+                bytes,
+                page,
+                &source
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                &replacement
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Plan a Prompt 31 source-level text mutation.  Refusals are returned as JSON
+/// without producing output bytes.
+///
+/// # Safety
+/// `request_json` is a NUL-terminated UTF-8 request.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt31_edit_eligibility_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt31_edit_eligibility_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Apply a Prompt 31 operator-preserving text edit and return owned PDF bytes
+/// plus a stable operation report.
+///
+/// # Safety
+/// Standard document and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt31_operator_text_edit_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt31_operator_text_edit_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// List Prompt 31 canonical vector/path source provenance.
+///
+/// # Safety
+/// `document` must be live and output pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt31_path_provenance_json(
+    document: *const WellfriendDocument,
+    page: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt31_path_provenance_json(bytes, page, None)
+        })
+    }
+}
+
+/// Apply a Prompt 31 operator-preserving vector/path/graphics mutation.
+///
+/// # Safety
+/// Input strings are NUL-terminated UTF-8 and returned outputs are owned.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt31_path_edit_json(
+    document: *const WellfriendDocument,
+    page: usize,
+    stable_id: *const c_char,
+    operation_json: *const c_char,
+    options_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let stable_id = unsafe { required_c_string(stable_id, "stable_id") };
+    let operation = unsafe { required_c_string(operation_json, "operation_json") };
+    let options = unsafe { optional_c_string(options_json) };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt31_path_edit_json(
+                bytes,
+                page,
+                &stable_id
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                &operation
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                options
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+                None,
+            )
+        })
+    }
+}
 xfa_document_report!(
     wellfriendpdf_document_associated_files_report_json,
     associated_files_report_json
@@ -5567,6 +5727,14 @@ mod tests {
             prompt20b["report"]["schema_version"],
             "prompt20b.multirun-form-appearance-closure.v1"
         );
+        let prompt31 = report_envelope(
+            wellfriendpdf_document_prompt31_report_json,
+            "prompt31_report",
+        );
+        assert_eq!(
+            prompt31["report"]["schema_version"],
+            "prompt31.provenance-operator-editing.v1"
+        );
         report_envelope(
             wellfriendpdf_document_associated_files_report_json,
             "associated_files_report",
@@ -5667,6 +5835,61 @@ mod tests {
         let report = unsafe { CStr::from_ptr(edit_json) }.to_string_lossy();
         assert!(report.contains("prompt20b_multi_run_text_edit_report"));
         assert!(report.contains("\"replacement_extracts\":true"));
+        unsafe {
+            wellfriendpdf_buffer_free(output);
+            wellfriendpdf_string_free(edit_json);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_prompt31_operator_surfaces_return_owned_outputs() {
+        let (doc, _pdf) = open_sample();
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+        let source = CString::new("Hello C API").unwrap();
+        let replacement = CString::new("HELLO C ABI").unwrap();
+        let status = unsafe {
+            wellfriendpdf_document_prompt31_provenance_json(
+                doc,
+                1,
+                source.as_ptr(),
+                replacement.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(text.contains("prompt31_provenance_report"));
+        unsafe { wellfriendpdf_string_free(json) };
+
+        let request = CString::new(
+            r#"{
+                "requested_mode":"operator_preserving",
+                "page":1,
+                "source_text":"Hello C API",
+                "replacement_text":"HELLO C ABI",
+                "signature_policy_override":false
+            }"#,
+        )
+        .unwrap();
+        let mut output = WellfriendBuffer::empty();
+        let mut edit_json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_prompt31_operator_text_edit_json(
+                doc,
+                request.as_ptr(),
+                &mut output,
+                &mut edit_json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let bytes = unsafe { slice::from_raw_parts(output.data, output.len) };
+        assert!(bytes.starts_with(b"%PDF-"));
+        let report = unsafe { CStr::from_ptr(edit_json) }.to_string_lossy();
+        assert!(report.contains("prompt31_operator_text_edit"));
         unsafe {
             wellfriendpdf_buffer_free(output);
             wellfriendpdf_string_free(edit_json);

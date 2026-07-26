@@ -830,6 +830,42 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt20b_text_range_edit_json(
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_provenance_json(
+    const WellfriendDocument *document,
+    size_t page,
+    const char *source_text,
+    const char *replacement_text,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_edit_eligibility_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_operator_text_edit_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_path_provenance_json(
+    const WellfriendDocument *document,
+    size_t page,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_path_edit_json(
+    const WellfriendDocument *document,
+    size_t page,
+    const char *stable_id,
+    const char *operation_json,
+    const char *options_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
 WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_vector_list_json(
     const WellfriendDocument *document,
     size_t page,

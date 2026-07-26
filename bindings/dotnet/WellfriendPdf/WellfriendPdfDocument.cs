@@ -506,6 +506,13 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string Prompt31ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_prompt31_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
     public string Prompt21ReportJson()
     {
         ThrowIfDisposed();
@@ -729,6 +736,95 @@ public sealed class WellfriendDocument : IDisposable
         finally
         {
             if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public string Prompt31ProvenanceJson(nuint page, string sourceText, string replacementText)
+    {
+        ThrowIfDisposed();
+        if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
+        ArgumentException.ThrowIfNullOrWhiteSpace(sourceText);
+        ArgumentNullException.ThrowIfNull(replacementText);
+        var sourcePtr = NativeMethods.StringToNativeOrNull(sourceText);
+        var replacementPtr = NativeMethods.StringToNativeOrNull(replacementText);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt31_provenance_json(
+                _handle, (UIntPtr)page, sourcePtr, replacementPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (sourcePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(sourcePtr);
+            if (replacementPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(replacementPtr);
+        }
+    }
+
+    public string Prompt31EditEligibilityJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt31_edit_eligibility_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public WellfriendBinaryResult Prompt31OperatorTextEdit(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt31_operator_text_edit_json(
+                _handle, requestPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public string Prompt31PathProvenanceJson(nuint page)
+    {
+        ThrowIfDisposed();
+        if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
+        var status = NativeMethods.wellfriendpdf_document_prompt31_path_provenance_json(
+            _handle, (UIntPtr)page, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public WellfriendBinaryResult Prompt31PathEdit(
+        nuint page, string stableId, string operationJson, string? optionsJson = null)
+    {
+        ThrowIfDisposed();
+        if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
+        ArgumentException.ThrowIfNullOrWhiteSpace(stableId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(operationJson);
+        var idPtr = NativeMethods.StringToNativeOrNull(stableId);
+        var operationPtr = NativeMethods.StringToNativeOrNull(operationJson);
+        var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt31_path_edit_json(
+                _handle, (UIntPtr)page, idPtr, operationPtr, optionsPtr,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (idPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(idPtr);
+            if (operationPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(operationPtr);
+            if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
         }
     }
 

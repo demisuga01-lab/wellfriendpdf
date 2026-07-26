@@ -121,6 +121,7 @@ pub mod prompt20;
 pub mod prompt21;
 pub mod prompt22;
 pub mod prompt23;
+pub mod prompt31;
 pub mod pubsec;
 pub mod reader;
 pub mod render;
@@ -394,6 +395,13 @@ pub use prompt23::{
     public_key_handler_report_bytes, writer_closeout_report, writer_external_diff_report,
     Prompt23FeatureMatrixRow, Prompt23Report, Prompt23Status, PROMPT23_ARTIFACT_ROOT,
     PROMPT23_SCHEMA_VERSION,
+};
+pub use prompt31::{
+    edit_path_operator, edit_text_operator, operator_image_eligibility, operator_path_provenance,
+    operator_text_eligibility, operator_text_provenance, prompt31_report,
+    OperatorEditOperationReport, OperatorEditRefusal, OperatorTextEditRequest,
+    OperatorTextEligibilityReport, ProvenanceSelectionReport, ProvenanceStrength,
+    SourceInstructionIdentity, TrueEditingMode, PROMPT31_SCHEMA_VERSION,
 };
 pub use pubsec::{
     encrypt_pdf_pubsec, parse_pubsec_encryption_info, recover_pubsec_file_key,

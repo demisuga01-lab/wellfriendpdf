@@ -347,6 +347,20 @@ enum Commands {
     Prompt22OfficeToPdf(Prompt22OfficeToPdfArgs),
     /// Analyze or edit a logical text range spanning text-showing operators
     EditTextRange(Prompt20bTextRangeArgs),
+    /// Report source-level provenance for an operator-preserving text selection
+    ProvenanceReport(Prompt31TextSelectionArgs),
+    /// Check whether an operator-preserving edit can be applied without escalation
+    EditEligibility(Prompt31TextSelectionArgs),
+    /// Replace text by mutating the original text-showing operator, not an overlay
+    EditTextOperator(Prompt31TextEditArgs),
+    /// Edit one source path/vector operator through the Prompt 31 routed API
+    EditPathOperator(Prompt31PathEditArgs),
+    /// Report exact unsupported/source eligibility for image occurrence edits
+    EditImageOccurrence(Prompt31ImageArgs),
+    /// Clone/edit one Form occurrence through source-level vector routing
+    EditFormOccurrence(Prompt31PathEditArgs),
+    /// Report the Prompt 31 true-editing operation schema and limits
+    EditOperationReport(Prompt17ReportArgs),
     /// Alias for vector-list focused on Form invocation ownership
     FormInstanceReport(Prompt20VectorListArgs),
     /// Alias for vector-edit with clone-edit-one-instance policy
@@ -1357,6 +1371,102 @@ struct Prompt20VectorListArgs {
     /// One-based page number
     #[arg(short, long, default_value_t = 1)]
     page: usize,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt31TextSelectionArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Source text to resolve to PDF text-showing operators
+    #[arg(long = "source-text")]
+    source_text: String,
+    /// Replacement text used for eligibility and encoding checks
+    #[arg(long = "replacement-text")]
+    replacement_text: String,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt31TextEditArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Source text to resolve to PDF text-showing operators
+    #[arg(long = "source-text")]
+    source_text: String,
+    /// Replacement text that must fit the operator-preserving contract
+    #[arg(long = "replacement-text")]
+    replacement_text: String,
+    /// Output PDF
+    #[arg(short, long, default_value = "operator-text-edited.pdf")]
+    output: PathBuf,
+    /// Optional JSON report output
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Permit an explicit signature-policy override
+    #[arg(long)]
+    signature_policy_override: bool,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt31PathEditArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Stable vector/path ID from vector-list
+    #[arg(long)]
+    id: String,
+    /// VectorEditOperation JSON file
+    #[arg(long)]
+    operation: Option<PathBuf>,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Output PDF
+    #[arg(short, long, default_value = "operator-path-edited.pdf")]
+    output: PathBuf,
+    /// Optional JSON report
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Permit an explicit signature-policy override
+    #[arg(long)]
+    signature_policy_override: bool,
+    /// Shared Form policy: reject, edit-all-uses, or clone-edit-one-instance
+    #[arg(long, default_value = "reject")]
+    shared_form_policy: String,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt31ImageArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Optional occurrence identifier when the caller already resolved one
+    #[arg(long)]
+    occurrence: Option<String>,
     /// Output JSON; defaults to stdout
     #[arg(short, long)]
     output: Option<PathBuf>,
@@ -3106,6 +3216,16 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Prompt22OfficeInspect(args) => run_prompt22_office_inspect(args),
         Commands::Prompt22OfficeToPdf(args) => run_prompt22_office_to_pdf(args),
         Commands::EditTextRange(args) => run_prompt20b_text_range(args),
+        Commands::ProvenanceReport(args) => run_prompt31_provenance(args),
+        Commands::EditEligibility(args) => run_prompt31_eligibility(args),
+        Commands::EditTextOperator(args) => run_prompt31_text_edit(args),
+        Commands::EditPathOperator(args) => run_prompt31_path_edit(args),
+        Commands::EditImageOccurrence(args) => run_prompt31_image_eligibility(args),
+        Commands::EditFormOccurrence(mut args) => {
+            args.shared_form_policy = "clone-edit-one-instance".to_string();
+            run_prompt31_path_edit(args)
+        }
+        Commands::EditOperationReport(args) => run_prompt31_report(args),
         Commands::FormInstanceReport(args) => run_prompt20_vector_list(args),
         Commands::FormCloneOne(mut args) => {
             args.shared_form_policy = "clone-edit-one-instance".to_string();
@@ -4818,6 +4938,110 @@ fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn 
         println!("{pretty}");
     }
     Ok(())
+}
+
+fn run_prompt31_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = read_edit_input(&args.pdf, &args.password)?;
+    let report = wellfriendpdf_engine::sdk::prompt31_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&None, &pretty_json(&report)?)
+}
+
+fn run_prompt31_provenance(args: Prompt31TextSelectionArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let report = wellfriendpdf_engine::sdk::prompt31_provenance_json(
+        &input,
+        args.page,
+        &args.source_text,
+        &args.replacement_text,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt31_eligibility(args: Prompt31TextSelectionArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = serde_json::json!({
+        "requested_mode": "operator_preserving",
+        "page": args.page,
+        "source_text": args.source_text,
+        "replacement_text": args.replacement_text,
+        "signature_policy_override": false
+    });
+    let report = wellfriendpdf_engine::sdk::prompt31_edit_eligibility_json(
+        &input,
+        &request.to_string(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt31_text_edit(args: Prompt31TextEditArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = serde_json::json!({
+        "requested_mode": "operator_preserving",
+        "page": args.page,
+        "source_text": args.source_text,
+        "replacement_text": args.replacement_text,
+        "signature_policy_override": args.signature_policy_override
+    });
+    let (output, report) = wellfriendpdf_engine::sdk::prompt31_operator_text_edit_json(
+        &input,
+        &request.to_string(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, output)?;
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, pretty)?;
+    } else {
+        println!("{pretty}");
+    }
+    Ok(())
+}
+
+fn run_prompt31_path_edit(args: Prompt31PathEditArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let operation = if let Some(path) = args.operation {
+        std::fs::read_to_string(path)?
+    } else {
+        "{}".to_string()
+    };
+    let options = serde_json::json!({
+        "signature_policy_override": args.signature_policy_override,
+        "deterministic": true,
+        "shared_form_policy": args.shared_form_policy
+    });
+    let options_json = options.to_string();
+    let (output, report) = wellfriendpdf_engine::sdk::prompt31_path_edit_json(
+        &input,
+        args.page,
+        &args.id,
+        &operation,
+        Some(options_json.as_str()),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, output)?;
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, pretty)?;
+    } else {
+        println!("{pretty}");
+    }
+    Ok(())
+}
+
+fn run_prompt31_image_eligibility(args: Prompt31ImageArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let _ = args.occurrence.as_deref();
+    let report = wellfriendpdf_engine::sdk::prompt31_image_eligibility_json(
+        &input,
+        args.page,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
 fn run_prompt20_vector_list(args: Prompt20VectorListArgs) -> Result<(), Box<dyn Error>> {

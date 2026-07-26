@@ -976,6 +976,55 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::prompt20b_report_json(bytes, None))
     }
 
+    fn prompt31_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt31_report_json(bytes, None))
+    }
+
+    #[pyo3(signature = (page, source_text, replacement_text))]
+    fn prompt31_provenance<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        source_text: &str,
+        replacement_text: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let source_text = source_text.to_string();
+        let replacement_text = replacement_text.to_string();
+        self.report_json(py, |bytes| {
+            sdk::prompt31_provenance_json(bytes, page, &source_text, &replacement_text, None)
+        })
+    }
+
+    #[pyo3(signature = (request_json))]
+    fn prompt31_edit_eligibility<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let request_json = request_json.to_string();
+        self.report_json(py, |bytes| {
+            sdk::prompt31_edit_eligibility_json(bytes, &request_json, None)
+        })
+    }
+
+    #[pyo3(signature = (request_json, output=None))]
+    fn prompt31_operator_text_edit<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::prompt31_operator_text_edit_json(&bytes, request_json, None)
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
     fn prompt21_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::prompt21_report_json(bytes, None))
     }
@@ -1123,6 +1172,55 @@ impl PyDocument {
     fn prompt20_vector_list<'py>(&self, py: Python<'py>, page: usize) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
             sdk::prompt20_vector_list_json(bytes, page, None)
+        })
+    }
+
+    #[pyo3(signature = (page))]
+    fn prompt31_path_provenance<'py>(&self, py: Python<'py>, page: usize) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt31_path_provenance_json(bytes, page, None)
+        })
+    }
+
+    #[pyo3(signature = (page, stable_id, operation_json, options_json=None, output=None))]
+    fn prompt31_path_edit<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        stable_id: &str,
+        operation_json: &str,
+        options_json: Option<&str>,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::prompt31_path_edit_json(
+                &bytes,
+                page,
+                stable_id,
+                operation_json,
+                options_json,
+                None,
+            )
+        })?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (page, occurrence=None))]
+    fn prompt31_image_eligibility<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+        occurrence: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let occurrence = occurrence.map(str::to_string);
+        self.report_json(py, |bytes| {
+            let _ = occurrence.as_deref();
+            sdk::prompt31_image_eligibility_json(bytes, page, None)
         })
     }
 

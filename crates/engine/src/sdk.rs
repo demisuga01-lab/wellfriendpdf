@@ -858,6 +858,108 @@ pub fn prompt20_ink_fit_json(
     Ok((output, envelope("prompt20_ink_fit_report", &report)?))
 }
 
+/// Prompt 31's canonical architecture/status report.  It describes the real
+/// parser-backed editing paths and exact Prompt 32/33 deferrals.
+pub fn prompt31_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let _ = open(bytes, password)?;
+    envelope("prompt31_report", &crate::prompt31::prompt31_report())
+}
+
+/// Resolve parser-backed text source instructions and semantic source spans.
+pub fn prompt31_provenance_json(
+    bytes: &[u8],
+    page: usize,
+    source_text: &str,
+    replacement_text: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt31_provenance_report",
+        &crate::prompt31::operator_text_provenance(&input, page, source_text, replacement_text)?,
+    )
+}
+
+/// Plan a Prompt 31 operator-preserving text edit.  Refusals are returned as
+/// structured JSON and do not alter the input document.
+pub fn prompt31_edit_eligibility_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt31::OperatorTextEditRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt31_operator_text_eligibility",
+        &crate::prompt31::operator_text_eligibility(&input, &request)?,
+    )
+}
+
+/// Apply the source-level Prompt 31 text mutation and return bytes plus its
+/// stable operation report.  This path rejects ineligible requests; callers
+/// should invoke `prompt31_edit_eligibility_json` first to receive a refusal.
+pub fn prompt31_operator_text_edit_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt31::OperatorTextEditRequest>(request_json)
+        .map_err(json_err)?;
+    let (output, report) = crate::prompt31::edit_text_operator(&input, &request)?;
+    Ok((output, envelope("prompt31_operator_text_edit", &report)?))
+}
+
+/// Return the canonical vector/path source inventory used by Prompt 31.
+pub fn prompt31_path_provenance_json(
+    bytes: &[u8],
+    page: usize,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt31_operator_path_provenance",
+        &crate::prompt31::operator_path_provenance(&input, page)?,
+    )
+}
+
+/// Apply a canonical source-range vector/path or graphics-state mutation.
+pub fn prompt31_path_edit_json(
+    bytes: &[u8],
+    page: usize,
+    stable_id: &str,
+    operation_json: &str,
+    options_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let operation = serde_json::from_str::<crate::prompt20::VectorEditOperation>(operation_json)
+        .map_err(json_err)?;
+    let options = options_json
+        .map(serde_json::from_str::<crate::prompt20::VectorEditOptions>)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    let (output, report) =
+        crate::prompt31::edit_path_operator(&input, page, stable_id, operation, &options)?;
+    Ok((output, envelope("prompt31_operator_path_edit", &report)?))
+}
+
+/// Images intentionally fail closed until canonical occurrence-to-source
+/// instruction identity is available.
+pub fn prompt31_image_eligibility_json(
+    bytes: &[u8],
+    page: usize,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt31_operator_image_eligibility",
+        &crate::prompt31::operator_image_eligibility(&input, page),
+    )
+}
+
 /// Prompt 18 mask/soft-mask inventory and secure fallback posture.
 pub fn mask_redaction_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
