@@ -141,11 +141,16 @@ pub struct DashState {
     current_idx: usize,
 }
 
+const MIN_RENDERABLE_DASH_INTERVAL: f64 = 0.05;
+const MAX_DASH_ADVANCE_SEGMENTS: usize = 512;
+const MAX_DASH_ADVANCE_ITERATIONS: usize = 4096;
+
 impl DashState {
     pub fn new(pattern: Vec<f64>, phase: f64) -> Self {
         let pattern: Vec<f64> = pattern
             .into_iter()
             .filter(|interval| interval.is_finite() && *interval > 0.0)
+            .map(|interval| interval.max(MIN_RENDERABLE_DASH_INTERVAL))
             .collect();
         let total: f64 = pattern.iter().sum();
         let phase = if total > 0.0 {
@@ -201,6 +206,17 @@ impl DashState {
         self.phase
     }
 
+    pub(crate) fn estimated_segment_count(&self, distance: f64) -> Option<usize> {
+        if distance <= 0.0 || !distance.is_finite() || self.pattern.is_empty() {
+            return None;
+        }
+        let min_interval = self.pattern.iter().copied().fold(f64::INFINITY, f64::min);
+        if !min_interval.is_finite() || min_interval <= 0.0 {
+            return None;
+        }
+        Some((distance / min_interval).ceil().min(usize::MAX as f64) as usize)
+    }
+
     /// Advance along a line by distance units.
     pub fn advance(&mut self, distance: f64) -> Vec<(f64, f64, bool)> {
         if distance <= 0.0 || !distance.is_finite() {
@@ -213,11 +229,31 @@ impl DashState {
         if total <= 0.0 {
             return vec![(0.0, distance, true)];
         }
+        if self
+            .estimated_segment_count(distance)
+            .is_some_and(|count| count > MAX_DASH_ADVANCE_SEGMENTS)
+        {
+            self.skip_distance(distance);
+            return vec![(0.0, distance, true)];
+        }
 
         let mut segments = Vec::new();
         let mut traveled = 0.0_f64;
+        let mut iterations = 0usize;
 
         while traveled < distance {
+            iterations += 1;
+            if iterations > MAX_DASH_ADVANCE_ITERATIONS {
+                self.skip_distance(distance - traveled);
+                if segments.is_empty() {
+                    return vec![(0.0, distance, true)];
+                }
+                return segments;
+            }
+            if segments.len() >= MAX_DASH_ADVANCE_SEGMENTS {
+                self.skip_distance(distance - traveled);
+                return segments;
+            }
             let current_interval = self.pattern[self.current_idx];
             let remaining_in_interval = current_interval - self.current_pos;
             let can_travel = (distance - traveled).min(remaining_in_interval);
@@ -242,6 +278,29 @@ impl DashState {
         }
 
         segments
+    }
+
+    fn skip_distance(&mut self, distance: f64) {
+        if distance <= 0.0 || self.pattern.is_empty() {
+            return;
+        }
+        let total: f64 = self.pattern.iter().sum();
+        if total <= 0.0 {
+            return;
+        }
+        let current_offset: f64 =
+            self.pattern.iter().take(self.current_idx).sum::<f64>() + self.current_pos;
+        let mut offset = (current_offset + distance).rem_euclid(total);
+        for (idx, interval) in self.pattern.iter().copied().enumerate() {
+            if offset < interval {
+                self.current_idx = idx;
+                self.current_pos = offset;
+                return;
+            }
+            offset -= interval;
+        }
+        self.current_idx = 0;
+        self.current_pos = 0.0;
     }
 }
 
@@ -385,6 +444,31 @@ mod tests {
         assert!(segs.iter().any(|(_, _, drawing)| !*drawing));
         assert!(segs[0].2);
         assert!(!segs[1].2);
+    }
+
+    #[test]
+    fn tiny_dash_intervals_do_not_expand_without_bound() {
+        let mut ds = DashState::new(vec![f64::MIN_POSITIVE, f64::MIN_POSITIVE], 0.0);
+        let segs = ds.advance(100_000.0);
+        assert!(
+            segs.len() <= MAX_DASH_ADVANCE_SEGMENTS,
+            "dash expansion must remain bounded, got {} segments",
+            segs.len()
+        );
+        assert!(segs
+            .iter()
+            .all(|(start, end, _)| start.is_finite() && end.is_finite()));
+    }
+
+    #[test]
+    fn huge_dash_patterns_do_not_spin_without_progress() {
+        let mut ds = DashState::new(vec![f64::MIN_POSITIVE; 10_000], 123.0);
+        let segs = ds.advance(100.0);
+        assert!(
+            segs.len() <= MAX_DASH_ADVANCE_SEGMENTS,
+            "dash advancement must remain bounded, got {} segments",
+            segs.len()
+        );
     }
 
     #[test]

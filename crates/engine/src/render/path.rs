@@ -648,6 +648,8 @@ struct StrokeSegment {
     normal: (f64, f64),
 }
 
+const MAX_DASH_POLYLINE_PIECES: usize = 1024;
+
 pub(crate) fn stroke_flat_path(
     flat: &FlatPath,
     width_px: f64,
@@ -730,6 +732,10 @@ fn normalize_stroke_points(points: &[(f64, f64)], closed: bool) -> Option<Vec<(f
 }
 
 fn dash_polyline(points: &[(f64, f64)], dash: &DashState) -> Vec<Vec<(f64, f64)>> {
+    if dash_polyline_would_expand_too_much(points, dash) {
+        return vec![points.to_vec()];
+    }
+
     let mut pieces = Vec::new();
     let mut current = Vec::new();
     let mut dash_state = dash.clone();
@@ -771,6 +777,25 @@ fn dash_polyline(points: &[(f64, f64)], dash: &DashState) -> Vec<Vec<(f64, f64)>
 
     finish_dash_piece(&mut pieces, &mut current);
     pieces
+}
+
+fn dash_polyline_would_expand_too_much(points: &[(f64, f64)], dash: &DashState) -> bool {
+    if dash.is_solid() {
+        return false;
+    }
+    let total_len = points
+        .windows(2)
+        .filter_map(|window| {
+            let p0 = window[0];
+            let p1 = window[1];
+            let dx = p1.0 - p0.0;
+            let dy = p1.1 - p0.1;
+            let len = (dx * dx + dy * dy).sqrt();
+            len.is_finite().then_some(len)
+        })
+        .sum::<f64>();
+    dash.estimated_segment_count(total_len)
+        .is_some_and(|count| count > MAX_DASH_POLYLINE_PIECES)
 }
 
 fn finish_dash_piece(pieces: &mut Vec<Vec<(f64, f64)>>, current: &mut Vec<(f64, f64)>) {
@@ -1538,6 +1563,14 @@ mod tests {
             (last.0 - 12.0).abs() < 1e-8 && last.1.abs() < 1e-8,
             "dash should continue across segment boundary, got {last:?}"
         );
+    }
+
+    #[test]
+    fn dense_dash_polyline_falls_back_before_expansion() {
+        let points: Vec<(f64, f64)> = (0..256).map(|idx| (f64::from(idx), 0.0)).collect();
+        let pieces = dash_polyline(&points, &DashState::new(vec![0.001, 0.001], 0.0));
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].len(), points.len());
     }
 
     #[test]

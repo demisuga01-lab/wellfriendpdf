@@ -690,11 +690,8 @@ fn exec_ps_op(name: &str, stack: &mut Vec<PsValue>, depth: usize) -> Result<(), 
         "bitshift" => {
             let shift = pop_num(stack)? as i64;
             let a = pop_num(stack)? as i64;
-            let v = if shift >= 0 {
-                a << (shift.min(63))
-            } else {
-                a >> ((-shift).min(63))
-            };
+            let amount = shift.unsigned_abs().min(63) as u32;
+            let v = if shift >= 0 { a << amount } else { a >> amount };
             stack.push(PsValue::Num(v as f64));
         }
         "true" => stack.push(PsValue::Bool(true)),
@@ -812,6 +809,13 @@ mod tests {
         // 1 2 3  3 1 roll -> 3 1 2
         let r = run_ps("{ 1 2 3 3 1 roll }", &[], 3);
         assert_eq!(r, vec![3.0, 1.0, 2.0]);
+    }
+
+    #[test]
+    fn ps_bitshift_min_shift_does_not_panic() {
+        let r = run_ps("{ 1 -9223372036854775808 bitshift }", &[], 1);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].is_finite());
     }
 
     #[test]

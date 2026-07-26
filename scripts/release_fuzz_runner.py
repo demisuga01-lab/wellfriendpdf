@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Prompt 27 release fuzz runner.
+"""Release fuzz runner used by Prompt 27 and later hardening campaigns.
 
 Runs cargo-fuzz one target at a time with explicit memory/time policy and writes
 machine-readable evidence. The defaults preserve serial Prompt 25B-style fuzzing
 posture: dev fuzz builds, high codegen units, no trace compares, bounded input,
-and explicit process-tree RSS caps. Prompt 27's VPS run uses a user-approved
-16 GiB cap while keeping the overall Wellfriend test allocation under 32 GiB.
+and explicit process-tree RSS caps. Prompt 27+ VPS campaigns use a user-approved
+16 GiB per-process cap while keeping the overall Wellfriend test allocation
+under 32 GiB.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from pathlib import Path
 from release_fuzz_matrix import HIGH_PRIORITY_LONG, RELEASE_CRITICAL, build_payload
 
 
-SCHEMA_VERSION = "prompt27.release-fuzz-runner.v1"
+SCHEMA_VERSION = "wellfriendpdf.release-fuzz-runner.v2"
 PARSER_GROUP = [
     "parse_pdf",
     "content_tokenizer",
@@ -192,11 +193,13 @@ def run_command(
     log_path: Path,
     timeout_seconds: int,
     memory_mb: int | None = None,
+    duration_complete_seconds: int | None = None,
 ) -> dict[str, object]:
     start = time.monotonic()
     started = utc()
     log_path.parent.mkdir(parents=True, exist_ok=True)
     timed_out = False
+    duration_completed = False
     memory_exceeded = False
     peak_rss_kib = 0
     exit_code: int | None
@@ -227,6 +230,15 @@ def run_command(
                 log.flush()
                 terminate_process_tree(proc)
                 break
+            if duration_complete_seconds and elapsed_now >= duration_complete_seconds:
+                duration_completed = True
+                log.write(
+                    f"\nDURATION_COMPLETE requested_seconds={duration_complete_seconds} "
+                    f"elapsed_seconds={elapsed_now:.3f}\n"
+                )
+                log.flush()
+                terminate_process_tree(proc)
+                break
             if elapsed_now > timeout_seconds:
                 timed_out = True
                 log.write(f"\nTIMEOUT after {timeout_seconds}s\n")
@@ -246,6 +258,8 @@ def run_command(
     tail = output.splitlines()[-120:]
     if memory_exceeded:
         status = "memory_exceeded"
+    elif duration_completed:
+        status = "passed"
     elif timed_out:
         status = "timeout"
     else:
@@ -258,6 +272,8 @@ def run_command(
         "elapsed_seconds": elapsed,
         "timeout_seconds": timeout_seconds,
         "timed_out": timed_out,
+        "duration_complete_seconds": duration_complete_seconds,
+        "duration_completed": duration_completed,
         "memory_cap_mib": memory_mb,
         "memory_exceeded": memory_exceeded,
         "peak_rss_kib": peak_rss_kib,
@@ -278,6 +294,7 @@ def run_target(
     timed_seconds: int,
     max_len: int,
     timeout_buffer: int,
+    per_input_timeout: int,
 ) -> dict[str, object]:
     fuzz_dir = repo / "fuzz"
     env = os.environ.copy()
@@ -314,6 +331,8 @@ def run_target(
         libfuzzer_args = [
             f"-runs={smoke_runs}",
             f"-max_len={max_len}",
+            f"-rss_limit_mb={memory_mb}",
+            f"-timeout={per_input_timeout}",
             f"-artifact_prefix={target_artifacts.as_posix()}/",
         ]
         cmd = ["cargo", "+nightly", "fuzz", "run", target] + cargo_fuzz_options() + ["--"] + libfuzzer_args
@@ -335,6 +354,8 @@ def run_target(
         libfuzzer_args = [
             f"-max_total_time={timed_seconds}",
             f"-max_len={max_len}",
+            f"-rss_limit_mb={memory_mb}",
+            f"-timeout={per_input_timeout}",
             f"-artifact_prefix={target_artifacts.as_posix()}/",
         ]
         cmd = ["cargo", "+nightly", "fuzz", "run", target] + cargo_fuzz_options() + ["--"] + libfuzzer_args
@@ -346,6 +367,7 @@ def run_target(
                 log_path=target_artifacts / "long.log",
                 timeout_seconds=timed_timeout,
                 memory_mb=memory_mb,
+                duration_complete_seconds=timed_seconds,
             )
         )
 
@@ -403,6 +425,7 @@ def main() -> int:
     parser.add_argument("--high-priority-seconds", type=int, default=1800)
     parser.add_argument("--max-len", type=int, default=262144)
     parser.add_argument("--timeout-buffer", type=int, default=120)
+    parser.add_argument("--per-input-timeout", type=int, default=30)
     parser.add_argument("--no-build", action="store_true")
     parser.add_argument("--no-smoke", action="store_true")
     args = parser.parse_args()
@@ -429,6 +452,7 @@ def main() -> int:
                 timed_seconds=timed_seconds,
                 max_len=args.max_len,
                 timeout_buffer=args.timeout_buffer,
+                per_input_timeout=args.per_input_timeout,
             )
         )
     passed = all(item["status"] == "passed" for item in results)
@@ -447,7 +471,7 @@ def main() -> int:
             "no_trace_compares": True,
             "input_cap_bytes": args.max_len,
             "one_target_at_a_time": True,
-            "user_approved_prompt27_memory_override": "16 GiB per fuzz process on VPS; total Wellfriend allocation remains 32 GiB",
+            "user_approved_memory_override": "16 GiB per fuzz process on VPS; total Wellfriend allocation remains 32 GiB",
         },
         "long_campaign": {
             "high_priority_targets": high_priority,
