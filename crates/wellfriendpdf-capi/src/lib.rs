@@ -3581,6 +3581,254 @@ pub unsafe extern "C" fn wellfriendpdf_document_prompt31_path_edit_json(
         })
     }
 }
+
+/// Return Prompt 32's scene/transaction/font architecture report.
+///
+/// # Safety
+/// `document` must be live and output pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt32_report_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt32_report_json(bytes, None)
+        })
+    }
+}
+
+/// Build a Prompt 32 editable scene graph. `pages_json` may be NULL or a JSON
+/// array of one-based page numbers.
+///
+/// # Safety
+/// Strings are NUL-terminated UTF-8; returned JSON is owned.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt32_scene_report_json(
+    document: *const WellfriendDocument,
+    pages_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let pages = unsafe { optional_c_string(pages_json) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt32_scene_report_json(
+                bytes,
+                pages
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+                None,
+            )
+        })
+    }
+}
+
+/// Resolve a Prompt 32 scene selection/hit-test request.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt32_scene_select_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt32_scene_select_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Plan an atomic Prompt 32 scene text transaction.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt32_transaction_plan_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt32_transaction_plan_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Apply an atomic Prompt 32 scene text transaction and return owned PDF bytes
+/// plus an owned JSON report.
+///
+/// # Safety
+/// Standard document and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt32_transaction_apply_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt32_transaction_apply_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Report text identity/grapheme/bidi/shaping mappings.
+///
+/// # Safety
+/// Strings are NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt32_text_map_json(
+    document: *const WellfriendDocument,
+    text: *const c_char,
+    direction: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let text = unsafe { required_c_string(text, "text") };
+    let direction = unsafe { optional_c_string(direction) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |_bytes| {
+            sdk::prompt32_text_map_json(
+                &text
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                direction
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+            )
+        })
+    }
+}
+
+/// Preview Prompt 32 shaping.
+///
+/// # Safety
+/// Strings are NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt32_shape_text_json(
+    document: *const WellfriendDocument,
+    text: *const c_char,
+    direction: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let text = unsafe { required_c_string(text, "text") };
+    let direction = unsafe { optional_c_string(direction) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |_bytes| {
+            sdk::prompt32_shape_text_json(
+                &text
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                direction
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+            )
+        })
+    }
+}
+
+/// Plan Prompt 32 deterministic subset reconstruction.
+///
+/// # Safety
+/// Strings are NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt32_font_subset_plan_json(
+    document: *const WellfriendDocument,
+    text: *const c_char,
+    direction: *const c_char,
+    policy: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let text = unsafe { required_c_string(text, "text") };
+    let direction = unsafe { optional_c_string(direction) };
+    let policy = unsafe { optional_c_string(policy) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |_bytes| {
+            sdk::prompt32_font_subset_plan_json(
+                &text
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                direction
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+                policy
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+            )
+        })
+    }
+}
+
+/// Report Prompt 32 font substitution policy/scoring.
+///
+/// # Safety
+/// Strings are NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt32_font_substitution_report_json(
+    document: *const WellfriendDocument,
+    requested_family: *const c_char,
+    text: *const c_char,
+    policy: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let family = unsafe { required_c_string(requested_family, "requested_family") };
+    let text = unsafe { required_c_string(text, "text") };
+    let policy = unsafe { optional_c_string(policy) };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |_bytes| {
+            sdk::prompt32_font_substitution_report_json(
+                &family
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                &text
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                policy
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?
+                    .as_deref(),
+            )
+        })
+    }
+}
 xfa_document_report!(
     wellfriendpdf_document_associated_files_report_json,
     associated_files_report_json
@@ -5893,6 +6141,95 @@ mod tests {
         unsafe {
             wellfriendpdf_buffer_free(output);
             wellfriendpdf_string_free(edit_json);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_prompt32_scene_transaction_font_surfaces_return_owned_outputs() {
+        let (doc, _pdf) = open_sample();
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+
+        let status =
+            unsafe { wellfriendpdf_document_prompt32_report_json(doc, &mut json, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(text.contains("prompt32.scene-transactions-fonts-shaping.v1"));
+        unsafe { wellfriendpdf_string_free(json) };
+
+        let pages = CString::new("[1]").unwrap();
+        let status = unsafe {
+            wellfriendpdf_document_prompt32_scene_report_json(
+                doc,
+                pages.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let scene = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(scene.contains("prompt32_scene_report"));
+        assert!(scene.contains("\"nodes\""));
+        unsafe { wellfriendpdf_string_free(json) };
+
+        let request = CString::new(
+            r#"{
+                "requested_mode":"operator_preserving",
+                "page":1,
+                "source_text":"Hello C API",
+                "replacement_text":"HELLO C ABI"
+            }"#,
+        )
+        .unwrap();
+        let status = unsafe {
+            wellfriendpdf_document_prompt32_transaction_plan_json(
+                doc,
+                request.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let plan = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(plan.contains("prompt32_transaction_plan"));
+        assert!(plan.contains("transaction_id"));
+        unsafe { wellfriendpdf_string_free(json) };
+
+        let sample_text = CString::new("A\u{0301}B").unwrap();
+        let direction = CString::new("ltr").unwrap();
+        let status = unsafe {
+            wellfriendpdf_document_prompt32_text_map_json(
+                doc,
+                sample_text.as_ptr(),
+                direction.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let map = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(map.contains("prompt32_text_map"));
+        assert!(map.contains("grapheme_clusters"));
+        unsafe { wellfriendpdf_string_free(json) };
+
+        let policy = CString::new("reuse_embedded_subset").unwrap();
+        let status = unsafe {
+            wellfriendpdf_document_prompt32_font_subset_plan_json(
+                doc,
+                sample_text.as_ptr(),
+                direction.as_ptr(),
+                policy.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let subset = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(subset.contains("prompt32_font_subset_plan"));
+        assert!(subset.contains("deterministic_subset_tag"));
+        unsafe {
+            wellfriendpdf_string_free(json);
             wellfriendpdf_document_free(doc);
         }
     }

@@ -361,6 +361,30 @@ enum Commands {
     EditFormOccurrence(Prompt31PathEditArgs),
     /// Report the Prompt 31 true-editing operation schema and limits
     EditOperationReport(Prompt17ReportArgs),
+    /// Prompt 32 editable scene/snapshot/transaction/font architecture report
+    Prompt32Report(Prompt17ReportArgs),
+    /// Build a source-linked editable scene graph
+    SceneReport(Prompt32SceneReportArgs),
+    /// Resolve a scene node by id, point, or region
+    SceneSelect(Prompt32SceneSelectArgs),
+    /// Plan an atomic Prompt 32 edit transaction
+    TransactionPlan(Prompt32TransactionArgs),
+    /// Apply an atomic Prompt 32 edit transaction
+    TransactionApply(Prompt32TransactionArgs),
+    /// Report Prompt 32 exact undo/restoration policy for a transaction
+    TransactionUndo(Prompt32TransactionArgs),
+    /// Report PDF-code/CID/GID/Unicode/grapheme/shaping mapping
+    TextMap(Prompt32TextArgs),
+    /// Preview canonical OpenType shaping for text
+    ShapeText(Prompt32TextArgs),
+    /// Plan deterministic font subset reconstruction
+    FontSubsetPlan(Prompt32TextArgs),
+    /// Alias for font-subset-plan; Prompt 32 reports exact build limits
+    FontSubsetBuild(Prompt32TextArgs),
+    /// Report deterministic font substitution policy and scoring
+    FontSubstitutionReport(Prompt32FontSubstitutionArgs),
+    /// Scene-facing local text edit compiled to source-level operator mutation
+    SceneEditText(Prompt32TransactionArgs),
     /// Alias for vector-list focused on Form invocation ownership
     FormInstanceReport(Prompt20VectorListArgs),
     /// Alias for vector-edit with clone-edit-one-instance policy
@@ -1473,6 +1497,116 @@ struct Prompt31ImageArgs {
     /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt32SceneReportArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// One-based pages to include; repeat --page. Empty means bounded all-pages.
+    #[arg(short, long)]
+    page: Vec<usize>,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt32SceneSelectArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Stable scene node id
+    #[arg(long)]
+    id: Option<String>,
+    /// Point x coordinate in page user space
+    #[arg(long)]
+    x: Option<f64>,
+    /// Point y coordinate in page user space
+    #[arg(long)]
+    y: Option<f64>,
+    /// Region as x0,y0,x1,y1
+    #[arg(long)]
+    region: Option<String>,
+    /// Cycle through overlapping nodes
+    #[arg(long, default_value_t = 0)]
+    cycle_index: usize,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt32TransactionArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Optional JSON SceneTextEditRequest; otherwise CLI text args are used
+    #[arg(long)]
+    request: Option<PathBuf>,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Source text to resolve to source operators
+    #[arg(long = "source-text", default_value = "")]
+    source_text: String,
+    /// Replacement text
+    #[arg(long = "replacement-text", default_value = "")]
+    replacement_text: String,
+    /// Output PDF for apply commands
+    #[arg(short, long, default_value = "prompt32-scene-edited.pdf")]
+    output: PathBuf,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Permit an explicit signature-policy override
+    #[arg(long)]
+    signature_policy_override: bool,
+    /// Font policy
+    #[arg(long, default_value = "preserve_original_or_refuse")]
+    font_policy: String,
+    /// Direction override: ltr or rtl
+    #[arg(long)]
+    direction: Option<String>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt32TextArgs {
+    /// Text to inspect or shape
+    text: String,
+    /// Direction override: ltr or rtl
+    #[arg(long)]
+    direction: Option<String>,
+    /// Font/subset policy
+    #[arg(long)]
+    policy: Option<String>,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+struct Prompt32FontSubstitutionArgs {
+    /// Requested font family
+    requested_family: String,
+    /// Text requiring font coverage
+    text: String,
+    /// Substitution policy, e.g. allow_substitute
+    #[arg(long)]
+    policy: Option<String>,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
 }
 
 #[derive(Parser)]
@@ -3226,6 +3360,18 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
             run_prompt31_path_edit(args)
         }
         Commands::EditOperationReport(args) => run_prompt31_report(args),
+        Commands::Prompt32Report(args) => run_prompt32_report(args),
+        Commands::SceneReport(args) => run_prompt32_scene_report(args),
+        Commands::SceneSelect(args) => run_prompt32_scene_select(args),
+        Commands::TransactionPlan(args) => run_prompt32_transaction_plan(args),
+        Commands::TransactionApply(args) => run_prompt32_transaction_apply(args),
+        Commands::TransactionUndo(args) => run_prompt32_transaction_undo(args),
+        Commands::TextMap(args) => run_prompt32_text_map(args),
+        Commands::ShapeText(args) => run_prompt32_shape_text(args),
+        Commands::FontSubsetPlan(args) => run_prompt32_font_subset_plan(args),
+        Commands::FontSubsetBuild(args) => run_prompt32_font_subset_plan(args),
+        Commands::FontSubstitutionReport(args) => run_prompt32_font_substitution_report(args),
+        Commands::SceneEditText(args) => run_prompt32_transaction_apply(args),
         Commands::FormInstanceReport(args) => run_prompt20_vector_list(args),
         Commands::FormCloneOne(mut args) => {
             args.shared_form_policy = "clone-edit-one-instance".to_string();
@@ -5042,6 +5188,175 @@ fn run_prompt31_image_eligibility(args: Prompt31ImageArgs) -> Result<(), Box<dyn
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt32_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = read_edit_input(&args.pdf, &args.password)?;
+    let report = wellfriendpdf_engine::sdk::prompt32_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt32_scene_report(args: Prompt32SceneReportArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let pages = if args.page.is_empty() {
+        None
+    } else {
+        Some(serde_json::to_string(&args.page)?)
+    };
+    let report = wellfriendpdf_engine::sdk::prompt32_scene_report_json(
+        &input,
+        pages.as_deref(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt32_scene_select(args: Prompt32SceneSelectArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let point = match (args.x, args.y) {
+        (Some(x), Some(y)) => Some([x, y]),
+        (None, None) => None,
+        _ => {
+            return Err("--x and --y must be supplied together".into());
+        }
+    };
+    let region = args
+        .region
+        .as_deref()
+        .map(parse_prompt32_region)
+        .transpose()?;
+    let request = serde_json::json!({
+        "page": args.page,
+        "node_id": args.id,
+        "point": point,
+        "region": region,
+        "cycle_index": args.cycle_index,
+    });
+    let report = wellfriendpdf_engine::sdk::prompt32_scene_select_json(
+        &input,
+        &request.to_string(),
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt32_transaction_plan(args: Prompt32TransactionArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt32_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::prompt32_transaction_plan_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    if let Some(path) = args.report {
+        std::fs::write(path, pretty_json(&report)?)?;
+        Ok(())
+    } else {
+        write_output_optional(&None, &pretty_json(&report)?)
+    }
+}
+
+fn run_prompt32_transaction_apply(args: Prompt32TransactionArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt32_request_json(&args)?;
+    let (output, report) = wellfriendpdf_engine::sdk::prompt32_transaction_apply_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, output)?;
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, pretty)?;
+    } else {
+        println!("{pretty}");
+    }
+    Ok(())
+}
+
+fn run_prompt32_transaction_undo(args: Prompt32TransactionArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt32_request_json(&args)?;
+    let plan_json = wellfriendpdf_engine::sdk::prompt32_transaction_plan_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    let report = serde_json::json!({
+        "schema_version": wellfriendpdf_engine::REPORT_ENVELOPE_VERSION,
+        "kind": "prompt32_transaction_undo",
+        "report": {
+            "schema_version": wellfriendpdf_engine::PROMPT32_SCHEMA_VERSION,
+            "plan": serde_json::from_str::<serde_json::Value>(&plan_json)?["report"].clone(),
+            "undo_policy": "exact_preimage_restore_or_declared_non_invertible_before_commit",
+            "raw_preimage_not_logged": true,
+            "redo_divergence_detection": "base_snapshot_id_and_source_instruction_hash_preconditions"
+        }
+    });
+    write_output_optional(&args.report, &serde_json::to_string_pretty(&report)?)
+}
+
+fn run_prompt32_text_map(args: Prompt32TextArgs) -> Result<(), Box<dyn Error>> {
+    let report =
+        wellfriendpdf_engine::sdk::prompt32_text_map_json(&args.text, args.direction.as_deref())?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt32_shape_text(args: Prompt32TextArgs) -> Result<(), Box<dyn Error>> {
+    let report =
+        wellfriendpdf_engine::sdk::prompt32_shape_text_json(&args.text, args.direction.as_deref())?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt32_font_subset_plan(args: Prompt32TextArgs) -> Result<(), Box<dyn Error>> {
+    let report = wellfriendpdf_engine::sdk::prompt32_font_subset_plan_json(
+        &args.text,
+        args.direction.as_deref(),
+        args.policy.as_deref(),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt32_font_substitution_report(
+    args: Prompt32FontSubstitutionArgs,
+) -> Result<(), Box<dyn Error>> {
+    let report = wellfriendpdf_engine::sdk::prompt32_font_substitution_report_json(
+        &args.requested_family,
+        &args.text,
+        args.policy.as_deref(),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn prompt32_request_json(args: &Prompt32TransactionArgs) -> Result<String, Box<dyn Error>> {
+    if let Some(path) = &args.request {
+        return Ok(std::fs::read_to_string(path)?);
+    }
+    Ok(serde_json::json!({
+        "requested_mode": "operator_preserving",
+        "page": args.page,
+        "source_text": args.source_text,
+        "replacement_text": args.replacement_text,
+        "signature_policy_override": args.signature_policy_override,
+        "font_policy": args.font_policy,
+        "normalization_policy": "preserve_exact_sequence",
+        "direction": args.direction,
+    })
+    .to_string())
+}
+
+fn parse_prompt32_region(value: &str) -> Result<[f64; 4], Box<dyn Error>> {
+    let values = value
+        .split(',')
+        .map(|item| item.trim().parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()?;
+    if values.len() != 4 {
+        return Err("--region must contain four comma-separated numbers".into());
+    }
+    Ok([values[0], values[1], values[2], values[3]])
 }
 
 fn run_prompt20_vector_list(args: Prompt20VectorListArgs) -> Result<(), Box<dyn Error>> {

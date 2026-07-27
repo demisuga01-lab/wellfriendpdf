@@ -122,6 +122,7 @@ pub mod prompt21;
 pub mod prompt22;
 pub mod prompt23;
 pub mod prompt31;
+pub mod prompt32;
 pub mod pubsec;
 pub mod reader;
 pub mod render;
@@ -402,6 +403,16 @@ pub use prompt31::{
     OperatorEditOperationReport, OperatorEditRefusal, OperatorTextEditRequest,
     OperatorTextEligibilityReport, ProvenanceSelectionReport, ProvenanceStrength,
     SourceInstructionIdentity, TrueEditingMode, PROMPT31_SCHEMA_VERSION,
+};
+pub use prompt32::{
+    apply_scene_text_transaction, build_document_snapshot, build_scene_graph,
+    clone_on_write_report, dirty_region_report, embedding_permission_report, font_subset_plan,
+    plan_scene_text_transaction, prompt32_feature_matrix, prompt32_report, scene_select,
+    substitution_report, text_identity_report, undo_restoration_report, DocumentSnapshot,
+    EditTransactionReport, EditableSceneGraph, FontIdentityReport, GraphemeClusterRecord,
+    Prompt32EvidenceKind, Prompt32Status, SceneNode, SceneNodeKind, SceneSelectionReport,
+    SceneSelectionRequest, SceneTextEditRequest, ShapingGlyphRecord, TransactionState,
+    PROMPT32_SCHEMA_VERSION,
 };
 pub use pubsec::{
     encrypt_pdf_pubsec, parse_pubsec_encryption_info, recover_pubsec_file_key,

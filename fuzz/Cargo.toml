@@ -312,3 +312,10 @@ path = "fuzz_targets/prompt31_operator_edit.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "prompt32_scene_fonts"
+path = "fuzz_targets/prompt32_scene_fonts.rs"
+test = false
+doc = false
+bench = false

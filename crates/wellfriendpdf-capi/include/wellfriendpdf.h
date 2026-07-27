@@ -866,6 +866,57 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_path_edit_json(
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_scene_report_json(
+    const WellfriendDocument *document,
+    const char *pages_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_scene_select_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_transaction_plan_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_transaction_apply_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_text_map_json(
+    const WellfriendDocument *document,
+    const char *text,
+    const char *direction,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_shape_text_json(
+    const WellfriendDocument *document,
+    const char *text,
+    const char *direction,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_font_subset_plan_json(
+    const WellfriendDocument *document,
+    const char *text,
+    const char *direction,
+    const char *policy,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_font_substitution_report_json(
+    const WellfriendDocument *document,
+    const char *requested_family,
+    const char *text,
+    const char *policy,
+    char **out_json,
+    char **error_out);
 WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_vector_list_json(
     const WellfriendDocument *document,
     size_t page,

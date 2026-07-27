@@ -758,6 +758,42 @@ internal static partial class NativeMethods
         IntPtr optionsJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt32_report_json(
+        DocumentHandle document, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt32_scene_report_json(
+        DocumentHandle document, IntPtr pagesJson, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt32_scene_select_json(
+        DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt32_transaction_plan_json(
+        DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt32_transaction_apply_json(
+        DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt32_text_map_json(
+        DocumentHandle document, IntPtr text, IntPtr direction, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt32_shape_text_json(
+        DocumentHandle document, IntPtr text, IntPtr direction, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt32_font_subset_plan_json(
+        DocumentHandle document, IntPtr text, IntPtr direction, IntPtr policy, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_prompt32_font_substitution_report_json(
+        DocumentHandle document, IntPtr requestedFamily, IntPtr text, IntPtr policy, out IntPtr json, out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_prompt20_vector_list_json(
         DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
 

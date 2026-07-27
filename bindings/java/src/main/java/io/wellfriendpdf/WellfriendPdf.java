@@ -847,6 +847,11 @@ public final class WellfriendPdf {
             return Native.documentReport(handle, Native.PROMPT31_REPORT, "prompt31_report");
         }
 
+        public String prompt32ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT32_REPORT, "prompt32_report");
+        }
+
         public String prompt21ReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.PROMPT21_REPORT, "prompt21_report");
@@ -999,6 +1004,46 @@ public final class WellfriendPdf {
         ) {
             ensureOpen();
             return Native.prompt31PathEdit(handle, page, stableId, operationJson, optionsJson);
+        }
+
+        public String prompt32SceneReportJson(String pagesJson) {
+            ensureOpen();
+            return Native.prompt32SceneReport(handle, pagesJson);
+        }
+
+        public String prompt32SceneSelectJson(String requestJson) {
+            ensureOpen();
+            return Native.prompt32SceneSelect(handle, requestJson);
+        }
+
+        public String prompt32TransactionPlanJson(String requestJson) {
+            ensureOpen();
+            return Native.prompt32TransactionPlan(handle, requestJson);
+        }
+
+        public BinaryResult prompt32TransactionApply(String requestJson) {
+            ensureOpen();
+            return Native.prompt32TransactionApply(handle, requestJson);
+        }
+
+        public String prompt32TextMapJson(String text, String direction) {
+            ensureOpen();
+            return Native.prompt32TextMap(handle, text, direction);
+        }
+
+        public String prompt32ShapeTextJson(String text, String direction) {
+            ensureOpen();
+            return Native.prompt32ShapeText(handle, text, direction);
+        }
+
+        public String prompt32FontSubsetPlanJson(String text, String direction, String policy) {
+            ensureOpen();
+            return Native.prompt32FontSubsetPlan(handle, text, direction, policy);
+        }
+
+        public String prompt32FontSubstitutionReportJson(String requestedFamily, String text, String policy) {
+            ensureOpen();
+            return Native.prompt32FontSubstitutionReport(handle, requestedFamily, text, policy);
         }
 
         public String prompt20VectorListJson(long page) {
@@ -1487,6 +1532,7 @@ public final class WellfriendPdf {
         private static final MethodHandle PROMPT20_REPORT = documentReport("wellfriendpdf_document_prompt20_report_json");
         private static final MethodHandle PROMPT20B_REPORT = documentReport("wellfriendpdf_document_prompt20b_report_json");
         private static final MethodHandle PROMPT31_REPORT = documentReport("wellfriendpdf_document_prompt31_report_json");
+        private static final MethodHandle PROMPT32_REPORT = documentReport("wellfriendpdf_document_prompt32_report_json");
         private static final MethodHandle PROMPT21_REPORT = documentReport("wellfriendpdf_document_prompt21_report_json");
         private static final MethodHandle PROMPT21_RASTER_VECTOR_REPORT = downcall(
             "wellfriendpdf_document_prompt21_raster_vector_report_json",
@@ -1770,6 +1816,46 @@ public final class WellfriendPdf {
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT32_SCENE_REPORT = downcall(
+            "wellfriendpdf_document_prompt32_scene_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT32_SCENE_SELECT = downcall(
+            "wellfriendpdf_document_prompt32_scene_select_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT32_TRANSACTION_PLAN = downcall(
+            "wellfriendpdf_document_prompt32_transaction_plan_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT32_TRANSACTION_APPLY = downcall(
+            "wellfriendpdf_document_prompt32_transaction_apply_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT32_TEXT_MAP = downcall(
+            "wellfriendpdf_document_prompt32_text_map_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT32_SHAPE_TEXT = downcall(
+            "wellfriendpdf_document_prompt32_shape_text_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT32_FONT_SUBSET_PLAN = downcall(
+            "wellfriendpdf_document_prompt32_font_subset_plan_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT32_FONT_SUBSTITUTION_REPORT = downcall(
+            "wellfriendpdf_document_prompt32_font_substitution_report_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle PROMPT20_VECTOR_LIST = downcall(
             "wellfriendpdf_document_prompt20_vector_list_json",
@@ -2644,6 +2730,129 @@ public final class WellfriendPdf {
                 return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
             } catch (WellfriendPdfException ex) { throw ex;
             } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt31_path_edit failed", ex); }
+        }
+
+        private static String prompt32SceneReport(MemorySegment handle, String pagesJson) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment pages = pagesJson == null || pagesJson.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(pagesJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT32_SCENE_REPORT.invokeExact(handle, pages, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt32_scene_report failed", ex); }
+        }
+
+        private static String prompt32SceneSelect(MemorySegment handle, String requestJson) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT32_SCENE_SELECT.invokeExact(handle, request, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt32_scene_select failed", ex); }
+        }
+
+        private static String prompt32TransactionPlan(MemorySegment handle, String requestJson) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT32_TRANSACTION_PLAN.invokeExact(handle, request, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt32_transaction_plan failed", ex); }
+        }
+
+        private static BinaryResult prompt32TransactionApply(MemorySegment handle, String requestJson) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT32_TRANSACTION_APPLY.invokeExact(handle, request, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt32_transaction_apply failed", ex); }
+        }
+
+        private static String prompt32TextMap(MemorySegment handle, String text, String direction) {
+            Objects.requireNonNull(text, "text");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment textArg = arena.allocateFrom(text);
+                MemorySegment directionArg = direction == null || direction.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(direction);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT32_TEXT_MAP.invokeExact(handle, textArg, directionArg, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt32_text_map failed", ex); }
+        }
+
+        private static String prompt32ShapeText(MemorySegment handle, String text, String direction) {
+            Objects.requireNonNull(text, "text");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment textArg = arena.allocateFrom(text);
+                MemorySegment directionArg = direction == null || direction.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(direction);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT32_SHAPE_TEXT.invokeExact(handle, textArg, directionArg, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt32_shape_text failed", ex); }
+        }
+
+        private static String prompt32FontSubsetPlan(
+            MemorySegment handle, String text, String direction, String policy
+        ) {
+            Objects.requireNonNull(text, "text");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment textArg = arena.allocateFrom(text);
+                MemorySegment directionArg = direction == null || direction.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(direction);
+                MemorySegment policyArg = policy == null || policy.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(policy);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT32_FONT_SUBSET_PLAN.invokeExact(
+                    handle, textArg, directionArg, policyArg, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt32_font_subset_plan failed", ex); }
+        }
+
+        private static String prompt32FontSubstitutionReport(
+            MemorySegment handle, String requestedFamily, String text, String policy
+        ) {
+            Objects.requireNonNull(requestedFamily, "requestedFamily");
+            Objects.requireNonNull(text, "text");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment familyArg = arena.allocateFrom(requestedFamily);
+                MemorySegment textArg = arena.allocateFrom(text);
+                MemorySegment policyArg = policy == null || policy.isBlank()
+                    ? MemorySegment.NULL : arena.allocateFrom(policy);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT32_FONT_SUBSTITUTION_REPORT.invokeExact(
+                    handle, familyArg, textArg, policyArg, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) { throw ex;
+            } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt32_font_substitution_report failed", ex); }
         }
 
         private static BinaryResult prompt20TextEdit(

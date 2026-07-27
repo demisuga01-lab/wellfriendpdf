@@ -58,3 +58,50 @@ def test_malformed_pdf_raises_wellfriendpdf_error():
         pytest.skip("robustness fixture not present")
     with pytest.raises(wellfriendpdf.WellfriendError):
         wellfriendpdf.open(BROKEN)
+
+
+def test_prompt32_surfaces(sample_pdf):
+    data = open(sample_pdf, "rb").read()
+    factories = [
+        lambda: wellfriendpdf.PyDocument(data),
+        lambda: wellfriendpdf.PyDocument(str(sample_pdf)),
+        lambda: wellfriendpdf.Document(data),
+        lambda: wellfriendpdf.Document(str(sample_pdf)),
+        lambda: wellfriendpdf.open_document(str(sample_pdf)),
+        lambda: wellfriendpdf.open(str(sample_pdf)),
+        lambda: wellfriendpdf.load(str(sample_pdf)),
+    ]
+    doc = None
+    required_doc_attrs = {"prompt32_report", "prompt32_report_json"}
+    for factory in factories:
+        try:
+            candidate = factory()
+            if any(hasattr(candidate, name) for name in required_doc_attrs):
+                doc = candidate
+                break
+        except Exception:
+            continue
+    assert doc is not None
+
+    def call_json(names, *args):
+        for name in names:
+            method = getattr(doc, name, None)
+            if method is not None:
+                return method(*args)
+        raise AttributeError(names[0])
+
+    def parse_json(value):
+        if isinstance(value, dict):
+            return value
+        return json.loads(value)
+
+    request = '{"requested_mode":"operator_preserving","page_index":0,"selection":{"text":"Hello"},"replacement":"Hi"}'
+    assert isinstance(parse_json(call_json(["prompt32_report", "prompt32_report_json"])), dict)
+    assert isinstance(parse_json(call_json(["prompt32_scene_report", "prompt32_scene_report_json"])), dict)
+    assert isinstance(parse_json(call_json(["prompt32_scene_select", "prompt32_scene_select_json"], '{"page_index":0,"point":[20,100]}')), dict)
+    assert isinstance(parse_json(call_json(["prompt32_transaction_plan", "prompt32_transaction_plan_json"], request)), dict)
+    assert isinstance(parse_json(call_json(["prompt32_transaction_apply", "prompt32_transaction_apply_json"], request)), dict)
+    assert isinstance(parse_json(call_json(["prompt32_text_map", "prompt32_text_map_json"], "A\u0301B", "ltr")), dict)
+    assert isinstance(parse_json(call_json(["prompt32_shape_text", "prompt32_shape_text_json"], "A\u0301B", "ltr")), dict)
+    assert isinstance(parse_json(call_json(["prompt32_font_subset_plan", "prompt32_font_subset_plan_json"], "A\u0301B", "ltr", "preserve_existing_font")), dict)
+    assert isinstance(parse_json(call_json(["prompt32_font_substitution_report", "prompt32_font_substitution_report_json"], "Helvetica", "A\u0301B", "no_silent_substitution")), dict)

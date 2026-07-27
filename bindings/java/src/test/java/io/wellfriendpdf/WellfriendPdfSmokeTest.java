@@ -55,6 +55,10 @@ public final class WellfriendPdfSmokeTest {
             reports.put("prompt19", doc.prompt19ReportJson());
             reports.put("prompt20", doc.prompt20ReportJson());
             reports.put("prompt20b", doc.prompt20bReportJson());
+            reports.put("prompt32", doc.prompt32ReportJson());
+            assertTrue(
+                reports.get("prompt32").contains("prompt32.scene-transactions-fonts-shaping.v1"),
+                "Prompt32 closeout schema");
             reports.put("associated_files", doc.associatedFilesReportJson());
             reports.put("edit_policy", doc.editPolicyReportJson("incremental_save"));
             reports.put("pages", doc.pagesReportJson());
@@ -64,6 +68,27 @@ public final class WellfriendPdfSmokeTest {
                 reports.put("advanced_chunks", prompt15.advancedChunksJson());
                 reports.put("semantic_bundle", prompt15.semanticBundleJson());
                 reports.put("semantic_search", prompt15.semanticSearchJson("Hello"));
+                String scene = prompt15.prompt32SceneReportJson("[1]");
+                assertTrue(scene.contains("prompt32_scene_report"), "Prompt32 scene graph");
+                assertTrue(scene.contains("\"nodes\""), "Prompt32 scene nodes");
+                String txRequest = """
+                        {
+                          "requested_mode": "operator_preserving",
+                          "page": 1,
+                          "source_text": "Hello",
+                          "replacement_text": "HELLO"
+                        }
+                        """;
+                String txPlan = prompt15.prompt32TransactionPlanJson(txRequest);
+                assertTrue(txPlan.contains("prompt32_transaction_plan"), "Prompt32 transaction plan");
+                assertTrue(txPlan.contains("transaction_id"), "Prompt32 transaction id");
+                String textMap = prompt15.prompt32TextMapJson("A\u0301B", "ltr");
+                assertTrue(textMap.contains("prompt32_text_map"), "Prompt32 text map");
+                String shape = prompt15.prompt32ShapeTextJson("ffi", "ltr");
+                assertTrue(shape.contains("shaping_clusters"), "Prompt32 shaping");
+                String subset = prompt15.prompt32FontSubsetPlanJson("Hello", "ltr", "reuse_embedded_subset");
+                assertTrue(subset.contains("prompt32_font_subset_plan"), "Prompt32 subset plan");
+                assertTrue(subset.contains("deterministic_subset_tag"), "Prompt32 deterministic subset tag");
                 String rangeModel = prompt15.prompt20bTextRangeAnalyzeJson(1);
                 reports.put("prompt20b_range_model", rangeModel);
                 assertTrue(rangeModel.contains("prompt20b_multi_run_range_model"), "Prompt20B range model");

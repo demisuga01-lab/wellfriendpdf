@@ -960,6 +960,138 @@ pub fn prompt31_image_eligibility_json(
     )
 }
 
+/// Prompt 32 editable scene/transaction/font architecture report.
+pub fn prompt32_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt32_report",
+        &crate::prompt32::prompt32_report(&input)?,
+    )
+}
+
+/// Build the source-linked Prompt 32 editable scene graph for selected pages.
+pub fn prompt32_scene_report_json(
+    bytes: &[u8],
+    pages_json: Option<&str>,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let pages = pages_json
+        .map(serde_json::from_str::<Vec<usize>>)
+        .transpose()
+        .map_err(json_err)?
+        .unwrap_or_default();
+    envelope(
+        "prompt32_scene_report",
+        &crate::prompt32::build_scene_graph(&input, &pages)?,
+    )
+}
+
+/// Resolve a bounded scene selection/hit-test query.
+pub fn prompt32_scene_select_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt32::SceneSelectionRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt32_scene_select",
+        &crate::prompt32::scene_select(&input, &request)?,
+    )
+}
+
+/// Plan an atomic Prompt 32 scene text transaction.
+pub fn prompt32_transaction_plan_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt32::SceneTextEditRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt32_transaction_plan",
+        &crate::prompt32::plan_scene_text_transaction(&input, &request)?,
+    )
+}
+
+/// Apply an atomic Prompt 32 scene text transaction through the canonical writer.
+pub fn prompt32_transaction_apply_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt32::SceneTextEditRequest>(request_json)
+        .map_err(json_err)?;
+    let (output, report) = crate::prompt32::apply_scene_text_transaction(&input, &request)?;
+    Ok((output, envelope("prompt32_transaction_apply", &report)?))
+}
+
+/// Alias for scene-facing text edits that compile to source-level Prompt 31 ops.
+pub fn prompt32_scene_edit_text_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    prompt32_transaction_apply_json(bytes, request_json, password)
+}
+
+/// Report dirty entities/regions for a scene text transaction.
+pub fn prompt32_dirty_region_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt32::SceneTextEditRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt32_dirty_region",
+        &crate::prompt32::dirty_region_report(&input, &request)?,
+    )
+}
+
+/// Report exact text identity, grapheme, bidi, shaping, and reverse mapping.
+pub fn prompt32_text_map_json(text: &str, direction: Option<&str>) -> Result<String> {
+    envelope(
+        "prompt32_text_map",
+        &crate::prompt32::text_identity_report(text, direction)?,
+    )
+}
+
+/// Preview shaping with the canonical rustybuzz-backed generated-text shaper.
+pub fn prompt32_shape_text_json(text: &str, direction: Option<&str>) -> Result<String> {
+    let report = crate::prompt32::text_identity_report(text, direction)?;
+    envelope("prompt32_shape_text", &report.shaping)
+}
+
+/// Plan deterministic font subset rebuilding and exact unsupported boundaries.
+pub fn prompt32_font_subset_plan_json(
+    text: &str,
+    direction: Option<&str>,
+    policy: Option<&str>,
+) -> Result<String> {
+    envelope(
+        "prompt32_font_subset_plan",
+        &crate::prompt32::font_subset_plan(text, direction, policy)?,
+    )
+}
+
+/// Report deterministic font substitution policy and scoring.
+pub fn prompt32_font_substitution_report_json(
+    requested_family: &str,
+    text: &str,
+    policy: Option<&str>,
+) -> Result<String> {
+    envelope(
+        "prompt32_font_substitution_report",
+        &crate::prompt32::substitution_report(requested_family, text, policy),
+    )
+}
+
 /// Prompt 18 mask/soft-mask inventory and secure fallback posture.
 pub fn mask_redaction_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;

@@ -947,6 +947,11 @@ mod wasm_api {
             self.report(|b| sdk::prompt31_report_json(b, None))
         }
 
+        #[wasm_bindgen(js_name = prompt32ReportJson)]
+        pub fn prompt32_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt32_report_json(b, None))
+        }
+
         #[wasm_bindgen(js_name = prompt21ReportJson)]
         pub fn prompt21_report_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::prompt21_report_json(b, None))
@@ -1046,6 +1051,67 @@ mod wasm_api {
         ) -> Result<String, JsValue> {
             let _ = occurrence.as_deref();
             self.report(|b| sdk::prompt31_image_eligibility_json(b, page, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt32SceneReportJson)]
+        pub fn prompt32_scene_report_json(
+            &self,
+            pages_json: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt32_scene_report_json(b, pages_json.as_deref(), None))
+        }
+
+        #[wasm_bindgen(js_name = prompt32SceneSelectJson)]
+        pub fn prompt32_scene_select_json(&self, request_json: String) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt32_scene_select_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt32TransactionPlanJson)]
+        pub fn prompt32_transaction_plan_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt32_transaction_plan_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt32TextMapJson)]
+        pub fn prompt32_text_map_json(
+            &self,
+            text: String,
+            direction: Option<String>,
+        ) -> Result<String, JsValue> {
+            sdk::prompt32_text_map_json(&text, direction.as_deref()).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = prompt32ShapeTextJson)]
+        pub fn prompt32_shape_text_json(
+            &self,
+            text: String,
+            direction: Option<String>,
+        ) -> Result<String, JsValue> {
+            sdk::prompt32_shape_text_json(&text, direction.as_deref()).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = prompt32FontSubsetPlanJson)]
+        pub fn prompt32_font_subset_plan_json(
+            &self,
+            text: String,
+            direction: Option<String>,
+            policy: Option<String>,
+        ) -> Result<String, JsValue> {
+            sdk::prompt32_font_subset_plan_json(&text, direction.as_deref(), policy.as_deref())
+                .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = prompt32FontSubstitutionReportJson)]
+        pub fn prompt32_font_substitution_report_json(
+            &self,
+            requested_family: String,
+            text: String,
+            policy: Option<String>,
+        ) -> Result<String, JsValue> {
+            sdk::prompt32_font_substitution_report_json(&requested_family, &text, policy.as_deref())
+                .map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = prompt20VectorListJson)]
@@ -1231,6 +1297,22 @@ mod wasm_api {
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
             self.output(|b| sdk::prompt31_operator_text_edit_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt32TransactionApply)]
+        pub fn prompt32_transaction_apply(
+            &self,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt32_transaction_apply_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt32SceneEditText)]
+        pub fn prompt32_scene_edit_text(
+            &self,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt32_scene_edit_text_json(b, &request_json, None))
         }
 
         #[wasm_bindgen(js_name = prompt31PathEdit)]

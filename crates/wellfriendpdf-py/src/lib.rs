@@ -1224,6 +1224,106 @@ impl PyDocument {
         })
     }
 
+    fn prompt32_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt32_report_json(bytes, None))
+    }
+
+    #[pyo3(signature = (pages_json=None))]
+    fn prompt32_scene_report<'py>(
+        &self,
+        py: Python<'py>,
+        pages_json: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let pages = pages_json.map(str::to_string);
+        self.report_json(py, |bytes| {
+            sdk::prompt32_scene_report_json(bytes, pages.as_deref(), None)
+        })
+    }
+
+    fn prompt32_scene_select<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let request_json = request_json.to_string();
+        self.report_json(py, |bytes| {
+            sdk::prompt32_scene_select_json(bytes, &request_json, None)
+        })
+    }
+
+    fn prompt32_transaction_plan<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let request_json = request_json.to_string();
+        self.report_json(py, |bytes| {
+            sdk::prompt32_transaction_plan_json(bytes, &request_json, None)
+        })
+    }
+
+    #[pyo3(signature = (request_json, output=None))]
+    fn prompt32_transaction_apply<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::prompt32_transaction_apply_json(&bytes, request_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    fn prompt32_text_map<'py>(
+        &self,
+        py: Python<'py>,
+        text: &str,
+        direction: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let json = run_wellfriendpdf(|| sdk::prompt32_text_map_json(text, direction))?;
+        parse_json_str(py, &json)
+    }
+
+    fn prompt32_shape_text<'py>(
+        &self,
+        py: Python<'py>,
+        text: &str,
+        direction: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let json = run_wellfriendpdf(|| sdk::prompt32_shape_text_json(text, direction))?;
+        parse_json_str(py, &json)
+    }
+
+    fn prompt32_font_subset_plan<'py>(
+        &self,
+        py: Python<'py>,
+        text: &str,
+        direction: Option<&str>,
+        policy: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let json =
+            run_wellfriendpdf(|| sdk::prompt32_font_subset_plan_json(text, direction, policy))?;
+        parse_json_str(py, &json)
+    }
+
+    fn prompt32_font_substitution_report<'py>(
+        &self,
+        py: Python<'py>,
+        requested_family: &str,
+        text: &str,
+        policy: Option<&str>,
+    ) -> PyResult<Py<PyAny>> {
+        let json = run_wellfriendpdf(|| {
+            sdk::prompt32_font_substitution_report_json(requested_family, text, policy)
+        })?;
+        parse_json_str(py, &json)
+    }
+
     fn associated_files_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::associated_files_report_json(bytes, None))
     }

@@ -399,6 +399,45 @@ public sealed class WellfriendPdfSmokeTests
     }
 
     [Fact]
+    public void Prompt32SceneTransactionFontSurfacesAreSharedAndOwned()
+    {
+        using var doc = WellfriendDocument.Open(FixturePath("multi_stream.pdf"));
+
+        var closeout = doc.Prompt32ReportJson();
+        Assert.Contains("prompt32.scene-transactions-fonts-shaping.v1", closeout);
+
+        var scene = doc.Prompt32SceneReportJson("[1]");
+        Assert.Contains("prompt32_scene_report", scene);
+        Assert.Contains("\"nodes\"", scene);
+        Assert.Contains("snapshot:", scene);
+
+        var request = """
+        {
+          "requested_mode":"operator_preserving",
+          "page":1,
+          "source_text":"Hello",
+          "replacement_text":"HELLO"
+        }
+        """;
+        var plan = doc.Prompt32TransactionPlanJson(request);
+        Assert.Contains("prompt32_transaction_plan", plan);
+        Assert.Contains("transaction_id", plan);
+        Assert.Contains("operator_preserving", plan);
+
+        var identity = doc.Prompt32TextMapJson("A\u0301B", "ltr");
+        Assert.Contains("prompt32_text_map", identity);
+        Assert.Contains("grapheme_clusters", identity);
+
+        var subset = doc.Prompt32FontSubsetPlanJson("Hello", "ltr", "reuse_embedded_subset");
+        Assert.Contains("prompt32_font_subset_plan", subset);
+        Assert.Contains("deterministic_subset_tag", subset);
+
+        var substitution = doc.Prompt32FontSubstitutionReportJson("Prompt32MissingFont", "Hello", "explicit_approval_required");
+        Assert.Contains("prompt32_font_substitution_report", substitution);
+        Assert.Contains("Prompt32MissingFont", substitution);
+    }
+
+    [Fact]
     public void DisposeIsIdempotent()
     {
         var doc = WellfriendDocument.Open(FixturePath());

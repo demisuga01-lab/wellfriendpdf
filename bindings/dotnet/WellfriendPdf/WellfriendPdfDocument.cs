@@ -513,6 +513,13 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public string Prompt32ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_prompt32_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
     public string Prompt21ReportJson()
     {
         ThrowIfDisposed();
@@ -825,6 +832,154 @@ public sealed class WellfriendDocument : IDisposable
             if (idPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(idPtr);
             if (operationPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(operationPtr);
             if (optionsPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(optionsPtr);
+        }
+    }
+
+    public string Prompt32SceneReportJson(string? pagesJson = null)
+    {
+        ThrowIfDisposed();
+        var pagesPtr = NativeMethods.StringToNativeOrNull(pagesJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt32_scene_report_json(
+                _handle, pagesPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (pagesPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(pagesPtr);
+        }
+    }
+
+    public string Prompt32SceneSelectJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt32_scene_select_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public string Prompt32TransactionPlanJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt32_transaction_plan_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public WellfriendBinaryResult Prompt32TransactionApply(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt32_transaction_apply_json(
+                _handle, requestPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public string Prompt32TextMapJson(string text, string? direction = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(text);
+        var textPtr = NativeMethods.StringToNativeOrNull(text);
+        var directionPtr = NativeMethods.StringToNativeOrNull(direction);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt32_text_map_json(
+                _handle, textPtr, directionPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (textPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(textPtr);
+            if (directionPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(directionPtr);
+        }
+    }
+
+    public string Prompt32ShapeTextJson(string text, string? direction = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(text);
+        var textPtr = NativeMethods.StringToNativeOrNull(text);
+        var directionPtr = NativeMethods.StringToNativeOrNull(direction);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt32_shape_text_json(
+                _handle, textPtr, directionPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (textPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(textPtr);
+            if (directionPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(directionPtr);
+        }
+    }
+
+    public string Prompt32FontSubsetPlanJson(string text, string? direction = null, string? policy = null)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(text);
+        var textPtr = NativeMethods.StringToNativeOrNull(text);
+        var directionPtr = NativeMethods.StringToNativeOrNull(direction);
+        var policyPtr = NativeMethods.StringToNativeOrNull(policy);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt32_font_subset_plan_json(
+                _handle, textPtr, directionPtr, policyPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (textPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(textPtr);
+            if (directionPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(directionPtr);
+            if (policyPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(policyPtr);
+        }
+    }
+
+    public string Prompt32FontSubstitutionReportJson(string requestedFamily, string text, string? policy = null)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestedFamily);
+        ArgumentNullException.ThrowIfNull(text);
+        var familyPtr = NativeMethods.StringToNativeOrNull(requestedFamily);
+        var textPtr = NativeMethods.StringToNativeOrNull(text);
+        var policyPtr = NativeMethods.StringToNativeOrNull(policy);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt32_font_substitution_report_json(
+                _handle, familyPtr, textPtr, policyPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (familyPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(familyPtr);
+            if (textPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(textPtr);
+            if (policyPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(policyPtr);
         }
     }
 
