@@ -1307,6 +1307,69 @@ pub fn prompt33_no_overlay_no_clipping_json(
     )
 }
 
+/// Prompt 34 feature and supported-boundary report.
+pub fn prompt34_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt34_report",
+        &serde_json::json!({
+            "feature_matrix": crate::prompt34::prompt34_feature_matrix(),
+            "source_bytes": input.len()
+        }),
+    )
+}
+
+/// Analyze Prompt 34 source-linked tables, math, OCR, annotations, forms, and XFA.
+pub fn prompt34_analyze_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt34_analyze",
+        &crate::prompt34::analyze_prompt34(&input)?,
+    )
+}
+
+/// Plan a supported Prompt 34 operation without mutating bytes.
+pub fn prompt34_plan_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::prompt34::Prompt34Request>(request_json).map_err(json_err)?;
+    envelope(
+        "prompt34_plan",
+        &crate::prompt34::plan_prompt34(&input, &request)?,
+    )
+}
+
+/// Apply one supported Prompt 34 operation through the canonical writer.
+pub fn prompt34_apply_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::prompt34::Prompt34Request>(request_json).map_err(json_err)?;
+    let (output, report) = crate::prompt34::apply_prompt34(&input, &request)?;
+    Ok((output, envelope("prompt34_apply", &report)?))
+}
+
+/// Restore the immutable Prompt 34 transaction preimage after output verification.
+pub fn prompt34_undo_json(
+    bytes: &[u8],
+    output: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::prompt34::Prompt34Request>(request_json).map_err(json_err)?;
+    let (restored, report) = crate::prompt34::undo_prompt34(&input, output, &request)?;
+    Ok((restored, envelope("prompt34_undo", &report)?))
+}
+
 /// Prompt 18 mask/soft-mask inventory and secure fallback posture.
 pub fn mask_redaction_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;

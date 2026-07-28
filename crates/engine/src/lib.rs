@@ -124,6 +124,7 @@ pub mod prompt23;
 pub mod prompt31;
 pub mod prompt32;
 pub mod prompt33;
+pub mod prompt34;
 pub mod pubsec;
 pub mod reader;
 pub mod render;
@@ -430,6 +431,11 @@ pub use prompt33::{
     NeighborPolicy, OverflowStatus, ParagraphStyleModel, Prompt33EvidenceKind, Prompt33Status,
     ReflowConfidencePolicy, ReflowMutationSession, ReflowTransactionReport, ReflowUndoReport,
     SemanticLayoutReport, SemanticRegionEdge, SemanticRegionNode, PROMPT33_SCHEMA_VERSION,
+};
+pub use prompt34::{
+    analyze_prompt34, apply_prompt34, plan_prompt34, prompt34_feature_matrix, undo_prompt34,
+    Prompt34AnalysisReport, Prompt34OperationReport, Prompt34Request, Prompt34Subsystem,
+    PROMPT34_SCHEMA_VERSION,
 };
 pub use pubsec::{
     encrypt_pdf_pubsec, parse_pubsec_encryption_info, recover_pubsec_file_key,
