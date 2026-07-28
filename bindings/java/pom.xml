@@ -63,6 +63,10 @@
           <includePluginDependencies>false</includePluginDependencies>
           <executable>java</executable>
           <commandlineArgs>--enable-preview --enable-native-access=ALL-UNNAMED -cp %classpath io.wellfriendpdf.WellfriendPdfSmokeTest</commandlineArgs>
+          <environmentVariables>
+            <WELLFRIENDPDF_NATIVE_LIBRARY>${env.WELLFRIENDPDF_NATIVE_LIBRARY}</WELLFRIENDPDF_NATIVE_LIBRARY>
+            <WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR>${env.WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR}</WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR>
+          </environmentVariables>
         </configuration>
       </plugin>
       <plugin>

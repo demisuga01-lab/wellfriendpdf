@@ -84,8 +84,55 @@ public final class WellfriendPdfSmokeTest {
                 assertTrue(txPlan.contains("transaction_id"), "Prompt32 transaction id");
                 String textMap = prompt15.prompt32TextMapJson("A\u0301B", "ltr");
                 assertTrue(textMap.contains("prompt32_text_map"), "Prompt32 text map");
+                String prompt33Request = """
+                        {
+                          "requested_mode": "geometric_block",
+                          "page": 1,
+                          "source_text": "Hello",
+                          "replacement_text": "World",
+                          "region": [10.0, 10.0, 260.0, 90.0],
+                          "language": "en",
+                          "hyphenation": true,
+                          "layout_constraints": [{
+                            "constraint_id": "java_soft_height",
+                            "variable": "region_height",
+                            "relation": "ge",
+                            "value": 500.0,
+                            "priority": "weak"
+                          }]
+                        }
+                        """;
+                reports.put("prompt33", prompt15.prompt33ReportJson());
+                assertTrue(
+                    reports.get("prompt33").contains("prompt33.geometric-semantic-reflow.v1"),
+                    "Prompt33 schema");
+                assertTrue(prompt15.prompt33LayoutAnalyzeJson(prompt33Request).contains("prompt33_layout_analyze"),
+                    "Prompt33 layout analysis");
+                assertTrue(prompt15.prompt33OverflowReportJson(prompt33Request).contains("prompt33_overflow_report"),
+                    "Prompt33 overflow report");
+                String prompt33Constraints = prompt15.prompt33ConstraintsReportJson(prompt33Request);
+                assertTrue(prompt33Constraints.contains("prompt33_constraints_report"),
+                    "Prompt33 constraint report");
+                assertTrue(prompt33Constraints.contains("java_soft_height"),
+                    "Prompt33 request constraint reaches canonical engine");
+                assertTrue(prompt15.prompt33ConfidenceReportJson(prompt33Request).contains("prompt33_confidence_report"),
+                    "Prompt33 confidence report");
+                WellfriendPdf.BinaryResult prompt33Applied = prompt15.prompt33ReflowRegion(prompt33Request);
+                assertPrefix(prompt33Applied.bytes(), "%PDF-", "Prompt33 geometric reflow");
+                assertTrue(
+                    prompt15.prompt33ValidateReflowOutputJson(prompt33Applied.bytes(), prompt33Request)
+                        .contains("prompt33_validate_reflow_output"),
+                    "Prompt33 output validation");
+                WellfriendPdf.BinaryResult prompt33Undo =
+                    prompt15.prompt33UndoReflow(prompt33Applied.bytes(), prompt33Request);
+                assertTrue(prompt33Undo.reportJson().contains("prompt33_undo_reflow"),
+                    "Prompt33 executable undo report");
+                assertTrue(prompt33Undo.reportJson().contains("\"byte_exact_restoration\":true"),
+                    "Prompt33 byte-exact undo");
+                assertTrue(java.util.Arrays.equals(Files.readAllBytes(prompt15Fixture), prompt33Undo.bytes()),
+                    "Prompt33 undo restores source bytes");
                 String shape = prompt15.prompt32ShapeTextJson("ffi", "ltr");
-                assertTrue(shape.contains("shaping_clusters"), "Prompt32 shaping");
+                assertTrue(shape.contains("\"glyphs\""), "Prompt32 shaping");
                 String subset = prompt15.prompt32FontSubsetPlanJson("Hello", "ltr", "reuse_embedded_subset");
                 assertTrue(subset.contains("prompt32_font_subset_plan"), "Prompt32 subset plan");
                 assertTrue(subset.contains("deterministic_subset_tag"), "Prompt32 deterministic subset tag");

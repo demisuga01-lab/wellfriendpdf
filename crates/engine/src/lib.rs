@@ -123,6 +123,7 @@ pub mod prompt22;
 pub mod prompt23;
 pub mod prompt31;
 pub mod prompt32;
+pub mod prompt33;
 pub mod pubsec;
 pub mod reader;
 pub mod render;
@@ -362,18 +363,22 @@ pub use prompt19::{
 };
 pub use prompt20::{
     analyze_advanced_text_reflow, analyze_multi_run_text_range, analyze_same_width_patch,
-    apply_same_width_patch, edit_advanced_text_pdf, edit_multi_run_text_range, edit_vector_object,
-    fit_annotation_ink_pdf, fit_ink_stroke, fit_ink_strokes, list_vector_objects, prompt20_report,
-    AdvancedTextEditOptions, AdvancedTextEditReport, AdvancedTextMode, AnnotationInkFitReport,
-    BidiRunProvenance, CacheInvalidationReport, CubicBezier, EditableVectorObject, InkFitOptions,
-    InkFitPolicy, InkFitReport, InkFitResult, InkPoint, InkStrokeSetResult, MultiRunRangeModel,
+    apply_same_width_patch, edit_advanced_text_pdf, edit_advanced_text_pdf_with_layout,
+    edit_advanced_text_pdf_with_positioned_visual_layout,
+    edit_advanced_text_pdf_with_visual_layout, edit_multi_run_text_range, edit_vector_object,
+    fit_annotation_ink_pdf, fit_ink_stroke, fit_ink_strokes, list_vector_objects,
+    move_link_annotation_rect_pdf, prompt20_report, AdvancedTextEditOptions,
+    AdvancedTextEditReport, AdvancedTextMode, AnnotationInkFitReport, BidiRunProvenance,
+    CacheInvalidationReport, CubicBezier, EditableVectorObject, ExplicitLayoutLine,
+    GeneratedLineAdjustment, GeneratedTextAlignment, InkFitOptions, InkFitPolicy, InkFitReport,
+    InkFitResult, InkPoint, InkStrokeSetResult, LinkAnnotationMoveReport, MultiRunRangeModel,
     MultiRunSourceSpan, MultiRunStylePolicy, MultiRunTextEditReport, MultiRunTextRangeRequest,
-    PatchStringRepresentation, Prompt20MutationCheckpoint, Prompt20MutationPatch,
-    Prompt20MutationSession, Prompt20SupportStatus, SameWidthMode, SameWidthPatchApplyReport,
-    SameWidthPatchEligibility, SameWidthPatchEligibilityReport, SameWidthPatchOptions,
-    SharedFormEditPolicy, TextGlyphProvenance, TextOverflowPolicy, TextReflowAnalysis,
-    TextReflowLimits, VectorColor, VectorEditOperation, VectorEditOptions, VectorEditReport,
-    VectorFillRule, VectorFormInvocation, VectorGroupProvenance, VectorMatrix,
+    PatchStringRepresentation, PositionedExplicitLayoutLine, Prompt20MutationCheckpoint,
+    Prompt20MutationPatch, Prompt20MutationSession, Prompt20SupportStatus, SameWidthMode,
+    SameWidthPatchApplyReport, SameWidthPatchEligibility, SameWidthPatchEligibilityReport,
+    SameWidthPatchOptions, SharedFormEditPolicy, TextGlyphProvenance, TextOverflowPolicy,
+    TextReflowAnalysis, TextReflowLimits, VectorColor, VectorEditOperation, VectorEditOptions,
+    VectorEditReport, VectorFillRule, VectorFormInvocation, VectorGroupProvenance, VectorMatrix,
     VectorObjectInventory, VectorPaintMode, VectorPathSegment, VectorProvenance, VectorStrokeStyle,
     VerticalGlyphOrientation, PROMPT20_SCHEMA_VERSION,
 };
@@ -413,6 +418,18 @@ pub use prompt32::{
     Prompt32EvidenceKind, Prompt32Status, SceneNode, SceneNodeKind, SceneSelectionReport,
     SceneSelectionRequest, SceneTextEditRequest, ShapingGlyphRecord, TransactionState,
     PROMPT32_SCHEMA_VERSION,
+};
+pub use prompt33::{
+    analyze_geometric_region, analyze_semantic_layout, apply_reflow_document, apply_reflow_region,
+    approve_structure_correction, evaluate_reflow_confidence, flow_graph_report, line_break_text,
+    no_overlay_no_clipping_report, paragraph_style_model, preview_reflow, prompt33_feature_matrix,
+    prompt33_report, query_confidence, query_constraints, query_overflow, reading_order_report,
+    score_reading_order_fixture, transaction_undo_report, undo_reflow_from_replay,
+    validate_reflow_output, ConfidenceDecision, ConstraintSolverReport, GeometricReflowRequest,
+    GeometricTextRegion, LayoutConstraint, LayoutLine, LineBreakRecord, LineBreakingResult,
+    NeighborPolicy, OverflowStatus, ParagraphStyleModel, Prompt33EvidenceKind, Prompt33Status,
+    ReflowConfidencePolicy, ReflowMutationSession, ReflowTransactionReport, ReflowUndoReport,
+    SemanticLayoutReport, SemanticRegionEdge, SemanticRegionNode, PROMPT33_SCHEMA_VERSION,
 };
 pub use pubsec::{
     encrypt_pdf_pubsec, parse_pubsec_encryption_info, recover_pubsec_file_key,

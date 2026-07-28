@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pytest
 
@@ -8,6 +9,11 @@ import wellfriendpdf
 ROOT = Path(__file__).resolve().parents[3]
 FIXTURE = ROOT / "crates" / "engine" / "tests" / "fixtures" / "multi_stream.pdf"
 BROKEN = ROOT / "renderer-benchmark" / "corpus" / "hostile" / "hostile_000_random.pdf"
+
+
+@pytest.fixture
+def sample_pdf() -> Path:
+    return FIXTURE
 
 
 def test_open_path_text_and_render():
@@ -95,13 +101,61 @@ def test_prompt32_surfaces(sample_pdf):
             return value
         return json.loads(value)
 
-    request = '{"requested_mode":"operator_preserving","page_index":0,"selection":{"text":"Hello"},"replacement":"Hi"}'
+    request = '{"requested_mode":"operator_preserving","page":1,"source_text":"Hello","replacement_text":"World"}'
     assert isinstance(parse_json(call_json(["prompt32_report", "prompt32_report_json"])), dict)
     assert isinstance(parse_json(call_json(["prompt32_scene_report", "prompt32_scene_report_json"])), dict)
-    assert isinstance(parse_json(call_json(["prompt32_scene_select", "prompt32_scene_select_json"], '{"page_index":0,"point":[20,100]}')), dict)
+    assert isinstance(parse_json(call_json(["prompt32_scene_select", "prompt32_scene_select_json"], '{"page":1,"point":[20,100]}')), dict)
     assert isinstance(parse_json(call_json(["prompt32_transaction_plan", "prompt32_transaction_plan_json"], request)), dict)
-    assert isinstance(parse_json(call_json(["prompt32_transaction_apply", "prompt32_transaction_apply_json"], request)), dict)
+    transaction_apply = call_json(["prompt32_transaction_apply", "prompt32_transaction_apply_json"], request)
+    if isinstance(transaction_apply, tuple):
+        # Output-producing bindings return `(pdf_bytes, report)` rather than a
+        # report-only JSON value. The smoke contract validates the shared
+        # report while retaining ownership coverage for the produced bytes.
+        assert isinstance(transaction_apply[0], bytes)
+        transaction_apply = transaction_apply[1]
+    assert isinstance(parse_json(transaction_apply), dict)
     assert isinstance(parse_json(call_json(["prompt32_text_map", "prompt32_text_map_json"], "A\u0301B", "ltr")), dict)
     assert isinstance(parse_json(call_json(["prompt32_shape_text", "prompt32_shape_text_json"], "A\u0301B", "ltr")), dict)
     assert isinstance(parse_json(call_json(["prompt32_font_subset_plan", "prompt32_font_subset_plan_json"], "A\u0301B", "ltr", "preserve_existing_font")), dict)
     assert isinstance(parse_json(call_json(["prompt32_font_substitution_report", "prompt32_font_substitution_report_json"], "Helvetica", "A\u0301B", "no_silent_substitution")), dict)
+
+
+def test_prompt33_query_surfaces_share_preview_request(sample_pdf):
+    doc = wellfriendpdf.open(sample_pdf)
+    request = json.dumps({
+        "requested_mode": "geometric_block",
+        "page": 1,
+        "source_text": "Hello",
+        "replacement_text": "World",
+        "region": [10.0, 10.0, 260.0, 90.0],
+        "language": "en",
+        "hyphenation": True,
+        "layout_constraints": [{
+            "constraint_id": "python_soft_height",
+            "variable": "region_height",
+            "relation": "ge",
+            "value": 500.0,
+            "priority": "weak",
+        }],
+    })
+
+    def call_json(name):
+        method = getattr(doc, name)
+        value = method(request)
+        return value if isinstance(value, dict) else json.loads(value)
+
+    assert call_json("prompt33_overflow_report")["kind"] == "prompt33_overflow_report"
+    constraints = call_json("prompt33_constraints_report")
+    assert constraints["kind"] == "prompt33_constraints_report"
+    assert "python_soft_height" in json.dumps(constraints)
+    assert call_json("prompt33_confidence_report")["kind"] == "prompt33_confidence_report"
+    output, apply = doc.prompt33_reflow_region(request)
+    assert isinstance(output, bytes)
+    assert apply["kind"] == "prompt33_reflow_region"
+    validation = doc.prompt33_validate_reflow_output(output, request)
+    assert validation["kind"] == "prompt33_validate_reflow_output"
+    assert validation["report"]["valid"] is True
+    restored, undo = doc.prompt33_undo_reflow(output, request)
+    assert restored == sample_pdf.read_bytes()
+    assert undo["kind"] == "prompt33_undo_reflow"
+    assert undo["report"]["byte_exact_restoration"] is True

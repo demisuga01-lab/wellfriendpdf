@@ -1114,6 +1114,85 @@ mod wasm_api {
                 .map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = prompt33ReportJson)]
+        pub fn prompt33_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33LayoutAnalyzeJson)]
+        pub fn prompt33_layout_analyze_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_layout_analyze_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33SemanticLayoutJson)]
+        pub fn prompt33_semantic_layout_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_semantic_layout_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33ReadingOrderReportJson)]
+        pub fn prompt33_reading_order_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_reading_order_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33FlowGraphReportJson)]
+        pub fn prompt33_flow_graph_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_flow_graph_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33ReflowPreviewJson)]
+        pub fn prompt33_reflow_preview_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_reflow_preview_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33OverflowReportJson)]
+        pub fn prompt33_overflow_report_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_overflow_report_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33ConstraintsReportJson)]
+        pub fn prompt33_constraints_report_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_constraints_report_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33ConfidenceReportJson)]
+        pub fn prompt33_confidence_report_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_confidence_report_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33ValidateReflowOutputJson)]
+        pub fn prompt33_validate_reflow_output_json(
+            &self,
+            output_pdf: Vec<u8>,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| {
+                sdk::prompt33_validate_reflow_output_json(b, &output_pdf, &request_json, None)
+            })
+        }
+
+        #[wasm_bindgen(js_name = prompt33ReflowOperationReportJson)]
+        pub fn prompt33_reflow_operation_report_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt33_reflow_operation_report_json(b, &request_json, None))
+        }
+
         #[wasm_bindgen(js_name = prompt20VectorListJson)]
         pub fn prompt20_vector_list_json(&self, page: usize) -> Result<String, JsValue> {
             self.report(|b| sdk::prompt20_vector_list_json(b, page, None))
@@ -1313,6 +1392,31 @@ mod wasm_api {
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
             self.output(|b| sdk::prompt32_scene_edit_text_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33ReflowRegion)]
+        pub fn prompt33_reflow_region(
+            &self,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt33_reflow_region_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33ReflowDocument)]
+        pub fn prompt33_reflow_document(
+            &self,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt33_reflow_document_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt33UndoReflow)]
+        pub fn prompt33_undo_reflow(
+            &self,
+            output_pdf: Vec<u8>,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt33_undo_reflow_json(b, &output_pdf, &request_json, None))
         }
 
         #[wasm_bindgen(js_name = prompt31PathEdit)]

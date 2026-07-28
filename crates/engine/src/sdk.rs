@@ -1092,6 +1092,221 @@ pub fn prompt32_font_substitution_report_json(
     )
 }
 
+/// Prompt 33 geometric and semantic reflow architecture report.
+pub fn prompt33_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt33_report",
+        &crate::prompt33::prompt33_report(&input)?,
+    )
+}
+
+/// Analyze a source-linked geometric text region for Prompt 33 reflow.
+pub fn prompt33_layout_analyze_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt33_layout_analyze",
+        &crate::prompt33::analyze_geometric_region(&input, &request)?,
+    )
+}
+
+/// Analyze the source-linked semantic layout graph.
+pub fn prompt33_semantic_layout_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt33_semantic_layout",
+        &crate::prompt33::analyze_semantic_layout(&input, None)?,
+    )
+}
+
+/// Report deterministic reading-order DAG and ambiguity.
+pub fn prompt33_reading_order_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt33_reading_order_report",
+        &crate::prompt33::reading_order_report(&input)?,
+    )
+}
+
+/// Report Prompt 33 cross-column/cross-page flow graph.
+pub fn prompt33_flow_graph_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt33_flow_graph_report",
+        &crate::prompt33::flow_graph_report(&input)?,
+    )
+}
+
+/// Preview a GeometricBlock or SemanticDocument reflow without mutating bytes.
+pub fn prompt33_reflow_preview_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt33_reflow_preview",
+        &crate::prompt33::preview_reflow(&input, &request)?,
+    )
+}
+
+/// Query ordered overflow evidence without mutating the PDF.
+pub fn prompt33_overflow_report_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt33_overflow_report",
+        &crate::prompt33::query_overflow(&input, &request)?,
+    )
+}
+
+/// Query bounded hard/soft constraint evidence without mutating the PDF.
+pub fn prompt33_constraints_report_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt33_constraints_report",
+        &crate::prompt33::query_constraints(&input, &request)?,
+    )
+}
+
+/// Query central confidence/review enforcement without mutating the PDF.
+pub fn prompt33_confidence_report_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt33_confidence_report",
+        &crate::prompt33::query_confidence(&input, &request)?,
+    )
+}
+
+/// Validate a completed supported local Prompt 33 reflow against canonical
+/// reopen and unaffected-content evidence. The output is an explicit byte
+/// slice so callers cannot accidentally validate their unchanged input.
+pub fn prompt33_validate_reflow_output_json(
+    bytes: &[u8],
+    output: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt33_validate_reflow_output",
+        &crate::prompt33::validate_reflow_output(&input, output, &request)?,
+    )
+}
+
+/// Apply a supported GeometricBlock reflow through canonical source mutation.
+pub fn prompt33_reflow_region_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    let (output, report) = crate::prompt33::apply_reflow_region(&input, &request)?;
+    Ok((output, envelope("prompt33_reflow_region", &report)?))
+}
+
+/// Apply a supported SemanticDocument reflow boundary through the canonical path.
+pub fn prompt33_reflow_document_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    let (output, report) = crate::prompt33::apply_reflow_document(&input, &request)?;
+    Ok((output, envelope("prompt33_reflow_document", &report)?))
+}
+
+/// Execute Prompt 33's canonical inverse operation against an explicit output
+/// byte buffer. The engine replays the requested operation from this document,
+/// rejects stale/non-deterministic output, then performs the transaction undo
+/// and returns owned restored bytes plus typed proof.
+pub fn prompt33_undo_reflow_json(
+    bytes: &[u8],
+    output: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    let (restored, report) = crate::prompt33::undo_reflow_from_replay(&input, output, &request)?;
+    Ok((restored, envelope("prompt33_undo_reflow", &report)?))
+}
+
+/// Store/preview a user correction to inferred semantic structure.
+pub fn prompt33_reflow_approve_structure_json(
+    bytes: &[u8],
+    correction_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt33_reflow_approve_structure",
+        &crate::prompt33::approve_structure_correction(&input, correction_json)?,
+    )
+}
+
+/// Report Prompt 33 transaction/undo/redo policy for a reflow request.
+pub fn prompt33_reflow_operation_report_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt33_reflow_operation_report",
+        &crate::prompt33::transaction_undo_report(&input, &request)?,
+    )
+}
+
+/// Report no-overlay/no-clipping evidence for a Prompt 33 reflow request.
+pub fn prompt33_no_overlay_no_clipping_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+        .map_err(json_err)?;
+    envelope(
+        "prompt33_no_overlay_no_clipping",
+        &crate::prompt33::no_overlay_no_clipping_report(&input, &request)?,
+    )
+}
+
 /// Prompt 18 mask/soft-mask inventory and secure fallback posture.
 pub fn mask_redaction_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;

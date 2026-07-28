@@ -15,6 +15,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+serde_json = "1"
 
 [dependencies.wellfriendpdf-engine]
 path = "../crates/engine"
@@ -316,6 +317,34 @@ bench = false
 [[bin]]
 name = "prompt32_scene_fonts"
 path = "fuzz_targets/prompt32_scene_fonts.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "prompt33_reflow"
+path = "fuzz_targets/prompt33_reflow.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "prompt33_semantic_graph"
+path = "fuzz_targets/prompt33_semantic_graph.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "prompt33_transaction"
+path = "fuzz_targets/prompt33_transaction.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "prompt33_reports"
+path = "fuzz_targets/prompt33_reports.rs"
 test = false
 doc = false
 bench = false

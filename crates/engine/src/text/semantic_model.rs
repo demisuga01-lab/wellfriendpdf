@@ -2536,13 +2536,10 @@ fn classify_line(
     median_font_size: f64,
 ) -> TextRole {
     let trimmed = text.trim_start();
-    if trimmed.starts_with(['-', '*', '\u{2022}']) || starts_with_numbered_list(trimmed) {
+    if is_canonical_list_item_text(trimmed) {
         return TextRole::List;
     }
-    if trimmed.to_ascii_lowercase().starts_with("figure ")
-        || trimmed.to_ascii_lowercase().starts_with("fig. ")
-        || trimmed.to_ascii_lowercase().starts_with("table ")
-    {
+    if is_canonical_caption_text(trimmed) {
         return TextRole::FigureCaption;
     }
     if (quad.y1 - quad.y0) < median_font_size * 0.85
@@ -2551,6 +2548,23 @@ fn classify_line(
         return TextRole::Footnote;
     }
     block_role
+}
+
+/// Canonical list-label evidence shared by semantic consumers.  The text
+/// semantic model remains the single place that recognizes list syntax; later
+/// stages may preserve that evidence when a conservative block grouping has
+/// otherwise retained a body-text role.
+pub(crate) fn is_canonical_list_item_text(text: &str) -> bool {
+    let trimmed = text.trim_start();
+    trimmed.starts_with(['-', '*', '\u{2022}']) || starts_with_numbered_list(trimmed)
+}
+
+/// Canonical caption-label evidence shared by semantic consumers. This is
+/// deliberately limited to the same deterministic labels used by the line
+/// classifier; it does not promote arbitrary nearby text into a caption.
+pub(crate) fn is_canonical_caption_text(text: &str) -> bool {
+    let lower = text.trim_start().to_ascii_lowercase();
+    lower.starts_with("figure ") || lower.starts_with("fig. ") || lower.starts_with("table ")
 }
 
 fn starts_with_numbered_list(text: &str) -> bool {

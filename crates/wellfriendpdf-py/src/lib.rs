@@ -1324,6 +1324,165 @@ impl PyDocument {
         parse_json_str(py, &json)
     }
 
+    fn prompt33_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt33_report_json(bytes, None))
+    }
+
+    fn prompt33_layout_analyze<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt33_layout_analyze_json(bytes, request_json, None)
+        })
+    }
+
+    fn prompt33_semantic_layout<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt33_semantic_layout_json(bytes, None))
+    }
+
+    fn prompt33_reading_order_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt33_reading_order_report_json(bytes, None)
+        })
+    }
+
+    fn prompt33_flow_graph_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt33_flow_graph_report_json(bytes, None)
+        })
+    }
+
+    fn prompt33_reflow_preview<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt33_reflow_preview_json(bytes, request_json, None)
+        })
+    }
+
+    fn prompt33_overflow_report<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt33_overflow_report_json(bytes, request_json, None)
+        })
+    }
+
+    fn prompt33_constraints_report<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt33_constraints_report_json(bytes, request_json, None)
+        })
+    }
+
+    fn prompt33_confidence_report<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt33_confidence_report_json(bytes, request_json, None)
+        })
+    }
+
+    /// Validate explicit Prompt 33 output bytes against this source document.
+    /// The input document remains immutable and the caller retains output
+    /// ownership, matching the Rust SDK and C ABI contracts.
+    fn prompt33_validate_reflow_output<'py>(
+        &self,
+        py: Python<'py>,
+        output_pdf: &[u8],
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        let bytes = self.file_bytes();
+        let json = run_wellfriendpdf(|| {
+            sdk::prompt33_validate_reflow_output_json(&bytes, output_pdf, request_json, None)
+        })?;
+        parse_json_str(py, &json)
+    }
+
+    #[pyo3(signature = (request_json, output=None))]
+    fn prompt33_reflow_region<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::prompt33_reflow_region_json(&bytes, request_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (request_json, output=None))]
+    fn prompt33_reflow_document<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::prompt33_reflow_document_json(&bytes, request_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (output_pdf, request_json, output=None))]
+    fn prompt33_undo_reflow<'py>(
+        &self,
+        py: Python<'py>,
+        output_pdf: &[u8],
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (restored, report) = run_wellfriendpdf(|| {
+            sdk::prompt33_undo_reflow_json(&bytes, output_pdf, request_json, None)
+        })?;
+        write_optional(&output, &restored)?;
+        Ok((
+            PyBytes::new(py, &restored).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    fn prompt33_reflow_approve_structure<'py>(
+        &self,
+        py: Python<'py>,
+        correction_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt33_reflow_approve_structure_json(bytes, correction_json, None)
+        })
+    }
+
+    fn prompt33_reflow_operation_report<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt33_reflow_operation_report_json(bytes, request_json, None)
+        })
+    }
+
     fn associated_files_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::associated_files_report_json(bytes, None))
     }

@@ -41,6 +41,13 @@ thiserror = "1"
 ttf-parser = "0.21"
 unicode-bidi = "0.3"
 unicode-segmentation = "1.12"
+unicode-linebreak = "0.1.5"
+cassowary = "0.3.0"
+# Prompt 33 uses only the auditable en-US and Spanish dictionaries from this
+# package.  The provider code is Apache-2.0/MIT; Prompt 33 records the
+# separate pattern provenance at runtime instead of guessing unsupported
+# languages with English rules.
+hyphenation = { version = "0.8.4", default-features = false, features = ["embed_all"] }
 url = "2.5"
 cms = { version = "0.2", features = ["builder"] }
 x509-cert = "0.2"

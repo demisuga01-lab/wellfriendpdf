@@ -917,6 +917,88 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_font_substitution_report_j
     const char *policy,
     char **out_json,
     char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_layout_analyze_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_semantic_layout_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reading_order_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_flow_graph_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_preview_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_overflow_report_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_constraints_report_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_confidence_report_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+/* Validate an explicitly supplied Prompt 33 output against this immutable
+ * source document. `output_pdf` remains caller-owned for the whole call. */
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_validate_reflow_output_json(
+    const WellfriendDocument *document,
+    const uint8_t *output_pdf,
+    size_t output_pdf_len,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_region_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_document_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+/* Execute the canonical Prompt 33 undo by replaying `request_json` against
+ * this immutable preimage and verifying `output_pdf` before restoring bytes. */
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_undo_reflow_json(
+    const WellfriendDocument *document,
+    const uint8_t *output_pdf,
+    size_t output_pdf_len,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_approve_structure_json(
+    const WellfriendDocument *document,
+    const char *correction_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_operation_report_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
 WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_vector_list_json(
     const WellfriendDocument *document,
     size_t page,

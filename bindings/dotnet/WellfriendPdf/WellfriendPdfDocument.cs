@@ -983,6 +983,234 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
+    public string Prompt33ReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_prompt33_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt33LayoutAnalyzeJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_layout_analyze_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public string Prompt33SemanticLayoutJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_prompt33_semantic_layout_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt33ReadingOrderReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_prompt33_reading_order_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt33FlowGraphReportJson()
+    {
+        ThrowIfDisposed();
+        var status = NativeMethods.wellfriendpdf_document_prompt33_flow_graph_report_json(_handle, out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
+    public string Prompt33ReflowPreviewJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_preview_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public string Prompt33OverflowReportJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_overflow_report_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public string Prompt33ConstraintsReportJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_constraints_report_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public string Prompt33ConfidenceReportJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_confidence_report_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    /// <summary>
+    /// Validates explicitly supplied Prompt 33 output against this immutable
+    /// source document. The output bytes remain owned by the caller.
+    /// </summary>
+    public string Prompt33ValidateReflowOutputJson(byte[] outputPdf, string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(outputPdf);
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_validate_reflow_output_json(
+                _handle, outputPdf, (UIntPtr)outputPdf.Length, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public WellfriendBinaryResult Prompt33ReflowRegion(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_region_json(
+                _handle, requestPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public WellfriendBinaryResult Prompt33ReflowDocument(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_document_json(
+                _handle, requestPtr, out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    /// <summary>
+    /// Replays the specified Prompt 33 operation against this immutable source,
+    /// verifies <paramref name="outputPdf"/>, then executes the canonical
+    /// transaction undo. Stale output is rejected rather than treated as an
+    /// unverified restoration request.
+    /// </summary>
+    public WellfriendBinaryResult Prompt33UndoReflow(byte[] outputPdf, string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(outputPdf);
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_undo_reflow_json(
+                _handle, outputPdf, (UIntPtr)outputPdf.Length, requestPtr,
+                out var buffer, out var json, out var error);
+            return NativeMethods.TakeOutput(status, buffer, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
+    public string Prompt33ReflowApproveStructureJson(string correctionJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(correctionJson);
+        var correctionPtr = NativeMethods.StringToNativeOrNull(correctionJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_approve_structure_json(
+                _handle, correctionPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (correctionPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(correctionPtr);
+        }
+    }
+
+    public string Prompt33ReflowOperationReportJson(string requestJson)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
+        var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_operation_report_json(
+                _handle, requestPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (requestPtr != IntPtr.Zero) Marshal.FreeCoTaskMem(requestPtr);
+        }
+    }
+
     public string Prompt20VectorListJson(nuint page = 1)
     {
         ThrowIfDisposed();

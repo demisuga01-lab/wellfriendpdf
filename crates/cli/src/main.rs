@@ -385,6 +385,34 @@ enum Commands {
     FontSubstitutionReport(Prompt32FontSubstitutionArgs),
     /// Scene-facing local text edit compiled to source-level operator mutation
     SceneEditText(Prompt32TransactionArgs),
+    /// Prompt 33 geometric/semantic reflow architecture report
+    Prompt33Report(Prompt17ReportArgs),
+    /// Analyze source-linked geometric and semantic layout
+    LayoutAnalyze(Prompt33ReflowArgs),
+    /// Report deterministic reading order
+    ReadingOrderReport(Prompt17ReportArgs),
+    /// Report cross-column/cross-page flow graph
+    FlowGraphReport(Prompt17ReportArgs),
+    /// Preview Prompt 33 reflow without mutating
+    ReflowPreview(Prompt33ReflowArgs),
+    /// Report ordered Prompt 33 overflow evidence without mutating
+    OverflowReport(Prompt33ReflowArgs),
+    /// Report bounded Prompt 33 hard/soft constraints without mutating
+    ReflowConstraints(Prompt33ReflowArgs),
+    /// Report Prompt 33 confidence/review enforcement without mutating
+    ReflowConfidence(Prompt33ReflowArgs),
+    /// Validate a completed local Prompt 33 reflow with explicit source, output, and request files
+    ReflowValidate(Prompt33ValidateArgs),
+    /// Apply supported GeometricBlock reflow
+    ReflowRegion(Prompt33ReflowArgs),
+    /// Apply supported SemanticDocument reflow
+    ReflowDocument(Prompt33ReflowArgs),
+    /// Replay and execute a verified Prompt 33 undo without overwriting either input PDF
+    ReflowUndo(Prompt33UndoArgs),
+    /// Store/preview a reviewed semantic-structure correction
+    ReflowApproveStructure(Prompt33StructureCorrectionArgs),
+    /// Report Prompt 33 transaction and undo evidence
+    ReflowOperationReport(Prompt33ReflowArgs),
     /// Alias for vector-list focused on Form invocation ownership
     FormInstanceReport(Prompt20VectorListArgs),
     /// Alias for vector-edit with clone-edit-one-instance policy
@@ -1570,7 +1598,7 @@ struct Prompt32TransactionArgs {
     #[arg(long)]
     signature_policy_override: bool,
     /// Font policy
-    #[arg(long, default_value = "preserve_original_or_refuse")]
+    #[arg(long, default_value = "rebuild_subset_or_generated_type0")]
     font_policy: String,
     /// Direction override: ltr or rtl
     #[arg(long)]
@@ -1607,6 +1635,116 @@ struct Prompt32FontSubstitutionArgs {
     /// Output JSON; defaults to stdout
     #[arg(short, long)]
     output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+struct Prompt33ReflowArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Optional JSON GeometricReflowRequest; otherwise CLI args are used
+    #[arg(long)]
+    request: Option<PathBuf>,
+    /// One-based page number
+    #[arg(short, long, default_value_t = 1)]
+    page: usize,
+    /// Source text to resolve to source operators
+    #[arg(long = "source-text", default_value = "")]
+    source_text: String,
+    /// Replacement text
+    #[arg(long = "replacement-text", default_value = "")]
+    replacement_text: String,
+    /// Requested mode: geometric_block or semantic_document
+    #[arg(long, default_value = "geometric_block")]
+    mode: String,
+    /// Region as x0,y0,x1,y1
+    #[arg(long)]
+    region: Option<String>,
+    /// Language tag for line breaking and hyphenation
+    #[arg(long)]
+    language: Option<String>,
+    /// Direction override: ltr, rtl, or vertical
+    #[arg(long)]
+    direction: Option<String>,
+    /// Font policy: rebuild_subset_or_generated_type0 or preserve_original_per_run
+    #[arg(long, default_value = "rebuild_subset_or_generated_type0")]
+    font_policy: String,
+    /// Enable explicit language hyphenation policy
+    #[arg(long)]
+    hyphenation: bool,
+    /// Allow page creation for SemanticDocument flow
+    #[arg(long)]
+    allow_page_creation: bool,
+    /// Allow review-approved low-confidence semantic structure
+    #[arg(long)]
+    approve_low_confidence_structure: bool,
+    /// Permit an explicit signature-policy override
+    #[arg(long)]
+    signature_policy_override: bool,
+    /// Output PDF for apply commands
+    #[arg(short, long, default_value = "prompt33-reflow-edited.pdf")]
+    output: PathBuf,
+    /// Optional JSON report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Output JSON; defaults to stdout for non-apply commands
+    #[arg(long = "json-output")]
+    json_output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt33StructureCorrectionArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// JSON correction object path
+    correction: PathBuf,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt33ValidateArgs {
+    /// Original input PDF used for the reflow
+    pdf: PathBuf,
+    /// Completed reflow output PDF to validate (read-only)
+    #[arg(long = "output-pdf")]
+    output_pdf: PathBuf,
+    /// JSON GeometricReflowRequest used to produce the output
+    #[arg(long)]
+    request: PathBuf,
+    /// Output JSON; defaults to stdout and never overwrites either PDF
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for the original encrypted PDF, if required
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt33UndoArgs {
+    /// Original input PDF used for the reflow
+    pdf: PathBuf,
+    /// Completed reflow output PDF to verify and undo (read-only)
+    #[arg(long = "output-pdf")]
+    output_pdf: PathBuf,
+    /// JSON GeometricReflowRequest used to produce the output
+    #[arg(long)]
+    request: PathBuf,
+    /// Destination for restored PDF bytes; must differ from both inputs
+    #[arg(long = "restored-pdf")]
+    restored_pdf: PathBuf,
+    /// Optional JSON undo report path
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Password for the original encrypted PDF, if required
+    #[arg(long)]
+    password: Option<String>,
 }
 
 #[derive(Parser)]
@@ -3372,6 +3510,20 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::FontSubsetBuild(args) => run_prompt32_font_subset_plan(args),
         Commands::FontSubstitutionReport(args) => run_prompt32_font_substitution_report(args),
         Commands::SceneEditText(args) => run_prompt32_transaction_apply(args),
+        Commands::Prompt33Report(args) => run_prompt33_report(args),
+        Commands::LayoutAnalyze(args) => run_prompt33_layout_analyze(args),
+        Commands::ReadingOrderReport(args) => run_prompt33_reading_order_report(args),
+        Commands::FlowGraphReport(args) => run_prompt33_flow_graph_report(args),
+        Commands::ReflowPreview(args) => run_prompt33_reflow_preview(args),
+        Commands::OverflowReport(args) => run_prompt33_overflow_report(args),
+        Commands::ReflowConstraints(args) => run_prompt33_constraints_report(args),
+        Commands::ReflowConfidence(args) => run_prompt33_confidence_report(args),
+        Commands::ReflowValidate(args) => run_prompt33_reflow_validate(args),
+        Commands::ReflowRegion(args) => run_prompt33_reflow_region(args),
+        Commands::ReflowDocument(args) => run_prompt33_reflow_document(args),
+        Commands::ReflowUndo(args) => run_prompt33_reflow_undo(args),
+        Commands::ReflowApproveStructure(args) => run_prompt33_reflow_approve_structure(args),
+        Commands::ReflowOperationReport(args) => run_prompt33_reflow_operation_report(args),
         Commands::FormInstanceReport(args) => run_prompt20_vector_list(args),
         Commands::FormCloneOne(mut args) => {
             args.shared_form_policy = "clone-edit-one-instance".to_string();
@@ -5329,6 +5481,219 @@ fn run_prompt32_font_substitution_report(
         args.policy.as_deref(),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let bytes = read_edit_input(&args.pdf, &args.password)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_layout_analyze(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt33_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_layout_analyze_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.json_output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_reading_order_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_reading_order_report_json(
+        &input,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_flow_graph_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_flow_graph_report_json(
+        &input,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_reflow_preview(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt33_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_reflow_preview_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.json_output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_overflow_report(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt33_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_overflow_report_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.json_output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_constraints_report(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt33_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_constraints_report_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.json_output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_confidence_report(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt33_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_confidence_report_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.json_output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_reflow_validate(args: Prompt33ValidateArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let output = std::fs::read(&args.output_pdf)?;
+    let request = std::fs::read_to_string(&args.request)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_validate_reflow_output_json(
+        &input,
+        &output,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_reflow_region(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt33_request_json(&args)?;
+    let (output, report) = wellfriendpdf_engine::sdk::prompt33_reflow_region_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, output)?;
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, pretty)?;
+    } else {
+        println!("{pretty}");
+    }
+    Ok(())
+}
+
+fn run_prompt33_reflow_document(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt33_request_json(&args)?;
+    let (output, report) = wellfriendpdf_engine::sdk::prompt33_reflow_document_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, output)?;
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, pretty)?;
+    } else {
+        println!("{pretty}");
+    }
+    Ok(())
+}
+
+fn run_prompt33_reflow_undo(args: Prompt33UndoArgs) -> Result<(), Box<dyn Error>> {
+    if args.restored_pdf == args.pdf || args.restored_pdf == args.output_pdf {
+        return Err(
+            "prompt33 reflow-undo requires --restored-pdf distinct from both input PDFs".into(),
+        );
+    }
+    if args.restored_pdf.exists() {
+        return Err("prompt33 reflow-undo refuses to overwrite an existing --restored-pdf".into());
+    }
+    if args.report.as_ref().is_some_and(|path| path.exists()) {
+        return Err("prompt33 reflow-undo refuses to overwrite an existing --report".into());
+    }
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let output = std::fs::read(&args.output_pdf)?;
+    let request = std::fs::read_to_string(&args.request)?;
+    let (restored, report) = wellfriendpdf_engine::sdk::prompt33_undo_reflow_json(
+        &input,
+        &output,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.restored_pdf, restored)?;
+    let pretty = pretty_json(&report)?;
+    if let Some(path) = args.report {
+        std::fs::write(path, pretty)?;
+    } else {
+        println!("{pretty}");
+    }
+    Ok(())
+}
+
+fn run_prompt33_reflow_approve_structure(
+    args: Prompt33StructureCorrectionArgs,
+) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let correction = std::fs::read_to_string(args.correction)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_reflow_approve_structure_json(
+        &input,
+        &correction,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt33_reflow_operation_report(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = prompt33_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::prompt33_reflow_operation_report_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.json_output, &pretty_json(&report)?)
+}
+
+fn prompt33_request_json(args: &Prompt33ReflowArgs) -> Result<String, Box<dyn Error>> {
+    if let Some(path) = &args.request {
+        return Ok(std::fs::read_to_string(path)?);
+    }
+    let region = args
+        .region
+        .as_deref()
+        .map(parse_prompt32_region)
+        .transpose()?;
+    Ok(serde_json::json!({
+        "requested_mode": args.mode,
+        "page": args.page,
+        "source_text": args.source_text,
+        "replacement_text": args.replacement_text,
+        "region": region,
+        "language": args.language,
+        "direction": args.direction,
+        "font_policy": args.font_policy,
+        "hyphenation": args.hyphenation,
+        "allow_page_creation": args.allow_page_creation,
+        "allow_font_reduction": false,
+        "approve_low_confidence_structure": args.approve_low_confidence_structure,
+        "signature_policy_override": args.signature_policy_override,
+    })
+    .to_string())
 }
 
 fn prompt32_request_json(args: &Prompt32TransactionArgs) -> Result<String, Box<dyn Error>> {

@@ -409,7 +409,8 @@ public sealed class WellfriendPdfSmokeTests
         var scene = doc.Prompt32SceneReportJson("[1]");
         Assert.Contains("prompt32_scene_report", scene);
         Assert.Contains("\"nodes\"", scene);
-        Assert.Contains("snapshot:", scene);
+        Assert.Contains("\"snapshot_id\"", scene);
+        Assert.Contains("\"revision_id\"", scene);
 
         var request = """
         {
@@ -435,6 +436,38 @@ public sealed class WellfriendPdfSmokeTests
         var substitution = doc.Prompt32FontSubstitutionReportJson("Prompt32MissingFont", "Hello", "explicit_approval_required");
         Assert.Contains("prompt32_font_substitution_report", substitution);
         Assert.Contains("Prompt32MissingFont", substitution);
+    }
+
+    [Fact]
+    public void Prompt33GeometricSemanticReflowSurfacesAreSharedAndOwned()
+    {
+        using var doc = WellfriendDocument.Open(FixturePath("multi_stream.pdf"));
+        const string request = "{\"requested_mode\":\"geometric_block\",\"page\":1,\"source_text\":\"Hello\",\"replacement_text\":\"World\",\"region\":[10.0,10.0,260.0,90.0],\"language\":\"en\",\"hyphenation\":true,\"layout_constraints\":[{\"constraint_id\":\"dotnet_soft_height\",\"variable\":\"region_height\",\"relation\":\"ge\",\"value\":500.0,\"priority\":\"weak\"}]}";
+
+        Assert.Contains("prompt33.geometric-semantic-reflow.v1", doc.Prompt33ReportJson());
+        Assert.Contains("prompt33_layout_analyze", doc.Prompt33LayoutAnalyzeJson(request));
+        Assert.Contains("prompt33_semantic_layout", doc.Prompt33SemanticLayoutJson());
+        Assert.Contains("prompt33_reading_order_report", doc.Prompt33ReadingOrderReportJson());
+        Assert.Contains("prompt33_flow_graph_report", doc.Prompt33FlowGraphReportJson());
+        Assert.Contains("prompt33_reflow_preview", doc.Prompt33ReflowPreviewJson(request));
+        Assert.Contains("prompt33_overflow_report", doc.Prompt33OverflowReportJson(request));
+        var constraints = doc.Prompt33ConstraintsReportJson(request);
+        Assert.Contains("prompt33_constraints_report", constraints);
+        Assert.Contains("dotnet_soft_height", constraints);
+        Assert.Contains("prompt33_confidence_report", doc.Prompt33ConfidenceReportJson(request));
+        Assert.Contains("prompt33_reflow_operation_report", doc.Prompt33ReflowOperationReportJson(request));
+        var geometric = doc.Prompt33ReflowRegion(request);
+        Assert.Contains("prompt33_reflow_region", geometric.ReportJson);
+        Assert.Contains(
+            "prompt33_validate_reflow_output",
+            doc.Prompt33ValidateReflowOutputJson(geometric.Bytes, request));
+        var undo = doc.Prompt33UndoReflow(geometric.Bytes, request);
+        Assert.Contains("prompt33_undo_reflow", undo.ReportJson);
+        Assert.Contains("\"byte_exact_restoration\":true", undo.ReportJson);
+        Assert.Equal(File.ReadAllBytes(FixturePath("multi_stream.pdf")), undo.Bytes);
+        var correctionError = Assert.Throws<WellfriendPdfException>(() =>
+            doc.Prompt33ReflowApproveStructureJson("{\"node\":\"reviewed\"}"));
+        Assert.Contains("structure_update_failed", correctionError.Message);
     }
 
     [Fact]

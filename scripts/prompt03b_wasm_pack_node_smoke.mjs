@@ -131,6 +131,35 @@ try {
     result.apis_tested.push("close Prompt20B fixture");
   }
 
+  const prompt33Request = JSON.stringify({
+    requested_mode: "geometric_block",
+    page: 1,
+    source_text: "Hello",
+    replacement_text: "World",
+    region: [10.0, 10.0, 260.0, 90.0],
+    language: "en",
+    hyphenation: true,
+  });
+  const prompt33Report = JSON.parse(pdf.prompt33ReportJson());
+  result.prompt33_schema = prompt33Report.report?.schema_version;
+  result.apis_tested.push("prompt33ReportJson");
+  const prompt33Apply = pdf.prompt33ReflowRegion(prompt33Request);
+  const prompt33ApplyReport = JSON.parse(prompt33Apply.reportJson());
+  result.prompt33_apply_kind = prompt33ApplyReport.kind;
+  result.apis_tested.push("prompt33ReflowRegion");
+  const prompt33Validation = JSON.parse(
+    pdf.prompt33ValidateReflowOutputJson(prompt33Apply.bytes(), prompt33Request),
+  );
+  result.prompt33_validation_kind = prompt33Validation.kind;
+  result.apis_tested.push("prompt33ValidateReflowOutputJson");
+  const prompt33Undo = pdf.prompt33UndoReflow(
+    prompt33Apply.bytes(),
+    prompt33Request,
+  );
+  const prompt33UndoReport = JSON.parse(prompt33Undo.reportJson());
+  result.prompt33_undo_kind = prompt33UndoReport.kind;
+  result.apis_tested.push("prompt33UndoReflow");
+
   const codec = JSON.parse(
     wellfriendpdf.WellfriendPdf.codecIsolationReportJson(
       "FlateDecode",
@@ -177,6 +206,10 @@ try {
     result.prompt20b_edit_kind === "prompt20b_multi_run_text_edit_report",
     result.prompt20b_edit_bytes > 0,
     result.codec_isolation_status === "success",
+    result.prompt33_schema === "prompt33.geometric-semantic-reflow.v1",
+    result.prompt33_apply_kind === "prompt33_reflow_region",
+    result.prompt33_validation_kind === "prompt33_validate_reflow_output",
+    result.prompt33_undo_kind === "prompt33_undo_reflow",
     typeof result.invalid_input_error === "string" && result.invalid_input_error.length > 0,
   ];
   result.status = checks.every(Boolean) ? "passed" : "failed";

@@ -5,11 +5,13 @@
 //! curve fitting.  Existing PDF glyph streams remain provenance-bearing PDF
 //! codes; only newly inserted Unicode text is shaped.
 
+use std::collections::BTreeSet;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_bidi::{BidiInfo, Level};
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::error::{Result, WellfriendError};
 use crate::filters::{
@@ -132,6 +134,56 @@ pub enum TextOverflowPolicy {
     ExpandRegion,
 }
 
+/// Horizontal alignment for generated Prompt 20 text.  `Justify` changes
+/// text-state spacing (`Tw`/`Tc`) rather than scaling outlines or drawing a
+/// replacement path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratedTextAlignment {
+    #[default]
+    Left,
+    Right,
+    Center,
+    Start,
+    End,
+    Justify,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratedLineAdjustment {
+    pub line_index: usize,
+    pub natural_width: f64,
+    pub target_width: f64,
+    pub residual: f64,
+    pub word_spacing: f64,
+    pub character_spacing: f64,
+    pub alignment: GeneratedTextAlignment,
+    pub last_line: bool,
+    pub applied: bool,
+    pub refusal_reason: Option<String>,
+}
+
+/// A final logical line and the glyph sequence that will be painted for it.
+/// The only visual/logical divergence currently supported is one end-of-line
+/// dictionary hyphen whose CID has an empty ToUnicode mapping. That narrow rule
+/// keeps PDF extraction equal to the requested source text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplicitLayoutLine {
+    pub logical_text: String,
+    pub visual_text: String,
+    #[serde(default)]
+    pub inserted_visual_hyphen: bool,
+}
+
+/// One final logical line at an explicit user-space line rectangle. This is a
+/// canonical source-writer input for bounded document-flow operations; it does
+/// not introduce a second display-list or text serializer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PositionedExplicitLayoutLine {
+    pub line: ExplicitLayoutLine,
+    pub region: [f64; 4],
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdvancedTextEditOptions {
     pub region: [f64; 4],
@@ -141,6 +193,24 @@ pub struct AdvancedTextEditOptions {
     pub overflow_policy: TextOverflowPolicy,
     pub signature_policy_override: bool,
     pub deterministic: bool,
+    #[serde(default)]
+    pub alignment: GeneratedTextAlignment,
+    #[serde(default)]
+    pub justify_last_line: bool,
+    /// Maximum emitted `Tw`, expressed in unscaled text-space units.
+    #[serde(default = "default_max_word_spacing")]
+    pub max_word_spacing: f64,
+    /// Maximum emitted `Tc`, expressed in unscaled text-space units.
+    #[serde(default = "default_max_character_spacing")]
+    pub max_character_spacing: f64,
+}
+
+fn default_max_word_spacing() -> f64 {
+    0.5
+}
+
+fn default_max_character_spacing() -> f64 {
+    0.05
 }
 
 impl Default for AdvancedTextEditOptions {
@@ -153,6 +223,10 @@ impl Default for AdvancedTextEditOptions {
             overflow_policy: TextOverflowPolicy::Error,
             signature_policy_override: false,
             deterministic: true,
+            alignment: GeneratedTextAlignment::Left,
+            justify_last_line: false,
+            max_word_spacing: default_max_word_spacing(),
+            max_character_spacing: default_max_character_spacing(),
         }
     }
 }
@@ -184,6 +258,7 @@ pub struct AdvancedTextEditReport {
     pub cryptographic_validity_claimed: bool,
     pub deterministic: bool,
     pub cache_invalidation: CacheInvalidationReport,
+    pub line_adjustments: Vec<GeneratedLineAdjustment>,
     pub exact_limits: Vec<String>,
 }
 
@@ -200,9 +275,14 @@ pub struct MultiRunTextRangeRequest {
     pub style_policy: MultiRunStylePolicy,
     #[serde(default)]
     pub options: AdvancedTextEditOptions,
+    /// Optional Prompt 33 final visual layout. When supplied it must cover the
+    /// logical replacement exactly and is serialized through this existing
+    /// range-edit source mutation path.
+    #[serde(default)]
+    pub final_lines: Option<Vec<ExplicitLayoutLine>>,
 }
 
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MultiRunStylePolicy {
     #[default]
@@ -437,7 +517,8 @@ pub fn analyze_advanced_text_reflow(
 struct GeneratedGlyph {
     cid: u16,
     gid: u16,
-    unicode: String,
+    visual_unicode: String,
+    to_unicode: Option<String>,
     advance: f64,
     orientation: VerticalGlyphOrientation,
 }
@@ -459,6 +540,210 @@ pub fn edit_advanced_text_pdf(
     options: &AdvancedTextEditOptions,
     font_bytes: Option<&[u8]>,
 ) -> Result<(Vec<u8>, AdvancedTextEditReport)> {
+    edit_advanced_text_pdf_internal(
+        input,
+        page_number,
+        old_text,
+        new_text,
+        mode,
+        options,
+        font_bytes,
+        None,
+        None,
+    )
+}
+
+/// Replace one source string using caller-selected, grapheme-safe final lines.
+///
+/// The supplied lines must concatenate byte-for-byte to `new_text`.  This is
+/// deliberately a layout boundary rather than a second writer: shaping,
+/// generated Type0 resources, source-token removal, canonical incremental
+/// serialization, reopen, and extraction verification all stay in the same
+/// bounded Prompt 20 mutation path as [`edit_advanced_text_pdf`].
+#[allow(clippy::too_many_arguments)] // Mirrors the stable public edit contract plus explicit final lines.
+pub fn edit_advanced_text_pdf_with_layout(
+    input: &[u8],
+    page_number: usize,
+    old_text: &str,
+    new_text: &str,
+    mode: AdvancedTextMode,
+    options: &AdvancedTextEditOptions,
+    font_bytes: Option<&[u8]>,
+    final_lines: &[String],
+) -> Result<(Vec<u8>, AdvancedTextEditReport)> {
+    if final_lines.is_empty() || final_lines.concat() != new_text {
+        return Err(WellfriendError::invalid_input(
+            "prompt20 explicit final lines must be nonempty and concatenate exactly to replacement text",
+        ));
+    }
+    let explicit_lines = final_lines
+        .iter()
+        .map(|text| ExplicitLayoutLine {
+            logical_text: text.clone(),
+            visual_text: text
+                .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}'])
+                .to_string(),
+            inserted_visual_hyphen: false,
+        })
+        .collect::<Vec<_>>();
+    edit_advanced_text_pdf_with_visual_layout(
+        input,
+        page_number,
+        old_text,
+        new_text,
+        mode,
+        options,
+        font_bytes,
+        &explicit_lines,
+    )
+}
+
+/// Replace one source string with logical final lines and a narrowly permitted
+/// visible end-of-line dictionary hyphen.  This is the same canonical Prompt
+/// 20 source/token/font/writer path as [`edit_advanced_text_pdf_with_layout`];
+/// it is not an overlay or a second serializer.
+#[allow(clippy::too_many_arguments)]
+pub fn edit_advanced_text_pdf_with_visual_layout(
+    input: &[u8],
+    page_number: usize,
+    old_text: &str,
+    new_text: &str,
+    mode: AdvancedTextMode,
+    options: &AdvancedTextEditOptions,
+    font_bytes: Option<&[u8]>,
+    final_lines: &[ExplicitLayoutLine],
+) -> Result<(Vec<u8>, AdvancedTextEditReport)> {
+    if final_lines.is_empty()
+        || final_lines
+            .iter()
+            .map(|line| line.logical_text.as_str())
+            .collect::<String>()
+            != new_text
+    {
+        return Err(WellfriendError::invalid_input(
+            "prompt20 explicit logical final lines must be nonempty and concatenate exactly to replacement text",
+        ));
+    }
+    for line in final_lines {
+        let visual_base = line
+            .logical_text
+            .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']);
+        let allowed_visual = if line.inserted_visual_hyphen {
+            format!("{visual_base}-")
+        } else {
+            visual_base.to_string()
+        };
+        if line.visual_text != allowed_visual {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 visual final layout permits only trailing mandatory line separators and one end-of-line inserted dictionary hyphen"
+                    .to_string(),
+            ));
+        }
+    }
+    edit_advanced_text_pdf_internal(
+        input,
+        page_number,
+        old_text,
+        new_text,
+        mode,
+        options,
+        font_bytes,
+        Some(final_lines),
+        None,
+    )
+}
+
+/// Replace one source token with final lines at explicit, validated line
+/// rectangles. The text, shaping, Type0 subset, content-token mutation, and
+/// canonical incremental writer are exactly the same Prompt 20 path as the
+/// non-positioned variant. Positioning is intentionally horizontal-only until
+/// the canonical vertical writer gains equivalent per-column geometry.
+#[allow(clippy::too_many_arguments)]
+pub fn edit_advanced_text_pdf_with_positioned_visual_layout(
+    input: &[u8],
+    page_number: usize,
+    old_text: &str,
+    new_text: &str,
+    mode: AdvancedTextMode,
+    options: &AdvancedTextEditOptions,
+    font_bytes: Option<&[u8]>,
+    final_lines: &[PositionedExplicitLayoutLine],
+) -> Result<(Vec<u8>, AdvancedTextEditReport)> {
+    if mode == AdvancedTextMode::ParagraphReflowVertical {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 positioned final layout does not yet support vertical columns".to_string(),
+        ));
+    }
+    let plain_lines = final_lines
+        .iter()
+        .map(|item| item.line.clone())
+        .collect::<Vec<_>>();
+    if plain_lines.is_empty()
+        || plain_lines
+            .iter()
+            .map(|line| line.logical_text.as_str())
+            .collect::<String>()
+            != new_text
+    {
+        return Err(WellfriendError::invalid_input(
+            "prompt20 positioned final lines must be nonempty and concatenate exactly to replacement text",
+        ));
+    }
+    for item in final_lines {
+        let region = item.region;
+        if region.iter().any(|value| !value.is_finite())
+            || region[2] <= region[0]
+            || region[3] <= region[1]
+        {
+            return Err(WellfriendError::invalid_input(
+                "prompt20 positioned final layout contains an invalid line rectangle",
+            ));
+        }
+        let visual_base = item
+            .line
+            .logical_text
+            .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']);
+        let allowed_visual = if item.line.inserted_visual_hyphen {
+            format!("{visual_base}-")
+        } else {
+            visual_base.to_string()
+        };
+        if item.line.visual_text != allowed_visual {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 positioned visual layout permits only trailing mandatory line separators and one end-of-line inserted dictionary hyphen"
+                    .to_string(),
+            ));
+        }
+    }
+    let regions = final_lines
+        .iter()
+        .map(|item| item.region)
+        .collect::<Vec<_>>();
+    edit_advanced_text_pdf_internal(
+        input,
+        page_number,
+        old_text,
+        new_text,
+        mode,
+        options,
+        font_bytes,
+        Some(&plain_lines),
+        Some(&regions),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn edit_advanced_text_pdf_internal(
+    input: &[u8],
+    page_number: usize,
+    old_text: &str,
+    new_text: &str,
+    mode: AdvancedTextMode,
+    options: &AdvancedTextEditOptions,
+    font_bytes: Option<&[u8]>,
+    explicit_final_lines: Option<&[ExplicitLayoutLine]>,
+    explicit_line_regions: Option<&[[f64; 4]]>,
+) -> Result<(Vec<u8>, AdvancedTextEditReport)> {
     validate_advanced_text_options(options)?;
     if !matches!(
         mode,
@@ -477,8 +762,20 @@ pub fn edit_advanced_text_pdf(
                 "prompt20 bundled shaping font unavailable".to_string(),
             )
         })?;
-    let analysis =
-        analyze_advanced_text_reflow(new_text, mode, Some(font), TextReflowLimits::default())?;
+    let analysis_text = explicit_final_lines
+        .map(|lines| {
+            lines
+                .iter()
+                .map(|line| line.visual_text.as_str())
+                .collect::<String>()
+        })
+        .unwrap_or_else(|| new_text.to_string());
+    let analysis = analyze_advanced_text_reflow(
+        &analysis_text,
+        mode,
+        Some(font),
+        TextReflowLimits::default(),
+    )?;
     if !analysis.missing_glyph_clusters.is_empty() {
         return Err(WellfriendError::UnsupportedFeature(format!(
             "prompt20 selected font is missing glyphs for UTF-8 clusters {:?}",
@@ -548,8 +845,16 @@ pub fn edit_advanced_text_pdf(
     source_dict.remove("DecodeParms");
     source_dict.insert("Length", PdfObject::Integer(source_compressed.len() as i64));
 
-    let glyphs = generated_glyph_plan(new_text, mode, font)?;
-    let layout = layout_generated_glyphs(&glyphs, mode, options)?;
+    let layout = match explicit_final_lines {
+        Some(lines) => {
+            layout_generated_explicit_lines(lines, mode, font, options, explicit_line_regions)?
+        }
+        None => {
+            let glyphs = generated_glyph_plan(new_text, mode, font)?;
+            layout_generated_glyphs(&glyphs, mode, options)?
+        }
+    };
+    let glyphs = layout.iter().flatten().cloned().collect::<Vec<_>>();
     let base_object = reader
         .object_ids()
         .into_iter()
@@ -584,12 +889,15 @@ pub fn edit_advanced_text_pdf(
         descendant_number,
         type0_number,
     )?);
-    let generated_content = serialize_generated_text(
+    let (generated_content, line_adjustments) = serialize_generated_text(
         &layout,
         &font_resource_name,
         options,
         mode == AdvancedTextMode::ParagraphReflowVertical,
-    );
+        explicit_line_regions,
+        (mode == AdvancedTextMode::ParagraphReflowRtl && explicit_line_regions.is_some())
+            .then_some(new_text),
+    )?;
     let generated_compressed = flate_encode(generated_content.as_bytes(), 6);
     let mut generated_dict = crate::PdfDictionary::empty();
     generated_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
@@ -649,7 +957,8 @@ pub fn edit_advanced_text_pdf(
     let output = write_incremental_update(reader, changed)?;
     let reopened = ContentEngine::open_bytes(output.clone())?;
     let extracted = reopened.get_page_text(page_number)?;
-    let replacement_extracts = extracted.contains(new_text);
+    let replacement_extracts = extracted.contains(new_text)
+        || explicit_final_lines.is_some_and(|_| layout_extraction_equivalent(&extracted, new_text));
     let old_absent = !extracted.contains(old_text);
     if !replacement_extracts || !old_absent || !output.starts_with(input) {
         return Err(WellfriendError::MalformedPdf(format!(
@@ -697,9 +1006,11 @@ pub fn edit_advanced_text_pdf(
             fingerprint_before: before_fingerprint,
             fingerprint_after: after_fingerprint,
         },
+        line_adjustments,
         exact_limits: vec![
             "the bounded true-edit path currently requires the old paragraph to occupy exactly one decoded PDF string token".to_string(),
             "new Unicode is embedded as a sequential-CID Type0 font; existing source codes/CIDs/GIDs are removed, not reshaped".to_string(),
+            "explicit final lines retain exact Unicode glyph mapping; validation additionally accepts line-separator-insensitive extraction equivalence when a reader materializes visual line boundaries".to_string(),
             "vertical mode uses Identity-V, top-to-bottom glyph placement, right-to-left columns, upright/rotated Unicode policy, and the selected font's glyph outlines".to_string(),
             "incremental prefix preservation is structural and does not imply cryptographic signature validity".to_string(),
         ],
@@ -821,14 +1132,7 @@ pub fn edit_multi_run_text_range(
     let page = engine.document().get_page(request.page)?;
     let reader = engine.document().reader();
     let resources = PageResources::from_dict(&page.resources, reader);
-    let mut selected: Vec<(
-        u32,
-        u16,
-        PdfObject,
-        Vec<u8>,
-        ContentStringToken,
-        MultiRunSourceSpan,
-    )> = Vec::new();
+    let mut selected = Vec::<SelectedMultiRunOperand>::new();
     let mut total = 0usize;
     let mut candidate_insertion: Option<(u32, u16, PdfObject, Vec<u8>)> = None;
     for (stream_index, (number, generation)) in page.contents.iter().copied().enumerate() {
@@ -931,10 +1235,35 @@ pub fn edit_multi_run_text_range(
         .iter()
         .map(|item| item.5.text.as_str())
         .collect::<String>();
+    if request.replacement_text.is_empty()
+        && selected
+            .iter()
+            .any(|item| !item.4.marked_content.is_empty())
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20b deletion of marked-content text requires a structure-tree repair transaction and is refused before mutation"
+                .to_string(),
+        ));
+    }
+    let preserved_marked_content =
+        if request.style_policy == MultiRunStylePolicy::PreservePerSegment {
+            preserved_marked_content_wrapper(&selected, &source_data)?
+        } else {
+            None
+        };
     for item in selected.iter().rev() {
         source_data.splice(
             item.4.token_start..item.4.token_end,
             serialize_pdf_string(&[], item.4.representation),
+        );
+    }
+    if let Some(marked_content) = &preserved_marked_content {
+        // The selected MCID moves to the generated stream.  Retag the now
+        // empty source scope as an artifact so no page has two active
+        // sequences claiming the same MCID.
+        source_data.splice(
+            marked_content.source_open_range[0]..marked_content.source_open_range[1],
+            b"/Artifact BMC".iter().copied(),
         );
     }
     let PdfObject::Stream {
@@ -970,6 +1299,256 @@ pub fn edit_multi_run_text_range(
         }
         return Ok((output.clone(), MultiRunTextEditReport { schema_version:"prompt20b.multirun-form-appearance-closure.v1".to_string(), status:Prompt20SupportStatus::ImplementedWithLimits, operation:"delete".to_string(), page:request.page, logical_range:[request.logical_start,request.logical_end], selected_source_spans:selected.into_iter().map(|item| item.5).collect(), style_policy:request.style_policy, replacement_text:request.replacement_text.clone(), replacement_extracts:true, old_selected_text_absent:old_absent, unrelated_text_preserved:true, reachable_source_tokens_removed:true, output_reopened:true, original_prefix_preserved:output.starts_with(input), output_sha256:format!("{:x}",Sha256::digest(&output)), signature_policy, cryptographic_validity_claimed:false, deterministic:request.options.deterministic, cache_invalidation:prompt20_cache_invalidation(input,&output,true,false,false), exact_limits:vec!["selected source spans must be contiguous token-boundary provenance in one page content stream; partial-token and cross-stream selections fail closed".to_string(),"delete removes selected provenance tokens and does not generate replacement glyph streams".to_string(),"logical/visual mapping uses bidi shaping provenance, never x-coordinate sorting; visual quad selection is accepted only after the caller resolves it to one unambiguous logical range".to_string()] }));
     }
+    if request.style_policy == MultiRunStylePolicy::PreservePerSegment {
+        if request.mode == AdvancedTextMode::ParagraphReflowVertical {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 preserve_per_segment supports horizontal source runs only; vertical source-run serialization is refused"
+                .to_string(),
+            ));
+        }
+        if request.mode == AdvancedTextMode::ParagraphReflowRtl
+            || request
+                .replacement_text
+                .chars()
+                .any(|character| matches!(character as u32, 0x0590..=0x08FF | 0xFB1D..=0xFEFF))
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 preserve_per_segment refuses RTL or mixed-bidi source runs until the canonical per-style serializer can retain final shaped visual ordering"
+                    .to_string(),
+            ));
+        }
+        if selected.is_empty() {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 preserve_per_segment insertion has no source style owner; use an explicit supplied or inherit style policy"
+                    .to_string(),
+            ));
+        }
+        let fallback_lines;
+        let logical_lines = if let Some(lines) = request.final_lines.as_deref() {
+            if lines.is_empty()
+                || lines
+                    .iter()
+                    .map(|line| line.logical_text.as_str())
+                    .collect::<String>()
+                    != request.replacement_text
+            {
+                return Err(WellfriendError::invalid_input(
+                    "prompt20 preserve_per_segment final lines must concatenate exactly to replacement text",
+                ));
+            }
+            let mut line_scalar_cursor = 0usize;
+            for line in lines {
+                let visual_base = line
+                    .logical_text
+                    .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']);
+                if line.inserted_visual_hyphen || line.visual_text != visual_base {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "prompt20 preserve_per_segment supports only logical final lines without inserted visual hyphens"
+                            .to_string(),
+                    ));
+                }
+                line_scalar_cursor =
+                    line_scalar_cursor.saturating_add(line.logical_text.chars().count());
+                let scalar_end = line_scalar_cursor;
+                let end_byte = scalar_boundary_byte(&request.replacement_text, scalar_end)
+                    .ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "prompt20 preserve_per_segment cannot map final line boundary"
+                                .to_string(),
+                        )
+                    })?;
+                if !is_grapheme_boundary(&request.replacement_text, end_byte) {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "prompt20 preserve_per_segment refuses a final line boundary that splits a grapheme or shaping cluster"
+                            .to_string(),
+                    ));
+                }
+            }
+            lines
+        } else {
+            fallback_lines = vec![ExplicitLayoutLine {
+                logical_text: request.replacement_text.clone(),
+                visual_text: request.replacement_text.clone(),
+                inserted_visual_hyphen: false,
+            }];
+            fallback_lines.as_slice()
+        };
+        // Preserve source styles for replacements whose length changes without
+        // flattening them to a generated Type0 font.  The style owner is
+        // chosen at a *grapheme* boundary by proportional source coverage:
+        // source style runs retain their order and each replacement grapheme
+        // is owned by exactly one complete source grapheme.  This is a
+        // deterministic editing policy, not a claim that a PDF source stores
+        // an author-level style intent for newly inserted characters.  It
+        // deliberately keeps the serializer scalar-oriented only after the
+        // grapheme-safe ownership decision has been made.
+        let mut source_styles_by_grapheme = Vec::<PreservedTextStyle>::new();
+        let mut scalar_offset = 0usize;
+        for item in &selected {
+            let token = &item.4;
+            let source_span = &item.5;
+            let style = preserved_style_from_token(token)?;
+            let span_scalars = source_span.text.chars().count();
+            let source_boundary = scalar_boundary_byte(&old_selected, scalar_offset + span_scalars)
+                .ok_or_else(|| {
+                    WellfriendError::MalformedPdf(
+                        "prompt20 preserve_per_segment cannot map source style boundary"
+                            .to_string(),
+                    )
+                })?;
+            if !is_grapheme_boundary(&old_selected, source_boundary) {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "prompt20 preserve_per_segment refuses a source style boundary inside a grapheme or shaping cluster"
+                        .to_string(),
+                ));
+            }
+            source_styles_by_grapheme
+                .extend(source_span.text.graphemes(true).map(|_| style.clone()));
+            scalar_offset = scalar_offset.saturating_add(span_scalars);
+        }
+        if scalar_offset != old_selected.chars().count() || source_styles_by_grapheme.is_empty() {
+            return Err(WellfriendError::MalformedPdf(
+                "prompt20 preserve_per_segment source spans did not cover grapheme-safe source style ownership"
+                    .to_string(),
+            ));
+        }
+        let replacement_graphemes = request.replacement_text.graphemes(true).collect::<Vec<_>>();
+        if replacement_graphemes.is_empty() {
+            return Err(WellfriendError::MalformedPdf(
+                "prompt20 preserve_per_segment non-delete replacement unexpectedly had no graphemes"
+                    .to_string(),
+            ));
+        }
+        let mut runs_by_scalar = Vec::<PreservedStyledRun>::new();
+        for (replacement_grapheme_index, grapheme) in replacement_graphemes.iter().enumerate() {
+            let source_grapheme_index = replacement_grapheme_index
+                .saturating_mul(source_styles_by_grapheme.len())
+                / replacement_graphemes.len();
+            let style = source_styles_by_grapheme
+                [source_grapheme_index.min(source_styles_by_grapheme.len().saturating_sub(1))]
+            .clone();
+            let Some(font_dict) = resources.fonts.get(&style.font_resource) else {
+                return Err(WellfriendError::MalformedPdf(
+                    "prompt20 preserve_per_segment source font resource disappeared".to_string(),
+                ));
+            };
+            let resolver = FontResolver::new(font_dict, reader);
+            for character in grapheme.chars() {
+                let text = character.to_string();
+                let (encoded, ambiguous) = encode_with_existing_font(&resolver, &text)?;
+                if ambiguous {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "prompt20 preserve_per_segment refuses an ambiguous source CMap encoding"
+                            .to_string(),
+                    ));
+                }
+                let advance = preserved_run_advance(&resolver, &encoded, &text, &style);
+                runs_by_scalar.push(PreservedStyledRun {
+                    text,
+                    encoded,
+                    style: style.clone(),
+                    advance,
+                });
+            }
+        }
+        let (generated_content, _line_adjustments) = serialize_preserved_styled_runs(
+            &runs_by_scalar,
+            logical_lines,
+            &request.options,
+            request.mode,
+            preserved_marked_content
+                .as_ref()
+                .map(|marked_content| marked_content.opening.as_str()),
+        )?;
+        let content_number = reader
+            .object_ids()
+            .into_iter()
+            .map(|(number, _)| number)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        let generated = flate_encode(generated_content.as_bytes(), 6);
+        let mut generated_dict = crate::PdfDictionary::empty();
+        generated_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
+        generated_dict.insert("Length", PdfObject::Integer(generated.len() as i64));
+        let mut changed = vec![IncrementalObject {
+            number: source_number,
+            generation: source_generation,
+            object: PdfObject::Stream {
+                dict: source_dict,
+                raw: source_compressed,
+            },
+        }];
+        changed.push(IncrementalObject {
+            number: content_number,
+            generation: 0,
+            object: PdfObject::Stream {
+                dict: generated_dict,
+                raw: generated,
+            },
+        });
+        let page_object = reader.get_object(page.object_number, page.generation_number)?;
+        let mut page_dict = page_object.as_dict().cloned().ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "prompt20 preserve_per_segment page object is not a dictionary".to_string(),
+            )
+        })?;
+        let mut contents = page
+            .contents
+            .iter()
+            .map(|(number, generation)| PdfObject::Reference {
+                number: *number,
+                generation: *generation,
+            })
+            .collect::<Vec<_>>();
+        contents.push(PdfObject::Reference {
+            number: content_number,
+            generation: 0,
+        });
+        page_dict.insert("Contents", PdfObject::Array(contents));
+        changed.push(IncrementalObject {
+            number: page.object_number,
+            generation: page.generation_number,
+            object: PdfObject::Dictionary(page_dict),
+        });
+        let output = write_incremental_update(reader, changed)?;
+        let reopened = ContentEngine::open_bytes(output.clone())?;
+        let extracted = reopened.get_page_text(request.page)?;
+        let replacement_extracts = extracted.contains(&request.replacement_text)
+            || layout_extraction_equivalent(&extracted, &request.replacement_text);
+        let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
+        if !replacement_extracts || !old_absent || !output.starts_with(input) {
+            return Err(WellfriendError::MalformedPdf(
+                "prompt20 preserve_per_segment save/reopen/extraction proof failed".to_string(),
+            ));
+        }
+        return Ok((output.clone(), MultiRunTextEditReport {
+            schema_version: "prompt20b.multirun-form-appearance-closure.v1".to_string(),
+            status: Prompt20SupportStatus::ImplementedWithLimits,
+            operation: "replace_preserving_per_segment_styles".to_string(),
+            page: request.page,
+            logical_range: [request.logical_start, request.logical_end],
+            selected_source_spans: selected.iter().map(|item| item.5.clone()).collect(),
+            style_policy: request.style_policy,
+            replacement_text: request.replacement_text.clone(),
+            replacement_extracts,
+            old_selected_text_absent: old_absent,
+            unrelated_text_preserved: true,
+            reachable_source_tokens_removed: true,
+            output_reopened: true,
+            original_prefix_preserved: output.starts_with(input),
+            output_sha256: format!("{:x}", Sha256::digest(&output)),
+            signature_policy,
+            cryptographic_validity_claimed: false,
+            deterministic: request.options.deterministic,
+            cache_invalidation: prompt20_cache_invalidation(input, &output, true, false, false),
+            exact_limits: vec![
+                "preserve_per_segment supports one contiguous page content stream, exact source CMap encoding, and horizontal layout only; changed-length replacements assign each complete replacement grapheme to a deterministic proportional source-style owner without flattening styles or splitting a source grapheme".to_string(),
+                "font resource, font size, character/word spacing, horizontal scaling, rise, render mode, and DeviceGray/RGB/CMYK paint state are replayed from each source text-showing operand".to_string(),
+                "a single text-state-only MCID BDC containing exactly the selected source spans is moved atomically to the generated stream while the empty source wrapper is retagged Artifact; nested/partial/property-list ambiguity, inserted dictionary hyphens, RTL/vertical writing, and per-style full justification fail closed".to_string(),
+            ],
+        }));
+    }
     let font = font_bytes
         .or_else(|| get_fallback_font("Symbol"))
         .ok_or_else(|| {
@@ -977,8 +1556,18 @@ pub fn edit_multi_run_text_range(
                 "prompt20b bundled shaping font unavailable".to_string(),
             )
         })?;
+    let analysis_text = request
+        .final_lines
+        .as_ref()
+        .map(|lines| {
+            lines
+                .iter()
+                .map(|line| line.visual_text.as_str())
+                .collect::<String>()
+        })
+        .unwrap_or_else(|| request.replacement_text.clone());
     let analysis = analyze_advanced_text_reflow(
-        &request.replacement_text,
+        &analysis_text,
         request.mode,
         Some(font),
         TextReflowLimits::default(),
@@ -988,8 +1577,40 @@ pub fn edit_multi_run_text_range(
             "prompt20b replacement has missing glyph clusters in selected shaping font".to_string(),
         ));
     }
-    let glyphs = generated_glyph_plan(&request.replacement_text, request.mode, font)?;
-    let layout = layout_generated_glyphs(&glyphs, request.mode, &request.options)?;
+    let layout = if let Some(lines) = request.final_lines.as_deref() {
+        if lines.is_empty()
+            || lines
+                .iter()
+                .map(|line| line.logical_text.as_str())
+                .collect::<String>()
+                != request.replacement_text
+        {
+            return Err(WellfriendError::invalid_input(
+                "prompt20b explicit final lines must concatenate exactly to replacement text",
+            ));
+        }
+        for line in lines {
+            let visual_base = line
+                .logical_text
+                .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}']);
+            let allowed_visual = if line.inserted_visual_hyphen {
+                format!("{visual_base}-")
+            } else {
+                visual_base.to_string()
+            };
+            if line.visual_text != allowed_visual {
+                return Err(WellfriendError::UnsupportedFeature(
+                    "prompt20b visual final layout permits only trailing mandatory separators and one end-of-line dictionary hyphen"
+                        .to_string(),
+                ));
+            }
+        }
+        layout_generated_explicit_lines(lines, request.mode, font, &request.options, None)?
+    } else {
+        let glyphs = generated_glyph_plan(&request.replacement_text, request.mode, font)?;
+        layout_generated_glyphs(&glyphs, request.mode, &request.options)?
+    };
+    let glyphs = layout.iter().flatten().cloned().collect::<Vec<_>>();
     let base = reader
         .object_ids()
         .into_iter()
@@ -1017,16 +1638,15 @@ pub fn edit_multi_run_text_range(
         base + 4,
         base + 5,
     )?);
-    let generated = flate_encode(
-        serialize_generated_text(
-            &layout,
-            &font_resource,
-            &request.options,
-            request.mode == AdvancedTextMode::ParagraphReflowVertical,
-        )
-        .as_bytes(),
-        6,
-    );
+    let (generated_content, _line_adjustments) = serialize_generated_text(
+        &layout,
+        &font_resource,
+        &request.options,
+        request.mode == AdvancedTextMode::ParagraphReflowVertical,
+        None,
+        None,
+    )?;
+    let generated = flate_encode(generated_content.as_bytes(), 6);
     let mut generated_dict = crate::PdfDictionary::empty();
     generated_dict.insert("Filter", PdfObject::Name("FlateDecode".to_string()));
     generated_dict.insert("Length", PdfObject::Integer(generated.len() as i64));
@@ -1075,8 +1695,12 @@ pub fn edit_multi_run_text_range(
     let output = write_incremental_update(reader, changed)?;
     let reopened = ContentEngine::open_bytes(output.clone())?;
     let extracted = reopened.get_page_text(request.page)?;
-    let replacement_extracts =
-        request.replacement_text.is_empty() || extracted.contains(&request.replacement_text);
+    let replacement_extracts = request.replacement_text.is_empty()
+        || extracted.contains(&request.replacement_text)
+        || request
+            .final_lines
+            .as_ref()
+            .is_some_and(|_| layout_extraction_equivalent(&extracted, &request.replacement_text));
     let old_absent = old_selected.is_empty() || !extracted.contains(&old_selected);
     if !replacement_extracts || !old_absent || !output.starts_with(input) {
         return Err(WellfriendError::MalformedPdf(
@@ -1303,7 +1927,8 @@ fn generated_glyph_plan(
                 glyphs.push(GeneratedGlyph {
                     cid,
                     gid: shaped_glyph.glyph_id,
-                    unicode,
+                    visual_unicode: unicode.clone(),
+                    to_unicode: Some(unicode),
                     advance: shaped_glyph.advance,
                     orientation,
                 });
@@ -1358,6 +1983,88 @@ fn layout_generated_glyphs(
         ));
     }
     Ok(groups)
+}
+
+fn layout_generated_explicit_lines(
+    lines: &[ExplicitLayoutLine],
+    mode: AdvancedTextMode,
+    font: &[u8],
+    options: &AdvancedTextEditOptions,
+    line_regions: Option<&[[f64; 4]]>,
+) -> Result<Vec<Vec<GeneratedGlyph>>> {
+    if line_regions.is_some_and(|regions| regions.len() != lines.len()) {
+        return Err(WellfriendError::invalid_input(
+            "prompt20 positioned final layout has mismatched line regions",
+        ));
+    }
+    if line_regions.is_none() && lines.len() > options.max_lines_or_columns {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "prompt20 explicit final layout has {} lines/columns; limit is {}",
+            lines.len(),
+            options.max_lines_or_columns
+        )));
+    }
+    let mut next_cid = 1u16;
+    let mut layout = Vec::with_capacity(lines.len());
+    for (index, line) in lines.iter().enumerate() {
+        let region = line_regions
+            .and_then(|regions| regions.get(index).copied())
+            .unwrap_or(options.region);
+        let available = if mode == AdvancedTextMode::ParagraphReflowVertical {
+            (region[3] - region[1]) / options.font_size * 1000.0
+        } else {
+            (region[2] - region[0]) / options.font_size * 1000.0
+        };
+        let mut glyphs = generated_glyph_plan(&line.visual_text, mode, font)?;
+        let advance = glyphs
+            .iter()
+            .map(|glyph| {
+                if mode == AdvancedTextMode::ParagraphReflowVertical {
+                    1000.0
+                } else {
+                    glyph.advance.abs()
+                }
+            })
+            .sum::<f64>();
+        if advance > available + EPSILON {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 explicit final layout line exceeds its source region".to_string(),
+            ));
+        }
+        for glyph in &mut glyphs {
+            glyph.cid = next_cid;
+            next_cid = next_cid.checked_add(1).ok_or_else(|| {
+                WellfriendError::UnsupportedFeature(
+                    "prompt20 explicit final layout CID count exceeds 65535".to_string(),
+                )
+            })?;
+        }
+        if line.inserted_visual_hyphen {
+            let Some(last) = glyphs.last_mut() else {
+                return Err(WellfriendError::MalformedPdf(
+                    "prompt20 inserted dictionary hyphen line has no generated glyph".to_string(),
+                ));
+            };
+            if last.visual_unicode != "-" {
+                return Err(WellfriendError::MalformedPdf(
+                    "prompt20 inserted dictionary hyphen must be the final generated glyph"
+                        .to_string(),
+                ));
+            }
+            // An explicit empty ToUnicode mapping preserves logical source
+            // extraction while retaining the visible shaped hyphen CID.  A
+            // missing mapping would make some extractors fall back to a
+            // font-program glyph name and incorrectly expose `-`.
+            last.to_unicode = Some(String::new());
+        }
+        layout.push(glyphs);
+    }
+    Ok(layout)
+}
+
+fn layout_extraction_equivalent(extracted: &str, expected: &str) -> bool {
+    extracted.split_whitespace().collect::<String>()
+        == expected.split_whitespace().collect::<String>()
 }
 
 fn deterministic_font_resource_name(
@@ -1577,12 +2284,19 @@ fn build_to_unicode_cmap(glyphs: &[GeneratedGlyph]) -> String {
         "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /WellfriendPrompt20ToUnicode def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
     );
     for chunk in glyphs.chunks(100) {
-        cmap.push_str(&format!("{} beginbfchar\n", chunk.len()));
-        for glyph in chunk {
+        let mapped = chunk
+            .iter()
+            .filter(|glyph| glyph.to_unicode.is_some())
+            .collect::<Vec<_>>();
+        if mapped.is_empty() {
+            continue;
+        }
+        cmap.push_str(&format!("{} beginbfchar\n", mapped.len()));
+        for glyph in mapped {
             cmap.push_str(&format!(
                 "<{:04X}> <{}>\n",
                 glyph.cid,
-                utf16be_hex(&glyph.unicode)
+                utf16be_hex(glyph.to_unicode.as_deref().expect("filtered Some"))
             ));
         }
         cmap.push_str("endbfchar\n");
@@ -1597,14 +2311,52 @@ fn utf16be_hex(text: &str) -> String {
         .collect::<String>()
 }
 
+fn utf16be_hex_with_bom(text: &str) -> String {
+    format!("FEFF{}", utf16be_hex(text))
+}
+
 fn serialize_generated_text(
     layout: &[Vec<GeneratedGlyph>],
     font_name: &str,
     options: &AdvancedTextEditOptions,
     vertical: bool,
-) -> String {
-    let mut content = format!("q\nBT\n/{font_name} {} Tf\n", fmt_num(options.font_size));
+    line_regions: Option<&[[f64; 4]]>,
+    logical_actual_text: Option<&str>,
+) -> Result<(String, Vec<GeneratedLineAdjustment>)> {
+    // Positioned RTL columns have a deliberate visual geometry conflict with
+    // the generic left-to-right coordinate sorter used by text extraction.
+    // Wrap the same shaped text object in a standard PDF ActualText span so
+    // extraction, accessibility consumers, and search retain the logical
+    // story order while the CIDs continue to paint in visual glyph order.
+    let mut content = String::from("q\n");
+    if let Some(text) = logical_actual_text {
+        content.push_str(&format!(
+            "/Span << /ActualText <{}> >> BDC\n",
+            utf16be_hex_with_bom(text)
+        ));
+    }
+    content.push_str(&format!(
+        "BT\n/{font_name} {} Tf\n",
+        fmt_num(options.font_size)
+    ));
+    let mut adjustments = Vec::with_capacity(layout.len());
+    if line_regions.is_some_and(|regions| regions.len() != layout.len()) {
+        return Err(WellfriendError::invalid_input(
+            "prompt20 positioned serializer has mismatched line regions",
+        ));
+    }
     if vertical {
+        if line_regions.is_some() {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 positioned serializer does not support vertical columns".to_string(),
+            ));
+        }
+        if options.alignment == GeneratedTextAlignment::Justify {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 vertical full justification is unsupported until the canonical writer can emit vertical text-state spacing without changing glyph orientation"
+                    .to_string(),
+            ));
+        }
         let column_advance = options.font_size * options.line_spacing;
         for (column, glyphs) in layout.iter().enumerate() {
             let x = options.region[2] - options.font_size - column as f64 * column_advance;
@@ -1630,33 +2382,134 @@ fn serialize_generated_text(
                 }
                 y -= options.font_size;
             }
+            adjustments.push(GeneratedLineAdjustment {
+                line_index: column,
+                natural_width: glyphs.len() as f64 * options.font_size,
+                target_width: options.region[3] - options.region[1],
+                residual: 0.0,
+                word_spacing: 0.0,
+                character_spacing: 0.0,
+                alignment: options.alignment,
+                last_line: column + 1 == layout.len(),
+                applied: true,
+                refusal_reason: None,
+            });
         }
     } else {
         let line_advance = options.font_size * options.line_spacing;
         for (line, glyphs) in layout.iter().enumerate() {
+            let region = line_regions
+                .and_then(|regions| regions.get(line).copied())
+                .unwrap_or(options.region);
             let line_width = glyphs.iter().map(|glyph| glyph.advance.abs()).sum::<f64>() / 1000.0
                 * options.font_size;
             let rtl = glyphs.first().is_some_and(|glyph| {
                 glyph
-                    .unicode
+                    .visual_unicode
                     .chars()
                     .any(|ch| matches!(ch as u32, 0x0590..=0x08FF | 0xFB1D..=0xFEFF))
             });
-            let x = if rtl {
-                options.region[2] - line_width
-            } else {
-                options.region[0]
+            let target_width = region[2] - region[0];
+            let last_line = line + 1 == layout.len();
+            let mut word_spacing = 0.0;
+            let mut character_spacing = 0.0;
+            let mut residual = target_width - line_width;
+            let applied = true;
+            let refusal_reason = None;
+            if options.alignment == GeneratedTextAlignment::Justify
+                && (options.justify_last_line || !last_line)
+                && residual > EPSILON
+            {
+                let word_count = glyphs
+                    .iter()
+                    .filter(|glyph| glyph.visual_unicode == " ")
+                    .count();
+                let character_count = glyphs.len().saturating_sub(1);
+                if word_count > 0 {
+                    word_spacing = (residual / word_count as f64 / options.font_size)
+                        .min(options.max_word_spacing);
+                    residual -= word_spacing * options.font_size * word_count as f64;
+                }
+                if residual > EPSILON && character_count > 0 {
+                    character_spacing = (residual / character_count as f64 / options.font_size)
+                        .min(options.max_character_spacing);
+                    residual -= character_spacing * options.font_size * character_count as f64;
+                }
+                if residual > EPSILON {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "prompt20 full justification exceeds configured text-state spacing bounds"
+                            .to_string(),
+                    ));
+                }
+            }
+            let x = match options.alignment {
+                GeneratedTextAlignment::Left => region[0],
+                GeneratedTextAlignment::Right => region[2] - line_width,
+                GeneratedTextAlignment::Center => region[0] + (target_width - line_width) / 2.0,
+                GeneratedTextAlignment::Start => {
+                    if rtl {
+                        region[2] - line_width
+                    } else {
+                        region[0]
+                    }
+                }
+                GeneratedTextAlignment::End => {
+                    if rtl {
+                        region[0]
+                    } else {
+                        region[2] - line_width
+                    }
+                }
+                GeneratedTextAlignment::Justify => {
+                    if rtl {
+                        region[2] - line_width
+                    } else {
+                        region[0]
+                    }
+                }
             };
-            let y = options.region[3] - options.font_size - line as f64 * line_advance;
+            let y = if line_regions.is_some() {
+                region[3] - options.font_size
+            } else {
+                options.region[3] - options.font_size - line as f64 * line_advance
+            };
+            if word_spacing.abs() > EPSILON {
+                content.push_str(&format!("{} Tw\n", fmt_num(word_spacing)));
+            }
+            if character_spacing.abs() > EPSILON {
+                content.push_str(&format!("{} Tc\n", fmt_num(character_spacing)));
+            }
             content.push_str(&format!("1 0 0 1 {} {} Tm <", fmt_num(x), fmt_num(y)));
             for glyph in glyphs {
                 content.push_str(&format!("{:04X}", glyph.cid));
             }
             content.push_str("> Tj\n");
+            if word_spacing.abs() > EPSILON {
+                content.push_str("0 Tw\n");
+            }
+            if character_spacing.abs() > EPSILON {
+                content.push_str("0 Tc\n");
+            }
+            adjustments.push(GeneratedLineAdjustment {
+                line_index: line,
+                natural_width: line_width,
+                target_width,
+                residual: residual.max(0.0),
+                word_spacing,
+                character_spacing,
+                alignment: options.alignment,
+                last_line,
+                applied,
+                refusal_reason,
+            });
         }
     }
-    content.push_str("ET\nQ");
-    content
+    content.push_str("ET\n");
+    if logical_actual_text.is_some() {
+        content.push_str("EMC\n");
+    }
+    content.push('Q');
+    Ok((content, adjustments))
 }
 
 fn reject_unsafe_text_controls(text: &str) -> Result<()> {
@@ -1824,10 +2677,59 @@ struct ContentStringToken {
     representation: PatchStringRepresentation,
     decoded: Vec<u8>,
     font_name: String,
+    font_size: f64,
+    character_spacing: f64,
+    word_spacing: f64,
+    horizontal_scaling: f64,
+    text_rise: f64,
+    fill_color_command: String,
+    stroke_color_command: String,
+    unsupported_fill_paint_state: bool,
+    unsupported_stroke_paint_state: bool,
     operator: String,
     element: Option<usize>,
     text_render_mode: i32,
     marked_depth: usize,
+    /// Exact open-marked-content operators active at this source operand.  The
+    /// bounded multi-run serializer uses this only after proving that a single
+    /// MCID-bearing BDC contains precisely the selected text-state sequence;
+    /// it never guesses a tag or property list from geometry.
+    marked_content: Vec<MarkedContentFrame>,
+}
+
+type SelectedMultiRunOperand = (
+    u32,
+    u16,
+    PdfObject,
+    Vec<u8>,
+    ContentStringToken,
+    MultiRunSourceSpan,
+);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MarkedContentFrame {
+    open_start: usize,
+    open_end: usize,
+    open_operator: String,
+    open_bytes: Vec<u8>,
+    has_mcid: bool,
+}
+
+/// The source text-state facts needed to replay a whole provenance-bearing
+/// operand as a styled generated run.  This deliberately remains private to
+/// the canonical Prompt 20 content mutator: Prompt 33 consumes the public
+/// multi-run operation rather than inventing another text serializer.
+#[derive(Debug, Clone, PartialEq)]
+struct PreservedTextStyle {
+    font_resource: String,
+    font_size: f64,
+    character_spacing: f64,
+    word_spacing: f64,
+    horizontal_scaling: f64,
+    text_rise: f64,
+    text_render_mode: i32,
+    fill_color_command: String,
+    stroke_color_command: String,
 }
 
 #[derive(Debug, Clone)]
@@ -1837,6 +2739,8 @@ enum LexicalKind {
     Number(f64),
     ArrayStart,
     ArrayEnd,
+    DictionaryStart,
+    DictionaryEnd,
     Word(String),
 }
 
@@ -2369,8 +3273,18 @@ fn scan_text_string_tokens(data: &[u8]) -> Result<Vec<ContentStringToken>> {
     let mut output = Vec::new();
     let mut operands = Vec::<LexicalToken>::new();
     let mut font_name = String::new();
+    let mut font_size = 0.0_f64;
     let mut render_mode = 0i32;
+    let mut character_spacing = 0.0_f64;
+    let mut word_spacing = 0.0_f64;
+    let mut horizontal_scaling = 100.0_f64;
+    let mut text_rise = 0.0_f64;
+    let mut fill_color_command = "0 g".to_string();
+    let mut stroke_color_command = "0 G".to_string();
+    let mut unsupported_fill_paint_state = false;
+    let mut unsupported_stroke_paint_state = false;
     let mut marked_depth = 0usize;
+    let mut marked_content = Vec::<MarkedContentFrame>::new();
     for token in tokens {
         let LexicalKind::Word(operator) = &token.kind else {
             operands.push(token);
@@ -2388,6 +3302,64 @@ fn scan_text_string_tokens(data: &[u8]) -> Result<Vec<ContentStringToken>> {
                 {
                     font_name = name;
                 }
+                if let Some(size) = operands
+                    .iter()
+                    .rev()
+                    .find_map(|operand| match operand.kind {
+                        LexicalKind::Number(number) => Some(number),
+                        _ => None,
+                    })
+                {
+                    font_size = size;
+                }
+            }
+            "Tc" => {
+                if let Some(value) = operands
+                    .iter()
+                    .rev()
+                    .find_map(|operand| match operand.kind {
+                        LexicalKind::Number(number) => Some(number),
+                        _ => None,
+                    })
+                {
+                    character_spacing = value;
+                }
+            }
+            "Tw" => {
+                if let Some(value) = operands
+                    .iter()
+                    .rev()
+                    .find_map(|operand| match operand.kind {
+                        LexicalKind::Number(number) => Some(number),
+                        _ => None,
+                    })
+                {
+                    word_spacing = value;
+                }
+            }
+            "Tz" => {
+                if let Some(value) = operands
+                    .iter()
+                    .rev()
+                    .find_map(|operand| match operand.kind {
+                        LexicalKind::Number(number) => Some(number),
+                        _ => None,
+                    })
+                {
+                    horizontal_scaling = value;
+                }
+            }
+            "Ts" => {
+                if let Some(value) = operands
+                    .iter()
+                    .rev()
+                    .find_map(|operand| match operand.kind {
+                        LexicalKind::Number(number) => Some(number),
+                        _ => None,
+                    })
+                {
+                    text_rise = value;
+                }
             }
             "Tr" => {
                 if let Some(number) = operands
@@ -2401,8 +3373,74 @@ fn scan_text_string_tokens(data: &[u8]) -> Result<Vec<ContentStringToken>> {
                     render_mode = number as i32;
                 }
             }
-            "BMC" | "BDC" => marked_depth = marked_depth.saturating_add(1),
-            "EMC" => marked_depth = marked_depth.saturating_sub(1),
+            "g" | "rg" | "k" => {
+                let values = operands
+                    .iter()
+                    .filter_map(|operand| match operand.kind {
+                        LexicalKind::Number(number) => Some(fmt_num(number)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !values.is_empty() {
+                    fill_color_command = format!("{} {operator}", values.join(" "));
+                    unsupported_fill_paint_state = false;
+                }
+            }
+            "G" | "RG" | "K" => {
+                let values = operands
+                    .iter()
+                    .filter_map(|operand| match operand.kind {
+                        LexicalKind::Number(number) => Some(fmt_num(number)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !values.is_empty() {
+                    stroke_color_command = format!("{} {operator}", values.join(" "));
+                    unsupported_stroke_paint_state = false;
+                }
+            }
+            "cs" | "sc" | "scn" => {
+                // DeviceGray/RGB/CMYK device operators above are replayed
+                // exactly. Other color-space/pattern/shading operations need
+                // their resource identity and component semantics preserved,
+                // so the bounded style serializer refuses them rather than
+                // silently emitting its default DeviceGray state.
+                unsupported_fill_paint_state = true;
+            }
+            "CS" | "SC" | "SCN" => {
+                unsupported_stroke_paint_state = true;
+            }
+            "BMC" | "BDC" => {
+                let open_start = operands
+                    .first()
+                    .map(|operand| operand.start)
+                    .unwrap_or(token.start);
+                let open_bytes = data
+                    .get(open_start..token.end)
+                    .ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "prompt20 marked-content opener is outside its decoded stream"
+                                .to_string(),
+                        )
+                    })?
+                    .to_vec();
+                let has_mcid = operator == "BDC"
+                    && open_bytes
+                        .windows(b"MCID".len())
+                        .any(|window| window == b"MCID");
+                marked_content.push(MarkedContentFrame {
+                    open_start,
+                    open_end: token.end,
+                    open_operator: operator.clone(),
+                    open_bytes,
+                    has_mcid,
+                });
+                marked_depth = marked_content.len();
+            }
+            "EMC" => {
+                marked_content.pop();
+                marked_depth = marked_content.len();
+            }
             "Tj" | "'" | "\"" => {
                 if let Some(string) =
                     operands
@@ -2421,10 +3459,20 @@ fn scan_text_string_tokens(data: &[u8]) -> Result<Vec<ContentStringToken>> {
                         representation: string.1,
                         decoded: string.2.clone(),
                         font_name: font_name.clone(),
+                        font_size,
+                        character_spacing,
+                        word_spacing,
+                        horizontal_scaling,
+                        text_rise,
+                        fill_color_command: fill_color_command.clone(),
+                        stroke_color_command: stroke_color_command.clone(),
+                        unsupported_fill_paint_state,
+                        unsupported_stroke_paint_state,
                         operator: operator.clone(),
                         element: None,
                         text_render_mode: render_mode,
                         marked_depth,
+                        marked_content: marked_content.clone(),
                     });
                 }
             }
@@ -2438,10 +3486,20 @@ fn scan_text_string_tokens(data: &[u8]) -> Result<Vec<ContentStringToken>> {
                             representation: *representation,
                             decoded: decoded.clone(),
                             font_name: font_name.clone(),
+                            font_size,
+                            character_spacing,
+                            word_spacing,
+                            horizontal_scaling,
+                            text_rise,
+                            fill_color_command: fill_color_command.clone(),
+                            stroke_color_command: stroke_color_command.clone(),
+                            unsupported_fill_paint_state,
+                            unsupported_stroke_paint_state,
                             operator: operator.clone(),
                             element: Some(element),
                             text_render_mode: render_mode,
                             marked_depth,
+                            marked_content: marked_content.clone(),
                         });
                         element += 1;
                     }
@@ -2452,6 +3510,419 @@ fn scan_text_string_tokens(data: &[u8]) -> Result<Vec<ContentStringToken>> {
         operands.clear();
     }
     Ok(output)
+}
+
+#[derive(Debug, Clone)]
+struct PreservedStyledRun {
+    text: String,
+    encoded: Vec<u8>,
+    style: PreservedTextStyle,
+    advance: f64,
+}
+
+/// A single, exact BDC wrapper that can move with a generated preserved-style
+/// run.  The original BDC is converted to an empty artifact BMC before the
+/// generated stream receives the original raw BDC bytes, keeping the page's
+/// MCID unique rather than duplicating a tagged-content identifier.
+#[derive(Debug, Clone)]
+struct PreservedMarkedContent {
+    opening: String,
+    source_open_range: [usize; 2],
+}
+
+fn preserved_marked_content_wrapper(
+    selected: &[SelectedMultiRunOperand],
+    source_data: &[u8],
+) -> Result<Option<PreservedMarkedContent>> {
+    let any_marked = selected
+        .iter()
+        .any(|item| !item.4.marked_content.is_empty());
+    if !any_marked {
+        return Ok(None);
+    }
+    if selected.iter().any(|item| item.4.marked_content.len() != 1) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment supports only one shared, non-nested MCID BDC wrapper; mixed, nested, or partial marked-content selections refuse"
+                .to_string(),
+        ));
+    }
+    let frame = selected
+        .first()
+        .and_then(|item| item.4.marked_content.first())
+        .ok_or_else(|| {
+            WellfriendError::MalformedPdf(
+                "prompt20 preserve_per_segment lost selected marked-content provenance".to_string(),
+            )
+        })?;
+    if frame.open_operator != "BDC" || !frame.has_mcid {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment requires an exact MCID-bearing BDC wrapper; untagged BMC/property-list cases remain refused"
+                .to_string(),
+        ));
+    }
+    if selected
+        .iter()
+        .any(|item| item.4.marked_content.first() != Some(frame))
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment refuses a selection crossing distinct marked-content identities"
+                .to_string(),
+        ));
+    }
+    let selected_ranges = selected
+        .iter()
+        .map(|item| [item.4.token_start, item.4.token_end])
+        .collect::<BTreeSet<_>>();
+    for token in scan_text_string_tokens(source_data)? {
+        if token.marked_content.first() == Some(frame)
+            && !selected_ranges.contains(&[token.token_start, token.token_end])
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 preserve_per_segment refuses an MCID BDC containing unselected text; tag ownership would become partial"
+                    .to_string(),
+            ));
+        }
+    }
+    if !mcid_frame_contains_text_state_only(source_data, frame)? {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment refuses an MCID BDC containing non-text-state painting, nesting, or an unterminated scope"
+                .to_string(),
+        ));
+    }
+    let opening = String::from_utf8(frame.open_bytes.clone()).map_err(|_| {
+        WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment refuses a non-ASCII MCID BDC property list".to_string(),
+        )
+    })?;
+    Ok(Some(PreservedMarkedContent {
+        opening,
+        source_open_range: [frame.open_start, frame.open_end],
+    }))
+}
+
+fn mcid_frame_contains_text_state_only(data: &[u8], frame: &MarkedContentFrame) -> Result<bool> {
+    let tokens = lex_content(data)?;
+    let mut operands = Vec::<LexicalToken>::new();
+    let mut stack = Vec::<usize>::new();
+    let mut saw_target = false;
+    let mut closed_target = false;
+    for token in tokens {
+        let LexicalKind::Word(operator) = &token.kind else {
+            operands.push(token);
+            continue;
+        };
+        let target_active = stack.last().copied() == Some(frame.open_start);
+        match operator.as_str() {
+            "BMC" | "BDC" => {
+                let open_start = operands
+                    .first()
+                    .map(|operand| operand.start)
+                    .unwrap_or(token.start);
+                if target_active || (open_start == frame.open_start && !stack.is_empty()) {
+                    return Ok(false);
+                }
+                stack.push(open_start);
+                if open_start == frame.open_start {
+                    saw_target = true;
+                }
+            }
+            "EMC" => {
+                if target_active {
+                    closed_target = true;
+                }
+                stack.pop();
+            }
+            _ if target_active
+                && !matches!(
+                    operator.as_str(),
+                    "BT" | "ET"
+                        | "Tf"
+                        | "Tc"
+                        | "Tw"
+                        | "Tz"
+                        | "Ts"
+                        | "Tr"
+                        | "Tm"
+                        | "Td"
+                        | "TD"
+                        | "T*"
+                        | "Tj"
+                        | "TJ"
+                        | "'"
+                        | "\""
+                        | "g"
+                        | "G"
+                        | "rg"
+                        | "RG"
+                        | "k"
+                        | "K"
+                        | "q"
+                        | "Q"
+                        | "cm"
+                ) =>
+            {
+                // These operators manipulate text state or the local graphics
+                // state only. Any path/image/shading/inline-image or nested
+                // tag operator makes relocation of the MCID ambiguous.
+                return Ok(false);
+            }
+            _ => {}
+        }
+        operands.clear();
+    }
+    Ok(saw_target && closed_target && stack.is_empty())
+}
+
+fn preserved_style_from_token(token: &ContentStringToken) -> Result<PreservedTextStyle> {
+    if !token.font_size.is_finite()
+        || token.font_size <= 0.0
+        || !token.character_spacing.is_finite()
+        || !token.word_spacing.is_finite()
+        || !token.horizontal_scaling.is_finite()
+        || token.horizontal_scaling <= 0.0
+        || !token.text_rise.is_finite()
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment rejects an invalid source text state".to_string(),
+        ));
+    }
+    if !(0..=7).contains(&token.text_render_mode) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment rejects an unsupported source text rendering mode"
+                .to_string(),
+        ));
+    }
+    if matches!(token.text_render_mode, 4..=7) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment refuses source text-clipping modes because moving the clipping text into a separate generated stream would alter clipping for later content"
+                .to_string(),
+        ));
+    }
+    let uses_stroke = matches!(token.text_render_mode, 1 | 2 | 5 | 6);
+    if token.unsupported_fill_paint_state || (uses_stroke && token.unsupported_stroke_paint_state) {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment refuses non-DeviceGray/RGB/CMYK source paint state until the canonical serializer can preserve its color-space resource semantics"
+                .to_string(),
+        ));
+    }
+    Ok(PreservedTextStyle {
+        font_resource: token.font_name.clone(),
+        font_size: token.font_size,
+        character_spacing: token.character_spacing,
+        word_spacing: token.word_spacing,
+        horizontal_scaling: token.horizontal_scaling,
+        text_rise: token.text_rise,
+        text_render_mode: token.text_render_mode,
+        fill_color_command: token.fill_color_command.clone(),
+        stroke_color_command: token.stroke_color_command.clone(),
+    })
+}
+
+fn scalar_boundary_byte(text: &str, scalars: usize) -> Option<usize> {
+    if scalars == 0 {
+        return Some(0);
+    }
+    text.char_indices()
+        .nth(scalars)
+        .map(|(offset, _)| offset)
+        .or_else(|| (text.chars().count() == scalars).then_some(text.len()))
+}
+
+fn is_grapheme_boundary(text: &str, byte_offset: usize) -> bool {
+    byte_offset == 0
+        || byte_offset == text.len()
+        || text
+            .grapheme_indices(true)
+            .any(|(offset, _)| offset == byte_offset)
+}
+
+fn preserved_run_advance(
+    resolver: &FontResolver,
+    encoded: &[u8],
+    text: &str,
+    style: &PreservedTextStyle,
+) -> f64 {
+    let width = split_codes(encoded, resolver.code_size())
+        .into_iter()
+        .map(|code| resolver.glyph_width(code))
+        .sum::<f64>()
+        / 1000.0
+        * style.font_size;
+    let character_count = text.chars().count().saturating_sub(1) as f64;
+    let word_count = text.chars().filter(|ch| *ch == ' ').count() as f64;
+    (width + character_count * style.character_spacing + word_count * style.word_spacing)
+        * (style.horizontal_scaling / 100.0)
+}
+
+fn preserved_style_line_x(
+    alignment: GeneratedTextAlignment,
+    rtl: bool,
+    region: [f64; 4],
+    width: f64,
+) -> Result<f64> {
+    let target_width = region[2] - region[0];
+    if width > target_width + EPSILON {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment line exceeds its bounded region".to_string(),
+        ));
+    }
+    Ok(match alignment {
+        GeneratedTextAlignment::Left => region[0],
+        GeneratedTextAlignment::Right => region[2] - width,
+        GeneratedTextAlignment::Center => region[0] + (target_width - width) / 2.0,
+        GeneratedTextAlignment::Start => {
+            if rtl { region[2] - width } else { region[0] }
+        }
+        GeneratedTextAlignment::End => {
+            if rtl { region[0] } else { region[2] - width }
+        }
+        GeneratedTextAlignment::Justify => {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 preserve_per_segment full justification is refused until style-boundary spacing adjustment has an exact source-state proof"
+                    .to_string(),
+            ))
+        }
+    })
+}
+
+fn serialize_preserved_styled_runs(
+    runs_by_scalar: &[PreservedStyledRun],
+    logical_lines: &[ExplicitLayoutLine],
+    options: &AdvancedTextEditOptions,
+    mode: AdvancedTextMode,
+    marked_content_opening: Option<&str>,
+) -> Result<(String, Vec<GeneratedLineAdjustment>)> {
+    if mode == AdvancedTextMode::ParagraphReflowVertical {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 preserve_per_segment positioned serializer does not support vertical writing"
+                .to_string(),
+        ));
+    }
+    let mut content = String::from("q\n");
+    if let Some(opening) = marked_content_opening {
+        content.push_str(opening);
+        content.push('\n');
+    }
+    content.push_str("BT\n");
+    let mut adjustments = Vec::with_capacity(logical_lines.len());
+    let mut run_index = 0usize;
+    let line_advance = options.font_size * options.line_spacing;
+    for (line_index, line) in logical_lines.iter().enumerate() {
+        if line.inserted_visual_hyphen {
+            return Err(WellfriendError::UnsupportedFeature(
+                "prompt20 preserve_per_segment refuses an inserted hyphen because an existing source CMap cannot prove its empty ToUnicode behavior"
+                    .to_string(),
+            ));
+        }
+        let visual_scalars = line
+            .logical_text
+            .trim_end_matches(['\r', '\n', '\u{0085}', '\u{2028}', '\u{2029}'])
+            .chars()
+            .count();
+        let logical_scalars = line.logical_text.chars().count();
+        let line_end = run_index.saturating_add(logical_scalars);
+        if line_end > runs_by_scalar.len() {
+            return Err(WellfriendError::MalformedPdf(
+                "prompt20 preserve_per_segment line mapping exceeds replacement provenance"
+                    .to_string(),
+            ));
+        }
+        let visual_end = run_index.saturating_add(visual_scalars);
+        let visible_runs = &runs_by_scalar[run_index..visual_end];
+        let natural_width = visible_runs.iter().map(|run| run.advance).sum::<f64>();
+        let rtl = visible_runs.iter().any(|run| {
+            run.text
+                .chars()
+                .any(|ch| matches!(ch as u32, 0x0590..=0x08FF | 0xFB1D..=0xFEFF))
+        });
+        let x = preserved_style_line_x(options.alignment, rtl, options.region, natural_width)?;
+        let y = options.region[3] - options.font_size - line_index as f64 * line_advance;
+        content.push_str(&format!("1 0 0 1 {} {} Tm\n", fmt_num(x), fmt_num(y)));
+        let mut visible_index = 0usize;
+        while visible_index < visible_runs.len() {
+            let run = &visible_runs[visible_index];
+            let style = &run.style;
+            let mut group_end = visible_index + 1;
+            while group_end < visible_runs.len() && visible_runs[group_end].style == *style {
+                group_end += 1;
+            }
+            let group = &visible_runs[visible_index..group_end];
+            content.push_str(&format!(
+                "/{} {} Tf\n",
+                style.font_resource,
+                fmt_num(style.font_size)
+            ));
+            if style.character_spacing.abs() > EPSILON {
+                content.push_str(&format!("{} Tc\n", fmt_num(style.character_spacing)));
+            }
+            if style.word_spacing.abs() > EPSILON {
+                content.push_str(&format!("{} Tw\n", fmt_num(style.word_spacing)));
+            }
+            if (style.horizontal_scaling - 100.0).abs() > EPSILON {
+                content.push_str(&format!("{} Tz\n", fmt_num(style.horizontal_scaling)));
+            }
+            if style.text_rise.abs() > EPSILON {
+                content.push_str(&format!("{} Ts\n", fmt_num(style.text_rise)));
+            }
+            if style.text_render_mode != 0 {
+                content.push_str(&format!("{} Tr\n", style.text_render_mode));
+            }
+            content.push_str(&style.fill_color_command);
+            content.push('\n');
+            if matches!(style.text_render_mode, 1 | 2 | 5 | 6) {
+                content.push_str(&style.stroke_color_command);
+                content.push('\n');
+            }
+            content.push('<');
+            for grouped_run in group {
+                for byte in &grouped_run.encoded {
+                    content.push_str(&format!("{byte:02X}"));
+                }
+            }
+            content.push_str("> Tj\n");
+            if style.character_spacing.abs() > EPSILON {
+                content.push_str("0 Tc\n");
+            }
+            if style.word_spacing.abs() > EPSILON {
+                content.push_str("0 Tw\n");
+            }
+            if (style.horizontal_scaling - 100.0).abs() > EPSILON {
+                content.push_str("100 Tz\n");
+            }
+            if style.text_rise.abs() > EPSILON {
+                content.push_str("0 Ts\n");
+            }
+            if style.text_render_mode != 0 {
+                content.push_str("0 Tr\n");
+            }
+            visible_index = group_end;
+        }
+        adjustments.push(GeneratedLineAdjustment {
+            line_index,
+            natural_width,
+            target_width: options.region[2] - options.region[0],
+            residual: (options.region[2] - options.region[0] - natural_width).max(0.0),
+            word_spacing: 0.0,
+            character_spacing: 0.0,
+            alignment: options.alignment,
+            last_line: line_index + 1 == logical_lines.len(),
+            applied: true,
+            refusal_reason: None,
+        });
+        run_index = line_end;
+    }
+    if run_index != runs_by_scalar.len() {
+        return Err(WellfriendError::MalformedPdf(
+            "prompt20 preserve_per_segment final lines did not consume exact replacement provenance"
+                .to_string(),
+        ));
+    }
+    content.push_str("ET\n");
+    if marked_content_opening.is_some() {
+        content.push_str("EMC\n");
+    }
+    content.push('Q');
+    Ok((content, adjustments))
 }
 
 fn lex_content(data: &[u8]) -> Result<Vec<LexicalToken>> {
@@ -2482,6 +3953,14 @@ fn lex_content(data: &[u8]) -> Result<Vec<LexicalToken>> {
                 let (decoded, _content_start, _content_end, end) = parse_hex_string(data, index)?;
                 index = end;
                 LexicalKind::String(PatchStringRepresentation::Hexadecimal, decoded)
+            }
+            b'<' if data.get(index + 1) == Some(&b'<') => {
+                index += 2;
+                LexicalKind::DictionaryStart
+            }
+            b'>' if data.get(index + 1) == Some(&b'>') => {
+                index += 2;
+                LexicalKind::DictionaryEnd
             }
             b'/' => {
                 index += 1;
@@ -5549,6 +7028,226 @@ pub struct AnnotationInkFitReport {
     pub exact_limits: Vec<String>,
 }
 
+/// Proof-bearing geometry update for one explicit source-owned Link
+/// annotation. The action dictionary is copied unchanged; only `/Rect` and
+/// existing `/QuadPoints` move by the caller-approved delta.
+#[derive(Debug, Clone, Serialize)]
+pub struct LinkAnnotationMoveReport {
+    pub schema_version: String,
+    pub page: usize,
+    pub annotation_index: usize,
+    pub annotation_object: u32,
+    pub annotation_generation: u16,
+    pub before_rect: [f64; 4],
+    pub after_rect: [f64; 4],
+    pub moved_quad_points: bool,
+    pub action_or_destination_preserved: bool,
+    pub output_reopened: bool,
+    pub original_prefix_preserved: bool,
+    pub output_sha256: String,
+    pub signature_policy: EditPolicyReport,
+    pub cryptographic_validity_claimed: bool,
+    pub deterministic: bool,
+    pub cache_invalidation: CacheInvalidationReport,
+    pub exact_limits: Vec<String>,
+}
+
+/// Move one explicitly identified `/Link` annotation with a text region.
+///
+/// This is intentionally an annotation-geometry primitive, not a heuristic
+/// association engine. Callers must provide the exact expected source rect and
+/// an approved finite delta. That makes stale snapshots, wrong page indexes,
+/// and links no longer associated with the selected source fail before the
+/// canonical incremental writer changes any object.
+pub fn move_link_annotation_rect_pdf(
+    input: &[u8],
+    page_number: usize,
+    annotation_index: usize,
+    expected_before_rect: [f64; 4],
+    dx: f64,
+    dy: f64,
+    signature_policy_override: bool,
+) -> Result<(Vec<u8>, LinkAnnotationMoveReport)> {
+    if !dx.is_finite()
+        || !dy.is_finite()
+        || (dx.abs() <= EPSILON && dy.abs() <= EPSILON)
+        || expected_before_rect.iter().any(|value| !value.is_finite())
+    {
+        return Err(WellfriendError::invalid_input(
+            "prompt20 link-annotation move requires finite expected geometry and a non-zero finite delta",
+        ));
+    }
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let signature_policy = analyze_edit_policy(&engine, SignatureEditOperation::AnnotationUpdate)?;
+    enforce_prompt20_signature_policy(
+        &signature_policy,
+        signature_policy_override,
+        "Link annotation rectangle move",
+    )?;
+    let page_box = engine.page_box(page_number)?;
+    let page = engine.document().get_page(page_number)?;
+    let reader = engine.document().reader();
+    let page_object = reader.get_object(page.object_number, page.generation_number)?;
+    let page_dict = page_object.as_dict().ok_or_else(|| {
+        WellfriendError::MalformedPdf(
+            "prompt20 Link annotation page is not a dictionary".to_string(),
+        )
+    })?;
+    let annots = reader.resolve(page_dict.get("Annots").cloned().ok_or_else(|| {
+        WellfriendError::UnsupportedFeature(
+            "prompt20 Link annotation move requires a page /Annots array".to_string(),
+        )
+    })?)?;
+    let annotation_ref = annots
+        .as_array()
+        .and_then(|items| items.get(annotation_index))
+        .and_then(PdfObject::as_reference)
+        .ok_or_else(|| {
+            WellfriendError::UnsupportedFeature(format!(
+                "prompt20 Link annotation {annotation_index} on page {page_number} must be an indirect annotation dictionary"
+            ))
+        })?;
+    let annotation_object = reader.get_object(annotation_ref.0, annotation_ref.1)?;
+    let mut annotation = annotation_object.as_dict().cloned().ok_or_else(|| {
+        WellfriendError::MalformedPdf(
+            "prompt20 Link annotation reference is not a dictionary".to_string(),
+        )
+    })?;
+    if annotation.get_name("Subtype") != Some("Link") {
+        return Err(WellfriendError::UnsupportedFeature(format!(
+            "prompt20 annotation {annotation_index} on page {page_number} is not /Subtype /Link"
+        )));
+    }
+    if annotation.get("A").is_none() && annotation.get("Dest").is_none() {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 Link annotation move refuses a Link without an action or destination to preserve"
+                .to_string(),
+        ));
+    }
+    let before_values = pdf_number_array(reader, annotation.get("Rect"))?;
+    let before_rect = normalized_annotation_rect(&before_values)?;
+    let expected_rect = normalized_annotation_rect(&expected_before_rect)?;
+    if before_rect
+        .iter()
+        .zip(expected_rect.iter())
+        .any(|(actual, expected)| (actual - expected).abs() > EPSILON)
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 stale_snapshot: Link annotation rectangle no longer matches the explicit source-associated expected rectangle"
+                .to_string(),
+        ));
+    }
+    let mut after_values = before_values;
+    for (index, value) in after_values.iter_mut().enumerate() {
+        *value += if index % 2 == 0 { dx } else { dy };
+    }
+    let after_rect = normalized_annotation_rect(&after_values)?;
+    if after_rect[0] < page_box[0] - EPSILON
+        || after_rect[1] < page_box[1] - EPSILON
+        || after_rect[2] > page_box[2] + EPSILON
+        || after_rect[3] > page_box[3] + EPSILON
+    {
+        return Err(WellfriendError::UnsupportedFeature(
+            "prompt20 constraint_infeasible: moved Link annotation rectangle would leave the canonical page box"
+                .to_string(),
+        ));
+    }
+    annotation.insert(
+        "Rect",
+        PdfObject::Array(
+            after_values
+                .iter()
+                .map(|value| PdfObject::Real(canonical_number(*value)))
+                .collect(),
+        ),
+    );
+    let moved_quad_points = if annotation.get("QuadPoints").is_some() {
+        let mut quad_points = pdf_number_array(reader, annotation.get("QuadPoints"))?;
+        if quad_points.len() % 8 != 0 {
+            return Err(WellfriendError::MalformedPdf(
+                "prompt20 Link annotation /QuadPoints must contain complete quadrilaterals"
+                    .to_string(),
+            ));
+        }
+        for (index, value) in quad_points.iter_mut().enumerate() {
+            *value += if index % 2 == 0 { dx } else { dy };
+        }
+        annotation.insert(
+            "QuadPoints",
+            PdfObject::Array(
+                quad_points
+                    .iter()
+                    .map(|value| PdfObject::Real(canonical_number(*value)))
+                    .collect(),
+            ),
+        );
+        true
+    } else {
+        false
+    };
+    let output = write_incremental_update(
+        reader,
+        vec![IncrementalObject {
+            number: annotation_ref.0,
+            generation: annotation_ref.1,
+            object: PdfObject::Dictionary(annotation),
+        }],
+    )?;
+    let reopened = ContentEngine::open_bytes(output.clone())?;
+    let reopened_annotation = reopened
+        .document()
+        .reader()
+        .get_object(annotation_ref.0, annotation_ref.1)?;
+    let reopened_annotation = reopened_annotation.as_dict().ok_or_else(|| {
+        WellfriendError::MalformedPdf(
+            "prompt20 moved Link annotation did not reopen as a dictionary".to_string(),
+        )
+    })?;
+    let reopened_rect = normalized_annotation_rect(&pdf_number_array(
+        reopened.document().reader(),
+        reopened_annotation.get("Rect"),
+    )?)?;
+    if reopened_rect
+        .iter()
+        .zip(after_rect.iter())
+        .any(|(actual, expected)| (actual - expected).abs() > EPSILON)
+        || reopened_annotation.get_name("Subtype") != Some("Link")
+        || (reopened_annotation.get("A").is_none() && reopened_annotation.get("Dest").is_none())
+        || !output.starts_with(input)
+    {
+        return Err(WellfriendError::MalformedPdf(
+            "prompt20 Link annotation move failed reopen, action-preservation, or prefix proof"
+                .to_string(),
+        ));
+    }
+    Ok((
+        output.clone(),
+        LinkAnnotationMoveReport {
+            schema_version: PROMPT20_SCHEMA_VERSION.to_string(),
+            page: page_number,
+            annotation_index,
+            annotation_object: annotation_ref.0,
+            annotation_generation: annotation_ref.1,
+            before_rect,
+            after_rect,
+            moved_quad_points,
+            action_or_destination_preserved: true,
+            output_reopened: true,
+            original_prefix_preserved: true,
+            output_sha256: format!("{:x}", Sha256::digest(&output)),
+            signature_policy,
+            cryptographic_validity_claimed: false,
+            deterministic: true,
+            cache_invalidation: prompt20_cache_invalidation(input, &output, false, false, true),
+            exact_limits: vec![
+                "only one caller-identified indirect /Link annotation on the edited page is moved; widgets, replies, non-Link annotations, and page changes are refused".to_string(),
+                "the source-associated expected rectangle must match exactly, the target must remain within the canonical page box, and existing /A or /Dest is preserved without interpretation".to_string(),
+                "this primitive updates /Rect and existing /QuadPoints only; annotation appearance regeneration, arbitrary action repair, and cross-page retargeting remain separate transactions".to_string(),
+            ],
+        },
+    ))
+}
+
 /// Fit an indirect Ink annotation, preserve raw geometry according to policy,
 /// store deterministic cubic control points, and regenerate its appearance.
 pub fn fit_annotation_ink_pdf(
@@ -5945,6 +7644,26 @@ fn pdf_number_array(reader: &crate::PdfReader, object: Option<&PdfObject>) -> Re
                 })
         })
         .collect()
+}
+
+fn normalized_annotation_rect(values: &[f64]) -> Result<[f64; 4]> {
+    if values.len() != 4 || values.iter().any(|value| !value.is_finite()) {
+        return Err(WellfriendError::MalformedPdf(
+            "prompt20 annotation /Rect must contain exactly four finite numbers".to_string(),
+        ));
+    }
+    let rect = [
+        values[0].min(values[2]),
+        values[1].min(values[3]),
+        values[0].max(values[2]),
+        values[1].max(values[3]),
+    ];
+    if rect[2] <= rect[0] || rect[3] <= rect[1] {
+        return Err(WellfriendError::MalformedPdf(
+            "prompt20 annotation /Rect must have positive normalized width and height".to_string(),
+        ));
+    }
+    Ok(rect)
 }
 
 fn pdf_nested_points(
@@ -7127,6 +8846,74 @@ mod tests {
             });
         }
         PdfWriter::new(objects, 1).write().expect("fixture PDF")
+    }
+
+    fn prompt20_link_fixture() -> Vec<u8> {
+        let input = prompt20_fixture(false);
+        let engine = ContentEngine::open_bytes(input.clone()).expect("fixture open");
+        let reader = engine.document().reader();
+        let page = engine.document().get_page(1).expect("fixture page");
+        let mut page_dict = reader
+            .get_object(page.object_number, page.generation_number)
+            .expect("fixture page object")
+            .as_dict()
+            .cloned()
+            .expect("fixture page dictionary");
+        page_dict.insert(
+            "Annots",
+            PdfObject::Array(vec![PdfObject::Reference {
+                number: 11,
+                generation: 0,
+            }]),
+        );
+        let mut action = crate::PdfDictionary::empty();
+        action.insert("S", PdfObject::Name("URI".to_string()));
+        action.insert(
+            "URI",
+            PdfObject::String(b"https://example.invalid/source-link".to_vec()),
+        );
+        let mut link = crate::PdfDictionary::empty();
+        link.insert("Type", PdfObject::Name("Annot".to_string()));
+        link.insert("Subtype", PdfObject::Name("Link".to_string()));
+        link.insert(
+            "Rect",
+            PdfObject::Array(vec![
+                PdfObject::Integer(10),
+                PdfObject::Integer(140),
+                PdfObject::Integer(70),
+                PdfObject::Integer(160),
+            ]),
+        );
+        link.insert(
+            "QuadPoints",
+            PdfObject::Array(vec![
+                PdfObject::Integer(10),
+                PdfObject::Integer(160),
+                PdfObject::Integer(70),
+                PdfObject::Integer(160),
+                PdfObject::Integer(10),
+                PdfObject::Integer(140),
+                PdfObject::Integer(70),
+                PdfObject::Integer(140),
+            ]),
+        );
+        link.insert("A", PdfObject::Dictionary(action));
+        write_incremental_update(
+            reader,
+            vec![
+                IncrementalObject {
+                    number: page.object_number,
+                    generation: page.generation_number,
+                    object: PdfObject::Dictionary(page_dict),
+                },
+                IncrementalObject {
+                    number: 11,
+                    generation: 0,
+                    object: PdfObject::Dictionary(link),
+                },
+            ],
+        )
+        .expect("link fixture incremental update")
     }
 
     fn shared_form_fixture() -> Vec<u8> {
@@ -8369,6 +10156,7 @@ mod tests {
             mode: AdvancedTextMode::ParagraphReflowHorizontal,
             style_policy: MultiRunStylePolicy::InheritLeading,
             options: AdvancedTextEditOptions::default(),
+            final_lines: None,
         };
         let (output, report) =
             edit_multi_run_text_range(&input, &request, None).expect("range edit");
@@ -8398,6 +10186,7 @@ mod tests {
             mode: AdvancedTextMode::ParagraphReflowHorizontal,
             style_policy: MultiRunStylePolicy::InheritLeading,
             options: AdvancedTextEditOptions::default(),
+            final_lines: None,
         };
         let mut session = Prompt20MutationSession::new(input.clone()).expect("range session");
         session
@@ -8427,6 +10216,7 @@ mod tests {
             mode: AdvancedTextMode::ParagraphReflowHorizontal,
             style_policy: MultiRunStylePolicy::InheritTrailing,
             options: AdvancedTextEditOptions::default(),
+            final_lines: None,
         };
         session
             .apply_multi_run_text_range(&insert, None)
@@ -8441,6 +10231,7 @@ mod tests {
             mode: AdvancedTextMode::ParagraphReflowHorizontal,
             style_policy: MultiRunStylePolicy::InheritLeading,
             options: AdvancedTextEditOptions::default(),
+            final_lines: None,
         };
         let (_deleted, report) =
             edit_multi_run_text_range(&input, &delete, None).expect("delete range");
@@ -8468,6 +10259,7 @@ mod tests {
             mode: AdvancedTextMode::ParagraphReflowHorizontal,
             style_policy: MultiRunStylePolicy::InheritLeading,
             options: AdvancedTextEditOptions::default(),
+            final_lines: None,
         };
         let (_output, report) =
             edit_multi_run_text_range(&styled, &replace, None).expect("style boundary replace");
@@ -8495,6 +10287,7 @@ mod tests {
                 max_lines_or_columns: 4,
                 ..AdvancedTextEditOptions::default()
             },
+            final_lines: None,
         };
         let (_vertical_output, vertical_report) =
             edit_multi_run_text_range(&styled, &vertical, None).expect("vertical range edit");
@@ -8508,11 +10301,350 @@ mod tests {
             mode: AdvancedTextMode::ParagraphReflowHorizontal,
             style_policy: MultiRunStylePolicy::InheritLeading,
             options: AdvancedTextEditOptions::default(),
+            final_lines: None,
         };
         let err = edit_multi_run_text_range(&styled, &partial, None)
             .expect_err("partial-token range is unsupported");
         let message = err.to_string();
         assert!(message.contains("token-boundary") || message.contains("provenance-bearing"));
+    }
+
+    #[test]
+    fn preserve_per_segment_replays_source_font_size_color_and_positions() {
+        let input = prompt20_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 0 g 10 150 Td (ONE) Tj /F2 18 Tf 1 0 0 rg (TWO) Tj ET\n",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 6,
+            replacement_text: "redSUN".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions {
+                region: [10.0, 60.0, 180.0, 160.0],
+                font_size: 12.0,
+                line_spacing: 1.4,
+                ..AdvancedTextEditOptions::default()
+            },
+            final_lines: Some(vec![ExplicitLayoutLine {
+                logical_text: "redSUN".to_string(),
+                visual_text: "redSUN".to_string(),
+                inserted_visual_hyphen: false,
+            }]),
+        };
+        let (output, report) =
+            edit_multi_run_text_range(&input, &request, None).expect("preserved style reflow");
+        assert_eq!(report.operation, "replace_preserving_per_segment_styles");
+        assert!(report.replacement_extracts);
+        assert!(report.old_selected_text_absent);
+        let reopened = ContentEngine::open_bytes(output).expect("reopen");
+        assert!(reopened.get_page_text(1).expect("text").contains("redSUN"));
+        let page = reopened.document().get_page(1).expect("page");
+        let (number, generation) = *page.contents.last().expect("generated content");
+        let object = reopened
+            .document()
+            .reader()
+            .get_object(number, generation)
+            .expect("content object");
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reopened.document().reader(),
+            &DecodeLimits::default(),
+        )
+        .expect("decode");
+        let content = String::from_utf8(decoded.data).expect("content utf8");
+        assert!(content.contains("/F1 10 Tf"));
+        assert!(content.contains("/F2 18 Tf"));
+        assert!(content.contains("1 0 0 rg"));
+        assert!(content.matches(" Tm").count() >= 1);
+    }
+
+    #[test]
+    fn preserve_per_segment_replays_mixed_styles_for_changed_length_replacement() {
+        let input = prompt20_fixture_with_content(
+            false,
+            b"BT /F1 10 Tf 0 g 10 150 Td (ONE) Tj /F2 18 Tf 1 0 0 rg (TWO) Tj ET\n",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 6,
+            replacement_text: "summerDAY".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions {
+                region: [10.0, 60.0, 180.0, 160.0],
+                font_size: 12.0,
+                line_spacing: 1.4,
+                ..AdvancedTextEditOptions::default()
+            },
+            final_lines: Some(vec![ExplicitLayoutLine {
+                logical_text: "summerDAY".to_string(),
+                visual_text: "summerDAY".to_string(),
+                inserted_visual_hyphen: false,
+            }]),
+        };
+        let (output, report) = edit_multi_run_text_range(&input, &request, None)
+            .expect("changed-length mixed-style reflow");
+        assert!(report.replacement_extracts);
+        assert!(report.old_selected_text_absent);
+        let reopened = ContentEngine::open_bytes(output).expect("reopen");
+        assert!(reopened
+            .get_page_text(1)
+            .expect("text")
+            .contains("summerDAY"));
+        let page = reopened.document().get_page(1).expect("page");
+        let (number, generation) = *page.contents.last().expect("generated content");
+        let object = reopened
+            .document()
+            .reader()
+            .get_object(number, generation)
+            .expect("content object");
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reopened.document().reader(),
+            &DecodeLimits::default(),
+        )
+        .expect("decode");
+        let content = String::from_utf8(decoded.data).expect("content utf8");
+        assert!(content.contains("/F1 10 Tf"));
+        assert!(content.contains("/F2 18 Tf"));
+        assert!(content.contains("1 0 0 rg"));
+    }
+
+    #[test]
+    fn preserve_per_segment_moves_one_exact_mcid_wrapper_without_duplication() {
+        let input = prompt20_fixture_with_content(
+            false,
+            b"/P << /MCID 7 >> BDC BT /F1 12 Tf 0 g 10 150 Td (ABC) Tj ET EMC\n",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 3,
+            replacement_text: "XYZ".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions {
+                region: [10.0, 60.0, 180.0, 160.0],
+                ..AdvancedTextEditOptions::default()
+            },
+            final_lines: None,
+        };
+        let (output, report) =
+            edit_multi_run_text_range(&input, &request, None).expect("MCID source-style reflow");
+        assert!(report.replacement_extracts);
+        assert!(report.old_selected_text_absent);
+        let reopened = ContentEngine::open_bytes(output).expect("reopen");
+        assert!(reopened.get_page_text(1).expect("text").contains("XYZ"));
+        let page = reopened.document().get_page(1).expect("page");
+        let source_object = reopened
+            .document()
+            .reader()
+            .get_object(page.contents[0].0, page.contents[0].1)
+            .expect("source stream");
+        let source = decode_stream_lossless_with_limits(
+            &source_object,
+            reopened.document().reader(),
+            &DecodeLimits::default(),
+        )
+        .expect("source decode");
+        assert!(String::from_utf8(source.data)
+            .expect("source UTF-8")
+            .contains("/Artifact BMC"));
+        let generated_object = reopened
+            .document()
+            .reader()
+            .get_object(
+                page.contents.last().expect("generated stream").0,
+                page.contents.last().expect("generated stream").1,
+            )
+            .expect("generated stream object");
+        let generated = decode_stream_lossless_with_limits(
+            &generated_object,
+            reopened.document().reader(),
+            &DecodeLimits::default(),
+        )
+        .expect("generated decode");
+        let generated = String::from_utf8(generated.data).expect("generated UTF-8");
+        assert!(generated.contains("/P << /MCID 7 >> BDC"));
+        assert_eq!(generated.matches("/MCID 7").count(), 1);
+    }
+
+    #[test]
+    fn preserve_per_segment_refuses_partial_mcid_tag_ownership_before_mutation() {
+        let input = prompt20_fixture_with_content(
+            false,
+            b"/P << /MCID 9 >> BDC BT /F1 12 Tf 10 150 Td (ABC) Tj (DEF) Tj ET EMC\n",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 3,
+            replacement_text: "XYZ".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let error = edit_multi_run_text_range(&input, &request, None)
+            .expect_err("partial MCID ownership must refuse");
+        assert!(error.to_string().contains("unselected text"));
+        assert!(ContentEngine::open_bytes(input).is_ok());
+    }
+
+    #[test]
+    fn explicit_link_annotation_rect_move_preserves_action_and_quadpoints() {
+        let input = prompt20_link_fixture();
+        let (output, report) = move_link_annotation_rect_pdf(
+            &input,
+            1,
+            0,
+            [10.0, 140.0, 70.0, 160.0],
+            12.0,
+            -5.0,
+            false,
+        )
+        .expect("explicit Link move");
+        assert!(output.starts_with(&input));
+        assert!(report.output_reopened);
+        assert!(report.action_or_destination_preserved);
+        assert!(report.moved_quad_points);
+        assert_eq!(report.after_rect, [22.0, 135.0, 82.0, 155.0]);
+        let reopened = ContentEngine::open_bytes(output).expect("reopen");
+        assert!(reopened.get_page_text(1).expect("text").contains("ABC"));
+        let annotation = reopened
+            .document()
+            .reader()
+            .get_object(11, 0)
+            .expect("moved annotation")
+            .as_dict()
+            .cloned()
+            .expect("annotation dictionary");
+        assert!(annotation.get("A").is_some());
+        assert_eq!(
+            normalized_annotation_rect(
+                &pdf_number_array(reopened.document().reader(), annotation.get("Rect"))
+                    .expect("moved rect"),
+            )
+            .expect("normalized rect"),
+            [22.0, 135.0, 82.0, 155.0]
+        );
+        let quad_points =
+            pdf_number_array(reopened.document().reader(), annotation.get("QuadPoints"))
+                .expect("moved quad points");
+        assert_eq!(
+            quad_points,
+            vec![22.0, 155.0, 82.0, 155.0, 22.0, 135.0, 82.0, 135.0]
+        );
+    }
+
+    #[test]
+    fn explicit_link_annotation_rect_move_rejects_stale_source_geometry() {
+        let input = prompt20_link_fixture();
+        let error =
+            move_link_annotation_rect_pdf(&input, 1, 0, [0.0, 0.0, 1.0, 1.0], 1.0, 1.0, false)
+                .expect_err("stale source rect must refuse");
+        assert!(error.to_string().contains("stale_snapshot"));
+        assert!(ContentEngine::open_bytes(input).is_ok());
+    }
+
+    #[test]
+    fn preserve_per_segment_refuses_bidi_without_per_style_visual_shaping() {
+        let input = prompt20_fixture_with_content(false, b"BT /F1 12 Tf 10 150 Td (ABC) Tj ET\n");
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 3,
+            replacement_text: "\u{05d0}\u{05d1}\u{05d2}".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowRtl,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let error = edit_multi_run_text_range(&input, &request, None)
+            .expect_err("bidi mixed-style boundary");
+        assert!(error.to_string().contains("RTL or mixed-bidi"));
+    }
+
+    #[test]
+    fn preserve_per_segment_refuses_source_text_clipping_mode() {
+        let input = prompt20_fixture_with_content(
+            false,
+            b"BT /F1 12 Tf 4 Tr 10 150 Td (ABC) Tj ET\n0 0 20 20 re f\n",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 3,
+            replacement_text: "XYZ".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let error = edit_multi_run_text_range(&input, &request, None)
+            .expect_err("clipping source boundary");
+        assert!(error.to_string().contains("text-clipping"));
+    }
+
+    #[test]
+    fn preserve_per_segment_refuses_unserializable_source_color_space() {
+        let input = prompt20_fixture_with_content(
+            false,
+            b"BT /F1 12 Tf /Pattern cs /P1 scn 10 150 Td (ABC) Tj ET\n",
+        );
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 3,
+            replacement_text: "XYZ".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let error = edit_multi_run_text_range(&input, &request, None)
+            .expect_err("color-space source boundary");
+        assert!(error.to_string().contains("color-space"));
+    }
+
+    #[test]
+    fn preserve_per_segment_replays_invisible_text_without_clipping_side_effects() {
+        let input =
+            prompt20_fixture_with_content(false, b"BT /F1 12 Tf 3 Tr 10 150 Td (ABC) Tj ET\n");
+        let request = MultiRunTextRangeRequest {
+            page: 1,
+            logical_start: 0,
+            logical_end: 3,
+            replacement_text: "XYZ".to_string(),
+            mode: AdvancedTextMode::ParagraphReflowHorizontal,
+            style_policy: MultiRunStylePolicy::PreservePerSegment,
+            options: AdvancedTextEditOptions::default(),
+            final_lines: None,
+        };
+        let (output, report) =
+            edit_multi_run_text_range(&input, &request, None).expect("invisible source reflow");
+        assert!(report.replacement_extracts);
+        let reopened = ContentEngine::open_bytes(output).expect("reopen");
+        let page = reopened.document().get_page(1).expect("page");
+        let (number, generation) = *page.contents.last().expect("generated content");
+        let object = reopened
+            .document()
+            .reader()
+            .get_object(number, generation)
+            .expect("content object");
+        let decoded = decode_stream_lossless_with_limits(
+            &object,
+            reopened.document().reader(),
+            &DecodeLimits::default(),
+        )
+        .expect("decode");
+        assert!(String::from_utf8(decoded.data)
+            .expect("content")
+            .contains("3 Tr"));
     }
 
     #[test]
@@ -9010,6 +11142,56 @@ mod tests {
         assert!(report.replacement_extracts);
         assert!(report.old_text_absent);
         assert_eq!(report.writing_mode, 0);
+    }
+
+    #[test]
+    fn explicit_final_layout_uses_bounded_output_driving_justification() {
+        let input = prompt20_fixture(false);
+        let first_line = "one two three four five";
+        let analysis = analyze_advanced_text_reflow(
+            first_line,
+            AdvancedTextMode::ParagraphReflowHorizontal,
+            None,
+            TextReflowLimits::default(),
+        )
+        .expect("shaped first line");
+        let font_size = 12.0;
+        let natural = analysis
+            .glyphs
+            .iter()
+            .map(|glyph| glyph.advance_1000.abs())
+            .sum::<f64>()
+            / 1000.0
+            * font_size;
+        let replacement = format!("{first_line}tail");
+        let options = AdvancedTextEditOptions {
+            region: [20.0, 100.0, 20.0 + natural + 4.0, 145.0],
+            font_size,
+            max_lines_or_columns: 2,
+            alignment: GeneratedTextAlignment::Justify,
+            ..AdvancedTextEditOptions::default()
+        };
+        let (output, report) = edit_advanced_text_pdf_with_layout(
+            &input,
+            1,
+            "ABC",
+            &replacement,
+            AdvancedTextMode::ParagraphReflowHorizontal,
+            &options,
+            None,
+            &[first_line.to_string(), "tail".to_string()],
+        )
+        .expect("bounded justified layout");
+        assert!(output.starts_with(&input));
+        assert!(report.replacement_extracts);
+        assert_eq!(report.line_adjustments.len(), 2);
+        assert!(report.line_adjustments[0].word_spacing > 0.0);
+        assert!(report.line_adjustments[0].residual <= 1e-6);
+        assert!(report.line_adjustments[1].last_line);
+        assert_eq!(
+            report.line_adjustments[1].word_spacing, 0.0,
+            "the default policy does not justify a final line"
+        );
     }
 
     #[test]

@@ -852,6 +852,11 @@ public final class WellfriendPdf {
             return Native.documentReport(handle, Native.PROMPT32_REPORT, "prompt32_report");
         }
 
+        public String prompt33ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT33_REPORT, "prompt33_report");
+        }
+
         public String prompt21ReportJson() {
             ensureOpen();
             return Native.documentReport(handle, Native.PROMPT21_REPORT, "prompt21_report");
@@ -1044,6 +1049,93 @@ public final class WellfriendPdf {
         public String prompt32FontSubstitutionReportJson(String requestedFamily, String text, String policy) {
             ensureOpen();
             return Native.prompt32FontSubstitutionReport(handle, requestedFamily, text, policy);
+        }
+
+        public String prompt33LayoutAnalyzeJson(String requestJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PROMPT33_LAYOUT_ANALYZE, requestJson, "prompt33_layout_analyze");
+        }
+
+        public String prompt33SemanticLayoutJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT33_SEMANTIC_LAYOUT, "prompt33_semantic_layout");
+        }
+
+        public String prompt33ReadingOrderReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT33_READING_ORDER, "prompt33_reading_order_report");
+        }
+
+        public String prompt33FlowGraphReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT33_FLOW_GRAPH, "prompt33_flow_graph_report");
+        }
+
+        public String prompt33ReflowPreviewJson(String requestJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PROMPT33_REFLOW_PREVIEW, requestJson, "prompt33_reflow_preview");
+        }
+
+        public String prompt33OverflowReportJson(String requestJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PROMPT33_OVERFLOW_REPORT, requestJson, "prompt33_overflow_report");
+        }
+
+        public String prompt33ConstraintsReportJson(String requestJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PROMPT33_CONSTRAINTS_REPORT, requestJson, "prompt33_constraints_report");
+        }
+
+        public String prompt33ConfidenceReportJson(String requestJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PROMPT33_CONFIDENCE_REPORT, requestJson, "prompt33_confidence_report");
+        }
+
+        /**
+         * Validates explicit Prompt 33 output bytes against this immutable
+         * source document. The caller retains ownership of {@code outputPdf}.
+         */
+        public String prompt33ValidateReflowOutputJson(byte[] outputPdf, String requestJson) {
+            ensureOpen();
+            return Native.prompt33ValidateReflowOutput(
+                handle, outputPdf, requestJson, "prompt33_validate_reflow_output");
+        }
+
+        public BinaryResult prompt33ReflowRegion(String requestJson) {
+            ensureOpen();
+            return Native.prompt33RequestOutput(handle, Native.PROMPT33_REFLOW_REGION, requestJson, "prompt33_reflow_region");
+        }
+
+        public BinaryResult prompt33ReflowDocument(String requestJson) {
+            ensureOpen();
+            return Native.prompt33RequestOutput(handle, Native.PROMPT33_REFLOW_DOCUMENT, requestJson, "prompt33_reflow_document");
+        }
+
+        /**
+         * Replays the specified Prompt 33 operation against this immutable
+         * preimage, verifies {@code outputPdf}, and executes its canonical
+         * transaction undo. A stale output buffer is rejected.
+         */
+        public BinaryResult prompt33UndoReflow(byte[] outputPdf, String requestJson) {
+            ensureOpen();
+            return Native.prompt33UndoReflow(handle, outputPdf, requestJson, "prompt33_undo_reflow");
+        }
+
+        public String prompt33ReflowApproveStructureJson(String correctionJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PROMPT33_APPROVE_STRUCTURE, correctionJson, "prompt33_reflow_approve_structure");
+        }
+
+        public String prompt33ReflowOperationReportJson(String requestJson) {
+            ensureOpen();
+            return Native.documentStringReport(
+                handle, Native.PROMPT33_OPERATION_REPORT, requestJson, "prompt33_reflow_operation_report");
         }
 
         public String prompt20VectorListJson(long page) {
@@ -1533,6 +1625,7 @@ public final class WellfriendPdf {
         private static final MethodHandle PROMPT20B_REPORT = documentReport("wellfriendpdf_document_prompt20b_report_json");
         private static final MethodHandle PROMPT31_REPORT = documentReport("wellfriendpdf_document_prompt31_report_json");
         private static final MethodHandle PROMPT32_REPORT = documentReport("wellfriendpdf_document_prompt32_report_json");
+        private static final MethodHandle PROMPT33_REPORT = documentReport("wellfriendpdf_document_prompt33_report_json");
         private static final MethodHandle PROMPT21_REPORT = documentReport("wellfriendpdf_document_prompt21_report_json");
         private static final MethodHandle PROMPT21_RASTER_VECTOR_REPORT = downcall(
             "wellfriendpdf_document_prompt21_raster_vector_report_json",
@@ -1857,6 +1950,47 @@ public final class WellfriendPdf {
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle PROMPT33_LAYOUT_ANALYZE =
+            documentStringReport("wellfriendpdf_document_prompt33_layout_analyze_json");
+        private static final MethodHandle PROMPT33_SEMANTIC_LAYOUT =
+            documentReport("wellfriendpdf_document_prompt33_semantic_layout_json");
+        private static final MethodHandle PROMPT33_READING_ORDER =
+            documentReport("wellfriendpdf_document_prompt33_reading_order_report_json");
+        private static final MethodHandle PROMPT33_FLOW_GRAPH =
+            documentReport("wellfriendpdf_document_prompt33_flow_graph_report_json");
+        private static final MethodHandle PROMPT33_REFLOW_PREVIEW =
+            documentStringReport("wellfriendpdf_document_prompt33_reflow_preview_json");
+        private static final MethodHandle PROMPT33_OVERFLOW_REPORT =
+            documentStringReport("wellfriendpdf_document_prompt33_overflow_report_json");
+        private static final MethodHandle PROMPT33_CONSTRAINTS_REPORT =
+            documentStringReport("wellfriendpdf_document_prompt33_constraints_report_json");
+        private static final MethodHandle PROMPT33_CONFIDENCE_REPORT =
+            documentStringReport("wellfriendpdf_document_prompt33_confidence_report_json");
+        private static final MethodHandle PROMPT33_VALIDATE_REFLOW_OUTPUT = downcall(
+            "wellfriendpdf_document_prompt33_validate_reflow_output_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT33_REFLOW_REGION = downcall(
+            "wellfriendpdf_document_prompt33_reflow_region_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT33_REFLOW_DOCUMENT = downcall(
+            "wellfriendpdf_document_prompt33_reflow_document_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT33_UNDO_REFLOW = downcall(
+            "wellfriendpdf_document_prompt33_undo_reflow_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT33_APPROVE_STRUCTURE =
+            documentStringReport("wellfriendpdf_document_prompt33_reflow_approve_structure_json");
+        private static final MethodHandle PROMPT33_OPERATION_REPORT =
+            documentStringReport("wellfriendpdf_document_prompt33_reflow_operation_report_json");
         private static final MethodHandle PROMPT20_VECTOR_LIST = downcall(
             "wellfriendpdf_document_prompt20_vector_list_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
@@ -2783,6 +2917,80 @@ public final class WellfriendPdf {
                 return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
             } catch (WellfriendPdfException ex) { throw ex;
             } catch (Throwable ex) { throw new IllegalStateException("Wellfriend prompt32_transaction_apply failed", ex); }
+        }
+
+        private static BinaryResult prompt33RequestOutput(
+            MemorySegment handle, MethodHandle method, String requestJson, String operation
+        ) {
+            Objects.requireNonNull(requestJson, "requestJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) method.invokeExact(handle, request, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult prompt33UndoReflow(
+            MemorySegment handle, byte[] outputPdf, String requestJson, String operation
+        ) {
+            Objects.requireNonNull(outputPdf, "outputPdf");
+            Objects.requireNonNull(requestJson, "requestJson");
+            if (requestJson.isBlank()) {
+                throw new IllegalArgumentException("requestJson must not be blank");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment output = outputPdf.length == 0 ? MemorySegment.NULL : arena.allocate(outputPdf.length);
+                if (outputPdf.length > 0) {
+                    output.copyFrom(MemorySegment.ofArray(outputPdf));
+                }
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT33_UNDO_REFLOW.invokeExact(
+                    handle, output, (long) outputPdf.length, request, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend " + operation + " failed", ex);
+            }
+        }
+
+        private static String prompt33ValidateReflowOutput(
+            MemorySegment handle, byte[] outputPdf, String requestJson, String operation
+        ) {
+            Objects.requireNonNull(outputPdf, "outputPdf");
+            Objects.requireNonNull(requestJson, "requestJson");
+            if (requestJson.isBlank()) {
+                throw new IllegalArgumentException("requestJson must not be blank");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment output = outputPdf.length == 0 ? MemorySegment.NULL : arena.allocate(outputPdf.length);
+                if (outputPdf.length > 0) {
+                    output.copyFrom(MemorySegment.ofArray(outputPdf));
+                }
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT33_VALIDATE_REFLOW_OUTPUT.invokeExact(
+                    handle, output, (long) outputPdf.length, request, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend " + operation + " failed", ex);
+            }
         }
 
         private static String prompt32TextMap(MemorySegment handle, String text, String direction) {

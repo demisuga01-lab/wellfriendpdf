@@ -3829,6 +3829,355 @@ pub unsafe extern "C" fn wellfriendpdf_document_prompt32_font_substitution_repor
         })
     }
 }
+
+/// Return Prompt 33's geometric/semantic reflow architecture report.
+///
+/// # Safety
+/// `document` must be live and output pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_report_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_report_json(bytes, None)
+        })
+    }
+}
+
+/// Analyze a Prompt 33 geometric reflow region.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_layout_analyze_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_layout_analyze_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Report Prompt 33 semantic layout reconstruction.
+///
+/// # Safety
+/// `document` must be live and output pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_semantic_layout_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_semantic_layout_json(bytes, None)
+        })
+    }
+}
+
+/// Report Prompt 33 reading order.
+///
+/// # Safety
+/// `document` must be live and output pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_reading_order_report_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_reading_order_report_json(bytes, None)
+        })
+    }
+}
+
+/// Report Prompt 33 flow graph.
+///
+/// # Safety
+/// `document` must be live and output pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_flow_graph_report_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_flow_graph_report_json(bytes, None)
+        })
+    }
+}
+
+/// Preview a Prompt 33 reflow request without mutating bytes.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_reflow_preview_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_reflow_preview_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Query Prompt 33's ordered overflow escalation without mutating bytes.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_overflow_report_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_overflow_report_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Query Prompt 33 hard/soft constraint evidence without mutating bytes.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_constraints_report_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_constraints_report_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Query Prompt 33 confidence and review enforcement without mutating bytes.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_confidence_report_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_confidence_report_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Validate explicitly supplied Prompt 33 output against this immutable source
+/// document. The input byte slice is borrowed only for this call; reports use
+/// the standard owned-string free function.
+///
+/// # Safety
+/// `output_pdf` must point to `output_pdf_len` readable bytes unless the
+/// length is zero, and `request_json` must be NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_validate_reflow_output_json(
+    document: *const WellfriendDocument,
+    output_pdf: *const u8,
+    output_pdf_len: usize,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let output = unsafe { read_input_bytes(output_pdf, output_pdf_len, "output_pdf") };
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            let output = output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            let request = request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            sdk::prompt33_validate_reflow_output_json(bytes, output, &request, None)
+        })
+    }
+}
+
+/// Apply Prompt 33 GeometricBlock reflow and return owned PDF bytes plus report.
+///
+/// # Safety
+/// Standard document and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_reflow_region_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt33_reflow_region_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Apply Prompt 33 SemanticDocument reflow and return owned PDF bytes plus report.
+///
+/// # Safety
+/// Standard document and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_reflow_document_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt33_reflow_document_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Execute Prompt 33's canonical inverse operation and return restored owned
+/// PDF bytes plus a typed replay/undo report.
+///
+/// # Safety
+/// `output_pdf` must point to `output_pdf_len` readable bytes unless the
+/// length is zero, and `request_json` must be NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_undo_reflow_json(
+    document: *const WellfriendDocument,
+    output_pdf: *const u8,
+    output_pdf_len: usize,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let output = unsafe { read_input_bytes(output_pdf, output_pdf_len, "output_pdf") };
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let output = output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            let request = request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            sdk::prompt33_undo_reflow_json(bytes, output, &request, None)
+        })
+    }
+}
+
+/// Store or preview a Prompt 33 reviewed structure correction.
+///
+/// # Safety
+/// `correction_json` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_reflow_approve_structure_json(
+    document: *const WellfriendDocument,
+    correction_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let correction = unsafe { required_c_string(correction_json, "correction_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_reflow_approve_structure_json(
+                bytes,
+                &correction
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Report Prompt 33 reflow operation/undo/redo evidence.
+///
+/// # Safety
+/// `request_json` is NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt33_reflow_operation_report_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt33_reflow_operation_report_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
 xfa_document_report!(
     wellfriendpdf_document_associated_files_report_json,
     associated_files_report_json
@@ -6228,6 +6577,155 @@ mod tests {
         let subset = unsafe { CStr::from_ptr(json) }.to_string_lossy();
         assert!(subset.contains("prompt32_font_subset_plan"));
         assert!(subset.contains("deterministic_subset_tag"));
+        unsafe {
+            wellfriendpdf_string_free(json);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_prompt33_reflow_surfaces_return_owned_outputs() {
+        let (doc, pdf) = open_sample();
+        let mut json = std::ptr::null_mut();
+        let mut error = std::ptr::null_mut();
+
+        let status =
+            unsafe { wellfriendpdf_document_prompt33_report_json(doc, &mut json, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let text = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(text.contains("prompt33.geometric-semantic-reflow.v1"));
+        unsafe { wellfriendpdf_string_free(json) };
+
+        let request = CString::new(
+            r#"{"requested_mode":"geometric_block","page":1,"source_text":"Hello C API","replacement_text":"World C API","region":[10.0,10.0,260.0,90.0],"language":"en","hyphenation":true,"layout_constraints":[{"constraint_id":"capi_soft_height","variable":"region_height","relation":"ge","value":500.0,"priority":"weak"}]}"#,
+        )
+        .unwrap();
+        let status = unsafe {
+            wellfriendpdf_document_prompt33_reflow_preview_json(
+                doc,
+                request.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let preview = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(preview.contains("prompt33_reflow_preview"));
+        assert!(preview.contains("no_overlay"));
+        unsafe { wellfriendpdf_string_free(json) };
+        json = std::ptr::null_mut();
+
+        for (operation, expected) in [
+            (
+                wellfriendpdf_document_prompt33_overflow_report_json
+                    as unsafe extern "C" fn(
+                        *const WellfriendDocument,
+                        *const c_char,
+                        *mut *mut c_char,
+                        *mut *mut c_char,
+                    ) -> c_int,
+                "prompt33_overflow_report",
+            ),
+            (
+                wellfriendpdf_document_prompt33_constraints_report_json,
+                "prompt33_constraints_report",
+            ),
+            (
+                wellfriendpdf_document_prompt33_confidence_report_json,
+                "prompt33_confidence_report",
+            ),
+        ] {
+            let status = unsafe { operation(doc, request.as_ptr(), &mut json, &mut error) };
+            assert_eq!(status, WELLFRIENDPDF_STATUS_OK, "{expected}");
+            let report = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+            assert!(report.contains(expected), "{report}");
+            if expected == "prompt33_constraints_report" {
+                assert!(report.contains("capi_soft_height"), "{report}");
+                assert!(report.contains("unsatisfied_soft_constraints"), "{report}");
+            }
+            unsafe { wellfriendpdf_string_free(json) };
+            json = std::ptr::null_mut();
+        }
+
+        let mut geometric_output = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_prompt33_reflow_region_json(
+                doc,
+                request.as_ptr(),
+                &mut geometric_output,
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        unsafe { wellfriendpdf_string_free(json) };
+        json = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_prompt33_validate_reflow_output_json(
+                doc,
+                geometric_output.data,
+                geometric_output.len,
+                request.as_ptr(),
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let validation = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(validation.contains("prompt33_validate_reflow_output"));
+        assert!(validation.contains("\"valid\":true"));
+        unsafe { wellfriendpdf_string_free(json) };
+        json = std::ptr::null_mut();
+        let mut restored = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_prompt33_undo_reflow_json(
+                doc,
+                geometric_output.data,
+                geometric_output.len,
+                request.as_ptr(),
+                &mut restored,
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let undo = unsafe { CStr::from_ptr(json) }.to_string_lossy();
+        assert!(undo.contains("prompt33_undo_reflow"));
+        assert!(undo.contains("\"byte_exact_restoration\":true"));
+        let restored_bytes = unsafe { slice::from_raw_parts(restored.data, restored.len) };
+        assert_eq!(restored_bytes, pdf.as_slice());
+        unsafe {
+            wellfriendpdf_string_free(json);
+            wellfriendpdf_buffer_free(geometric_output);
+            wellfriendpdf_buffer_free(restored);
+        }
+        json = std::ptr::null_mut();
+
+        let semantic_without_approval = CString::new(
+            r#"{"requested_mode":"semantic_document","page":1,"source_text":"Hello C API","replacement_text":"World C API","region":[10.0,10.0,260.0,90.0],"language":"en"}"#,
+        )
+        .unwrap();
+        let mut output = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_prompt33_reflow_document_json(
+                doc,
+                semantic_without_approval.as_ptr(),
+                &mut output,
+                &mut json,
+                &mut error,
+            )
+        };
+        assert_ne!(status, WELLFRIENDPDF_STATUS_OK);
+        let refusal = unsafe { CStr::from_ptr(error) }.to_string_lossy();
+        // SemanticDocument must refuse an unapproved low-confidence structure
+        // before source mutation. The central policy may refuse before the
+        // later paragraph-ambiguity gate; both the engine and ABI expose the
+        // policy's exact `refuse` result.
+        assert!(
+            refusal.contains("\"refuse\"") && refusal.contains("confidence policy"),
+            "unexpected typed semantic refusal: {refusal}"
+        );
+        unsafe { wellfriendpdf_string_free(error) };
         unsafe {
             wellfriendpdf_string_free(json);
             wellfriendpdf_document_free(doc);
