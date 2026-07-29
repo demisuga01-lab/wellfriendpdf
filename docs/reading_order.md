@@ -6,7 +6,7 @@ lowest-confidence edge is removed with edge-ID tie-breaking and reported with
 an alternative/review flag.
 
 This is an analysis result. Low confidence does not authorize a semantic edit,
-and corpus-level reading-order accuracy metrics remain a Prompt 33 closure
+and corpus-level reading-order accuracy metrics remain a text reflow closure
 gate. The owned annotated two-column/footnote fixture executes the same
 resolver, deliberately introduces a precedence cycle, verifies deterministic
 lowest-confidence edge removal, and scores exact order, Kendall-style pair

@@ -36,7 +36,7 @@ overflow-checks = true
 # units. Splitting into many small codegen units and dropping debug info keeps
 # per-unit LLVM peak memory well under the cap while preserving coverage
 # instrumentation (proven on Windows/MSVC under a 4096 MiB Job Object cap; see
-# docs/prompt25b_cargo_fuzz_root_cause.md). Keeps debug-assertions/overflow
+# docs/pades_ltv_fuzz_cargo_fuzz_root_cause.md). Keeps debug-assertions/overflow
 # checks on so panics still fire. This block only affects the out-of-workspace
 # fuzz crate's `--dev` builds; it does not touch the workspace or the release
 # fuzz profile the Linux CI gate uses.
@@ -237,8 +237,8 @@ doc = false
 bench = false
 
 [[bin]]
-name = "renderer_prompt11"
-path = "fuzz_targets/renderer_prompt11.rs"
+name = "renderer_renderer_fuzz_cmm"
+path = "fuzz_targets/renderer_renderer_fuzz_cmm.rs"
 test = false
 doc = false
 bench = false
@@ -308,43 +308,43 @@ doc = false
 bench = false
 
 [[bin]]
-name = "prompt31_operator_edit"
-path = "fuzz_targets/prompt31_operator_edit.rs"
+name = "source_editing_operator_edit"
+path = "fuzz_targets/source_editing_operator_edit.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "prompt32_scene_fonts"
-path = "fuzz_targets/prompt32_scene_fonts.rs"
+name = "editing_transactions_scene_fonts"
+path = "fuzz_targets/editing_transactions_scene_fonts.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "prompt33_reflow"
-path = "fuzz_targets/prompt33_reflow.rs"
+name = "text_reflow_reflow"
+path = "fuzz_targets/text_reflow_reflow.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "prompt33_semantic_graph"
-path = "fuzz_targets/prompt33_semantic_graph.rs"
+name = "text_reflow_semantic_graph"
+path = "fuzz_targets/text_reflow_semantic_graph.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "prompt33_transaction"
-path = "fuzz_targets/prompt33_transaction.rs"
+name = "text_reflow_transaction"
+path = "fuzz_targets/text_reflow_transaction.rs"
 test = false
 doc = false
 bench = false
 
 [[bin]]
-name = "prompt33_reports"
-path = "fuzz_targets/prompt33_reports.rs"
+name = "text_reflow_reports"
+path = "fuzz_targets/text_reflow_reports.rs"
 test = false
 doc = false
 bench = false

@@ -1,4 +1,4 @@
-﻿# README evidence audit
+# README evidence audit
 
 Generated: 2026-07-29T18:06:28.4430549Z
 
@@ -12,7 +12,7 @@ Generated: 2026-07-29T18:06:28.4430549Z
 
 ## Current README problems
 
-The previous README was not suitable for the current true-editing release posture. It mixed older extraction/authoring product language with stale benchmark-style numbers and did not clearly distinguish current Prompt 31-36 evidence from historical or unmeasured claims. Old internal prompt-era reports and historical rename documents still contain legacy pre-Wellfriend branding references, but the rewritten public README must not use those names except for legitimate third-party crate names.
+The previous README was not suitable for the current true-editing release posture. It mixed older extraction/authoring product language with stale benchmark-style numbers and did not clearly distinguish current source editing-36 evidence from historical or unmeasured claims. Old internal roadmap task-era reports and historical rename documents still contain legacy pre-Wellfriend branding references, but the rewritten public README must not use those names except for legitimate third-party crate names.
 
 Stale-name scan count in root README: $staleCount.
 
@@ -30,14 +30,14 @@ Stale-name scan count in root README: $staleCount.
 
 ## Evidence reviewed
 
-- Prompt 36 local evidence directory: 	arget/prompt36-enterprise-validation/.
-- Prompt 36 VPS evidence: /home/demisuga01/wellpdf/results/prompt36-20260729T063834Z.
+- release validation local evidence directory: 	arget/release_validation-enterprise-validation/.
+- release validation VPS evidence: /home/demisuga01/wellpdf/results/release_validation-20260729T063834Z.
 - README competitor VPS evidence: $vps.
-- Prompt 36 final verdict: implementation_status=complete, elease_posture=release_ready_with_limits, prompt36_complete=true.
-- Prompt 36 maximum observed RSS: 6618920 KiB under a 33554432 KiB budget.
-- Prompt 36 fuzz inventory: 43 targets built and smoke-run with 64 runs per target.
-- Prompt 36 binding matrix: Rust/CLI/Python/C/WASM/.NET/Java Maven passed; Gradle was classified as an exact VPS host limit.
-- Independent tools in Prompt 36: qpdf and Poppler ran; MuPDF, PDFium, veraPDF and some security/package tools were unavailable.
+- release validation final verdict: implementation_status=complete, elease_posture=release-ready, with documented boundaries, release_validation_complete=true.
+- release validation maximum observed RSS: 6618920 KiB under a 33554432 KiB budget.
+- release validation fuzz inventory: 43 targets built and smoke-run with 64 runs per target.
+- release validation binding matrix: Rust/CLI/Python/C/WASM/.NET/Java Maven passed; Gradle was classified as an exact VPS host limit.
+- Independent tools in release validation: qpdf and Poppler ran; MuPDF, PDFium, veraPDF and some security/package tools were unavailable.
 
 ## Comparator evidence added for README
 
@@ -53,7 +53,7 @@ These are narrow README-level evidence artifacts, not release certification and 
 README claims are restricted to:
 
 - measured_directly for Wellfriend/comparator operations run on the same VPS fixture.
-- alidated_in_repository for Prompt 31-36 code/tests/evidence and repository metadata.
+- alidated_in_repository for source editing-36 code/tests/evidence and repository metadata.
 - official_competitor_documentation for current official external documentation.
 - inferred_limited only where the README says the claim is inferred.
 - unavailable_or_not_measured for unavailable tools, unlicensed commercial SDKs, or non-equivalent operations.

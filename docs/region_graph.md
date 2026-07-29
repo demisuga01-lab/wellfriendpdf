@@ -1,7 +1,7 @@
 # Region Graph
 
-Prompt 33 materializes a bounded graph from the existing Prompt 06 semantic
-model and Prompt 32 scene graph. Nodes include page regions, blocks,
+text reflow materializes a bounded graph from the existing Native Renderer semantic
+model and editing transactions scene graph. Nodes include page regions, blocks,
 paragraphs/list items, lines, words, glyphs, and image/path figure candidates.
 Edges include `contains`, `list_parent`, `next_reading`, `next_page`,
 `heading_for`, and `caption_of`, each with source evidence and confidence.

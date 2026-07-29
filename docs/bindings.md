@@ -67,7 +67,7 @@ password; a non-null pointer with zero length means an explicit empty password.
 The C ABI reads the password only for the open operation and does not log or
 retain it. Existing callers can keep using `wellfriendpdf_document_open_from_bytes`.
 
-### Report / version surfaces (Prompt 01)
+### Report / version surfaces (Binding Surface)
 
 The C ABI, Python, and Rust `wellfriendpdf_engine::sdk` facade share one versioned-JSON
 report layer (envelope `{"schema_version","kind","report"}`). New C functions
@@ -80,11 +80,11 @@ returning owned JSON strings (free with `wellfriendpdf_string_free`):
 `wellfriendpdf_document_sanitize_json`, `wellfriendpdf_document_canonicalize_json`,
 `wellfriendpdf_document_redact_terms_json` (owned `WellfriendBuffer` + report), and
 version/capability queries `wellfriendpdf_feature_report_json`, `wellfriendpdf_version`,
-`wellfriendpdf_abi_version`. See [`c_abi_prompt01.md`](c_abi_prompt01.md),
-[`python_sdk_prompt01.md`](python_sdk_prompt01.md),
-[`public_api_rust_prompt01.md`](public_api_rust_prompt01.md),
-[`report_schema_versioning_prompt01.md`](report_schema_versioning_prompt01.md),
-and the gap matrix [`bindings_prompt01_gap_matrix.md`](bindings_prompt01_gap_matrix.md).
+`wellfriendpdf_abi_version`. See [`c_abi_binding_surface.md`](c_abi_binding_surface.md),
+[`python_sdk_binding_surface.md`](python_sdk_binding_surface.md),
+[`public_api_rust_binding_surface.md`](public_api_rust_binding_surface.md),
+[`report_schema_versioning_binding_surface.md`](report_schema_versioning_binding_surface.md),
+and the gap matrix [`bindings_binding_surface_gap_matrix.md`](bindings_binding_surface_gap_matrix.md).
 
 Every exported function catches Rust panics before the FFI boundary and returns
 one of:
@@ -152,7 +152,7 @@ parallel all-pages extractor.
 
 Browser example: `crates/wellfriendpdf-wasm/examples/browser/index.html`
 
-Prompt H browser verification:
+Roadmap task H browser verification:
 
 ```sh
 cd crates/wellfriendpdf-wasm/examples/browser

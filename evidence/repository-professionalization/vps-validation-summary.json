@@ -1,0 +1,168 @@
+{
+  "result_folder": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z",
+  "memory_budget_kib": 33554432,
+  "max_peak_rss_kib": 3021960,
+  "failed_stage_count": 0,
+  "stages": [
+    {
+      "stage": "final-cargo-fmt",
+      "exit": 0,
+      "duration_sec": 1.47,
+      "peak_rss_kib": 176928,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-cargo-fmt.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "final-git-diff-check",
+      "exit": 0,
+      "duration_sec": 0.02,
+      "peak_rss_kib": 8480,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-git-diff-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "final-cargo-check-tmpdir",
+      "exit": 0,
+      "duration_sec": 153.38,
+      "peak_rss_kib": 2268404,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-cargo-check-tmpdir.log",
+      "sha256": "d9fd22e99bebccb2d5ad35617a9568c88b484549e8c4cac988d94271726104ab"
+    },
+    {
+      "stage": "final-cargo-clippy",
+      "exit": 0,
+      "duration_sec": 70.3,
+      "peak_rss_kib": 2317612,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-cargo-clippy.log",
+      "sha256": "34d417bfe336c21f587b96571f5bab17b0033347df4b0f796c5514474eac7e19"
+    },
+    {
+      "stage": "final-cargo-test-2",
+      "exit": 0,
+      "duration_sec": 171.06,
+      "peak_rss_kib": 433420,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-cargo-test-2.log",
+      "sha256": "e00a6a9f46cf774e463234b9724287c1b6718f7347ccf70f1357b897d589f17e"
+    },
+    {
+      "stage": "final-readme-source-example",
+      "exit": 0,
+      "duration_sec": 41.36,
+      "peak_rss_kib": 2949720,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-readme-source-example.log",
+      "sha256": "f26b3d7de72679db990016cfeba75a4fc0a207b4ddb71f2b1656a6697525cfa1"
+    },
+    {
+      "stage": "final-cli-help",
+      "exit": 0,
+      "duration_sec": 52.66,
+      "peak_rss_kib": 3021960,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-cli-help.log",
+      "sha256": "49c41f9430a670f0ce4b35772c05d74ac5b2a8a407d4a0c9f8456bc736ebd4c1"
+    },
+    {
+      "stage": "final-cli-smoke",
+      "exit": 0,
+      "duration_sec": 0.21,
+      "peak_rss_kib": 86176,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-cli-smoke.log",
+      "sha256": "cf741cc0d7120255e2d772b949d3ec6822726628909139826bd668c78a401aa6"
+    },
+    {
+      "stage": "final-capi-check",
+      "exit": 0,
+      "duration_sec": 50.32,
+      "peak_rss_kib": 2047716,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-capi-check.log",
+      "sha256": "38b5301c1b91609a7348ea3fc114504ff87a97b5025b07ebfab139b62e2209e4"
+    },
+    {
+      "stage": "final-wasm-check",
+      "exit": 0,
+      "duration_sec": 86.65,
+      "peak_rss_kib": 2014764,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-wasm-check.log",
+      "sha256": "a1a9928fcacd3825775e53f3404b8b14070c2facf95eb63bd32610e1dc2e2809"
+    },
+    {
+      "stage": "final-python-binding-check",
+      "exit": 0,
+      "duration_sec": 0.06,
+      "peak_rss_kib": 17588,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-python-binding-check.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "final-capi-native-build",
+      "exit": 0,
+      "duration_sec": 51.22,
+      "peak_rss_kib": 2663560,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-capi-native-build.log",
+      "sha256": "7f0b24b9f4636f6aba79278e55f4a99bb92f4a2766791815ceed3e0181e966e2"
+    },
+    {
+      "stage": "final-dotnet-build-noserver",
+      "exit": 0,
+      "duration_sec": 2.5,
+      "peak_rss_kib": 178080,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-dotnet-build-noserver.log",
+      "sha256": "7d2933bdc854893eaa0653c246deee664433f61d81e20bc19fd9c76f52f45efb"
+    },
+    {
+      "stage": "final-dotnet-test-native-2",
+      "exit": 0,
+      "duration_sec": 34.49,
+      "peak_rss_kib": 138204,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-dotnet-test-native-2.log",
+      "sha256": "63dae2b4cdfd7af49661397ce35d4a3c770bb7be14a7f41c89ac82fe40549b06"
+    },
+    {
+      "stage": "final-maven-test-native",
+      "exit": 0,
+      "duration_sec": 50.25,
+      "peak_rss_kib": 287332,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-maven-test-native.log",
+      "sha256": "d21252b8647f942f4512b43b0dd2dc241487b11fd30bfd6bf9f5cecc50a3ef67"
+    },
+    {
+      "stage": "final-gradle-provision",
+      "exit": 0,
+      "duration_sec": 1.61,
+      "peak_rss_kib": 124152,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-gradle-provision.log",
+      "sha256": "a783c863f3658306aed0dbdb3d2031abeda637cb68498cbb0fe0aea1787eb139"
+    },
+    {
+      "stage": "final-gradle-test-8c",
+      "exit": 0,
+      "duration_sec": 27.92,
+      "peak_rss_kib": 413400,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-gradle-test-8c.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "final-naming-audit-vps",
+      "exit": 0,
+      "duration_sec": 0.85,
+      "peak_rss_kib": 31588,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/final-naming-audit-vps.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "benchmark-run-2",
+      "exit": 0,
+      "duration_sec": 2.43,
+      "peak_rss_kib": 374564,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/benchmark-run-2.log",
+      "sha256": "cc3a248493df5e362a52e05d2a928c08510ec5e3fdd2585d48a74da453fa2861"
+    },
+    {
+      "stage": "comparator-benchmark",
+      "exit": 0,
+      "duration_sec": 0.32,
+      "peak_rss_kib": 101460,
+      "artifact": "/home/demisuga01/wellpdf/results/repository-professionalization-20260729T192340Z/comparator-benchmark.log",
+      "sha256": "fe2f4920751e5b34021c496596c8d4074bb6abb024cfe35ef2f38ddbe6bb0ffc"
+    }
+  ]
+}

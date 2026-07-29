@@ -6,7 +6,7 @@ The supported true-edit subset spans contiguous whole string operands in one pag
 
 Partial-token, cross-stream/cross-page, malformed-CMap, missing-provenance, and arbitrary Type3 selections fail closed. `preserve_per_segment` is reported as a limit because the current generated Type0 output has a normalized style run; it never silently pretends to retain source style segmentation. Logical/visual RTL mapping comes from bidi/shaping provenance, not x-coordinate sorting. Incremental prefix preservation is structural evidence, not a cryptographic-signature-validity assertion.
 
-Focused Prompt 20B fixtures cover multiple `Tj` operands, `Tj` followed by
+Focused advanced editing closeout fixtures cover multiple `Tj` operands, `Tj` followed by
 `TJ`, quote and double-quote operators, font/size/color changes, mixed
 RTL/LTR analysis, vertical replacement serialization, insertion, deletion,
 unsupported partial-token ranges, undo/redo, and branch redo clearing. The

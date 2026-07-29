@@ -12,7 +12,7 @@ contained **no** field ground truth, so field extraction was not scored there.
 The campaign's single worst measured number — strict field-F1 `0.104`
 (precision `0.166`, recall `0.085`) at baseline — was therefore left unverified.
 This run scores field extraction directly and reports honestly whether the
-Prompt 3 field work landed. Nothing else is re-tested here.
+Release Packaging field work landed. Nothing else is re-tested here.
 
 ## Provenance
 
@@ -93,13 +93,13 @@ corpus gives them nothing to do.
 | recall | 0.085 | **0.845** | +0.760 |
 | value-only F1 | 0.118¹ | **0.814** | +0.696 |
 
-¹ value-only baseline from `docs/field_extraction_benchmark.md` (Prompt 3 "before").
+¹ value-only baseline from `docs/field_extraction_benchmark.md` (Release Packaging "before").
 
-**Did Prompt 3's field work land? Yes.** Strict field-F1 moved from `0.104` to
+**Did Release Packaging's field work land? Yes.** Strict field-F1 moved from `0.104` to
 `0.725` — roughly a 7× improvement — and **both precision and recall rose
 together** (precision ×4.2, recall ×9.9). This is not a one-metric-up,
 other-metric-down artifact. The current build measures `0.725`, at/slightly above
-the `0.6635` recorded for the Prompt 3 build in `field_extraction_benchmark.md`,
+the `0.6635` recorded for the Release Packaging build in `field_extraction_benchmark.md`,
 so the field work is intact and has not regressed.
 
 ## Honest read — dominant remaining failure modes

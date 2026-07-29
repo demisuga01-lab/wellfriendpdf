@@ -1,6 +1,0 @@
-{
-  "schema": "prompt23b.crypto-reference-disagreements.v1",
-  "status": "none_recorded",
-  "disagreements": [],
-  "note": "External AESV4/PubSec interoperability was not counted as passed without confirmed support."
-}

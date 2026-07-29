@@ -29,6 +29,9 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all -- --check
 
+      - name: Check public repository naming
+        run: python scripts/check_repository_naming.py
+
       - name: Run workspace tests
         shell: bash
         run: |

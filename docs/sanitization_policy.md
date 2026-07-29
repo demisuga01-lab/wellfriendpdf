@@ -1,6 +1,6 @@
 # Sanitization Policy
 
-Prompt 35 sanitizer presets are explicit. A request must identify the preset,
+document security sanitizer presets are explicit. A request must identify the preset,
 approval, and full-rewrite acknowledgement where the operation can remove data
 or alter executable behavior.
 

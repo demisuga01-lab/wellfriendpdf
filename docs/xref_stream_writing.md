@@ -1,6 +1,6 @@
 # Xref Stream Writing
 
-Prompt 21 xref-stream output is provided by `PdfWriter` in modern writer modes. `XrefStreamWithObjStm` writes:
+writer history xref-stream output is provided by `PdfWriter` in modern writer modes. `XrefStreamWithObjStm` writes:
 
 | Item | Policy |
 | --- | --- |

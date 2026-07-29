@@ -1,6 +1,6 @@
 //! Deterministic document-versioning and deduplication helpers.
 //!
-//! Prompt 08 needs a small, auditable foundation for detecting unchanged streams
+//! Advanced Rendering needs a small, auditable foundation for detecting unchanged streams
 //! across edits and for comparing reconstructed blocks. These helpers are not a
 //! compression engine; they are stable sketches and content chunks used by the
 //! writer/conversion layer.

@@ -142,7 +142,7 @@ Per-call text-extraction time (mean over digital docs):
 
 ## Recorded weaknesses / remaining gaps
 
-The prompt-targeted synthetic scan gaps are now closed in this corpus; these are the remaining follow-up items:
+The roadmap task-targeted synthetic scan gaps are now closed in this corpus; these are the remaining follow-up items:
 
 1. **Broader messy-scan coverage**: warped, low-contrast, handwritten, multi-table, and camera-captured invoices still need a larger corpus before claiming Docling-class scan robustness. No optional ML hook was added here; the core remains pure Rust plus optional OCR.
 

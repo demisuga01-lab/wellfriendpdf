@@ -1,6 +1,6 @@
 # Wellfriend Enterprise SDK Capstone
 
-This is the capstone record for the 11-prompt enterprise SDK arc. It is a
+This is the capstone record for the 11-roadmap task enterprise SDK arc. It is a
 measurement and release-readiness document, not a new feature plan.
 
 Wellfriend is a pure-Rust, self-hostable PDF SDK spanning structured extraction,
@@ -23,7 +23,7 @@ branch, not permission to tag this exact dirty worktree.
 The post-GA hardening consolidation adds continuous fuzzing, differential
 fuzzing, property tests, grammar-aware deep fuzzing, dependency audit gates, and
 an audit-readiness packet. The current authoritative security/robustness
-posture is `docs/security/posture.md`. Prompt 3 added a renderer follow-up on 2026-06-23, raising the latest 265-entry renderer score to 86.94% visual pass / 91.82 weighted while preserving 100% hostile safety and 24/24 deterministic samples.
+posture is `docs/security/posture.md`. Release Packaging added a renderer follow-up on 2026-06-23, raising the latest 265-entry renderer score to 86.94% visual pass / 91.82 weighted while preserving 100% hostile safety and 24/24 deterministic samples.
 
 Tools used:
 
@@ -48,7 +48,7 @@ The capstone integration test suite is in
 | Workflow | Result |
 | --- | --- |
 | Create PDF -> watermark edit -> encrypt -> decrypt -> extract | Passed. Authored text and watermark survived the full flow. |
-| PDF/A conversion -> linearize -> sign -> verify | Passed at the library level. The signed output verifies cryptographically. GA Prompt 1 fixed the later qpdf hint-table warnings. |
+| PDF/A conversion -> linearize -> sign -> verify | Passed at the library level. The signed output verifies cryptographically. GA Binding Surface fixed the later qpdf hint-table warnings. |
 | Fill form -> flatten -> redact | Passed. Filled values were visible, fields were removed by flattening, and the redacted value was no longer extractable. |
 
 Cross-surface extraction consistency is recorded in
@@ -72,16 +72,16 @@ library.
 | Authored PDF | `qpdf --check`, Poppler render/extract | Clean. Poppler emitted font-substitution warnings for Symbol/ArialUnicode but exited successfully and extracted text. |
 | PDF/A-1b conversion | veraPDF 1.30.2 | PASS |
 | PDF/A-2b conversion | veraPDF 1.30.2 | PASS |
-| PDF/A-2a conversion | veraPDF 1.30.2 | PASS after GA Prompt 3 |
-| PDF/A-3b conversion | veraPDF 1.30.2 | PASS after GA Prompt 3 |
-| PDF/A-3a conversion | veraPDF 1.30.2 | PASS after GA Prompt 3 |
+| PDF/A-2a conversion | veraPDF 1.30.2 | PASS after GA Release Packaging |
+| PDF/A-3b conversion | veraPDF 1.30.2 | PASS after GA Release Packaging |
+| PDF/A-3a conversion | veraPDF 1.30.2 | PASS after GA Release Packaging |
 | PDF/UA best-effort improvement | veraPDF 1.30.2 UA-1 | Not claimed compliant; veraPDF still reports semantic tagging/PDF-UA metadata requirements |
 | Signed PDF | `qpdf --check`, Wellfriend verify-sig | Clean. One RSA/SHA-256 signature reported cryptographically valid with whole-file coverage. |
 | Optimized PDF | `qpdf --check` | Clean |
 | AES-256 encrypted PDF | `qpdf --check --password=capstone` | Clean, AESv3 reported |
-| Linearized PDF | `qpdf --check`, `qpdf --show-linearization` | Clean after GA Prompt 1 across the supported fixture breadth. |
+| Linearized PDF | `qpdf --check`, `qpdf --show-linearization` | Clean after GA Binding Surface across the supported fixture breadth. |
 
-The Prompt 11 linearization warnings were:
+The Renderer Fuzz CMM linearization warnings were:
 
 ```text
 object count mismatch for page 0: hint table 25, computed 23
@@ -92,7 +92,7 @@ page 2 shared object 15 in hint table but not computed list
 qpdf: operation succeeded with warnings
 ```
 
-GA Prompt 1 mapped these warnings to first-page dependency grouping: later
+GA Binding Surface mapped these warnings to first-page dependency grouping: later
 page dictionaries were inserted into the first-page closure before traversal
 stopped. The fixed grouping is qpdf-clean on `minimal.pdf`, `flate.pdf`,
 `multi_stream.pdf`, `basicapi.pdf`, `tracemonkey.pdf`, and `form_160f.pdf`.
@@ -103,7 +103,7 @@ the converted file did not have a non-empty trailer `/ID`. The conversion path
 now writes a deterministic trailer ID when the source lacks one, and the PDF/A
 validator reports missing or empty IDs as violations.
 
-GA Prompt 3 broadened `PdfAProfile` to PDF/A-2a, PDF/A-3b, and PDF/A-3a. The
+GA Release Packaging broadened `PdfAProfile` to PDF/A-2a, PDF/A-3b, and PDF/A-3a. The
 generated compliance example passes qpdf and bundled veraPDF 1.30.2 for
 1b/2b/2a/3b/3a. PDF/A-3 FileSpecs are preserved and repaired with
 `/AFRelationship` when missing. PDF/UA remains assistive best-effort rather
@@ -152,9 +152,9 @@ and trails ML-based systems on messy scanned structure.
 
 ## Renderer Benchmark
 
-Baseline report: `docs/capstone_renderer_benchmark_prompt11.md`. GA4 follow-up:
+Baseline report: `docs/capstone_renderer_benchmark_renderer_fuzz_cmm.md`. GA4 follow-up:
 `docs/ga4_renderer_fidelity.md`. Baseline raw data:
-`docs/capstone_renderer_benchmark_prompt11.json`.
+`docs/capstone_renderer_benchmark_renderer_fuzz_cmm.json`.
 
 Command:
 
@@ -167,7 +167,7 @@ python renderer-benchmark\scripts\renderer_benchmark.py `
   --max-memory-mb 1024 `
   --max-pages-per-file 3 `
   --limit 265 `
-  --output-dir renderer-benchmark\results\prompt11-0a-265
+  --output-dir renderer-benchmark\results\renderer_fuzz_cmm-0a-265
 ```
 
 Results:
@@ -191,7 +191,7 @@ Results:
 
 GA4 follow-up result on the same 265-entry slice:
 
-| Metric | Prompt 11 baseline | GA4 final |
+| Metric | Renderer Fuzz CMM baseline | GA4 final |
 | --- | ---: | ---: |
 | Weighted score | 87.19 | 91.32 |
 | Visual pass | 78.37% | 86.18% |
@@ -199,9 +199,9 @@ GA4 follow-up result on the same 265-entry slice:
 | Hostile safety | 100.0% crash/timeout/memory-safe | 100.0% crash/timeout/memory-safe |
 | Determinism sample | 24/24 stable | 24/24 stable |
 
-Prompt 3 follow-up result on the same 265-entry slice:
+Release Packaging follow-up result on the same 265-entry slice:
 
-| Metric | GA6 final | Prompt 3 final |
+| Metric | GA6 final | Release Packaging final |
 | --- | ---: | ---: |
 | Weighted score | 91.29 | 91.82 |
 | Visual pass | 86.12% | 86.94% |
@@ -209,7 +209,7 @@ Prompt 3 follow-up result on the same 265-entry slice:
 | Hostile safety | 100.0% crash/timeout/memory-safe | 100.0% crash/timeout/memory-safe |
 | Determinism sample | 24/24 stable | 24/24 stable |
 
-Weakest real-world categories after Prompt 3:
+Weakest real-world categories after Release Packaging:
 
 | Category | Visual pass |
 | --- | ---: |
@@ -231,7 +231,7 @@ python renderer-benchmark\scripts\renderer_benchmark.py `
   --timeout-sec 20 `
   --max-memory-mb 1024 `
   --max-pages-per-file 3 `
-  --output-dir renderer-benchmark\results\prompt11-0a-full-1335
+  --output-dir renderer-benchmark\results\renderer_fuzz_cmm-0a-full-1335
 ```
 
 Interpretation: the renderer is crash-safe on hostile input and fast in this
@@ -270,7 +270,7 @@ best elapsed time and max peak working set across the three runs.
 | PDF/A conversion example | 21.5 | 9.06 | Passed |
 | RSA signing example | 11.9 | 5.12 | Passed |
 | Optimize CLI | 9.2 | 6.08 | Passed |
-| Linearize CLI | 12.6 | 6.87 | Passed; GA Prompt 1 made the hint tables qpdf-clean |
+| Linearize CLI | 12.6 | 6.87 | Passed; GA Binding Surface made the hint tables qpdf-clean |
 | Encrypt AES-256 CLI | 15.6 | 6.61 | Passed |
 
 These are smoke operation benchmarks, not statistically rigorous throughput
@@ -288,8 +288,8 @@ claims.
 | PDF/A and PDF/UA | PDF/A-1b, 2b, 2a, 3b, and 3a validation/conversion examples pass qpdf and veraPDF 1.30.2; PDF/UA basic validation/best-effort tagging | Useful compliance foundation. PDF/UA remains best-effort and still needs manual semantic accessibility review before any full-conformance claim. |
 | Signatures | RSA/SHA-256 signing and verification over ByteRange with incremental update; offline PAdES B-T/B-LT timestamp-token and DSS material embedding/reporting | Core signing plus deterministic LTV substrate exists. Live TSA/OCSP fetching, trust-store policy, timestamp imprint validation, PAdES-B-LTA, and ECDSA breadth remain follow-ups. |
 | Surfaces | Rust library, CLI, C ABI, WASM, HTTP server | Strong embeddability and self-hosting story. |
-| Packaging | Feature flags, dry-run packaging docs, license docs | Commercially friendly MIT OR Apache-2.0 posture. Some feature dependency slimming remains. |
-| Rendering | 86.94% visual pass / 91.82 weighted on the Prompt 3 265-entry slice, with 100% hostile safety | Materially improved from Prompt 11, but still trails Poppler/MuPDF/PDFium for visual-proof workflows. |
+| Packaging | Feature flags, dry-run packaging docs, license docs | Commercially friendly MIT posture. Some feature dependency slimming remains. |
+| Rendering | 86.94% visual pass / 91.82 weighted on the Release Packaging 265-entry slice, with 100% hostile safety | Materially improved from Renderer Fuzz CMM, but still trails Poppler/MuPDF/PDFium for visual-proof workflows. |
 
 ## Positioning
 
@@ -306,7 +306,7 @@ It leads on:
 - Structured extraction plus KV fields and RAG chunks in the same stack.
 - Self-hosted privacy and predictable deployment footprint.
 - Hostile-input safety in the renderer benchmark slice.
-- Permissive MIT OR Apache-2.0 licensing.
+- Permissive MIT licensing.
 
 It trails on:
 
@@ -330,7 +330,7 @@ Blocker status after GA1-GA5 plus GA6 verification:
 | --- | --- |
 | Linearization | Cleared: qpdf-clean check/show-linearization on the seven-fixture breadth. |
 | PDF/A matrix | Cleared: qpdf + veraPDF PASS for 1b/2b/2a/3b/3a examples. |
-| Renderer fidelity | Cleared as a meaningful improvement: 86.94% visual pass / 91.82 weighted after Prompt 3, still preview/OCR-grade. |
+| Renderer fidelity | Cleared as a meaningful improvement: 86.94% visual pass / 91.82 weighted after Release Packaging, still preview/OCR-grade. |
 | Whole-SDK hardening | Cleared for the measured slice: 1,590 operations, 0 crashes, 0 timeouts, 0 invalid transformed outputs from qpdf-clean inputs. |
 | Signature LTV | Partially cleared: offline timestamp/DSS/CRL substrate works; live TSA/OCSP/trust-store/B-LTA and external LTV UI recognition remain known limitations. |
 | Continuous hardening | Cleared as code-level posture: zeroizing PDF encryption secrets, engine `forbid(unsafe_code)`, sanitizer CI wiring, fuzz/property/differential gates, and cargo-audit/cargo-deny with the documented RSA advisory exception. |

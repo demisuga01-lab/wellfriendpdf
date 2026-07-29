@@ -11,7 +11,7 @@ did not score tables — its image-heavy slice had no table ground truth. So the
 table problems from the original benchmark were unverified: Wellfriend led cell-F1
 (`0.857`) but had weak **precision** (`0.806` — false-positive tables) and weak
 **structure** (TEDS-approx `0.667`, behind pdfplumber `0.863` and PyMuPDF
-`0.868`). Prompt 7 was meant to raise precision and TEDS without crushing recall.
+`0.868`). Transparency Rendering was meant to raise precision and TEDS without crushing recall.
 This run measures whether it did. Nothing else is re-tested here.
 
 ## Provenance
@@ -84,14 +84,14 @@ Capability gaps (not scored as a silent 0):
 
 ## Before / after vs the baseline (same slice, harness, scorer)
 
-| metric | baseline (before) | this run (after) | change | Prompt-7 target |
+| metric | baseline (before) | this run (after) | change | transparency-rendering target |
 | --- | ---: | ---: | --- | --- |
 | cell-F1 | 0.857 | **0.936** | +0.079 | hold (not regress) — held & rose |
 | precision | 0.806 | **0.896** | +0.090 | **↑** — met |
 | recall | 0.960 | **0.997** | +0.037 | hold (not regress) — held & rose |
 | TEDS-approx | 0.667 | **0.893** | +0.226 | **↑** — met |
 
-**Did Prompt 7's table work land? Yes.** The success condition was precision↑ and
+**Did Transparency Rendering's table work land? Yes.** The success condition was precision↑ and
 TEDS↑ with recall and cell-F1 not regressing. **All four moved up and none
 regressed.** Wellfriend went from *trailing* on TEDS-approx (0.667, behind pdfplumber
 0.863 and PyMuPDF 0.868) to *leading* it (0.893). The competitor TEDS numbers are
@@ -118,7 +118,7 @@ at the **same root cause: table over-detection / over-segmentation.**
    tables**, not missing content — precision (0.896) is its lowest headline metric
    and the structural shape gap follows from the same over-segmentation.
 
-Net: Prompt 7 turned the original precision/TEDS weakness into a lead on every
+Net: Transparency Rendering turned the original precision/TEDS weakness into a lead on every
 composite metric, with recall now near-perfect. The honest remaining work is
 **structural**: stop over-segmenting tables so the predicted table/cell counts and
 grid shapes match ground truth, which would lift precision and shape-F1 toward the

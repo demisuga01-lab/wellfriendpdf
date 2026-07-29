@@ -2,20 +2,20 @@
 
 ## Scope
 
-Prompt 33 extends the Prompt 31 provenance/operator-editing and Prompt 32 scene/transaction/font stack. It owns GeometricBlock and SemanticDocument routing and does not create a second parser, scene graph, font engine, semantic model, writer or binding-specific reflow implementation.
+text reflow extends the source editing provenance/operator-editing and editing transactions scene/transaction/font stack. It owns GeometricBlock and SemanticDocument routing and does not create a second parser, scene graph, font engine, semantic model, writer or binding-specific reflow implementation.
 
 ## Actual implementation status
 
-Prompt 33 materializes canonical Prompt 06 semantic roles as runtime region
+text reflow materializes canonical Native Renderer semantic roles as runtime region
 nodes for headings, lists/list items, captions, headers, footnote bodies, and
-sidebars. Prompt 32 image/path scene occurrences are materialized as bounded
+sidebars. editing transactions image/path scene occurrences are materialized as bounded
 figure candidates. A caption receives a deterministic, confidence-scored
 `caption_of` edge only to its nearest same-page figure candidate; competing
 interpretations remain alternatives. A heading receives a bounded
 `heading_for` edge to the next paragraph or list item in deterministic reading
 order. Existing list blocks own `list_item` nodes through `list_parent` edges.
 When the conservative canonical block role remains body text but its canonical
-paragraph text has an enumerated or bullet label, Prompt 33 materializes one
+paragraph text has an enumerated or bullet label, text reflow materializes one
 bounded inferred `List` parent and preserves the body-block alternative. The
 same canonical label evidence promotes a paragraph-level Figure/Fig./Table
 caption and gives it a nearest-figure `caption_of` edge; it does not turn
@@ -40,4 +40,4 @@ Full type accuracy metrics and cross-document corpora remain required closure
 gates.
 ## Known limits
 
-Prompt 34 owns full table/formula/OCR edit engines. Prompt 35 owns final tagged-PDF/accessibility repair and forensic redaction closure. Prompt 33 reports low-confidence semantic reconstruction and broad page-flow limitations instead of treating inference as exact fact.
+document subsystems owns full table/formula/OCR edit engines. document security owns final tagged-PDF/accessibility repair and forensic redaction closure. text reflow reports low-confidence semantic reconstruction and broad page-flow limitations instead of treating inference as exact fact.

@@ -1,4 +1,4 @@
-//! Prompt 14 semantic intelligence layer.
+//! Semantic Intelligence semantic intelligence layer.
 //!
 //! This module is additive to the deterministic semantic model. ParentTree
 //! recovery uses only PDF structure evidence and visible marked content. Layout
@@ -21,7 +21,7 @@ use crate::text::{
     segment_cjk_dictionary_text, CjkDictionaryProvider, CjkDictionaryProviderLimits, TextChunk,
 };
 
-const PROMPT14_SCHEMA_VERSION: &str = "prompt14.semantic_intelligence.v1";
+const SEMANTIC_INTELLIGENCE_SCHEMA_VERSION: &str = "semantic_intelligence.semantic_intelligence.v1";
 const MAX_PARENTTREE_DEPTH: usize = 128;
 const MAX_PARENTTREE_NODES: usize = 250_000;
 const DEFAULT_LAYOUT_CONFIDENCE_THRESHOLD: f32 = 0.78;
@@ -296,7 +296,7 @@ impl Default for LayoutLocalBackendConfig {
             enabled: false,
             model_path: None,
             model_name: "mock-layout-local".to_string(),
-            model_version: "prompt14-template".to_string(),
+            model_version: "semantic_intelligence-template".to_string(),
             batch_page_limit: 4,
             timeout_ms: 5_000,
             memory_limit_bytes: 256 * 1024 * 1024,
@@ -381,7 +381,7 @@ pub struct LayoutMergeReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct Prompt14SemanticIntelligenceReport {
+pub struct SemanticIntelligenceSemanticIntelligenceReport {
     pub status: String,
     pub schema_version: String,
     pub artifact_root: String,
@@ -484,7 +484,7 @@ impl MockCloudLayoutBackend {
             backend_id: "mock-cloud-layout".to_string(),
             backend_type: LayoutBackendKind::MockCloud,
             model_name: "mock-cloud-layout".to_string(),
-            model_version: "prompt14-template".to_string(),
+            model_version: "semantic_intelligence-template".to_string(),
             model_hash: "mock-cloud:no-network".to_string(),
             status,
             diagnostics: Vec::new(),
@@ -517,7 +517,7 @@ impl MockCloudLayoutBackend {
             "mock-cloud-layout",
             LayoutBackendKind::MockCloud,
             "mock-cloud-layout",
-            "prompt14-template",
+            "semantic_intelligence-template",
             input,
             vec![LayoutDiagnostic {
                 code: "layout.cloud.mock_no_network".to_string(),
@@ -545,7 +545,7 @@ pub fn recover_parenttree_semantics(
     let Some(root_obj) = catalog.get("StructTreeRoot").cloned() else {
         let pages = summarize_pages(&page_list, &page_struct_parents, &marked_text, &nodes);
         return Ok(ParentTreeRecoveryReport {
-            schema_version: PROMPT14_SCHEMA_VERSION.to_string(),
+            schema_version: SEMANTIC_INTELLIGENCE_SCHEMA_VERSION.to_string(),
             status: ParentTreeRecoveryStatus::NoTaggedEvidence,
             struct_tree_root_present: false,
             parent_tree_present: false,
@@ -581,7 +581,7 @@ pub fn recover_parenttree_semantics(
     let Some(root_dict) = root.as_dict() else {
         let pages = summarize_pages(&page_list, &page_struct_parents, &marked_text, &nodes);
         return Ok(ParentTreeRecoveryReport {
-            schema_version: PROMPT14_SCHEMA_VERSION.to_string(),
+            schema_version: SEMANTIC_INTELLIGENCE_SCHEMA_VERSION.to_string(),
             status: ParentTreeRecoveryStatus::UnsupportedReportedExact,
             struct_tree_root_present: true,
             parent_tree_present: false,
@@ -766,7 +766,7 @@ pub fn recover_parenttree_semantics(
     };
     let pages = summarize_pages(&page_list, &page_struct_parents, &marked_text, &nodes);
     Ok(ParentTreeRecoveryReport {
-        schema_version: PROMPT14_SCHEMA_VERSION.to_string(),
+        schema_version: SEMANTIC_INTELLIGENCE_SCHEMA_VERSION.to_string(),
         status,
         struct_tree_root_present: true,
         parent_tree_present,
@@ -841,7 +841,7 @@ pub fn validate_layout_proposal_set(set: &LayoutProposalSet) -> LayoutMergeRepor
         }
     }
     LayoutMergeReport {
-        schema_version: PROMPT14_SCHEMA_VERSION.to_string(),
+        schema_version: SEMANTIC_INTELLIGENCE_SCHEMA_VERSION.to_string(),
         accepted_count: set.proposed_regions.len().saturating_sub(rejected),
         suggestion_count: 0,
         rejected_count: rejected,
@@ -886,7 +886,7 @@ pub fn merge_layout_proposals_deterministic(
         });
     }
     LayoutMergeReport {
-        schema_version: PROMPT14_SCHEMA_VERSION.to_string(),
+        schema_version: SEMANTIC_INTELLIGENCE_SCHEMA_VERSION.to_string(),
         accepted_count,
         suggestion_count,
         rejected_count: set
@@ -934,7 +934,7 @@ pub fn load_user_cjk_dictionary_metadata(path: impl AsRef<Path>) -> Result<serde
     }))
 }
 
-pub fn prompt14_semantic_intelligence_report_value() -> serde_json::Value {
+pub fn semantic_intelligence_semantic_intelligence_report_value() -> serde_json::Value {
     let dictionary = builtin_cjk_dictionary_metadata();
     let local = LayoutLocalBackendConfig {
         enabled: true,
@@ -944,18 +944,18 @@ pub fn prompt14_semantic_intelligence_report_value() -> serde_json::Value {
     let availability = layout_backend_availability_report(&local, &cloud);
     serde_json::json!({
         "status": "complete",
-        "schema_version": PROMPT14_SCHEMA_VERSION,
-        "artifact_root": "target/prompt14-semantic-intelligence",
+        "schema_version": SEMANTIC_INTELLIGENCE_SCHEMA_VERSION,
+        "artifact_root": "target/semantic_intelligence-semantic-intelligence",
         "docs": [
-            "docs/prompt14_parenttree_recovery.md",
-            "docs/prompt14_cjk_dictionary_segmentation.md",
-            "docs/prompt14_ml_layout_hook_interface.md",
-            "docs/prompt14_local_layout_backend_template.md",
-            "docs/prompt14_cloud_layout_backend_template.md",
-            "docs/prompt14_semantic_merge_policy.md",
-            "docs/prompt14_privacy_security_policy.md",
-            "docs/prompt14_semantic_intelligence_known_limits.md",
-            "docs/prompt14_semantic_intelligence_audit.md"
+            "docs/semantic_intelligence_parenttree_recovery.md",
+            "docs/semantic_intelligence_cjk_dictionary_segmentation.md",
+            "docs/semantic_intelligence_ml_layout_hook_interface.md",
+            "docs/semantic_intelligence_local_layout_backend_template.md",
+            "docs/semantic_intelligence_cloud_layout_backend_template.md",
+            "docs/semantic_intelligence_semantic_merge_policy.md",
+            "docs/semantic_intelligence_privacy_security_policy.md",
+            "docs/semantic_intelligence_semantic_intelligence_known_limits.md",
+            "docs/semantic_intelligence_semantic_intelligence_audit.md"
         ],
         "parenttree_recovery": {
             "status": "implemented_with_limits",
@@ -970,7 +970,7 @@ pub fn prompt14_semantic_intelligence_report_value() -> serde_json::Value {
                 "role-map gap repair",
                 "visible-content-first merge"
             ],
-            "graph_export": "parenttree-recovered-graph-prompt14.json",
+            "graph_export": "parenttree-recovered-graph-semantic_intelligence.json",
             "conflict_policy": "preserve deterministic evidence, report conflict, do not cross page boundaries without page StructParents evidence",
             "recursion_cap": MAX_PARENTTREE_DEPTH,
             "node_cap": MAX_PARENTTREE_NODES
@@ -1020,7 +1020,7 @@ pub fn prompt14_semantic_intelligence_report_value() -> serde_json::Value {
             "secret_values_logged": false
         },
         "public_reports": {
-            "feature_report": "additive_feature_report_prompt14",
+            "feature_report": "additive_feature_report_semantic_intelligence",
             "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"],
             "schema_change": "additive_section_only"
         },
@@ -1037,7 +1037,7 @@ pub fn prompt14_semantic_intelligence_report_value() -> serde_json::Value {
             "cloud layout template is mock-only unless an application explicitly supplies endpoint, payload policy, and privacy acknowledgement"
         ],
         "closure_gates": {
-            "public_report_schema": "additive_feature_report_prompt14",
+            "public_report_schema": "additive_feature_report_semantic_intelligence",
             "schema_change": "additive_section_only",
             "ml_required_for_core_extraction": false,
             "cloud_upload_default": false,
@@ -1047,7 +1047,8 @@ pub fn prompt14_semantic_intelligence_report_value() -> serde_json::Value {
     })
 }
 
-pub fn prompt14b_cjk_dictionary_layout_backend_closure_report_value() -> serde_json::Value {
+pub fn cjk_dictionary_layout_cjk_dictionary_layout_backend_closure_report_value(
+) -> serde_json::Value {
     let provider = CjkDictionaryProvider::builtin_fixture();
     let limits = CjkDictionaryProviderLimits::default();
     let fixture_text = "\u{673A}\u{5668}\u{5B66}\u{4E60}2026\u{5E74}5GB\u{691C}\u{7D22}\u{30A8}\u{30F3}\u{30B8}\u{30F3}\u{D55C}\u{AD6D}\u{C5B4}";
@@ -1066,17 +1067,17 @@ pub fn prompt14b_cjk_dictionary_layout_backend_closure_report_value() -> serde_j
     let availability = layout_backend_availability_report(&local, &cloud);
     serde_json::json!({
         "status": "complete",
-        "schema_version": "prompt14b.cjk_dictionary_layout_backend_closure.v1",
-        "artifact_root": "target/prompt14-semantic-intelligence",
+        "schema_version": "cjk_dictionary_layout.cjk_dictionary_layout_backend_closure.v1",
+        "artifact_root": "target/semantic_intelligence-semantic-intelligence",
         "docs": [
-            "docs/prompt14b_cjk_dictionary_layout_backend_closure.md",
+            "docs/cjk_dictionary_layout_cjk_dictionary_layout_backend_closure.md",
             "docs/cjk_dictionary_provider.md",
             "docs/cjk_dictionary_pack_format.md",
             "docs/cjk_segmentation_quality.md",
             "docs/cjk_search_rag_integration.md",
             "docs/ml_layout_backend_runtime_policy.md",
             "docs/ml_layout_backend_privacy_policy.md",
-            "docs/prompt14_semantic_intelligence_known_limits.md"
+            "docs/semantic_intelligence_semantic_intelligence_known_limits.md"
         ],
         "dictionary_provider": {
             "status": "implemented",
@@ -1114,7 +1115,7 @@ pub fn prompt14b_cjk_dictionary_layout_backend_closure_report_value() -> serde_j
         "layout_backend": {
             "local_backend_status": "unsupported_reported_no_runtime",
             "cloud_backend_status": "disabled_by_default",
-            "real_runtime_policy": "no ONNX/Torch/LayoutParser runtime or model weights are bundled; applications provide external runtimes/models through the Prompt 14 proposal schema",
+            "real_runtime_policy": "no ONNX/Torch/LayoutParser runtime or model weights are bundled; applications provide external runtimes/models through the Semantic Intelligence proposal schema",
             "local_template_status": availability.local_backend,
             "cloud_template_status": availability.cloud_backend,
             "privacy_posture": {
@@ -1127,11 +1128,11 @@ pub fn prompt14b_cjk_dictionary_layout_backend_closure_report_value() -> serde_j
         },
         "public_reports": {
             "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"],
-            "feature_report": "additive_feature_report_prompt14b",
+            "feature_report": "additive_feature_report_cjk_dictionary_layout",
             "schema_change": "additive_section_only"
         },
         "closure_gates": {
-            "public_report_schema": "additive_feature_report_prompt14b",
+            "public_report_schema": "additive_feature_report_cjk_dictionary_layout",
             "schema_change": "additive_section_only",
             "blocked_count": 0,
             "ml_required_for_core_extraction": false,
@@ -1149,12 +1150,13 @@ pub fn prompt14b_cjk_dictionary_layout_backend_closure_report_value() -> serde_j
     })
 }
 
-pub fn prompt15_semantic_binding_rag_benchmark_closeout_report_value() -> serde_json::Value {
+pub fn semantic_closeout_semantic_binding_rag_benchmark_closeout_report_value() -> serde_json::Value
+{
     let table_backend = crate::table_intelligence::table_model_backend_status_report();
     serde_json::json!({
         "status": "complete",
-        "schema_version": "prompt15.semantic_binding_rag_benchmark_closeout.v1",
-        "artifact_root": "target/prompt15-semantic-closeout",
+        "schema_version": "semantic_closeout.semantic_binding_rag_benchmark_closeout.v1",
+        "artifact_root": "target/semantic_closeout-semantic-closeout",
         "tableformer_table_transformer_hook": {
             "status": "implemented_with_limits",
             "tableformer": "implemented",
@@ -1186,7 +1188,7 @@ pub fn prompt15_semantic_binding_rag_benchmark_closeout_report_value() -> serde_
         },
         "cjk_dictionary_pack": {
             "status": "implemented_with_limits",
-            "provider": "Prompt 14B builtin fixture or user supplied manifest plus TSV pack",
+            "provider": "CJK Dictionary Layout builtin fixture or user supplied manifest plus TSV pack",
             "raw_text_rewrite": false,
             "metadata_fields": ["source", "license", "version", "hash", "entry_count", "memory"]
         },
@@ -1208,9 +1210,9 @@ pub fn prompt15_semantic_binding_rag_benchmark_closeout_report_value() -> serde_
         "benchmark": {
             "status": "implemented",
             "manifest": "semantic-benchmark-manifest.json",
-            "results": "semantic-benchmark-results-prompt15.json",
-            "scorecard": "semantic-scorecard-prompt15.json",
-            "html_report": "prompt15-html-report/index.html",
+            "results": "semantic-benchmark-results-semantic_closeout.json",
+            "scorecard": "semantic-scorecard-semantic_closeout.json",
+            "html_report": "semantic_closeout-html-report/index.html",
             "reference_availability": "availability_aware_fixture_truth",
             "external_parity_claimed_without_running_reference": false
         },
@@ -1234,7 +1236,7 @@ pub fn prompt15_semantic_binding_rag_benchmark_closeout_report_value() -> serde_
             "blocked": 0
         },
         "closure_gates": {
-            "public_report_schema": "additive_feature_report_prompt15",
+            "public_report_schema": "additive_feature_report_semantic_closeout",
             "schema_change": "additive_section_only",
             "blocked_count": 0,
             "deterministic_extraction_requires_ml": false,
@@ -1792,11 +1794,11 @@ fn disabled_layout_set(
     code: &str,
 ) -> LayoutProposalSet {
     LayoutProposalSet {
-        schema_version: PROMPT14_SCHEMA_VERSION.to_string(),
+        schema_version: SEMANTIC_INTELLIGENCE_SCHEMA_VERSION.to_string(),
         backend_id: backend_id.to_string(),
         backend_type,
         model_name: backend_id.to_string(),
-        model_version: "prompt14-template".to_string(),
+        model_version: "semantic_intelligence-template".to_string(),
         model_hash: "unavailable".to_string(),
         input_page_ids: input.pages.clone(),
         input_payload_type: payload,
@@ -1843,7 +1845,7 @@ fn mock_layout_set(
         });
     }
     LayoutProposalSet {
-        schema_version: PROMPT14_SCHEMA_VERSION.to_string(),
+        schema_version: SEMANTIC_INTELLIGENCE_SCHEMA_VERSION.to_string(),
         backend_id: backend_id.to_string(),
         backend_type,
         model_name: model_name.to_string(),

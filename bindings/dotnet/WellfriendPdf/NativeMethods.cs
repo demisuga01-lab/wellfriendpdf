@@ -448,15 +448,15 @@ internal static partial class NativeMethods
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt17_report_json(
+    internal static extern int wellfriendpdf_document_annotation_media_redaction_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt18_report_json(
+    internal static extern int wellfriendpdf_document_secure_mutation_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt18b_report_json(
+    internal static extern int wellfriendpdf_document_secure_mutation_closeout_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
@@ -472,47 +472,47 @@ internal static partial class NativeMethods
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt19_report_json(
+    internal static extern int wellfriendpdf_document_form_action_policy_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt20_report_json(
+    internal static extern int wellfriendpdf_document_advanced_editing_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt20b_report_json(
+    internal static extern int wellfriendpdf_document_advanced_editing_closeout_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt21_report_json(
+    internal static extern int wellfriendpdf_document_writer_history_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt21_raster_vector_report_json(
+    internal static extern int wellfriendpdf_document_writer_history_raster_vector_report_json(
         DocumentHandle document, UIntPtr page, IntPtr optionsJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt21_font_reconstruction_report_json(
+    internal static extern int wellfriendpdf_document_writer_history_font_reconstruction_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_prompt21_history_report_json(
+    internal static extern int wellfriendpdf_writer_history_history_report_json(
         out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt21_object_stream_report_json(
+    internal static extern int wellfriendpdf_document_writer_history_object_stream_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt21_pack_object_streams_pdf(
+    internal static extern int wellfriendpdf_document_writer_history_pack_object_streams_pdf(
         DocumentHandle document, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt22_report_json(
+    internal static extern int wellfriendpdf_document_compression_office_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt23_report_json(
+    internal static extern int wellfriendpdf_document_crypto_writer_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
@@ -712,211 +712,211 @@ internal static partial class NativeMethods
         DocumentHandle document, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt22_optimize_pdf(
+    internal static extern int wellfriendpdf_document_compression_office_optimize_pdf(
         DocumentHandle document, IntPtr optionsJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_prompt22_office_inspect_json(
+    internal static extern int wellfriendpdf_compression_office_office_inspect_json(
         byte[] data, UIntPtr len, IntPtr format, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_prompt22_office_to_pdf(
+    internal static extern int wellfriendpdf_compression_office_office_to_pdf(
         byte[] data, UIntPtr len, IntPtr format, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt20b_text_range_analyze_json(
+    internal static extern int wellfriendpdf_document_advanced_editing_closeout_text_range_analyze_json(
         DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt20b_text_range_edit_json(
+    internal static extern int wellfriendpdf_document_advanced_editing_closeout_text_range_edit_json(
         DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt31_report_json(
+    internal static extern int wellfriendpdf_document_source_editing_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt31_provenance_json(
+    internal static extern int wellfriendpdf_document_source_editing_provenance_json(
         DocumentHandle document, UIntPtr page, IntPtr sourceText, IntPtr replacementText,
         out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt31_edit_eligibility_json(
+    internal static extern int wellfriendpdf_document_source_editing_edit_eligibility_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt31_operator_text_edit_json(
+    internal static extern int wellfriendpdf_document_source_editing_operator_text_edit_json(
         DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt31_path_provenance_json(
+    internal static extern int wellfriendpdf_document_source_editing_path_provenance_json(
         DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt31_path_edit_json(
+    internal static extern int wellfriendpdf_document_source_editing_path_edit_json(
         DocumentHandle document, UIntPtr page, IntPtr stableId, IntPtr operationJson,
         IntPtr optionsJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt32_report_json(
+    internal static extern int wellfriendpdf_document_editing_transactions_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt32_scene_report_json(
+    internal static extern int wellfriendpdf_document_editing_transactions_scene_report_json(
         DocumentHandle document, IntPtr pagesJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt32_scene_select_json(
+    internal static extern int wellfriendpdf_document_editing_transactions_scene_select_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt32_transaction_plan_json(
+    internal static extern int wellfriendpdf_document_editing_transactions_transaction_plan_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt32_transaction_apply_json(
+    internal static extern int wellfriendpdf_document_editing_transactions_transaction_apply_json(
         DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt32_text_map_json(
+    internal static extern int wellfriendpdf_document_editing_transactions_text_map_json(
         DocumentHandle document, IntPtr text, IntPtr direction, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt32_shape_text_json(
+    internal static extern int wellfriendpdf_document_editing_transactions_shape_text_json(
         DocumentHandle document, IntPtr text, IntPtr direction, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt32_font_subset_plan_json(
+    internal static extern int wellfriendpdf_document_editing_transactions_font_subset_plan_json(
         DocumentHandle document, IntPtr text, IntPtr direction, IntPtr policy, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt32_font_substitution_report_json(
+    internal static extern int wellfriendpdf_document_editing_transactions_font_substitution_report_json(
         DocumentHandle document, IntPtr requestedFamily, IntPtr text, IntPtr policy, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_report_json(
+    internal static extern int wellfriendpdf_document_text_reflow_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_layout_analyze_json(
+    internal static extern int wellfriendpdf_document_text_reflow_layout_analyze_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_semantic_layout_json(
+    internal static extern int wellfriendpdf_document_text_reflow_semantic_layout_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_reading_order_report_json(
+    internal static extern int wellfriendpdf_document_text_reflow_reading_order_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_flow_graph_report_json(
+    internal static extern int wellfriendpdf_document_text_reflow_flow_graph_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_reflow_preview_json(
+    internal static extern int wellfriendpdf_document_text_reflow_reflow_preview_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_overflow_report_json(
+    internal static extern int wellfriendpdf_document_text_reflow_overflow_report_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_constraints_report_json(
+    internal static extern int wellfriendpdf_document_text_reflow_constraints_report_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_confidence_report_json(
+    internal static extern int wellfriendpdf_document_text_reflow_confidence_report_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_validate_reflow_output_json(
+    internal static extern int wellfriendpdf_document_text_reflow_validate_reflow_output_json(
         DocumentHandle document, byte[] outputPdf, UIntPtr outputPdfLen, IntPtr requestJson,
         out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_reflow_region_json(
+    internal static extern int wellfriendpdf_document_text_reflow_reflow_region_json(
         DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_reflow_document_json(
+    internal static extern int wellfriendpdf_document_text_reflow_reflow_document_json(
         DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_undo_reflow_json(
+    internal static extern int wellfriendpdf_document_text_reflow_undo_reflow_json(
         DocumentHandle document, byte[] outputPdf, UIntPtr outputPdfLen, IntPtr requestJson,
         out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_reflow_approve_structure_json(
+    internal static extern int wellfriendpdf_document_text_reflow_reflow_approve_structure_json(
         DocumentHandle document, IntPtr correctionJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt33_reflow_operation_report_json(
+    internal static extern int wellfriendpdf_document_text_reflow_reflow_operation_report_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt34_report_json(
+    internal static extern int wellfriendpdf_document_document_subsystems_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt34_analyze_json(
+    internal static extern int wellfriendpdf_document_document_subsystems_analyze_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt34_plan_json(
+    internal static extern int wellfriendpdf_document_document_subsystems_plan_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt34_apply_json(
+    internal static extern int wellfriendpdf_document_document_subsystems_apply_json(
         DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt34_undo_json(
+    internal static extern int wellfriendpdf_document_document_subsystems_undo_json(
         DocumentHandle document, byte[] outputPdf, UIntPtr outputPdfLen, IntPtr requestJson,
         out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt35_report_json(
+    internal static extern int wellfriendpdf_document_document_security_report_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt35_analyze_json(
+    internal static extern int wellfriendpdf_document_document_security_analyze_json(
         DocumentHandle document, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt35_plan_json(
+    internal static extern int wellfriendpdf_document_document_security_plan_json(
         DocumentHandle document, IntPtr requestJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt35_apply_json(
+    internal static extern int wellfriendpdf_document_document_security_apply_json(
         DocumentHandle document, IntPtr requestJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt35_undo_json(
+    internal static extern int wellfriendpdf_document_document_security_undo_json(
         DocumentHandle document, byte[] outputPdf, UIntPtr outputPdfLen, IntPtr requestJson,
         out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt35_verify_residual_json(
+    internal static extern int wellfriendpdf_document_document_security_verify_residual_json(
         DocumentHandle document, IntPtr termsJson, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt20_vector_list_json(
+    internal static extern int wellfriendpdf_document_advanced_editing_vector_list_json(
         DocumentHandle document, UIntPtr page, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt20_text_edit_json(
+    internal static extern int wellfriendpdf_document_advanced_editing_text_edit_json(
         DocumentHandle document, UIntPtr page, IntPtr oldText, IntPtr newText, IntPtr mode,
         IntPtr optionsJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt20_vector_edit_json(
+    internal static extern int wellfriendpdf_document_advanced_editing_vector_edit_json(
         DocumentHandle document, UIntPtr page, IntPtr stableId, IntPtr operationJson,
         IntPtr optionsJson, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int wellfriendpdf_document_prompt20_ink_fit_json(
+    internal static extern int wellfriendpdf_document_advanced_editing_ink_fit_json(
         DocumentHandle document, UIntPtr page, UIntPtr annotationIndex, IntPtr optionsJson,
         int signaturePolicyOverride, out WellfriendBuffer buffer, out IntPtr json, out IntPtr errorOut);
 

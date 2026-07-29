@@ -21,9 +21,9 @@ style semantics are typed refusals; they are never flattened or
 silently downgraded.
 
 An explicit `downstream_vector_moves` request can also move up to eight same-page,
-source-linked path object through the canonical Prompt 20 vector mutator. The
+source-linked path object through the canonical advanced editing vector mutator. The
 request must name its stable vector ID, an approved relationship, and a
-user-approved dependency-edge ID. Prompt 33 validates the matching Prompt 32
+user-approved dependency-edge ID. text reflow validates the matching editing transactions
 scene occurrence, page bounds, no-overlap target, clipping/marked-content/OCG
 context, Form ownership policy, and the absence of forms or annotations that
 would require reference repair. Unknown objects, images, text objects,
@@ -34,7 +34,7 @@ atomic session undo.
 An explicit `downstream_link_moves` request may move up to eight same-page `/Link`
 annotation associated with the selected source region. It must carry the
 annotation index, exact preimage rectangle, approved relationship/dependency
-edge, and finite delta. Prompt 33 proves that the current link rectangle still
+edge, and finite delta. text reflow proves that the current link rectangle still
 matches and overlaps the source region; the canonical transaction moves `/Rect`
 and existing `/QuadPoints` while preserving `/A` or `/Dest`. Widgets, replies,
 generic annotations, stale association, page changes, and inferred proximity

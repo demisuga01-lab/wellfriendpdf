@@ -1,6 +1,6 @@
 //! 10-PDF **document-model smoke** against hand-authored ground truth.
 //!
-//! Per Doc-Intel Prompt 2 Part D.2: a fast smoke over complex-layout documents
+//! Per Doc-Intel Binding Parity Part D.2: a fast smoke over complex-layout documents
 //! (academic 2-column, magazine + sidebar, figures + captions, a tagged PDF for
 //! the tags-first path, an RTL doc, …) comparing the recovered document model's
 //! **reading order** and **block classifications** to ground truth, and

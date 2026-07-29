@@ -2,7 +2,7 @@
 
 ## Implemented boundary
 
-`wellfriendpdf_engine::line_break_text` is the canonical Prompt 33 candidate
+`wellfriendpdf_engine::line_break_text` is the canonical text reflow candidate
 pipeline for the currently supported single-region `GeometricBlock` path. It
 uses `unicode-linebreak` 0.1.5 (Apache-2.0) for UAX #14 Unicode 15 default
 break opportunities and `unicode-segmentation` for extended grapheme
@@ -17,7 +17,7 @@ modifying logical source text.
 
 Interactive preview uses deterministic greedy filling. Final selection uses
 bounded dynamic programming over the same candidate set. Every selectable
-candidate is shaped with Prompt 20's Rustybuzz-backed generated-font pipeline,
+candidate is shaped with advanced editing's Rustybuzz-backed generated-font pipeline,
 and its advance is measured in the same point scale used by the source writer.
 The final line list is passed to `edit_advanced_text_pdf_with_layout`; the
 canonical source writer therefore emits the selected lines rather than
@@ -49,7 +49,7 @@ mutation. It is never clipped, painted over, or silently reduced in font size.
 
 ## Regression evidence
 
-The Prompt 33 engine suite covers source-linked final-line serialization,
+The text reflow engine suite covers source-linked final-line serialization,
 grapheme/bidi separation, and refusal of an over-wide non-breaking-space token.
 VPS evidence for the continuation snapshot is retained under
-`/home/demisuga01/wellpdf/results/prompt33-20260727T171233Z/`.
+`/home/demisuga01/wellpdf/results/text_reflow-20260727T171233Z/`.

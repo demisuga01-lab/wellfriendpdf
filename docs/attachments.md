@@ -91,5 +91,5 @@ the byte payload lands as `<output-dir>/evil.txt` with nothing escaping.
   (relationship roles like `/AFRelationship /Data`) — currently the file is
   extracted but its association role is not surfaced.
 - Server endpoints (`POST /api/v1/attachments` listing + extraction, with the
-  Mega-Prompt 12 output-size caps) — deferred this round; the CLI is complete.
+  Mega-Prepress CMM output-size caps) — deferred this round; the CLI is complete.
 - Collection ("portable collection" / PDF package) presentation metadata.

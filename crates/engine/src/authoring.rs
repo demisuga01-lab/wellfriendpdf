@@ -3372,7 +3372,7 @@ mod tests {
         let mut doc = PdfBuilder::new();
         let font = doc
             .register_font_bytes(
-                "DejaVuSansPrompt04B",
+                "DejaVuSansFontSubsystem",
                 include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/DejaVuSans.ttf"))
                     .as_slice(),
             )
@@ -3404,7 +3404,7 @@ mod tests {
         );
         assert!(content.contains("BDC"), "{content}");
 
-        let cmap = String::from_utf8(build_to_unicode_cmap(font, &plan, "Prompt04B").unwrap())
+        let cmap = String::from_utf8(build_to_unicode_cmap(font, &plan, "FontSubsystem").unwrap())
             .expect("cmap is text");
         assert!(cmap.contains("0633") || cmap.contains("0644"), "{cmap}");
 
@@ -3427,7 +3427,7 @@ mod tests {
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/DejaVuSans.ttf")).as_slice();
         let mut doc = PdfBuilder::new();
         let font = doc
-            .register_font_bytes("DejaVuSubsetPrompt04C", font_bytes)
+            .register_font_bytes("DejaVuSubsetFontFailureAnalysis", font_bytes)
             .unwrap();
         doc.add_page(PageSize::LETTER)
             .draw_text("Hello subset", 72.0, 720.0, &TextStyle::new(font, 18.0))
@@ -3435,9 +3435,14 @@ mod tests {
 
         let plan = FontBuildPlan::from_builder(&doc).unwrap();
         let mut next = 1;
-        let built =
-            build_embedded_type0_font(&mut next, font, "DejaVuSubsetPrompt04C", font_bytes, &plan)
-                .unwrap();
+        let built = build_embedded_type0_font(
+            &mut next,
+            font,
+            "DejaVuSubsetFontFailureAnalysis",
+            font_bytes,
+            &plan,
+        )
+        .unwrap();
         let font_file = built
             .objects
             .iter()
@@ -3505,7 +3510,7 @@ mod tests {
             include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/fonts/DejaVuSans.ttf")).as_slice();
         let mut doc = PdfBuilder::new();
         let font = doc
-            .register_font_bytes("DejaVuArabicSubsetPrompt04C", font_bytes)
+            .register_font_bytes("DejaVuArabicSubsetFontFailureAnalysis", font_bytes)
             .unwrap();
         let arabic = "\u{0633}\u{0644}\u{0627}\u{0645}";
         doc.add_page(PageSize::LETTER)
@@ -3518,7 +3523,7 @@ mod tests {
         let built = build_embedded_type0_font(
             &mut next,
             font,
-            "DejaVuArabicSubsetPrompt04C",
+            "DejaVuArabicSubsetFontFailureAnalysis",
             font_bytes,
             &plan,
         )

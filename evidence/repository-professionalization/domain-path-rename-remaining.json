@@ -1,0 +1,12 @@
+{
+  "artifact": "domain-path-rename-remaining",
+  "redacted": true,
+  "reason": "retained summary avoids storing legacy roadmap-number path names",
+  "planned_count": 519,
+  "applied_count": 519,
+  "collision_count": 0,
+  "failed_count": 0,
+  "raw_details_retained": false,
+  "final_audit_artifact": "evidence/repository-professionalization/final-naming-audit.json",
+  "sha256_of_artifact_name": "6c5f65e4dc57ed3bb530ccef26adfd07612607d0b8ac430a1146bc255e09c7e0"
+}

@@ -1,4 +1,4 @@
-//! Key-value / form-field extraction tests (Parser-Pivot prompt 4).
+//! Key-value / form-field extraction tests (Parser-Pivot codec boundary).
 //!
 //! Covers all three strategies on synthetic-but-realistic PDFs:
 //! - AcroForm direct field→value (with `/TU` labels);

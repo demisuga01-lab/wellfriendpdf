@@ -1,7 +1,7 @@
 # Provenance Identity Model
 
-Wellfriend PDF SDK Prompt 31 closes the operator-preserving true-editing layer by
-reusing the existing Prompt 20 source-range editing and writer paths instead of
+Wellfriend PDF SDK source editing closes the operator-preserving true-editing layer by
+reusing the existing advanced editing source-range editing and writer paths instead of
 creating a second editor. A visual cover-up is not considered an edit.
 
 ## Implemented Contract
@@ -12,7 +12,7 @@ creating a second editor. A visual cover-up is not considered an edit.
 - Path/vector/Form occurrence edits route through canonical source-range vector
   mutation and shared-resource clone-on-write policy.
 - Image occurrence editing refuses with a typed no-change report until the
-  Prompt 32 occurrence graph is complete.
+  editing transactions occurrence graph is complete.
 - Operation reports include source identity, changed objects, overlay detection,
   unaffected-content proof, signature impact, conformance impact, and reopen validation.
 
@@ -26,10 +26,10 @@ creating a second editor. A visual cover-up is not considered an edit.
 
 ## Exact Deferrals
 
-- Stable display-list-to-instruction IDs remain Prompt 32 work.
-- Image occurrence mutation returns a typed no-change refusal in Prompt 31.
-- Geometric block and semantic document reflow remain Prompt 33 work.
+- Stable display-list-to-instruction IDs remain editing transactions work.
+- Image occurrence mutation returns a typed no-change refusal in source editing.
+- Geometric block and semantic document reflow remain text reflow work.
 
 ## Verdict
 
-Prompt 31 verdict: complete.
+source editing verdict: complete.

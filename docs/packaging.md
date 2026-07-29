@@ -22,7 +22,7 @@ WellfriendPdf.
 
 Current limitation: these features are capability labels and compile gates for
 future API organization. The dependency graph is not yet aggressively slimmed by
-feature because the modules are still tightly connected. Prompt 10 therefore
+feature because the modules are still tightly connected. Multilingual Color Glyphs therefore
 lands the documented matrix and independent compile checks; dependency slimming
 is a packaging follow-up before a `1.0` release.
 
@@ -54,7 +54,7 @@ workspace path.
 
 ## License Audit
 
-The project is dual licensed `MIT OR Apache-2.0`. Bundled fonts and third-party
+The project is dual licensed `MIT`. Bundled fonts and third-party
 license status are documented in `NOTICE` and `docs/licenses.md`.
 
 `deny.toml` contains the allowlist for cargo-deny. Run:

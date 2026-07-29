@@ -1,6 +1,6 @@
 # Paragraph and Styled-Run Model
 
-`ParagraphStyleModel` exposes exact Prompt 20 token spans, font-resource
+`ParagraphStyleModel` exposes exact advanced editing token spans, font-resource
 identity, marked-content depth, Unicode scalar range, and grapheme range for a
 source-linked paragraph. It can report multiple source spans and never
 fabricates a style mapping.

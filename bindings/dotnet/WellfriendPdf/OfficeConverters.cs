@@ -8,11 +8,11 @@ public static class OfficeConverters
 
     public static byte[] PptxToPdf(string path) => PptxToPdf(File.ReadAllBytes(path));
 
-    public static string Prompt22InspectJson(string path, string format) =>
-        Prompt22InspectJson(File.ReadAllBytes(path), format);
+    public static string CompressionOfficeInspectJson(string path, string format) =>
+        CompressionOfficeInspectJson(File.ReadAllBytes(path), format);
 
-    public static WellfriendBinaryResult Prompt22ToPdf(string path, string format) =>
-        Prompt22ToPdf(File.ReadAllBytes(path), format);
+    public static WellfriendBinaryResult CompressionOfficeToPdf(string path, string format) =>
+        CompressionOfficeToPdf(File.ReadAllBytes(path), format);
 
     public static byte[] DocxToPdf(byte[] bytes)
     {
@@ -38,14 +38,14 @@ public static class OfficeConverters
         return NativeMethods.TakeBuffer(buffer);
     }
 
-    public static string Prompt22InspectJson(byte[] bytes, string format)
+    public static string CompressionOfficeInspectJson(byte[] bytes, string format)
     {
         ArgumentNullException.ThrowIfNull(bytes);
         ArgumentException.ThrowIfNullOrWhiteSpace(format);
         var formatPtr = NativeMethods.StringToNativeOrNull(format);
         try
         {
-            var status = NativeMethods.wellfriendpdf_prompt22_office_inspect_json(
+            var status = NativeMethods.wellfriendpdf_compression_office_office_inspect_json(
                 bytes, (UIntPtr)bytes.Length, formatPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -58,14 +58,14 @@ public static class OfficeConverters
         }
     }
 
-    public static WellfriendBinaryResult Prompt22ToPdf(byte[] bytes, string format)
+    public static WellfriendBinaryResult CompressionOfficeToPdf(byte[] bytes, string format)
     {
         ArgumentNullException.ThrowIfNull(bytes);
         ArgumentException.ThrowIfNullOrWhiteSpace(format);
         var formatPtr = NativeMethods.StringToNativeOrNull(format);
         try
         {
-            var status = NativeMethods.wellfriendpdf_prompt22_office_to_pdf(
+            var status = NativeMethods.wellfriendpdf_compression_office_office_to_pdf(
                 bytes, (UIntPtr)bytes.Length, formatPtr, out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }

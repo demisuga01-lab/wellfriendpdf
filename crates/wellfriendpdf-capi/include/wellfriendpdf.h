@@ -311,7 +311,7 @@ WELLFRIENDPDF_API int wellfriendpdf_document_signatures_json(
     char **out_json,
     char **error_out);
 
-/* Prompt 24 signature-validation handles. All stores are owned and explicit:
+/* Signature Validation signature-validation handles. All stores are owned and explicit:
  * only an WellfriendSignatureTrustStore grants anchor trust; intermediate and
  * evidence stores remain untrusted inputs until the shared validator proves
  * their applicability. All byte inputs are copied during the call; no caller
@@ -570,7 +570,7 @@ WELLFRIENDPDF_API int wellfriendpdf_document_forms_report_json(
     char **out_json,
     char **error_out);
 
-/* Prompt 26 clause-mapped standards validation reports. `target` may be NULL
+/* Incremental Signing Standards clause-mapped standards validation reports. `target` may be NULL
  * (detected/claimed profile) or a label such as "PDF/A-2B", "PDF/UA-1",
  * "PDF/X-4". Each returns a versioned JSON envelope; free with
  * wellfriendpdf_string_free. */
@@ -595,7 +595,7 @@ WELLFRIENDPDF_API int wellfriendpdf_document_standards_all_json(
     char **out_json,
     char **error_out);
 
-/* Prompt 26 append-only incremental signing. `key_pem`/`cert_pem` are the
+/* Incremental Signing Standards append-only incremental signing. `key_pem`/`cert_pem` are the
  * signer material (never logged). `certify` in 1..=3 creates a certification
  * (DocMDP) signature; any other value creates an approval signature. The plan
  * function writes no output; the sign function returns the signed PDF via
@@ -622,7 +622,7 @@ WELLFRIENDPDF_API int wellfriendpdf_document_sign_pdf(
     char **out_json,
     char **error_out);
 
-/* Prompt 16 bounded XFA packet/static/script/security reports. */
+/* XFA Runtime bounded XFA packet/static/script/security reports. */
 WELLFRIENDPDF_API int wellfriendpdf_document_xfa_report_json(
     const WellfriendDocument *document, char **out_json, char **error_out);
 WELLFRIENDPDF_API int wellfriendpdf_document_xfa_extract_json(
@@ -662,26 +662,26 @@ WELLFRIENDPDF_API int wellfriendpdf_document_chunks_json(
     char **out_json,
     char **error_out);
 
-/* Prompt 15 provenance-aware RAG chunks. */
+/* Semantic Closeout provenance-aware RAG chunks. */
 WELLFRIENDPDF_API int wellfriendpdf_document_advanced_chunks_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
 
-/* Prompt 15 semantic model, tables, tokens, search metadata, and RAG chunks. */
+/* Semantic Closeout semantic model, tables, tokens, search metadata, and RAG chunks. */
 WELLFRIENDPDF_API int wellfriendpdf_document_semantic_bundle_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
 
-/* Prompt 15 provenance-aware semantic and dictionary-token search. */
+/* Semantic Closeout provenance-aware semantic and dictionary-token search. */
 WELLFRIENDPDF_API int wellfriendpdf_document_semantic_search_json(
     const WellfriendDocument *document,
     const char *query,
     char **out_json,
     char **error_out);
 
-/* Prompt 16 output operations. Returned buffers and JSON strings are owned by
+/* XFA Runtime output operations. Returned buffers and JSON strings are owned by
  * the caller and must be freed with wellfriendpdf_buffer_free/wellfriendpdf_string_free. */
 WELLFRIENDPDF_API int wellfriendpdf_document_xfa_render_json(
     const WellfriendDocument *document,
@@ -704,63 +704,63 @@ WELLFRIENDPDF_API int wellfriendpdf_document_xfa_sanitize_json(
     char **out_json,
     char **error_out);
 
-/* Prompt 17 read-only annotation/media/redaction reports. JSON option strings
+/* annotation/media redaction read-only annotation/media/redaction reports. JSON option strings
  * are UTF-8 and NUL-terminated; options_json may be NULL only where noted. */
 WELLFRIENDPDF_API int wellfriendpdf_document_rich_media_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt17_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_annotation_media_redaction_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt18_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_secure_mutation_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt18b_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_secure_mutation_closeout_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt20b_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt21_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_writer_history_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt21_raster_vector_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_writer_history_raster_vector_report_json(
     const WellfriendDocument *document,
     size_t page,
     const char *options_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt21_font_reconstruction_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_writer_history_font_reconstruction_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_prompt21_history_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_writer_history_history_report_json(
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt21_object_stream_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_writer_history_object_stream_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt21_pack_object_streams_pdf(
+WELLFRIENDPDF_API int wellfriendpdf_document_writer_history_pack_object_streams_pdf(
     const WellfriendDocument *document,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt22_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_compression_office_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt23_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_crypto_writer_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
@@ -800,64 +800,64 @@ WELLFRIENDPDF_API int wellfriendpdf_document_pdf_mac_create_pdf(
 WELLFRIENDPDF_API int wellfriendpdf_crypto_tamper_test_json(
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt22_optimize_pdf(
+WELLFRIENDPDF_API int wellfriendpdf_document_compression_office_optimize_pdf(
     const WellfriendDocument *document,
     const char *options_json,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_prompt22_office_inspect_json(
+WELLFRIENDPDF_API int wellfriendpdf_compression_office_office_inspect_json(
     const uint8_t *data,
     uintptr_t len,
     const char *format,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_prompt22_office_to_pdf(
+WELLFRIENDPDF_API int wellfriendpdf_compression_office_office_to_pdf(
     const uint8_t *data,
     uintptr_t len,
     const char *format,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt20b_text_range_analyze_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_text_range_analyze_json(
     const WellfriendDocument *document,
     size_t page,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt20b_text_range_edit_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_closeout_text_range_edit_json(
     const WellfriendDocument *document,
     const char *request_json,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_source_editing_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_provenance_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_source_editing_provenance_json(
     const WellfriendDocument *document,
     size_t page,
     const char *source_text,
     const char *replacement_text,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_edit_eligibility_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_source_editing_edit_eligibility_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_operator_text_edit_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_source_editing_operator_text_edit_json(
     const WellfriendDocument *document,
     const char *request_json,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_path_provenance_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_source_editing_path_provenance_json(
     const WellfriendDocument *document,
     size_t page,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_path_edit_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_source_editing_path_edit_json(
     const WellfriendDocument *document,
     size_t page,
     const char *stable_id,
@@ -866,122 +866,122 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt31_path_edit_json(
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_scene_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_scene_report_json(
     const WellfriendDocument *document,
     const char *pages_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_scene_select_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_scene_select_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_transaction_plan_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_transaction_plan_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_transaction_apply_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_transaction_apply_json(
     const WellfriendDocument *document,
     const char *request_json,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_text_map_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_text_map_json(
     const WellfriendDocument *document,
     const char *text,
     const char *direction,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_shape_text_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_shape_text_json(
     const WellfriendDocument *document,
     const char *text,
     const char *direction,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_font_subset_plan_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_font_subset_plan_json(
     const WellfriendDocument *document,
     const char *text,
     const char *direction,
     const char *policy,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt32_font_substitution_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_editing_transactions_font_substitution_report_json(
     const WellfriendDocument *document,
     const char *requested_family,
     const char *text,
     const char *policy,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_layout_analyze_json(
-    const WellfriendDocument *document,
-    const char *request_json,
-    char **out_json,
-    char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_semantic_layout_json(
-    const WellfriendDocument *document,
-    char **out_json,
-    char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reading_order_report_json(
-    const WellfriendDocument *document,
-    char **out_json,
-    char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_flow_graph_report_json(
-    const WellfriendDocument *document,
-    char **out_json,
-    char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_preview_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_layout_analyze_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_overflow_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_semantic_layout_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_reading_order_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_flow_graph_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_reflow_preview_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_constraints_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_overflow_report_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_confidence_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_constraints_report_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-/* Validate an explicitly supplied Prompt 33 output against this immutable
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_confidence_report_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+/* Validate an explicitly supplied text reflow output against this immutable
  * source document. `output_pdf` remains caller-owned for the whole call. */
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_validate_reflow_output_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_validate_reflow_output_json(
     const WellfriendDocument *document,
     const uint8_t *output_pdf,
     size_t output_pdf_len,
     const char *request_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_region_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_reflow_region_json(
     const WellfriendDocument *document,
     const char *request_json,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_document_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_reflow_document_json(
     const WellfriendDocument *document,
     const char *request_json,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-/* Execute the canonical Prompt 33 undo by replaying `request_json` against
+/* Execute the canonical text reflow undo by replaying `request_json` against
  * this immutable preimage and verifying `output_pdf` before restoring bytes. */
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_undo_reflow_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_undo_reflow_json(
     const WellfriendDocument *document,
     const uint8_t *output_pdf,
     size_t output_pdf_len,
@@ -989,37 +989,37 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_undo_reflow_json(
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_approve_structure_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_reflow_approve_structure_json(
     const WellfriendDocument *document,
     const char *correction_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_operation_report_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_text_reflow_reflow_operation_report_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-/* Prompt 34 source-linked table, math, OCR, annotation, form, and XFA APIs. */
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_report_json(
+/* document subsystems source-linked table, math, OCR, annotation, form, and XFA APIs. */
+WELLFRIENDPDF_API int wellfriendpdf_document_document_subsystems_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_analyze_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_document_subsystems_analyze_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_plan_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_document_subsystems_plan_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_apply_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_document_subsystems_apply_json(
     const WellfriendDocument *document,
     const char *request_json,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_undo_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_document_subsystems_undo_json(
     const WellfriendDocument *document,
     const uint8_t *output_pdf,
     size_t output_pdf_len,
@@ -1027,27 +1027,27 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_undo_json(
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-/* Prompt 35 tagged-PDF accessibility, redaction, sanitization, and residual APIs. */
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_report_json(
+/* document security tagged-PDF accessibility, redaction, sanitization, and residual APIs. */
+WELLFRIENDPDF_API int wellfriendpdf_document_document_security_report_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_analyze_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_document_security_analyze_json(
     const WellfriendDocument *document,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_plan_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_document_security_plan_json(
     const WellfriendDocument *document,
     const char *request_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_apply_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_document_security_apply_json(
     const WellfriendDocument *document,
     const char *request_json,
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_undo_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_document_security_undo_json(
     const WellfriendDocument *document,
     const uint8_t *output_pdf,
     size_t output_pdf_len,
@@ -1055,17 +1055,17 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_undo_json(
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_verify_residual_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_document_security_verify_residual_json(
     const WellfriendDocument *document,
     const char *terms_json,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_vector_list_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_vector_list_json(
     const WellfriendDocument *document,
     size_t page,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_text_edit_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_text_edit_json(
     const WellfriendDocument *document,
     size_t page,
     const char *old_text,
@@ -1075,7 +1075,7 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_text_edit_json(
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_vector_edit_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_vector_edit_json(
     const WellfriendDocument *document,
     size_t page,
     const char *stable_id,
@@ -1084,7 +1084,7 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_vector_edit_json(
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
-WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_ink_fit_json(
+WELLFRIENDPDF_API int wellfriendpdf_document_advanced_editing_ink_fit_json(
     const WellfriendDocument *document,
     size_t page,
     size_t annotation_index,
@@ -1117,7 +1117,7 @@ WELLFRIENDPDF_API int wellfriendpdf_document_nonaxis_redaction_plan_json(
     char **out_json,
     char **error_out);
 
-/* Prompt 17 output operations. `xfdf` is a byte buffer with an explicit
+/* annotation/media redaction output operations. `xfdf` is a byte buffer with an explicit
  * length; the other string inputs are NUL-terminated UTF-8. On success the
  * caller owns both `out_buffer` and `out_json` and must release them with
  * wellfriendpdf_buffer_free and wellfriendpdf_string_free. */

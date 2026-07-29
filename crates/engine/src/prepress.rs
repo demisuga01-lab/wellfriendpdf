@@ -1,9 +1,9 @@
-//! Prompt 12 prepress color structures.
+//! Prepress CMM prepress color structures.
 //!
 //! This module keeps the press-oriented color state separate from the RGB
 //! preview renderer. It inventories ICC profile classes, reports native/fallback
 //! transform posture, and stores sparse plate contributions for Separation and
-//! DeviceN color spaces. Prompt 13 extends the same model with bounded
+//! DeviceN color spaces. Prepress Proofing extends the same model with bounded
 //! overprint state, OP/op/OPM cache identity, and color-managed shading/pattern
 //! close-out reporting without claiming certification-grade PDF/X validation.
 
@@ -239,7 +239,7 @@ pub struct NChannelSample {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Prompt12BPrepressReport {
+pub struct NchannelPlatePrepressPrepressReport {
     pub status: String,
     pub nchannel_pixel_format: NChannelPixelFormatReport,
     pub device_link_transform_status: String,
@@ -398,7 +398,7 @@ impl OverprintStateModel {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Prompt13PrepressCloseoutReport {
+pub struct PrepressProofingPrepressCloseoutReport {
     pub status: String,
     pub overprint_state_model: OverprintStateModel,
     pub overprint_simulation_status: String,
@@ -419,7 +419,7 @@ pub struct Prompt13PrepressCloseoutReport {
     pub remaining_exact_limits: Vec<String>,
 }
 
-impl Prompt13PrepressCloseoutReport {
+impl PrepressProofingPrepressCloseoutReport {
     pub fn from_parts(separation_framebuffer: &SeparationFramebufferReport) -> Self {
         let native = cmm::native_cmm_status();
         let operations = separation_framebuffer
@@ -449,7 +449,7 @@ impl Prompt13PrepressCloseoutReport {
                 "colored_and_uncolored_tiling_pattern_caller_colors_share_the_CMM_plate_and_cache_fingerprint_path"
                     .to_string(),
             prepress_benchmark_status:
-                "prompt13_benchmark_writes_deterministic_manifest_reference_diff_scorecard_and_html_artifacts"
+                "prepress_proofing_benchmark_writes_deterministic_manifest_reference_diff_scorecard_and_html_artifacts"
                     .to_string(),
             native_fallback_backend_status: if native.available {
                 "native_lcms2_active_for_supported_profile_shapes; fallback_and_wasm_remain_preview_only_where_native_is_absent"
@@ -457,8 +457,8 @@ impl Prompt13PrepressCloseoutReport {
                 "fallback_qcms_default_active; native_lcms2_rows_report_unsupported_or_feature_build_required"
             }
             .to_string(),
-            pdfium_reference_status: "required_and_run_by_prompt13_benchmark_when_target_local_tool_is_available".to_string(),
-            mupdf_reference_status: "required_and_run_by_prompt13_benchmark_when_target_local_tool_is_available".to_string(),
+            pdfium_reference_status: "required_and_run_by_prepress_proofing_benchmark_when_target_local_tool_is_available".to_string(),
+            mupdf_reference_status: "required_and_run_by_prepress_proofing_benchmark_when_target_local_tool_is_available".to_string(),
             wellfriendpdf_outlier_count: 0,
             unclassified_failure_count: 0,
             cache_key_fields: vec![
@@ -475,7 +475,7 @@ impl Prompt13PrepressCloseoutReport {
                 "soft_mask_context".to_string(),
                 "transparency_group_context".to_string(),
             ],
-            supported_cases: supported_prompt13_cases(&operations),
+            supported_cases: supported_prepress_proofing_cases(&operations),
             unsupported_exact: vec![
                 "vendor_specific_RIP_overprint_quirks_without_reference_evidence_are_not_modeled"
                     .to_string(),
@@ -496,7 +496,7 @@ impl Prompt13PrepressCloseoutReport {
     }
 }
 
-impl Prompt12BPrepressReport {
+impl NchannelPlatePrepressPrepressReport {
     pub fn from_parts(
         profile_inventory: &[IccProfileInfo],
         separation_framebuffer: &SeparationFramebufferReport,
@@ -520,7 +520,7 @@ impl Prompt12BPrepressReport {
                 if has_device_link {
                     "native_lcms2_device_link_path_validates_profile_class_channel_shape_and_output_intent_context"
                 } else {
-                    "native_lcms2_device_link_path_available; prompt12b_simulated_fixture_exercises_transform_key_and_nchannel_output"
+                    "native_lcms2_device_link_path_available; nchannel_plate_prepress_simulated_fixture_exercises_transform_key_and_nchannel_output"
                 }
             } else {
                 "unsupported_reported_no_native_backend_default_wasm_preview_only"
@@ -581,9 +581,9 @@ impl Prompt12BPrepressReport {
             }
             .to_string(),
             pdfium_reference_audit_status:
-                "required_target_local_prompt06b_pdfium_wrapper_run_by_prompt12b_audit".to_string(),
+                "required_target_local_reference_renderer_pdfium_wrapper_run_by_nchannel_plate_prepress_audit".to_string(),
             mupdf_reference_audit_status:
-                "required_target_local_prompt06b_mutool_run_by_prompt12b_audit".to_string(),
+                "required_target_local_reference_renderer_mutool_run_by_nchannel_plate_prepress_audit".to_string(),
             native_fallback_backend_status: if native.available {
                 "native_lcms2_active; fallback_qcms_preview_posture_remains_reported_for_default_wasm"
             } else {
@@ -593,7 +593,7 @@ impl Prompt12BPrepressReport {
             wellfriendpdf_outlier_count: 0,
             unclassified_failure_count: 0,
             remaining_exact_limits: vec![
-                "Prompt 13 owns bounded overprint close-out; Prompt 12B remains the n-channel baseline".to_string(),
+                "Prepress Proofing owns bounded overprint close-out; Nchannel Plate Prepress remains the n-channel baseline".to_string(),
                 "certification-grade PDF/X validation remains later standards work".to_string(),
                 "resource-heavy Type3 charprocs that invoke XObjects/shadings/images are fail-closed until the recursive Type3 interpreter owns those resources".to_string(),
                 "ICC profiles whose n-channel pixel format is not exposed by the safe LittleCMS wrapper are inventory plus unsupported_reported_unsafe_profile rather than transformed".to_string(),
@@ -603,7 +603,7 @@ impl Prompt12BPrepressReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Prompt12PrepressReport {
+pub struct PrepressCMMPrepressReport {
     pub status: String,
     pub profile_inventory: Vec<IccProfileInfo>,
     pub device_link_profiles: Vec<IccProfileInfo>,
@@ -618,13 +618,13 @@ pub struct Prompt12PrepressReport {
     pub known_limits: Vec<String>,
 }
 
-impl Default for Prompt12PrepressReport {
+impl Default for PrepressCMMPrepressReport {
     fn default() -> Self {
         Self::from_parts(Vec::new(), SeparationFramebuffer::default().report())
     }
 }
 
-impl Prompt12PrepressReport {
+impl PrepressCMMPrepressReport {
     pub fn from_parts(
         profile_inventory: Vec<IccProfileInfo>,
         separation_framebuffer: SeparationFramebufferReport,
@@ -695,7 +695,7 @@ impl Prompt12PrepressReport {
                 output_mode: "report_hashes_and_sparse_plate_state".to_string(),
                 preview_hash_count,
                 plate_preview_artifact:
-                    "target/prompt12-prepress-cmm/plate-preview-results-prompt12.json"
+                    "target/prepress_cmm-prepress-cmm/plate-preview-results-prepress_cmm.json"
                         .to_string(),
             },
             native_cmm_policy: if native.available {
@@ -706,9 +706,9 @@ impl Prompt12PrepressReport {
             fallback_policy:
                 "default/WASM fallback inventories device-link and multicolor profiles, preserves plate/tint metadata, and labels alternate-space output as preview only".to_string(),
             known_limits: vec![
-                "Prompt 13 owns bounded overprint close-out; Prompt 12 remains the compatibility baseline".to_string(),
+                "Prepress Proofing owns bounded overprint close-out; Prepress CMM remains the compatibility baseline".to_string(),
                 "certification-grade PDF/X validation is later standards work".to_string(),
-                "Prompt 12B owns n-channel output closure; Prompt 12 section remains the compatibility baseline".to_string(),
+                "Nchannel Plate Prepress owns n-channel output closure; Prepress CMM section remains the compatibility baseline".to_string(),
             ],
         }
     }
@@ -1358,7 +1358,7 @@ fn paint_role_from_operation(operation: &str) -> String {
     }
 }
 
-fn supported_prompt13_cases(operations: &BTreeSet<&str>) -> Vec<String> {
+fn supported_prepress_proofing_cases(operations: &BTreeSet<&str>) -> Vec<String> {
     let mut cases = vec![
         "OP_fill_flag_distinct_from_OP_stroke_flag".to_string(),
         "OPM_0_process_replacement".to_string(),

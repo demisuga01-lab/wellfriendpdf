@@ -1,6 +1,6 @@
 # GA5 Release Hardening
 
-This report records the GA Prompt 5 whole-SDK robustness pass. It extends the
+This report records the GA Decode Scheduler whole-SDK robustness pass. It extends the
 earlier parser/filter/font/image fuzzing posture to the post-capstone pillars:
 modern writer modes, linearization, PDF/A conversion, editing/redaction/forms,
 and signature validation.

@@ -1,10 +1,10 @@
 # Text Character Fidelity Benchmark
 
-**Plain-language summary.** Prompt 4 found that Wellfriend's low character similarity was dominated by reading-order and line-structure issues, not missing words: the words were usually present, but sparse page furniture could be moved after body text and three-column rows could be emitted as joined visual rows. The fix tightens default two-column detection and adds a narrow structured-text fallback for obvious row-joined columns. On the indicative (approx 200-file subset) text-heavy loop, char-sim improved from 0.686 to 0.765 while word-F1 stayed effectively flat at 0.910; this is real progress, but Wellfriend remains below the current leaders around 0.92 on this slice.
+**Plain-language summary.** Codec Boundary found that Wellfriend's low character similarity was dominated by reading-order and line-structure issues, not missing words: the words were usually present, but sparse page furniture could be moved after body text and three-column rows could be emitted as joined visual rows. The fix tightens default two-column detection and adds a narrow structured-text fallback for obvious row-joined columns. On the indicative (approx 200-file subset) text-heavy loop, char-sim improved from 0.686 to 0.765 while word-F1 stayed effectively flat at 0.910; this is real progress, but Wellfriend remains below the current leaders around 0.92 on this slice.
 
 ## Scope
 
-These numbers are indicative (approx 200-file subset), not final benchmark claims. Final validation belongs in Prompt 10.
+These numbers are indicative (approx 200-file subset), not final benchmark claims. Final validation belongs in Multilingual Color Glyphs.
 
 Two deterministic subsets were used:
 
@@ -67,11 +67,11 @@ Leader reference from the baseline text-heavy run: pypdf 0.923 char-sim, PyMuPDF
 
 ```powershell
 cargo build --release -p wellfriendpdf-cli
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\prompt4-text-final-first200 --report target\competitive-benchmark\prompt4-text-final-first200.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category text-heavy --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\prompt4-text-final-textheavy200 --report target\competitive-benchmark\prompt4-text-final-textheavy200.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-tables --limit 200 --tools wellfriendpdf --tasks tables --output-dir target\competitive-benchmark\prompt4-regression-tables --report target\competitive-benchmark\prompt4-regression-tables.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools wellfriendpdf --tasks fields --output-dir target\competitive-benchmark\prompt4-regression-fields --report target\competitive-benchmark\prompt4-regression-fields.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python robustness-benchmark\scripts\robustness_benchmark.py --manifest robustness-benchmark\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --output-dir target\robustness-benchmark\prompt4-regression --report target\robustness-benchmark\prompt4-regression.md --tools wellfriendpdf --timeout 60 --max-memory-mb 2048 --max-workers 4
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\codec_boundary-text-final-first200 --report target\competitive-benchmark\codec_boundary-text-final-first200.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category text-heavy --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\codec_boundary-text-final-textheavy200 --report target\competitive-benchmark\codec_boundary-text-final-textheavy200.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-tables --limit 200 --tools wellfriendpdf --tasks tables --output-dir target\competitive-benchmark\codec_boundary-regression-tables --report target\competitive-benchmark\codec_boundary-regression-tables.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools wellfriendpdf --tasks fields --output-dir target\competitive-benchmark\codec_boundary-regression-fields --report target\competitive-benchmark\codec_boundary-regression-fields.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python robustness-benchmark\scripts\robustness_benchmark.py --manifest robustness-benchmark\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --output-dir target\robustness-benchmark\codec_boundary-regression --report target\robustness-benchmark\codec_boundary-regression.md --tools wellfriendpdf --timeout 60 --max-memory-mb 2048 --max-workers 4
 ```
 
 ## Remaining Gap

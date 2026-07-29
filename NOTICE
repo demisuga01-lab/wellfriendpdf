@@ -1,8 +1,8 @@
 Wellfriend PDF SDK Toolkit
 Copyright (c) 2024-2026 the Wellfriend authors
 
-This product is licensed under the terms of MIT OR Apache-2.0 (at your option).
-See LICENSE-MIT and LICENSE-APACHE at the repository root.
+This product is licensed under the terms of MIT (at your option).
+See LICENSE at the repository root.
 
 ================================================================================
 THIRD-PARTY NOTICES
@@ -39,13 +39,13 @@ locations referenced below.
 
   The resolved dependency tree comprises 260 third-party crates (excluding
   Wellfriend's own workspace crates). A `cargo metadata` license audit finds the tree
-  is ENTIRELY PERMISSIVE: predominantly MIT OR Apache-2.0, with some MIT, BSD,
+  is ENTIRELY PERMISSIVE: predominantly MIT, with some MIT, BSD,
   Zlib, Unicode-3.0, and IJG (libjpeg) components — all permissive.
 
   No GPL / AGPL / LGPL / MPL / EUPL / CDDL / SSPL is FORCED anywhere in the tree.
   The single crate whose license string mentions any GPL form is `r-efi`
-  (MIT OR Apache-2.0 OR LGPL-2.1-or-later) — a tri-licensed UEFI-target crate
-  from which the MIT/Apache option is taken (no copyleft forced) and which does
+  (MIT OR LGPL-2.1-or-later) — a tri-licensed UEFI-target crate
+  from which the MIT option is taken (no copyleft forced) and which does
   not compile on the primary targets.
 
   COMMERCIAL-COMPATIBILITY VERDICT: the dependency tree and the bundled fonts are

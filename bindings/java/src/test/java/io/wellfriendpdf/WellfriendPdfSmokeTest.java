@@ -11,7 +11,7 @@ import java.util.Map;
 public final class WellfriendPdfSmokeTest {
     public static void main(String[] args) throws Exception {
         Path fixture = fixturePath();
-        Path prompt15Fixture = locateFixture("multi_stream.pdf");
+        Path semantic_closeoutFixture = locateFixture("multi_stream.pdf");
         try (WellfriendPdf.Document doc = WellfriendPdf.Document.open(fixture)) {
             assertTrue(doc.pageCount() >= 1, "page count");
             assertTrue(!doc.page(1).text().isBlank(), "text extraction");
@@ -29,13 +29,13 @@ public final class WellfriendPdfSmokeTest {
             reports.put("docmdp_permissions", doc.docMdpPermissionReportJson());
             reports.put("fieldmdp_permissions", doc.fieldMdpPermissionReportJson());
             assertTrue(reports.get("pdfa_standards").contains("\"kind\":\"pdfa_standards_validation\""),
-                "Prompt26 PDF/A standards envelope");
+                "IncrementalSigningStandards PDF/A standards envelope");
             assertTrue(reports.get("pdfua_standards").contains("\"kind\":\"pdfua_standards_validation\""),
-                "Prompt26 PDF/UA standards envelope");
+                "IncrementalSigningStandards PDF/UA standards envelope");
             assertTrue(reports.get("pdfx_standards").contains("\"kind\":\"pdfx_standards_validation\""),
-                "Prompt26 PDF/X standards envelope");
+                "IncrementalSigningStandards PDF/X standards envelope");
             assertTrue(reports.get("standards_all").contains("\"kind\":\"standards_all_validation\""),
-                "Prompt26 combined standards envelope");
+                "IncrementalSigningStandards combined standards envelope");
             reports.put("forms", doc.formsReportJson());
             reports.put("xfa", doc.xfaReportJson());
             reports.put("xfa_extract", doc.xfaExtractJson());
@@ -45,36 +45,36 @@ public final class WellfriendPdfSmokeTest {
             reports.put("annotations", doc.annotationsReportJson());
             reports.put("rich_media", doc.richMediaReportJson());
             reports.put("annotation_appearance", doc.annotationAppearanceReportJson(null));
-            reports.put("prompt17", doc.prompt17ReportJson());
-            reports.put("prompt18", doc.prompt18ReportJson());
-            reports.put("prompt18b", doc.prompt18bReportJson());
+            reports.put("annotation_media_redaction", doc.annotation_media_redactionReportJson());
+            reports.put("secure_mutation", doc.secure_mutationReportJson());
+            reports.put("secure_mutation_closeout", doc.secure_mutation_closeoutReportJson());
             reports.put("form_js", doc.formJavaScriptReportJson());
             reports.put("form_action_graph", doc.formActionGraphJson());
             reports.put("interactive_data", doc.interactiveDataReportJson());
             reports.put("word_pagination", doc.wordPaginationAuditJson("page-faithful"));
-            reports.put("prompt19", doc.prompt19ReportJson());
-            reports.put("prompt20", doc.prompt20ReportJson());
-            reports.put("prompt20b", doc.prompt20bReportJson());
-            reports.put("prompt32", doc.prompt32ReportJson());
-            reports.put("prompt34", doc.prompt34ReportJson());
+            reports.put("form_action_policy", doc.form_action_policyReportJson());
+            reports.put("advanced_editing", doc.advanced_editingReportJson());
+            reports.put("advanced_editing_closeout", doc.advanced_editing_closeoutReportJson());
+            reports.put("editing_transactions", doc.editing_transactionsReportJson());
+            reports.put("document_subsystems", doc.document_subsystemsReportJson());
             assertTrue(
-                reports.get("prompt34").contains("prompt34.tables-math-ocr-forms-annotations.v1"),
-                "Prompt34 feature schema");
+                reports.get("document_subsystems").contains("document_subsystems.tables-math-ocr-forms-annotations.v1"),
+                "DocumentSubsystems feature schema");
             assertTrue(
-                reports.get("prompt32").contains("prompt32.scene-transactions-fonts-shaping.v1"),
-                "Prompt32 closeout schema");
+                reports.get("editing_transactions").contains("editing_transactions.scene-transactions-fonts-shaping.v1"),
+                "EditingTransactions closeout schema");
             reports.put("associated_files", doc.associatedFilesReportJson());
             reports.put("edit_policy", doc.editPolicyReportJson("incremental_save"));
             reports.put("pages", doc.pagesReportJson());
             reports.put("interactive", doc.interactiveReportJson());
             reports.put("chunks", doc.chunksJson());
-            try (WellfriendPdf.Document prompt15 = WellfriendPdf.Document.open(prompt15Fixture)) {
-                reports.put("advanced_chunks", prompt15.advancedChunksJson());
-                reports.put("semantic_bundle", prompt15.semanticBundleJson());
-                reports.put("semantic_search", prompt15.semanticSearchJson("Hello"));
-                String scene = prompt15.prompt32SceneReportJson("[1]");
-                assertTrue(scene.contains("prompt32_scene_report"), "Prompt32 scene graph");
-                assertTrue(scene.contains("\"nodes\""), "Prompt32 scene nodes");
+            try (WellfriendPdf.Document semantic_closeout = WellfriendPdf.Document.open(semantic_closeoutFixture)) {
+                reports.put("advanced_chunks", semantic_closeout.advancedChunksJson());
+                reports.put("semantic_bundle", semantic_closeout.semanticBundleJson());
+                reports.put("semantic_search", semantic_closeout.semanticSearchJson("Hello"));
+                String scene = semantic_closeout.editing_transactionsSceneReportJson("[1]");
+                assertTrue(scene.contains("editing_transactions_scene_report"), "EditingTransactions scene graph");
+                assertTrue(scene.contains("\"nodes\""), "EditingTransactions scene nodes");
                 String txRequest = """
                         {
                           "requested_mode": "operator_preserving",
@@ -83,12 +83,12 @@ public final class WellfriendPdfSmokeTest {
                           "replacement_text": "HELLO"
                         }
                         """;
-                String txPlan = prompt15.prompt32TransactionPlanJson(txRequest);
-                assertTrue(txPlan.contains("prompt32_transaction_plan"), "Prompt32 transaction plan");
-                assertTrue(txPlan.contains("transaction_id"), "Prompt32 transaction id");
-                String textMap = prompt15.prompt32TextMapJson("A\u0301B", "ltr");
-                assertTrue(textMap.contains("prompt32_text_map"), "Prompt32 text map");
-                String prompt33Request = """
+                String txPlan = semantic_closeout.editing_transactionsTransactionPlanJson(txRequest);
+                assertTrue(txPlan.contains("editing_transactions_transaction_plan"), "EditingTransactions transaction plan");
+                assertTrue(txPlan.contains("transaction_id"), "EditingTransactions transaction id");
+                String textMap = semantic_closeout.editing_transactionsTextMapJson("A\u0301B", "ltr");
+                assertTrue(textMap.contains("editing_transactions_text_map"), "EditingTransactions text map");
+                String text_reflowRequest = """
                         {
                           "requested_mode": "geometric_block",
                           "page": 1,
@@ -106,47 +106,47 @@ public final class WellfriendPdfSmokeTest {
                           }]
                         }
                         """;
-                reports.put("prompt33", prompt15.prompt33ReportJson());
+                reports.put("text_reflow", semantic_closeout.text_reflowReportJson());
                 assertTrue(
-                    prompt15.prompt34AnalyzeJson().contains("prompt34_analyze"),
-                    "Prompt34 source-linked analysis");
+                    semantic_closeout.document_subsystemsAnalyzeJson().contains("document_subsystems_analyze"),
+                    "DocumentSubsystems source-linked analysis");
                 assertTrue(
-                    reports.get("prompt33").contains("prompt33.geometric-semantic-reflow.v1"),
-                    "Prompt33 schema");
-                assertTrue(prompt15.prompt33LayoutAnalyzeJson(prompt33Request).contains("prompt33_layout_analyze"),
-                    "Prompt33 layout analysis");
-                assertTrue(prompt15.prompt33OverflowReportJson(prompt33Request).contains("prompt33_overflow_report"),
-                    "Prompt33 overflow report");
-                String prompt33Constraints = prompt15.prompt33ConstraintsReportJson(prompt33Request);
-                assertTrue(prompt33Constraints.contains("prompt33_constraints_report"),
-                    "Prompt33 constraint report");
-                assertTrue(prompt33Constraints.contains("java_soft_height"),
-                    "Prompt33 request constraint reaches canonical engine");
-                assertTrue(prompt15.prompt33ConfidenceReportJson(prompt33Request).contains("prompt33_confidence_report"),
-                    "Prompt33 confidence report");
-                WellfriendPdf.BinaryResult prompt33Applied = prompt15.prompt33ReflowRegion(prompt33Request);
-                assertPrefix(prompt33Applied.bytes(), "%PDF-", "Prompt33 geometric reflow");
+                    reports.get("text_reflow").contains("text_reflow.geometric-semantic-reflow.v1"),
+                    "TextReflow schema");
+                assertTrue(semantic_closeout.text_reflowLayoutAnalyzeJson(text_reflowRequest).contains("text_reflow_layout_analyze"),
+                    "TextReflow layout analysis");
+                assertTrue(semantic_closeout.text_reflowOverflowReportJson(text_reflowRequest).contains("text_reflow_overflow_report"),
+                    "TextReflow overflow report");
+                String text_reflowConstraints = semantic_closeout.text_reflowConstraintsReportJson(text_reflowRequest);
+                assertTrue(text_reflowConstraints.contains("text_reflow_constraints_report"),
+                    "TextReflow constraint report");
+                assertTrue(text_reflowConstraints.contains("java_soft_height"),
+                    "TextReflow request constraint reaches canonical engine");
+                assertTrue(semantic_closeout.text_reflowConfidenceReportJson(text_reflowRequest).contains("text_reflow_confidence_report"),
+                    "TextReflow confidence report");
+                WellfriendPdf.BinaryResult text_reflowApplied = semantic_closeout.text_reflowReflowRegion(text_reflowRequest);
+                assertPrefix(text_reflowApplied.bytes(), "%PDF-", "TextReflow geometric reflow");
                 assertTrue(
-                    prompt15.prompt33ValidateReflowOutputJson(prompt33Applied.bytes(), prompt33Request)
-                        .contains("prompt33_validate_reflow_output"),
-                    "Prompt33 output validation");
-                WellfriendPdf.BinaryResult prompt33Undo =
-                    prompt15.prompt33UndoReflow(prompt33Applied.bytes(), prompt33Request);
-                assertTrue(prompt33Undo.reportJson().contains("prompt33_undo_reflow"),
-                    "Prompt33 executable undo report");
-                assertTrue(prompt33Undo.reportJson().contains("\"byte_exact_restoration\":true"),
-                    "Prompt33 byte-exact undo");
-                assertTrue(java.util.Arrays.equals(Files.readAllBytes(prompt15Fixture), prompt33Undo.bytes()),
-                    "Prompt33 undo restores source bytes");
-                String shape = prompt15.prompt32ShapeTextJson("ffi", "ltr");
-                assertTrue(shape.contains("\"glyphs\""), "Prompt32 shaping");
-                String subset = prompt15.prompt32FontSubsetPlanJson("Hello", "ltr", "reuse_embedded_subset");
-                assertTrue(subset.contains("prompt32_font_subset_plan"), "Prompt32 subset plan");
-                assertTrue(subset.contains("deterministic_subset_tag"), "Prompt32 deterministic subset tag");
-                String rangeModel = prompt15.prompt20bTextRangeAnalyzeJson(1);
-                reports.put("prompt20b_range_model", rangeModel);
-                assertTrue(rangeModel.contains("prompt20b_multi_run_range_model"), "Prompt20B range model");
-                WellfriendPdf.BinaryResult rangeEdited = prompt15.editTextRange("""
+                    semantic_closeout.text_reflowValidateReflowOutputJson(text_reflowApplied.bytes(), text_reflowRequest)
+                        .contains("text_reflow_validate_reflow_output"),
+                    "TextReflow output validation");
+                WellfriendPdf.BinaryResult text_reflowUndo =
+                    semantic_closeout.text_reflowUndoReflow(text_reflowApplied.bytes(), text_reflowRequest);
+                assertTrue(text_reflowUndo.reportJson().contains("text_reflow_undo_reflow"),
+                    "TextReflow executable undo report");
+                assertTrue(text_reflowUndo.reportJson().contains("\"byte_exact_restoration\":true"),
+                    "TextReflow byte-exact undo");
+                assertTrue(java.util.Arrays.equals(Files.readAllBytes(semantic_closeoutFixture), text_reflowUndo.bytes()),
+                    "TextReflow undo restores source bytes");
+                String shape = semantic_closeout.editing_transactionsShapeTextJson("ffi", "ltr");
+                assertTrue(shape.contains("\"glyphs\""), "EditingTransactions shaping");
+                String subset = semantic_closeout.editing_transactionsFontSubsetPlanJson("Hello", "ltr", "reuse_embedded_subset");
+                assertTrue(subset.contains("editing_transactions_font_subset_plan"), "EditingTransactions subset plan");
+                assertTrue(subset.contains("deterministic_subset_tag"), "EditingTransactions deterministic subset tag");
+                String rangeModel = semantic_closeout.advanced_editing_closeoutTextRangeAnalyzeJson(1);
+                reports.put("advanced_editing_closeout_range_model", rangeModel);
+                assertTrue(rangeModel.contains("advanced_editing_closeout_multi_run_range_model"), "AdvancedEditingB range model");
+                WellfriendPdf.BinaryResult rangeEdited = semantic_closeout.editTextRange("""
                         {
                           "page": 1,
                           "logical_start": 0,
@@ -165,11 +165,11 @@ public final class WellfriendPdfSmokeTest {
                           }
                         }
                         """);
-                assertPrefix(rangeEdited.bytes(), "%PDF-", "Prompt20B text range edit");
+                assertPrefix(rangeEdited.bytes(), "%PDF-", "AdvancedEditingB text range edit");
                 assertTrue(
-                    rangeEdited.reportJson().contains("prompt20b_multi_run_text_edit_report"),
-                    "Prompt20B text range edit report");
-                reports.put("prompt20b_range_edit", rangeEdited.reportJson());
+                    rangeEdited.reportJson().contains("advanced_editing_closeout_multi_run_text_edit_report"),
+                    "AdvancedEditingB text range edit report");
+                reports.put("advanced_editing_closeout_range_edit", rangeEdited.reportJson());
             }
             assertTrue(reports.get("feature").contains("feature_report"), "feature report");
             assertTrue(
@@ -213,26 +213,26 @@ public final class WellfriendPdfSmokeTest {
                 }
                 assertTrue(cancelled, "signature component handles observe cancellation");
             }
-            String prompt26KeyPath = System.getenv("WELLFRIENDPDF_PROMPT26_SIGNING_KEY_PEM");
-            String prompt26CertPath = System.getenv("WELLFRIENDPDF_PROMPT26_SIGNING_CERT_PEM");
-            if (prompt26KeyPath != null && !prompt26KeyPath.isBlank()
-                    && prompt26CertPath != null && !prompt26CertPath.isBlank()) {
-                String keyPem = Files.readString(Path.of(prompt26KeyPath), StandardCharsets.UTF_8);
-                String certPem = Files.readString(Path.of(prompt26CertPath), StandardCharsets.UTF_8);
+            String incremental_signing_standardsKeyPath = System.getenv("WELLFRIENDPDF_INCREMENTAL_SIGNING_STANDARDS_SIGNING_KEY_PEM");
+            String incremental_signing_standardsCertPath = System.getenv("WELLFRIENDPDF_INCREMENTAL_SIGNING_STANDARDS_SIGNING_CERT_PEM");
+            if (incremental_signing_standardsKeyPath != null && !incremental_signing_standardsKeyPath.isBlank()
+                    && incremental_signing_standardsCertPath != null && !incremental_signing_standardsCertPath.isBlank()) {
+                String keyPem = Files.readString(Path.of(incremental_signing_standardsKeyPath), StandardCharsets.UTF_8);
+                String certPem = Files.readString(Path.of(incremental_signing_standardsCertPath), StandardCharsets.UTF_8);
                 String approvalPlan = doc.incrementalSigningPlanJson(keyPem, certPem, 4096, 0);
                 String certificationPlan = doc.incrementalSigningPlanJson(keyPem, certPem, 4096, 1);
-                assertTrue(approvalPlan.contains("reserved_bytes"), "Prompt26 approval signing plan");
-                assertTrue(certificationPlan.contains("reserved_bytes"), "Prompt26 certification signing plan");
+                assertTrue(approvalPlan.contains("reserved_bytes"), "IncrementalSigningStandards approval signing plan");
+                assertTrue(certificationPlan.contains("reserved_bytes"), "IncrementalSigningStandards certification signing plan");
                 WellfriendPdf.BinaryResult signed = doc.signIncremental(
-                    keyPem, certPem, 4096, 0, "Prompt26Java", "Java runtime smoke");
-                assertTrue(signed.bytes().length > Files.size(fixture), "Prompt26 incremental output grew");
+                    keyPem, certPem, 4096, 0, "IncrementalSigningStandardsJava", "Java runtime smoke");
+                assertTrue(signed.bytes().length > Files.size(fixture), "IncrementalSigningStandards incremental output grew");
                 assertTrue(new String(signed.bytes(), 0, 5, StandardCharsets.US_ASCII).equals("%PDF-"),
-                    "Prompt26 signed PDF prefix");
-                assertTrue(signed.reportJson().contains("post_sign"), "Prompt26 post-sign report");
-                assertTrue(signed.reportJson().contains("prefix_preserved"), "Prompt26 preserved prefix report");
+                    "IncrementalSigningStandards signed PDF prefix");
+                assertTrue(signed.reportJson().contains("post_sign"), "IncrementalSigningStandards post-sign report");
+                assertTrue(signed.reportJson().contains("prefix_preserved"), "IncrementalSigningStandards preserved prefix report");
                 try (WellfriendPdf.Document signedDocument = WellfriendPdf.Document.open(signed.bytes())) {
                     assertTrue(!"[]".equals(signedDocument.signatureReportJson()),
-                        "Prompt26 post-sign native validation");
+                        "IncrementalSigningStandards post-sign native validation");
                 }
                 boolean invalidSignerInput = false;
                 try {
@@ -240,36 +240,36 @@ public final class WellfriendPdfSmokeTest {
                 } catch (IllegalArgumentException expected) {
                     invalidSignerInput = true;
                 }
-                assertTrue(invalidSignerInput, "Prompt26 invalid signing input rejected before native call");
+                assertTrue(invalidSignerInput, "IncrementalSigningStandards invalid signing input rejected before native call");
             } else {
                 // Package-only runs deliberately do not store key material. The
                 // final binding harness supplies target-only PEM files and
                 // exercises the branch above for the real signing smoke.
                 assertTrue(WellfriendPdf.Document.class.getMethod(
                     "incrementalSigningPlanJson", String.class, String.class, long.class, int.class) != null,
-                    "Prompt26 signing-plan API");
+                    "IncrementalSigningStandards signing-plan API");
                 assertTrue(WellfriendPdf.Document.class.getMethod(
                     "signIncremental", String.class, String.class, long.class, int.class, String.class, String.class) != null,
-                    "Prompt26 signing API");
+                    "IncrementalSigningStandards signing API");
             }
 
             String timestamp = WellfriendPdf.timestampTokenValidationJson(
                 "not-a-rfc3161-token".getBytes(StandardCharsets.US_ASCII),
                 "cms-signature-value".getBytes(StandardCharsets.US_ASCII));
             assertTrue(timestamp.contains("\"kind\":\"timestamp_token_validation\""),
-                "Prompt25 timestamp report kind");
+                "PadesLTV timestamp report kind");
             assertTrue(timestamp.contains("\"token_type\":\"signature_timestamp\""),
-                "Prompt25 timestamp token type");
+                "PadesLTV timestamp token type");
             assertTrue(timestamp.contains("\"status\":\"malformed\""),
-                "Prompt25 malformed timestamp status");
+                "PadesLTV malformed timestamp status");
             try (WellfriendPdf.Document form = WellfriendPdf.Document.open(locateFixture("form_160f.pdf"))) {
-                String plan = form.signaturePreservingFormPlanJson("name", "Prompt25", "{}");
+                String plan = form.signaturePreservingFormPlanJson("name", "PadesLTV", "{}");
                 assertTrue(plan.contains("\"kind\":\"signature_preserving_edit_plan\""),
-                    "Prompt25 signature-preserving plan kind");
-                assertTrue(plan.contains("prompt25.tsa-dss-ltv-mdp-signature-edits.v1"),
-                    "Prompt25 signature-preserving plan schema");
+                    "PadesLTV signature-preserving plan kind");
+                assertTrue(plan.contains("pades_ltv.tsa-dss-ltv-mdp-signature-edits.v1"),
+                    "PadesLTV signature-preserving plan schema");
                 assertTrue(plan.contains("\"prefix_preservation_required\":true"),
-                    "Prompt25 prefix preservation requirement");
+                    "PadesLTV prefix preservation requirement");
             }
             assertTrue(!WellfriendPdf.engineVersion().isBlank(), "engine version");
             assertTrue(WellfriendPdf.abiVersion() >= 1, "abi version");
@@ -314,7 +314,7 @@ public final class WellfriendPdfSmokeTest {
             assertPrefix(WellfriendPdf.Office.docxToPdf(docx), "%PDF-", "docx pdf");
             assertPrefix(WellfriendPdf.Office.xlsxToPdf(xlsx), "%PDF-", "xlsx pdf");
             assertPrefix(WellfriendPdf.Office.pptxToPdf(pptx), "%PDF-", "pptx pdf");
-            writePrompt02Artifact(fixture, prompt15Fixture, reports, sanitized, canonicalized);
+            writeBindingParityArtifact(fixture, semantic_closeoutFixture, reports, sanitized, canonicalized);
         }
 
         try (WellfriendPdf.Document emptyPassword = WellfriendPdf.Document.open(fixture, "")) {
@@ -334,7 +334,7 @@ public final class WellfriendPdfSmokeTest {
             } catch (IllegalStateException expected) {
                 closedRejected = true;
             }
-            assertTrue(closedRejected, "Prompt26 AutoCloseable close is deterministic and idempotent");
+            assertTrue(closedRejected, "IncrementalSigningStandards AutoCloseable close is deterministic and idempotent");
         }
 
         String feature = WellfriendPdf.featureReportJson();
@@ -347,191 +347,191 @@ public final class WellfriendPdfSmokeTest {
             feature.contains("engine_render_cancellation_supported_binding_tokens_later"),
             "cancellation binding token status");
         assertTrue(feature.contains("\"codec_isolation\""), "codec isolation feature posture");
-        assertTrue(feature.contains("\"prompt07_transparency_compositing\""), "prompt07 feature posture");
+        assertTrue(feature.contains("\"transparency_rendering_transparency_compositing\""), "transparency_rendering feature posture");
         assertTrue(
-            feature.contains("native_foundation_with_prompt07b_closure"),
-            "prompt07 native foundation status");
-        assertTrue(feature.contains("\"prompt07b_transparency_closure\""), "prompt07b closure posture");
-        assertTrue(feature.contains("\"wellfriendpdf_outlier_failures\":0"), "prompt07b outlier count");
-        assertTrue(feature.contains("\"memory_cap_mb\":4096"), "prompt07 memory cap");
-        assertTrue(feature.contains("\"Luminosity\""), "prompt07 blend mode report");
+            feature.contains("native_foundation_with_transparency_closeout_closure"),
+            "transparency_rendering native foundation status");
+        assertTrue(feature.contains("\"transparency_closeout_transparency_closure\""), "transparency_closeout closure posture");
+        assertTrue(feature.contains("\"wellfriendpdf_outlier_failures\":0"), "transparency_closeout outlier count");
+        assertTrue(feature.contains("\"memory_cap_mb\":4096"), "transparency_rendering memory cap");
+        assertTrue(feature.contains("\"Luminosity\""), "transparency_rendering blend mode report");
         assertTrue(
-            feature.contains("\"prompt08_text_clipping_shading_patterns\""),
-            "prompt08 feature posture");
+            feature.contains("\"advanced_rendering_text_clipping_shading_patterns\""),
+            "advanced_rendering feature posture");
         assertTrue(
             feature.contains("native_common_paths_with_bounded_unsupported_reports"),
-            "prompt08 native status");
-        assertTrue(feature.contains("\"rendering_modes\":[4,5,6,7]"), "prompt08 text clip modes");
+            "advanced_rendering native status");
+        assertTrue(feature.contains("\"rendering_modes\":[4,5,6,7]"), "advanced_rendering text clip modes");
         assertTrue(
-            feature.contains("\"prompt09_annotation_ocg_progressive_cache\""),
-            "prompt09 feature posture");
+            feature.contains("\"annotation_ocg_rendering_annotation_ocg_progressive_cache\""),
+            "annotation_ocg_rendering feature posture");
         assertTrue(
             feature.contains("implemented_with_bounded_unsupported_reports"),
-            "prompt09 implementation status");
+            "annotation_ocg_rendering implementation status");
         assertTrue(
-            feature.contains("\"prompt09b_annotation_progressive_cache_validation\""),
-            "prompt09b feature posture");
-        assertTrue(feature.contains("implemented_and_proven"), "prompt09b closure status");
+            feature.contains("\"renderer_validation_annotation_progressive_cache_validation\""),
+            "renderer_validation feature posture");
+        assertTrue(feature.contains("implemented_and_proven"), "renderer_validation closure status");
         assertTrue(
             feature.contains("\"schema_change\":\"additive_section_only\""),
-            "prompt09b additive schema status");
+            "renderer_validation additive schema status");
         assertTrue(
-            feature.contains("\"prompt10_cjk_rtl_color_glyph_reference_harness\""),
-            "prompt10 feature posture");
+            feature.contains("\"multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness\""),
+            "multilingual_color_glyphs feature posture");
         assertTrue(
             feature.contains("unsupported_color_tables_are_detected_and_reported"),
-            "prompt10 color glyph reporting posture");
+            "multilingual_color_glyphs color glyph reporting posture");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt10\""),
-            "prompt10 additive schema status");
+            feature.contains("\"additive_feature_report_multilingual_color_glyphs\""),
+            "multilingual_color_glyphs additive schema status");
         assertTrue(
-            feature.contains("\"prompt10b_color_glyph_cjk_rtl_fidelity_closure\""),
-            "prompt10b feature posture");
+            feature.contains("\"cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_fidelity_closure\""),
+            "cjk_rtl_color_glyph_closeout feature posture");
         assertTrue(
             feature.contains("\"implemented_with_precise_security_and_exotic_limits\""),
-            "prompt10b color glyph closure posture");
+            "cjk_rtl_color_glyph_closeout color glyph closure posture");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt10b\""),
-            "prompt10b additive schema status");
+            feature.contains("\"additive_feature_report_cjk_rtl_color_glyph_closeout\""),
+            "cjk_rtl_color_glyph_closeout additive schema status");
         assertTrue(
-            feature.contains("\"prompt10c_color_glyph_hinting_cff_closure\""),
-            "prompt10c feature posture");
+            feature.contains("\"color_glyph_hinting_color_glyph_hinting_cff_closure\""),
+            "color_glyph_hinting feature posture");
         assertTrue(
             feature.contains("\"implemented_with_operator_level_limits\""),
-            "prompt10c colrv1 closure posture");
+            "color_glyph_hinting colrv1 closure posture");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt10c\""),
-            "prompt10c additive schema status");
+            feature.contains("\"additive_feature_report_color_glyph_hinting\""),
+            "color_glyph_hinting additive schema status");
         assertTrue(
-            feature.contains("\"prompt10d_full_colrv1_svg_color_glyph_closure\""),
-            "prompt10d feature posture");
+            feature.contains("\"colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure\""),
+            "colrv_svg_bitmap feature posture");
         assertTrue(
             feature.contains("\"safe_static_subset_rendered_active_constructs_blocked\""),
-            "prompt10d SVG static renderer posture");
+            "colrv_svg_bitmap SVG static renderer posture");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt10d\""),
-            "prompt10d additive schema status");
+            feature.contains("\"additive_feature_report_colrv_svg_bitmap\""),
+            "colrv_svg_bitmap additive schema status");
         assertTrue(
-            feature.contains("\"prompt10e_colrv1_gradient_clip_composite_closure\""),
-            "prompt10e feature posture");
+            feature.contains("\"colrv_gradient_composite_colrv1_gradient_clip_composite_closure\""),
+            "colrv_gradient_composite feature posture");
         assertTrue(
             feature.contains("\"implemented_with_exact_mode_limits\""),
-            "prompt10e composite closure posture");
+            "colrv_gradient_composite composite closure posture");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt10e\""),
-            "prompt10e additive schema status");
+            feature.contains("\"additive_feature_report_colrv_gradient_composite\""),
+            "colrv_gradient_composite additive schema status");
         assertTrue(
-            feature.contains("\"prompt10f_colrv1_porterduff_radial_closure\""),
-            "prompt10f feature posture");
+            feature.contains("\"porterduff_radial_color_glyph_colrv1_porterduff_radial_closure\""),
+            "porterduff_radial_color_glyph feature posture");
         assertTrue(
             feature.contains("\"DestinationAtop\""),
-            "prompt10f Porter-Duff posture");
+            "porterduff_radial_color_glyph Porter-Duff posture");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt10f\""),
-            "prompt10f additive schema status");
+            feature.contains("\"additive_feature_report_porterduff_radial_color_glyph\""),
+            "porterduff_radial_color_glyph additive schema status");
         assertTrue(
-            feature.contains("\"prompt11_renderer_fuzz_cmm_closeout\""),
-            "prompt11 feature posture");
+            feature.contains("\"renderer_fuzz_cmm_renderer_fuzz_cmm_closeout\""),
+            "renderer_fuzz_cmm feature posture");
         assertTrue(
             feature.contains("\"hard_blocked_precise_no_default_native_dependency\""),
-            "prompt11 native CMM posture");
+            "renderer_fuzz_cmm native CMM posture");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt11\""),
-            "prompt11 additive schema status");
+            feature.contains("\"additive_feature_report_renderer_fuzz_cmm\""),
+            "renderer_fuzz_cmm additive schema status");
         assertTrue(
-            feature.contains("\"prompt11b_native_littlecms_cmm_backend_closure\""),
-            "prompt11b native CMM posture");
+            feature.contains("\"native_cmm_backend_native_littlecms_cmm_backend_closure\""),
+            "native_cmm_backend native CMM posture");
         assertTrue(
             feature.contains("\"native-cmm-lcms2\""),
-            "prompt11b native CMM feature flag");
+            "native_cmm_backend native CMM feature flag");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt11b\""),
-            "prompt11b additive schema status");
+            feature.contains("\"additive_feature_report_native_cmm_backend\""),
+            "native_cmm_backend additive schema status");
         assertTrue(
-            feature.contains("\"prompt12_prepress_cmm_device_link_separation_plates\""),
-            "prompt12 prepress CMM plate posture");
+            feature.contains("\"prepress_cmm_prepress_cmm_device_link_separation_plates\""),
+            "prepress_cmm prepress CMM plate posture");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt12\""),
-            "prompt12 additive schema status");
+            feature.contains("\"additive_feature_report_prepress_cmm\""),
+            "prepress_cmm additive schema status");
         assertTrue(
             feature.contains("\"cache_key_includes_plate_state\":true"),
-            "prompt12 plate cache key status");
+            "prepress_cmm plate cache key status");
         assertTrue(
-            feature.contains("\"prompt12b_nchannel_plate_reference_closure\""),
-            "prompt12B n-channel plate reference closure");
+            feature.contains("\"nchannel_plate_prepress_nchannel_plate_reference_closure\""),
+            "nchannel_plate_prepress n-channel plate reference closure");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt12b\""),
-            "prompt12B additive schema status");
+            feature.contains("\"additive_feature_report_nchannel_plate_prepress\""),
+            "nchannel_plate_prepress additive schema status");
         assertTrue(
-            feature.contains("\"required_and_run_by_prompt12b_audit\""),
-            "prompt12B reference audit status");
+            feature.contains("\"required_and_run_by_nchannel_plate_prepress_audit\""),
+            "nchannel_plate_prepress reference audit status");
         assertTrue(
-            feature.contains("\"prompt13_full_overprint_prepress_closeout\""),
-            "prompt13 full overprint prepress closeout");
+            feature.contains("\"prepress_proofing_full_overprint_prepress_closeout\""),
+            "prepress_proofing full overprint prepress closeout");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt13\""),
-            "prompt13 additive schema status");
+            feature.contains("\"additive_feature_report_prepress_proofing\""),
+            "prepress_proofing additive schema status");
         assertTrue(
             feature.contains("\"wellfriendpdf_outlier_failures\":0"),
-            "prompt13 zero Wellfriend outliers");
+            "prepress_proofing zero Wellfriend outliers");
         assertTrue(
-            feature.contains("\"prompt14_semantic_intelligence_parenttree_cjk_ml_layout\""),
-            "prompt14 semantic intelligence foundation");
+            feature.contains("\"semantic_intelligence_semantic_intelligence_parenttree_cjk_ml_layout\""),
+            "semantic_intelligence semantic intelligence foundation");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt14\""),
-            "prompt14 additive schema status");
+            feature.contains("\"additive_feature_report_semantic_intelligence\""),
+            "semantic_intelligence additive schema status");
         assertTrue(
             feature.contains("\"cloud_upload_default\":false"),
-            "prompt14 cloud disabled by default");
+            "semantic_intelligence cloud disabled by default");
         assertTrue(
-            feature.contains("\"prompt14b_cjk_dictionary_layout_backend_closure\""),
-            "prompt14B dictionary provider closure");
+            feature.contains("\"cjk_dictionary_layout_cjk_dictionary_layout_backend_closure\""),
+            "cjk_dictionary_layout dictionary provider closure");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt14b\""),
-            "prompt14B additive schema status");
+            feature.contains("\"additive_feature_report_cjk_dictionary_layout\""),
+            "cjk_dictionary_layout additive schema status");
         assertTrue(
             feature.contains("\"external_pack_support\":\"implemented\""),
-            "prompt14B external dictionary pack support");
+            "cjk_dictionary_layout external dictionary pack support");
         assertTrue(
             feature.contains("\"local_backend_status\":\"unsupported_reported_no_runtime\""),
-            "prompt14B local runtime policy");
+            "cjk_dictionary_layout local runtime policy");
         assertTrue(
-            feature.contains("\"prompt15_semantic_binding_rag_benchmark_closeout\""),
-            "prompt15 semantic binding and RAG closeout");
+            feature.contains("\"semantic_closeout_semantic_binding_rag_benchmark_closeout\""),
+            "semantic_closeout semantic binding and RAG closeout");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt15\""),
-            "prompt15 additive schema status");
+            feature.contains("\"additive_feature_report_semantic_closeout\""),
+            "semantic_closeout additive schema status");
         assertTrue(
             feature.contains("\"model_can_rewrite_deterministic_text\":false"),
-            "prompt15 deterministic text preservation");
-        assertTrue(feature.contains("\"blocked\":0"), "prompt15 blocked count");
+            "semantic_closeout deterministic text preservation");
+        assertTrue(feature.contains("\"blocked\":0"), "semantic_closeout blocked count");
         assertTrue(
-            feature.contains("\"prompt16_xfa_runtime_sandbox_closure\""),
-            "prompt16 XFA runtime sandbox closure");
+            feature.contains("\"xfa_runtime_xfa_runtime_sandbox_closure\""),
+            "xfa_runtime XFA runtime sandbox closure");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt16\""),
-            "prompt16 additive schema status");
+            feature.contains("\"additive_feature_report_xfa_runtime\""),
+            "xfa_runtime additive schema status");
         assertTrue(
             feature.contains("\"scripts_disabled_events_not_executed\""),
-            "prompt16 default script policy");
+            "xfa_runtime default script policy");
         assertTrue(
-            feature.contains("\"prompt17_annotation_xfdf_media_nonaxis_redaction\""),
-            "prompt17 feature closure");
+            feature.contains("\"annotation_media_redaction_annotation_xfdf_media_nonaxis_redaction\""),
+            "annotation_media_redaction feature closure");
         assertTrue(
-            feature.contains("\"additive_feature_report_prompt17\""),
-            "prompt17 additive schema status");
+            feature.contains("\"additive_feature_report_annotation_media_redaction\""),
+            "annotation_media_redaction additive schema status");
         assertTrue(
             feature.contains("\"overlay_only_redaction_success_claims\":0"),
-            "prompt17 secure redaction posture");
+            "annotation_media_redaction secure redaction posture");
         assertTrue(
-            feature.contains("\"prompt23_deterministic_writer_pubsec_aesgcm\""),
-            "prompt23 feature posture");
+            feature.contains("\"crypto_writer_deterministic_writer_pubsec_aesgcm\""),
+            "crypto_writer feature posture");
         assertTrue(
             feature.contains("\"public_key_handler_status\":\"implemented_with_limits\""),
-            "prompt23 public-key posture");
+            "crypto_writer public-key posture");
         assertTrue(
             feature.contains("\"aes_gcm_decrypt_status\":\"implemented_with_limits\""),
-            "prompt23 AES-GCM posture");
+            "crypto_writer AES-GCM posture");
         assertTrue(
             WellfriendPdf.Document.class.getMethod("openPubSec", byte[].class, byte[].class, byte[].class) != null,
             "PubSec open runtime surface");
@@ -546,7 +546,7 @@ public final class WellfriendPdfSmokeTest {
             "PDF-MAC create runtime surface");
         assertTrue(
             WellfriendPdf.cryptoTamperTestJson().contains("crypto_tamper_test"),
-            "prompt23 tamper report");
+            "crypto_writer tamper report");
         String isolation = WellfriendPdf.codecIsolationReportJson(
             "FlateDecode",
             "not-decoded-in-report-only".getBytes(StandardCharsets.UTF_8),
@@ -587,13 +587,13 @@ public final class WellfriendPdfSmokeTest {
         assertTrue(expected.equals(actual), label + " prefix");
     }
 
-    private static void writePrompt02Artifact(
+    private static void writeBindingParityArtifact(
             Path fixture,
-            Path prompt15Fixture,
+            Path semantic_closeoutFixture,
             Map<String, String> reports,
             WellfriendPdf.BinaryResult sanitized,
             WellfriendPdf.BinaryResult canonicalized) throws Exception {
-        String dir = System.getenv("WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR");
+        String dir = System.getenv("WELLFRIENDPDF_BINDING_PARITY_ARTIFACT_DIR");
         if (dir == null || dir.isBlank()) {
             return;
         }
@@ -604,7 +604,7 @@ public final class WellfriendPdfSmokeTest {
         json.append("{\n");
         json.append("  \"surface\": \"java\",\n");
         json.append("  \"fixture\": \"").append(escape(fixture.toString())).append("\",\n");
-        json.append("  \"prompt15_fixture\": \"").append(escape(prompt15Fixture.toString())).append("\",\n");
+        json.append("  \"semantic_closeout_fixture\": \"").append(escape(semantic_closeoutFixture.toString())).append("\",\n");
         json.append("  \"engine_version\": \"").append(escape(WellfriendPdf.engineVersion())).append("\",\n");
         json.append("  \"abi_version\": ").append(WellfriendPdf.abiVersion()).append(",\n");
         json.append("  \"reports\": {\n");

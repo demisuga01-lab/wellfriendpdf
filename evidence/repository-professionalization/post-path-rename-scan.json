@@ -1,0 +1,42 @@
+{
+  "violation_count": 9,
+  "unique_path_count": 9,
+  "top_paths": [
+    [
+      "crates/engine/examples/sdk_reports.rs",
+      1
+    ],
+    [
+      "crates/wellfriendpdf-capi/examples/sdk_reports.c",
+      1
+    ],
+    [
+      "crates/wellfriendpdf-capi/src/lib.rs",
+      1
+    ],
+    [
+      "crates/wellfriendpdf-py/examples/sdk_reports.py",
+      1
+    ],
+    [
+      "crates/wellfriendpdf-py/tests/test_reports.py",
+      1
+    ],
+    [
+      "docs/best_in_class_verdict.md",
+      1
+    ],
+    [
+      "docs/bindings_binding_surface_audit.md",
+      1
+    ],
+    [
+      "docs/renderer_benchmark_0a_recalibration.md",
+      1
+    ],
+    [
+      "docs/table_slice_validation.md",
+      1
+    ]
+  ]
+}

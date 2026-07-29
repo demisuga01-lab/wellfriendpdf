@@ -1,6 +1,6 @@
 # Robustness Benchmark: Wild-PDF Survival
 
-**Plain-language summary.** On this indicative (approx 200-file subset) robustness run, Wellfriend survived 100.0% of attempted files and produced parsed text artifacts for 87.5%. The main Prompt 2 targets are: corrupt xref/trailer recovery (18), encryption edge (7). Clean handled errors are separated from crashes/timeouts/OOMs because a clean rejection is acceptable for malformed input, while a hard failure is not.
+**Plain-language summary.** On this indicative (approx 200-file subset) robustness run, Wellfriend survived 100.0% of attempted files and produced parsed text artifacts for 87.5%. The main Binding Parity targets are: corrupt xref/trailer recovery (18), encryption edge (7). Clean handled errors are separated from crashes/timeouts/OOMs because a clean rejection is acceptable for malformed input, while a hard failure is not.
 
 ## Scope And Corpus
 
@@ -45,9 +45,9 @@ This is a SMALL indicative robustness corpus, not a final robustness claim. It h
 
 | source | status |
 | --- | --- |
-| mozilla_pdfjs_raw | reachable during Prompt 1 HEAD probe |
-| veraPDF_corpus | reachable during Prompt 1 HEAD probe |
-| govdocs1_zip | reachable during Prompt 1 HEAD probe but not downloaded because first zip is about 486 MB |
+| mozilla_pdfjs_raw | reachable during Binding Surface HEAD probe |
+| veraPDF_corpus | reachable during Binding Surface HEAD probe |
+| govdocs1_zip | reachable during Binding Surface HEAD probe but not downloaded because first zip is about 486 MB |
 | local_public_benchmark | used when present; corpus PDFs are gitignored |
 
 ## Provenance
@@ -70,7 +70,7 @@ This is a SMALL indicative robustness corpus, not a final robustness claim. It h
 | --- | --- | --- | --- |
 | docling | available, not run | 2.107.0 | installed but skipped in default run because it is a heavyweight ML converter; pass --include-heavy to run it |
 | markitdown | available, not run | 0.1.6 | MIT |
-| wellfriendpdf | yes | wellfriendpdf 0.1.0 | MIT OR Apache-2.0 |
+| wellfriendpdf | yes | wellfriendpdf 0.1.0 | MIT |
 | pdf_wellfriendpdf | yes | 0.3.68 | MIT |
 | pdfminer.six | available, not run | 20251230 | MIT |
 | pdfplumber | available, not run | 0.11.9 | MIT |
@@ -101,7 +101,7 @@ No Wellfriend crash/timeout/OOM/missing-output hard failures had a competitor su
 
 ## Wellfriend Clean-Errors But A Competitor Parses
 
-These are not crash bugs, but they are best-effort recovery gaps for Prompt 2 if the category is common.
+These are not crash bugs, but they are best-effort recovery gaps for Binding Parity if the category is common.
 
 | file | tag | root cause | competitors parsed | Wellfriend error |
 | --- | --- | --- | --- | --- |
@@ -144,7 +144,7 @@ Clean errors are included here but are distinguished from hard failures.
 | renderer-benchmark/corpus/hostile/hostile_050_random.pdf | pathological |
 | renderer-benchmark/corpus/hostile/hostile_051_truncated.pdf | pathological |
 
-## Prioritized Fix List For Prompt 2
+## Prioritized Fix List For Binding Parity
 
 1. **corrupt xref/trailer recovery** (18 files): Improve best-effort xref/trailer recovery and object scanning.
 2. **encryption edge** (7 files): Harden encrypted-file detection and unsupported security-handler errors.

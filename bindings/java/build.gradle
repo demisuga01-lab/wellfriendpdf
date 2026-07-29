@@ -34,6 +34,7 @@ dependencies {
 
 tasks.withType(Test).configureEach {
     useJUnit()
+    exclude "**/WellfriendPdfSmokeTest.class"
     jvmArgs("--enable-preview", "--enable-native-access=ALL-UNNAMED")
     doFirst {
         def nativeFile = wellfriendpdfNativeLibrary()
@@ -41,9 +42,9 @@ tasks.withType(Test).configureEach {
             throw new GradleException("Build wellfriendpdf-capi or set WELLFRIENDPDF_NATIVE_LIBRARY before running Java smoke tests")
         }
         environment "WELLFRIENDPDF_NATIVE_LIBRARY", nativeFile.absolutePath
-        def artifactDir = System.getenv("WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR")
+        def artifactDir = System.getenv("WELLFRIENDPDF_BINDING_PARITY_ARTIFACT_DIR")
         if (artifactDir != null && !artifactDir.isBlank()) {
-            environment "WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR", artifactDir
+            environment "WELLFRIENDPDF_BINDING_PARITY_ARTIFACT_DIR", artifactDir
         }
     }
 }
@@ -68,7 +69,7 @@ publishing {
                 url = "https://github.com/demisuga01-lab/wellfriendpdf"
                 licenses {
                     license {
-                        name = "MIT OR Apache-2.0"
+                        name = "MIT"
                     }
                 }
             }

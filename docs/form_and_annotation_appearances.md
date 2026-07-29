@@ -2,7 +2,7 @@
 
 Form values are serialized through the existing canonical form appearance
 writer. Annotation create/edit/delete and XFDF import regenerate supported
-appearance resources through Prompt 17. This preserves the owning document
+appearance resources through annotation/media redaction. This preserves the owning document
 graph and avoids a binding-specific rendering path.
 
 Flattening is an explicit action: the canonical appearance is painted into page

@@ -1,9 +1,0 @@
-{
-  "figure_caption_text_preserved": true,
-  "plain_text_rewrite": false,
-  "rag_chunk_text_preserved": true,
-  "schema_version": "prompt14.cjk.search_rag.v1",
-  "search_provenance_preserved": true,
-  "semantic_words_use_dictionary_mode_when_requested": true,
-  "table_cell_text_preserved": true
-}

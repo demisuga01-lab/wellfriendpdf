@@ -5,7 +5,7 @@ prefix/tail/xref windows it needs and loads indirect objects on demand. Object
 streams are decoded through a bounded cache. Parser-report performs additional
 audit work, but repair scans and revision traversal remain bounded.
 
-Current low-risk Prompt 01B work intentionally does not rewrite the object table
+Current low-risk Binding SurfaceB work intentionally does not rewrite the object table
 into arenas or a structure-of-arrays layout. That migration should be measured
 first against open, first-page access, last-page access, random object lookup,
 repair scan, and Arlington validation benchmarks.

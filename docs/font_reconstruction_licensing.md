@@ -1,6 +1,6 @@
 # Font Reconstruction Licensing
 
-Prompt 21 never infers legal embedding or redistribution rights from visual similarity, subset names, glyph images, or generated outlines.
+writer history never infers legal embedding or redistribution rights from visual similarity, subset names, glyph images, or generated outlines.
 
 Policy:
 
@@ -11,4 +11,4 @@ Policy:
 | Generated glyph output | Generated provenance required; not original font identity. |
 | External backend | Must declare license/provenance and privacy policy. |
 
-See `font-license-provenance-prompt21.json` for per-font evidence rows.
+See `font-license-provenance-writer_history.json` for per-font evidence rows.

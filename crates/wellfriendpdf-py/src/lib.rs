@@ -327,7 +327,7 @@ impl PySignatureValidationCancellation {
     }
 }
 
-/// Owned Prompt 24 signature-validation configuration.
+/// Owned Signature Validation signature-validation configuration.
 ///
 /// The object owns every byte supplied by Python.  Certificates remain either
 /// explicit trust anchors or untrusted intermediates according to the method
@@ -786,7 +786,7 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::pdfua_validation_json(bytes, None))
     }
 
-    /// Prompt 26 clause-mapped PDF/A validation. `target` e.g. "PDF/A-2B".
+    /// Incremental Signing Standards clause-mapped PDF/A validation. `target` e.g. "PDF/A-2B".
     #[pyo3(signature = (target=None))]
     fn validate_pdfa_standards<'py>(
         &self,
@@ -799,7 +799,7 @@ impl PyDocument {
         })
     }
 
-    /// Prompt 26 clause-mapped PDF/UA validation. `target` e.g. "PDF/UA-1".
+    /// Incremental Signing Standards clause-mapped PDF/UA validation. `target` e.g. "PDF/UA-1".
     #[pyo3(signature = (target=None))]
     fn validate_pdfua_standards<'py>(
         &self,
@@ -812,7 +812,7 @@ impl PyDocument {
         })
     }
 
-    /// Prompt 26 clause-mapped PDF/X validation. `target` e.g. "PDF/X-4".
+    /// Incremental Signing Standards clause-mapped PDF/X validation. `target` e.g. "PDF/X-4".
     #[pyo3(signature = (target=None))]
     fn validate_pdfx_standards<'py>(
         &self,
@@ -825,7 +825,7 @@ impl PyDocument {
         })
     }
 
-    /// Prompt 26 combined PDF/A + PDF/UA + PDF/X validation with cross-profile
+    /// Incremental Signing Standards combined PDF/A + PDF/UA + PDF/X validation with cross-profile
     /// conflicts. A single profile passing never hides another failing.
     #[pyo3(signature = (target=None))]
     fn validate_standards_all<'py>(
@@ -858,22 +858,22 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::forms_report_json(bytes, None))
     }
 
-    /// Prompt 16 bounded XFA packet inventory and XML-safety report.
+    /// XFA Runtime bounded XFA packet inventory and XML-safety report.
     fn xfa_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::xfa_report_json(bytes, None))
     }
 
-    /// Prompt 16 static XFA fields/datasets/layout/provenance extraction.
+    /// XFA Runtime static XFA fields/datasets/layout/provenance extraction.
     fn xfa_extract<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::xfa_extract_json(bytes, None))
     }
 
-    /// Prompt 16 script/event inventory and fail-closed default policy.
+    /// XFA Runtime script/event inventory and fail-closed default policy.
     fn xfa_script_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::xfa_script_report_json(bytes, None))
     }
 
-    /// Prompt 16 XFA-specific security/signature/redaction posture.
+    /// XFA Runtime XFA-specific security/signature/redaction posture.
     fn xfa_security_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::xfa_security_report_json(bytes, None))
     }
@@ -897,13 +897,13 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::annotation_report_json(bytes, None))
     }
 
-    /// Prompt 17 rich-media inventory. No player, network, filesystem, or media
+    /// annotation/media redaction rich-media inventory. No player, network, filesystem, or media
     /// codec is invoked.
     fn rich_media_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::rich_media_report_json(bytes, None))
     }
 
-    /// Prompt 17 annotation appearance generation report.
+    /// annotation/media redaction annotation appearance generation report.
     #[pyo3(signature = (options_json=None))]
     fn annotation_appearance_report<'py>(
         &self,
@@ -916,7 +916,7 @@ impl PyDocument {
         })
     }
 
-    /// Prompt 17 request-specific non-axis redaction plan.
+    /// annotation/media redaction request-specific non-axis redaction plan.
     fn nonaxis_redaction_plan<'py>(
         &self,
         py: Python<'py>,
@@ -928,18 +928,22 @@ impl PyDocument {
         })
     }
 
-    /// Combined Prompt 17 report.
-    fn prompt17_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt17_report_json(bytes, None))
+    /// Combined annotation/media redaction report.
+    fn annotation_media_redaction_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::annotation_media_redaction_report_json(bytes, None)
+        })
     }
 
-    /// Combined Prompt 18 secure-mutation report.
-    fn prompt18_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt18_report_json(bytes, None))
+    /// Combined secure mutation secure-mutation report.
+    fn secure_mutation_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::secure_mutation_report_json(bytes, None))
     }
 
-    fn prompt18b_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt18b_report_json(bytes, None))
+    fn secure_mutation_closeout_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::secure_mutation_closeout_report_json(bytes, None)
+        })
     }
 
     fn form_js_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
@@ -964,24 +968,26 @@ impl PyDocument {
         })
     }
 
-    fn prompt19_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt19_report_json(bytes, None))
+    fn form_action_policy_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::form_action_policy_report_json(bytes, None))
     }
 
-    fn prompt20_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt20_report_json(bytes, None))
+    fn advanced_editing_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::advanced_editing_report_json(bytes, None))
     }
 
-    fn prompt20b_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt20b_report_json(bytes, None))
+    fn advanced_editing_closeout_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::advanced_editing_closeout_report_json(bytes, None)
+        })
     }
 
-    fn prompt31_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt31_report_json(bytes, None))
+    fn source_editing_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::source_editing_report_json(bytes, None))
     }
 
     #[pyo3(signature = (page, source_text, replacement_text))]
-    fn prompt31_provenance<'py>(
+    fn source_editing_provenance<'py>(
         &self,
         py: Python<'py>,
         page: usize,
@@ -991,24 +997,24 @@ impl PyDocument {
         let source_text = source_text.to_string();
         let replacement_text = replacement_text.to_string();
         self.report_json(py, |bytes| {
-            sdk::prompt31_provenance_json(bytes, page, &source_text, &replacement_text, None)
+            sdk::source_editing_provenance_json(bytes, page, &source_text, &replacement_text, None)
         })
     }
 
     #[pyo3(signature = (request_json))]
-    fn prompt31_edit_eligibility<'py>(
+    fn source_editing_edit_eligibility<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let request_json = request_json.to_string();
         self.report_json(py, |bytes| {
-            sdk::prompt31_edit_eligibility_json(bytes, &request_json, None)
+            sdk::source_editing_edit_eligibility_json(bytes, &request_json, None)
         })
     }
 
     #[pyo3(signature = (request_json, output=None))]
-    fn prompt31_operator_text_edit<'py>(
+    fn source_editing_operator_text_edit<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
@@ -1016,7 +1022,7 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::prompt31_operator_text_edit_json(&bytes, request_json, None)
+            sdk::source_editing_operator_text_edit_json(&bytes, request_json, None)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -1025,12 +1031,12 @@ impl PyDocument {
         ))
     }
 
-    fn prompt21_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt21_report_json(bytes, None))
+    fn writer_history_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::writer_history_report_json(bytes, None))
     }
 
     #[pyo3(signature = (page=1, options_json=None))]
-    fn prompt21_raster_vector_report<'py>(
+    fn writer_history_raster_vector_report<'py>(
         &self,
         py: Python<'py>,
         page: usize,
@@ -1038,31 +1044,34 @@ impl PyDocument {
     ) -> PyResult<Py<PyAny>> {
         let options = options_json.map(str::to_string);
         self.report_json(py, |bytes| {
-            sdk::prompt21_raster_vector_report_json(bytes, page, options.as_deref(), None)
+            sdk::writer_history_raster_vector_report_json(bytes, page, options.as_deref(), None)
         })
     }
 
-    fn prompt21_font_reconstruction_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+    fn writer_history_font_reconstruction_report<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt21_font_reconstruction_report_json(bytes, None)
+            sdk::writer_history_font_reconstruction_report_json(bytes, None)
         })
     }
 
-    fn prompt21_object_stream_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+    fn writer_history_object_stream_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt21_object_stream_report_json(bytes, None)
+            sdk::writer_history_object_stream_report_json(bytes, None)
         })
     }
 
     #[pyo3(signature = (output=None))]
-    fn prompt21_pack_object_streams<'py>(
+    fn writer_history_pack_object_streams<'py>(
         &self,
         py: Python<'py>,
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) =
-            run_wellfriendpdf(|| sdk::prompt21_pack_object_streams_json(&bytes, None))?;
+            run_wellfriendpdf(|| sdk::writer_history_pack_object_streams_json(&bytes, None))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -1070,12 +1079,12 @@ impl PyDocument {
         ))
     }
 
-    fn prompt22_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt22_report_json(bytes, None))
+    fn compression_office_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::compression_office_report_json(bytes, None))
     }
 
-    fn prompt23_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt23_report_json(bytes, None))
+    fn crypto_writer_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::crypto_writer_report_json(bytes, None))
     }
 
     fn writer_determinism_audit<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
@@ -1122,7 +1131,7 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (options_json=None, output=None))]
-    fn prompt22_optimize<'py>(
+    fn compression_office_optimize<'py>(
         &self,
         py: Python<'py>,
         options_json: Option<&str>,
@@ -1131,7 +1140,7 @@ impl PyDocument {
         let bytes = self.file_bytes();
         let options = options_json.map(str::to_string);
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::prompt22_optimize_pdf_json(&bytes, options.as_deref(), None)
+            sdk::compression_office_optimize_pdf_json(&bytes, options.as_deref(), None)
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -1141,13 +1150,13 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (page=1))]
-    fn prompt20b_text_range_analyze<'py>(
+    fn advanced_editing_closeout_text_range_analyze<'py>(
         &self,
         py: Python<'py>,
         page: usize,
     ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt20b_text_range_analyze_json(bytes, page, None)
+            sdk::advanced_editing_closeout_text_range_analyze_json(bytes, page, None)
         })
     }
 
@@ -1159,8 +1168,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) =
-            run_wellfriendpdf(|| sdk::prompt20b_text_range_edit_json(&bytes, request_json, None))?;
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::advanced_editing_closeout_text_range_edit_json(&bytes, request_json, None)
+        })?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -1169,21 +1179,29 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (page=1))]
-    fn prompt20_vector_list<'py>(&self, py: Python<'py>, page: usize) -> PyResult<Py<PyAny>> {
+    fn advanced_editing_vector_list<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+    ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt20_vector_list_json(bytes, page, None)
+            sdk::advanced_editing_vector_list_json(bytes, page, None)
         })
     }
 
     #[pyo3(signature = (page))]
-    fn prompt31_path_provenance<'py>(&self, py: Python<'py>, page: usize) -> PyResult<Py<PyAny>> {
+    fn source_editing_path_provenance<'py>(
+        &self,
+        py: Python<'py>,
+        page: usize,
+    ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt31_path_provenance_json(bytes, page, None)
+            sdk::source_editing_path_provenance_json(bytes, page, None)
         })
     }
 
     #[pyo3(signature = (page, stable_id, operation_json, options_json=None, output=None))]
-    fn prompt31_path_edit<'py>(
+    fn source_editing_path_edit<'py>(
         &self,
         py: Python<'py>,
         page: usize,
@@ -1194,7 +1212,7 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::prompt31_path_edit_json(
+            sdk::source_editing_path_edit_json(
                 &bytes,
                 page,
                 stable_id,
@@ -1211,7 +1229,7 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (page, occurrence=None))]
-    fn prompt31_image_eligibility<'py>(
+    fn source_editing_image_eligibility<'py>(
         &self,
         py: Python<'py>,
         page: usize,
@@ -1220,58 +1238,61 @@ impl PyDocument {
         let occurrence = occurrence.map(str::to_string);
         self.report_json(py, |bytes| {
             let _ = occurrence.as_deref();
-            sdk::prompt31_image_eligibility_json(bytes, page, None)
+            sdk::source_editing_image_eligibility_json(bytes, page, None)
         })
     }
 
-    fn prompt32_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt32_report_json(bytes, None))
+    fn editing_transactions_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::editing_transactions_report_json(bytes, None)
+        })
     }
 
     #[pyo3(signature = (pages_json=None))]
-    fn prompt32_scene_report<'py>(
+    fn editing_transactions_scene_report<'py>(
         &self,
         py: Python<'py>,
         pages_json: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let pages = pages_json.map(str::to_string);
         self.report_json(py, |bytes| {
-            sdk::prompt32_scene_report_json(bytes, pages.as_deref(), None)
+            sdk::editing_transactions_scene_report_json(bytes, pages.as_deref(), None)
         })
     }
 
-    fn prompt32_scene_select<'py>(
+    fn editing_transactions_scene_select<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let request_json = request_json.to_string();
         self.report_json(py, |bytes| {
-            sdk::prompt32_scene_select_json(bytes, &request_json, None)
+            sdk::editing_transactions_scene_select_json(bytes, &request_json, None)
         })
     }
 
-    fn prompt32_transaction_plan<'py>(
+    fn editing_transactions_transaction_plan<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         let request_json = request_json.to_string();
         self.report_json(py, |bytes| {
-            sdk::prompt32_transaction_plan_json(bytes, &request_json, None)
+            sdk::editing_transactions_transaction_plan_json(bytes, &request_json, None)
         })
     }
 
     #[pyo3(signature = (request_json, output=None))]
-    fn prompt32_transaction_apply<'py>(
+    fn editing_transactions_transaction_apply<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) =
-            run_wellfriendpdf(|| sdk::prompt32_transaction_apply_json(&bytes, request_json, None))?;
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::editing_transactions_transaction_apply_json(&bytes, request_json, None)
+        })?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -1279,39 +1300,41 @@ impl PyDocument {
         ))
     }
 
-    fn prompt32_text_map<'py>(
+    fn editing_transactions_text_map<'py>(
         &self,
         py: Python<'py>,
         text: &str,
         direction: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
-        let json = run_wellfriendpdf(|| sdk::prompt32_text_map_json(text, direction))?;
+        let json = run_wellfriendpdf(|| sdk::editing_transactions_text_map_json(text, direction))?;
         parse_json_str(py, &json)
     }
 
-    fn prompt32_shape_text<'py>(
+    fn editing_transactions_shape_text<'py>(
         &self,
         py: Python<'py>,
         text: &str,
         direction: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
-        let json = run_wellfriendpdf(|| sdk::prompt32_shape_text_json(text, direction))?;
+        let json =
+            run_wellfriendpdf(|| sdk::editing_transactions_shape_text_json(text, direction))?;
         parse_json_str(py, &json)
     }
 
-    fn prompt32_font_subset_plan<'py>(
+    fn editing_transactions_font_subset_plan<'py>(
         &self,
         py: Python<'py>,
         text: &str,
         direction: Option<&str>,
         policy: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
-        let json =
-            run_wellfriendpdf(|| sdk::prompt32_font_subset_plan_json(text, direction, policy))?;
+        let json = run_wellfriendpdf(|| {
+            sdk::editing_transactions_font_subset_plan_json(text, direction, policy)
+        })?;
         parse_json_str(py, &json)
     }
 
-    fn prompt32_font_substitution_report<'py>(
+    fn editing_transactions_font_substitution_report<'py>(
         &self,
         py: Python<'py>,
         requested_family: &str,
@@ -1319,85 +1342,87 @@ impl PyDocument {
         policy: Option<&str>,
     ) -> PyResult<Py<PyAny>> {
         let json = run_wellfriendpdf(|| {
-            sdk::prompt32_font_substitution_report_json(requested_family, text, policy)
+            sdk::editing_transactions_font_substitution_report_json(requested_family, text, policy)
         })?;
         parse_json_str(py, &json)
     }
 
-    fn prompt33_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt33_report_json(bytes, None))
+    fn text_reflow_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::text_reflow_report_json(bytes, None))
     }
 
-    fn prompt33_layout_analyze<'py>(
+    fn text_reflow_layout_analyze<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt33_layout_analyze_json(bytes, request_json, None)
+            sdk::text_reflow_layout_analyze_json(bytes, request_json, None)
         })
     }
 
-    fn prompt33_semantic_layout<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt33_semantic_layout_json(bytes, None))
-    }
-
-    fn prompt33_reading_order_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+    fn text_reflow_semantic_layout<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt33_reading_order_report_json(bytes, None)
+            sdk::text_reflow_semantic_layout_json(bytes, None)
         })
     }
 
-    fn prompt33_flow_graph_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+    fn text_reflow_reading_order_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt33_flow_graph_report_json(bytes, None)
+            sdk::text_reflow_reading_order_report_json(bytes, None)
         })
     }
 
-    fn prompt33_reflow_preview<'py>(
+    fn text_reflow_flow_graph_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::text_reflow_flow_graph_report_json(bytes, None)
+        })
+    }
+
+    fn text_reflow_reflow_preview<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt33_reflow_preview_json(bytes, request_json, None)
+            sdk::text_reflow_reflow_preview_json(bytes, request_json, None)
         })
     }
 
-    fn prompt33_overflow_report<'py>(
+    fn text_reflow_overflow_report<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt33_overflow_report_json(bytes, request_json, None)
+            sdk::text_reflow_overflow_report_json(bytes, request_json, None)
         })
     }
 
-    fn prompt33_constraints_report<'py>(
+    fn text_reflow_constraints_report<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt33_constraints_report_json(bytes, request_json, None)
+            sdk::text_reflow_constraints_report_json(bytes, request_json, None)
         })
     }
 
-    fn prompt33_confidence_report<'py>(
+    fn text_reflow_confidence_report<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt33_confidence_report_json(bytes, request_json, None)
+            sdk::text_reflow_confidence_report_json(bytes, request_json, None)
         })
     }
 
-    /// Validate explicit Prompt 33 output bytes against this source document.
+    /// Validate explicit text reflow output bytes against this source document.
     /// The input document remains immutable and the caller retains output
     /// ownership, matching the Rust SDK and C ABI contracts.
-    fn prompt33_validate_reflow_output<'py>(
+    fn text_reflow_validate_reflow_output<'py>(
         &self,
         py: Python<'py>,
         output_pdf: &[u8],
@@ -1405,13 +1430,13 @@ impl PyDocument {
     ) -> PyResult<Py<PyAny>> {
         let bytes = self.file_bytes();
         let json = run_wellfriendpdf(|| {
-            sdk::prompt33_validate_reflow_output_json(&bytes, output_pdf, request_json, None)
+            sdk::text_reflow_validate_reflow_output_json(&bytes, output_pdf, request_json, None)
         })?;
         parse_json_str(py, &json)
     }
 
     #[pyo3(signature = (request_json, output=None))]
-    fn prompt33_reflow_region<'py>(
+    fn text_reflow_reflow_region<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
@@ -1419,7 +1444,7 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) =
-            run_wellfriendpdf(|| sdk::prompt33_reflow_region_json(&bytes, request_json, None))?;
+            run_wellfriendpdf(|| sdk::text_reflow_reflow_region_json(&bytes, request_json, None))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -1428,15 +1453,16 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (request_json, output=None))]
-    fn prompt33_reflow_document<'py>(
+    fn text_reflow_reflow_document<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (out, report) =
-            run_wellfriendpdf(|| sdk::prompt33_reflow_document_json(&bytes, request_json, None))?;
+        let (out, report) = run_wellfriendpdf(|| {
+            sdk::text_reflow_reflow_document_json(&bytes, request_json, None)
+        })?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -1445,7 +1471,7 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (output_pdf, request_json, output=None))]
-    fn prompt33_undo_reflow<'py>(
+    fn text_reflow_undo_reflow<'py>(
         &self,
         py: Python<'py>,
         output_pdf: &[u8],
@@ -1454,7 +1480,7 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (restored, report) = run_wellfriendpdf(|| {
-            sdk::prompt33_undo_reflow_json(&bytes, output_pdf, request_json, None)
+            sdk::text_reflow_undo_reflow_json(&bytes, output_pdf, request_json, None)
         })?;
         write_optional(&output, &restored)?;
         Ok((
@@ -1463,44 +1489,52 @@ impl PyDocument {
         ))
     }
 
-    fn prompt33_reflow_approve_structure<'py>(
+    fn text_reflow_reflow_approve_structure<'py>(
         &self,
         py: Python<'py>,
         correction_json: &str,
     ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt33_reflow_approve_structure_json(bytes, correction_json, None)
+            sdk::text_reflow_reflow_approve_structure_json(bytes, correction_json, None)
         })
     }
 
-    fn prompt33_reflow_operation_report<'py>(
+    fn text_reflow_reflow_operation_report<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
     ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt33_reflow_operation_report_json(bytes, request_json, None)
+            sdk::text_reflow_reflow_operation_report_json(bytes, request_json, None)
         })
     }
 
-    /// Prompt 34 feature report.  Operations use the shared JSON request
+    /// document subsystems feature report.  Operations use the shared JSON request
     /// contract so Python cannot diverge from the Rust/C/WASM engines.
-    fn prompt34_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt34_report_json(bytes, None))
-    }
-
-    fn prompt34_analyze<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt34_analyze_json(bytes, None))
-    }
-
-    fn prompt34_plan<'py>(&self, py: Python<'py>, request_json: &str) -> PyResult<Py<PyAny>> {
+    fn document_subsystems_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt34_plan_json(bytes, request_json, None)
+            sdk::document_subsystems_report_json(bytes, None)
+        })
+    }
+
+    fn document_subsystems_analyze<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::document_subsystems_analyze_json(bytes, None)
+        })
+    }
+
+    fn document_subsystems_plan<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::document_subsystems_plan_json(bytes, request_json, None)
         })
     }
 
     #[pyo3(signature = (request_json, output=None))]
-    fn prompt34_apply<'py>(
+    fn document_subsystems_apply<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
@@ -1508,7 +1542,7 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) =
-            run_wellfriendpdf(|| sdk::prompt34_apply_json(&bytes, request_json, None))?;
+            run_wellfriendpdf(|| sdk::document_subsystems_apply_json(&bytes, request_json, None))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -1517,7 +1551,7 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (output_pdf, request_json, output=None))]
-    fn prompt34_undo<'py>(
+    fn document_subsystems_undo<'py>(
         &self,
         py: Python<'py>,
         output_pdf: &[u8],
@@ -1525,8 +1559,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (restored, report) =
-            run_wellfriendpdf(|| sdk::prompt34_undo_json(&bytes, output_pdf, request_json, None))?;
+        let (restored, report) = run_wellfriendpdf(|| {
+            sdk::document_subsystems_undo_json(&bytes, output_pdf, request_json, None)
+        })?;
         write_optional(&output, &restored)?;
         Ok((
             PyBytes::new(py, &restored).unbind(),
@@ -1534,23 +1569,27 @@ impl PyDocument {
         ))
     }
 
-    /// Prompt 35 accessibility/redaction/sanitization report and operations.
-    fn prompt35_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt35_report_json(bytes, None))
+    /// document security accessibility/redaction/sanitization report and operations.
+    fn document_security_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::document_security_report_json(bytes, None))
     }
 
-    fn prompt35_analyze<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
-        self.report_json(py, |bytes| sdk::prompt35_analyze_json(bytes, None))
+    fn document_security_analyze<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::document_security_analyze_json(bytes, None))
     }
 
-    fn prompt35_plan<'py>(&self, py: Python<'py>, request_json: &str) -> PyResult<Py<PyAny>> {
+    fn document_security_plan<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+    ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt35_plan_json(bytes, request_json, None)
+            sdk::document_security_plan_json(bytes, request_json, None)
         })
     }
 
     #[pyo3(signature = (request_json, output=None))]
-    fn prompt35_apply<'py>(
+    fn document_security_apply<'py>(
         &self,
         py: Python<'py>,
         request_json: &str,
@@ -1558,7 +1597,7 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) =
-            run_wellfriendpdf(|| sdk::prompt35_apply_json(&bytes, request_json, None))?;
+            run_wellfriendpdf(|| sdk::document_security_apply_json(&bytes, request_json, None))?;
         write_optional(&output, &out)?;
         Ok((
             PyBytes::new(py, &out).unbind(),
@@ -1567,7 +1606,7 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (output_pdf, request_json, output=None))]
-    fn prompt35_undo<'py>(
+    fn document_security_undo<'py>(
         &self,
         py: Python<'py>,
         output_pdf: &[u8],
@@ -1575,8 +1614,9 @@ impl PyDocument {
         output: Option<PathBuf>,
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
-        let (restored, report) =
-            run_wellfriendpdf(|| sdk::prompt35_undo_json(&bytes, output_pdf, request_json, None))?;
+        let (restored, report) = run_wellfriendpdf(|| {
+            sdk::document_security_undo_json(&bytes, output_pdf, request_json, None)
+        })?;
         write_optional(&output, &restored)?;
         Ok((
             PyBytes::new(py, &restored).unbind(),
@@ -1584,13 +1624,13 @@ impl PyDocument {
         ))
     }
 
-    fn prompt35_verify_residual<'py>(
+    fn document_security_verify_residual<'py>(
         &self,
         py: Python<'py>,
         terms_json: &str,
     ) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| {
-            sdk::prompt35_verify_residual_json(bytes, terms_json, None)
+            sdk::document_security_verify_residual_json(bytes, terms_json, None)
         })
     }
 
@@ -1619,7 +1659,7 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::signature_report_json(bytes, None))
     }
 
-    /// Prompt 24 signature report with explicit trust/evidence options JSON.
+    /// Signature Validation signature report with explicit trust/evidence options JSON.
     fn signature_report_with_options<'py>(
         &self,
         py: Python<'py>,
@@ -1631,7 +1671,7 @@ impl PyDocument {
         })
     }
 
-    /// Prompt 24 validation outcome with an explicit replayable evidence bundle.
+    /// Signature Validation validation outcome with an explicit replayable evidence bundle.
     /// Online retrieval is still disabled unless the options JSON enables the
     /// shared bounded retrieval policy.
     fn signature_validation_with_evidence<'py>(
@@ -1645,7 +1685,7 @@ impl PyDocument {
         })
     }
 
-    /// Validate signatures through the owned Prompt 24 options object.  This
+    /// Validate signatures through the owned Signature Validation options object.  This
     /// bypasses the JSON facade and calls the same typed engine API exposed by
     /// the Rust SDK.
     fn signature_validation<'py>(
@@ -1659,7 +1699,7 @@ impl PyDocument {
     }
 
     /// Validate signatures and return both reports and an exportable evidence
-    /// bundle using the owned Prompt 24 options object.
+    /// bundle using the owned Signature Validation options object.
     fn signature_validation_with_evidence_options<'py>(
         &self,
         py: Python<'py>,
@@ -1673,7 +1713,7 @@ impl PyDocument {
         json_to_py(py, &outcome)
     }
 
-    /// Prompt 25 signature-preserving form-fill plan.
+    /// Pades LTV signature-preserving form-fill plan.
     #[pyo3(signature = (field_name, value, options_json="{}"))]
     fn signature_preserving_form_plan<'py>(
         &self,
@@ -1713,7 +1753,7 @@ impl PyDocument {
         self.report_json(py, |bytes| sdk::chunk_report_json(bytes, None))
     }
 
-    /// Prompt 15 provenance-aware RAG chunks with stable hashes, table/cell,
+    /// Semantic Closeout provenance-aware RAG chunks with stable hashes, table/cell,
     /// CJK dictionary, structure/MCID, ParentTree, and security metadata.
     #[pyo3(signature = (pages=None))]
     fn advanced_chunks<'py>(
@@ -1727,7 +1767,7 @@ impl PyDocument {
         })
     }
 
-    /// Full Prompt 15 semantic binding bundle as a versioned Python dictionary.
+    /// Full Semantic Closeout semantic binding bundle as a versioned Python dictionary.
     #[pyo3(signature = (pages=None))]
     fn semantic_bundle<'py>(
         &self,
@@ -1774,7 +1814,7 @@ impl PyDocument {
 
     // ── Output-producing operations (return (bytes, report) tuples) ──────────
 
-    /// Prompt 25 signature-preserving form-fill execution with post-edit validation.
+    /// Pades LTV signature-preserving form-fill execution with post-edit validation.
     #[pyo3(signature = (field_name, value, options_json="{}", explicit_invalidation_override=false, output=None))]
     fn signature_preserving_form_edit<'py>(
         &self,
@@ -1805,7 +1845,7 @@ impl PyDocument {
 
     #[pyo3(signature = (page, old_text, new_text, mode="rtl-reflow", options_json=None, output=None))]
     #[allow(clippy::too_many_arguments)]
-    fn prompt20_text_edit<'py>(
+    fn advanced_editing_text_edit<'py>(
         &self,
         py: Python<'py>,
         page: usize,
@@ -1817,7 +1857,15 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::prompt20_text_edit_json(&bytes, page, old_text, new_text, mode, options_json, None)
+            sdk::advanced_editing_text_edit_json(
+                &bytes,
+                page,
+                old_text,
+                new_text,
+                mode,
+                options_json,
+                None,
+            )
         })?;
         write_optional(&output, &out)?;
         Ok((
@@ -1827,7 +1875,7 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (page, stable_id, operation_json, options_json=None, output=None))]
-    fn prompt20_vector_edit<'py>(
+    fn advanced_editing_vector_edit<'py>(
         &self,
         py: Python<'py>,
         page: usize,
@@ -1838,7 +1886,7 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::prompt20_vector_edit_json(
+            sdk::advanced_editing_vector_edit_json(
                 &bytes,
                 page,
                 stable_id,
@@ -1855,7 +1903,7 @@ impl PyDocument {
     }
 
     #[pyo3(signature = (page, annotation_index=0, options_json=None, signature_policy_override=false, output=None))]
-    fn prompt20_ink_fit<'py>(
+    fn advanced_editing_ink_fit<'py>(
         &self,
         py: Python<'py>,
         page: usize,
@@ -1866,7 +1914,7 @@ impl PyDocument {
     ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
         let bytes = self.file_bytes();
         let (out, report) = run_wellfriendpdf(|| {
-            sdk::prompt20_ink_fit_json(
+            sdk::advanced_editing_ink_fit_json(
                 &bytes,
                 page,
                 annotation_index,
@@ -1904,7 +1952,7 @@ impl PyDocument {
         ))
     }
 
-    /// Flatten the supported static XFA subset under an explicit Prompt 16 mode.
+    /// Flatten the supported static XFA subset under an explicit XFA Runtime mode.
     #[pyo3(signature = (mode="flatten_supported_static", output=None))]
     fn xfa_flatten<'py>(
         &self,
@@ -2978,26 +3026,27 @@ fn pptx_to_pdf(pptx: PathBuf, output: Option<PathBuf>) -> PyResult<Vec<u8>> {
 
 #[pyfunction]
 #[pyo3(signature = (input, format))]
-fn prompt22_office_inspect<'py>(
+fn compression_office_office_inspect<'py>(
     py: Python<'py>,
     input: PathBuf,
     format: &str,
 ) -> PyResult<Py<PyAny>> {
     let bytes = std::fs::read(&input)?;
-    let json = run_wellfriendpdf(|| sdk::prompt22_office_inspect_json(&bytes, format))?;
+    let json = run_wellfriendpdf(|| sdk::compression_office_office_inspect_json(&bytes, format))?;
     parse_json_str(py, &json)
 }
 
 #[pyfunction]
 #[pyo3(signature = (input, format, output=None))]
-fn prompt22_office_to_pdf<'py>(
+fn compression_office_office_to_pdf<'py>(
     py: Python<'py>,
     input: PathBuf,
     format: &str,
     output: Option<PathBuf>,
 ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
     let bytes = std::fs::read(&input)?;
-    let (out, report) = run_wellfriendpdf(|| sdk::prompt22_office_to_pdf_json(&bytes, format))?;
+    let (out, report) =
+        run_wellfriendpdf(|| sdk::compression_office_office_to_pdf_json(&bytes, format))?;
     write_optional(&output, &out)?;
     Ok((
         PyBytes::new(py, &out).unbind(),
@@ -3165,7 +3214,7 @@ fn feature_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
     parse_json_str(py, &json)
 }
 
-/// Prompt 26 append-only incremental signing. `key_pem`/`cert_pem` are the
+/// Incremental Signing Standards append-only incremental signing. `key_pem`/`cert_pem` are the
 /// signer material and are never logged. `certify` (1|2|3) creates a DocMDP
 /// certification signature; otherwise an approval signature is produced. The
 /// signed PDF is reopened and validated before it is returned; a signature that
@@ -3231,14 +3280,14 @@ fn sign_pdf<'py>(
     Ok((signed, parse_json_str(py, &report_json)?))
 }
 
-/// Prompt 21 persistent history store report. No document input.
+/// writer history persistent history store report. No document input.
 #[pyfunction]
-fn prompt21_history_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
-    let json = run_wellfriendpdf(sdk::prompt21_history_report_json)?;
+fn writer_history_history_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let json = run_wellfriendpdf(sdk::writer_history_history_report_json)?;
     parse_json_str(py, &json)
 }
 
-/// Prompt 23 AES-GCM/PubSec tamper policy report. No secret material is accepted.
+/// crypto writer AES-GCM/PubSec tamper policy report. No secret material is accepted.
 #[pyfunction]
 fn crypto_tamper_test(py: Python<'_>) -> PyResult<Py<PyAny>> {
     let json = run_wellfriendpdf(sdk::crypto_tamper_test_json)?;
@@ -3325,8 +3374,8 @@ fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(docx_to_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(xlsx_to_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(pptx_to_pdf, module)?)?;
-    module.add_function(wrap_pyfunction!(prompt22_office_inspect, module)?)?;
-    module.add_function(wrap_pyfunction!(prompt22_office_to_pdf, module)?)?;
+    module.add_function(wrap_pyfunction!(compression_office_office_inspect, module)?)?;
+    module.add_function(wrap_pyfunction!(compression_office_office_to_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(watermark_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(add_page_numbers, module)?)?;
     module.add_function(wrap_pyfunction!(organize_pdf, module)?)?;
@@ -3335,7 +3384,7 @@ fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(verify_signatures_with_options, module)?)?;
     module.add_function(wrap_pyfunction!(feature_report, module)?)?;
     module.add_function(wrap_pyfunction!(sign_pdf, module)?)?;
-    module.add_function(wrap_pyfunction!(prompt21_history_report, module)?)?;
+    module.add_function(wrap_pyfunction!(writer_history_history_report, module)?)?;
     module.add_function(wrap_pyfunction!(crypto_tamper_test, module)?)?;
     module.add_function(wrap_pyfunction!(decode_budget_report, module)?)?;
     module.add_function(wrap_pyfunction!(codec_isolation_report, module)?)?;

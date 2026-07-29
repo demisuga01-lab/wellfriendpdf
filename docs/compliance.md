@@ -85,7 +85,7 @@ semantics.
 
 ## veraPDF
 
-veraPDF is the external reference validator for PDF/A and PDF/UA. GA Prompt 3
+veraPDF is the external reference validator for PDF/A and PDF/UA. GA Release Packaging
 validated the generated matrix with bundled veraPDF 1.30.2:
 
 | Profile | Generated example | veraPDF result |

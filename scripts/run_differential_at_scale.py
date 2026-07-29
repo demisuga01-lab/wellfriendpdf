@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prompt 29 availability-aware differential runner.
+"""Malformed Coverage availability-aware differential runner.
 
 The harness compares Wellfriend PDF SDK with independent command-line tools that
 are actually available on the runner. Raw tool output is retained under the
@@ -109,7 +109,7 @@ def classify_disagreement(results: dict[str, dict[str, object]], page_counts: di
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
-    parser.add_argument("--artifact-root", type=Path, default=Path("target/prompt29-malformed-differential-coverage"))
+    parser.add_argument("--artifact-root", type=Path, default=Path("target/malformed_coverage-malformed-differential-coverage"))
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--wellfriendpdf-bin", type=Path, required=True)
     parser.add_argument("--limit", type=int, default=300)
@@ -120,7 +120,7 @@ def main() -> int:
     raw_root = artifact_root / "raw" / "differential"
     manifest = load_manifest(args.manifest)[: args.limit]
     tool_support = {
-        "schema_version": "prompt29.differential-tool-support.v1",
+        "schema_version": "malformed_coverage.differential-tool-support.v1",
         "generated_at_utc": utc(),
         "tools": [
             {"tool": "qpdf", "available": command_available("qpdf"), "status": "available" if command_available("qpdf") else "unavailable_external_tool"},
@@ -181,11 +181,11 @@ def main() -> int:
     buckets = Counter(row["classification"] for row in rows)
     manual = [row for row in disagreements if row["needs_manual_review"]]
     write_json(artifact_root / "differential-tool-support-matrix.json", {**tool_support, "verdict": "passed"})
-    write_json(artifact_root / "differential-corpus-manifest.json", {"schema_version": "prompt29.differential-corpus-manifest.v1", "generated_at_utc": utc(), "files": manifest, "file_count": len(manifest), "verdict": "passed" if manifest else "failed"})
-    write_json(artifact_root / "differential-run-results.json", {"schema_version": "prompt29.differential-run-results.v1", "generated_at_utc": utc(), "rows": rows, "verdict": "passed" if rows and not manual else "failed"})
-    write_json(artifact_root / "differential-disagreement-buckets.json", {"schema_version": "prompt29.differential-disagreement-buckets.v1", "generated_at_utc": utc(), "buckets": dict(buckets), "unclassified_high_severity": manual, "verdict": "passed" if not manual else "failed"})
-    write_json(artifact_root / "differential-scale-scorecard.json", {"schema_version": "prompt29.differential-scale-scorecard.v1", "generated_at_utc": utc(), "attempted_count": len(rows), "disagreement_count": len(disagreements), "high_severity_unclassified_count": len(manual), "verdict": "passed" if rows and not manual else "failed"})
-    write_json(artifact_root / "differential-manual-review-queue.json", {"schema_version": "prompt29.differential-manual-review-queue.v1", "generated_at_utc": utc(), "queue": manual, "verdict": "passed" if not manual else "failed"})
+    write_json(artifact_root / "differential-corpus-manifest.json", {"schema_version": "malformed_coverage.differential-corpus-manifest.v1", "generated_at_utc": utc(), "files": manifest, "file_count": len(manifest), "verdict": "passed" if manifest else "failed"})
+    write_json(artifact_root / "differential-run-results.json", {"schema_version": "malformed_coverage.differential-run-results.v1", "generated_at_utc": utc(), "rows": rows, "verdict": "passed" if rows and not manual else "failed"})
+    write_json(artifact_root / "differential-disagreement-buckets.json", {"schema_version": "malformed_coverage.differential-disagreement-buckets.v1", "generated_at_utc": utc(), "buckets": dict(buckets), "unclassified_high_severity": manual, "verdict": "passed" if not manual else "failed"})
+    write_json(artifact_root / "differential-scale-scorecard.json", {"schema_version": "malformed_coverage.differential-scale-scorecard.v1", "generated_at_utc": utc(), "attempted_count": len(rows), "disagreement_count": len(disagreements), "high_severity_unclassified_count": len(manual), "verdict": "passed" if rows and not manual else "failed"})
+    write_json(artifact_root / "differential-manual-review-queue.json", {"schema_version": "malformed_coverage.differential-manual-review-queue.v1", "generated_at_utc": utc(), "queue": manual, "verdict": "passed" if not manual else "failed"})
     print(json.dumps({"status": "passed" if rows and not manual else "failed", "attempted": len(rows), "manual_review": len(manual), "artifact": str(artifact_root / "differential-scale-scorecard.json")}, sort_keys=True))
     return 0 if rows and not manual else 1
 

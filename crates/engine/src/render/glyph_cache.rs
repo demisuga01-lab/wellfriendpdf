@@ -16,7 +16,7 @@ pub struct GlyphCacheKey {
     pub is_gid: bool,
     /// Rendering class for the source glyph: 0 = monochrome outline, 1 =
     /// COLR/CPAL, 2 = embedded bitmap strike, 3 = SVG-in-OpenType security
-    /// blocked, 4 = known unsupported bitmap payload. This keeps Prompt 10B+
+    /// blocked, 4 = known unsupported bitmap payload. This keeps CJK RTL Color Glyph Closeout+
     /// color-glyph paths from sharing a stale monochrome cache entry when the
     /// same glyph ID is painted in different modes.
     pub color_mode: u8,

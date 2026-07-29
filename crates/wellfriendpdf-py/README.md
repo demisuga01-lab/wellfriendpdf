@@ -45,7 +45,7 @@ doc.signature_report()         # validity, trust, coverage, LTV
 doc.font_report()              # fonts, embedding, subsetting
 doc.validate_pdfa(); doc.validate_pdfua(); doc.validate(profile="all")
 doc.text_semantic(); doc.chunks(); doc.semantic_document()
-doc.semantic_bundle()          # full Prompt 15 semantic report
+doc.semantic_bundle()          # full Semantic Closeout semantic report
 doc.advanced_chunks()          # provenance/table/CJK/security-aware chunks
 doc.semantic_search("invoice") # semantic + dictionary-token provenance
 doc.table_proposal_status()    # hook/runtime/privacy status, no model load
@@ -62,7 +62,7 @@ wellfriendpdf.codec_isolation_report("FlateDecode", b"...", policy="in_process")
 wellfriendpdf.resource_dedup_report([b"a", b"a", b"b"])
 ```
 
-See `../../docs/python_sdk_prompt01.md` and `examples/sdk_reports.py`.
+See `../../docs/python_sdk_binding_surface.md` and `examples/sdk_reports.py`.
 
 Scanned-page OCR can be supplied by any Python object implementing
 `recognize(image_bytes, info) -> list[dict]`:

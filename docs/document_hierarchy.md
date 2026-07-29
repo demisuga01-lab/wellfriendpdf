@@ -11,7 +11,7 @@ PDF-to-PowerPoint. PDF-to-Excel will consume the same document model, but its
 primary input is the table/grid projection carried by `BlockKind::Table` and
 `analysis::tables::Table`.
 
-This is option (c) from the Phase 4a prompt:
+This is option (c) from the Phase 4a roadmap task:
 
 - `docmodel.rs` remains the backbone for flowing and page-positioned document
   content: headings, paragraphs, lists, figures, captions, tables, page

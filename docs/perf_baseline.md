@@ -1,4 +1,4 @@
-# Wellfriend Performance Baseline (Mega-Prompt 10)
+# Wellfriend Performance Baseline (Mega-Multilingual Color Glyphs)
 
 This document records throughput and peak-memory numbers for the Wellfriend CLI and
 engine. It complements the **parity** harness (`scripts/poppler_compare.py`),
@@ -119,9 +119,9 @@ image decode.
 > showed no 1-vs-N wall-clock speedup (page-level render parallelism is not
 > wired into the CLI) — see `docs/wellfriendpdf_vs_poppler.md` §D.5.
 
-## Prompt 4 Follow-Up (2026-06-23)
+## Codec Boundary Follow-Up (2026-06-23)
 
-Prompt 4 re-ran the capstone smoke benchmark and the multipage `perf_bench.py` harness after Prompt 3. The measured hotspot worth changing was raster render batching: `extract-text` already had strong 1-vs-N scaling, while the CLI render path still rendered and encoded pages in the ZIP write loop.
+Codec Boundary re-ran the capstone smoke benchmark and the multipage `perf_bench.py` harness after Release Packaging. The measured hotspot worth changing was raster render batching: `extract-text` already had strong 1-vs-N scaling, while the CLI render path still rendered and encoded pages in the ZIP write loop.
 
 ### Operation Smoke Refresh
 

@@ -178,7 +178,7 @@ jobs:
           mkdir -p "${staging}" dist
           cp "target/${TARGET}/release/wellfriendpdf" "${staging}/wellfriendpdf"
           cp README.md CHANGELOG.md "${staging}/"
-          for license in LICENSE LICENSE-MIT LICENSE-APACHE; do
+          for license in LICENSE; do
             if [ -f "${license}" ]; then
               cp "${license}" "${staging}/"
             fi
@@ -203,7 +203,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $staging, "dist" | Out-Null
           Copy-Item "target/$env:TARGET/release/wellfriendpdf.exe" (Join-Path $staging "wellfriendpdf.exe")
           Copy-Item "README.md", "CHANGELOG.md" $staging
-          foreach ($license in @("LICENSE", "LICENSE-MIT", "LICENSE-APACHE")) {
+          foreach ($license in @("LICENSE")) {
             if (Test-Path $license) {
               Copy-Item $license $staging
             }

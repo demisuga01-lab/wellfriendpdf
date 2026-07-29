@@ -1,8 +1,0 @@
-{
-  "deterministic_merge_accepted_count": 1,
-  "malformed_schema_rejected": true,
-  "mock_cloud_default_regions": 0,
-  "mock_cloud_default_status": "cloud_mock_disabled_by_default",
-  "mock_local_regions": 1,
-  "schema_version": "prompt14.ml_layout.fixtures.v1"
-}

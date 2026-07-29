@@ -1,0 +1,18 @@
+{
+  "schema_version": "repository_professionalization.benchmark.corpus.v1",
+  "name": "Wellfriend compact repository benchmark corpus",
+  "provenance": "Repository-generated fixtures and compact checked-in fixtures",
+  "large_external_files_committed": false,
+  "categories": [
+    "born_digital_text",
+    "paragraph_reflow_text",
+    "ruled_table",
+    "compact_scan_fixture",
+    "forms_annotations_generated_during_benchmark",
+    "security_repair_generated_during_benchmark"
+  ],
+  "notes": [
+    "The benchmark harness writes exact hashes and byte counts for the materialized fixtures into results/latest/raw-results.json.",
+    "Representative external corpus and stress measurements remain engineering-validation tasks, not README headline numbers."
+  ]
+}

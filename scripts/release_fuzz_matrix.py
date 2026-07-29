@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build the Prompt 27 release fuzz target inventory.
+"""Build the Crypto Standards Fuzz release fuzz target inventory.
 
 The script intentionally uses only the Python standard library so the same
 command works on a fresh VPS runner and in GitHub Actions. It reads the
 out-of-workspace `fuzz/Cargo.toml`, classifies each target into release tiers,
-and writes deterministic JSON/Markdown evidence for Prompt 27.
+and writes deterministic JSON/Markdown evidence for Crypto Standards Fuzz.
 """
 
 from __future__ import annotations
@@ -16,9 +16,9 @@ import time
 from pathlib import Path
 
 
-SCHEMA_VERSION = "prompt27.release-fuzz-target-inventory.v1"
-DEFAULT_OUTPUT = Path("target/prompt27-verapdf-crypto-fuzz/release-fuzz-target-inventory.json")
-PROMPT27_FUZZ_MEMORY_CAP_MIB = 16_384
+SCHEMA_VERSION = "crypto_standards_fuzz.release-fuzz-target-inventory.v1"
+DEFAULT_OUTPUT = Path("target/crypto_standards_fuzz-verapdf-crypto-fuzz/release-fuzz-target-inventory.json")
+CRYPTO_STANDARDS_FUZZ_FUZZ_MEMORY_CAP_MIB = 16_384
 
 PARSER_TARGETS = {
     "parse_pdf": "end-to-end parser/COS/xref/object-stream/open-bytes coverage",
@@ -52,7 +52,7 @@ SUBSYSTEMS = {
     "cmap": "renderer/cmap",
     "functions": "renderer/functions",
     "display_list": "renderer/display-list",
-    "renderer_prompt11": "renderer/prompt11-regression",
+    "renderer_renderer_fuzz_cmm": "renderer/renderer_fuzz_cmm-regression",
     "writer": "writer/edit",
     "editing": "writer/edit",
     "color_report": "standards/color",
@@ -128,7 +128,7 @@ def target_row(target: dict[str, str], repo: Path) -> dict[str, object]:
         "subsystem": subsystem,
         "crate_or_bin": "fuzz/" + target["path"],
         "input_cap_bytes": 262_144 if is_parser or "signature" in subsystem or "standards" in subsystem else 65_536,
-        "memory_cap_mib": PROMPT27_FUZZ_MEMORY_CAP_MIB,
+        "memory_cap_mib": CRYPTO_STANDARDS_FUZZ_FUZZ_MEMORY_CAP_MIB,
         "expected_run_mode": (
             "build+smoke+long_high_priority" if name in HIGH_PRIORITY_LONG else
             "build+smoke_release_critical" if name in RELEASE_CRITICAL else
@@ -141,8 +141,8 @@ def target_row(target: dict[str, str], repo: Path) -> dict[str, object]:
         "release_inclusion": "release-fuzz" if name in RELEASE_CRITICAL else "inventory-only-until-prioritized",
         "current_build_status": "not_run_by_inventory",
         "current_smoke_status": "not_run_by_inventory",
-        "long_campaign_status": "planned_prompt27" if name in HIGH_PRIORITY_LONG else "smoke_only_prompt27",
-        "prompt27_parser_scope": PARSER_TARGETS.get(name),
+        "long_campaign_status": "planned_crypto_standards_fuzz" if name in HIGH_PRIORITY_LONG else "smoke_only_crypto_standards_fuzz",
+        "crypto_standards_fuzz_parser_scope": PARSER_TARGETS.get(name),
     }
 
 
@@ -191,7 +191,7 @@ def parser_scope_coverage(rows: list[dict[str, object]]) -> list[dict[str, objec
 def write_markdown(payload: dict[str, object], path: Path) -> None:
     rows = payload["targets"]
     lines = [
-        "# Prompt 27 release fuzz target inventory",
+        "# Crypto Standards Fuzz release fuzz target inventory",
         "",
         f"Generated: `{payload['generated_at_utc']}`",
         "",

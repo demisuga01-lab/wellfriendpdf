@@ -7,7 +7,7 @@ SAME pure-Rust metrics (via ``wellfriendpdf eval-score``), so the numbers are di
 comparable and comparable to how the literature reports (CER/WER, cell-F1/TEDS,
 field-F1, block-type accuracy, reading-order similarity).
 
-Design (matches the prompt's constraints):
+Design (matches the roadmap task's constraints):
   - Competitor DETECTION at runtime; run those present, skip others cleanly with
     a note; NEVER fabricate a competitor number. Docling is marked not-run if
     absent.

@@ -1,0 +1,12 @@
+{
+  "verdict": "no_legacy_branding",
+  "finding_count": 0,
+  "findings": [],
+  "allowed_count": 1,
+  "allowed": [
+    {
+      "path_hash": "13ee4b2252c9e516a0547f2891aa2105c3ca71c6d7a1e682c69be97998dfc87e",
+      "reason": "third_party_dependency_name"
+    }
+  ]
+}

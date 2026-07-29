@@ -1,6 +1,6 @@
 /* Cross-language SDK facade demo (C side).
  *
- * Opens a PDF and calls the Prompt-01 report surfaces, printing the envelope
+ * Opens a PDF and calls the binding-surface report surfaces, printing the envelope
  * `kind` for each. This is the C counterpart of the Rust `sdk_reports` example
  * and the Python `sdk_reports.py` — all three call the SAME shared facade and
  * receive the SAME versioned-JSON envelopes.

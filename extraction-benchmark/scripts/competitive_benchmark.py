@@ -245,7 +245,7 @@ def poppler_text(pdf,out,args): return ["pdftotext","-layout",str(pdf),str(out)]
 def poppler_images(pdf,out,args): return ["pdfimages","-list",str(pdf)]
 
 def text_tools(): return [
-    Tool("wellfriendpdf","local",None,"MIT OR Apache-2.0",wellfriendpdf_text),
+    Tool("wellfriendpdf","local",None,"MIT",wellfriendpdf_text),
     Tool("pdf_wellfriendpdf","python","pdf_wellfriendpdf","MIT",lambda p,o,a:pycmd(PY_PDF_WELLFRIENDPDF_TEXT,p,o,a)),
     Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_TEXT,p,o,a),"PyMuPDF"),
     Tool("pypdfium2","python","pypdfium2","Apache-2.0/BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDFIUM2_TEXT,p,o,a)),
@@ -257,9 +257,9 @@ def text_tools(): return [
     Tool("markitdown","python","markitdown","MIT",lambda p,o,a:pycmd(PY_MARKITDOWN_TEXT,p,o,a)),
     Tool("docling","python","docling","MIT",lambda p,o,a:tool_pycmd("docling",PY_DOCLING_TEXT,p,o,a)),
     Tool("poppler","cli",None,"GPL-2.0-or-later",poppler_text)]
-def table_tools(): return [Tool("wellfriendpdf","local",None,"MIT OR Apache-2.0",wellfriendpdf_tables),Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_TABLES,p,o,a),"PyMuPDF"),Tool("pdfplumber","python","pdfplumber","MIT",lambda p,o,a:pycmd(PY_PDFPLUMBER_TABLES,p,o,a))]
-def field_tools(): return [Tool("wellfriendpdf","local",None,"MIT OR Apache-2.0",wellfriendpdf_fields),Tool("pypdf","python","pypdf","BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDF_FIELDS,p,o,a))]
-def image_tools(): return [Tool("wellfriendpdf","local",None,"MIT OR Apache-2.0",wellfriendpdf_images),Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_IMAGES,p,o,a),"PyMuPDF"),Tool("pdfplumber","python","pdfplumber","MIT",lambda p,o,a:pycmd(PY_PDFPLUMBER_IMAGES,p,o,a)),Tool("pypdf","python","pypdf","BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDF_IMAGES,p,o,a)),Tool("poppler","cli",None,"GPL-2.0-or-later",poppler_images)]
+def table_tools(): return [Tool("wellfriendpdf","local",None,"MIT",wellfriendpdf_tables),Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_TABLES,p,o,a),"PyMuPDF"),Tool("pdfplumber","python","pdfplumber","MIT",lambda p,o,a:pycmd(PY_PDFPLUMBER_TABLES,p,o,a))]
+def field_tools(): return [Tool("wellfriendpdf","local",None,"MIT",wellfriendpdf_fields),Tool("pypdf","python","pypdf","BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDF_FIELDS,p,o,a))]
+def image_tools(): return [Tool("wellfriendpdf","local",None,"MIT",wellfriendpdf_images),Tool("pymupdf","python","fitz","AGPL-3.0/commercial",lambda p,o,a:pycmd(PY_PYMUPDF_IMAGES,p,o,a),"PyMuPDF"),Tool("pdfplumber","python","pdfplumber","MIT",lambda p,o,a:pycmd(PY_PDFPLUMBER_IMAGES,p,o,a)),Tool("pypdf","python","pypdf","BSD-3-Clause",lambda p,o,a:pycmd(PY_PYPDF_IMAGES,p,o,a)),Tool("poppler","cli",None,"GPL-2.0-or-later",poppler_images)]
 
 def cap(s,n=600): return "" if not s else (s if len(s)<=n else s[:n]+" ...")
 def run_cap(cmd,timeout=20):

@@ -1,6 +1,6 @@
 # Raster To Vector
 
-Prompt 21 exposes bounded raster-to-vector analysis through `wellfriendpdf_engine::prompt21::raster_vectorization_report`, CLI commands `raster-vector-report` and `raster-vectorize`, and SDK/binding report wrappers.
+writer history exposes bounded raster-to-vector analysis through `wellfriendpdf_engine::writer_history::raster_vectorization_report`, CLI commands `raster-vector-report` and `raster-vectorize`, and SDK/binding report wrappers.
 
 Supported evidence:
 
@@ -12,4 +12,4 @@ Supported evidence:
 
 The output is a reconstructed vector model from raster evidence, not the original authoring path. By default Wellfriend exports/report vectors and leaves source rasters unchanged. Replacement requires an explicit clone-one-resource policy because shared image XObjects can appear on multiple pages or in multiple placements.
 
-Artifacts: `raster-vectorization-primitive-results-prompt21.json`, `raster-vectorization-topology-prompt21.json`, and `raster-vectorization-curve-error-prompt21.json`.
+Artifacts: `raster-vectorization-primitive-results-writer_history.json`, `raster-vectorization-topology-writer_history.json`, and `raster-vectorization-curve-error-writer_history.json`.

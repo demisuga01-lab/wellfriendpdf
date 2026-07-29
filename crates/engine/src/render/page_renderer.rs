@@ -108,7 +108,7 @@ impl PageRenderer {
         Ok(buf)
     }
 
-    /// Build the conservative Prompt 03 display list for a page.
+    /// Build the conservative Release Packaging display list for a page.
     ///
     /// The list always records what it can inspect, but it is marked unsupported
     /// when it sees primitives that still require the immediate renderer (text,
@@ -268,11 +268,11 @@ impl PageRenderer {
         Ok(bands)
     }
 
-    /// Render-interpreter pass that returns sparse Prompt 12/13 plate state.
+    /// Render-interpreter pass that returns sparse Prepress CMM/13 plate state.
     ///
     /// This follows the same content dispatch path as RGB rendering for page
     /// fill/stroke operations, and exposes plate/tint/OP/op/OPM side-channel
-    /// data for supported Prompt 13 prepress close-out cases.
+    /// data for supported Prepress Proofing prepress close-out cases.
     pub fn prepress_plate_report(
         engine: &ContentEngine,
         page_number: usize,
@@ -370,7 +370,7 @@ struct RenderState<'a> {
     /// Visibility stack for nested BMC/BDC/EMC marked-content sections.
     oc_visibility_stack: Vec<bool>,
     oc_current_visible: bool,
-    /// Sparse Prompt 12 plate framebuffer side-channel. It records Separation
+    /// Sparse Prepress CMM plate framebuffer side-channel. It records Separation
     /// and DeviceN tint identity for report/proofing without changing RGB
     /// preview compositing semantics.
     separation_framebuffer: SeparationFramebuffer,
@@ -7686,7 +7686,7 @@ mod tests {
     }
 
     #[test]
-    fn colrv1_porter_duff_pixel_modes_cover_prompt10f_set() {
+    fn colrv1_porter_duff_pixel_modes_cover_porterduff_radial_color_glyph_set() {
         use crate::render::color_glyph::ColrBlendMode;
 
         let src = [200, 20, 20, 128];

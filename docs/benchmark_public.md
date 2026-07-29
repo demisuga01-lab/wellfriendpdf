@@ -31,7 +31,7 @@ Raw PDFs and per-file raw results are local-only and ignored by git. The manifes
 
 | tool         | available | reason/license                                                 |
 | ------------ | --------- | -------------------------------------------------------------- |
-| wellfriendpdf        | yes       | MIT OR Apache-2.0                                              |
+| wellfriendpdf        | yes       | MIT                                              |
 | pdf_wellfriendpdf    | yes       | MIT                                                            |
 | pymupdf      | yes       | AGPL-3.0/commercial                                            |
 | pypdfium2    | yes       | Apache-2.0/BSD-3-Clause                                        |

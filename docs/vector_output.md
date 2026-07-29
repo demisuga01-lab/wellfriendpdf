@@ -55,7 +55,7 @@ For pages using only natively-representable operations:
 - **Colour** → device Gray/RGB/CMYK and Separation/DeviceN tint transforms,
   resolved to `#rrggbb` the same way the raster path does.
 
-## Rasterize-and-embed fallback (the prompt's prescribed fallback)
+## Rasterize-and-embed fallback (the roadmap task's prescribed fallback)
 
 Some operations have no faithful native-SVG mapping *here*: **images** (XObject
 `Do` / inline `BI`), **shadings** (`sh`), **shading/tiling pattern fills**
@@ -103,4 +103,4 @@ parsed by `resvg` as a structural cross-check.
 - **Per-region** image embedding (an `<image>` per image XObject under its
   transform) instead of whole-page rasterization, so a page mixing text and one
   image stays mostly vector.
-- **PDF-to-PDF** (`pdftocairo -pdf`) via the Mega-Prompt 16 writer.
+- **PDF-to-PDF** (`pdftocairo -pdf`) via the Mega-XFA Runtime writer.

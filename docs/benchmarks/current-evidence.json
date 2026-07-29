@@ -1,33 +1,204 @@
 {
-  "schema": "readme.current_evidence.v1",
-  "commit": "d346915de5125fccf3163847cb3ebec197c49046",
-  "generated_for": "README rewrite",
-  "release": {
-    "implementation_status": "complete",
-    "release_posture": "release_ready_with_limits",
-    "evidence_class": "validated_in_repository",
-    "artifact": "target/prompt36-enterprise-validation/final-release-verdict.json"
+  "schema_version": "repository_professionalization.current_evidence.v1",
+  "status": "benchmark_backed_current_snapshot",
+  "wellfriend": {
+    "results": [
+      {
+        "category": "core",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.004908,
+        "p95_ms": 0.005188,
+        "peak_rss_kib": 6684,
+        "task": "open_parse",
+        "throughput_ops_per_sec_median": 203748.98125509373
+      },
+      {
+        "category": "core",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.0049169999999999995,
+        "p95_ms": 0.005077,
+        "peak_rss_kib": 6736,
+        "task": "page_count_model",
+        "throughput_ops_per_sec_median": 203376.0423022168
+      },
+      {
+        "category": "core",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.027812,
+        "p95_ms": 0.031037000000000002,
+        "peak_rss_kib": 8080,
+        "task": "text_extraction",
+        "throughput_ops_per_sec_median": 35955.7025744283
+      },
+      {
+        "category": "core",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.13685499999999998,
+        "p95_ms": 0.142674,
+        "peak_rss_kib": 10144,
+        "task": "render_page_png_72dpi",
+        "throughput_ops_per_sec_median": 7307.003763106939
+      },
+      {
+        "category": "core",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.017596,
+        "p95_ms": 0.018177,
+        "peak_rss_kib": 10400,
+        "task": "canonical_noop_rewrite",
+        "throughput_ops_per_sec_median": 56831.09797681291
+      },
+      {
+        "category": "core",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.070646,
+        "p95_ms": 0.074001,
+        "peak_rss_kib": 10792,
+        "task": "linearized_save",
+        "throughput_ops_per_sec_median": 14155.083090337741
+      },
+      {
+        "category": "editing",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.744757,
+        "p95_ms": 0.7524689999999999,
+        "peak_rss_kib": 11528,
+        "task": "source_text_replacement_save_reopen",
+        "throughput_ops_per_sec_median": 1342.7198401626301
+      },
+      {
+        "category": "editing",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 597,
+        "median_ms": 0.51362,
+        "p95_ms": 0.528513,
+        "peak_rss_kib": 12248,
+        "task": "paragraph_reflow_save_reopen",
+        "throughput_ops_per_sec_median": 1946.9646820606677
+      },
+      {
+        "category": "editing",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 865,
+        "median_ms": 37.160841,
+        "p95_ms": 43.102214,
+        "peak_rss_kib": 16252,
+        "task": "table_cell_edit_save_reopen",
+        "throughput_ops_per_sec_median": 26.910047595532085
+      },
+      {
+        "category": "editing",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.14318499999999998,
+        "p95_ms": 0.150526,
+        "peak_rss_kib": 16252,
+        "task": "annotation_create_appearance_save_reopen",
+        "throughput_ops_per_sec_median": 6983.9717847539905
+      },
+      {
+        "category": "editing",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.133821,
+        "p95_ms": 0.14141199999999998,
+        "peak_rss_kib": 16252,
+        "task": "form_text_create_appearance_save_reopen",
+        "throughput_ops_per_sec_median": 7472.668714177895
+      },
+      {
+        "category": "ocr",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 652,
+        "median_ms": 0.204567,
+        "p95_ms": 0.215203,
+        "peak_rss_kib": 16252,
+        "task": "ocr_searchable_layer_save_reopen",
+        "throughput_ops_per_sec_median": 4888.373980162978
+      },
+      {
+        "category": "security",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 597,
+        "median_ms": 0.44653,
+        "p95_ms": 0.463986,
+        "peak_rss_kib": 16252,
+        "task": "redaction_residual_verification",
+        "throughput_ops_per_sec_median": 2239.491187602177
+      },
+      {
+        "category": "security",
+        "evidence_class": "measured_directly",
+        "failures": 0,
+        "input_bytes": 642,
+        "median_ms": 0.087501,
+        "p95_ms": 0.09430200000000001,
+        "peak_rss_kib": 16252,
+        "task": "accessibility_structure_repair",
+        "throughput_ops_per_sec_median": 11428.440817819226
+      }
+    ],
+    "schema_version": "repository_professionalization.benchmark.summary.v1",
+    "successful_task_count": 14,
+    "task_count": 14,
+    "verdict": "passed"
   },
-  "prompt36": {
-    "acceptance_count": 42,
-    "acceptance_status": "complete",
-    "max_peak_rss_kib": 6618920,
-    "memory_budget_kib": 33554432,
-    "fuzz_target_count": 43,
-    "fuzz_runs_per_target": 64,
-    "binding_status": "pass_with_exact_gradle_host_limit"
+  "corpus": {
+    "categories": [
+      {
+        "bytes": 642,
+        "name": "born_digital_text",
+        "pages": 1,
+        "sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057"
+      },
+      {
+        "bytes": 597,
+        "name": "paragraph_reflow_text",
+        "pages": 1,
+        "sha256": "d304b46c64f3a923b16551666e99387842e1e391e961927dbcd6caf24372320c"
+      },
+      {
+        "bytes": 865,
+        "name": "ruled_table",
+        "pages": 1,
+        "sha256": "9dd92bdd38439689e43b6172c502f43b55726b85586245e81f0b3308b04237e7"
+      },
+      {
+        "bytes": 652,
+        "name": "compact_scan_fixture",
+        "pages": 1,
+        "sha256": "3db9f6bd77f5235febb49923b8c7e1bfdb075c20b59e566696f3237278dacc45"
+      }
+    ],
+    "file_count": 4,
+    "name": "repository-generated compact benchmark corpus",
+    "provenance": "repository-generated fixtures plus checked-in compact scan fixture",
+    "total_bytes": 2756
   },
-  "readme_direct_comparison": {
-    "vps_result_folder": "/home/demisuga01/wellpdf/results/readme-competitor-20260729T175541Z",
-    "artifact": "target/readme-rewrite/readme-direct-comparisons-qpdf-clean.json",
-    "operation_count": 11,
-    "pass_count": 11,
-    "evidence_class": "measured_directly",
-    "limitations": [
-      "single compact repository-owned fixture",
-      "not a corpus benchmark",
-      "not an aggregate ranking",
-      "wrapper relationships disclosed"
-    ]
-  }
+  "environment_file": "benchmarks/results/latest/environment.json",
+  "tool_versions_file": "benchmarks/results/latest/tool-versions.json",
+  "limitations": [
+    "Compact repository-generated fixture set; not a public-corpus stress result.",
+    "Comparator timings are task-specific and not an aggregate winner score."
+  ]
 }

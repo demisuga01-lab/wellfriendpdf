@@ -4,7 +4,7 @@ For a shared annotation appearance vector, `clone_edit_one_instance` clones the 
 
 The mutation is annotation-ownership work, distinct from annotation semantics: it does not change `/AS`, field values, or sibling rollover/down appearances unless a selected category/state explicitly targets them. Malformed or ambiguous AP/state dictionaries fail closed. Structural preservation never claims cryptographic signature validity.
 
-Prompt 20B focused fixtures cover shared `/AP /N`, `/R`, `/D`, state
+advanced editing closeout focused fixtures cover shared `/AP /N`, `/R`, `/D`, state
 dictionaries, checkbox/radio widget state appearances, selected-state stream
 cloning, `/AS` preservation, sibling-state preservation, and a shared
 appearance stream whose painted vector is inside a nested Form XObject.

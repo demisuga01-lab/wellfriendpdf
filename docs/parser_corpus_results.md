@@ -1,6 +1,6 @@
 # Parser Corpus Results
 
-Prompt 01B adds the expanded corpus runner but does not vendor SafeDocs or other
+Binding SurfaceB adds the expanded corpus runner but does not vendor SafeDocs or other
 large corpora into the repository.
 
 Run a bounded local corpus pass with:

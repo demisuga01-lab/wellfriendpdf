@@ -1,0 +1,7 @@
+{
+  "artifact": "stale-brand-scan",
+  "redacted": true,
+  "reason": "legacy brand matches removed from retained evidence",
+  "finding_count_before_cleanup": 1,
+  "final_audit": "evidence/repository-professionalization/final-stale-brand-audit.json"
+}

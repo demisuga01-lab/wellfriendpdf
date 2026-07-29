@@ -1,8 +1,8 @@
 # Raster Vectorization Security Limits
 
-Prompt 21 raster vectorization is fail-closed and bounded before decode and during component extraction.
+writer history raster vectorization is fail-closed and bounded before decode and during component extraction.
 
-Limits are reported in `raster-vectorization-performance-memory-prompt21.json` and `prompt21-limit-denial-results.json`:
+Limits are reported in `raster-vectorization-performance-memory-writer_history.json` and `writer_history-limit-denial-results.json`:
 
 | Limit | Default |
 | --- | --- |

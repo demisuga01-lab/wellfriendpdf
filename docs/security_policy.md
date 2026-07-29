@@ -8,7 +8,7 @@ Report suspected vulnerabilities through the project maintainer's private securi
 
 The engine crate uses `#![forbid(unsafe_code)]`. Native dependencies must be optional, isolated, documented, and kept out of default/WASM builds unless a later policy explicitly changes that posture.
 
-Prompt 11 applies this rule to native color management. LittleCMS/lcms2 is not
+Renderer Fuzz CMM applies this rule to native color management. LittleCMS/lcms2 is not
 linked or vendored in the default engine, and the future `native-cmm-lcms2`
 feature name remains reserved until a separate audited native boundary,
 packaging policy, and fuzz posture exist. The current CMM report must identify
@@ -27,7 +27,7 @@ Fuzz targets should compile on every release candidate. Long fuzz runs are expec
 
 Wellfriend does not execute PDF active content. Integrators running untrusted files at scale should still combine Wellfriend with process/container sandboxing, CPU/memory/time limits, and storage isolation.
 
-Prompt 03 adds optional codec subprocess isolation for bounded lossless filter
+Release Packaging adds optional codec subprocess isolation for bounded lossless filter
 decode work. This contains worker crashes, timeouts, malformed worker responses,
 and oversized decoded output. It is not a syscall sandbox, not privilege
 separation by itself, and not a guarantee that all codec families are isolated.

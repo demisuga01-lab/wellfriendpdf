@@ -1,0 +1,10 @@
+{
+  "updated": [
+    "docs/wellfriendpdf_rename_migration.md",
+    "evidence/repository-professionalization/stale-brand-scan.json"
+  ],
+  "sha256": {
+    "evidence/repository-professionalization/stale-brand-scan.json": "3dcfb2ca6aa00676e7a16ad2f98f468e810a56416eb1cfcc8f80ceff4e83b28f",
+    "docs/wellfriendpdf_rename_migration.md": "4a49a3c9bff2da12b55c619e4b35c0c698ff0c0d7b6867ef7eca0173ada72653"
+  }
+}

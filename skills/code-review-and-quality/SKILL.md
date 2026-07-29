@@ -197,7 +197,7 @@ Human makes the final call
 
 This catches issues that a single model might miss — different models have different blind spots.
 
-**Example prompt for a review agent:**
+**Example roadmap task for a review agent:**
 ```
 Review this code change for correctness, security, and adherence to
 our project conventions. The spec says [X]. The change should [Y].

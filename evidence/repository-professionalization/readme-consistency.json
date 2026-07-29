@@ -1,0 +1,8 @@
+{
+  "schema_version": "repository_professionalization.readme_consistency.v1",
+  "verdict": "readme_consistent_with_benchmark_summary",
+  "readme": "README.md",
+  "benchmark_summary": "benchmarks/results/latest/summary.json",
+  "competitor_comparison": "docs/benchmarks/competitor-comparison.json",
+  "claim_count": 5
+}

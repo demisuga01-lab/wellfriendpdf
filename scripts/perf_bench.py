@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wellfriend performance benchmark harness (Mega-Prompt 10, Part A).
+"""Wellfriend performance benchmark harness (Mega-Multilingual Color Glyphs, Part A).
 
 Measures, for the release-build `wellfriendpdf` CLI:
   * THROUGHPUT  — best-of-N wall-clock time per (command, file, thread-count).

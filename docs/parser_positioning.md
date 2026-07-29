@@ -34,7 +34,7 @@ extract-pages) alongside. It has:
 - **Embeddable four ways.** Rust library (the engine API), C ABI
   (`wellfriendpdf-capi`), WebAssembly (`wellfriendpdf-wasm`, in-browser), and a self-hostable
   HTTP server (`wellfriendpdf-server`). See `docs/bindings.md` and `docs/self_hosting.md`.
-- **MIT OR Apache-2.0** — permissive, non-copyleft (contrast Poppler's
+- **MIT** — permissive, non-copyleft (contrast Poppler's
   GPL-family licensing). See `docs/licenses.md`.
 
 ## Where it wins (benchmark evidence)

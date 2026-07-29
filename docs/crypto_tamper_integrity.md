@@ -21,7 +21,7 @@ PDF-MAC status:
 - AttachedToSig extraction/binding and non-SHA256 profiles remain exact unsupported PDF-MAC limits. PKCS #12/PFX provider extraction is implemented for bounded non-WASM PubSec RSA identities and remains unsupported for ambiguous/non-RSA bundles and WASM extraction.
 - Reports must not claim document-level integrity validity from AES-GCM object tag success alone.
 
-Tamper handling added in Prompt 23B:
+Tamper handling added in crypto writer closeout:
 
 - Bad AES-KW integrity returns `authentication_failed` and clears the unwrap buffer.
 - Bad HMAC returns `authentication_failed`.

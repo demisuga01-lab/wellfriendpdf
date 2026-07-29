@@ -22,8 +22,8 @@ env:
   CARGO_BUILD_JOBS: "1"
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
-  PROMPT27_FUZZ_MEMORY_MB: "16384"
-  PROMPT27_FUZZ_MAX_LEN: "262144"
+  CRYPTO_STANDARDS_FUZZ_FUZZ_MEMORY_MB: "16384"
+  CRYPTO_STANDARDS_FUZZ_FUZZ_MAX_LEN: "262144"
 
 jobs:
   inventory:
@@ -33,13 +33,13 @@ jobs:
       - name: Build fuzz inventory
         run: |
           python scripts/release_fuzz_matrix.py \
-            --output target/prompt27-verapdf-crypto-fuzz/release-fuzz-target-inventory.json \
-            --markdown-output target/prompt27-verapdf-crypto-fuzz/release-fuzz-target-inventory.md
+            --output target/crypto_standards_fuzz-verapdf-crypto-fuzz/release-fuzz-target-inventory.json \
+            --markdown-output target/crypto_standards_fuzz-verapdf-crypto-fuzz/release-fuzz-target-inventory.md
       - name: Upload inventory
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-fuzz-inventory-${{ github.run_id }}
-          path: target/prompt27-verapdf-crypto-fuzz
+          path: target/crypto_standards_fuzz-verapdf-crypto-fuzz
 
   release-fuzz:
     runs-on: ubuntu-latest
@@ -78,10 +78,10 @@ jobs:
             --group "${group}" \
             --seconds "${seconds}" \
             --smoke-runs 64 \
-            --memory-mb "${PROMPT27_FUZZ_MEMORY_MB}" \
-            --max-len "${PROMPT27_FUZZ_MAX_LEN}" \
-            --json-output target/prompt27-verapdf-crypto-fuzz/release-fuzz-runner-smoke.json \
-            --markdown-output target/prompt27-verapdf-crypto-fuzz/release-fuzz-runner-smoke.md
+            --memory-mb "${CRYPTO_STANDARDS_FUZZ_FUZZ_MEMORY_MB}" \
+            --max-len "${CRYPTO_STANDARDS_FUZZ_FUZZ_MAX_LEN}" \
+            --json-output target/crypto_standards_fuzz-verapdf-crypto-fuzz/release-fuzz-runner-smoke.json \
+            --markdown-output target/crypto_standards_fuzz-verapdf-crypto-fuzz/release-fuzz-runner-smoke.md
       - name: Upload fuzz artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -89,5 +89,5 @@ jobs:
           name: release-fuzz-${{ github.run_id }}
           if-no-files-found: ignore
           path: |
-            target/prompt27-verapdf-crypto-fuzz
+            target/crypto_standards_fuzz-verapdf-crypto-fuzz
             fuzz/artifacts

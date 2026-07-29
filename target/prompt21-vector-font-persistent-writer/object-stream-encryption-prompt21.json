@@ -1,3 +1,0 @@
-{
-  "policy": "when encryption is configured, only the ObjStm stream is encrypted; inner objects are not independently encrypted"
-}

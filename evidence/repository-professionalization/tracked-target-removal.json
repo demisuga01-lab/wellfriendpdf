@@ -1,0 +1,29 @@
+{
+  "schema": "repository_professionalization.tracked_target_removal.v1",
+  "generated_at": "2026-07-29T18:59:43.5470187Z",
+  "removed_from_index_count": 253,
+  "mode": "git rm --cached -r target",
+  "preserved_local_files": true,
+  "sample": [
+    "target/binding_parity-binding-parity/binding-gap-matrix.json",
+    "target/binding_parity-binding-parity/cross-binding-parity.json",
+    "target/binding_parity-binding-parity/dotnet-smoke.json",
+    "target/binding_parity-binding-parity/gradle-jar-smoke.json",
+    "target/binding_parity-binding-parity/java-maven-gradle-equivalence.json",
+    "target/binding_parity-binding-parity/java-package-smoke.json",
+    "target/binding_parity-binding-parity/java-smoke.json",
+    "target/binding_parity-binding-parity/memory-smoke.json",
+    "target/binding_parity-binding-parity/wasm-smoke.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-dictionary-fixtures-semantic_intelligence.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-dictionary-license-report-semantic_intelligence.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-dictionary-quality-cjk_dictionary_layout.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-dictionary-segmentation-matrix-semantic_intelligence.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-rag-token-layer-cjk_dictionary_layout.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-search-rag-integration-semantic_intelligence.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-search-rag-integration-cjk_dictionary_layout.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-search-token-layer-cjk_dictionary_layout.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-segmentation-fixtures-cjk_dictionary_layout.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-segmentation-quality-results-semantic_intelligence.json",
+    "target/semantic_intelligence-semantic-intelligence/cjk-token-provenance-semantic_intelligence.json"
+  ]
+}

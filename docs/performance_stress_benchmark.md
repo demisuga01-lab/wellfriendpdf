@@ -1,6 +1,6 @@
 # Performance and stress benchmark
 
-Run `scripts/run_prompt30_performance_stress.py` only on the VPS. The harness
+Run `scripts/run_release_readiness_benchmark_performance_stress.py` only on the VPS. The harness
 generates deterministic synthetic PDFs (many pages, object-dense, and text-heavy),
 uses an allow-listed public corpus, and calls the real `wellfriendpdf` CLI in
 separate capped processes.

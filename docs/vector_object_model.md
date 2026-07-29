@@ -1,6 +1,6 @@
 # Editable vector object model
 
-Prompt 20 reconstructs vector objects from actual content operations. A path
+advanced editing reconstructs vector objects from actual content operations. A path
 starts with `m`, `l`, `c`, `v`, `y`, `h`, or `re` and ends at its painting or
 end-path operator. Wellfriend does not combine adjacent paths into inferred semantic
 ellipses, icons, charts, or other shapes.

@@ -1,6 +1,6 @@
 # ML Table Backend Policy
 
-Prompt 15 ships a proposal contract, validator, deterministic merge, and mock
+Semantic Closeout ships a proposal contract, validator, deterministic merge, and mock
 fixture. It does not ship a production model backend.
 
 ## Local Adapter Requirements
@@ -33,7 +33,7 @@ must require all of the following before any request:
 - explicit image/text/metadata payload policy;
 - user privacy acknowledgement;
 - bounded timeout and retry count;
-- response-size limits and Prompt 15 schema validation;
+- response-size limits and Semantic Closeout schema validation;
 - fail-closed malformed response behavior;
 - no telemetry unless independently disclosed and enabled by the application.
 

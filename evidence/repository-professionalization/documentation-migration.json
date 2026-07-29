@@ -1,0 +1,1221 @@
+{
+  "schema_version": "repository_professionalization.documentation_migration.v1",
+  "verdict": "professional_docs_consolidated",
+  "canonical_docs": [
+    "README.md",
+    "docs/licensing.md",
+    "docs/capabilities.md",
+    "docs/limitations.md",
+    "docs/architecture.md",
+    "docs/reports/validation-summary.md",
+    "docs/benchmarks/methodology.md",
+    "docs/benchmarks/competitor-comparison.md"
+  ],
+  "renamed_doc_count": 375,
+  "renamed_docs": [
+    {
+      "source": "docs/prompt10e_colrv1_gradient_clip_composite_closure_audit.md",
+      "destination": "docs/colrv_gradient_composite_colrv1_gradient_clip_composite_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt14b_cjk_dictionary_layout_backend_closure_audit.md",
+      "destination": "docs/cjk_dictionary_layout_cjk_dictionary_layout_backend_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt22b_resource_dedup_office_benchmark_closure.md",
+      "destination": "docs/compression_office_closeout_resource_dedup_office_benchmark_closure.md"
+    },
+    {
+      "source": "docs/prompt10e_colrv1_gradient_clip_composite_closure.md",
+      "destination": "docs/colrv_gradient_composite_colrv1_gradient_clip_composite_closure.md"
+    },
+    {
+      "source": "docs/prompt09_annotation_ocg_progressive_cache_audit.md",
+      "destination": "docs/annotation_ocg_rendering_annotation_ocg_progressive_cache_audit.md"
+    },
+    {
+      "source": "docs/prompt10c_color_glyph_hinting_cff_closure_audit.md",
+      "destination": "docs/color_glyph_hinting_color_glyph_hinting_cff_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt12b_prepress_nchannel_plate_closure_audit.md",
+      "destination": "docs/nchannel_plate_prepress_prepress_nchannel_plate_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt14b_cjk_dictionary_layout_backend_closure.md",
+      "destination": "docs/cjk_dictionary_layout_cjk_dictionary_layout_backend_closure.md"
+    },
+    {
+      "source": "docs/prompt10_cjk_rtl_color_glyph_reference_harness.md",
+      "destination": "docs/binding_surface0_cjk_rtl_color_glyph_reference_harness.md"
+    },
+    {
+      "source": "docs/prompt11b_native_littlecms_cmm_backend_closure.md",
+      "destination": "docs/native_cmm_backend_native_littlecms_cmm_backend_closure.md"
+    },
+    {
+      "source": "docs/prompt22b_office_conversion_benchmark_closeout.md",
+      "destination": "docs/compression_office_closeout_office_conversion_benchmark_closeout.md"
+    },
+    {
+      "source": "docs/prompt29_malformed_differential_coverage_audit.md",
+      "destination": "docs/binding_parity9_malformed_differential_coverage_audit.md"
+    },
+    {
+      "source": "docs/prompt05_codec_isolation_performance_closeout.md",
+      "destination": "docs/decode_scheduler_codec_isolation_performance_closeout.md"
+    },
+    {
+      "source": "docs/prompt10d_full_colrv1_svg_color_glyph_closure.md",
+      "destination": "docs/colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure.md"
+    },
+    {
+      "source": "docs/prompt15_semantic_intelligence_closeout_audit.md",
+      "destination": "docs/binding_surface5_semantic_intelligence_closeout_audit.md"
+    },
+    {
+      "source": "docs/prompt11_native_cmm_feasibility_safety_audit.md",
+      "destination": "docs/binding_surface1_native_cmm_feasibility_safety_audit.md"
+    },
+    {
+      "source": "docs/prompt21_vector_font_persistent_writer_audit.md",
+      "destination": "docs/binding_parity1_vector_font_persistent_writer_audit.md"
+    },
+    {
+      "source": "docs/prompt26_incremental_signing_standards_audit.md",
+      "destination": "docs/binding_parity6_incremental_signing_standards_audit.md"
+    },
+    {
+      "source": "docs/prompt10b_color_glyph_cjk_rtl_closure_audit.md",
+      "destination": "docs/cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt11_renderer_fuzz_metamorphic_campaign.md",
+      "destination": "docs/binding_surface1_renderer_fuzz_metamorphic_campaign.md"
+    },
+    {
+      "source": "docs/prompt14_semantic_intelligence_known_limits.md",
+      "destination": "docs/binding_surface4_semantic_intelligence_known_limits.md"
+    },
+    {
+      "source": "docs/derendering_vector_reconstruction_prompt08.md",
+      "destination": "docs/derendering_vector_reconstruction_advanced_rendering.md"
+    },
+    {
+      "source": "docs/deterministic_incremental_writing_prompt08.md",
+      "destination": "docs/deterministic_incremental_writing_advanced_rendering.md"
+    },
+    {
+      "source": "docs/editing_conversion_prompt08b_closure_audit.md",
+      "destination": "docs/editing_conversion_type3_cid_rendering_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt10f_colrv1_porterduff_radial_closure.md",
+      "destination": "docs/porterduff_radial_color_glyph_colrv1_porterduff_radial_closure.md"
+    },
+    {
+      "source": "docs/prompt18b_advanced_secure_mutation_closure.md",
+      "destination": "docs/secure_mutation_closeout_advanced_secure_mutation_closure.md"
+    },
+    {
+      "source": "docs/prompt20b_multirun_form_appearance_closure.md",
+      "destination": "docs/advanced_editing_closeout_multirun_form_appearance_closure.md"
+    },
+    {
+      "source": "docs/prompt23_editing_writer_closeout_scorecard.md",
+      "destination": "docs/binding_parity3_editing_writer_closeout_scorecard.md"
+    },
+    {
+      "source": "docs/annotation_appearance_generation_prompt17.md",
+      "destination": "docs/annotation_appearance_generation_binding_surface7.md"
+    },
+    {
+      "source": "docs/fuzzing_metamorphic_differential_prompt09.md",
+      "destination": "docs/fuzzing_metamorphic_differential_annotation_ocg_rendering.md"
+    },
+    {
+      "source": "docs/prompt10c_color_glyph_hinting_cff_closure.md",
+      "destination": "docs/color_glyph_hinting_color_glyph_hinting_cff_closure.md"
+    },
+    {
+      "source": "docs/prompt10d_colrv1_svg_bitmap_closure_audit.md",
+      "destination": "docs/colrv_svg_bitmap_colrv1_svg_bitmap_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt10f_porterduff_radial_closure_audit.md",
+      "destination": "docs/porterduff_radial_color_glyph_porterduff_radial_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt27_crypto_standards_release_verdict.md",
+      "destination": "docs/binding_parity7_crypto_standards_release_verdict.md"
+    },
+    {
+      "source": "docs/interactive_data_prompt07b_closure_audit.md",
+      "destination": "docs/interactive_data_transparency_closeout_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt08b_type3_cid_tensor_closure_audit.md",
+      "destination": "docs/type3_cid_rendering_type3_cid_tensor_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt13_advanced_cmm_prepress_scorecard.md",
+      "destination": "docs/binding_surface3_advanced_cmm_prepress_scorecard.md"
+    },
+    {
+      "source": "docs/prompt13_color_managed_shadings_patterns.md",
+      "destination": "docs/binding_surface3_color_managed_shadings_patterns.md"
+    },
+    {
+      "source": "docs/prompt23b_normative_crypto_closure_audit.md",
+      "destination": "docs/crypto_writer_closeout_normative_crypto_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt31_true_editing_architecture_audit.md",
+      "destination": "docs/release_packaging1_true_editing_architecture_audit.md"
+    },
+    {
+      "source": "docs/prompt33_geometric_semantic_reflow_audit.md",
+      "destination": "docs/release_packaging3_geometric_semantic_reflow_audit.md"
+    },
+    {
+      "source": "docs/binding_release_packaging_gate_prompt03.md",
+      "destination": "docs/binding_release_packaging_gate_release_packaging.md"
+    },
+    {
+      "source": "docs/deterministic_canonical_output_prompt09.md",
+      "destination": "docs/deterministic_canonical_output_annotation_ocg_rendering.md"
+    },
+    {
+      "source": "docs/prompt04_codec_boundary_scheduler_audit.md",
+      "destination": "docs/codec_boundary_codec_boundary_scheduler_audit.md"
+    },
+    {
+      "source": "docs/prompt15_semantic_intelligence_closeout.md",
+      "destination": "docs/binding_surface5_semantic_intelligence_closeout.md"
+    },
+    {
+      "source": "docs/prompt20b_reference_disagreement_policy.md",
+      "destination": "docs/advanced_editing_closeout_reference_disagreement_policy.md"
+    },
+    {
+      "source": "docs/prompt22_writer_office_conversion_audit.md",
+      "destination": "docs/binding_parity2_writer_office_conversion_audit.md"
+    },
+    {
+      "source": "docs/rlbox_wasm_sandbox_feasibility_prompt04.md",
+      "destination": "docs/rlbox_wasm_sandbox_feasibility_codec_boundary.md"
+    },
+    {
+      "source": "docs/capstone_renderer_benchmark_prompt11.json",
+      "destination": "docs/capstone_renderer_benchmark_binding_surface1.json"
+    },
+    {
+      "source": "docs/prompt05_extraction_scheduler_adoption.md",
+      "destination": "docs/decode_scheduler_extraction_scheduler_adoption.md"
+    },
+    {
+      "source": "docs/prompt06_compatibility_fallback_policy.md",
+      "destination": "docs/native_renderer_compatibility_fallback_policy.md"
+    },
+    {
+      "source": "docs/prompt06_reference_disagreement_policy.md",
+      "destination": "docs/native_renderer_reference_disagreement_policy.md"
+    },
+    {
+      "source": "docs/prompt06b_reference_renderer_bootstrap.md",
+      "destination": "docs/reference_renderer_reference_renderer_bootstrap.md"
+    },
+    {
+      "source": "docs/prompt07_reference_disagreement_policy.md",
+      "destination": "docs/transparency_rendering_reference_disagreement_policy.md"
+    },
+    {
+      "source": "docs/prompt09_reference_disagreement_policy.md",
+      "destination": "docs/annotation_ocg_rendering_reference_disagreement_policy.md"
+    },
+    {
+      "source": "docs/prompt10_reference_disagreement_policy.md",
+      "destination": "docs/binding_surface0_reference_disagreement_policy.md"
+    },
+    {
+      "source": "docs/prompt11_reference_disagreement_policy.md",
+      "destination": "docs/binding_surface1_reference_disagreement_policy.md"
+    },
+    {
+      "source": "docs/prompt12_reference_disagreement_policy.md",
+      "destination": "docs/binding_surface2_reference_disagreement_policy.md"
+    },
+    {
+      "source": "docs/prompt14_cloud_layout_backend_template.md",
+      "destination": "docs/binding_surface4_cloud_layout_backend_template.md"
+    },
+    {
+      "source": "docs/prompt14_local_layout_backend_template.md",
+      "destination": "docs/binding_surface4_local_layout_backend_template.md"
+    },
+    {
+      "source": "docs/prompt23b_clause_implementation_matrix.md",
+      "destination": "docs/crypto_writer_closeout_clause_implementation_matrix.md"
+    },
+    {
+      "source": "docs/editing_conversion_prompt08_inventory.md",
+      "destination": "docs/editing_conversion_advanced_rendering_inventory.md"
+    },
+    {
+      "source": "docs/native_codec_boundary_policy_prompt04.md",
+      "destination": "docs/native_codec_boundary_policy_codec_boundary.md"
+    },
+    {
+      "source": "docs/prompt09_annotation_appearance_parity.md",
+      "destination": "docs/annotation_ocg_rendering_annotation_appearance_parity.md"
+    },
+    {
+      "source": "docs/prompt12_spot_devicen_plate_rendering.md",
+      "destination": "docs/binding_surface2_spot_devicen_plate_rendering.md"
+    },
+    {
+      "source": "docs/prompt24_clause_implementation_matrix.md",
+      "destination": "docs/binding_parity4_clause_implementation_matrix.md"
+    },
+    {
+      "source": "docs/prompt25_clause_implementation_matrix.md",
+      "destination": "docs/binding_parity5_clause_implementation_matrix.md"
+    },
+    {
+      "source": "docs/prompt26_clause_implementation_matrix.md",
+      "destination": "docs/binding_parity6_clause_implementation_matrix.md"
+    },
+    {
+      "source": "docs/prompt27_release_fuzz_ci_architecture.md",
+      "destination": "docs/binding_parity7_release_fuzz_ci_architecture.md"
+    },
+    {
+      "source": "docs/bindings_prompt03b_wasm_pack_closure.md",
+      "destination": "docs/bindings_wasm_packaging_wasm_pack_closure.md"
+    },
+    {
+      "source": "docs/capstone_renderer_benchmark_prompt11.md",
+      "destination": "docs/capstone_renderer_benchmark_binding_surface1.md"
+    },
+    {
+      "source": "docs/prompt07b_transparency_closure_audit.md",
+      "destination": "docs/transparency_closeout_transparency_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt09_tile_band_cache_performance.md",
+      "destination": "docs/annotation_ocg_rendering_tile_band_cache_performance.md"
+    },
+    {
+      "source": "docs/prompt10_color_glyph_cache_scheduler.md",
+      "destination": "docs/binding_surface0_color_glyph_cache_scheduler.md"
+    },
+    {
+      "source": "docs/prompt13_prepress_proofing_benchmark.md",
+      "destination": "docs/binding_surface3_prepress_proofing_benchmark.md"
+    },
+    {
+      "source": "docs/prompt14_cjk_dictionary_segmentation.md",
+      "destination": "docs/binding_surface4_cjk_dictionary_segmentation.md"
+    },
+    {
+      "source": "docs/prompt14_semantic_intelligence_audit.md",
+      "destination": "docs/binding_surface4_semantic_intelligence_audit.md"
+    },
+    {
+      "source": "docs/prompt17_interactive_redaction_audit.md",
+      "destination": "docs/binding_surface7_interactive_redaction_audit.md"
+    },
+    {
+      "source": "docs/prompt36_enterprise_validation_audit.md",
+      "destination": "docs/release_packaging6_enterprise_validation_audit.md"
+    },
+    {
+      "source": "docs/safe_simd_delimiter_scanner_prompt04.md",
+      "destination": "docs/safe_simd_delimiter_scanner_codec_boundary.md"
+    },
+    {
+      "source": "docs/codec_isolation_user_guide_prompt03.md",
+      "destination": "docs/codec_isolation_user_guide_release_packaging.md"
+    },
+    {
+      "source": "docs/color_management_prompt05_inventory.md",
+      "destination": "docs/color_management_decode_scheduler_inventory.md"
+    },
+    {
+      "source": "docs/enterprise_trust_scorecard_prompt09.md",
+      "destination": "docs/enterprise_trust_scorecard_annotation_ocg_rendering.md"
+    },
+    {
+      "source": "docs/interactive_data_prompt07_inventory.md",
+      "destination": "docs/interactive_data_transparency_rendering_inventory.md"
+    },
+    {
+      "source": "docs/page_operations_relinking_prompt07b.md",
+      "destination": "docs/page_operations_relinking_transparency_closeout.md"
+    },
+    {
+      "source": "docs/prompt19_interactive_data_scorecard.md",
+      "destination": "docs/binding_surface9_interactive_data_scorecard.md"
+    },
+    {
+      "source": "docs/prompt24_performance_memory_network.md",
+      "destination": "docs/binding_parity4_performance_memory_network.md"
+    },
+    {
+      "source": "docs/prompt25b_fuzz_blocker_resume_audit.md",
+      "destination": "docs/pades_ltv_fuzz_fuzz_blocker_resume_audit.md"
+    },
+    {
+      "source": "docs/cross_binding_diagnostics_prompt02.md",
+      "destination": "docs/cross_binding_diagnostics_binding_parity.md"
+    },
+    {
+      "source": "docs/document_versioning_dedup_prompt08.md",
+      "destination": "docs/document_versioning_dedup_advanced_rendering.md"
+    },
+    {
+      "source": "docs/html_markdown_json_export_prompt08.md",
+      "destination": "docs/html_markdown_json_export_advanced_rendering.md"
+    },
+    {
+      "source": "docs/package_artifact_manifest_prompt03.md",
+      "destination": "docs/package_artifact_manifest_release_packaging.md"
+    },
+    {
+      "source": "docs/paragraph_reflow_editing_prompt08b.md",
+      "destination": "docs/paragraph_reflow_editing_type3_cid_rendering.md"
+    },
+    {
+      "source": "docs/prompt05_decode_callsite_inventory.md",
+      "destination": "docs/decode_scheduler_decode_callsite_inventory.md"
+    },
+    {
+      "source": "docs/prompt06_renderer_failure_taxonomy.md",
+      "destination": "docs/native_renderer_renderer_failure_taxonomy.md"
+    },
+    {
+      "source": "docs/prompt07_renderer_failure_taxonomy.md",
+      "destination": "docs/transparency_rendering_renderer_failure_taxonomy.md"
+    },
+    {
+      "source": "docs/prompt07_transparency_architecture.md",
+      "destination": "docs/transparency_rendering_transparency_architecture.md"
+    },
+    {
+      "source": "docs/prompt08_renderer_failure_taxonomy.md",
+      "destination": "docs/advanced_rendering_renderer_failure_taxonomy.md"
+    },
+    {
+      "source": "docs/prompt09_renderer_failure_taxonomy.md",
+      "destination": "docs/annotation_ocg_rendering_renderer_failure_taxonomy.md"
+    },
+    {
+      "source": "docs/prompt09b_validation_closure_audit.md",
+      "destination": "docs/renderer_validation_validation_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt10_svg_color_glyph_rendering.md",
+      "destination": "docs/binding_surface0_svg_color_glyph_rendering.md"
+    },
+    {
+      "source": "docs/prompt13_full_overprint_simulation.md",
+      "destination": "docs/binding_surface3_full_overprint_simulation.md"
+    },
+    {
+      "source": "docs/prompt27_crypto_standards_closeout.md",
+      "destination": "docs/binding_parity7_crypto_standards_closeout.md"
+    },
+    {
+      "source": "docs/prompt27_long_parser_fuzz_campaign.md",
+      "destination": "docs/binding_parity7_long_parser_fuzz_campaign.md"
+    },
+    {
+      "source": "docs/prompt27_verapdf_crypto_fuzz_audit.md",
+      "destination": "docs/binding_parity7_verapdf_crypto_fuzz_audit.md"
+    },
+    {
+      "source": "docs/prompt33_reflow_architecture_audit.md",
+      "destination": "docs/release_packaging3_reflow_architecture_audit.md"
+    },
+    {
+      "source": "docs/renderer_decode_scheduler_prompt04.md",
+      "destination": "docs/renderer_decode_scheduler_codec_boundary.md"
+    },
+    {
+      "source": "docs/attachment_sanitization_prompt07b.md",
+      "destination": "docs/attachment_sanitization_transparency_closeout.md"
+    },
+    {
+      "source": "docs/bindings_prompt02c_gradle_closure.md",
+      "destination": "docs/bindings_gradle_packaging_gradle_closure.md"
+    },
+    {
+      "source": "docs/font_prompt04e_final_parity_audit.md",
+      "destination": "docs/font_font_final_parity_final_parity_audit.md"
+    },
+    {
+      "source": "docs/partial_image_redaction_prompt07b.md",
+      "destination": "docs/partial_image_redaction_transparency_closeout.md"
+    },
+    {
+      "source": "docs/prompt07_transparency_compositing.md",
+      "destination": "docs/transparency_rendering_transparency_compositing.md"
+    },
+    {
+      "source": "docs/prompt10_cjk_rtl_fixture_fidelity.md",
+      "destination": "docs/binding_surface0_cjk_rtl_fixture_fidelity.md"
+    },
+    {
+      "source": "docs/prompt10_svg_color_glyph_security.md",
+      "destination": "docs/binding_surface0_svg_color_glyph_security.md"
+    },
+    {
+      "source": "docs/prompt11_release_renderer_verdict.md",
+      "destination": "docs/binding_surface1_release_renderer_verdict.md"
+    },
+    {
+      "source": "docs/prompt11_renderer_parity_closeout.md",
+      "destination": "docs/binding_surface1_renderer_parity_closeout.md"
+    },
+    {
+      "source": "docs/prompt11b_native_cmm_safety_audit.md",
+      "destination": "docs/native_cmm_backend_native_cmm_safety_audit.md"
+    },
+    {
+      "source": "docs/prompt12_backend_packaging_policy.md",
+      "destination": "docs/binding_surface2_backend_packaging_policy.md"
+    },
+    {
+      "source": "docs/prompt12_prepress_reference_audit.md",
+      "destination": "docs/binding_surface2_prepress_reference_audit.md"
+    },
+    {
+      "source": "docs/prompt13_prepress_cache_scheduler.md",
+      "destination": "docs/binding_surface3_prepress_cache_scheduler.md"
+    },
+    {
+      "source": "docs/prompt13_prepress_reference_audit.md",
+      "destination": "docs/binding_surface3_prepress_reference_audit.md"
+    },
+    {
+      "source": "docs/prompt14_ml_layout_hook_interface.md",
+      "destination": "docs/binding_surface4_ml_layout_hook_interface.md"
+    },
+    {
+      "source": "docs/prompt24_final_continuation_audit.md",
+      "destination": "docs/binding_parity4_final_continuation_audit.md"
+    },
+    {
+      "source": "docs/prompt25_signature_ltv_edit_audit.md",
+      "destination": "docs/binding_parity5_signature_ltv_edit_audit.md"
+    },
+    {
+      "source": "docs/prompt27_parser_fuzz_crash_triage.md",
+      "destination": "docs/binding_parity7_parser_fuzz_crash_triage.md"
+    },
+    {
+      "source": "docs/prompt28_long_fuzz_safedocs_audit.md",
+      "destination": "docs/binding_parity8_long_fuzz_safedocs_audit.md"
+    },
+    {
+      "source": "docs/prompt36_accessibility_validation.md",
+      "destination": "docs/release_packaging6_accessibility_validation.md"
+    },
+    {
+      "source": "docs/prompt36_release_readiness_report.md",
+      "destination": "docs/release_packaging6_release_readiness_report.md"
+    },
+    {
+      "source": "docs/report_schema_versioning_prompt01.md",
+      "destination": "docs/report_schema_versioning_binding_surface.md"
+    },
+    {
+      "source": "docs/report_schema_versioning_prompt02.md",
+      "destination": "docs/report_schema_versioning_binding_parity.md"
+    },
+    {
+      "source": "docs/text_semantic_prompt06b_inventory.md",
+      "destination": "docs/text_semantic_reference_renderer_inventory.md"
+    },
+    {
+      "source": "docs/annotation_appearances_prompt07b.md",
+      "destination": "docs/annotation_appearances_transparency_closeout.md"
+    },
+    {
+      "source": "docs/bindings_prompt02b_closure_audit.md",
+      "destination": "docs/bindings_java_packaging_closure_audit.md"
+    },
+    {
+      "source": "docs/multi_language_examples_prompt03.md",
+      "destination": "docs/multi_language_examples_release_packaging.md"
+    },
+    {
+      "source": "docs/nonaxis_image_redaction_prompt17.md",
+      "destination": "docs/nonaxis_image_redaction_binding_surface7.md"
+    },
+    {
+      "source": "docs/package_platform_matrix_prompt02.md",
+      "destination": "docs/package_platform_matrix_binding_parity.md"
+    },
+    {
+      "source": "docs/package_platform_matrix_prompt03.md",
+      "destination": "docs/package_platform_matrix_release_packaging.md"
+    },
+    {
+      "source": "docs/prompt11b_output_intent_proofing.md",
+      "destination": "docs/native_cmm_backend_output_intent_proofing.md"
+    },
+    {
+      "source": "docs/prompt13_prepress_closeout_audit.md",
+      "destination": "docs/binding_surface3_prepress_closeout_audit.md"
+    },
+    {
+      "source": "docs/prompt14_privacy_security_policy.md",
+      "destination": "docs/binding_surface4_privacy_security_policy.md"
+    },
+    {
+      "source": "docs/prompt30_release_readiness_audit.md",
+      "destination": "docs/release_packaging0_release_readiness_audit.md"
+    },
+    {
+      "source": "docs/prompt36_sanitization_validation.md",
+      "destination": "docs/release_packaging6_sanitization_validation.md"
+    },
+    {
+      "source": "docs/prompt36_true_editing_validation.md",
+      "destination": "docs/release_packaging6_true_editing_validation.md"
+    },
+    {
+      "source": "docs/rendering_architecture_prompt03b.md",
+      "destination": "docs/rendering_architecture_wasm_packaging.md"
+    },
+    {
+      "source": "docs/codec_isolation_design_prompt03.md",
+      "destination": "docs/codec_isolation_design_release_packaging.md"
+    },
+    {
+      "source": "docs/font_prompt04c_failure_analysis.md",
+      "destination": "docs/font_font_failure_analysis_failure_analysis.md"
+    },
+    {
+      "source": "docs/font_prompt04d_failure_analysis.md",
+      "destination": "docs/font_font_rendering_failure_failure_analysis.md"
+    },
+    {
+      "source": "docs/perf_prompt4-baseline_results.json",
+      "destination": "docs/perf_codec_boundary-baseline_results.json"
+    },
+    {
+      "source": "docs/prompt05_codec_fuzzing_campaign.md",
+      "destination": "docs/decode_scheduler_codec_fuzzing_campaign.md"
+    },
+    {
+      "source": "docs/prompt10_cid_keyed_cff_clipping.md",
+      "destination": "docs/binding_surface0_cid_keyed_cff_clipping.md"
+    },
+    {
+      "source": "docs/prompt11b_cmm_backend_selection.md",
+      "destination": "docs/native_cmm_backend_cmm_backend_selection.md"
+    },
+    {
+      "source": "docs/prompt11b_icc_transform_backend.md",
+      "destination": "docs/native_cmm_backend_icc_transform_backend.md"
+    },
+    {
+      "source": "docs/prompt12_separation_framebuffer.md",
+      "destination": "docs/binding_surface2_separation_framebuffer.md"
+    },
+    {
+      "source": "docs/prompt19_interactive_docx_audit.md",
+      "destination": "docs/binding_surface9_interactive_docx_audit.md"
+    },
+    {
+      "source": "docs/prompt20_advanced_editing_audit.md",
+      "destination": "docs/binding_parity0_advanced_editing_audit.md"
+    },
+    {
+      "source": "docs/prompt23b_historical_validation.md",
+      "destination": "docs/crypto_writer_closeout_historical_validation.md"
+    },
+    {
+      "source": "docs/prompt25b_cargo_fuzz_root_cause.md",
+      "destination": "docs/pades_ltv_fuzz_cargo_fuzz_root_cause.md"
+    },
+    {
+      "source": "docs/prompt36_binding_release_matrix.md",
+      "destination": "docs/release_packaging6_binding_release_matrix.md"
+    },
+    {
+      "source": "docs/prompt36_performance_and_stress.md",
+      "destination": "docs/release_packaging6_performance_and_stress.md"
+    },
+    {
+      "source": "docs/prompt36_redaction_verification.md",
+      "destination": "docs/release_packaging6_redaction_verification.md"
+    },
+    {
+      "source": "docs/rendering_architecture_prompt03.md",
+      "destination": "docs/rendering_architecture_release_packaging.md"
+    },
+    {
+      "source": "docs/deterministic_writer_prompt08b.md",
+      "destination": "docs/deterministic_writer_type3_cid_rendering.md"
+    },
+    {
+      "source": "docs/large_file_performance_prompt2.md",
+      "destination": "docs/large_file_performance_binding_parity.md"
+    },
+    {
+      "source": "docs/large_file_performance_prompt3.md",
+      "destination": "docs/large_file_performance_release_packaging.md"
+    },
+    {
+      "source": "docs/prompt05_codec_coverage_matrix.md",
+      "destination": "docs/decode_scheduler_codec_coverage_matrix.md"
+    },
+    {
+      "source": "docs/prompt06_renderer_parity_audit.md",
+      "destination": "docs/native_renderer_renderer_parity_audit.md"
+    },
+    {
+      "source": "docs/prompt08_axial_radial_shadings.md",
+      "destination": "docs/advanced_rendering_axial_radial_shadings.md"
+    },
+    {
+      "source": "docs/prompt10_color_glyph_rendering.md",
+      "destination": "docs/binding_surface0_color_glyph_rendering.md"
+    },
+    {
+      "source": "docs/prompt11_renderer_known_limits.md",
+      "destination": "docs/binding_surface1_renderer_known_limits.md"
+    },
+    {
+      "source": "docs/prompt11b_cmm_packaging_policy.md",
+      "destination": "docs/native_cmm_backend_cmm_packaging_policy.md"
+    },
+    {
+      "source": "docs/prompt11b_rendering_intent_bpc.md",
+      "destination": "docs/native_cmm_backend_rendering_intent_bpc.md"
+    },
+    {
+      "source": "docs/prompt12_bpc_rendering_intents.md",
+      "destination": "docs/binding_surface2_bpc_rendering_intents.md"
+    },
+    {
+      "source": "docs/prompt12_nchannel_pixel_format.md",
+      "destination": "docs/binding_surface2_nchannel_pixel_format.md"
+    },
+    {
+      "source": "docs/prompt12_prepress_known_limits.md",
+      "destination": "docs/binding_surface2_prepress_known_limits.md"
+    },
+    {
+      "source": "docs/prompt14_semantic_merge_policy.md",
+      "destination": "docs/binding_surface4_semantic_merge_policy.md"
+    },
+    {
+      "source": "docs/prompt16_xfa_feasibility_audit.md",
+      "destination": "docs/binding_surface6_xfa_feasibility_audit.md"
+    },
+    {
+      "source": "docs/prompt18_secure_mutation_audit.md",
+      "destination": "docs/binding_surface8_secure_mutation_audit.md"
+    },
+    {
+      "source": "docs/prompt24_historical_validation.md",
+      "destination": "docs/binding_parity4_historical_validation.md"
+    },
+    {
+      "source": "docs/prompt24_security_threat_model.md",
+      "destination": "docs/binding_parity4_security_threat_model.md"
+    },
+    {
+      "source": "docs/security_threat_model_prompt09.md",
+      "destination": "docs/security_threat_model_annotation_ocg_rendering.md"
+    },
+    {
+      "source": "docs/text_layout_prompt06_inventory.md",
+      "destination": "docs/text_layout_native_renderer_inventory.md"
+    },
+    {
+      "source": "docs/color_prompt05b_closure_audit.md",
+      "destination": "docs/color_color_management_closure_audit.md"
+    },
+    {
+      "source": "docs/prompt05_hostile_codec_corpus.md",
+      "destination": "docs/decode_scheduler_hostile_codec_corpus.md"
+    },
+    {
+      "source": "docs/prompt07_soft_mask_luminosity.md",
+      "destination": "docs/transparency_rendering_soft_mask_luminosity.md"
+    },
+    {
+      "source": "docs/prompt09_ocg_layer_validation.md",
+      "destination": "docs/annotation_ocg_rendering_ocg_layer_validation.md"
+    },
+    {
+      "source": "docs/prompt11b_cmm_binding_reports.md",
+      "destination": "docs/native_cmm_backend_cmm_binding_reports.md"
+    },
+    {
+      "source": "docs/prompt25_performance_security.md",
+      "destination": "docs/binding_parity5_performance_security.md"
+    },
+    {
+      "source": "docs/prompt26_performance_security.md",
+      "destination": "docs/binding_parity6_performance_security.md"
+    },
+    {
+      "source": "docs/prompt31_performance_security.md",
+      "destination": "docs/release_packaging1_performance_security.md"
+    },
+    {
+      "source": "docs/prompt33_performance_security.md",
+      "destination": "docs/release_packaging3_performance_security.md"
+    },
+    {
+      "source": "docs/prompt34_implementation_audit.md",
+      "destination": "docs/release_packaging4_implementation_audit.md"
+    },
+    {
+      "source": "docs/prompt35_implementation_audit.md",
+      "destination": "docs/release_packaging5_implementation_audit.md"
+    },
+    {
+      "source": "docs/standards_validation_prompt09.md",
+      "destination": "docs/standards_validation_annotation_ocg_rendering.md"
+    },
+    {
+      "source": "docs/bindings_prompt01_gap_matrix.md",
+      "destination": "docs/bindings_binding_surface_gap_matrix.md"
+    },
+    {
+      "source": "docs/bindings_prompt02_gap_matrix.md",
+      "destination": "docs/bindings_binding_parity_gap_matrix.md"
+    },
+    {
+      "source": "docs/page_faithful_docx_prompt08b.md",
+      "destination": "docs/page_faithful_docx_type3_cid_rendering.md"
+    },
+    {
+      "source": "docs/perf_prompt4-after_results.json",
+      "destination": "docs/perf_codec_boundary-after_results.json"
+    },
+    {
+      "source": "docs/prompt06_form_xobject_replay.md",
+      "destination": "docs/native_renderer_form_xobject_replay.md"
+    },
+    {
+      "source": "docs/prompt06_native_image_replay.md",
+      "destination": "docs/native_renderer_native_image_replay.md"
+    },
+    {
+      "source": "docs/prompt08_mesh_patch_shadings.md",
+      "destination": "docs/advanced_rendering_mesh_patch_shadings.md"
+    },
+    {
+      "source": "docs/prompt08_type3_text_clipping.md",
+      "destination": "docs/advanced_rendering_type3_text_clipping.md"
+    },
+    {
+      "source": "docs/prompt10_bitmap_color_glyphs.md",
+      "destination": "docs/binding_surface0_bitmap_color_glyphs.md"
+    },
+    {
+      "source": "docs/prompt10_colrv1_paint_graphs.md",
+      "destination": "docs/binding_surface0_colrv1_paint_graphs.md"
+    },
+    {
+      "source": "docs/prompt11_cmm_security_policy.md",
+      "destination": "docs/binding_surface1_cmm_security_policy.md"
+    },
+    {
+      "source": "docs/prompt12_cmm_backend_reports.md",
+      "destination": "docs/binding_surface2_cmm_backend_reports.md"
+    },
+    {
+      "source": "docs/prompt14_parenttree_recovery.md",
+      "destination": "docs/binding_surface4_parenttree_recovery.md"
+    },
+    {
+      "source": "docs/prompt23_writer_crypto_audit.md",
+      "destination": "docs/binding_parity3_writer_crypto_audit.md"
+    },
+    {
+      "source": "docs/prompt23b_continuation_audit.md",
+      "destination": "docs/crypto_writer_closeout_continuation_audit.md"
+    },
+    {
+      "source": "docs/prompt26_external_comparison.md",
+      "destination": "docs/binding_parity6_external_comparison.md"
+    },
+    {
+      "source": "docs/prompt27_vps_testing_process.md",
+      "destination": "docs/binding_parity7_vps_testing_process.md"
+    },
+    {
+      "source": "docs/prompt34_deferred_validation.md",
+      "destination": "docs/release_packaging4_deferred_validation.md"
+    },
+    {
+      "source": "docs/prompt35_deferred_validation.md",
+      "destination": "docs/release_packaging5_deferred_validation.md"
+    },
+    {
+      "source": "docs/prompt36_fuzz_and_sanitizers.md",
+      "destination": "docs/release_packaging6_fuzz_and_sanitizers.md"
+    },
+    {
+      "source": "docs/codec_threat_model_prompt03.md",
+      "destination": "docs/codec_threat_model_release_packaging.md"
+    },
+    {
+      "source": "docs/prompt06_native_text_replay.md",
+      "destination": "docs/native_renderer_native_text_replay.md"
+    },
+    {
+      "source": "docs/prompt07_knockout_isolation.md",
+      "destination": "docs/transparency_rendering_knockout_isolation.md"
+    },
+    {
+      "source": "docs/prompt08_type7_tensor_patch.md",
+      "destination": "docs/advanced_rendering_type7_tensor_patch.md"
+    },
+    {
+      "source": "docs/prompt09_progressive_resume.md",
+      "destination": "docs/annotation_ocg_rendering_progressive_resume.md"
+    },
+    {
+      "source": "docs/prompt11_native_cmm_backend.md",
+      "destination": "docs/binding_surface1_native_cmm_backend.md"
+    },
+    {
+      "source": "docs/prompt11_renderer_cmm_audit.md",
+      "destination": "docs/binding_surface1_renderer_cmm_audit.md"
+    },
+    {
+      "source": "docs/prompt12_prepress_cmm_audit.md",
+      "destination": "docs/binding_surface2_prepress_cmm_audit.md"
+    },
+    {
+      "source": "docs/prompt23b_normative_sources.md",
+      "destination": "docs/crypto_writer_closeout_normative_sources.md"
+    },
+    {
+      "source": "docs/prompt26_finalization_audit.md",
+      "destination": "docs/binding_parity6_finalization_audit.md"
+    },
+    {
+      "source": "docs/prompt29_low_coverage_risks.md",
+      "destination": "docs/binding_parity9_low_coverage_risks.md"
+    },
+    {
+      "source": "docs/security_prompt09_inventory.md",
+      "destination": "docs/security_annotation_ocg_rendering_inventory.md"
+    },
+    {
+      "source": "docs/prompt06_reference_engines.md",
+      "destination": "docs/native_renderer_reference_engines.md"
+    },
+    {
+      "source": "docs/prompt08_cid_text_clipping.md",
+      "destination": "docs/advanced_rendering_cid_text_clipping.md"
+    },
+    {
+      "source": "docs/prompt23b_interoperability.md",
+      "destination": "docs/crypto_writer_closeout_interoperability.md"
+    },
+    {
+      "source": "docs/prompt24_normative_sources.md",
+      "destination": "docs/binding_parity4_normative_sources.md"
+    },
+    {
+      "source": "docs/prompt25_normative_sources.md",
+      "destination": "docs/binding_parity5_normative_sources.md"
+    },
+    {
+      "source": "docs/prompt32_scene_fonts_audit.md",
+      "destination": "docs/release_packaging2_scene_fonts_audit.md"
+    },
+    {
+      "source": "docs/rich_media_policy_prompt17.md",
+      "destination": "docs/rich_media_policy_binding_surface7.md"
+    },
+    {
+      "source": "docs/versioning_dedup_prompt08b.md",
+      "destination": "docs/versioning_dedup_type3_cid_rendering.md"
+    },
+    {
+      "source": "docs/binding_examples_prompt01.md",
+      "destination": "docs/binding_examples_binding_surface.md"
+    },
+    {
+      "source": "docs/color_management_prompt05.md",
+      "destination": "docs/color_management_decode_scheduler.md"
+    },
+    {
+      "source": "docs/pdf_text_editing_prompt08.md",
+      "destination": "docs/pdf_text_editing_advanced_rendering.md"
+    },
+    {
+      "source": "docs/persistent_undo_prompt08b.md",
+      "destination": "docs/persistent_undo_type3_cid_rendering.md"
+    },
+    {
+      "source": "docs/prompt18b_release_verdict.md",
+      "destination": "docs/secure_mutation_closeout_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt20b_reference_audit.md",
+      "destination": "docs/advanced_editing_closeout_reference_audit.md"
+    },
+    {
+      "source": "docs/prompt20b_release_verdict.md",
+      "destination": "docs/advanced_editing_closeout_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt22b_release_verdict.md",
+      "destination": "docs/compression_office_closeout_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt23_interoperability.md",
+      "destination": "docs/binding_parity3_interoperability.md"
+    },
+    {
+      "source": "docs/prompt23b_release_verdict.md",
+      "destination": "docs/crypto_writer_closeout_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt24_interoperability.md",
+      "destination": "docs/binding_parity4_interoperability.md"
+    },
+    {
+      "source": "docs/prompt25_interoperability.md",
+      "destination": "docs/binding_parity5_interoperability.md"
+    },
+    {
+      "source": "docs/prompt27_fuzz_seed_policy.md",
+      "destination": "docs/binding_parity7_fuzz_seed_policy.md"
+    },
+    {
+      "source": "docs/prompt32_fuzzing_security.md",
+      "destination": "docs/release_packaging2_fuzzing_security.md"
+    },
+    {
+      "source": "docs/prompt36_security_package.md",
+      "destination": "docs/release_packaging6_security_package.md"
+    },
+    {
+      "source": "docs/annotation_xfdf_prompt17.md",
+      "destination": "docs/annotation_xfdf_binding_surface7.md"
+    },
+    {
+      "source": "docs/font_subsystem_prompt04b.md",
+      "destination": "docs/font_subsystem_font_subsystem.md"
+    },
+    {
+      "source": "docs/font_subsystem_prompt04c.md",
+      "destination": "docs/font_subsystem_font_failure_analysis.md"
+    },
+    {
+      "source": "docs/page_operations_prompt07.md",
+      "destination": "docs/page_operations_transparency_rendering.md"
+    },
+    {
+      "source": "docs/prompt07_knockout_groups.md",
+      "destination": "docs/transparency_rendering_knockout_groups.md"
+    },
+    {
+      "source": "docs/prompt08_fallback_policy.md",
+      "destination": "docs/advanced_rendering_fallback_policy.md"
+    },
+    {
+      "source": "docs/prompt08_tiling_patterns.md",
+      "destination": "docs/advanced_rendering_tiling_patterns.md"
+    },
+    {
+      "source": "docs/prompt10_hinting_posture.md",
+      "destination": "docs/binding_surface0_hinting_posture.md"
+    },
+    {
+      "source": "docs/prompt12_device_link_icc.md",
+      "destination": "docs/binding_surface2_device_link_icc.md"
+    },
+    {
+      "source": "docs/prompt13_release_verdict.md",
+      "destination": "docs/binding_surface3_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt16_release_verdict.md",
+      "destination": "docs/binding_surface6_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt17_reference_audit.md",
+      "destination": "docs/binding_surface7_reference_audit.md"
+    },
+    {
+      "source": "docs/prompt17_release_verdict.md",
+      "destination": "docs/binding_surface7_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt18_reference_audit.md",
+      "destination": "docs/binding_surface8_reference_audit.md"
+    },
+    {
+      "source": "docs/prompt18_release_verdict.md",
+      "destination": "docs/binding_surface8_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt19_release_verdict.md",
+      "destination": "docs/binding_surface9_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt20_reference_audit.md",
+      "destination": "docs/binding_parity0_reference_audit.md"
+    },
+    {
+      "source": "docs/prompt20_release_verdict.md",
+      "destination": "docs/binding_parity0_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt21_reference_audit.md",
+      "destination": "docs/binding_parity1_reference_audit.md"
+    },
+    {
+      "source": "docs/prompt21_release_verdict.md",
+      "destination": "docs/binding_parity1_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt23_release_verdict.md",
+      "destination": "docs/binding_parity3_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt24_release_verdict.md",
+      "destination": "docs/binding_parity4_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt25_release_verdict.md",
+      "destination": "docs/binding_parity5_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt26_release_verdict.md",
+      "destination": "docs/binding_parity6_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt27_release_verdict.md",
+      "destination": "docs/binding_parity7_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt28_release_verdict.md",
+      "destination": "docs/binding_parity8_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt29_release_verdict.md",
+      "destination": "docs/binding_parity9_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt30_release_verdict.md",
+      "destination": "docs/release_packaging0_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt31_release_verdict.md",
+      "destination": "docs/release_packaging1_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt32_release_verdict.md",
+      "destination": "docs/release_packaging2_release_verdict.md"
+    },
+    {
+      "source": "docs/prompt33_release_verdict.md",
+      "destination": "docs/release_packaging3_release_verdict.md"
+    },
+    {
+      "source": "docs/public_api_rust_prompt01.md",
+      "destination": "docs/public_api_rust_binding_surface.md"
+    },
+    {
+      "source": "docs/text_extraction_prompt06.md",
+      "destination": "docs/text_extraction_native_renderer.md"
+    },
+    {
+      "source": "docs/bindings_prompt01_audit.md",
+      "destination": "docs/bindings_binding_surface_audit.md"
+    },
+    {
+      "source": "docs/bindings_prompt02_audit.md",
+      "destination": "docs/bindings_binding_parity_audit.md"
+    },
+    {
+      "source": "docs/combined_prompt03_audit.md",
+      "destination": "docs/combined_release_packaging_audit.md"
+    },
+    {
+      "source": "docs/font_subsystem_prompt04.md",
+      "destination": "docs/font_subsystem_codec_boundary.md"
+    },
+    {
+      "source": "docs/forms_acroform_prompt07.md",
+      "destination": "docs/forms_acroform_transparency_rendering.md"
+    },
+    {
+      "source": "docs/packaging_gate_prompt03.md",
+      "destination": "docs/packaging_gate_release_packaging.md"
+    },
+    {
+      "source": "docs/prompt08_renderer_audit.md",
+      "destination": "docs/advanced_rendering_renderer_audit.md"
+    },
+    {
+      "source": "docs/prompt12_multicolor_icc.md",
+      "destination": "docs/binding_surface2_multicolor_icc.md"
+    },
+    {
+      "source": "docs/prompt27_verapdf_parity.md",
+      "destination": "docs/binding_parity7_verapdf_parity.md"
+    },
+    {
+      "source": "docs/prompt28_feature_matrix.md",
+      "destination": "docs/binding_parity8_feature_matrix.md"
+    },
+    {
+      "source": "docs/prompt29_feature_matrix.md",
+      "destination": "docs/binding_parity9_feature_matrix.md"
+    },
+    {
+      "source": "docs/prompt30_feature_matrix.md",
+      "destination": "docs/release_packaging0_feature_matrix.md"
+    },
+    {
+      "source": "docs/prompt31_feature_matrix.md",
+      "destination": "docs/release_packaging1_feature_matrix.md"
+    },
+    {
+      "source": "docs/prompt32_feature_matrix.md",
+      "destination": "docs/release_packaging2_feature_matrix.md"
+    },
+    {
+      "source": "docs/prompt33_feature_matrix.md",
+      "destination": "docs/release_packaging3_feature_matrix.md"
+    },
+    {
+      "source": "docs/prompt34_implementation.md",
+      "destination": "docs/release_packaging4_implementation.md"
+    },
+    {
+      "source": "docs/prompt35_implementation.md",
+      "destination": "docs/release_packaging5_implementation.md"
+    },
+    {
+      "source": "docs/true_redaction_prompt07.md",
+      "destination": "docs/true_redaction_transparency_rendering.md"
+    },
+    {
+      "source": "docs/prompt08_text_clipping.md",
+      "destination": "docs/advanced_rendering_text_clipping.md"
+    }
+  ],
+  "notes": [
+    "Internal roadmap-number filenames were converted to domain filenames.",
+    "Transient target artifacts were removed from the tracked project and durable evidence is kept under evidence/repository-professionalization."
+  ]
+}

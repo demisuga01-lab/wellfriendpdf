@@ -33,4 +33,4 @@ python robustness-benchmark\scripts\robustness_benchmark.py `
 ```
 
 Numbers from this fast loop must be labeled `indicative (approx 200-file
-subset)`. Prompt 10 is the full-scale validation pass.
+subset)`. Multilingual Color Glyphs is the full-scale validation pass.

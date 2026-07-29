@@ -1,6 +1,6 @@
 # GA6 Final Release Gate
 
-This is the final GA Prompt 6 verification record. It is measurement and
+This is the final GA Native Renderer verification record. It is measurement and
 release judgment only; no engine feature work is claimed here.
 
 ## Provenance
@@ -173,7 +173,7 @@ Raw data: `docs\capstone_sdk_operation_benchmarks.json`.
 Wellfriend is shippable as a v1.0 release candidate or controlled enterprise pilot
 from a clean release branch. The feature pillars are present, qpdf/veraPDF
 structural and compliance checks are green for the measured outputs, renderer
-quality is materially above the Prompt 11 baseline, and the whole-SDK safety
+quality is materially above the Renderer Fuzz CMM baseline, and the whole-SDK safety
 slice is crash/timeout clean.
 
 It is not responsible to tag v1.0 GA directly from this dirty worktree, and a

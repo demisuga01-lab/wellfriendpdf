@@ -49,7 +49,7 @@ front doors.
 
 ## Coverage Note
 
-The local verification for this prompt proves reach by construction and smoke
+The local verification for this roadmap task proves reach by construction and smoke
 execution of the `structured_pdf` target. A numeric LLVM coverage delta was not
 collected in this run; the CI target exists so future coverage jobs can compare
 `parse_pdf` against `structured_pdf` directly if required.

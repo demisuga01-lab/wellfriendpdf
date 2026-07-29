@@ -26,5 +26,5 @@ Valid example: `event.value = this.getField("A").value * 2;` may be evaluated
 only in the opt-in flatten policy. Failure example: `app.launchURL(...)` is
 inventoried and rejected by the safe subset.
 
-All full-rewrite policies expose signature impact and obey Prompt 18B
+All full-rewrite policies expose signature impact and obey secure mutation closeout
 DocMDP/FieldMDP enforcement. They do not claim cryptographic validity.

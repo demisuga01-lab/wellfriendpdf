@@ -26,7 +26,7 @@ eliminate the denial-of-service class that survives in safe code:
 This document records what has been hardened against those classes in the
 parser, the stream filters, and the content-stream tokenizer.
 
-GA Prompt 5 extends this posture to the whole SDK surface introduced by the
+GA Decode Scheduler extends this posture to the whole SDK surface introduced by the
 enterprise prompts: modern writer modes, linearization, PDF/A conversion,
 editing/redaction/forms, and signature validation. See
 [`ga5_release_hardening.md`](ga5_release_hardening.md) for the new fuzz targets
@@ -58,7 +58,7 @@ residual-risk list are recorded in
 
 A `cargo-fuzz` / libFuzzer harness lives in the out-of-tree [`fuzz/`](../fuzz)
 workspace member (excluded from the stable workspace so `cargo build`/`cargo
-test` stay green without nightly). Ten targets were built and run in the Prompt
+test` stay green without nightly). Ten targets were built and run in the Roadmap task
 G safety pass:
 
 | Target              | Entry point                          | Subsystem |
@@ -171,10 +171,10 @@ covered by regression tests.
   outside the stable workspace, so the stable `cargo build`/`cargo test` never
   sees it.
 
-## Prompt G CVE-class corpus run
+## Roadmap task G CVE-class corpus run
 
-The Prompt G safety corpus is saved at
-[`renderer-benchmark/corpus/prompt-g-cve-class-manifest.json`](../renderer-benchmark/corpus/prompt-g-cve-class-manifest.json).
+The Roadmap task G safety corpus is saved at
+[`renderer-benchmark/corpus/roadmap task-g-cve-class-manifest.json`](../renderer-benchmark/corpus/roadmap task-g-cve-class-manifest.json).
 It contains 751 files selected from the expanded pdf.js corpus plus generated
 hostile fixtures to mirror CVE-class input shapes: malformed/truncated streams,
 bad xrefs/object streams/startxref, resource bombs, malformed image codecs,
@@ -198,10 +198,10 @@ Run command:
 
 ```powershell
 py renderer-benchmark\scripts\renderer_benchmark.py `
-  --manifest renderer-benchmark\corpus\prompt-g-cve-class-manifest.json `
+  --manifest renderer-benchmark\corpus\roadmap task-g-cve-class-manifest.json `
   --wellfriendpdf-bin target\release\wellfriendpdf.exe `
   --poppler-bin-dir target\tools\poppler\poppler-26.02.0\Library\bin `
-  --output-dir renderer-benchmark\results\prompt-g-cve-class `
+  --output-dir renderer-benchmark\results\roadmap task-g-cve-class `
   --dpi 72 --max-pages-per-file 1 --timeout-sec 15 --max-memory-mb 1024 `
   --determinism-sample 0
 ```

@@ -1,6 +1,6 @@
 # Redaction Full Rewrite
 
-Prompt 35 full rewrite history removal uses the canonical security
+document security full rewrite history removal uses the canonical security
 canonicalizer/writer path. It is intended for destructive history-removal
 policies where incremental update history, prior object revisions, stale
 metadata, or attachment references must not remain in the output.

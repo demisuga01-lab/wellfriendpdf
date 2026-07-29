@@ -1,4 +1,4 @@
-//! Prompt 26 shared clause-mapped standards-validation architecture.
+//! Incremental Signing Standards shared clause-mapped standards-validation architecture.
 //!
 //! This is the single report envelope used by the PDF/A, PDF/UA, and PDF/X
 //! rule engines and by every binding surface. It is deliberately independent of
@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::{ContentEngine, Result};
 
-/// Schema version for every Prompt 26 standards report.
+/// Schema version for every Incremental Signing Standards standards report.
 pub const STANDARDS_ENGINE_SCHEMA_VERSION: u32 = 1;
 
 /// Standards family a run targets.
@@ -49,7 +49,7 @@ pub enum RuleStatus {
     Indeterminate,
     NotApplicable,
     UnsupportedReportedExact,
-    DeferredPrompt27CorpusParity,
+    DeferredCryptoStandardsFuzzCorpusParity,
     BlockedNormativeDependency,
 }
 
@@ -66,7 +66,7 @@ impl RuleStatus {
             self,
             RuleStatus::Indeterminate
                 | RuleStatus::UnsupportedReportedExact
-                | RuleStatus::DeferredPrompt27CorpusParity
+                | RuleStatus::DeferredCryptoStandardsFuzzCorpusParity
                 | RuleStatus::BlockedNormativeDependency
         )
     }
@@ -79,7 +79,7 @@ pub enum RuleImplementation {
     FullyImplemented,
     ImplementedWithLimits,
     Unsupported,
-    DeferredPrompt27,
+    DeferredCryptoStandardsFuzz,
     Blocked,
 }
 
@@ -233,8 +233,8 @@ impl StandardsRuleResult {
         }
     }
 
-    /// A rule deferred to Prompt 27 full-corpus parity.
-    pub fn deferred_prompt27(
+    /// A rule deferred to Crypto Standards Fuzz full-corpus parity.
+    pub fn deferred_crypto_standards_fuzz(
         profile: &str,
         rule_id: &str,
         clause: StandardsClauseRef,
@@ -245,11 +245,11 @@ impl StandardsRuleResult {
             profile: profile.to_string(),
             clause,
             context: ValidationEvidence::document(),
-            status: RuleStatus::DeferredPrompt27CorpusParity,
+            status: RuleStatus::DeferredCryptoStandardsFuzzCorpusParity,
             severity: ValidationSeverity::Info,
             diagnostic: reason.into(),
             unsupported_reason: None,
-            implementation: RuleImplementation::DeferredPrompt27,
+            implementation: RuleImplementation::DeferredCryptoStandardsFuzz,
         }
     }
 
@@ -294,7 +294,7 @@ pub struct StandardsRuleCounts {
     pub indeterminate: usize,
     pub not_applicable: usize,
     pub unsupported_reported_exact: usize,
-    pub deferred_prompt27_corpus_parity: usize,
+    pub deferred_crypto_standards_fuzz_corpus_parity: usize,
     pub blocked_normative_dependency: usize,
 }
 
@@ -312,8 +312,8 @@ impl StandardsRuleCounts {
                 RuleStatus::Indeterminate => counts.indeterminate += 1,
                 RuleStatus::NotApplicable => counts.not_applicable += 1,
                 RuleStatus::UnsupportedReportedExact => counts.unsupported_reported_exact += 1,
-                RuleStatus::DeferredPrompt27CorpusParity => {
-                    counts.deferred_prompt27_corpus_parity += 1
+                RuleStatus::DeferredCryptoStandardsFuzzCorpusParity => {
+                    counts.deferred_crypto_standards_fuzz_corpus_parity += 1
                 }
                 RuleStatus::BlockedNormativeDependency => counts.blocked_normative_dependency += 1,
             }
@@ -822,7 +822,7 @@ pub fn validate_pdfa_profile(
         let (status_rule, reason) = if part == 4 {
             (
                 "pdfa4.profile_support",
-                "PDF/A-4 (ISO 19005-4:2020) rule execution is not implemented by Wellfriend's current rule engine; Prompt 27 veraPDF parity treats PDF/A-4 as an exact unsupported profile rather than a conformance pass.",
+                "PDF/A-4 (ISO 19005-4:2020) rule execution is not implemented by Wellfriend's current rule engine; Crypto Standards Fuzz veraPDF parity treats PDF/A-4 as an exact unsupported profile rather than a conformance pass.",
             )
         } else {
             (
@@ -953,19 +953,19 @@ pub fn validate_pdfa_profile(
         );
     }
 
-    // Prompt 27 closes the self-referential "deferred to Prompt 27" status.
+    // Crypto Standards Fuzz closes the self-referential "deferred to Crypto Standards Fuzz" status.
     // Keep a deterministic implemented-with-limits row so callers can see that
     // veraPDF parity is evidence-backed for the selected corpus, while the
     // library still does not claim accredited certification or every ISO rule.
     rules.push(StandardsRuleResult::implemented(
         profile_label,
-        "pdfa.corpus.verapdf_parity_prompt27",
+        "pdfa.corpus.verapdf_parity_crypto_standards_fuzz",
         StandardsClauseRef::new(standard, "6", "Full ISO 19005 rule coverage"),
         ValidationEvidence::document()
-            .with_detail("See target/prompt27-verapdf-crypto-fuzz/verapdf-parity-results.json"),
+            .with_detail("See target/crypto_standards_fuzz-verapdf-crypto-fuzz/verapdf-parity-results.json"),
         RuleStatus::Warning,
         ValidationSeverity::Warning,
-        "Prompt 27 runs veraPDF corpus parity for the supported profile scope; this row is not an accredited certification claim and records exact limits outside the selected corpus.",
+        "Crypto Standards Fuzz runs veraPDF corpus parity for the supported profile scope; this row is not an accredited certification claim and records exact limits outside the selected corpus.",
     )
     .with_implementation_limits());
 
@@ -1074,7 +1074,7 @@ pub fn validate_pdfua_profile(
         profile_label,
         "pdfua.corpus.full_rule_coverage",
         StandardsClauseRef::new(standard, "7", "Full ISO 14289-1 rule coverage"),
-        "Full ISO 14289-1 semantic/corpus parity remains outside Prompt 27's PDF/A-focused veraPDF unit and is reported exactly rather than counted as conformant.",
+        "Full ISO 14289-1 semantic/corpus parity remains outside Crypto Standards Fuzz's PDF/A-focused veraPDF unit and is reported exactly rather than counted as conformant.",
     ));
 
     Ok(StandardsValidationReport::assemble(
@@ -1315,7 +1315,7 @@ pub fn validate_pdfx_profile(
     ));
 
     // Colour / transparency / OPI / trapping depth are exact limits rather than
-    // Prompt 27 self-deferrals.
+    // Crypto Standards Fuzz self-deferrals.
     rules.push(StandardsRuleResult::unsupported(
         profile_label,
         "pdfx.color.full_colorant_validation",
@@ -1544,7 +1544,7 @@ mod tests {
             .any(|r| r.rule_id.contains("output_intent") && matches!(r.status, RuleStatus::Fail)));
         assert_ne!(report.conformance, ConformanceStatus::Conformant);
         assert!(report.rules.iter().any(|r| {
-            r.rule_id == "pdfa.corpus.verapdf_parity_prompt27"
+            r.rule_id == "pdfa.corpus.verapdf_parity_crypto_standards_fuzz"
                 && matches!(r.status, RuleStatus::Warning)
                 && matches!(r.implementation, RuleImplementation::ImplementedWithLimits)
         }));

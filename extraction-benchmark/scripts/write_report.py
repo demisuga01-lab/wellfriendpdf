@@ -242,7 +242,7 @@ def main():
 
     # Weakness punch list.
     w("## Recorded weaknesses / remaining gaps\n")
-    w("The prompt-targeted synthetic scan gaps are now closed in this corpus; these "
+    w("The roadmap task-targeted synthetic scan gaps are now closed in this corpus; these "
       "are the remaining follow-up items:\n")
     w("1. **Broader messy-scan coverage**: warped, low-contrast, handwritten, "
       "multi-table, and camera-captured invoices still need a larger corpus before "

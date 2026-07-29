@@ -609,7 +609,7 @@ fn signature_verify_json_does_not_hide_an_untrusted_result() {
 }
 
 #[test]
-fn prompt24_evidence_commands_are_exposed() {
+fn signature_validation_evidence_commands_are_exposed() {
     for command in [
         "evidence-fetch",
         "evidence-export",
@@ -770,113 +770,118 @@ fn simple_secret_pdf() -> Vec<u8> {
     pdf.into_bytes()
 }
 
-// --- Unified-surface additions (Prompt 7) -----------------------------------
+// --- Unified-surface additions (Transparency Rendering) -----------------------------------
 
 #[test]
-fn prompt07_report_commands_emit_json() {
+fn transparency_rendering_report_commands_emit_json() {
     let feature = assert_json(&run(&["feature-report"]), "feature-report");
     assert_eq!(
-        feature["report"]["prompt07_transparency_compositing"]["status"],
-        "native_foundation_with_prompt07b_closure"
+        feature["report"]["transparency_rendering_transparency_compositing"]["status"],
+        "native_foundation_with_transparency_closeout_closure"
     );
     assert_eq!(
-        feature["report"]["prompt07_transparency_compositing"]["reference_audit"]["memory_cap_mb"],
+        feature["report"]["transparency_rendering_transparency_compositing"]["reference_audit"]
+            ["memory_cap_mb"],
         4096
     );
     assert_eq!(
-        feature["report"]["prompt07b_transparency_closure"]["status"],
+        feature["report"]["transparency_closeout_transparency_closure"]["status"],
         "complete"
     );
     assert_eq!(
-        feature["report"]["prompt07b_transparency_closure"]["reference_audit"]
+        feature["report"]["transparency_closeout_transparency_closure"]["reference_audit"]
             ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
-        feature["report"]["prompt08_text_clipping_shading_patterns"]["reference_audit"]["status"],
+        feature["report"]["advanced_rendering_text_clipping_shading_patterns"]["reference_audit"]
+            ["status"],
         "multi_reference_audit_complete"
     );
     assert_eq!(
-        feature["report"]["prompt08_text_clipping_shading_patterns"]["reference_audit"]
+        feature["report"]["advanced_rendering_text_clipping_shading_patterns"]["reference_audit"]
             ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
-        feature["report"]["prompt08b_type3_cid_tensor_closure"]["status"],
+        feature["report"]["type3_cid_rendering_type3_cid_tensor_closure"]["status"],
         "complete_native_common_paths_with_reference_cluster_limits"
     );
     assert_eq!(
-        feature["report"]["prompt08b_type3_cid_tensor_closure"]["reference_audit"]
+        feature["report"]["type3_cid_rendering_type3_cid_tensor_closure"]["reference_audit"]
             ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
-        feature["report"]["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]["status"],
+        feature["report"]["cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_fidelity_closure"]
+            ["status"],
         "complete"
     );
     assert_eq!(
-        feature["report"]["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]
+        feature["report"]["cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_fidelity_closure"]
             ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
-        feature["report"]["prompt10c_color_glyph_hinting_cff_closure"]["status"],
+        feature["report"]["color_glyph_hinting_color_glyph_hinting_cff_closure"]["status"],
         "complete"
     );
     assert_eq!(
-        feature["report"]["prompt10c_color_glyph_hinting_cff_closure"]["closure_gates"]
+        feature["report"]["color_glyph_hinting_color_glyph_hinting_cff_closure"]["closure_gates"]
             ["public_report_schema"],
-        "additive_feature_report_prompt10c"
+        "additive_feature_report_color_glyph_hinting"
     );
     assert_eq!(
-        feature["report"]["prompt10c_color_glyph_hinting_cff_closure"]["multi_reference_audit"]
-            ["wellfriendpdf_outlier_failures"],
+        feature["report"]["color_glyph_hinting_color_glyph_hinting_cff_closure"]
+            ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
-        feature["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["status"],
+        feature["report"]["colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure"]["status"],
         "complete"
     );
     assert_eq!(
-        feature["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["svg_in_opentype"]
-            ["status"],
+        feature["report"]["colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure"]
+            ["svg_in_opentype"]["status"],
         "safe_static_subset_rendered_active_constructs_blocked"
     );
     assert_eq!(
-        feature["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["closure_gates"]
+        feature["report"]["colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure"]["closure_gates"]
             ["public_report_schema"],
-        "additive_feature_report_prompt10d"
+        "additive_feature_report_colrv_svg_bitmap"
     );
     assert_eq!(
-        feature["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["multi_reference_audit"]
-            ["wellfriendpdf_outlier_failures"],
-        0
-    );
-    assert_eq!(
-        feature["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["status"],
-        "complete"
-    );
-    assert_eq!(
-        feature["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["colrv1_clip_stack"]
-            ["status"],
-        "implemented"
-    );
-    assert_eq!(
-        feature["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["closure_gates"]
-            ["public_report_schema"],
-        "additive_feature_report_prompt10e"
-    );
-    assert_eq!(
-        feature["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]
+        feature["report"]["colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure"]
             ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
-        feature["report"]["prompt10f_colrv1_porterduff_radial_closure"]["status"],
+        feature["report"]["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+            ["status"],
         "complete"
     );
     assert_eq!(
-        feature["report"]["prompt10f_colrv1_porterduff_radial_closure"]
+        feature["report"]["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+            ["colrv1_clip_stack"]["status"],
+        "implemented"
+    );
+    assert_eq!(
+        feature["report"]["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+            ["closure_gates"]["public_report_schema"],
+        "additive_feature_report_colrv_gradient_composite"
+    );
+    assert_eq!(
+        feature["report"]["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+            ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
+        0
+    );
+    assert_eq!(
+        feature["report"]["porterduff_radial_color_glyph_colrv1_porterduff_radial_closure"]
+            ["status"],
+        "complete"
+    );
+    assert_eq!(
+        feature["report"]["porterduff_radial_color_glyph_colrv1_porterduff_radial_closure"]
             ["porter_duff_plus_composites"]["implemented_modes"]
             .as_array()
             .unwrap()
@@ -884,91 +889,106 @@ fn prompt07_report_commands_emit_json() {
         12
     );
     assert_eq!(
-        feature["report"]["prompt10f_colrv1_porterduff_radial_closure"]["closure_gates"]
-            ["public_report_schema"],
-        "additive_feature_report_prompt10f"
+        feature["report"]["porterduff_radial_color_glyph_colrv1_porterduff_radial_closure"]
+            ["closure_gates"]["public_report_schema"],
+        "additive_feature_report_porterduff_radial_color_glyph"
     );
     assert_eq!(
-        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["status"],
+        feature["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["status"],
         "complete_with_native_cmm_hard_blocked_precise"
     );
     assert_eq!(
-        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_fuzz"]
+        feature["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["renderer_fuzz"]
             ["fuzz_target_count"],
         25
     );
     assert_eq!(
-        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_closeout"]
+        feature["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["renderer_closeout"]
             ["wellfriendpdf_outlier_failures"],
         0
     );
     assert_eq!(
-        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["native_cmm_backend"]
+        feature["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["native_cmm_backend"]
             ["backend_used_in_current_build"],
         "safe-rust-plus-qcms"
     );
     assert_eq!(
-        feature["report"]["prompt11_renderer_fuzz_cmm_closeout"]["closure_gates"]
+        feature["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["closure_gates"]
             ["public_report_schema"],
-        "additive_feature_report_prompt11"
+        "additive_feature_report_renderer_fuzz_cmm"
     );
-    let prompt11b = &feature["report"]["prompt11b_native_littlecms_cmm_backend_closure"];
-    assert_eq!(prompt11b["status"], "complete");
-    assert_eq!(prompt11b["feature_flag"]["name"], "native-cmm-lcms2");
+    let native_cmm_backend =
+        &feature["report"]["native_cmm_backend_native_littlecms_cmm_backend_closure"];
+    assert_eq!(native_cmm_backend["status"], "complete");
     assert_eq!(
-        prompt11b["closure_gates"]["public_report_schema"],
-        "additive_feature_report_prompt11b"
-    );
-    let prompt12 = &feature["report"]["prompt12_prepress_cmm_device_link_separation_plates"];
-    assert_eq!(prompt12["status"], "complete");
-    assert_eq!(
-        prompt12["closure_gates"]["public_report_schema"],
-        "additive_feature_report_prompt12"
+        native_cmm_backend["feature_flag"]["name"],
+        "native-cmm-lcms2"
     );
     assert_eq!(
-        prompt12["separation_framebuffer"]["cache_key_includes_plate_state"],
+        native_cmm_backend["closure_gates"]["public_report_schema"],
+        "additive_feature_report_native_cmm_backend"
+    );
+    let prepress_cmm =
+        &feature["report"]["prepress_cmm_prepress_cmm_device_link_separation_plates"];
+    assert_eq!(prepress_cmm["status"], "complete");
+    assert_eq!(
+        prepress_cmm["closure_gates"]["public_report_schema"],
+        "additive_feature_report_prepress_cmm"
+    );
+    assert_eq!(
+        prepress_cmm["separation_framebuffer"]["cache_key_includes_plate_state"],
         true
     );
-    let prompt12b = &feature["report"]["prompt12b_nchannel_plate_reference_closure"];
-    assert_eq!(prompt12b["status"], "complete");
+    let nchannel_plate_prepress =
+        &feature["report"]["nchannel_plate_prepress_nchannel_plate_reference_closure"];
+    assert_eq!(nchannel_plate_prepress["status"], "complete");
     assert_eq!(
-        prompt12b["closure_gates"]["public_report_schema"],
-        "additive_feature_report_prompt12b"
+        nchannel_plate_prepress["closure_gates"]["public_report_schema"],
+        "additive_feature_report_nchannel_plate_prepress"
     );
     assert_eq!(
-        prompt12b["reference_audit"]["mupdf"],
-        "required_and_run_by_prompt12b_audit"
+        nchannel_plate_prepress["reference_audit"]["mupdf"],
+        "required_and_run_by_nchannel_plate_prepress_audit"
     );
-    let prompt13 = &feature["report"]["prompt13_full_overprint_prepress_closeout"];
-    assert_eq!(prompt13["status"], "complete");
+    let prepress_proofing =
+        &feature["report"]["prepress_proofing_full_overprint_prepress_closeout"];
+    assert_eq!(prepress_proofing["status"], "complete");
     assert_eq!(
-        prompt13["closure_gates"]["public_report_schema"],
-        "additive_feature_report_prompt13"
+        prepress_proofing["closure_gates"]["public_report_schema"],
+        "additive_feature_report_prepress_proofing"
     );
     assert_eq!(
-        prompt13["reference_audit"]["wellfriendpdf_outlier_failures"],
+        prepress_proofing["reference_audit"]["wellfriendpdf_outlier_failures"],
         0
     );
-    assert_eq!(prompt13["reference_audit"]["unclassified_failures"], 0);
-    let prompt14 = &feature["report"]["prompt14_semantic_intelligence_parenttree_cjk_ml_layout"];
-    assert_eq!(prompt14["status"], "complete");
     assert_eq!(
-        prompt14["closure_gates"]["public_report_schema"],
-        "additive_feature_report_prompt14"
+        prepress_proofing["reference_audit"]["unclassified_failures"],
+        0
     );
-    assert_eq!(prompt14["privacy_defaults"]["cloud_upload_default"], false);
-    let prompt14b = &feature["report"]["prompt14b_cjk_dictionary_layout_backend_closure"];
-    assert_eq!(prompt14b["status"], "complete");
+    let semantic_intelligence =
+        &feature["report"]["semantic_intelligence_semantic_intelligence_parenttree_cjk_ml_layout"];
+    assert_eq!(semantic_intelligence["status"], "complete");
     assert_eq!(
-        prompt14b["closure_gates"]["public_report_schema"],
-        "additive_feature_report_prompt14b"
+        semantic_intelligence["closure_gates"]["public_report_schema"],
+        "additive_feature_report_semantic_intelligence"
     );
     assert_eq!(
-        prompt14b["dictionary_provider"]["external_pack_support"],
+        semantic_intelligence["privacy_defaults"]["cloud_upload_default"],
+        false
+    );
+    let cjk_dictionary_layout =
+        &feature["report"]["cjk_dictionary_layout_cjk_dictionary_layout_backend_closure"];
+    assert_eq!(cjk_dictionary_layout["status"], "complete");
+    assert_eq!(
+        cjk_dictionary_layout["closure_gates"]["public_report_schema"],
+        "additive_feature_report_cjk_dictionary_layout"
+    );
+    assert_eq!(
+        cjk_dictionary_layout["dictionary_provider"]["external_pack_support"],
         "implemented"
     );
     assert_eq!(
-        prompt14b["layout_backend"]["local_backend_status"],
+        cjk_dictionary_layout["layout_backend"]["local_backend_status"],
         "unsupported_reported_no_runtime"
     );
 
@@ -1016,13 +1036,13 @@ fn prompt07_report_commands_emit_json() {
 }
 
 #[test]
-fn prompt07b_form_annotation_and_page_ops_run() {
-    let xfdf = tmp("prompt07b_fields.xfdf");
-    let filled = tmp("prompt07b_filled.pdf");
-    let flattened = tmp("prompt07b_flattened.pdf");
-    let cropped = tmp("prompt07b_cropped.pdf");
-    let scaled = tmp("prompt07b_scaled.pdf");
-    let nup = tmp("prompt07b_nup.pdf");
+fn transparency_closeout_form_annotation_and_page_ops_run() {
+    let xfdf = tmp("transparency_closeout_fields.xfdf");
+    let filled = tmp("transparency_closeout_filled.pdf");
+    let flattened = tmp("transparency_closeout_flattened.pdf");
+    let cropped = tmp("transparency_closeout_cropped.pdf");
+    let scaled = tmp("transparency_closeout_scaled.pdf");
+    let nup = tmp("transparency_closeout_nup.pdf");
     for path in [&xfdf, &filled, &flattened, &cropped, &scaled, &nup] {
         remove_path(path);
     }
@@ -1126,9 +1146,9 @@ fn prompt07b_form_annotation_and_page_ops_run() {
 }
 
 #[test]
-fn prompt07_redact_search_term_writes_verified_pdf() {
-    let input = tmp("prompt07_redact_input.pdf");
-    let output = tmp("prompt07_redact_output.pdf");
+fn transparency_rendering_redact_search_term_writes_verified_pdf() {
+    let input = tmp("transparency_rendering_redact_input.pdf");
+    let output = tmp("transparency_rendering_redact_output.pdf");
     remove_path(&input);
     remove_path(&output);
     std::fs::write(&input, simple_secret_pdf()).expect("write redaction fixture");

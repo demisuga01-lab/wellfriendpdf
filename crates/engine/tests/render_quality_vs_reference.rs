@@ -4,10 +4,10 @@
 //! byte space to track Poppler/Splash. `RenderMode::HighQuality` is opt-in and
 //! keeps the same geometry and analytic AA coverage while compositing RGB in
 //! linear light. The asserted test uses the same high-resolution HighQuality
-//! linear-light downsample reference as the Prompt I measurement script.
+//! linear-light downsample reference as the Roadmap task I measurement script.
 //! Ghostscript is used only for an informational external-renderer report.
 //!
-//! The full Prompt I three-way Compat/High/Poppler measurement lives in
+//! The full Roadmap task I three-way Compat/High/Poppler measurement lives in
 //! `scripts/render_quality_prompt_i.py` and writes:
 //! - `docs/render_quality_prompt_i_results.json`
 //! - `docs/render_quality_prompt_i_summary.md`

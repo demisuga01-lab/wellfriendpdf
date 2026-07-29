@@ -1,6 +1,6 @@
 # MCID and ParentTree Repair
 
-Prompt 35 ParentTree repair is source-linked and conservative. It uses existing
+document security ParentTree repair is source-linked and conservative. It uses existing
 marked-content and semantic recovery evidence, then applies supported updates
 through the canonical writer.
 
@@ -13,4 +13,4 @@ The operation report records:
 - validation status after reopening the output.
 
 When a ParentTree update cannot be represented safely with current canonical
-APIs, Prompt 35 returns a structure-update typed refusal and preserves the input.
+APIs, document security returns a structure-update typed refusal and preserves the input.

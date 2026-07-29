@@ -1,0 +1,15 @@
+{
+  "verdict": "mit_license_consistent",
+  "license_files": {
+    "LICENSE": "present",
+    "LICENSE-MIT": "missing",
+    "LICENSE-APACHE": "missing"
+  },
+  "problem_count": 0,
+  "problems": [],
+  "metadata_missing_mit_hashes": [],
+  "allowed_third_party_dual_license_paths": [
+    "Cargo.lock",
+    "docs/licensing.md"
+  ]
+}

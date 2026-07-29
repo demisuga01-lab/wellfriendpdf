@@ -1,0 +1,15 @@
+{
+  "artifact": "requirements-summary",
+  "scope": "README and repository professionalization",
+  "required_commit_message": "Professionalize README benchmarks naming and MIT license",
+  "required_outcomes": [
+    "README rewritten with measured benchmark numbers",
+    "domain-oriented naming in active tracked files",
+    "tracked build-output artifacts removed from index",
+    "project license converted to MIT",
+    "third-party attributions preserved",
+    "workspace and binding checks recorded",
+    "single pushed commit with clean worktree"
+  ],
+  "raw_task_text_retained": false
+}

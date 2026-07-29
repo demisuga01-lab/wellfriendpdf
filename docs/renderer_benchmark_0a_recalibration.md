@@ -1,10 +1,10 @@
 # Renderer Benchmark 0A — Recalibration + Confirmed Fixes (this round)
 
-Generated: 2026-06-16. This round (Prompt 0A "Fix") did three things: **recalibrated
+Generated: 2026-06-16. This round (renderer calibration "Fix") did three things: **recalibrated
 the harness measurement** so renderer-vs-renderer comparison is honest, **fixed two
 confirmed real defects** (huge-page allocation abort; the dimension "bug"), and
 **re-ran 0A** to establish the true baseline. It deliberately did NOT broadly change
-the renderer to chase the visual number — that is Prompt B, fed by the categorized
+the renderer to chase the visual number — that is Roadmap task B, fed by the categorized
 list below.
 
 ## Part A — Harness recalibration (measurement, not renderer)
@@ -80,7 +80,7 @@ Wellfriend matches `pdftoppm -cropbox` exactly (±1 px rounding). **Fix (per use
 align the harness — pass `-cropbox` to `pdftoppm` so both render the same region. Wellfriend's
 spec-aligned CropBox default is unchanged.** All 16 dimension mismatches resolved. The
 rotate files then exposed a *real* content bug (text mirrored under /Rotate 270) that the
-dimension confusion had masked — handed to Prompt B.
+dimension confusion had masked — handed to Roadmap task B.
 
 Regression: `crates/engine/tests/render_resource_limits.rs` asserts CropBox-derived
 dimensions (`cropbox_drives_page_dimensions_matching_poppler_cropbox`,
@@ -134,7 +134,7 @@ Regression: engine `huge_mediabox_is_rejected_cleanly_not_aborted`,
 **The jump from 2.05 % is real (AA-noise false-fails removed), but the number stays
 modest because the recalibration EXPOSED genuine, severe renderer bugs** that the old
 strict thresholds had buried in the same bucket as AA noise. That is the honest finding:
-Wellfriend has real rendering defects, listed below for Prompt B.
+Wellfriend has real rendering defects, listed below for Roadmap task B.
 
 ### Remaining failures by PRIMARY cause (the input to Prompt B)
 
@@ -185,9 +185,9 @@ All offending files are already in-repo (`renderer-benchmark/corpus/synthetic/` 
 
 ---
 
-# Benchmark Fix Prompt B — Fixing the genuine residual failures
+# Benchmark Fix Roadmap task B — Fixing the genuine residual failures
 
-This round fixed three root-cause renderer-bug groups from the Prompt-A list,
+This round fixed three root-cause renderer-bug groups from the Roadmap task-A list,
 verified each against its fixture and Poppler, and re-ran 0A. Font groups were
 deliberately deferred (large/risky). `cargo test --workspace` + clippy stay green.
 
@@ -229,9 +229,9 @@ deliberately deferred (large/risky). `cargo test --workspace` + clippy stay gree
    33%; transparency pages went ssim 0.50 → 0.99 (though still failing — see
    deferred).**
 
-## Re-baseline (Prompt-B, same recalibrated thresholds / corpus / 144 DPI)
+## Re-baseline (Roadmap task-B, same recalibrated thresholds / corpus / 144 DPI)
 
-| metric | Prompt A | **Prompt B** |
+| metric | Roadmap task A | **Roadmap task B** |
 | --- | --- | --- |
 | Visual pass (Wellfriend vs Poppler) | 34.02 % | **43.85 %** (107/244 pages) |
 | Weighted score | 64.03 | **69.36** |

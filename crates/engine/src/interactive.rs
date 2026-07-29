@@ -1,7 +1,7 @@
 //! Interactive/data-layer reports for tables, forms, annotations, page
 //! navigation state, and redaction verification.
 //!
-//! Prompt 07 keeps mutation in the existing writer/editor paths. This module is
+//! Transparency Rendering keeps mutation in the existing writer/editor paths. This module is
 //! the shared audit surface: consumers can see which field/widget/annotation
 //! structures exist, what page operations must preserve, and whether a produced
 //! redaction still exposes target terms.
@@ -277,7 +277,7 @@ pub fn forms_report(engine: &ContentEngine) -> Result<FormReport> {
                     .diagnostics
                     .retain(|diagnostic| diagnostic.code != "form.xfa.detected");
                 report.diagnostics.push(InteractiveDiagnostic::info(
-                    "form.xfa.prompt16_bounded_subsystem",
+                    "form.xfa.xfa_runtime_bounded_subsystem",
                     "XFA packet inventory and supported static/dynamic subsets are exposed; scripts remain disabled by default",
                 ));
             }
@@ -844,7 +844,7 @@ fn page_operations_report_document(document: &PdfDocument) -> Result<PageOperati
     if signatures_may_be_invalidated_by_rewrite {
         diagnostics.push(InteractiveDiagnostic::warning(
             "pageops.signature_invalidation",
-            "full-save page operations may invalidate existing signatures; Prompt 09 owns cryptographic validation",
+            "full-save page operations may invalidate existing signatures; Annotation Ocg Rendering owns cryptographic validation",
         ));
     }
     Ok(PageOperationsReport {

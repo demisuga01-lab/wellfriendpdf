@@ -44,7 +44,7 @@ This run uses 200 synthetic procedurally generated PDFs with paired JSON ground 
 | --- | --- | --- | --- |
 | docling | yes | 2.107.0 | MIT |
 | markitdown | yes | 0.1.6 | MIT |
-| wellfriendpdf | yes | wellfriendpdf 0.1.0 | MIT OR Apache-2.0 |
+| wellfriendpdf | yes | wellfriendpdf 0.1.0 | MIT |
 | pdf_wellfriendpdf | yes | 0.3.68 | MIT |
 | pdfminer.six | yes | 20251230 | MIT |
 | pdfplumber | yes | 0.11.9 | MIT |

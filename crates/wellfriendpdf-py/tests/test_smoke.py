@@ -66,7 +66,7 @@ def test_malformed_pdf_raises_wellfriendpdf_error():
         wellfriendpdf.open(BROKEN)
 
 
-def test_prompt32_surfaces(sample_pdf):
+def test_editing_transactions_surfaces(sample_pdf):
     data = open(sample_pdf, "rb").read()
     factories = [
         lambda: wellfriendpdf.PyDocument(data),
@@ -78,7 +78,7 @@ def test_prompt32_surfaces(sample_pdf):
         lambda: wellfriendpdf.load(str(sample_pdf)),
     ]
     doc = None
-    required_doc_attrs = {"prompt32_report", "prompt32_report_json"}
+    required_doc_attrs = {"editing_transactions_report", "editing_transactions_report_json"}
     for factory in factories:
         try:
             candidate = factory()
@@ -102,11 +102,11 @@ def test_prompt32_surfaces(sample_pdf):
         return json.loads(value)
 
     request = '{"requested_mode":"operator_preserving","page":1,"source_text":"Hello","replacement_text":"World"}'
-    assert isinstance(parse_json(call_json(["prompt32_report", "prompt32_report_json"])), dict)
-    assert isinstance(parse_json(call_json(["prompt32_scene_report", "prompt32_scene_report_json"])), dict)
-    assert isinstance(parse_json(call_json(["prompt32_scene_select", "prompt32_scene_select_json"], '{"page":1,"point":[20,100]}')), dict)
-    assert isinstance(parse_json(call_json(["prompt32_transaction_plan", "prompt32_transaction_plan_json"], request)), dict)
-    transaction_apply = call_json(["prompt32_transaction_apply", "prompt32_transaction_apply_json"], request)
+    assert isinstance(parse_json(call_json(["editing_transactions_report", "editing_transactions_report_json"])), dict)
+    assert isinstance(parse_json(call_json(["editing_transactions_scene_report", "editing_transactions_scene_report_json"])), dict)
+    assert isinstance(parse_json(call_json(["editing_transactions_scene_select", "editing_transactions_scene_select_json"], '{"page":1,"point":[20,100]}')), dict)
+    assert isinstance(parse_json(call_json(["editing_transactions_transaction_plan", "editing_transactions_transaction_plan_json"], request)), dict)
+    transaction_apply = call_json(["editing_transactions_transaction_apply", "editing_transactions_transaction_apply_json"], request)
     if isinstance(transaction_apply, tuple):
         # Output-producing bindings return `(pdf_bytes, report)` rather than a
         # report-only JSON value. The smoke contract validates the shared
@@ -114,13 +114,13 @@ def test_prompt32_surfaces(sample_pdf):
         assert isinstance(transaction_apply[0], bytes)
         transaction_apply = transaction_apply[1]
     assert isinstance(parse_json(transaction_apply), dict)
-    assert isinstance(parse_json(call_json(["prompt32_text_map", "prompt32_text_map_json"], "A\u0301B", "ltr")), dict)
-    assert isinstance(parse_json(call_json(["prompt32_shape_text", "prompt32_shape_text_json"], "A\u0301B", "ltr")), dict)
-    assert isinstance(parse_json(call_json(["prompt32_font_subset_plan", "prompt32_font_subset_plan_json"], "A\u0301B", "ltr", "preserve_existing_font")), dict)
-    assert isinstance(parse_json(call_json(["prompt32_font_substitution_report", "prompt32_font_substitution_report_json"], "Helvetica", "A\u0301B", "no_silent_substitution")), dict)
+    assert isinstance(parse_json(call_json(["editing_transactions_text_map", "editing_transactions_text_map_json"], "A\u0301B", "ltr")), dict)
+    assert isinstance(parse_json(call_json(["editing_transactions_shape_text", "editing_transactions_shape_text_json"], "A\u0301B", "ltr")), dict)
+    assert isinstance(parse_json(call_json(["editing_transactions_font_subset_plan", "editing_transactions_font_subset_plan_json"], "A\u0301B", "ltr", "preserve_existing_font")), dict)
+    assert isinstance(parse_json(call_json(["editing_transactions_font_substitution_report", "editing_transactions_font_substitution_report_json"], "Helvetica", "A\u0301B", "no_silent_substitution")), dict)
 
 
-def test_prompt33_query_surfaces_share_preview_request(sample_pdf):
+def test_text_reflow_query_surfaces_share_preview_request(sample_pdf):
     doc = wellfriendpdf.open(sample_pdf)
     request = json.dumps({
         "requested_mode": "geometric_block",
@@ -144,18 +144,18 @@ def test_prompt33_query_surfaces_share_preview_request(sample_pdf):
         value = method(request)
         return value if isinstance(value, dict) else json.loads(value)
 
-    assert call_json("prompt33_overflow_report")["kind"] == "prompt33_overflow_report"
-    constraints = call_json("prompt33_constraints_report")
-    assert constraints["kind"] == "prompt33_constraints_report"
+    assert call_json("text_reflow_overflow_report")["kind"] == "text_reflow_overflow_report"
+    constraints = call_json("text_reflow_constraints_report")
+    assert constraints["kind"] == "text_reflow_constraints_report"
     assert "python_soft_height" in json.dumps(constraints)
-    assert call_json("prompt33_confidence_report")["kind"] == "prompt33_confidence_report"
-    output, apply = doc.prompt33_reflow_region(request)
+    assert call_json("text_reflow_confidence_report")["kind"] == "text_reflow_confidence_report"
+    output, apply = doc.text_reflow_reflow_region(request)
     assert isinstance(output, bytes)
-    assert apply["kind"] == "prompt33_reflow_region"
-    validation = doc.prompt33_validate_reflow_output(output, request)
-    assert validation["kind"] == "prompt33_validate_reflow_output"
+    assert apply["kind"] == "text_reflow_reflow_region"
+    validation = doc.text_reflow_validate_reflow_output(output, request)
+    assert validation["kind"] == "text_reflow_validate_reflow_output"
     assert validation["report"]["valid"] is True
-    restored, undo = doc.prompt33_undo_reflow(output, request)
+    restored, undo = doc.text_reflow_undo_reflow(output, request)
     assert restored == sample_pdf.read_bytes()
-    assert undo["kind"] == "prompt33_undo_reflow"
+    assert undo["kind"] == "text_reflow_undo_reflow"
     assert undo["report"]["byte_exact_restoration"] is True

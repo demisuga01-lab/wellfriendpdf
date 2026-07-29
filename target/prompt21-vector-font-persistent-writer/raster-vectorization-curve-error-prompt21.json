@@ -1,9 +1,0 @@
-[
-  {
-    "cubic_fitting": "candidate-only; no smooth curve is emitted above evidence confidence",
-    "max_deviation_px": 0.0,
-    "rms_deviation_px": 0.0,
-    "segment_count": 0,
-    "simplification": "bounded Douglas-Peucker-equivalent bbox/edge simplification"
-  }
-]

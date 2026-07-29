@@ -21,7 +21,7 @@ claim that those unrelated edits are release-ready.
 | Property-based testing | Round-trip identities, writer-mode equivalence, AES-256 preserve-content, no-panic arbitrary bytes, document-model invariants | `.github/workflows/property-tests.yml` is live. `cargo test -p wellfriendpdf-engine --test property_invariants` passed 6 properties. |
 | Grammar-aware fuzzing | Valid-but-adversarial PDFs that reach content interpretation, renderer, editing, linearization, PDF/A, and signature validation paths | `structured_pdf` is in the fuzz target matrix. Its committed corpus replay passed, reaching 10,945 coverage/features in the smoke output. |
 | Real-world and hostile corpus sweep | Cross-pillar safety over parse, info, verify-sig, render, optimize, and linearize in isolated subprocesses | 265 files, 1,590 operations, 0 crashes, 0 timeouts, 100% crash-free and timeout-free. |
-| Indicative wild-PDF robustness benchmark | Text-extraction survival over the Prompt 1 corpus with isolated subprocesses, timeout, memory cap, and checkpointing | 200 files, 100.0% survival, 0 hard failures, 25 clean handled errors in the latest Prompt 8 smoke. |
+| Indicative wild-PDF robustness benchmark | Text-extraction survival over the Binding Surface corpus with isolated subprocesses, timeout, memory cap, and checkpointing | 200 files, 100.0% survival, 0 hard failures, 25 clean handled errors in the latest Advanced Rendering smoke. |
 | Dependency security and licensing | RustSec advisories, license allowlist, source policy | `.github/workflows/security-audit.yml` is live. `cargo audit` and `cargo deny` passed with the documented `RUSTSEC-2023-0071` exception. |
 | Linux sanitizer CI | ASan/TSan/Rust UB checks over C-ABI and crypto tests; ASan replay for all committed fuzz corpora | `.github/workflows/sanitizers.yml` is live for scheduled and manual runs. Local Windows execution is not claimed. |
 
@@ -37,17 +37,17 @@ python scripts\differential_fuzz.py --cases 20 --output target\hardening6-differ
 python scripts\ci_fuzz.py --targets all --mode regression --no-build
 python scripts\ci_fuzz.py --targets content_tokenizer,crypto,signature_validation --mode regression --no-build
 python scripts\ga5_corpus_hardening.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --output-dir target\hardening6-corpus-60s --limit 265 --timeout-sec 60 --include-hostile
-python robustness-benchmark\scripts\robustness_benchmark.py --wellfriendpdf-bin target\debug\wellfriendpdf.exe --output-dir target\roadmap-prompt8\robustness_smoke --report target\roadmap-prompt8\robustness_smoke.md --tools wellfriendpdf --timeout 60 --max-memory-mb 2048 --max-workers 4 --limit 200
+python robustness-benchmark\scripts\robustness_benchmark.py --wellfriendpdf-bin target\debug\wellfriendpdf.exe --output-dir target\roadmap-advanced_rendering\robustness_smoke --report target\roadmap-advanced_rendering\robustness_smoke.md --tools wellfriendpdf --timeout 60 --max-memory-mb 2048 --max-workers 4 --limit 200
 cargo audit --deny warnings --ignore RUSTSEC-2023-0071
 cargo deny check advisories licenses bans sources
 ```
 
-Prompt 9 note: these checks initially found `RUSTSEC-2026-0176` and
+Annotation Ocg Rendering note: these checks initially found `RUSTSEC-2026-0176` and
 `RUSTSEC-2026-0177` in PyO3 0.27.2. The Python binding was upgraded to PyO3
 0.29.0, and both advisory checks then passed without adding new exceptions.
-The focused Prompt 9 fuzz replay passed for `content_tokenizer` (565 runs),
+The focused Annotation Ocg Rendering fuzz replay passed for `content_tokenizer` (565 runs),
 `crypto` (49 runs), and `signature_validation` (14 runs). The full all-target
-fuzz matrix remains a CI/scheduled gate; this Windows prompt did not rerun the
+fuzz matrix remains a CI/scheduled gate; this Windows roadmap task did not rerun the
 Linux sanitizer matrix locally.
 
 Corpus sweep summary from `target\hardening6-corpus-60s\aggregate.json`:

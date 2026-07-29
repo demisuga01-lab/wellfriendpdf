@@ -1,6 +1,6 @@
 # Form Editing
 
-The Prompt 34 form actions resolve an AcroForm field from the canonical,
+The document subsystems form actions resolve an AcroForm field from the canonical,
 inherited field-tree report before mutation. Text, choice, checkbox, and radio
 updates are type-checked, signature values are rejected by policy, and canonical
 form appearance writing produces the saved output. JSON, FDF, and XFDF scalar
@@ -75,7 +75,7 @@ is refused rather than moving every widget in the field.
 Missing fields, incompatible value kinds, unsupported actions, and signature
 permission conflicts leave the source unchanged and return typed results.
 
-Prompt 34 uses the canonical AcroForm hierarchy and form-data editor for
+document subsystems uses the canonical AcroForm hierarchy and form-data editor for
 supported FDF/XFDF value changes. Signature policy, validation, inheritance,
 and appearance regeneration remain enforced by the existing form runtime.
 `form_create_text_in_table_cell`, `form_create_checkbox_in_table_cell`, and

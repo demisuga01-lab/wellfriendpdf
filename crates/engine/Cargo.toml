@@ -3,7 +3,7 @@ name = "wellfriendpdf-engine"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.95"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 description = "Pure-Rust PDF parsing, rendering, authoring, editing, compliance, and signing engine."
 repository = "https://github.com/demisuga01-lab/wellfriendpdf"
 documentation = "https://docs.rs/wellfriendpdf-engine"
@@ -43,8 +43,8 @@ unicode-bidi = "0.3"
 unicode-segmentation = "1.12"
 unicode-linebreak = "0.1.5"
 cassowary = "0.3.0"
-# Prompt 33 uses only the auditable en-US and Spanish dictionaries from this
-# package.  The provider code is Apache-2.0/MIT; Prompt 33 records the
+# text reflow uses only the auditable en-US and Spanish dictionaries from this
+# package.  The provider code is dual-permissive; text reflow records the
 # separate pattern provenance at runtime instead of guessing unsupported
 # languages with English rules.
 hyphenation = { version = "0.8.4", default-features = false, features = ["embed_all"] }
@@ -87,11 +87,11 @@ structural = []
 sign = []
 pdfa = []
 ocr = []
-# Prompt 04 native/C codec boundary guard. This compiles no native dependency by
+# Codec Boundary native/C codec boundary guard. This compiles no native dependency by
 # itself; it only allows future explicitly-registered native backend metadata to
 # report as compiled. Defaults remain pure Rust.
 native-codecs = []
-# Prompt 11B native CMM boundary. Off by default: when enabled, ICCBased
+# Native CMM Backend native CMM boundary. Off by default: when enabled, ICCBased
 # Gray/RGB/CMYK preview transforms can use the safe Rust `lcms2` wrapper around
 # LittleCMS/lcms2. Default, WASM, and package builds keep the qcms fallback path.
 native-cmm-lcms2 = ["dep:lcms2"]

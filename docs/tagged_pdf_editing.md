@@ -1,6 +1,6 @@
 # Tagged PDF Editing
 
-Prompt 35 does not create a new tagged-PDF subsystem. It routes tagged structure
+document security does not create a new tagged-PDF subsystem. It routes tagged structure
 inspection through the semantic extractor and applies supported repairs through
 the existing PDF/UA improvement path.
 

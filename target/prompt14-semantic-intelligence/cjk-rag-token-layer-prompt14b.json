@@ -1,9 +1,0 @@
-{
-  "chunk_policy": "bounded token chunks over dictionary token layer",
-  "fallback_policy": "dictionary disabled falls back to deterministic char/simple segmentation",
-  "phrase_preservation": [
-    "机器学习",
-    "検索エンジン",
-    "한국어"
-  ]
-}

@@ -11,8 +11,8 @@ use crate::content::ContentParser;
 use crate::filters::{decode_stream_lossless, StreamDecodeStatus};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::prepress::{
-    self, IccProfileClass, Prompt12BPrepressReport, Prompt12PrepressReport,
-    Prompt13PrepressCloseoutReport, SeparationFramebuffer,
+    self, IccProfileClass, NchannelPlatePrepressPrepressReport, PrepressCMMPrepressReport,
+    PrepressProofingPrepressCloseoutReport, SeparationFramebuffer,
 };
 use crate::reader::PdfReader;
 use crate::render::{cmm, colorspace, function};
@@ -97,7 +97,7 @@ impl Default for ColorBackendDecision {
         let native = cmm::native_cmm_status();
         Self {
             outcome: if native.available {
-                "Prompt 11B: feature-gated LittleCMS/lcms2 native CMM backend active"
+                "Native CMM Backend: feature-gated LittleCMS/lcms2 native CMM backend active"
                     .to_string()
             } else {
                 "B: safe Rust/qcms accurate-enough preview backend".to_string()
@@ -251,9 +251,10 @@ pub struct ColorReport {
     pub output_intents: Vec<OutputIntentInfo>,
     pub rendering_intents: Vec<ColorSpaceUsage>,
     pub overprint: OverprintReport,
-    pub prompt12_prepress_cmm_device_link_separation_plates: Prompt12PrepressReport,
-    pub prompt12b_nchannel_plate_reference_closure: Prompt12BPrepressReport,
-    pub prompt13_full_overprint_prepress_closeout: Prompt13PrepressCloseoutReport,
+    pub prepress_cmm_prepress_cmm_device_link_separation_plates: PrepressCMMPrepressReport,
+    pub nchannel_plate_prepress_nchannel_plate_reference_closure:
+        NchannelPlatePrepressPrepressReport,
+    pub prepress_proofing_full_overprint_prepress_closeout: PrepressProofingPrepressCloseoutReport,
     pub standards: StandardsColorReport,
     pub diagnostics: Vec<ColorDiagnostic>,
 }
@@ -281,22 +282,22 @@ impl ColorReport {
             spot_colorants: Vec::new(),
             devicen_components: Vec::new(),
             spot_preview: SpotPreviewReport {
-                preview_model: "PDF tint transform to alternate color space plus Prompt 12 sparse plate framebuffer; RGB output remains preview, not press proof".to_string(),
+                preview_model: "PDF tint transform to alternate color space plus Prepress CMM sparse plate framebuffer; RGB output remains preview, not press proof".to_string(),
                 ..SpotPreviewReport::default()
             },
             output_intents: Vec::new(),
             rendering_intents: Vec::new(),
             overprint: OverprintReport::default(),
-            prompt12_prepress_cmm_device_link_separation_plates: Prompt12PrepressReport::default(),
-            prompt12b_nchannel_plate_reference_closure: Prompt12BPrepressReport::from_parts(
+            prepress_cmm_prepress_cmm_device_link_separation_plates: PrepressCMMPrepressReport::default(),
+            nchannel_plate_prepress_nchannel_plate_reference_closure: NchannelPlatePrepressPrepressReport::from_parts(
                 &[],
                 &SeparationFramebuffer::default().report(),
             ),
-            prompt13_full_overprint_prepress_closeout: Prompt13PrepressCloseoutReport::from_parts(
+            prepress_proofing_full_overprint_prepress_closeout: PrepressProofingPrepressCloseoutReport::from_parts(
                 &SeparationFramebuffer::default().report(),
             ),
             standards: StandardsColorReport {
-                scope: "color-only OutputIntent/ICC/device-color/prepress checks; full PDF/A/PDF/X validation remains the compliance module/Prompt 09 scope".to_string(),
+                scope: "color-only OutputIntent/ICC/device-color/prepress checks; full PDF/A/PDF/X validation remains the compliance module/Annotation Ocg Rendering scope".to_string(),
                 output_intent_checked: false,
                 icc_profile_checked: false,
                 device_color_policy_checked: false,
@@ -322,8 +323,8 @@ struct ColorReportBuilder {
 
 impl ColorReportBuilder {
     fn finish(self, mut report: ColorReport) -> ColorReport {
-        let prompt12_profiles = self.icc_profiles.clone();
-        let prompt12_framebuffer = self.separation_framebuffer.report();
+        let prepress_cmm_profiles = self.icc_profiles.clone();
+        let prepress_cmm_framebuffer = self.separation_framebuffer.report();
         let device_rgb_used = self.color_spaces.contains_key("DeviceRGB");
         report.color_spaces = self
             .color_spaces
@@ -343,16 +344,19 @@ impl ColorReportBuilder {
         };
         report.overprint = self.overprint;
         report.overprint.true_separation_framebuffer =
-            prompt12_framebuffer.true_separation_framebuffer;
-        report.prompt12_prepress_cmm_device_link_separation_plates =
-            Prompt12PrepressReport::from_parts(
-                prompt12_profiles.clone(),
-                prompt12_framebuffer.clone(),
+            prepress_cmm_framebuffer.true_separation_framebuffer;
+        report.prepress_cmm_prepress_cmm_device_link_separation_plates =
+            PrepressCMMPrepressReport::from_parts(
+                prepress_cmm_profiles.clone(),
+                prepress_cmm_framebuffer.clone(),
             );
-        report.prompt12b_nchannel_plate_reference_closure =
-            Prompt12BPrepressReport::from_parts(&prompt12_profiles, &prompt12_framebuffer);
-        report.prompt13_full_overprint_prepress_closeout =
-            Prompt13PrepressCloseoutReport::from_parts(&prompt12_framebuffer);
+        report.nchannel_plate_prepress_nchannel_plate_reference_closure =
+            NchannelPlatePrepressPrepressReport::from_parts(
+                &prepress_cmm_profiles,
+                &prepress_cmm_framebuffer,
+            );
+        report.prepress_proofing_full_overprint_prepress_closeout =
+            PrepressProofingPrepressCloseoutReport::from_parts(&prepress_cmm_framebuffer);
         report.diagnostics.extend(self.diagnostics);
         if matches!(report.validation_profile, ColorValidationProfile::PdfX) && device_rgb_used {
             report.diagnostics.push(ColorDiagnostic {
@@ -1239,13 +1243,13 @@ mod tests {
         assert!(report.overprint.approximation_diagnostics >= 1);
         assert_eq!(
             report
-                .prompt12_prepress_cmm_device_link_separation_plates
+                .prepress_cmm_prepress_cmm_device_link_separation_plates
                 .separation_framebuffer
                 .plate_count,
             3
         );
         assert!(report
-            .prompt12_prepress_cmm_device_link_separation_plates
+            .prepress_cmm_prepress_cmm_device_link_separation_plates
             .spot_plates
             .iter()
             .any(|plate| plate.plane_name == "SpotBlue"));

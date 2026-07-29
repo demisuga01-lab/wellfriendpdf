@@ -20,7 +20,7 @@ from pathlib import Path
 
 
 PDF_EXTS = {".pdf"}
-SCHEMA = "prompt28.safedocs-corpus-run.v1"
+SCHEMA = "fuzz_campaign.safedocs-corpus-run.v1"
 DEFAULT_SAFEDOCS_ROOTS = [
     Path("/home/demisuga01/wellpdf/corpus/safedocs"),
     Path("/home/demisuga01/wellpdf/corpus/CC-MAIN-2021-31-PDF-UNTRUNCATED"),
@@ -259,7 +259,7 @@ def write_json(path: Path, payload: dict[str, object]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--result-root", type=Path, default=Path("target/prompt28-long-fuzz-safedocs"))
+    parser.add_argument("--result-root", type=Path, default=Path("target/fuzz_campaign-long-fuzz-safedocs"))
     parser.add_argument("--wellfriendpdf-bin", type=Path, required=True)
     parser.add_argument("--safedocs-root", type=Path, action="append", default=[])
     parser.add_argument("--fallback-root", type=Path, action="append", default=[])
@@ -305,7 +305,7 @@ def main() -> int:
         if record["status"] in {"timeout", "oom", "panic_crash", "sanitizer_failure"}
     ]
     provenance = {
-        "schema_version": "prompt28.safedocs-corpus-provenance.v1",
+        "schema_version": "fuzz_campaign.safedocs-corpus-provenance.v1",
         "generated_at_utc": utc(),
         "source_status": source_status,
         "selected_roots": [str(root) for root in selected_roots],
@@ -318,7 +318,7 @@ def main() -> int:
         ),
     }
     summary = {
-        "schema_version": "prompt28.safedocs-summary.v1",
+        "schema_version": "fuzz_campaign.safedocs-summary.v1",
         "generated_at_utc": utc(),
         "started_at_utc": started,
         "source_status": source_status,
@@ -334,7 +334,7 @@ def main() -> int:
         "per_file_memory_cap_mib": args.memory_mb,
     }
     classification = {
-        "schema_version": "prompt28.safedocs-failure-classification.v1",
+        "schema_version": "fuzz_campaign.safedocs-failure-classification.v1",
         "generated_at_utc": utc(),
         "skipped": skipped,
         "unclassified_failures": unclassified,
@@ -342,7 +342,7 @@ def main() -> int:
         "verdict": "passed" if not unclassified else "failed",
     }
     crash_triage = {
-        "schema_version": "prompt28.safedocs-crash-triage.v1",
+        "schema_version": "fuzz_campaign.safedocs-crash-triage.v1",
         "generated_at_utc": utc(),
         "findings": [
             {
@@ -360,7 +360,7 @@ def main() -> int:
         "verdict": "passed" if not unclassified else "failed",
     }
     final = {
-        "schema_version": "prompt28.safedocs-final-verdict.v1",
+        "schema_version": "fuzz_campaign.safedocs-final-verdict.v1",
         "generated_at_utc": utc(),
         "status": (
             "complete"
@@ -374,7 +374,7 @@ def main() -> int:
         "unclassified_failure_count": len(unclassified),
     }
     run_plan = {
-        "schema_version": "prompt28.safedocs-run-plan.v1",
+        "schema_version": "fuzz_campaign.safedocs-run-plan.v1",
         "generated_at_utc": utc(),
         "operations": ["parser-report --mode audit --json --include-decode"],
         "deterministic_order": True,
@@ -384,7 +384,7 @@ def main() -> int:
         "full_available_corpus_policy": "attempt every candidate PDF file under selected SafeDocs root; fallback is not called full SafeDocs",
     }
     manifest = {
-        "schema_version": "prompt28.safedocs-corpus-manifest.v1",
+        "schema_version": "fuzz_campaign.safedocs-corpus-manifest.v1",
         "generated_at_utc": utc(),
         "source_status": source_status,
         "file_count": len(manifest_entries),

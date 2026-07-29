@@ -7,14 +7,14 @@ structured parser diagnostics. This is not a claim of complete PDF-spec
 perfection. It is a bounded, diagnostic, repair-aware foundation for the rest
 of the SDK.
 
-## Prompt 01A and 01B Scope
+## Binding SurfaceA and 01B Scope
 
-Prompt 01A added structured parser reporting, strict/repair/audit modes,
+Binding SurfaceA added structured parser reporting, strict/repair/audit modes,
 parser diagnostics, source metrics, xref/object-stream hardening, `/Prev` depth
 caps, a SafeDocs-compatible corpus runner, a parser-report CLI command, parser
 fuzz targets, and Arlington-shaped validation scaffolding.
 
-Prompt 01B replaces the Arlington scaffold with generated tables from real
+Binding SurfaceB replaces the Arlington scaffold with generated tables from real
 upstream Arlington TSVs, expands parser-report with revision history,
 linearization validation, damaged-object repair summaries, differential testing
 scripts, bounded corpus execution, and structure-aware fuzz seed generation.

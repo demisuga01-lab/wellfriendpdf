@@ -1,7 +1,7 @@
 # ICC Fixture Notice
 
 `PRMG_v2.0.1_MR.icc` is an International Color Consortium profile-library
-fixture used by the Prompt 11B LittleCMS integration tests to exercise real
+fixture used by the Native CMM Backend LittleCMS integration tests to exercise real
 CMYK ICC-to-sRGB preview transforms.
 
 Source: https://registry.color.org/profile-library/exchange-space-profile

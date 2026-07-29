@@ -125,7 +125,7 @@ npx npm-check-updates
 For any feature that calls an LLM (chatbots, summarizers, agents, RAG):
 
 - [ ] Model output treated as untrusted — never into `eval`/SQL/shell/`innerHTML`/file paths
-- [ ] Prompt injection assumed; permissions enforced in code, not in the system prompt
+- [ ] Roadmap task injection assumed; permissions enforced in code, not in the system roadmap task
 - [ ] Secrets, cross-tenant data, and full system prompts kept out of the context window
 - [ ] Tool/agent permissions scoped; destructive or irreversible actions require confirmation
 - [ ] Token, rate, and recursion/loop limits set (bound consumption)

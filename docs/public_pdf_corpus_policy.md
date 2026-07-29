@@ -1,7 +1,7 @@
 # Public PDF corpus policy
 
-Prompt 30 downloads only the small allow-list in
-`scripts/download_prompt30_public_pdf_corpus.py`: public United States government
+Release Readiness Benchmark downloads only the small allow-list in
+`scripts/download_release_readiness_benchmark_public_pdf_corpus.py`: public United States government
 forms and publications. The downloader verifies a PDF header, per-file and total
 size caps, SHA-256, and resumable result manifests.
 

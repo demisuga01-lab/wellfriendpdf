@@ -1,7 +1,7 @@
 # Justification Policy
 
 Horizontal `left`, `right`, `center`, `start`, `end`, and `justify` are
-serialized through Prompt 20. Full justification uses bounded PDF `Tw` then
+serialized through advanced editing. Full justification uses bounded PDF `Tw` then
 `Tc`, records each line adjustment, and fails before mutation if the residual
 cannot fit within those bounds. Final lines are not justified by scaling
 outlines.

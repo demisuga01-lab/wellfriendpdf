@@ -1,6 +1,6 @@
-# GA Prompt 3 PDF/A Matrix Evidence
+# GA Release Packaging PDF/A Matrix Evidence
 
-GA Prompt 3 broadened the compliance API beyond PDF/A-1b and PDF/A-2b.
+GA Release Packaging broadened the compliance API beyond PDF/A-1b and PDF/A-2b.
 
 ## Implemented
 

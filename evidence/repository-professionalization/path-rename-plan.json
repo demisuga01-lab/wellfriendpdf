@@ -1,0 +1,37 @@
+{
+  "schema": "repository_professionalization.path_rename_plan.v1",
+  "generated_at": "2026-07-29T19:02:05.9925333Z",
+  "production_module_renames": [
+    {
+      "from": "crates/engine/src/source_editing.rs",
+      "to": "crates/engine/src/source_editing.rs",
+      "domain": "source-linked operator editing"
+    },
+    {
+      "from": "crates/engine/src/editing_transactions.rs",
+      "to": "crates/engine/src/editing_transactions.rs",
+      "domain": "scene graph, transactions, fonts, shaping"
+    },
+    {
+      "from": "crates/engine/src/text_reflow.rs",
+      "to": "crates/engine/src/text_reflow.rs",
+      "domain": "geometric and semantic text reflow"
+    },
+    {
+      "from": "crates/engine/src/document_subsystems.rs",
+      "to": "crates/engine/src/document_subsystems.rs",
+      "domain": "tables, math, OCR, forms and annotations"
+    },
+    {
+      "from": "crates/engine/src/document_security.rs",
+      "to": "crates/engine/src/document_security.rs",
+      "domain": "accessibility, redaction, sanitization"
+    },
+    {
+      "from": "crates/engine/src/release_validation.rs",
+      "to": "crates/engine/src/release_validation.rs",
+      "domain": "enterprise validation and release evidence"
+    }
+  ],
+  "note": "Initial domain-oriented source module rename plan; additional binding/script/doc path cleanup follows after identifier migration."
+}

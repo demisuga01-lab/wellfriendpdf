@@ -2,7 +2,7 @@
 
 The malformed corpus pipeline accepts public/user corpus roots, repository fixtures, committed fuzz seeds, and generated compact malformed PDFs. Each file receives a SHA-256, size, provenance classification, retention policy, category tags, and expected clean-failure behavior.
 
-The Prompt 29 VPS run uses deterministic ordering, per-file timeouts, explicit operation selection, and process isolation through the CLI. The required operation set is parser/open diagnostics, repair diagnostics, extraction smoke, render smoke where supported, and standards/signature smoke where relevant.
+The Malformed Coverage VPS run uses deterministic ordering, per-file timeouts, explicit operation selection, and process isolation through the CLI. The required operation set is parser/open diagnostics, repair diagnostics, extraction smoke, render smoke where supported, and standards/signature smoke where relevant.
 
 Large or copyrighted corpora are not committed. If a public malformed corpus is unavailable on the VPS, the result is recorded as `unavailable_external_corpus` and the repository/generated fallback corpus is run without claiming full public-corpus coverage.
 

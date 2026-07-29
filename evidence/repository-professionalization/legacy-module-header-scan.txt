@@ -1,0 +1,223 @@
+﻿FILE annotation_media_redaction.rs
+//! Annotation Media Redaction annotation XFDF, appearance, rich-media policy, and non-axis
+//! image-redaction orchestration.
+//!
+//! The implementation deliberately reuses the repository's PDF object model,
+//! deterministic writer, annotation renderer/editor, sanitizer, signature
+//! report, image decoder, and bounded XML parser. Active content is never
+//! executed and media payloads are never decoded by this module.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+
+use crate::editing::{EditMode, ImageRedactionPolicy, PdfEditor, RedactionOptions};
+use crate::error::{Result, WellfriendError};
+use crate::info::decode_pdf_text_string;
+use crate::object::{PdfDictionary, PdfObject};
+use crate::reader::PdfReader;
+use crate::security::{sanitize_pdf, SanitizerOptions};
+use crate::versioning::resource_digest;
+use crate::writer::{rewrite_document_objects, OutputObject, PdfWriter, WriterMode};
+use crate::xfa::xml::{parse_xml, XmlNode};
+use crate::{ContentEngine, PdfDocument};
+
+pub const ANNOTATION_MEDIA_REDACTION_SCHEMA_VERSION: &str = "annotation_media_redaction.annotation-xfdf-media-redaction.v1";
+pub const XFDF_NAMESPACE: &str = "http://ns.adobe.com/xfdf/";
+pub const WELLFRIENDPDF_XFDF_NAMESPACE: &str = "urn:wellfriendpdf:xfdf:annotation_media_redaction";
+
+const MAX_XFDF_BYTES: usize = 8 * 1024 * 1024;
+const MAX_ANNOTATIONS: usize = 20_000;
+const MAX_RELATIONSHIPS: usize = 40_000;
+
+FILE secure_mutation.rs
+//! Combined Secure Mutation secure-mutation model.
+//!
+//! This module is the shared Rust facade for mask/inline-image redaction,
+//! associated files, and signature-aware edit policy. Language bindings call
+//! these functions through `sdk`; no binding owns an alternate implementation.
+
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::attachments::{extract_attachment_with_limits, list_attachments, sanitize_filename};
+use crate::document::PdfDocument;
+use crate::editing::{AnnotationOptions, EditMode, ImageRect, PdfEditor};
+use crate::engine::ContentEngine;
+use crate::error::{Result, WellfriendError};
+use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
+use crate::object::{PdfDictionary, PdfObject};
+use crate::annotation_media_redaction::{
+    apply_nonaxis_image_redaction_pdf, NonAxisRedactionApplyReport, NonAxisRedactionOptions,
+};
+use crate::signature::{
+    verify_signatures, verify_signatures_with_options, SignatureReport, SignatureValidity,
+    VerifyOptions, PADES_LTV_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+};
+use crate::versioning::resource_digest;
+use crate::writer::{
+    rewrite_document_objects, write_incremental_update, IncrementalObject, OutputObject, PdfWriter,
+    WriterMode,
+};
+
+FILE form_action_policy.rs
+//! Combined Form Action Policy form-action policy and DOCX fidelity audit.
+//!
+//! This module owns the shared, versioned report and mutation model. It never
+//! executes arbitrary PDF JavaScript: scripts are inventoried, a deliberately
+//! small expression subset may be evaluated for opt-in calculation flattening,
+//! and every mutation is routed through the existing writer/editor and Prompt
+//! 18B signature-policy surfaces.
+
+use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::io::{Cursor, Read};
+
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use zip::ZipArchive;
+
+use crate::editing::{EditMode, PdfEditor};
+use crate::error::{Result, WellfriendError};
+use crate::filters::{decode_stream_lossless_with_limits, DecodeLimits, StreamDecodeStatus};
+use crate::info::decode_pdf_text_string;
+use crate::object::{PdfDictionary, PdfObject};
+use crate::office::{pdf_to_docx, DocxLayout, DocxOptions};
+use crate::secure_mutation::{analyze_edit_policy, EditOperation, EditPolicyDecision};
+use crate::reader::PdfReader;
+use crate::versioning::resource_digest;
+use crate::writer::{rewrite_document_with_mode, WriterMode};
+use crate::{ContentEngine, PdfDocument};
+
+pub const FORM_ACTION_POLICY_SCHEMA_VERSION: &str = "form_action_policy.form-js-interactive-docx-layout.v1";
+pub const MAX_SCRIPT_BYTES: usize = 8 * 1024 * 1024;
+
+FILE advanced_editing.rs
+//! Combined Advanced Editing advanced editing primitives.
+//!
+//! This module is the shared implementation surface for vertical/RTL text
+//! analysis, byte-preserving text patching, vector-object editing, and ink
+//! curve fitting.  Existing PDF glyph streams remain provenance-bearing PDF
+//! codes; only newly inserted Unicode text is shaped.
+
+use std::collections::BTreeSet;
+use std::time::Instant;
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use unicode_bidi::{BidiInfo, Level};
+use unicode_segmentation::UnicodeSegmentation;
+
+use crate::error::{Result, WellfriendError};
+use crate::filters::{
+    decode_stream_lossless_with_limits, flate_encode, DecodeLimits, StreamDecodeStatus,
+};
+use crate::fonts::{FontResolver, FontType, ShapeOptions, TextDirection, TextShaper};
+use crate::object::PdfObject;
+use crate::secure_mutation::{
+    analyze_edit_policy, EditOperation as SignatureEditOperation, EditPolicyDecision,
+    EditPolicyReport,
+};
+use crate::render::get_fallback_font;
+use crate::writer::{write_incremental_update, IncrementalObject};
+use crate::{ContentEngine, PageResources};
+
+pub const ADVANCED_EDITING_SCHEMA_VERSION: &str = "advanced_editing.vertical-rtl-patch-vector-ink-editing.v1";
+
+FILE writer_history.rs
+//! Combined Writer History shared implementation surface.
+//!
+//! The heavy PDF writer pieces used here are the existing writer and parser.
+//! This module adds bounded analysis/report layers for raster-to-vector,
+//! font-reconstruction posture, persistent edit history, and object-stream
+//! packing so SDK bindings do not each invent their own policy.
+
+use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
+use std::time::Instant;
+
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+
+use crate::error::{Result, WellfriendError};
+use crate::images::decoder::RawImage;
+use crate::images::locator::ImageReference;
+use crate::object::PdfObject;
+use crate::reader::PdfReader;
+use crate::writer::{rewrite_document_objects, rewrite_document_with_mode, serialize_object};
+use crate::{ContentEngine, PdfDocument, WriterMode};
+
+pub const WRITER_HISTORY_SCHEMA_VERSION: &str = "writer_history.raster-vector-font-persistent-object-stream.v1";
+pub const WRITER_HISTORY_ARTIFACT_ROOT: &str = "target/writer_history-vector-font-persistent-writer";
+
+const DEFAULT_PIXEL_CAP: usize = 8_000_000;
+const DEFAULT_COMPONENT_CAP: usize = 20_000;
+const DEFAULT_POINT_CAP: usize = 400_000;
+const DEFAULT_OBJECT_STREAM_MEMBER_CAP: usize = 200;
+
+FILE compression_office.rs
+//! Combined Compression Office shared implementation surface.
+//!
+//! This module connects the existing PDF writer, stream decoder, Office import
+//! path, and SDK report layer for high-compression Flate output, deterministic
+//! resource deduplication, and native Office-to-PDF audit evidence.
+
+use std::collections::{BTreeMap, HashMap};
+use std::io::Cursor;
+use std::num::NonZeroU64;
+use std::time::Instant;
+
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+
+use crate::error::{Result, WellfriendError};
+use crate::filters::{decode_stream_from_dict_with_limits, flate_encode, DecodeLimits};
+use crate::object::{PdfDictionary, PdfObject};
+use crate::office::{
+    docx_to_pdf, inspect_office_package, pptx_to_pdf, xlsx_to_pdf, OfficeFormat,
+    OfficePackageSecurityLimits, OfficePackageSecurityReport, OfficeToPdfOptions,
+};
+use crate::writer::{rewrite_document_objects, rewrite_references, serialize_object};
+use crate::{ContentEngine, PdfDocument, PdfWriter, WriterMode};
+
+pub const COMPRESSION_OFFICE_SCHEMA_VERSION: &str = "compression_office.zopfli-dedup-office-benchmark.v1";
+pub const COMPRESSION_OFFICE_CLOSEOUT_SCHEMA_VERSION: &str = "compression_office_closeout.resource-dedup-office-benchmark-closure.v1";
+pub const COMPRESSION_OFFICE_ARTIFACT_ROOT: &str = "target/compression_office-writer-office-benchmark";
+
+const DEFAULT_ZOPFLI_MAX_INPUT_BYTES: usize = 8 * 1024 * 1024;
+
+FILE crypto_writer.rs
+//! Combined Crypto Writer deterministic-writer and crypto posture surface.
+//!
+//! This module deliberately separates implemented writer determinism evidence
+//! from cryptographic features that depend on ISO PDF extension text. Public-key
+//! security handlers and PDF AES-GCM are reported precisely, and unsupported
+//! profiles are named without downgrading or guessing byte layouts.
+
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+
+use crate::error::Result;
+use crate::security::security_report;
+use crate::writer::{rewrite_document_with_mode, write_document_linearized, WriterMode};
+use crate::{ContentEngine, PdfDocument};
+
+pub const CRYPTO_WRITER_SCHEMA_VERSION: &str = "crypto_writer.deterministic-writer-pubsec-aesgcm.v1";
+pub const CRYPTO_WRITER_ARTIFACT_ROOT: &str = "target/crypto_writer-writer-crypto";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CryptoWriterStatus {
+    Implemented,
+    ImplementedWithLimits,
+    UnsupportedReportedExact,
+    UnsupportedReportedSecurityPolicy,
+    UnsupportedReportedNoCryptoBackend,
+    NotInCryptoWriterScope,
+    Blocked,
+}

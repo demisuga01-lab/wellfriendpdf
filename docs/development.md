@@ -24,7 +24,7 @@ The `skills/` and `references/` directories are **development/process
 materials**, not product source:
 
 - `skills/` — agent "skills" (e.g. `test-driven-development`,
-  `security-and-hardening`, `code-review-and-quality`): prompt/process guidance
+  `security-and-hardening`, `code-review-and-quality`): roadmap task/process guidance
   used while developing the toolkit.
 - `references/` — engineering checklists (`security-checklist.md`,
   `performance-checklist.md`, `testing-patterns.md`, etc.).

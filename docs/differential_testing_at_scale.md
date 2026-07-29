@@ -1,6 +1,6 @@
 # Differential testing at scale
 
-`scripts/run_differential_at_scale.py` compares Wellfriend PDF SDK against available external tools over the Prompt 29 corpus manifest.
+`scripts/run_differential_at_scale.py` compares Wellfriend PDF SDK against available external tools over the Malformed Coverage corpus manifest.
 
 Comparison dimensions include:
 

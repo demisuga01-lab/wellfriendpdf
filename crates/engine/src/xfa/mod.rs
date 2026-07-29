@@ -74,7 +74,7 @@ impl RuntimeInstant {
     }
 }
 
-pub const XFA_SCHEMA_VERSION: &str = "prompt16.xfa.v1";
+pub const XFA_SCHEMA_VERSION: &str = "xfa_runtime.xfa.v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -83,7 +83,7 @@ pub enum XfaSupportStatus {
     ImplementedWithLimits,
     UnsupportedReportedExact,
     UnsupportedReportedSecurityPolicy,
-    NotInPrompt16Scope,
+    NotInXFARuntimeScope,
     Blocked,
 }
 
@@ -3798,7 +3798,7 @@ pub fn xfa_security_report(
     })
 }
 
-pub(crate) fn prompt16_feature_report_value(envelope_version: u32) -> serde_json::Value {
+pub(crate) fn xfa_runtime_feature_report_value(envelope_version: u32) -> serde_json::Value {
     serde_json::json!({
         "status": "complete_bounded_foundation",
         "schema_version": XFA_SCHEMA_VERSION,
@@ -3849,7 +3849,7 @@ pub(crate) fn prompt16_feature_report_value(envelope_version: u32) -> serde_json
             "signature_preservation_after_mutation": false
         },
         "closure_gates": {
-            "public_report_schema": "additive_feature_report_prompt16",
+            "public_report_schema": "additive_feature_report_xfa_runtime",
             "shared_core_owner": "wellfriendpdf_engine::xfa",
             "scripts_default_disabled": true,
             "blocked": 0

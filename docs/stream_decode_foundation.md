@@ -1,6 +1,6 @@
 # Stream Decode Foundation
 
-This document is the Prompt 02 inventory and design record for Wellfriend's PDF
+This document is the Binding Parity inventory and design record for Wellfriend's PDF
 stream decoding layer. It covers the current central decoder path, filter
 support, resource limits, tests, fuzzing, cache posture, and the places where
 future work should extend the design without adding a second decode stack.
@@ -23,9 +23,9 @@ streams, object/image editing helpers, image XObjects, inline images where
 possible, xref streams, and object streams. Image codecs remain separate
 adapters because their outputs are pixels, not byte streams.
 
-## Prompt 02 Hardening
+## Binding Parity Hardening
 
-Prompt 02 kept the existing architecture and tightened the safety envelope:
+Binding Parity kept the existing architecture and tightened the safety envelope:
 
 - Filter chain depth is capped at 16 filters before decoding starts.
 - Buffered ASCIIHex, ASCII85, RunLength, and LZW output now use the same
@@ -68,7 +68,7 @@ MiB, chain depth, image megapixels, and decode cache MiB.
 
 ## Public Decode Diagnostics
 
-Prompt 02B adds a typed stream decode report surface in
+Java Packaging adds a typed stream decode report surface in
 `crates/engine/src/filters.rs`:
 
 - `DecodeReport`
@@ -132,7 +132,7 @@ unless callers opt into stream auditing.
 
 ## Decode Cache
 
-Prompt 02B adds `DecodeCache`, a per-document LRU utility with exact byte
+Java Packaging adds `DecodeCache`, a per-document LRU utility with exact byte
 accounting:
 
 - configurable total budget and max-entry size;
@@ -148,7 +148,7 @@ document memory budget faster than repeated decode saves CPU.
 
 ## Parallel Decode
 
-Prompt 02B adds `DecodeMemoryBudget`, `ScheduledDecodeJob`, and
+Java Packaging adds `DecodeMemoryBudget`, `ScheduledDecodeJob`, and
 `run_scheduled_decode_jobs`. This is a controlled work-stealing foundation over
 Rayon:
 
@@ -164,7 +164,7 @@ foundation without changing filter semantics or causing nested thread pools.
 
 ## SIMD and Delimiter Scanning
 
-Prompt 02B adds `decode_scanner`:
+Java Packaging adds `decode_scanner`:
 
 - scalar reference scanner for `obj`, `endobj`, `stream`, `endstream`, `xref`,
   `trailer`, and `startxref`;
@@ -195,7 +195,7 @@ including filter chains and predictors. Cap tests cover decompression bombs,
 filter-chain depth, predictor row geometry, ASCII output, RunLength output, LZW
 output, and streaming ASCII output.
 
-Prompt 02B adds:
+Java Packaging adds:
 
 - `scripts/run_decode_fuzz_campaign.py` for quick or long fuzz campaigns with
   per-target logs and JSON summaries under `target/fuzz-campaigns/`;
@@ -207,7 +207,7 @@ Prompt 02B adds:
 ## Known Limits
 
 - Python and C ABI do not yet expose decode diagnostics directly. The stable
-  surfaces for Prompt 02B are Rust and parser-report JSON.
+  surfaces for Java Packaging are Rust and parser-report JSON.
 - Risky codecs remain in-process. This is a documented pure-Rust plus caps
   decision, not subprocess/RLBox isolation.
 - The scheduler foundation is implemented, but broad render/extraction adoption

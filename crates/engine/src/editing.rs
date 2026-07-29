@@ -510,7 +510,7 @@ pub fn replace_text_pdf(
 /// Edit text inside a reconstructed paragraph/run, reflow the rewritten
 /// paragraph within a bounded page region, and save a full-rewrite PDF where
 /// the old paragraph text is removed from reachable content before the new
-/// paragraph is serialized. This is the default "true edit" path for Prompt
+/// paragraph is serialized. This is the default "true edit" path for Roadmap task
 /// 08B; the older overlay fallback remains opt-in through [`replace_text_pdf`].
 pub fn edit_paragraph_reflow_pdf(
     input: Vec<u8>,
@@ -1178,7 +1178,7 @@ impl PdfEditor {
     }
 
     /// Flatten only the named annotation subtypes. This keeps field/widget
-    /// semantics and unrelated annotations intact, and is used by the Prompt
+    /// semantics and unrelated annotations intact, and is used by the Roadmap task
     /// 17 static-poster media policy.
     pub fn flatten_annotation_subtypes<I, S>(&mut self, subtypes: I) -> &mut Self
     where
@@ -6215,7 +6215,7 @@ mod h2_alt_text_tests {
     }
 
     #[test]
-    fn prompt18b_packed_rows_round_trip_all_supported_depths() {
+    fn secure_mutation_closeout_packed_rows_round_trip_all_supported_depths() {
         for bpc in [1, 2, 4, 8] {
             let max = ((1u16 << bpc) - 1) as u8;
             let samples = vec![0, max, max / 2, max, 0, max / 3];
@@ -6228,7 +6228,7 @@ mod h2_alt_text_tests {
     }
 
     #[test]
-    fn prompt18b_tiff_and_png_predictors_reencode_deterministically() {
+    fn secure_mutation_closeout_tiff_and_png_predictors_reencode_deterministically() {
         let mut tiff = PdfDictionary::empty();
         tiff.insert("Predictor", PdfObject::Integer(2));
         let first = output_predictor(&[Some(tiff)], 2, 1, 8, &[10, 20]).unwrap();

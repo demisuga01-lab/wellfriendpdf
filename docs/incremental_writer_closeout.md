@@ -1,10 +1,10 @@
 # Incremental Writer Close-Out
 
-Schema: `prompt23.deterministic-writer-pubsec-aesgcm.v1`
+Schema: `crypto_writer.deterministic-writer-pubsec-aesgcm.v1`
 
 Incremental writer artifacts record original-prefix preservation, deterministic appended objects, xref/trailer policy, and exact unsupported object-stream packing for arbitrary incremental edits.
 
-## Prompt 23 Verdict
+## crypto writer Verdict
 
 Writer determinism and writer close-out reporting are implemented with limits.
 Public-key security-handler decryption and PDF AES-GCM authenticated encryption

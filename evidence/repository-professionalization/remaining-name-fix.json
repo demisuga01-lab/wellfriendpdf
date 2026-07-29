@@ -1,0 +1,13 @@
+{
+  "changed_paths": [
+    "crates/engine/examples/sdk_reports.rs",
+    "crates/wellfriendpdf-capi/examples/sdk_reports.c",
+    "crates/wellfriendpdf-capi/src/lib.rs",
+    "crates/wellfriendpdf-py/examples/sdk_reports.py",
+    "crates/wellfriendpdf-py/tests/test_reports.py",
+    "docs/best_in_class_verdict.md",
+    "docs/bindings_binding_surface_audit.md",
+    "docs/renderer_benchmark_0a_recalibration.md",
+    "docs/table_slice_validation.md"
+  ]
+}

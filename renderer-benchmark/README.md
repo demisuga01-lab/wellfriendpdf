@@ -63,7 +63,7 @@ pages. Drop real PDFs into `corpus/real-world/` and rerun the generator; the
 benchmark will include them automatically. Do not present a small seed run as
 full Tier-3 evidence.
 
-Prompt F added a repeatable expansion helper:
+Roadmap task F added a repeatable expansion helper:
 
 ```powershell
 py -3 renderer-benchmark\scripts\expand_real_corpus.py
@@ -90,7 +90,7 @@ py -3 renderer-benchmark\scripts\renderer_benchmark.py `
   --timeout-sec 20 `
   --max-memory-mb 1024 `
   --max-pages-per-file 20 `
-  --output-dir renderer-benchmark\results\prompt-f-expanded
+  --output-dir renderer-benchmark\results\roadmap task-f-expanded
 ```
 
 ## Benchmark 0B Scaffold

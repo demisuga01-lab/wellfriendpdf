@@ -1,4 +1,4 @@
-//! Shared editable document model for Prompt 08 conversion and editing.
+//! Shared editable document model for Advanced Rendering conversion and editing.
 //!
 //! PDF content is fixed-position drawing instructions. This model is the
 //! conservative bridge between Wellfriend's semantic extraction/document model and

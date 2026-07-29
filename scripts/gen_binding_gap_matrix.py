@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the Combined Prompt 01 binding gap matrix (JSON + Markdown).
+"""Generate the roadmap closure 01 binding gap matrix (JSON + Markdown).
 
 Single source of truth for the feature-to-surface status matrix. Edit the
 `FEATURES` table below and re-run to regenerate both artifacts:
@@ -7,8 +7,8 @@ Single source of truth for the feature-to-surface status matrix. Edit the
     python scripts/gen_binding_gap_matrix.py
 
 Outputs:
-    target/prompt01-binding-core/binding-gap-matrix.json
-    docs/bindings_prompt01_gap_matrix.md
+    target/binding_surface-binding-core/binding-gap-matrix.json
+    docs/bindings_binding_surface_gap_matrix.md
 
 Status vocabulary (consumed by later automation):
     implemented_public     public, documented, tested, stable enough
@@ -17,7 +17,7 @@ Status vocabulary (consumed by later automation):
     cli_only               behavior exists via CLI, not the library/binding
     unsupported_reported   unsupported but honestly reported via diagnostics
     missing                no implementation and no honest reporting
-    deferred               deliberately out of Prompt 01 (names later prompt)
+    deferred               deliberately out of Binding Surface (names later roadmap task)
     blocked                cannot expose safely without a refactor/decision
 """
 
@@ -26,8 +26,8 @@ import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-JSON_OUT = ROOT / "target" / "prompt01-binding-core" / "binding-gap-matrix.json"
-MD_OUT = ROOT / "docs" / "bindings_prompt01_gap_matrix.md"
+JSON_OUT = ROOT / "target" / "binding_surface-binding-core" / "binding-gap-matrix.json"
+MD_OUT = ROOT / "docs" / "bindings_binding_surface_gap_matrix.md"
 
 # Shorthand statuses.
 PUB = "implemented_public"
@@ -122,7 +122,7 @@ FEATURES = [
     ("render.dpi_scale", "render", "DPI and scale handling", PUB, PUB, PUB, PUB,
      "dpi param on all render entry points."),
     ("render.tile", "render", "tile rendering", INT, MISS, MISS, INT,
-     "render::RenderTile at Rust root. Action: deferred to a render-binding prompt."),
+     "render::RenderTile at Rust root. Action: deferred to a render-binding roadmap task."),
     ("render.band", "render", "band rendering", INT, MISS, MISS, INT,
      "renderer band path Rust-only. Action: deferred."),
     ("render.progressive", "render", "progressive rendering state", INT, MISS, MISS, INT,
@@ -243,7 +243,7 @@ FEATURES = [
     ("forms.acroform_inventory", "forms", "AcroForm field inventory", PUB, PUB, PUB, PUB,
      "forms_report. sdk::forms_report_json; py forms_report; capi forms_report_json."),
     ("forms.field_rw", "forms", "field value read/write", PART, PART, PART, PUB,
-     "forms_report reads; apply_form_data_pdf writes (Rust root). Action: binding write method deferred to a forms prompt."),
+     "forms_report reads; apply_form_data_pdf writes (Rust root). Action: binding write method deferred to a forms roadmap task."),
     ("forms.fdf", "forms", "FDF import and export", INT, MISS, MISS, PUB,
      "form_exchange (FDF) at Rust root + CLI. Action: binding FDF methods deferred."),
     ("forms.xfdf", "forms", "XFDF field import and export", INT, MISS, MISS, PUB,
@@ -383,7 +383,7 @@ FEATURES = [
     ("diag.log_redaction", "diagnostics", "log redaction policy", INT, MISS, MISS, PART,
      "log crate used; no secret logging. Action: explicit policy report deferred."),
     ("diag.trace_ids", "diagnostics", "trace correlation IDs", MISS, MISS, MISS, MISS,
-     "no trace-id seam. Action: deferred to an observability prompt."),
+     "no trace-id seam. Action: deferred to an observability roadmap task."),
     ("diag.feature_availability", "diagnostics", "feature availability reporting", PUB, PUB, PUB, PUB,
      "feature_report (capabilities). sdk::feature_report_json; py feature_report; capi feature_report_json/version."),
 
@@ -395,13 +395,13 @@ FEATURES = [
     ("test.capi", "release", "C ABI integration tests", PUB, PUB, PUB, PUB,
      "capi_* inline tests (report/version/output) + compiled examples/sdk_reports.c."),
     ("test.cross_lang_golden", "release", "cross-language golden fixtures", PUB, PUB, PUB, PUB,
-     "rust/python/c-abi smoke JSON in target/prompt01-binding-core; parity asserted equal."),
+     "rust/python/c-abi smoke JSON in target/binding_surface-binding-core; parity asserted equal."),
     ("test.snapshot_schema", "release", "snapshot JSON schemas", PUB, PUB, PUB, PUB,
-     "report_schema_versioning_prompt01.md + smoke JSON snapshots."),
+     "report_schema_versioning_binding_surface.md + smoke JSON snapshots."),
     ("doc.api", "release", "API documentation", PUB, PUB, PUB, PUB,
-     "public_api_rust/python_sdk/c_abi prompt01 docs + rustdoc."),
+     "public_api_rust/python_sdk/c_abi binding_surface docs + rustdoc."),
     ("doc.examples", "release", "example programs", PUB, PUB, PUB, PUB,
-     "sdk_reports.{rs,py,c} + binding_examples_prompt01.md."),
+     "sdk_reports.{rs,py,c} + binding_examples_binding_surface.md."),
     ("pkg.metadata", "release", "package metadata", PUB, PUB, PUB, PUB,
      "Cargo.toml / pyproject.toml / wellfriendpdf.h; honest capabilities via feature_report."),
     ("pkg.semver", "release", "versioning and semver", PUB, PUB, PUB, PUB,
@@ -409,15 +409,15 @@ FEATURES = [
     ("pkg.feature_flags", "release", "feature flags", PUB, PUB, PUB, PUB,
      "cargo features surfaced in feature_report capabilities."),
     ("pkg.platform_matrix", "release", "platform matrix", PART, PART, PART, PART,
-     "builds on win-msvc validated here; full platform matrix is CI. Action: platform matrix is a CI/release-prompt concern."),
+     "builds on win-msvc validated here; full platform matrix is CI. Action: platform matrix is a CI/release-roadmap task concern."),
     ("pkg.ci_smoke", "release", "CI packaging smoke", PART, PART, PART, PART,
-     "local maturin build + cargo build validated. Action: CI wiring is a release prompt."),
+     "local maturin build + cargo build validated. Action: CI wiring is a release roadmap task."),
     ("pkg.abi_compat", "release", "ABI compatibility checks", PUB, PUB, PUB, PUB,
      "wellfriendpdf_abi_version + hand-maintained header; opaque handles keep ABI stable."),
     ("pkg.memory_leak", "release", "memory leak checks", PUB, PART, PUB, PART,
      "capi tests free every allocation; py returns owned objects. Action: valgrind/asan run is a CI concern (bounded)."),
     ("pkg.release_manifest", "release", "release artifact manifest", PART, PART, PART, PART,
-     "smoke JSON artifacts serve as manifest evidence. Action: formal release manifest is a release prompt."),
+     "smoke JSON artifacts serve as manifest evidence. Action: formal release manifest is a release roadmap task."),
 ]
 
 CATEGORY_TITLES = {
@@ -448,7 +448,7 @@ def main() -> int:
             "note": note,
         })
 
-    # Tallies over the primary binding surfaces this prompt implements (rust,
+    # Tallies over the primary binding surfaces this roadmap task implements (rust,
     # python, c_abi). Report the max-maturity status per row for a headline.
     def headline(r):
         order = [PUB, PART, CLI, INT, UNSUP, MISS, DEF, BLK]
@@ -465,7 +465,7 @@ def main() -> int:
 
     matrix = {
         "schema_version": 1,
-        "prompt": "combined-01-binding-core",
+        "feature_area": "combined-01-binding-core",
         "envelope_version": 1,
         "status_vocabulary": [PUB, PART, INT, CLI, UNSUP, MISS, DEF, BLK],
         "surfaces": ["rust", "python", "c_abi", "cli"],
@@ -479,10 +479,10 @@ def main() -> int:
 
     # Markdown.
     lines = []
-    lines.append("# Combined Prompt 01 — Binding Gap Matrix")
+    lines.append("# roadmap closure 01 — Binding Gap Matrix")
     lines.append("")
     lines.append("Human-readable view of "
-                 "`target/prompt01-binding-core/binding-gap-matrix.json`. "
+                 "`target/binding_surface-binding-core/binding-gap-matrix.json`. "
                  "Regenerate both with `python scripts/gen_binding_gap_matrix.py`.")
     lines.append("")
     lines.append(f"**Features:** {len(rows)}  ")

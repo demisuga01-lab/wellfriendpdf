@@ -1,6 +1,6 @@
 # Vertical and RTL paragraph reflow
 
-Prompt 20 distinguishes existing PDF glyph streams from newly inserted text.
+advanced editing distinguishes existing PDF glyph streams from newly inserted text.
 Existing strings retain their code/CID/GID provenance and are removed from the
 reachable stream when replaced; they are never fed back through a shaper.
 New Unicode is resolved with UAX #9 ordering and rustybuzz, then embedded as a

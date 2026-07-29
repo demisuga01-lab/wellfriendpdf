@@ -1,6 +1,6 @@
 # GA2 Signature LTV / PAdES Notes
 
-GA Prompt 2 extends the core CMS signing work with the deterministic offline
+GA Binding Parity extends the core CMS signing work with the deterministic offline
 PAdES/LTV substrate.
 
 ## What Landed

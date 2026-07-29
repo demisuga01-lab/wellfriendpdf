@@ -2,7 +2,7 @@
 
 Status: `implemented_with_limits`
 
-Normative source: ISO/TS 32003:2023, clauses 5.1 and 5.2, Tables 2-4. The local specification PDF is recorded by filename and SHA-256 in `target/prompt23-writer-crypto/normative-source-manifest-prompt23b.json`; the PDF itself is not committed.
+Normative source: ISO/TS 32003:2023, clauses 5.1 and 5.2, Tables 2-4. The local specification PDF is recorded by filename and SHA-256 in `target/crypto_writer-writer-crypto/normative-source-manifest-crypto_writer_closeout.json`; the PDF itself is not committed.
 
 Implemented mapping:
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Small delimiter-scanner benchmark harness for Prompt 02B follow-up runs."""
+"""Small delimiter-scanner benchmark harness for Java Packaging follow-up runs."""
 
 from __future__ import annotations
 

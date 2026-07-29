@@ -4,7 +4,7 @@ OCR analysis keeps three linked layers explicit: original scan, searchable text,
 and approved editable reconstruction. Page classification, existing word boxes,
 and OCR-layer state come from the canonical classifier, collector, and
 `ocr::OcrEngine`/preprocess interfaces. Existing searchable text can be
-corrected only with explicit approval and source-linked Prompt 33 rewriting;
+corrected only with explicit approval and source-linked text reflow rewriting;
 the source scan is retained.
 
 Creating recognition output for an image-only scan requires an injected
@@ -37,6 +37,6 @@ searchable, and undo restores both layers atomically.
 ## Searchable geometry correction
 
 `ocr_correct_geometry` rewrites a provenance-resolved existing searchable text
-instruction through the Prompt 33 source-reflow path while retaining the scan
+instruction through the text reflow source-reflow path while retaining the scan
 as the visual source. It requires explicit review approval, validates the
 target PDF-space rectangle, and supports exact transaction undo.

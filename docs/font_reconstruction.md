@@ -1,6 +1,6 @@
 # Font Reconstruction
 
-Prompt 21 adds a safe font reconstruction report layer. It uses the existing font inventory and records reconstruction levels:
+writer history adds a safe font reconstruction report layer. It uses the existing font inventory and records reconstruction levels:
 
 | Level | Behavior |
 | --- | --- |
@@ -13,4 +13,4 @@ Prompt 21 adds a safe font reconstruction report layer. It uses the existing fon
 
 This is a repaired-font/eligibility report, not a claim that Wellfriend recovered the original font family. Deterministic names use an Wellfriend prefix and object number, and unresolved glyphs remain explicit.
 
-Artifacts: `font-reconstruction-levels-prompt21.json`, `font-outline-repackage-prompt21.json`, and `font-subset-rebuild-prompt21.json`.
+Artifacts: `font-reconstruction-levels-writer_history.json`, `font-outline-repackage-writer_history.json`, and `font-subset-rebuild-writer_history.json`.

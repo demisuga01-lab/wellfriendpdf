@@ -15,7 +15,7 @@
 //! - the shared [`glyph_outline`](crate::render::glyph_outline) /
 //!   [`text_decode`](crate::render::text_decode) helpers for text-as-outlines.
 //!
-//! # Per-page vector-vs-raster decision (the prompt's rasterize-embed fallback)
+//! # Per-page vector-vs-raster decision (the roadmap task's rasterize-embed fallback)
 //!
 //! Pages that use only operations SVG represents natively — paths, text, solid
 //! fills/strokes, clipping, opacity — are emitted as **true scalable SVG**.

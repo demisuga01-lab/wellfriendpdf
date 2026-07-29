@@ -21,7 +21,7 @@ does not require either runtime and does not bundle model weights.
 - per-element and set-level diagnostics, runtime, and memory observations.
 
 The machine schema is
-`target/prompt15-semantic-closeout/table-proposal-schema-prompt15.json`.
+`target/semantic_closeout-semantic-closeout/table-proposal-schema-semantic_closeout.json`.
 
 ## Validation
 

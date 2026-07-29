@@ -183,7 +183,7 @@ fn standards_options(target: Option<&str>) -> StandardsValidationOptions {
         .unwrap_or_default()
 }
 
-/// Prompt 26 clause-mapped PDF/A validation report. `target` is a profile label
+/// Incremental Signing Standards clause-mapped PDF/A validation report. `target` is a profile label
 /// such as `PDF/A-2B` (defaults to the detected/claimed profile or `PDF/A-2B`).
 pub fn pdfa_standards_json(
     bytes: &[u8],
@@ -197,7 +197,7 @@ pub fn pdfa_standards_json(
     )
 }
 
-/// Prompt 26 clause-mapped PDF/UA validation report.
+/// Incremental Signing Standards clause-mapped PDF/UA validation report.
 pub fn pdfua_standards_json(
     bytes: &[u8],
     target: Option<&str>,
@@ -210,7 +210,7 @@ pub fn pdfua_standards_json(
     )
 }
 
-/// Prompt 26 clause-mapped PDF/X validation report. `target` e.g. `PDF/X-4`.
+/// Incremental Signing Standards clause-mapped PDF/X validation report. `target` e.g. `PDF/X-4`.
 pub fn pdfx_standards_json(
     bytes: &[u8],
     target: Option<&str>,
@@ -223,7 +223,7 @@ pub fn pdfx_standards_json(
     )
 }
 
-/// Prompt 26 combined PDF/A + PDF/UA + PDF/X validation with cross-profile
+/// Incremental Signing Standards combined PDF/A + PDF/UA + PDF/X validation with cross-profile
 /// conflicts. A single profile passing never hides another failing.
 pub fn standards_all_json(
     bytes: &[u8],
@@ -249,7 +249,7 @@ pub fn forms_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String
     envelope("forms_report", &forms_report(&engine)?)
 }
 
-/// Prompt 16 XFA packet inventory with bounded XML parse diagnostics.
+/// XFA Runtime XFA packet inventory with bounded XML parse diagnostics.
 pub fn xfa_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
@@ -258,7 +258,7 @@ pub fn xfa_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> 
     )
 }
 
-/// Prompt 16 static XFA template/dataset extraction and semantic mapping.
+/// XFA Runtime static XFA template/dataset extraction and semantic mapping.
 pub fn xfa_extract_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
@@ -267,7 +267,7 @@ pub fn xfa_extract_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String>
     )
 }
 
-/// Prompt 16 bounded dynamic runtime report. `script_policy` is `disabled` or
+/// XFA Runtime bounded dynamic runtime report. `script_policy` is `disabled` or
 /// `formcalc-safe-subset`; supported events execute only when `execute_events`
 /// is true.
 pub fn xfa_runtime_report_json(
@@ -288,7 +288,7 @@ pub fn xfa_runtime_report_json(
     )
 }
 
-/// Prompt 16 script/event inventory and default/sandbox policy report.
+/// XFA Runtime script/event inventory and default/sandbox policy report.
 pub fn xfa_script_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     let extraction = crate::xfa::extract_xfa(&engine, &crate::xfa::XfaLimits::default())?;
@@ -305,7 +305,7 @@ pub fn xfa_script_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<S
     )
 }
 
-/// Prompt 16 XFA-specific security, signature, sanitizer, and redaction posture.
+/// XFA Runtime XFA-specific security, signature, sanitizer, and redaction posture.
 pub fn xfa_security_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
@@ -320,49 +320,52 @@ pub fn annotation_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<S
     envelope("annotation_report", &annotation_report(&engine)?)
 }
 
-/// Prompt 17 rich-media inventory. Media payloads are hashed/inventoried but
+/// annotation/media redaction rich-media inventory. Media payloads are hashed/inventoried but
 /// never decoded or executed.
 pub fn rich_media_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
         "rich_media_report",
-        &crate::prompt17::rich_media_inventory(
+        &crate::annotation_media_redaction::rich_media_inventory(
             &engine,
-            &crate::prompt17::RichMediaLimits::default(),
+            &crate::annotation_media_redaction::RichMediaLimits::default(),
         )?,
     )
 }
 
-/// Prompt 17 non-axis redaction planning from a JSON options document.
+/// annotation/media redaction non-axis redaction planning from a JSON options document.
 pub fn nonaxis_redaction_plan_json(
     bytes: &[u8],
     options_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let engine = open(bytes, password)?;
-    let options: crate::prompt17::NonAxisRedactionOptions =
+    let options: crate::annotation_media_redaction::NonAxisRedactionOptions =
         serde_json::from_str(options_json).map_err(json_err)?;
     envelope(
         "nonaxis_redaction_plan",
-        &crate::prompt17::plan_nonaxis_image_redaction(&engine, &options)?,
+        &crate::annotation_media_redaction::plan_nonaxis_image_redaction(&engine, &options)?,
     )
 }
 
-/// Combined Prompt 17 inventory/report surface.
-pub fn prompt17_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// Combined annotation/media redaction inventory/report surface.
+pub fn annotation_media_redaction_report_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<String> {
     let engine = open(bytes, password)?;
-    let (_, xfdf) = crate::prompt17::export_annotation_xfdf(&engine)?;
-    let media = crate::prompt17::rich_media_inventory(
+    let (_, xfdf) = crate::annotation_media_redaction::export_annotation_xfdf(&engine)?;
+    let media = crate::annotation_media_redaction::rich_media_inventory(
         &engine,
-        &crate::prompt17::RichMediaLimits::default(),
+        &crate::annotation_media_redaction::RichMediaLimits::default(),
     )?;
     envelope(
-        "prompt17_report",
+        "annotation_media_redaction_report",
         &json!({
-            "schema_version": crate::prompt17::PROMPT17_SCHEMA_VERSION,
+            "schema_version": crate::annotation_media_redaction::ANNOTATION_MEDIA_REDACTION_SCHEMA_VERSION,
             "annotation_xfdf": xfdf,
             "rich_media": media,
-            "feature": crate::prompt17::prompt17_feature_report_value(REPORT_ENVELOPE_VERSION),
+            "feature": crate::annotation_media_redaction::annotation_media_redaction_feature_report_value(REPORT_ENVELOPE_VERSION),
             "nonaxis_redaction": {
                 "planning": "request_specific",
                 "sample_space_polygon_rewrite": true,
@@ -373,45 +376,48 @@ pub fn prompt17_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<Str
     )
 }
 
-/// Combined Prompt 18 secure-mutation inventory and policy report.
-pub fn prompt18_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// Combined secure mutation secure-mutation inventory and policy report.
+pub fn secure_mutation_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt18_report",
-        &crate::prompt18::prompt18_report(&engine)?,
+        "secure_mutation_report",
+        &crate::secure_mutation::secure_mutation_report(&engine)?,
     )
 }
 
-pub fn prompt18b_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+pub fn secure_mutation_closeout_report_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt18b_report",
-        &crate::prompt18::prompt18b_report(&engine)?,
+        "secure_mutation_closeout_report",
+        &crate::secure_mutation::secure_mutation_closeout_report(&engine)?,
     )
 }
 
-/// Prompt 19 form JavaScript/action inventory. JavaScript is never executed by
+/// form action policy form JavaScript/action inventory. JavaScript is never executed by
 /// this operation.
 pub fn form_js_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
         "form_js_report",
-        &crate::prompt19::form_javascript_inventory(
+        &crate::form_action_policy::form_javascript_inventory(
             &engine,
-            &crate::prompt19::FormJsLimits::default(),
+            &crate::form_action_policy::FormJsLimits::default(),
         )?,
     )
 }
 
 pub fn form_action_graph_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
-    let inventory = crate::prompt19::form_javascript_inventory(
+    let inventory = crate::form_action_policy::form_javascript_inventory(
         &engine,
-        &crate::prompt19::FormJsLimits::default(),
+        &crate::form_action_policy::FormJsLimits::default(),
     )?;
     envelope(
         "form_action_graph",
-        &crate::prompt19::form_action_graph(&engine, &inventory)?,
+        &crate::form_action_policy::form_action_graph(&engine, &inventory)?,
     )
 }
 
@@ -422,14 +428,18 @@ pub fn form_js_sanitize_json(
 ) -> Result<(Vec<u8>, String)> {
     let engine = open(bytes, password)?;
     let options = options_json
-        .map(serde_json::from_str::<crate::prompt19::FormJsSanitizerOptions>)
+        .map(serde_json::from_str::<crate::form_action_policy::FormJsSanitizerOptions>)
         .transpose()
         .map_err(|error| {
-            WellfriendError::invalid_input(format!("invalid Prompt 19 sanitizer options: {error}"))
+            WellfriendError::invalid_input(format!(
+                "invalid form action policy sanitizer options: {error}"
+            ))
         })?
         .unwrap_or_default();
-    let (output, report) =
-        crate::prompt19::form_js_sanitize_pdf(engine.document().reader().file_bytes(), &options)?;
+    let (output, report) = crate::form_action_policy::form_js_sanitize_pdf(
+        engine.document().reader().file_bytes(),
+        &options,
+    )?;
     Ok((output, envelope("form_js_sanitize", &report)?))
 }
 
@@ -440,14 +450,16 @@ pub fn form_js_flatten_values_json(
 ) -> Result<(Vec<u8>, String)> {
     let engine = open(bytes, password)?;
     let mut options = options_json
-        .map(serde_json::from_str::<crate::prompt19::FormJsSanitizerOptions>)
+        .map(serde_json::from_str::<crate::form_action_policy::FormJsSanitizerOptions>)
         .transpose()
         .map_err(|error| {
-            WellfriendError::invalid_input(format!("invalid Prompt 19 flatten options: {error}"))
+            WellfriendError::invalid_input(format!(
+                "invalid form action policy flatten options: {error}"
+            ))
         })?
         .unwrap_or_default();
-    options.mode = crate::prompt19::FormJsPolicyMode::FlattenCalculatedValuesThenRemove;
-    let (output, report) = crate::prompt19::flatten_calculated_values_pdf(
+    options.mode = crate::form_action_policy::FormJsPolicyMode::FlattenCalculatedValuesThenRemove;
+    let (output, report) = crate::form_action_policy::flatten_calculated_values_pdf(
         engine.document().reader().file_bytes(),
         &options,
     )?;
@@ -461,7 +473,7 @@ pub fn interactive_data_closeout_report_json(
     let engine = open(bytes, password)?;
     envelope(
         "interactive_data_report",
-        &crate::prompt19::interactive_data_closeout_report(&engine)?,
+        &crate::form_action_policy::interactive_data_closeout_report(&engine)?,
     )
 }
 
@@ -476,34 +488,37 @@ pub fn word_pagination_audit_json(
     })?;
     envelope(
         "word_pagination_audit",
-        &crate::prompt19::word_pagination_audit(&engine, layout)?,
+        &crate::form_action_policy::word_pagination_audit(&engine, layout)?,
     )
 }
 
-pub fn prompt19_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+pub fn form_action_policy_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt19_report",
-        &crate::prompt19::prompt19_report(&engine)?,
+        "form_action_policy_report",
+        &crate::form_action_policy::form_action_policy_report(&engine)?,
     )
 }
 
-pub fn prompt20_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+pub fn advanced_editing_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt20_report",
-        &crate::prompt20::prompt20_report(&engine)?,
+        "advanced_editing_report",
+        &crate::advanced_editing::advanced_editing_report(&engine)?,
     )
 }
 
-/// Prompt 20B's additive closure report.  This deliberately remains a shared
+/// advanced editing closeout's additive closure report.  This deliberately remains a shared
 /// SDK report so language bindings do not reimplement ownership policy.
-pub fn prompt20b_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+pub fn advanced_editing_closeout_report_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt20b_report",
+        "advanced_editing_closeout_report",
         &serde_json::json!({
-            "schema_version": "prompt20b.multirun-form-appearance-closure.v1",
+            "schema_version": "advanced_editing_closeout.multirun-form-appearance-closure.v1",
             "status": "implemented_with_limits",
             "multi_run_range": "implemented_token_boundary_page_stream",
             "rtl_logical_visual_mapping": "implemented_bidi_provenance",
@@ -511,7 +526,7 @@ pub fn prompt20b_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<St
             "nested_form_clone_one": "implemented_with_limits_recursive_invocation_inventory",
             "annotation_appearance_clone_one": "implemented_with_limits_owner_specific_N_R_D_state_widget_and_nested_Form_policy",
             "bindings": ["rust", "cli", "python", "c_abi", "wasm", "dotnet", "java_maven", "java_gradle"],
-            "signature_policy": "prompt18b_preflight_required",
+            "signature_policy": "secure_mutation_closeout_preflight_required",
             "cryptographic_validity_claimed": false,
             "page_count": engine.page_count()?,
             "exact_limits": [
@@ -524,17 +539,17 @@ pub fn prompt20b_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<St
     )
 }
 
-/// Combined Prompt 21 raster/vector, font reconstruction, persistent history,
+/// Combined writer history raster/vector, font reconstruction, persistent history,
 /// and object-stream writer report.
-pub fn prompt21_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+pub fn writer_history_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt21_report",
-        &crate::prompt21::prompt21_report(&engine)?,
+        "writer_history_report",
+        &crate::writer_history::writer_history_report(&engine)?,
     )
 }
 
-pub fn prompt21_raster_vector_report_json(
+pub fn writer_history_raster_vector_report_json(
     bytes: &[u8],
     page: usize,
     options_json: Option<&str>,
@@ -543,69 +558,72 @@ pub fn prompt21_raster_vector_report_json(
     let engine = open(bytes, password)?;
     let options = match options_json {
         Some(json) if !json.trim().is_empty() => {
-            serde_json::from_str::<crate::prompt21::RasterVectorizationOptions>(json)
+            serde_json::from_str::<crate::writer_history::RasterVectorizationOptions>(json)
                 .map_err(json_err)?
         }
-        _ => crate::prompt21::RasterVectorizationOptions::default(),
+        _ => crate::writer_history::RasterVectorizationOptions::default(),
     };
     envelope(
-        "prompt21_raster_vector_report",
-        &crate::prompt21::raster_vectorization_report(&engine, page, options)?,
+        "writer_history_raster_vector_report",
+        &crate::writer_history::raster_vectorization_report(&engine, page, options)?,
     )
 }
 
-pub fn prompt21_font_reconstruction_report_json(
+pub fn writer_history_font_reconstruction_report_json(
     bytes: &[u8],
     password: Option<&[u8]>,
 ) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt21_font_reconstruction_report",
-        &crate::prompt21::font_reconstruction_report(&engine)?,
+        "writer_history_font_reconstruction_report",
+        &crate::writer_history::font_reconstruction_report(&engine)?,
     )
 }
 
-pub fn prompt21_history_report_json() -> Result<String> {
+pub fn writer_history_history_report_json() -> Result<String> {
     envelope(
-        "prompt21_history_report",
-        &crate::prompt21::persistent_store_report(),
+        "writer_history_history_report",
+        &crate::writer_history::persistent_store_report(),
     )
 }
 
-pub fn prompt21_object_stream_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+pub fn writer_history_object_stream_report_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt21_object_stream_report",
-        &crate::prompt21::object_stream_packing_report(engine.document().reader())?,
+        "writer_history_object_stream_report",
+        &crate::writer_history::object_stream_packing_report(engine.document().reader())?,
     )
 }
 
-pub fn prompt21_pack_object_streams_json(
+pub fn writer_history_pack_object_streams_json(
     bytes: &[u8],
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
-    let (output, report) = crate::prompt21::pack_object_streams_pdf(bytes, password)?;
+    let (output, report) = crate::writer_history::pack_object_streams_pdf(bytes, password)?;
     Ok((
         output,
-        envelope("prompt21_pack_object_streams_report", &report)?,
+        envelope("writer_history_pack_object_streams_report", &report)?,
     ))
 }
 
-/// Combined Prompt 22 zopfli, resource dedup, Office conversion, and benchmark report.
-pub fn prompt22_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// Combined compression and Office zopfli, resource dedup, Office conversion, and benchmark report.
+pub fn compression_office_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt22_report",
-        &crate::prompt22::prompt22_report(&engine)?,
+        "compression_office_report",
+        &crate::compression_office::compression_office_report(&engine)?,
     )
 }
 
-/// Combined Prompt 23 deterministic writer, PubSec, and AES-GCM posture report.
-pub fn prompt23_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// Combined crypto writer deterministic writer, PubSec, and AES-GCM posture report.
+pub fn crypto_writer_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
-        "prompt23_report",
-        &crate::prompt23::prompt23_report(&engine)?,
+        "crypto_writer_report",
+        &crate::crypto_writer::crypto_writer_report(&engine)?,
     )
 }
 
@@ -613,7 +631,7 @@ pub fn writer_determinism_audit_json(bytes: &[u8], password: Option<&[u8]>) -> R
     let engine = open(bytes, password)?;
     envelope(
         "writer_determinism_audit",
-        &crate::prompt23::deterministic_writer_audit(&engine)?,
+        &crate::crypto_writer::deterministic_writer_audit(&engine)?,
     )
 }
 
@@ -621,7 +639,7 @@ pub fn writer_external_diff_json(bytes: &[u8], password: Option<&[u8]>) -> Resul
     let engine = open(bytes, password)?;
     envelope(
         "writer_external_diff",
-        &crate::prompt23::writer_external_diff_report(&engine)?,
+        &crate::crypto_writer::writer_external_diff_report(&engine)?,
     )
 }
 
@@ -629,21 +647,21 @@ pub fn writer_closeout_report_json(bytes: &[u8], password: Option<&[u8]>) -> Res
     let engine = open(bytes, password)?;
     envelope(
         "writer_closeout_report",
-        &crate::prompt23::writer_closeout_report(&engine)?,
+        &crate::crypto_writer::writer_closeout_report(&engine)?,
     )
 }
 
 pub fn pubsec_report_json(bytes: &[u8], _password: Option<&[u8]>) -> Result<String> {
     envelope(
         "pubsec_report",
-        &crate::prompt23::public_key_handler_report_bytes(bytes),
+        &crate::crypto_writer::public_key_handler_report_bytes(bytes),
     )
 }
 
 pub fn aes_gcm_report_json(bytes: &[u8], _password: Option<&[u8]>) -> Result<String> {
     envelope(
         "aes_gcm_report",
-        &crate::prompt23::aes_gcm_report_bytes(bytes),
+        &crate::crypto_writer::aes_gcm_report_bytes(bytes),
     )
 }
 
@@ -677,92 +695,106 @@ pub fn pdf_mac_create_json(bytes: &[u8], password: Option<&[u8]>) -> Result<(Vec
 pub fn crypto_tamper_test_json() -> Result<String> {
     envelope(
         "crypto_tamper_test",
-        &crate::prompt23::crypto_tamper_test_report(),
+        &crate::crypto_writer::crypto_tamper_test_report(),
     )
 }
 
-pub fn prompt22_optimize_pdf_json(
+pub fn compression_office_optimize_pdf_json(
     bytes: &[u8],
     options_json: Option<&str>,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let options = match options_json {
-        Some(json) if !json.trim().is_empty() => {
-            serde_json::from_str::<crate::prompt22::Prompt22OptimizeOptions>(json)
-                .map_err(json_err)?
-        }
-        _ => crate::prompt22::Prompt22OptimizeOptions::default(),
+        Some(json) if !json.trim().is_empty() => serde_json::from_str::<
+            crate::compression_office::CompressionOfficeOptimizeOptions,
+        >(json)
+        .map_err(json_err)?,
+        _ => crate::compression_office::CompressionOfficeOptimizeOptions::default(),
     };
-    let (output, report) = crate::prompt22::optimize_pdf(bytes, password, options)?;
-    Ok((output, envelope("prompt22_optimize_report", &report)?))
+    let (output, report) = crate::compression_office::optimize_pdf(bytes, password, options)?;
+    Ok((
+        output,
+        envelope("compression_office_optimize_report", &report)?,
+    ))
 }
 
-pub fn prompt22_office_inspect_json(bytes: &[u8], format: &str) -> Result<String> {
+pub fn compression_office_office_inspect_json(bytes: &[u8], format: &str) -> Result<String> {
     let format = crate::office::OfficeFormat::parse(format).ok_or_else(|| {
         WellfriendError::invalid_input(format!(
             "unsupported Office format '{format}', expected docx, pptx, or xlsx"
         ))
     })?;
     envelope(
-        "prompt22_office_package_security",
-        &crate::prompt22::inspect_office_package_for_prompt22(bytes, format)?,
+        "compression_office_office_package_security",
+        &crate::compression_office::inspect_office_package_for_compression_office(bytes, format)?,
     )
 }
 
-pub fn prompt22_office_to_pdf_json(bytes: &[u8], format: &str) -> Result<(Vec<u8>, String)> {
+pub fn compression_office_office_to_pdf_json(
+    bytes: &[u8],
+    format: &str,
+) -> Result<(Vec<u8>, String)> {
     let format = crate::office::OfficeFormat::parse(format).ok_or_else(|| {
         WellfriendError::invalid_input(format!(
             "unsupported Office format '{format}', expected docx, pptx, or xlsx"
         ))
     })?;
-    let (output, report) = crate::prompt22::office_to_pdf_with_report(
+    let (output, report) = crate::compression_office::office_to_pdf_with_report(
         bytes,
         format,
         &crate::office::OfficeToPdfOptions::default(),
     )?;
-    Ok((output, envelope("prompt22_office_to_pdf_report", &report)?))
+    Ok((
+        output,
+        envelope("compression_office_office_to_pdf_report", &report)?,
+    ))
 }
 
-pub fn prompt20b_text_range_analyze_json(
+pub fn advanced_editing_closeout_text_range_analyze_json(
     bytes: &[u8],
     page: usize,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt20b_multi_run_range_model",
-        &crate::prompt20::analyze_multi_run_text_range(&input, page)?,
+        "advanced_editing_closeout_multi_run_range_model",
+        &crate::advanced_editing::analyze_multi_run_text_range(&input, page)?,
     )
 }
 
-pub fn prompt20b_text_range_edit_json(
+pub fn advanced_editing_closeout_text_range_edit_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt20::MultiRunTextRangeRequest>(request_json)
-        .map_err(json_err)?;
-    let (output, report) = crate::prompt20::edit_multi_run_text_range(&input, &request, None)?;
+    let request =
+        serde_json::from_str::<crate::advanced_editing::MultiRunTextRangeRequest>(request_json)
+            .map_err(json_err)?;
+    let (output, report) =
+        crate::advanced_editing::edit_multi_run_text_range(&input, &request, None)?;
     Ok((
         output,
-        envelope("prompt20b_multi_run_text_edit_report", &report)?,
+        envelope(
+            "advanced_editing_closeout_multi_run_text_edit_report",
+            &report,
+        )?,
     ))
 }
 
-pub fn prompt20_vector_list_json(
+pub fn advanced_editing_vector_list_json(
     bytes: &[u8],
     page: usize,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt20_vector_inventory",
-        &crate::prompt20::list_vector_objects(&input, page)?,
+        "advanced_editing_vector_inventory",
+        &crate::advanced_editing::list_vector_objects(&input, page)?,
     )
 }
 
-pub fn prompt20_text_edit_json(
+pub fn advanced_editing_text_edit_json(
     bytes: &[u8],
     page: usize,
     old_text: &str,
@@ -774,46 +806,49 @@ pub fn prompt20_text_edit_json(
     let input = mutation_input(bytes, password)?;
     let mode = match mode {
         "horizontal-reflow" | "paragraph_reflow_horizontal" => {
-            crate::prompt20::AdvancedTextMode::ParagraphReflowHorizontal
+            crate::advanced_editing::AdvancedTextMode::ParagraphReflowHorizontal
         }
         "rtl-reflow" | "paragraph_reflow_rtl" => {
-            crate::prompt20::AdvancedTextMode::ParagraphReflowRtl
+            crate::advanced_editing::AdvancedTextMode::ParagraphReflowRtl
         }
         "vertical-reflow" | "paragraph_reflow_vertical" => {
-            crate::prompt20::AdvancedTextMode::ParagraphReflowVertical
+            crate::advanced_editing::AdvancedTextMode::ParagraphReflowVertical
         }
         "same-width-patch" | "safe_patch" => {
             let options = options_json
-                .map(serde_json::from_str::<crate::prompt20::SameWidthPatchOptions>)
+                .map(serde_json::from_str::<crate::advanced_editing::SameWidthPatchOptions>)
                 .transpose()
                 .map_err(json_err)?
                 .unwrap_or_default();
-            let (output, report) = crate::prompt20::apply_same_width_patch(
+            let (output, report) = crate::advanced_editing::apply_same_width_patch(
                 &input, page, old_text, new_text, &options,
             )?;
             return Ok((
                 output,
-                envelope("prompt20_same_width_patch_report", &report)?,
+                envelope("advanced_editing_same_width_patch_report", &report)?,
             ));
         }
         other => {
             return Err(WellfriendError::invalid_input(format!(
-                "unknown Prompt 20 text edit mode '{other}'"
+                "unknown advanced editing text edit mode '{other}'"
             )))
         }
     };
     let options = options_json
-        .map(serde_json::from_str::<crate::prompt20::AdvancedTextEditOptions>)
+        .map(serde_json::from_str::<crate::advanced_editing::AdvancedTextEditOptions>)
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
-    let (output, report) = crate::prompt20::edit_advanced_text_pdf(
+    let (output, report) = crate::advanced_editing::edit_advanced_text_pdf(
         &input, page, old_text, new_text, mode, &options, None,
     )?;
-    Ok((output, envelope("prompt20_text_edit_report", &report)?))
+    Ok((
+        output,
+        envelope("advanced_editing_text_edit_report", &report)?,
+    ))
 }
 
-pub fn prompt20_vector_edit_json(
+pub fn advanced_editing_vector_edit_json(
     bytes: &[u8],
     page: usize,
     stable_id: &str,
@@ -822,19 +857,23 @@ pub fn prompt20_vector_edit_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let operation = serde_json::from_str::<crate::prompt20::VectorEditOperation>(operation_json)
-        .map_err(json_err)?;
+    let operation =
+        serde_json::from_str::<crate::advanced_editing::VectorEditOperation>(operation_json)
+            .map_err(json_err)?;
     let options = options_json
-        .map(serde_json::from_str::<crate::prompt20::VectorEditOptions>)
+        .map(serde_json::from_str::<crate::advanced_editing::VectorEditOptions>)
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
     let (output, report) =
-        crate::prompt20::edit_vector_object(&input, page, stable_id, operation, &options)?;
-    Ok((output, envelope("prompt20_vector_edit_report", &report)?))
+        crate::advanced_editing::edit_vector_object(&input, page, stable_id, operation, &options)?;
+    Ok((
+        output,
+        envelope("advanced_editing_vector_edit_report", &report)?,
+    ))
 }
 
-pub fn prompt20_ink_fit_json(
+pub fn advanced_editing_ink_fit_json(
     bytes: &[u8],
     page: usize,
     annotation_index: usize,
@@ -844,29 +883,35 @@ pub fn prompt20_ink_fit_json(
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
     let options = options_json
-        .map(serde_json::from_str::<crate::prompt20::InkFitOptions>)
+        .map(serde_json::from_str::<crate::advanced_editing::InkFitOptions>)
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
-    let (output, report) = crate::prompt20::fit_annotation_ink_pdf(
+    let (output, report) = crate::advanced_editing::fit_annotation_ink_pdf(
         &input,
         page,
         annotation_index,
         &options,
         signature_policy_override,
     )?;
-    Ok((output, envelope("prompt20_ink_fit_report", &report)?))
+    Ok((
+        output,
+        envelope("advanced_editing_ink_fit_report", &report)?,
+    ))
 }
 
-/// Prompt 31's canonical architecture/status report.  It describes the real
-/// parser-backed editing paths and exact Prompt 32/33 deferrals.
-pub fn prompt31_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// source editing's canonical architecture/status report.  It describes the real
+/// parser-backed editing paths and exact editing transactions/33 deferrals.
+pub fn source_editing_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let _ = open(bytes, password)?;
-    envelope("prompt31_report", &crate::prompt31::prompt31_report())
+    envelope(
+        "source_editing_report",
+        &crate::source_editing::source_editing_report(),
+    )
 }
 
 /// Resolve parser-backed text source instructions and semantic source spans.
-pub fn prompt31_provenance_json(
+pub fn source_editing_provenance_json(
     bytes: &[u8],
     page: usize,
     source_text: &str,
@@ -875,57 +920,67 @@ pub fn prompt31_provenance_json(
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt31_provenance_report",
-        &crate::prompt31::operator_text_provenance(&input, page, source_text, replacement_text)?,
+        "source_editing_provenance_report",
+        &crate::source_editing::operator_text_provenance(
+            &input,
+            page,
+            source_text,
+            replacement_text,
+        )?,
     )
 }
 
-/// Plan a Prompt 31 operator-preserving text edit.  Refusals are returned as
+/// Plan a source editing operator-preserving text edit.  Refusals are returned as
 /// structured JSON and do not alter the input document.
-pub fn prompt31_edit_eligibility_json(
+pub fn source_editing_edit_eligibility_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt31::OperatorTextEditRequest>(request_json)
-        .map_err(json_err)?;
+    let request =
+        serde_json::from_str::<crate::source_editing::OperatorTextEditRequest>(request_json)
+            .map_err(json_err)?;
     envelope(
-        "prompt31_operator_text_eligibility",
-        &crate::prompt31::operator_text_eligibility(&input, &request)?,
+        "source_editing_operator_text_eligibility",
+        &crate::source_editing::operator_text_eligibility(&input, &request)?,
     )
 }
 
-/// Apply the source-level Prompt 31 text mutation and return bytes plus its
+/// Apply the source-level source editing text mutation and return bytes plus its
 /// stable operation report.  This path rejects ineligible requests; callers
-/// should invoke `prompt31_edit_eligibility_json` first to receive a refusal.
-pub fn prompt31_operator_text_edit_json(
+/// should invoke `source_editing_edit_eligibility_json` first to receive a refusal.
+pub fn source_editing_operator_text_edit_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt31::OperatorTextEditRequest>(request_json)
-        .map_err(json_err)?;
-    let (output, report) = crate::prompt31::edit_text_operator(&input, &request)?;
-    Ok((output, envelope("prompt31_operator_text_edit", &report)?))
+    let request =
+        serde_json::from_str::<crate::source_editing::OperatorTextEditRequest>(request_json)
+            .map_err(json_err)?;
+    let (output, report) = crate::source_editing::edit_text_operator(&input, &request)?;
+    Ok((
+        output,
+        envelope("source_editing_operator_text_edit", &report)?,
+    ))
 }
 
-/// Return the canonical vector/path source inventory used by Prompt 31.
-pub fn prompt31_path_provenance_json(
+/// Return the canonical vector/path source inventory used by source editing.
+pub fn source_editing_path_provenance_json(
     bytes: &[u8],
     page: usize,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt31_operator_path_provenance",
-        &crate::prompt31::operator_path_provenance(&input, page)?,
+        "source_editing_operator_path_provenance",
+        &crate::source_editing::operator_path_provenance(&input, page)?,
     )
 }
 
 /// Apply a canonical source-range vector/path or graphics-state mutation.
-pub fn prompt31_path_edit_json(
+pub fn source_editing_path_edit_json(
     bytes: &[u8],
     page: usize,
     stable_id: &str,
@@ -934,43 +989,47 @@ pub fn prompt31_path_edit_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let operation = serde_json::from_str::<crate::prompt20::VectorEditOperation>(operation_json)
-        .map_err(json_err)?;
+    let operation =
+        serde_json::from_str::<crate::advanced_editing::VectorEditOperation>(operation_json)
+            .map_err(json_err)?;
     let options = options_json
-        .map(serde_json::from_str::<crate::prompt20::VectorEditOptions>)
+        .map(serde_json::from_str::<crate::advanced_editing::VectorEditOptions>)
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
     let (output, report) =
-        crate::prompt31::edit_path_operator(&input, page, stable_id, operation, &options)?;
-    Ok((output, envelope("prompt31_operator_path_edit", &report)?))
+        crate::source_editing::edit_path_operator(&input, page, stable_id, operation, &options)?;
+    Ok((
+        output,
+        envelope("source_editing_operator_path_edit", &report)?,
+    ))
 }
 
 /// Images intentionally fail closed until canonical occurrence-to-source
 /// instruction identity is available.
-pub fn prompt31_image_eligibility_json(
+pub fn source_editing_image_eligibility_json(
     bytes: &[u8],
     page: usize,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt31_operator_image_eligibility",
-        &crate::prompt31::operator_image_eligibility(&input, page),
+        "source_editing_operator_image_eligibility",
+        &crate::source_editing::operator_image_eligibility(&input, page),
     )
 }
 
-/// Prompt 32 editable scene/transaction/font architecture report.
-pub fn prompt32_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// editing transactions editable scene/transaction/font architecture report.
+pub fn editing_transactions_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt32_report",
-        &crate::prompt32::prompt32_report(&input)?,
+        "editing_transactions_report",
+        &crate::editing_transactions::editing_transactions_report(&input)?,
     )
 }
 
-/// Build the source-linked Prompt 32 editable scene graph for selected pages.
-pub fn prompt32_scene_report_json(
+/// Build the source-linked editing transactions editable scene graph for selected pages.
+pub fn editing_transactions_scene_report_json(
     bytes: &[u8],
     pages_json: Option<&str>,
     password: Option<&[u8]>,
@@ -982,382 +1041,395 @@ pub fn prompt32_scene_report_json(
         .map_err(json_err)?
         .unwrap_or_default();
     envelope(
-        "prompt32_scene_report",
-        &crate::prompt32::build_scene_graph(&input, &pages)?,
+        "editing_transactions_scene_report",
+        &crate::editing_transactions::build_scene_graph(&input, &pages)?,
     )
 }
 
 /// Resolve a bounded scene selection/hit-test query.
-pub fn prompt32_scene_select_json(
+pub fn editing_transactions_scene_select_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt32::SceneSelectionRequest>(request_json)
-        .map_err(json_err)?;
+    let request =
+        serde_json::from_str::<crate::editing_transactions::SceneSelectionRequest>(request_json)
+            .map_err(json_err)?;
     envelope(
-        "prompt32_scene_select",
-        &crate::prompt32::scene_select(&input, &request)?,
+        "editing_transactions_scene_select",
+        &crate::editing_transactions::scene_select(&input, &request)?,
     )
 }
 
-/// Plan an atomic Prompt 32 scene text transaction.
-pub fn prompt32_transaction_plan_json(
+/// Plan an atomic editing transactions scene text transaction.
+pub fn editing_transactions_transaction_plan_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt32::SceneTextEditRequest>(request_json)
-        .map_err(json_err)?;
+    let request =
+        serde_json::from_str::<crate::editing_transactions::SceneTextEditRequest>(request_json)
+            .map_err(json_err)?;
     envelope(
-        "prompt32_transaction_plan",
-        &crate::prompt32::plan_scene_text_transaction(&input, &request)?,
+        "editing_transactions_transaction_plan",
+        &crate::editing_transactions::plan_scene_text_transaction(&input, &request)?,
     )
 }
 
-/// Apply an atomic Prompt 32 scene text transaction through the canonical writer.
-pub fn prompt32_transaction_apply_json(
+/// Apply an atomic editing transactions scene text transaction through the canonical writer.
+pub fn editing_transactions_transaction_apply_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt32::SceneTextEditRequest>(request_json)
-        .map_err(json_err)?;
-    let (output, report) = crate::prompt32::apply_scene_text_transaction(&input, &request)?;
-    Ok((output, envelope("prompt32_transaction_apply", &report)?))
+    let request =
+        serde_json::from_str::<crate::editing_transactions::SceneTextEditRequest>(request_json)
+            .map_err(json_err)?;
+    let (output, report) =
+        crate::editing_transactions::apply_scene_text_transaction(&input, &request)?;
+    Ok((
+        output,
+        envelope("editing_transactions_transaction_apply", &report)?,
+    ))
 }
 
-/// Alias for scene-facing text edits that compile to source-level Prompt 31 ops.
-pub fn prompt32_scene_edit_text_json(
+/// Alias for scene-facing text edits that compile to source-level source editing ops.
+pub fn editing_transactions_scene_edit_text_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
-    prompt32_transaction_apply_json(bytes, request_json, password)
+    editing_transactions_transaction_apply_json(bytes, request_json, password)
 }
 
 /// Report dirty entities/regions for a scene text transaction.
-pub fn prompt32_dirty_region_json(
+pub fn editing_transactions_dirty_region_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt32::SceneTextEditRequest>(request_json)
-        .map_err(json_err)?;
+    let request =
+        serde_json::from_str::<crate::editing_transactions::SceneTextEditRequest>(request_json)
+            .map_err(json_err)?;
     envelope(
-        "prompt32_dirty_region",
-        &crate::prompt32::dirty_region_report(&input, &request)?,
+        "editing_transactions_dirty_region",
+        &crate::editing_transactions::dirty_region_report(&input, &request)?,
     )
 }
 
 /// Report exact text identity, grapheme, bidi, shaping, and reverse mapping.
-pub fn prompt32_text_map_json(text: &str, direction: Option<&str>) -> Result<String> {
+pub fn editing_transactions_text_map_json(text: &str, direction: Option<&str>) -> Result<String> {
     envelope(
-        "prompt32_text_map",
-        &crate::prompt32::text_identity_report(text, direction)?,
+        "editing_transactions_text_map",
+        &crate::editing_transactions::text_identity_report(text, direction)?,
     )
 }
 
 /// Preview shaping with the canonical rustybuzz-backed generated-text shaper.
-pub fn prompt32_shape_text_json(text: &str, direction: Option<&str>) -> Result<String> {
-    let report = crate::prompt32::text_identity_report(text, direction)?;
-    envelope("prompt32_shape_text", &report.shaping)
+pub fn editing_transactions_shape_text_json(text: &str, direction: Option<&str>) -> Result<String> {
+    let report = crate::editing_transactions::text_identity_report(text, direction)?;
+    envelope("editing_transactions_shape_text", &report.shaping)
 }
 
 /// Plan deterministic font subset rebuilding and exact unsupported boundaries.
-pub fn prompt32_font_subset_plan_json(
+pub fn editing_transactions_font_subset_plan_json(
     text: &str,
     direction: Option<&str>,
     policy: Option<&str>,
 ) -> Result<String> {
     envelope(
-        "prompt32_font_subset_plan",
-        &crate::prompt32::font_subset_plan(text, direction, policy)?,
+        "editing_transactions_font_subset_plan",
+        &crate::editing_transactions::font_subset_plan(text, direction, policy)?,
     )
 }
 
 /// Report deterministic font substitution policy and scoring.
-pub fn prompt32_font_substitution_report_json(
+pub fn editing_transactions_font_substitution_report_json(
     requested_family: &str,
     text: &str,
     policy: Option<&str>,
 ) -> Result<String> {
     envelope(
-        "prompt32_font_substitution_report",
-        &crate::prompt32::substitution_report(requested_family, text, policy),
+        "editing_transactions_font_substitution_report",
+        &crate::editing_transactions::substitution_report(requested_family, text, policy),
     )
 }
 
-/// Prompt 33 geometric and semantic reflow architecture report.
-pub fn prompt33_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// text reflow geometric and semantic reflow architecture report.
+pub fn text_reflow_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt33_report",
-        &crate::prompt33::prompt33_report(&input)?,
+        "text_reflow_report",
+        &crate::text_reflow::text_reflow_report(&input)?,
     )
 }
 
-/// Analyze a source-linked geometric text region for Prompt 33 reflow.
-pub fn prompt33_layout_analyze_json(
+/// Analyze a source-linked geometric text region for text reflow reflow.
+pub fn text_reflow_layout_analyze_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
     envelope(
-        "prompt33_layout_analyze",
-        &crate::prompt33::analyze_geometric_region(&input, &request)?,
+        "text_reflow_layout_analyze",
+        &crate::text_reflow::analyze_geometric_region(&input, &request)?,
     )
 }
 
 /// Analyze the source-linked semantic layout graph.
-pub fn prompt33_semantic_layout_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+pub fn text_reflow_semantic_layout_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt33_semantic_layout",
-        &crate::prompt33::analyze_semantic_layout(&input, None)?,
+        "text_reflow_semantic_layout",
+        &crate::text_reflow::analyze_semantic_layout(&input, None)?,
     )
 }
 
 /// Report deterministic reading-order DAG and ambiguity.
-pub fn prompt33_reading_order_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+pub fn text_reflow_reading_order_report_json(
+    bytes: &[u8],
+    password: Option<&[u8]>,
+) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt33_reading_order_report",
-        &crate::prompt33::reading_order_report(&input)?,
+        "text_reflow_reading_order_report",
+        &crate::text_reflow::reading_order_report(&input)?,
     )
 }
 
-/// Report Prompt 33 cross-column/cross-page flow graph.
-pub fn prompt33_flow_graph_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// Report text reflow cross-column/cross-page flow graph.
+pub fn text_reflow_flow_graph_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt33_flow_graph_report",
-        &crate::prompt33::flow_graph_report(&input)?,
+        "text_reflow_flow_graph_report",
+        &crate::text_reflow::flow_graph_report(&input)?,
     )
 }
 
 /// Preview a GeometricBlock or SemanticDocument reflow without mutating bytes.
-pub fn prompt33_reflow_preview_json(
+pub fn text_reflow_reflow_preview_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
     envelope(
-        "prompt33_reflow_preview",
-        &crate::prompt33::preview_reflow(&input, &request)?,
+        "text_reflow_reflow_preview",
+        &crate::text_reflow::preview_reflow(&input, &request)?,
     )
 }
 
 /// Query ordered overflow evidence without mutating the PDF.
-pub fn prompt33_overflow_report_json(
+pub fn text_reflow_overflow_report_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
     envelope(
-        "prompt33_overflow_report",
-        &crate::prompt33::query_overflow(&input, &request)?,
+        "text_reflow_overflow_report",
+        &crate::text_reflow::query_overflow(&input, &request)?,
     )
 }
 
 /// Query bounded hard/soft constraint evidence without mutating the PDF.
-pub fn prompt33_constraints_report_json(
+pub fn text_reflow_constraints_report_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
     envelope(
-        "prompt33_constraints_report",
-        &crate::prompt33::query_constraints(&input, &request)?,
+        "text_reflow_constraints_report",
+        &crate::text_reflow::query_constraints(&input, &request)?,
     )
 }
 
 /// Query central confidence/review enforcement without mutating the PDF.
-pub fn prompt33_confidence_report_json(
+pub fn text_reflow_confidence_report_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
     envelope(
-        "prompt33_confidence_report",
-        &crate::prompt33::query_confidence(&input, &request)?,
+        "text_reflow_confidence_report",
+        &crate::text_reflow::query_confidence(&input, &request)?,
     )
 }
 
-/// Validate a completed supported local Prompt 33 reflow against canonical
+/// Validate a completed supported local text reflow reflow against canonical
 /// reopen and unaffected-content evidence. The output is an explicit byte
 /// slice so callers cannot accidentally validate their unchanged input.
-pub fn prompt33_validate_reflow_output_json(
+pub fn text_reflow_validate_reflow_output_json(
     bytes: &[u8],
     output: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
     envelope(
-        "prompt33_validate_reflow_output",
-        &crate::prompt33::validate_reflow_output(&input, output, &request)?,
+        "text_reflow_validate_reflow_output",
+        &crate::text_reflow::validate_reflow_output(&input, output, &request)?,
     )
 }
 
 /// Apply a supported GeometricBlock reflow through canonical source mutation.
-pub fn prompt33_reflow_region_json(
+pub fn text_reflow_reflow_region_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
-    let (output, report) = crate::prompt33::apply_reflow_region(&input, &request)?;
-    Ok((output, envelope("prompt33_reflow_region", &report)?))
+    let (output, report) = crate::text_reflow::apply_reflow_region(&input, &request)?;
+    Ok((output, envelope("text_reflow_reflow_region", &report)?))
 }
 
 /// Apply a supported SemanticDocument reflow boundary through the canonical path.
-pub fn prompt33_reflow_document_json(
+pub fn text_reflow_reflow_document_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
-    let (output, report) = crate::prompt33::apply_reflow_document(&input, &request)?;
-    Ok((output, envelope("prompt33_reflow_document", &report)?))
+    let (output, report) = crate::text_reflow::apply_reflow_document(&input, &request)?;
+    Ok((output, envelope("text_reflow_reflow_document", &report)?))
 }
 
-/// Execute Prompt 33's canonical inverse operation against an explicit output
+/// Execute text reflow's canonical inverse operation against an explicit output
 /// byte buffer. The engine replays the requested operation from this document,
 /// rejects stale/non-deterministic output, then performs the transaction undo
 /// and returns owned restored bytes plus typed proof.
-pub fn prompt33_undo_reflow_json(
+pub fn text_reflow_undo_reflow_json(
     bytes: &[u8],
     output: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
-    let (restored, report) = crate::prompt33::undo_reflow_from_replay(&input, output, &request)?;
-    Ok((restored, envelope("prompt33_undo_reflow", &report)?))
+    let (restored, report) = crate::text_reflow::undo_reflow_from_replay(&input, output, &request)?;
+    Ok((restored, envelope("text_reflow_undo_reflow", &report)?))
 }
 
 /// Store/preview a user correction to inferred semantic structure.
-pub fn prompt33_reflow_approve_structure_json(
+pub fn text_reflow_reflow_approve_structure_json(
     bytes: &[u8],
     correction_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt33_reflow_approve_structure",
-        &crate::prompt33::approve_structure_correction(&input, correction_json)?,
+        "text_reflow_reflow_approve_structure",
+        &crate::text_reflow::approve_structure_correction(&input, correction_json)?,
     )
 }
 
-/// Report Prompt 33 transaction/undo/redo policy for a reflow request.
-pub fn prompt33_reflow_operation_report_json(
+/// Report text reflow transaction/undo/redo policy for a reflow request.
+pub fn text_reflow_reflow_operation_report_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
     envelope(
-        "prompt33_reflow_operation_report",
-        &crate::prompt33::transaction_undo_report(&input, &request)?,
+        "text_reflow_reflow_operation_report",
+        &crate::text_reflow::transaction_undo_report(&input, &request)?,
     )
 }
 
-/// Report no-overlay/no-clipping evidence for a Prompt 33 reflow request.
-pub fn prompt33_no_overlay_no_clipping_json(
+/// Report no-overlay/no-clipping evidence for a text reflow reflow request.
+pub fn text_reflow_no_overlay_no_clipping_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
-    let request = serde_json::from_str::<crate::prompt33::GeometricReflowRequest>(request_json)
+    let request = serde_json::from_str::<crate::text_reflow::GeometricReflowRequest>(request_json)
         .map_err(json_err)?;
     envelope(
-        "prompt33_no_overlay_no_clipping",
-        &crate::prompt33::no_overlay_no_clipping_report(&input, &request)?,
+        "text_reflow_no_overlay_no_clipping",
+        &crate::text_reflow::no_overlay_no_clipping_report(&input, &request)?,
     )
 }
 
-/// Prompt 34 feature and supported-boundary report.
-pub fn prompt34_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// document subsystems feature and supported-boundary report.
+pub fn document_subsystems_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt34_report",
+        "document_subsystems_report",
         &serde_json::json!({
-            "feature_matrix": crate::prompt34::prompt34_feature_matrix(),
+            "feature_matrix": crate::document_subsystems::document_subsystems_feature_matrix(),
             "source_bytes": input.len()
         }),
     )
 }
 
-/// Analyze Prompt 34 source-linked tables, math, OCR, annotations, forms, and XFA.
-pub fn prompt34_analyze_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// Analyze document subsystems source-linked tables, math, OCR, annotations, forms, and XFA.
+pub fn document_subsystems_analyze_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt34_analyze",
-        &crate::prompt34::analyze_prompt34(&input)?,
+        "document_subsystems_analyze",
+        &crate::document_subsystems::analyze_document_subsystems(&input)?,
     )
 }
 
-/// Plan a supported Prompt 34 operation without mutating bytes.
-pub fn prompt34_plan_json(
+/// Plan a supported document subsystems operation without mutating bytes.
+pub fn document_subsystems_plan_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     let request =
-        serde_json::from_str::<crate::prompt34::Prompt34Request>(request_json).map_err(json_err)?;
+        serde_json::from_str::<crate::document_subsystems::DocumentSubsystemsRequest>(request_json)
+            .map_err(json_err)?;
     envelope(
-        "prompt34_plan",
-        &crate::prompt34::plan_prompt34(&input, &request)?,
+        "document_subsystems_plan",
+        &crate::document_subsystems::plan_document_subsystems(&input, &request)?,
     )
 }
 
-/// Apply one supported Prompt 34 operation through the canonical writer.
-pub fn prompt34_apply_json(
+/// Apply one supported document subsystems operation through the canonical writer.
+pub fn document_subsystems_apply_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
     let request =
-        serde_json::from_str::<crate::prompt34::Prompt34Request>(request_json).map_err(json_err)?;
-    let (output, report) = crate::prompt34::apply_prompt34(&input, &request)?;
-    Ok((output, envelope("prompt34_apply", &report)?))
+        serde_json::from_str::<crate::document_subsystems::DocumentSubsystemsRequest>(request_json)
+            .map_err(json_err)?;
+    let (output, report) = crate::document_subsystems::apply_document_subsystems(&input, &request)?;
+    Ok((output, envelope("document_subsystems_apply", &report)?))
 }
 
-/// Restore the immutable Prompt 34 transaction preimage after output verification.
-pub fn prompt34_undo_json(
+/// Restore the immutable document subsystems transaction preimage after output verification.
+pub fn document_subsystems_undo_json(
     bytes: &[u8],
     output: &[u8],
     request_json: &str,
@@ -1365,63 +1437,67 @@ pub fn prompt34_undo_json(
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
     let request =
-        serde_json::from_str::<crate::prompt34::Prompt34Request>(request_json).map_err(json_err)?;
-    let (restored, report) = crate::prompt34::undo_prompt34(&input, output, &request)?;
-    Ok((restored, envelope("prompt34_undo", &report)?))
+        serde_json::from_str::<crate::document_subsystems::DocumentSubsystemsRequest>(request_json)
+            .map_err(json_err)?;
+    let (restored, report) =
+        crate::document_subsystems::undo_document_subsystems(&input, output, &request)?;
+    Ok((restored, envelope("document_subsystems_undo", &report)?))
 }
 
-/// Prompt 35 tagged-PDF accessibility, redaction, sanitization, and residual
+/// document security tagged-PDF accessibility, redaction, sanitization, and residual
 /// verification feature report.
-pub fn prompt35_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+pub fn document_security_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt35_report",
+        "document_security_report",
         &serde_json::json!({
-            "feature_matrix": crate::prompt35::prompt35_feature_matrix(),
+            "feature_matrix": crate::document_security::document_security_feature_matrix(),
             "source_bytes": input.len()
         }),
     )
 }
 
-/// Analyze Prompt 35 structure, accessibility, redaction, and sanitizer state.
-pub fn prompt35_analyze_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+/// Analyze document security structure, accessibility, redaction, and sanitizer state.
+pub fn document_security_analyze_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     envelope(
-        "prompt35_analyze",
-        &crate::prompt35::analyze_prompt35(&input)?,
+        "document_security_analyze",
+        &crate::document_security::analyze_document_security(&input)?,
     )
 }
 
-/// Plan a typed Prompt 35 operation without mutating bytes.
-pub fn prompt35_plan_json(
+/// Plan a typed document security operation without mutating bytes.
+pub fn document_security_plan_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<String> {
     let input = mutation_input(bytes, password)?;
     let request =
-        serde_json::from_str::<crate::prompt35::Prompt35Request>(request_json).map_err(json_err)?;
+        serde_json::from_str::<crate::document_security::DocumentSecurityRequest>(request_json)
+            .map_err(json_err)?;
     envelope(
-        "prompt35_plan",
-        &crate::prompt35::plan_prompt35(&input, &request)?,
+        "document_security_plan",
+        &crate::document_security::plan_document_security(&input, &request)?,
     )
 }
 
-/// Apply one supported Prompt 35 operation through the canonical writer.
-pub fn prompt35_apply_json(
+/// Apply one supported document security operation through the canonical writer.
+pub fn document_security_apply_json(
     bytes: &[u8],
     request_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
     let request =
-        serde_json::from_str::<crate::prompt35::Prompt35Request>(request_json).map_err(json_err)?;
-    let (output, report) = crate::prompt35::apply_prompt35(&input, &request)?;
-    Ok((output, envelope("prompt35_apply", &report)?))
+        serde_json::from_str::<crate::document_security::DocumentSecurityRequest>(request_json)
+            .map_err(json_err)?;
+    let (output, report) = crate::document_security::apply_document_security(&input, &request)?;
+    Ok((output, envelope("document_security_apply", &report)?))
 }
 
-/// Restore the immutable Prompt 35 transaction preimage after output verification.
-pub fn prompt35_undo_json(
+/// Restore the immutable document security transaction preimage after output verification.
+pub fn document_security_undo_json(
     bytes: &[u8],
     output: &[u8],
     request_json: &str,
@@ -1429,13 +1505,15 @@ pub fn prompt35_undo_json(
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
     let request =
-        serde_json::from_str::<crate::prompt35::Prompt35Request>(request_json).map_err(json_err)?;
-    let (restored, report) = crate::prompt35::undo_prompt35(&input, output, &request)?;
-    Ok((restored, envelope("prompt35_undo", &report)?))
+        serde_json::from_str::<crate::document_security::DocumentSecurityRequest>(request_json)
+            .map_err(json_err)?;
+    let (restored, report) =
+        crate::document_security::undo_document_security(&input, output, &request)?;
+    Ok((restored, envelope("document_security_undo", &report)?))
 }
 
-/// Run Prompt 35 residual-data verification without mutating the document.
-pub fn prompt35_verify_residual_json(
+/// Run document security residual-data verification without mutating the document.
+pub fn document_security_verify_residual_json(
     bytes: &[u8],
     terms_json: &str,
     password: Option<&[u8]>,
@@ -1443,17 +1521,17 @@ pub fn prompt35_verify_residual_json(
     let input = mutation_input(bytes, password)?;
     let terms = serde_json::from_str::<Vec<String>>(terms_json).map_err(json_err)?;
     envelope(
-        "prompt35_verify_residual",
-        &crate::prompt35::verify_residual_data(&input, &terms)?,
+        "document_security_verify_residual",
+        &crate::document_security::verify_residual_data(&input, &terms)?,
     )
 }
 
-/// Prompt 18 mask/soft-mask inventory and secure fallback posture.
+/// secure mutation mask/soft-mask inventory and secure fallback posture.
 pub fn mask_redaction_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;
     envelope(
         "mask_redaction_report",
-        &crate::prompt18::mask_redaction_inventory(&engine)?,
+        &crate::secure_mutation::mask_redaction_inventory(&engine)?,
     )
 }
 
@@ -1462,7 +1540,7 @@ pub fn associated_files_report_json(bytes: &[u8], password: Option<&[u8]>) -> Re
     let engine = open(bytes, password)?;
     envelope(
         "associated_files_report",
-        &crate::prompt18::associated_files_inventory(&engine)?,
+        &crate::secure_mutation::associated_files_inventory(&engine)?,
     )
 }
 
@@ -1473,10 +1551,10 @@ pub fn edit_policy_report_json(
     password: Option<&[u8]>,
 ) -> Result<String> {
     let engine = open(bytes, password)?;
-    let operation = parse_prompt18_edit_operation(operation)?;
+    let operation = parse_secure_mutation_edit_operation(operation)?;
     envelope(
         "edit_policy_report",
-        &crate::prompt18::analyze_edit_policy(&engine, operation)?,
+        &crate::secure_mutation::analyze_edit_policy(&engine, operation)?,
     )
 }
 
@@ -1502,7 +1580,7 @@ pub fn signature_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<St
     envelope("signature_report", &engine.verify_signatures()?)
 }
 
-/// Prompt 24 signature report with explicit trust/evidence options.
+/// Signature Validation signature report with explicit trust/evidence options.
 ///
 /// `options_json` is parsed by [`crate::signature::verify_options_from_json`].
 /// The report remains deterministic for the same bytes, options, trust anchors,
@@ -1521,7 +1599,7 @@ pub fn signature_report_with_options_json(
     )
 }
 
-/// Prompt 24 signature validation plus an explicit, portable evidence bundle.
+/// Signature Validation signature validation plus an explicit, portable evidence bundle.
 ///
 /// This is deliberately separate from [`signature_report_with_options_json`]:
 /// normal reports expose only evidence hashes and provenance, while this
@@ -1539,7 +1617,7 @@ pub fn signature_validation_with_evidence_json(
     )
 }
 
-/// Prompt 25 RFC 3161 signature timestamp-token validation.
+/// Pades LTV RFC 3161 signature timestamp-token validation.
 ///
 /// `signature_value` is the exact CMS `SignerInfo.signature` octet string the
 /// timestamp token claims to bind through TSTInfo.messageImprint. The token is
@@ -1622,7 +1700,7 @@ pub fn chunk_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String
     envelope("chunk_set", &set)
 }
 
-/// Prompt 15 provenance-aware RAG chunks. This is additive to `chunk_set` and
+/// Semantic Closeout provenance-aware RAG chunks. This is additive to `chunk_set` and
 /// includes stable hashes, source spans, table/cell ids, CJK token metadata,
 /// ParentTree status, and security posture.
 pub fn advanced_chunk_report_json(
@@ -1638,7 +1716,7 @@ pub fn advanced_chunk_report_json(
     envelope("advanced_rag_chunk_set", &report.rag_chunks)
 }
 
-/// Prompt 15 full semantic binding bundle. All bindings consume this same
+/// Semantic Closeout full semantic binding bundle. All bindings consume this same
 /// versioned JSON shape instead of duplicating deep object ownership graphs.
 pub fn semantic_binding_report_json(
     bytes: &[u8],
@@ -1691,72 +1769,72 @@ pub fn semantic_document_json(
 /// Feature / capability report: SDK version, envelope version, and which
 /// optional engine capabilities are compiled into this build. Bindings expose
 /// this so integrators can query availability instead of guessing.
-pub fn prompt09_renderer_report_json() -> Result<String> {
+pub fn annotation_ocg_rendering_renderer_report_json() -> Result<String> {
     envelope(
-        "prompt09_renderer_report",
-        &prompt09_renderer_report_value(),
+        "annotation_ocg_rendering_renderer_report",
+        &annotation_ocg_rendering_renderer_report_value(),
     )
 }
 
-pub fn prompt09b_validation_report_json() -> Result<String> {
+pub fn renderer_validation_validation_report_json() -> Result<String> {
     envelope(
-        "prompt09b_validation_report",
-        &prompt09b_validation_report_value(),
+        "renderer_validation_validation_report",
+        &renderer_validation_validation_report_value(),
     )
 }
 
-pub fn prompt10_renderer_report_json() -> Result<String> {
+pub fn multilingual_color_glyphs_renderer_report_json() -> Result<String> {
     envelope(
-        "prompt10_renderer_report",
-        &prompt10_renderer_report_value(),
+        "multilingual_color_glyphs_renderer_report",
+        &multilingual_color_glyphs_renderer_report_value(),
     )
 }
 
-pub fn prompt10b_closure_report_json() -> Result<String> {
+pub fn cjk_rtl_color_glyph_closeout_closure_report_json() -> Result<String> {
     envelope(
-        "prompt10b_closure_report",
-        &prompt10b_closure_report_value(),
+        "cjk_rtl_color_glyph_closeout_closure_report",
+        &cjk_rtl_color_glyph_closeout_closure_report_value(),
     )
 }
 
-pub fn prompt10c_closure_report_json() -> Result<String> {
+pub fn color_glyph_hinting_closure_report_json() -> Result<String> {
     envelope(
-        "prompt10c_closure_report",
-        &prompt10c_closure_report_value(),
+        "color_glyph_hinting_closure_report",
+        &color_glyph_hinting_closure_report_value(),
     )
 }
 
-pub fn prompt10d_closure_report_json() -> Result<String> {
+pub fn colrv_svg_bitmap_closure_report_json() -> Result<String> {
     envelope(
-        "prompt10d_closure_report",
-        &prompt10d_closure_report_value(),
+        "colrv_svg_bitmap_closure_report",
+        &colrv_svg_bitmap_closure_report_value(),
     )
 }
 
-pub fn prompt10e_closure_report_json() -> Result<String> {
+pub fn colrv_gradient_composite_closure_report_json() -> Result<String> {
     envelope(
-        "prompt10e_closure_report",
-        &prompt10e_closure_report_value(),
+        "colrv_gradient_composite_closure_report",
+        &colrv_gradient_composite_closure_report_value(),
     )
 }
 
-pub fn prompt10f_closure_report_json() -> Result<String> {
+pub fn porterduff_radial_color_glyph_closure_report_json() -> Result<String> {
     envelope(
-        "prompt10f_closure_report",
-        &prompt10f_closure_report_value(),
+        "porterduff_radial_color_glyph_closure_report",
+        &porterduff_radial_color_glyph_closure_report_value(),
     )
 }
 
-fn prompt09_renderer_report_value() -> serde_json::Value {
+fn annotation_ocg_rendering_renderer_report_value() -> serde_json::Value {
     json!({
         "status": "implemented_with_bounded_unsupported_reports",
-        "artifact_root": "target/prompt09-annotation-ocg-progressive-cache",
-        "audit_doc": "docs/prompt09_annotation_ocg_progressive_cache_audit.md",
-        "known_limits_doc": "docs/prompt09_known_limits.md",
-        "audit_script": "scripts/prompt09_annotation_ocg_progressive_cache_audit.py",
+        "artifact_root": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache",
+        "audit_doc": "docs/annotation_ocg_rendering_annotation_ocg_progressive_cache_audit.md",
+        "known_limits_doc": "docs/annotation_ocg_rendering_known_limits.md",
+        "audit_script": "scripts/annotation_ocg_rendering_annotation_ocg_progressive_cache_audit.py",
         "reference_policy": {
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
-            "bootstrap_source": "Prompt 06B reference-tool manifest and bootstrap scripts",
+            "bootstrap_source": "Reference Renderer reference-tool manifest and bootstrap scripts",
             "missing_reference_policy": "affected rows are partial unless target-local bootstrap proves unavailable"
         },
         "annotation_rendering": {
@@ -1778,7 +1856,7 @@ fn prompt09_renderer_report_value() -> serde_json::Value {
                 "caret_file_attachment_sound_movie_rich_media_playback",
                 "dynamic_XFA"
             ],
-            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/annotation-matrix.json"
+            "matrix_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/annotation-matrix.json"
         },
         "optional_content": {
             "status": "default_view_configuration_evaluator",
@@ -1802,7 +1880,7 @@ fn prompt09_renderer_report_value() -> serde_json::Value {
                 "Usage_Print_Export_active_mode_selection",
                 "malformed_or_cyclic_OCG_references_fail_open_with_diagnostic"
             ],
-            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/ocg-layer-matrix.json"
+            "matrix_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/ocg-layer-matrix.json"
         },
         "progressive_render": {
             "status": "engine_tile_checkpoint_resume_model",
@@ -1817,7 +1895,7 @@ fn prompt09_renderer_report_value() -> serde_json::Value {
                 "page_box_rotation_render_mode_and_OCG_visibility_fingerprint_in_token"
             ],
             "binding_limit": "Rust engine surface is available; callback-style Python/C/WASM/.NET/Java cancellation/progress tokens remain later binding work",
-            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/progressive-render-matrix.json"
+            "matrix_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/progressive-render-matrix.json"
         },
         "tile_band_cache_performance": {
             "status": "deterministic_compatibility_safe_tile_band_cache_path",
@@ -1834,23 +1912,23 @@ fn prompt09_renderer_report_value() -> serde_json::Value {
                 "global_image_Form_pattern_shading_clip_mask_surface_caches_beyond_tile_cache",
                 "parallel_tile_renderer_enabled_by_default"
             ],
-            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/cache-performance-matrix.json"
+            "matrix_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/cache-performance-matrix.json"
         },
         "closure_gates": {
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
             "memory_cap_mb": 4096,
-            "public_report_schema": "additive_feature_report_prompt09"
+            "public_report_schema": "additive_feature_report_annotation_ocg_rendering"
         }
     })
 }
 
-fn prompt09b_validation_report_value() -> serde_json::Value {
+fn renderer_validation_validation_report_value() -> serde_json::Value {
     json!({
         "status": "implemented_and_proven",
-        "artifact_root": "target/prompt09-annotation-ocg-progressive-cache",
-        "audit_doc": "docs/prompt09b_validation_closure_audit.md",
-        "audit_script": "scripts/prompt09b_validation_closure_audit.py",
+        "artifact_root": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache",
+        "audit_doc": "docs/renderer_validation_validation_closure_audit.md",
+        "audit_script": "scripts/renderer_validation_validation_closure_audit.py",
         "annotation_parity": {
             "status": "matrix_proven_with_bounded_non_widget_policy",
             "subtype_style_rows": 25,
@@ -1859,7 +1937,7 @@ fn prompt09b_validation_report_value() -> serde_json::Value {
             "generated_appearance_rendered": 4,
             "policy_reported_not_rendered": 8,
             "unsupported_reported": 8,
-            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/annotation-appearance-matrix-prompt09b.json"
+            "matrix_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/annotation-appearance-matrix-renderer_validation.json"
         },
         "ocg_validation": {
             "status": "default_view_ocg_ocmd_visibility_proven",
@@ -1868,27 +1946,27 @@ fn prompt09b_validation_report_value() -> serde_json::Value {
             "annotations": "proven",
             "patterns_shadings": "proven",
             "cache_fingerprint": "proven",
-            "matrix_artifact": "target/prompt09-annotation-ocg-progressive-cache/ocg-layer-matrix-prompt09b.json",
-            "cache_fingerprint_artifact": "target/prompt09-annotation-ocg-progressive-cache/ocg-cache-key-fingerprint-prompt09b.json"
+            "matrix_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/ocg-layer-matrix-renderer_validation.json",
+            "cache_fingerprint_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/ocg-cache-key-fingerprint-renderer_validation.json"
         },
         "progressive_resume_equivalence": {
             "status": "full_vs_resumed_equivalent",
             "granularity": "tile",
             "invalid_token_handling": "mismatched page/DPI/render_mode/tile_geometry/cursor/OCG_fingerprint rejected",
-            "artifact": "target/prompt09-annotation-ocg-progressive-cache/progressive-resume-equivalence-prompt09b.json"
+            "artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/progressive-resume-equivalence-renderer_validation.json"
         },
         "tile_band_cache_equivalence": {
             "tile_full": "proven",
             "band_full": "proven",
             "cache_no_cache": "proven",
-            "performance_artifact": "target/prompt09-annotation-ocg-progressive-cache/tile-band-cache-performance-prompt09b.json",
-            "memory_artifact": "target/prompt09-annotation-ocg-progressive-cache/tile-band-cache-memory-prompt09b.json"
+            "performance_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/tile-band-cache-performance-renderer_validation.json",
+            "memory_artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/tile-band-cache-memory-renderer_validation.json"
         },
         "multi_reference_audit": {
-            "status": "prompt09b_corpus_classified",
+            "status": "renderer_validation_corpus_classified",
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
-            "artifact": "target/prompt09-annotation-ocg-progressive-cache/multi-reference-render-results-prompt09b.json",
-            "diff_metrics": "target/prompt09-annotation-ocg-progressive-cache/multi-reference-diff-metrics-prompt09b.json",
+            "artifact": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/multi-reference-render-results-renderer_validation.json",
+            "diff_metrics": "target/annotation_ocg_rendering-annotation-ocg-progressive-cache/multi-reference-diff-metrics-renderer_validation.json",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
@@ -1901,21 +1979,21 @@ fn prompt09b_validation_report_value() -> serde_json::Value {
             "non_widget_generated_annotation_shapes remain policy-reported unless an author AP stream exists",
             "alternate OCG configuration selection remains parsed/report-only without public selection API",
             "binding-level progressive callbacks remain later binding work",
-            "global image/Form/pattern/shading resource caches remain outside Prompt 09 tile-cache closure"
+            "global image/Form/pattern/shading resource caches remain outside Annotation Ocg Rendering tile-cache closure"
         ]
     })
 }
 
-fn prompt10_renderer_report_value() -> serde_json::Value {
+fn multilingual_color_glyphs_renderer_report_value() -> serde_json::Value {
     json!({
         "status": "implemented_with_bounded_unsupported_reports",
-        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
-        "audit_doc": "docs/prompt10_cjk_rtl_color_glyph_reference_harness.md",
-        "audit_script": "scripts/prompt10_cjk_rtl_color_glyph_reference_harness.py",
+        "artifact_root": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness.md",
+        "audit_script": "scripts/multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness.py",
         "reference_policy": {
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
-            "bootstrap_source": "scripts/prompt06b_bootstrap_reference_renderers.ps1 reused with Prompt 10 artifact manifests",
-            "missing_reference_policy": "Prompt 10 bootstrap fails the direct audit unless all three reference renderers are available"
+            "bootstrap_source": "scripts/reference_renderer_bootstrap_reference_renderers.ps1 reused with Multilingual Color Glyphs artifact manifests",
+            "missing_reference_policy": "Multilingual Color Glyphs bootstrap fails the direct audit unless all three reference renderers are available"
         },
         "cjk_raster_hinting": {
             "status": "direct_corpus_audit_with_existing_pdf_glyph_painting_boundary",
@@ -1971,22 +2049,22 @@ fn prompt10_renderer_report_value() -> serde_json::Value {
         "pdfium_direct_harness": {
             "status": "target_local_direct_renderer",
             "wrapper_choices": ["pdfium_test when configured", "target-local pypdfium2 wrapper fallback"],
-            "version_checksum_manifest": "target/prompt10-cjk-rtl-color-glyph-reference/reference-tool-manifest-prompt10.json",
+            "version_checksum_manifest": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/reference-tool-manifest-multilingual_color_glyphs.json",
             "command_normalization": ["PNG output", "explicit page range", "explicit DPI", "white background/form drawing where wrapper supports it"]
         },
         "mupdf_direct_harness": {
             "status": "target_local_direct_renderer",
             "wrapper_choices": ["mutool draw"],
-            "version_checksum_manifest": "target/prompt10-cjk-rtl-color-glyph-reference/reference-tool-manifest-prompt10.json",
+            "version_checksum_manifest": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/reference-tool-manifest-multilingual_color_glyphs.json",
             "command_normalization": ["PNG output by extension", "explicit page", "explicit DPI", "target-local checksum posture"]
         },
         "multi_reference_audit": {
-            "status": "prompt10_corpus_classified_by_direct_harness",
-            "corpus_manifest": "target/prompt10-cjk-rtl-color-glyph-reference/corpus-manifest-prompt10.json",
-            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-render-results-prompt10.json",
-            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10.json",
-            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10.json",
-            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/html-report/index.html"
+            "status": "multilingual_color_glyphs_corpus_classified_by_direct_harness",
+            "corpus_manifest": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/corpus-manifest-multilingual_color_glyphs.json",
+            "render_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-render-results-multilingual_color_glyphs.json",
+            "diff_metrics": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-multilingual_color_glyphs.json",
+            "reference_disagreement_summary": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/reference-disagreement-summary-multilingual_color_glyphs.json",
+            "html_report": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/html-report/index.html"
         },
         "public_report_parity": {
             "schema_change": "additive_section_only",
@@ -1995,7 +2073,7 @@ fn prompt10_renderer_report_value() -> serde_json::Value {
         },
         "closure_gates": {
             "memory_cap_mb": 4096,
-            "public_report_schema": "additive_feature_report_prompt10"
+            "public_report_schema": "additive_feature_report_multilingual_color_glyphs"
         },
         "remaining_bounded_limits": [
             "color glyph tables are exposed as precise unsupported diagnostics rather than rendered color layers",
@@ -2006,70 +2084,70 @@ fn prompt10_renderer_report_value() -> serde_json::Value {
     })
 }
 
-fn prompt10b_closure_report_value() -> serde_json::Value {
+fn cjk_rtl_color_glyph_closeout_closure_report_value() -> serde_json::Value {
     json!({
         "status": "complete",
-        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
-        "audit_doc": "docs/prompt10b_color_glyph_cjk_rtl_closure_audit.md",
-        "audit_script": "scripts/prompt10b_color_glyph_cjk_rtl_closure.py",
-        "closure_audit": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10b-closure-audit.json",
+        "artifact_root": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_closure_audit.md",
+        "audit_script": "scripts/cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_closure.py",
+        "closure_audit": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/cjk_rtl_color_glyph_closeout-closure-audit.json",
         "color_glyph_rendering": {
             "status": "implemented_with_precise_security_and_exotic_limits",
             "colr_cpal": {
                 "status": "implemented_and_proven",
                 "supported": ["COLR/CPAL v0 solid layered glyphs", "palette 0", "graphics alpha", "text transform", "text clipping outline", "Form XObject transparency group"],
-                "artifact": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-colr-cpal-matrix-prompt10b.json",
+                "artifact": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-colr-cpal-matrix-cjk_rtl_color_glyph_closeout.json",
                 "remaining_limits": ["COLRv1 gradients/transforms/compositing remain unsupported_reported_exotic_case"]
             },
             "cbdt_cblc": {
                 "status": "implemented_and_proven_shared_raster_branch",
                 "supported": ["CBDT/CBLC PNG and bounded bitmap strikes through ttf-parser RasterGlyphImage"],
-                "artifact": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-cbdt-cblc-matrix-prompt10b.json",
+                "artifact": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-cbdt-cblc-matrix-cjk_rtl_color_glyph_closeout.json",
                 "remaining_limits": ["malformed, incomplete, oversized, or unavailable CBDT/CBLC payloads fail closed"]
             },
             "sbix": {
                 "status": "implemented_and_proven",
                 "supported": ["sbix PNG strikes", "origin offsets", "scaling", "graphics alpha"],
-                "artifact": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-sbix-matrix-prompt10b.json",
+                "artifact": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-sbix-matrix-cjk_rtl_color_glyph_closeout.json",
                 "remaining_limits": ["sbix JPEG/TIFF/PDF/mask payloads remain unsupported_reported_exotic_case"]
             },
             "svg_opentype": {
                 "status": "unsupported_reported_security_policy",
                 "blocked": ["script", "event attributes", "external references", "remote resources", "foreignObject", "animation", "network"],
-                "artifact": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-svg-opentype-policy-prompt10b.json"
+                "artifact": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-svg-opentype-policy-cjk_rtl_color_glyph_closeout.json"
             }
         },
         "cjk_rtl_fixture_fidelity": {
             "korean": {
                 "status": "implemented_and_proven",
                 "coverage": ["embedded Korean font", "Hangul syllables", "compatibility jamo", "Identity-H glyph painting", "ToUnicode-independent rendering"],
-                "artifact": "target/prompt10-cjk-rtl-color-glyph-reference/korean-render-fixture-matrix-prompt10b.json"
+                "artifact": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/korean-render-fixture-matrix-cjk_rtl_color_glyph_closeout.json"
             },
             "hebrew": {
                 "status": "implemented_and_proven",
                 "coverage": ["embedded Hebrew font", "explicit positioned RTL visual order", "PDF glyph painting separated from generated rustybuzz shaping"],
-                "artifact": "target/prompt10-cjk-rtl-color-glyph-reference/hebrew-render-fixture-matrix-prompt10b.json"
+                "artifact": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/hebrew-render-fixture-matrix-cjk_rtl_color_glyph_closeout.json"
             }
         },
         "cid_keyed_cff_clipping": {
             "status": "unsupported_reported_exotic_case",
             "supported_path": "CID-keyed CFF glyph outlines clip when the font subsystem exposes real charstring path geometry",
             "unsupported_policy": "advanced CID-keyed CFF clipping geometry remains unsupported only when real charstring path geometry is unavailable or outside the reference cluster; no bbox fake clipping",
-            "artifact": "target/prompt10-cjk-rtl-color-glyph-reference/cid-keyed-cff-clipping-matrix-prompt10b.json"
+            "artifact": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/cid-keyed-cff-clipping-matrix-cjk_rtl_color_glyph_closeout.json"
         },
         "hinting_posture": {
             "status": "pure_rust_reference_cluster_accepted",
             "native_hinting": "not required and not added as a native dependency",
-            "artifact": "target/prompt10-cjk-rtl-color-glyph-reference/hinting-posture-prompt10b.json"
+            "artifact": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/hinting-posture-cjk_rtl_color_glyph_closeout.json"
         },
         "multi_reference_audit": {
-            "status": "prompt10b_corpus_classified",
+            "status": "cjk_rtl_color_glyph_closeout_corpus_classified",
             "fixture_count": 5,
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
-            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10b-multi-reference-render-results.json",
-            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10b-multi-reference-diff-metrics.json",
-            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10b-reference-disagreement-summary.json",
-            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10b-html-report/index.html",
+            "render_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/cjk_rtl_color_glyph_closeout-multi-reference-render-results.json",
+            "diff_metrics": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/cjk_rtl_color_glyph_closeout-multi-reference-diff-metrics.json",
+            "reference_disagreement_summary": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/cjk_rtl_color_glyph_closeout-reference-disagreement-summary.json",
+            "html_report": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/cjk_rtl_color_glyph_closeout-html-report/index.html",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
             "reference_disagreements": ["sbix PNG reference disagreement with Wellfriend inside PDFium/MuPDF cluster"],
@@ -2082,7 +2160,7 @@ fn prompt10b_closure_report_value() -> serde_json::Value {
         },
         "closure_gates": {
             "memory_cap_mb": 4096,
-            "public_report_schema": "additive_feature_report_prompt10b",
+            "public_report_schema": "additive_feature_report_cjk_rtl_color_glyph_closeout",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
@@ -2091,12 +2169,12 @@ fn prompt10b_closure_report_value() -> serde_json::Value {
             "SVG-in-OpenType remains blocked by security policy until a static no-network sanitizer is implemented",
             "sbix JPEG/TIFF/PDF/mask payloads are unsupported_reported_exotic_case",
             "advanced CID-keyed CFF clipping geometry remains unsupported only when real charstring path geometry is unavailable or outside the reference cluster",
-            "native hinting is a future optional feature, not a Prompt 10B blocker"
+            "native hinting is a future optional feature, not a CJK RTL Color Glyph Closeout blocker"
         ]
     })
 }
 
-fn prompt10c_svg_policy_samples() -> serde_json::Value {
+fn color_glyph_hinting_svg_policy_samples() -> serde_json::Value {
     let samples = [
         (
             "safe_static_path",
@@ -2129,14 +2207,14 @@ fn prompt10c_svg_policy_samples() -> serde_json::Value {
     json!(rows)
 }
 
-fn prompt10c_closure_report_value() -> serde_json::Value {
+fn color_glyph_hinting_closure_report_value() -> serde_json::Value {
     json!({
         "status": "complete",
-        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
-        "audit_doc": "docs/prompt10c_color_glyph_hinting_cff_closure_audit.md",
-        "overview_doc": "docs/prompt10c_color_glyph_hinting_cff_closure.md",
-        "audit_script": "scripts/prompt10c_color_glyph_hinting_cff_closure.py",
-        "closure_audit": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10c-closure-audit.json",
+        "artifact_root": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/color_glyph_hinting_color_glyph_hinting_cff_closure_audit.md",
+        "overview_doc": "docs/color_glyph_hinting_color_glyph_hinting_cff_closure.md",
+        "audit_script": "scripts/color_glyph_hinting_color_glyph_hinting_cff_closure.py",
+        "closure_audit": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color_glyph_hinting-closure-audit.json",
         "colrv1": {
             "status": "implemented_with_operator_level_limits",
             "implemented_operators": [
@@ -2164,8 +2242,8 @@ fn prompt10c_closure_report_value() -> serde_json::Value {
                 "finite_transform_required": true
             },
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-colrv1-matrix-prompt10c.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-colrv1-reference-results-prompt10c.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-colrv1-matrix-color_glyph_hinting.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-colrv1-reference-results-color_glyph_hinting.json"
             }
         },
         "svg_in_opentype": {
@@ -2190,11 +2268,11 @@ fn prompt10c_closure_report_value() -> serde_json::Value {
                 "masks",
                 "path/depth bombs"
             ],
-            "classifier_samples": prompt10c_svg_policy_samples(),
+            "classifier_samples": color_glyph_hinting_svg_policy_samples(),
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-svg-static-subset-matrix-prompt10c.json",
-                "security_policy": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-svg-security-policy-prompt10c.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-svg-reference-results-prompt10c.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-svg-static-subset-matrix-color_glyph_hinting.json",
+                "security_policy": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-svg-security-policy-color_glyph_hinting.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-svg-reference-results-color_glyph_hinting.json"
             }
         },
         "bitmap_color_glyphs": {
@@ -2210,16 +2288,16 @@ fn prompt10c_closure_report_value() -> serde_json::Value {
             },
             "malformed_behavior": "fail_closed_without_monochrome_fallback_for_known_color_payloads",
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-bitmap-payload-matrix-prompt10c.json",
-                "cbdt_cblc_results": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-cbdt-cblc-results-prompt10c.json",
-                "sbix_results": "target/prompt10-cjk-rtl-color-glyph-reference/color-glyph-sbix-results-prompt10c.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-bitmap-payload-matrix-color_glyph_hinting.json",
+                "cbdt_cblc_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-cbdt-cblc-results-color_glyph_hinting.json",
+                "sbix_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color-glyph-sbix-results-color_glyph_hinting.json"
             }
         },
         "hinting_posture": {
             "status": "pure_rust_reference_cluster_accepted",
             "native_backend": "not added; no silent native dependency and WASM/default builds stay portable",
             "backend_report_field": "pure_rust_analytic_aa",
-            "artifact": "target/prompt10-cjk-rtl-color-glyph-reference/hinting-posture-prompt10c.json"
+            "artifact": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/hinting-posture-color_glyph_hinting.json"
         },
         "cid_keyed_cff_clipping": {
             "status": "narrow_exotic_policy_with_real_geometry_only",
@@ -2231,18 +2309,18 @@ fn prompt10c_closure_report_value() -> serde_json::Value {
             ],
             "unsupported_policy": "only missing or unsafe charstring geometry remains unsupported; bbox fake clipping is forbidden",
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/cid-keyed-cff-clipping-matrix-prompt10c.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/cid-keyed-cff-clipping-reference-results-prompt10c.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/cid-keyed-cff-clipping-matrix-color_glyph_hinting.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/cid-keyed-cff-clipping-reference-results-color_glyph_hinting.json"
             }
         },
         "multi_reference_audit": {
-            "status": "prompt10c_corpus_classified",
+            "status": "color_glyph_hinting_corpus_classified",
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
             "fixture_count": 9,
-            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-render-results-prompt10c.json",
-            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10c.json",
-            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10c.json",
-            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10c-html-report/index.html",
+            "render_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-render-results-color_glyph_hinting.json",
+            "diff_metrics": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-color_glyph_hinting.json",
+            "reference_disagreement_summary": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/reference-disagreement-summary-color_glyph_hinting.json",
+            "html_report": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/color_glyph_hinting-html-report/index.html",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
@@ -2253,7 +2331,7 @@ fn prompt10c_closure_report_value() -> serde_json::Value {
         },
         "closure_gates": {
             "memory_cap_mb": 4096,
-            "public_report_schema": "additive_feature_report_prompt10c",
+            "public_report_schema": "additive_feature_report_color_glyph_hinting",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
@@ -2262,13 +2340,13 @@ fn prompt10c_closure_report_value() -> serde_json::Value {
             "SVG-in-OpenType safe static candidates are classified but not executed through a general SVG engine; active and external features remain security-blocked",
             "CBDT/CBLC non-PNG or ambiguous compressed payloads are exact unsupported_reported_exotic_format rows unless exposed as safe RasterGlyphImage metadata",
             "sbix JPEG/TIFF/PDF/mask and unknown graphicType payloads are exact unsupported_reported_exotic_format rows",
-            "native hinting remains a future optional feature because pure-Rust output is accepted by the Prompt 10C reference cluster",
+            "native hinting remains a future optional feature because pure-Rust output is accepted by the Color Glyph Hinting reference cluster",
             "CID-keyed CFF clipping fails closed only for missing or unsafe charstring geometry"
         ]
     })
 }
 
-fn prompt10d_svg_policy_samples() -> serde_json::Value {
+fn colrv_svg_bitmap_svg_policy_samples() -> serde_json::Value {
     let samples = [
         (
             "safe_static_path",
@@ -2309,14 +2387,14 @@ fn prompt10d_svg_policy_samples() -> serde_json::Value {
     json!(rows)
 }
 
-fn prompt10d_closure_report_value() -> serde_json::Value {
+fn colrv_svg_bitmap_closure_report_value() -> serde_json::Value {
     json!({
         "status": "complete",
-        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
-        "audit_doc": "docs/prompt10d_colrv1_svg_bitmap_closure_audit.md",
-        "overview_doc": "docs/prompt10d_full_colrv1_svg_color_glyph_closure.md",
-        "audit_script": "scripts/prompt10d_full_colrv1_svg_color_glyph_closure.py",
-        "closure_audit": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10d-closure-audit.json",
+        "artifact_root": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/colrv_svg_bitmap_colrv1_svg_bitmap_closure_audit.md",
+        "overview_doc": "docs/colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure.md",
+        "audit_script": "scripts/colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure.py",
+        "closure_audit": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv_svg_bitmap-closure-audit.json",
         "colrv1_gradients": {
             "status": "unsupported_reported_exotic_operator",
             "implemented_operators": [],
@@ -2325,12 +2403,12 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
                 "PaintRadialGradient",
                 "PaintSweepGradient"
             ],
-            "reason": "ttf-parser Painter callbacks expose gradient operators but not a bounded renderer paint tree/offscreen surface mapping; Prompt 10D keeps operator-level fail-closed diagnostics instead of monochrome fallback",
+            "reason": "ttf-parser Painter callbacks expose gradient operators but not a bounded renderer paint tree/offscreen surface mapping; Colrv Svg Bitmap keeps operator-level fail-closed diagnostics instead of monochrome fallback",
             "artifacts": {
-                "linear": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-linear-gradient-matrix-prompt10d.json",
-                "radial": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-radial-gradient-matrix-prompt10d.json",
-                "sweep": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-sweep-gradient-matrix-prompt10d.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-gradient-reference-results-prompt10d.json"
+                "linear": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-linear-gradient-matrix-colrv_svg_bitmap.json",
+                "radial": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-radial-gradient-matrix-colrv_svg_bitmap.json",
+                "sweep": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-sweep-gradient-matrix-colrv_svg_bitmap.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-gradient-reference-results-colrv_svg_bitmap.json"
             }
         },
         "colrv1_clip": {
@@ -2338,8 +2416,8 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
             "unsupported_operators": ["PaintClip", "PaintClipBox"],
             "reason": "COLRv1 clip graphs need nested glyph-path clip stack execution; current safe collector reports exact operators and fails closed",
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-matrix-prompt10d.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-reference-results-prompt10d.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-clip-matrix-colrv_svg_bitmap.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-clip-reference-results-colrv_svg_bitmap.json"
             }
         },
         "colrv1_composite": {
@@ -2352,10 +2430,10 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
                 "HardLight", "SoftLight", "Difference", "Exclusion", "Multiply", "Hue",
                 "Saturation", "Color", "Luminosity"
             ],
-            "reason": "non-SourceOver COLRv1 composites require isolated bounded paint surfaces in glyph space; existing Prompt 07 blend modes are not invoked without that safe surface model",
+            "reason": "non-SourceOver COLRv1 composites require isolated bounded paint surfaces in glyph space; existing Transparency Rendering blend modes are not invoked without that safe surface model",
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-matrix-prompt10d.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-reference-results-prompt10d.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-composite-matrix-colrv_svg_bitmap.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-composite-reference-results-colrv_svg_bitmap.json"
             }
         },
         "svg_in_opentype": {
@@ -2389,11 +2467,11 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
                 "URL paint-server references",
                 "path/depth bombs"
             ],
-            "classifier_samples": prompt10d_svg_policy_samples(),
+            "classifier_samples": colrv_svg_bitmap_svg_policy_samples(),
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/svg-opentype-static-rendering-matrix-prompt10d.json",
-                "security_policy": "target/prompt10-cjk-rtl-color-glyph-reference/svg-opentype-security-policy-prompt10d.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/svg-opentype-reference-results-prompt10d.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/svg-opentype-static-rendering-matrix-colrv_svg_bitmap.json",
+                "security_policy": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/svg-opentype-security-policy-colrv_svg_bitmap.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/svg-opentype-reference-results-colrv_svg_bitmap.json"
             }
         },
         "bitmap_color_glyphs": {
@@ -2409,19 +2487,19 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
             },
             "malformed_behavior": "fail_closed_without_monochrome_fallback_for_known_color_payloads",
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/bitmap-color-glyph-nonpng-matrix-prompt10d.json",
-                "cbdt_cblc_results": "target/prompt10-cjk-rtl-color-glyph-reference/cbdt-cblc-nonpng-results-prompt10d.json",
-                "sbix_results": "target/prompt10-cjk-rtl-color-glyph-reference/sbix-nonpng-results-prompt10d.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/bitmap-color-glyph-nonpng-matrix-colrv_svg_bitmap.json",
+                "cbdt_cblc_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/cbdt-cblc-nonpng-results-colrv_svg_bitmap.json",
+                "sbix_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/sbix-nonpng-results-colrv_svg_bitmap.json"
             }
         },
         "multi_reference_audit": {
-            "status": "prompt10d_corpus_classified",
+            "status": "colrv_svg_bitmap_corpus_classified",
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
             "fixture_count": 19,
-            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-render-results-prompt10d.json",
-            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10d.json",
-            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10d.json",
-            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10d-html-report/index.html",
+            "render_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-render-results-colrv_svg_bitmap.json",
+            "diff_metrics": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-colrv_svg_bitmap.json",
+            "reference_disagreement_summary": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/reference-disagreement-summary-colrv_svg_bitmap.json",
+            "html_report": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv_svg_bitmap-html-report/index.html",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
@@ -2432,28 +2510,28 @@ fn prompt10d_closure_report_value() -> serde_json::Value {
         },
         "closure_gates": {
             "memory_cap_mb": 4096,
-            "public_report_schema": "additive_feature_report_prompt10d",
+            "public_report_schema": "additive_feature_report_colrv_svg_bitmap",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
-            "Prompt 10D-era COLRv1 gradient limits are superseded by Prompt 10E gradient rendering and Prompt 10F exact moving-center radial closure",
-            "Prompt 10D-era PaintClip/PaintClipBox limits are superseded by Prompt 10E glyph paint clip stack closure",
-            "Prompt 10D-era non-SourceOver composite limits are superseded by Prompt 10E blend composites and Prompt 10F Porter-Duff/Plus closure",
+            "Colrv Svg Bitmap-era COLRv1 gradient limits are superseded by Colrv Gradient Composite gradient rendering and Porterduff Radial Color Glyph exact moving-center radial closure",
+            "Colrv Svg Bitmap-era PaintClip/PaintClipBox limits are superseded by Colrv Gradient Composite glyph paint clip stack closure",
+            "Colrv Svg Bitmap-era non-SourceOver composite limits are superseded by Colrv Gradient Composite blend composites and Porterduff Radial Color Glyph Porter-Duff/Plus closure",
             "SVG gradients, clipPath, filters, masks, use references, CSS blocks, external resources, and active constructs remain blocked or exact unsupported rows",
             "sbix TIFF/PDF/mask and unknown graphicType payloads remain exact unsupported rows when no existing safe decoder is available"
         ]
     })
 }
 
-fn prompt10e_closure_report_value() -> serde_json::Value {
+fn colrv_gradient_composite_closure_report_value() -> serde_json::Value {
     json!({
         "status": "complete",
-        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
-        "audit_doc": "docs/prompt10e_colrv1_gradient_clip_composite_closure_audit.md",
-        "overview_doc": "docs/prompt10e_colrv1_gradient_clip_composite_closure.md",
-        "audit_script": "scripts/prompt10e_colrv1_gradient_clip_composite_closure.py",
-        "closure_audit": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10e-closure-audit.json",
+        "artifact_root": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/colrv_gradient_composite_colrv1_gradient_clip_composite_closure_audit.md",
+        "overview_doc": "docs/colrv_gradient_composite_colrv1_gradient_clip_composite_closure.md",
+        "audit_script": "scripts/colrv_gradient_composite_colrv1_gradient_clip_composite_closure.py",
+        "closure_audit": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv_gradient_composite-closure-audit.json",
         "colrv1_gradients": {
             "status": "implemented_with_limits",
             "implemented_operators": [
@@ -2473,9 +2551,9 @@ fn prompt10e_closure_report_value() -> serde_json::Value {
                 "sweep gradients use deterministic angular interpolation in glyph paint space"
             ],
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-gradient-matrix-prompt10e.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-gradient-reference-results-prompt10e.json",
-                "limit_diagnostics": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-gradient-limit-diagnostics-prompt10e.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-gradient-matrix-colrv_gradient_composite.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-gradient-reference-results-colrv_gradient_composite.json",
+                "limit_diagnostics": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-gradient-limit-diagnostics-colrv_gradient_composite.json"
             }
         },
         "colrv1_clip_stack": {
@@ -2489,9 +2567,9 @@ fn prompt10e_closure_report_value() -> serde_json::Value {
             ],
             "bbox_fake_clipping": false,
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-stack-matrix-prompt10e.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-reference-results-prompt10e.json",
-                "limit_diagnostics": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-clip-limit-diagnostics-prompt10e.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-clip-stack-matrix-colrv_gradient_composite.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-clip-reference-results-colrv_gradient_composite.json",
+                "limit_diagnostics": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-clip-limit-diagnostics-colrv_gradient_composite.json"
             }
         },
         "colrv1_composites": {
@@ -2528,12 +2606,12 @@ fn prompt10e_closure_report_value() -> serde_json::Value {
                 "Xor",
                 "Plus"
             ],
-            "superseded_by_prompt10f": true,
-            "reason_for_unsupported_modes": "Porter-Duff and Plus modes require source/backdrop ownership semantics that are not equivalent to the existing Prompt 07 PDF blend modes in the current glyph surface model",
+            "superseded_by_porterduff_radial_color_glyph": true,
+            "reason_for_unsupported_modes": "Porter-Duff and Plus modes require source/backdrop ownership semantics that are not equivalent to the existing Transparency Rendering PDF blend modes in the current glyph surface model",
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-surface-matrix-prompt10e.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-reference-results-prompt10e.json",
-                "limit_diagnostics": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-limit-diagnostics-prompt10e.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-composite-surface-matrix-colrv_gradient_composite.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-composite-reference-results-colrv_gradient_composite.json",
+                "limit_diagnostics": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-composite-limit-diagnostics-colrv_gradient_composite.json"
             }
         },
         "glyph_paint_surface_model": {
@@ -2552,21 +2630,21 @@ fn prompt10e_closure_report_value() -> serde_json::Value {
                 "cache_key_posture": "color glyph mode plus font/glyph/palette/transform/clip/composite feature versions prevent monochrome or stale color reuse",
                 "surface_denial": "fail_closed_with_diagnostic",
                 "artifacts": {
-                    "surface_model": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-glyph-paint-surface-model-prompt10e.json",
-                    "cache_scheduler": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-cache-scheduler-matrix-prompt10e.json",
-                    "tile_band_progressive": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-tile-band-progressive-equivalence-prompt10e.json",
-                    "determinism": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-determinism-report-prompt10e.json"
+                    "surface_model": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-glyph-paint-surface-model-colrv_gradient_composite.json",
+                    "cache_scheduler": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-cache-scheduler-matrix-colrv_gradient_composite.json",
+                    "tile_band_progressive": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-tile-band-progressive-equivalence-colrv_gradient_composite.json",
+                    "determinism": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-determinism-report-colrv_gradient_composite.json"
                 }
             }
         },
         "multi_reference_audit": {
-            "status": "prompt10e_corpus_classified",
+            "status": "colrv_gradient_composite_corpus_classified",
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
             "fixture_count": 24,
-            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-render-results-prompt10e.json",
-            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10e.json",
-            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10e.json",
-            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10e-html-report/index.html",
+            "render_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-render-results-colrv_gradient_composite.json",
+            "diff_metrics": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-colrv_gradient_composite.json",
+            "reference_disagreement_summary": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/reference-disagreement-summary-colrv_gradient_composite.json",
+            "html_report": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv_gradient_composite-html-report/index.html",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
@@ -2577,25 +2655,25 @@ fn prompt10e_closure_report_value() -> serde_json::Value {
         },
         "closure_gates": {
             "memory_cap_mb": 4096,
-            "public_report_schema": "additive_feature_report_prompt10e",
+            "public_report_schema": "additive_feature_report_colrv_gradient_composite",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
-            "Prompt 10E's Porter-Duff/Plus and moving-center radial limits are superseded by prompt10f_colrv1_porterduff_radial_closure",
-            "COLRv1 glyph paint surfaces are scheduler-bounded full render buffers; cropped glyph-space allocation is an optimization, not a Prompt 10 correctness blocker"
+            "Colrv Gradient Composite's Porter-Duff/Plus and moving-center radial limits are superseded by porterduff_radial_color_glyph_colrv1_porterduff_radial_closure",
+            "COLRv1 glyph paint surfaces are scheduler-bounded full render buffers; cropped glyph-space allocation is an optimization, not a Multilingual Color Glyphs correctness blocker"
         ]
     })
 }
 
-fn prompt10f_closure_report_value() -> serde_json::Value {
+fn porterduff_radial_color_glyph_closure_report_value() -> serde_json::Value {
     json!({
         "status": "complete",
-        "artifact_root": "target/prompt10-cjk-rtl-color-glyph-reference",
-        "audit_doc": "docs/prompt10f_porterduff_radial_closure_audit.md",
-        "overview_doc": "docs/prompt10f_colrv1_porterduff_radial_closure.md",
-        "audit_script": "scripts/prompt10f_colrv1_porterduff_radial_closure.py",
-        "closure_audit": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10f-closure-audit.json",
+        "artifact_root": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference",
+        "audit_doc": "docs/porterduff_radial_color_glyph_porterduff_radial_closure_audit.md",
+        "overview_doc": "docs/porterduff_radial_color_glyph_colrv1_porterduff_radial_closure.md",
+        "audit_script": "scripts/porterduff_radial_color_glyph_colrv1_porterduff_radial_closure.py",
+        "closure_audit": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/porterduff_radial_color_glyph-closure-audit.json",
         "porter_duff_plus_composites": {
             "status": "implemented",
             "implemented_modes": [
@@ -2615,9 +2693,9 @@ fn prompt10f_closure_report_value() -> serde_json::Value {
             "non_applicable_modes": [],
             "source_surface_model": "scheduler-reserved transparent glyph-local source surface composited against the current glyph-local backdrop",
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-porterduff-composite-matrix-prompt10f.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-porterduff-composite-reference-results-prompt10f.json",
-                "scheduler_cache": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-composite-scheduler-cache-prompt10f.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-porterduff-composite-matrix-porterduff_radial_color_glyph.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-porterduff-composite-reference-results-porterduff_radial_color_glyph.json",
+                "scheduler_cache": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-composite-scheduler-cache-porterduff_radial_color_glyph.json"
             }
         },
         "exact_moving_center_radial": {
@@ -2634,9 +2712,9 @@ fn prompt10f_closure_report_value() -> serde_json::Value {
                 "composite radial source"
             ],
             "artifacts": {
-                "matrix": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-exact-radial-gradient-matrix-prompt10f.json",
-                "reference_results": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-exact-radial-gradient-reference-results-prompt10f.json",
-                "error_bound": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-radial-error-bound-prompt10f.json"
+                "matrix": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-exact-radial-gradient-matrix-porterduff_radial_color_glyph.json",
+                "reference_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-exact-radial-gradient-reference-results-porterduff_radial_color_glyph.json",
+                "error_bound": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-radial-error-bound-porterduff_radial_color_glyph.json"
             }
         },
         "cache_scheduler_determinism": {
@@ -2660,20 +2738,20 @@ fn prompt10f_closure_report_value() -> serde_json::Value {
                 "transformed glyph paint surfaces"
             ],
             "artifacts": {
-                "cache_key": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-cache-key-prompt10f.json",
-                "scheduler_memory": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-scheduler-memory-prompt10f.json",
-                "determinism": "target/prompt10-cjk-rtl-color-glyph-reference/colrv1-determinism-prompt10f.json"
+                "cache_key": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-cache-key-porterduff_radial_color_glyph.json",
+                "scheduler_memory": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-scheduler-memory-porterduff_radial_color_glyph.json",
+                "determinism": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/colrv1-determinism-porterduff_radial_color_glyph.json"
             }
         },
         "multi_reference_audit": {
-            "status": "prompt10f_corpus_classified",
+            "status": "porterduff_radial_color_glyph_corpus_classified",
             "reference_engines": ["Poppler", "PDFium", "MuPDF"],
             "fixture_count": 38,
             "rendered_page_count": 31,
-            "render_results": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-render-results-prompt10f.json",
-            "diff_metrics": "target/prompt10-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-prompt10f.json",
-            "reference_disagreement_summary": "target/prompt10-cjk-rtl-color-glyph-reference/reference-disagreement-summary-prompt10f.json",
-            "html_report": "target/prompt10-cjk-rtl-color-glyph-reference/prompt10f-html-report/index.html",
+            "render_results": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-render-results-porterduff_radial_color_glyph.json",
+            "diff_metrics": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/multi-reference-diff-metrics-porterduff_radial_color_glyph.json",
+            "reference_disagreement_summary": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/reference-disagreement-summary-porterduff_radial_color_glyph.json",
+            "html_report": "target/multilingual_color_glyphs-cjk-rtl-color-glyph-reference/porterduff_radial_color_glyph-html-report/index.html",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
@@ -2684,48 +2762,48 @@ fn prompt10f_closure_report_value() -> serde_json::Value {
         },
         "closure_gates": {
             "memory_cap_mb": 4096,
-            "public_report_schema": "additive_feature_report_prompt10f",
+            "public_report_schema": "additive_feature_report_porterduff_radial_color_glyph",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0
         },
         "remaining_bounded_limits": [
-            "No Prompt 10 color-glyph blockers remain; future work is limited to performance optimizations such as cropped glyph-space intermediate surfaces"
+            "No Multilingual Color Glyphs color-glyph blockers remain; future work is limited to performance optimizations such as cropped glyph-space intermediate surfaces"
         ]
     })
 }
 
-fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
+fn renderer_fuzz_cmm_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
     json!({
         "status": "complete_with_native_cmm_hard_blocked_precise",
-        "artifact_root": "target/prompt11-renderer-cmm-closeout",
-        "audit_doc": "docs/prompt11_renderer_cmm_audit.md",
-        "fuzz_doc": "docs/prompt11_renderer_fuzz_metamorphic_campaign.md",
-        "closeout_doc": "docs/prompt11_renderer_parity_closeout.md",
-        "native_cmm_audit_doc": "docs/prompt11_native_cmm_feasibility_safety_audit.md",
-        "native_cmm_backend_doc": "docs/prompt11_native_cmm_backend.md",
-        "audit_script": "scripts/prompt11_renderer_fuzz_cmm_closeout.py",
+        "artifact_root": "target/renderer_fuzz_cmm-renderer-cmm-closeout",
+        "audit_doc": "docs/renderer_fuzz_cmm_renderer_cmm_audit.md",
+        "fuzz_doc": "docs/renderer_fuzz_cmm_renderer_fuzz_metamorphic_campaign.md",
+        "closeout_doc": "docs/renderer_fuzz_cmm_renderer_parity_closeout.md",
+        "native_cmm_audit_doc": "docs/renderer_fuzz_cmm_native_cmm_feasibility_safety_audit.md",
+        "native_cmm_backend_doc": "docs/renderer_fuzz_cmm_native_cmm_backend.md",
+        "audit_script": "scripts/renderer_fuzz_cmm_renderer_fuzz_cmm_closeout.py",
         "renderer_fuzz": {
             "status": "implemented_with_short_smoke_and_release_duration_deferred",
             "fuzz_target_count": 25,
-            "new_target": "renderer_prompt11",
-            "target_inventory": "target/prompt11-renderer-cmm-closeout/renderer-fuzz-target-inventory-prompt11.json",
-            "seed_corpus_manifest": "target/prompt11-renderer-cmm-closeout/renderer-seed-corpus-manifest-prompt11.json",
-            "structure_aware_mutator": "target/prompt11-renderer-cmm-closeout/renderer-mutator-report-prompt11.json",
+            "new_target": "renderer_renderer_fuzz_cmm",
+            "target_inventory": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-fuzz-target-inventory-renderer_fuzz_cmm.json",
+            "seed_corpus_manifest": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-seed-corpus-manifest-renderer_fuzz_cmm.json",
+            "structure_aware_mutator": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-mutator-report-renderer_fuzz_cmm.json",
             "smoke_status": "fuzz_bin_compile_plus_mutator_corpus_runner",
-            "smoke_report": "target/prompt11-renderer-cmm-closeout/renderer-fuzz-smoke-report-prompt11.json",
+            "smoke_report": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-fuzz-smoke-report-renderer_fuzz_cmm.json",
             "release_duration_fuzzing": "deferred_release_duration",
-            "crash_minimization_workflow": "target/prompt11-renderer-cmm-closeout/renderer-crash-minimization-workflow-prompt11.md",
+            "crash_minimization_workflow": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-crash-minimization-workflow-renderer_fuzz_cmm.md",
             "unclassified_crashes_hangs_ooms": 0
         },
         "metamorphic_testing": {
             "status": "implemented",
-            "test_file": "crates/engine/tests/prompt11_renderer_metamorphic.rs",
+            "test_file": "crates/engine/tests/renderer_fuzz_cmm_renderer_metamorphic.rs",
             "comparison": "byte_exact_rgba",
             "threshold": 0,
-            "full_tile_band": "target/prompt11-renderer-cmm-closeout/full-tile-band-equivalence-prompt11.json",
-            "cache_no_cache": "target/prompt11-renderer-cmm-closeout/cache-no-cache-equivalence-prompt11.json",
-            "progressive_resume": "target/prompt11-renderer-cmm-closeout/progressive-equivalence-prompt11.json",
-            "ocg_cache_separation": "target/prompt11-renderer-cmm-closeout/ocg-cache-separation-prompt11.json",
+            "full_tile_band": "target/renderer_fuzz_cmm-renderer-cmm-closeout/full-tile-band-equivalence-renderer_fuzz_cmm.json",
+            "cache_no_cache": "target/renderer_fuzz_cmm-renderer-cmm-closeout/cache-no-cache-equivalence-renderer_fuzz_cmm.json",
+            "progressive_resume": "target/renderer_fuzz_cmm-renderer-cmm-closeout/progressive-equivalence-renderer_fuzz_cmm.json",
+            "ocg_cache_separation": "target/renderer_fuzz_cmm-renderer-cmm-closeout/ocg-cache-separation-renderer_fuzz_cmm.json",
             "unclassified_failures": 0,
             "stale_cache_failures": 0,
             "progressive_mismatch_failures": 0
@@ -2733,13 +2811,13 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
         "renderer_closeout": {
             "status": "implemented",
             "reference_engines": ["Poppler", "PDFium", "MuPDF", "Wellfriend"],
-            "corpus_manifest": "target/prompt11-renderer-cmm-closeout/renderer-closeout-corpus-manifest-prompt11.json",
-            "render_results": "target/prompt11-renderer-cmm-closeout/renderer-closeout-render-results-prompt11.json",
-            "diff_metrics": "target/prompt11-renderer-cmm-closeout/renderer-closeout-diff-metrics-prompt11.json",
-            "reference_disagreements": "target/prompt11-renderer-cmm-closeout/renderer-closeout-reference-disagreements-prompt11.json",
-            "fallback_taxonomy": "target/prompt11-renderer-cmm-closeout/renderer-closeout-fallback-taxonomy-prompt11.json",
-            "performance_memory": "target/prompt11-renderer-cmm-closeout/renderer-closeout-performance-memory-prompt11.json",
-            "html_report": "target/prompt11-renderer-cmm-closeout/renderer-closeout-html-report/index.html",
+            "corpus_manifest": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-closeout-corpus-manifest-renderer_fuzz_cmm.json",
+            "render_results": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-closeout-render-results-renderer_fuzz_cmm.json",
+            "diff_metrics": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-closeout-diff-metrics-renderer_fuzz_cmm.json",
+            "reference_disagreements": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-closeout-reference-disagreements-renderer_fuzz_cmm.json",
+            "fallback_taxonomy": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-closeout-fallback-taxonomy-renderer_fuzz_cmm.json",
+            "performance_memory": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-closeout-performance-memory-renderer_fuzz_cmm.json",
+            "html_report": "target/renderer_fuzz_cmm-renderer-cmm-closeout/renderer-closeout-html-report/index.html",
             "visual_threshold": "mean_abs_channel_difference <= 2.0 OR changed_pixel_threshold8_percentage <= 0.02",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
@@ -2748,14 +2826,14 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
         "native_cmm_audit": {
             "decision": "littlecms_native_backend_hard_blocked_pending_audited_native_boundary",
             "backend_candidate": "LittleCMS lcms2",
-            "license_posture": "generally compatible but not vendored_or_linked_in_prompt11",
+            "license_posture": "generally compatible but not vendored_or_linked_in_renderer_fuzz_cmm",
             "security_posture": "no unsafe/native boundary inside wellfriendpdf-engine default build",
             "dependency_policy": "no silent native dependency",
             "feature_flag": "reserved_native-cmm-lcms2_not_compiled",
             "default_build_posture": "no_native_cmm_dependency",
             "wasm_posture": "native_cmm_disabled_qcms_default_path_only",
-            "package_impact": "target/prompt11-renderer-cmm-closeout/native-cmm-package-impact-prompt11.json",
-            "audit_artifact": "target/prompt11-renderer-cmm-closeout/native-cmm-feasibility-prompt11.json"
+            "package_impact": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native-cmm-package-impact-renderer_fuzz_cmm.json",
+            "audit_artifact": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native-cmm-feasibility-renderer_fuzz_cmm.json"
         },
         "native_cmm_backend": {
             "status": "hard_blocked_precise_no_default_native_dependency",
@@ -2774,8 +2852,8 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
             "pattern_integration": "current Device/Cal/Lab color model only",
             "transparency_group_integration": "RGB framebuffer preview only",
             "transform_tests": "qcms_identity_vectors_no_native_claim",
-            "cache_memory": "target/prompt11-renderer-cmm-closeout/native-cmm-cache-memory-prompt11.json",
-            "backend_matrix": "target/prompt11-renderer-cmm-closeout/native-cmm-backend-matrix-prompt11.json",
+            "cache_memory": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native-cmm-cache-memory-renderer_fuzz_cmm.json",
+            "backend_matrix": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native-cmm-backend-matrix-renderer_fuzz_cmm.json",
             "not_claimed": [
                 "LittleCMS native transforms",
                 "device-link ICC",
@@ -2789,11 +2867,11 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
             "schema_change": "additive_section_only",
             "report_envelope_version": REPORT_ENVELOPE_VERSION,
             "bindings": ["Rust SDK", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"],
-            "artifact": "target/prompt11-renderer-cmm-closeout/public-feature-report-prompt11.json"
+            "artifact": "target/renderer_fuzz_cmm-renderer-cmm-closeout/public-feature-report-renderer_fuzz_cmm.json"
         },
         "closure_gates": {
             "memory_cap_mb": 4096,
-            "public_report_schema": "additive_feature_report_prompt11",
+            "public_report_schema": "additive_feature_report_renderer_fuzz_cmm",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
             "native_cmm_backend_status": "hard_blocked_precise",
@@ -2801,7 +2879,7 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
             "wasm_native_dependency": false
         },
         "remaining_bounded_limits": [
-            "release-duration coverage-guided renderer fuzzing remains a release-hardening run over the Prompt 11 targets and promoted corpus",
+            "release-duration coverage-guided renderer fuzzing remains a release-hardening run over the Renderer Fuzz CMM targets and promoted corpus",
             "LittleCMS/native CMM is not linked until a separate audited native boundary and package policy are accepted",
             "output-intent destination proofing, device-link ICC, multicolor ICC, true BPC, spot/DeviceN plates, separation framebuffers, and overprint proofing remain later CMM/prepress owners",
             "qcms/default ICCBased transforms are sRGB preview transforms, not full prepress parity"
@@ -2809,7 +2887,7 @@ fn prompt11_renderer_fuzz_cmm_closeout_report_value() -> serde_json::Value {
     })
 }
 
-fn prompt11b_native_littlecms_cmm_backend_closure_report_value() -> serde_json::Value {
+fn native_cmm_backend_native_littlecms_cmm_backend_closure_report_value() -> serde_json::Value {
     let native = cmm::native_cmm_status();
     let backend_status = if native.available {
         "implemented_native_lcms2_active"
@@ -2820,10 +2898,10 @@ fn prompt11b_native_littlecms_cmm_backend_closure_report_value() -> serde_json::
     };
     json!({
         "status": "complete",
-        "artifact_root": "target/prompt11-renderer-cmm-closeout",
-        "audit_doc": "docs/prompt11b_native_cmm_safety_audit.md",
-        "backend_doc": "docs/prompt11b_native_littlecms_cmm_backend_closure.md",
-        "selection_doc": "docs/prompt11b_cmm_backend_selection.md",
+        "artifact_root": "target/renderer_fuzz_cmm-renderer-cmm-closeout",
+        "audit_doc": "docs/native_cmm_backend_native_cmm_safety_audit.md",
+        "backend_doc": "docs/native_cmm_backend_native_littlecms_cmm_backend_closure.md",
+        "selection_doc": "docs/native_cmm_backend_cmm_backend_selection.md",
         "native_cmm_compiled": native.compiled,
         "native_cmm_available_at_runtime": native.available,
         "backend_selected": native.selected_backend,
@@ -2882,24 +2960,24 @@ fn prompt11b_native_littlecms_cmm_backend_closure_report_value() -> serde_json::
             "default_build_native_dependency": native.default_build_native_dependency,
             "license": "lcms2 and lcms2-sys Rust crates MIT; bundled LittleCMS source has MIT-style LittleCMS license notice when static fallback is used"
         },
-        "validation_status": "prompt11b_native_cmm_audit_required",
+        "validation_status": "native_cmm_backend_native_cmm_audit_required",
         "artifacts": {
-            "audit": "target/prompt11-renderer-cmm-closeout/prompt11b-native-cmm-audit.json",
-            "build_matrix": "target/prompt11-renderer-cmm-closeout/native-cmm-build-matrix-prompt11b.json",
-            "package_matrix": "target/prompt11-renderer-cmm-closeout/native-cmm-package-matrix-prompt11b.json",
-            "transform_matrix": "target/prompt11-renderer-cmm-closeout/native-cmm-transform-matrix-prompt11b.json",
-            "binding_parity": "target/prompt11-renderer-cmm-closeout/native-cmm-binding-report-parity-prompt11b.json",
-            "html_report": "target/prompt11-renderer-cmm-closeout/prompt11b-html-report/index.html"
+            "audit": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native_cmm_backend-native-cmm-audit.json",
+            "build_matrix": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native-cmm-build-matrix-native_cmm_backend.json",
+            "package_matrix": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native-cmm-package-matrix-native_cmm_backend.json",
+            "transform_matrix": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native-cmm-transform-matrix-native_cmm_backend.json",
+            "binding_parity": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native-cmm-binding-report-parity-native_cmm_backend.json",
+            "html_report": "target/renderer_fuzz_cmm-renderer-cmm-closeout/native_cmm_backend-html-report/index.html"
         },
         "remaining_exact_limits": [
-            "device-link ICC execution is reserved for Prompt 12",
-            "multicolor ICC and n-color transforms are reserved for Prompt 12",
-            "true separation framebuffer and spot/DeviceN plate preview are reserved for Prompt 12/13",
-            "Prompt 13 owns bounded overprint/prepress close-out; certification-grade PDF/X proofing is not claimed",
+            "device-link ICC execution is reserved for Prepress CMM",
+            "multicolor ICC and n-color transforms are reserved for Prepress CMM",
+            "true separation framebuffer and spot/DeviceN plate preview are reserved for Prepress CMM/13",
+            "Prepress Proofing owns bounded overprint/prepress close-out; certification-grade PDF/X proofing is not claimed",
             "default Python/.NET/Java packages do not silently bundle LittleCMS"
         ],
         "closure_gates": {
-            "public_report_schema": "additive_feature_report_prompt11b",
+            "public_report_schema": "additive_feature_report_native_cmm_backend",
             "schema_change": "additive_section_only",
             "no_silent_native_dependency": true,
             "default_build_portable": true,
@@ -2908,19 +2986,19 @@ fn prompt11b_native_littlecms_cmm_backend_closure_report_value() -> serde_json::
     })
 }
 
-fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_json::Value {
+fn prepress_cmm_prepress_cmm_device_link_separation_plates_report_value() -> serde_json::Value {
     let native = cmm::native_cmm_status();
     json!({
         "status": "complete",
-        "artifact_root": "target/prompt12-prepress-cmm",
-        "audit_doc": "docs/prompt12_prepress_cmm_audit.md",
-        "device_link_doc": "docs/prompt12_device_link_icc.md",
-        "multicolor_doc": "docs/prompt12_multicolor_icc.md",
-        "bpc_intent_doc": "docs/prompt12_bpc_rendering_intents.md",
-        "separation_framebuffer_doc": "docs/prompt12_separation_framebuffer.md",
-        "plate_rendering_doc": "docs/prompt12_spot_devicen_plate_rendering.md",
-        "plate_preview_doc": "docs/prompt12_plate_preview.md",
-        "audit_script": "scripts/prompt12_prepress_cmm_audit.py",
+        "artifact_root": "target/prepress_cmm-prepress-cmm",
+        "audit_doc": "docs/prepress_cmm_prepress_cmm_audit.md",
+        "device_link_doc": "docs/prepress_cmm_device_link_icc.md",
+        "multicolor_doc": "docs/prepress_cmm_multicolor_icc.md",
+        "bpc_intent_doc": "docs/prepress_cmm_bpc_rendering_intents.md",
+        "separation_framebuffer_doc": "docs/prepress_cmm_separation_framebuffer.md",
+        "plate_rendering_doc": "docs/prepress_cmm_spot_devicen_plate_rendering.md",
+        "plate_preview_doc": "docs/prepress_cmm_plate_preview.md",
+        "audit_script": "scripts/prepress_cmm_prepress_cmm_audit.py",
         "native_cmm_compiled": native.compiled,
         "native_cmm_available_at_runtime": native.available,
         "backend_selected": native.selected_backend,
@@ -2941,10 +3019,10 @@ fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_j
                 "reason"
             ],
             "artifacts": [
-                "device-link-icc-matrix-prompt12.json",
-                "device-link-transform-results-prompt12.json",
-                "device-link-fallback-results-prompt12.json",
-                "device-link-malformed-results-prompt12.json"
+                "device-link-icc-matrix-prepress_cmm.json",
+                "device-link-transform-results-prepress_cmm.json",
+                "device-link-fallback-results-prepress_cmm.json",
+                "device-link-malformed-results-prepress_cmm.json"
             ]
         },
         "multicolor_icc": {
@@ -2975,17 +3053,17 @@ fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_j
             "memory_budget_bytes": prepress::DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES,
             "scheduler_accounted": true,
             "cache_key_includes_plate_state": true,
-            "progressive_tile_band_posture": "plate fingerprint participates in render cache keys; Prompt 12 artifacts prove representative equivalence"
+            "progressive_tile_band_posture": "plate fingerprint participates in render cache keys; Prepress CMM artifacts prove representative equivalence"
         },
         "spot_devicen_plates": {
-            "separation_support": "spot name, tint value, alternate preview, alpha, object provenance, and Prompt 13 overprint posture are preserved",
+            "separation_support": "spot name, tint value, alternate preview, alpha, object provenance, and Prepress Proofing overprint posture are preserved",
             "devicen_support": "component names and per-component tints are preserved; process components remain distinct from named spot plates",
             "tint_transforms": "existing bounded PDF function evaluator is used for preview; malformed/excessive functions are reported",
-            "plate_preview": "report hashes are emitted under plate-preview-results-prompt12.json"
+            "plate_preview": "report hashes are emitted under plate-preview-results-prepress_cmm.json"
         },
         "public_reports": {
-            "color_report": "additive prompt12_prepress_cmm_device_link_separation_plates section",
-            "feature_report": "additive_feature_report_prompt12",
+            "color_report": "additive prepress_cmm_prepress_cmm_device_link_separation_plates section",
+            "feature_report": "additive_feature_report_prepress_cmm",
             "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
         },
         "reference_audit": {
@@ -2995,12 +3073,12 @@ fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_j
             "disagreement_policy": "spot/DeviceN flattening differences are classified; Wellfriend internal plate artifacts prove plate state"
         },
         "remaining_exact_limits": [
-            "Prompt 13 owns bounded overprint close-out; Prompt 12 remains the CMM/plate baseline",
+            "Prepress Proofing owns bounded overprint close-out; Prepress CMM remains the CMM/plate baseline",
             "certification-grade PDF/X validation is later standards work",
-            "Prompt 12B owns n-channel output closure and exact high-channel transform limits"
+            "Nchannel Plate Prepress owns n-channel output closure and exact high-channel transform limits"
         ],
         "closure_gates": {
-            "public_report_schema": "additive_feature_report_prompt12",
+            "public_report_schema": "additive_feature_report_prepress_cmm",
             "schema_change": "additive_section_only",
             "default_build_portable": true,
             "wasm_build_portable": true,
@@ -3009,13 +3087,13 @@ fn prompt12_prepress_cmm_device_link_separation_plates_report_value() -> serde_j
     })
 }
 
-fn prompt12b_nchannel_plate_reference_closure_report_value() -> serde_json::Value {
+fn nchannel_plate_prepress_nchannel_plate_reference_closure_report_value() -> serde_json::Value {
     let native = cmm::native_cmm_status();
     json!({
         "status": "complete",
-        "artifact_root": "target/prompt12-prepress-cmm",
-        "audit_doc": "docs/prompt12b_prepress_nchannel_plate_closure_audit.md",
-        "audit_script": "scripts/prompt12b_prepress_nchannel_plate_closure.py",
+        "artifact_root": "target/prepress_cmm-prepress-cmm",
+        "audit_doc": "docs/nchannel_plate_prepress_prepress_nchannel_plate_closure_audit.md",
+        "audit_script": "scripts/nchannel_plate_prepress_prepress_nchannel_plate_closure.py",
         "nchannel_pixel_format": {
             "status": "implemented_bounded_internal_sample_surface",
             "storage_model": "dynamic_channel_vector_samples_backed_by_sparse_tile_local_plate_planes",
@@ -3059,7 +3137,7 @@ fn prompt12b_nchannel_plate_reference_closure_report_value() -> serde_json::Valu
             "per_page_memory_cap_bytes": prepress::DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES,
             "plate_count_cap": prepress::MAX_PREPRESS_PLATES,
             "channel_count_cap": prepress::MAX_NCHANNEL_OUTPUT_CHANNELS,
-            "tile_band_progressive_cache_equivalence": "proved_by_prompt12b_audit_artifacts"
+            "tile_band_progressive_cache_equivalence": "proved_by_nchannel_plate_prepress_audit_artifacts"
         },
         "plate_writing": {
             "text": "implemented_for_simple_type0_cid_type1_truetype_and_supported_type3_path_geometry",
@@ -3070,9 +3148,9 @@ fn prompt12b_nchannel_plate_reference_closure_report_value() -> serde_json::Valu
             "provenance": "page_object_operation_color_space_plate_and_cache_fingerprint_recorded"
         },
         "reference_audit": {
-            "poppler": "required_and_run_by_prompt12b_audit",
-            "pdfium": "required_and_run_by_prompt12b_audit",
-            "mupdf": "required_and_run_by_prompt12b_audit",
+            "poppler": "required_and_run_by_nchannel_plate_prepress_audit",
+            "pdfium": "required_and_run_by_nchannel_plate_prepress_audit",
+            "mupdf": "required_and_run_by_nchannel_plate_prepress_audit",
             "wellfriendpdf_default": "run",
             "wellfriendpdf_native_lcms2": if native.available { "run_current_feature_build" } else { "run_when_feature_gate_enabled_in_validation" },
             "wellfriendpdf_outlier_failures": 0,
@@ -3085,18 +3163,18 @@ fn prompt12b_nchannel_plate_reference_closure_report_value() -> serde_json::Valu
             "fallback_wasm_posture": "no_native_nchannel_transform_claim; inventory_and_preview_only"
         },
         "public_reports": {
-            "feature_report": "additive_feature_report_prompt12b",
-            "color_report": "additive prompt12b_nchannel_plate_reference_closure section",
+            "feature_report": "additive_feature_report_nchannel_plate_prepress",
+            "color_report": "additive nchannel_plate_prepress_nchannel_plate_reference_closure section",
             "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
         },
         "remaining_exact_limits": [
-            "Prompt 13 owns bounded overprint close-out; Prompt 12B remains the n-channel baseline",
+            "Prepress Proofing owns bounded overprint close-out; Nchannel Plate Prepress remains the n-channel baseline",
             "certification-grade PDF/X validation is later standards work",
             "resource-heavy Type3 charprocs that invoke XObjects/shadings/images are fail-closed until recursive Type3 resource execution owns those resources",
             "ICC profiles whose n-channel pixel format is not exposed by the safe LittleCMS wrapper are inventory plus unsupported_reported_unsafe_profile rather than transformed"
         ],
         "closure_gates": {
-            "public_report_schema": "additive_feature_report_prompt12b",
+            "public_report_schema": "additive_feature_report_nchannel_plate_prepress",
             "schema_change": "additive_section_only",
             "default_build_portable": true,
             "wasm_build_portable": true,
@@ -3108,20 +3186,20 @@ fn prompt12b_nchannel_plate_reference_closure_report_value() -> serde_json::Valu
     })
 }
 
-fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value {
+fn prepress_proofing_full_overprint_prepress_closeout_report_value() -> serde_json::Value {
     let native = cmm::native_cmm_status();
     json!({
         "status": "complete",
-        "artifact_root": "target/prompt13-prepress-closeout",
-        "audit_doc": "docs/prompt13_prepress_closeout_audit.md",
-        "overprint_doc": "docs/prompt13_full_overprint_simulation.md",
-        "shading_pattern_doc": "docs/prompt13_color_managed_shadings_patterns.md",
-        "benchmark_doc": "docs/prompt13_prepress_proofing_benchmark.md",
-        "scorecard_doc": "docs/prompt13_advanced_cmm_prepress_scorecard.md",
-        "cache_scheduler_doc": "docs/prompt13_prepress_cache_scheduler.md",
-        "known_limits_doc": "docs/prompt13_known_limits.md",
-        "release_verdict_doc": "docs/prompt13_release_verdict.md",
-        "audit_script": "scripts/prompt13_prepress_benchmark.py",
+        "artifact_root": "target/prepress_proofing-prepress-closeout",
+        "audit_doc": "docs/prepress_proofing_prepress_closeout_audit.md",
+        "overprint_doc": "docs/prepress_proofing_full_overprint_simulation.md",
+        "shading_pattern_doc": "docs/prepress_proofing_color_managed_shadings_patterns.md",
+        "benchmark_doc": "docs/prepress_proofing_prepress_proofing_benchmark.md",
+        "scorecard_doc": "docs/prepress_proofing_advanced_cmm_prepress_scorecard.md",
+        "cache_scheduler_doc": "docs/prepress_proofing_prepress_cache_scheduler.md",
+        "known_limits_doc": "docs/prepress_proofing_known_limits.md",
+        "release_verdict_doc": "docs/prepress_proofing_release_verdict.md",
+        "audit_script": "scripts/prepress_proofing_prepress_benchmark.py",
         "overprint": {
             "simulation_status": "implemented_with_limits",
             "op_opm_status": "OP_stroke_and_op_fill_are_distinct; OPM_0_and_OPM_1_are_modeled_for_supported_process_named_plate_paths",
@@ -3133,7 +3211,7 @@ fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value
             "shading": "implemented_for_axial_radial_mesh_patch_and_function_color_paths_already_supported_by_renderer_CMM_layer",
             "pattern": "implemented_for_colored_tiling_uncolored_caller_color_pattern_resource_color_spaces_and_cache_fingerprints",
             "transparency_interaction": "implemented_with_limits_for_alpha_and_non_recursive_group_plate_contributions; soft_mask_and_knockout_variants_are_exact_matrix_rows",
-            "plate_preview_consistency": "plate_hashes_RGB_preview_hashes_and_overprint_posture_are_written_by_prompt13_benchmark",
+            "plate_preview_consistency": "plate_hashes_RGB_preview_hashes_and_overprint_posture_are_written_by_prepress_proofing_benchmark",
             "remaining_limits": [
                 "vendor-specific RIP quirks without reference evidence are not claimed",
                 "recursive resource-heavy Type3 charprocs remain fail-closed",
@@ -3150,15 +3228,15 @@ fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value
             },
             "fallback_wasm_behavior": "fallback_and_wasm_preserve_plate_metadata_and_label_output_as_preview_only_where_native_proofing_is_absent",
             "artifacts": [
-                "color-managed-shadings-matrix-prompt13.json",
-                "color-managed-patterns-matrix-prompt13.json",
-                "shading-pattern-native-fallback-comparison-prompt13.json",
-                "shading-pattern-plate-output-prompt13.json",
-                "shading-pattern-cache-equivalence-prompt13.json"
+                "color-managed-shadings-matrix-prepress_proofing.json",
+                "color-managed-patterns-matrix-prepress_proofing.json",
+                "shading-pattern-native-fallback-comparison-prepress_proofing.json",
+                "shading-pattern-plate-output-prepress_proofing.json",
+                "shading-pattern-cache-equivalence-prepress_proofing.json"
             ]
         },
         "prepress_benchmark": {
-            "status": "deterministic_prompt13_suite",
+            "status": "deterministic_prepress_proofing_suite",
             "fixture_categories": 18,
             "dimensions": [
                 "page_count",
@@ -3201,10 +3279,10 @@ fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value
             "final_verdict": "credible_bounded_prepress_simulation_not_certification_not_RIP_replacement"
         },
         "tile_band_progressive_cache": {
-            "full_vs_tile": "proved_by_prompt13_artifact",
-            "full_vs_band": "proved_by_prompt13_artifact",
-            "full_vs_progressive": "proved_by_prompt13_artifact",
-            "cache_no_cache": "proved_by_prompt13_artifact",
+            "full_vs_tile": "proved_by_prepress_proofing_artifact",
+            "full_vs_band": "proved_by_prepress_proofing_artifact",
+            "full_vs_progressive": "proved_by_prepress_proofing_artifact",
+            "cache_no_cache": "proved_by_prepress_proofing_artifact",
             "invalidates_on_output_intent": true,
             "invalidates_on_bpc": true,
             "invalidates_on_rendering_intent": true,
@@ -3216,14 +3294,14 @@ fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value
             "max_nchannel_output_channels": prepress::MAX_NCHANNEL_OUTPUT_CHANNELS
         },
         "public_reports": {
-            "feature_report": "additive_feature_report_prompt13",
-            "color_report": "additive prompt13_full_overprint_prepress_closeout section",
+            "feature_report": "additive_feature_report_prepress_proofing",
+            "color_report": "additive prepress_proofing_full_overprint_prepress_closeout section",
             "bindings": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java Maven", "Java Gradle"]
         },
         "reference_audit": {
-            "poppler": "required_and_run_by_prompt13_benchmark",
-            "pdfium": "required_and_run_by_prompt13_benchmark",
-            "mupdf": "required_and_run_by_prompt13_benchmark",
+            "poppler": "required_and_run_by_prepress_proofing_benchmark",
+            "pdfium": "required_and_run_by_prepress_proofing_benchmark",
+            "mupdf": "required_and_run_by_prepress_proofing_benchmark",
             "wellfriendpdf_outlier_failures": 0,
             "unclassified_failures": 0,
             "disagreement_policy": "reference_renderer_differences_are_classified; Wellfriend_outlier_failures_must_be_zero"
@@ -3235,7 +3313,7 @@ fn prompt13_full_overprint_prepress_closeout_report_value() -> serde_json::Value
             "malformed recursive resource bombs fail closed under scheduler and resource caps"
         ],
         "closure_gates": {
-            "public_report_schema": "additive_feature_report_prompt13",
+            "public_report_schema": "additive_feature_report_prepress_proofing",
             "schema_change": "additive_section_only",
             "default_build_portable": true,
             "wasm_build_portable": true,
@@ -3265,51 +3343,51 @@ pub fn feature_report_json() -> Result<String> {
             "ocr": cfg!(feature = "ocr"),
         },
         "codec_isolation": codec_isolation,
-        "prompt04": {
+        "codec_boundary": {
             "native_codec_boundary": native_codec_boundary,
             "scanner": scanner_availability_report(),
             "renderer_decode_scheduler": renderer_decode_scheduler_adoption_report(),
             "rlbox_wasm": {
-                "status": "hard_blocked_with_prompt04_evidence",
-                "report_artifact": "target/prompt04-codec-boundary-scheduler/rlbox-wasm-feasibility.json"
+                "status": "hard_blocked_with_codec_boundary_evidence",
+                "report_artifact": "target/codec_boundary-codec-boundary-scheduler/rlbox-wasm-feasibility.json"
             }
         },
-        "prompt05": {
+        "decode_scheduler": {
             "decode_scheduler": non_render_decode_scheduler_adoption_report(),
             "hostile_corpus": {
                 "status": "deterministic_generated_corpus_with_local_runner",
-                "generator": "scripts/prompt05_hostile_codec_corpus.py",
-                "manifest_artifact": "target/prompt05-codec-closeout/hostile-corpus-manifest.json",
-                "run_artifact": "target/prompt05-codec-closeout/hostile-corpus-run.json"
+                "generator": "scripts/decode_scheduler_hostile_codec_corpus.py",
+                "manifest_artifact": "target/decode_scheduler-codec-closeout/hostile-corpus-manifest.json",
+                "run_artifact": "target/decode_scheduler-codec-closeout/hostile-corpus-run.json"
             },
             "fuzz_campaign": {
                 "status": "campaign_scripts_and_smoke_artifacts",
-                "script": "scripts/prompt05_codec_fuzz_campaign.py",
-                "target_inventory_artifact": "target/prompt05-codec-closeout/fuzz-target-inventory.json",
-                "smoke_artifact": "target/prompt05-codec-closeout/fuzz-smoke-report.json"
+                "script": "scripts/decode_scheduler_codec_fuzz_campaign.py",
+                "target_inventory_artifact": "target/decode_scheduler-codec-closeout/fuzz-target-inventory.json",
+                "smoke_artifact": "target/decode_scheduler-codec-closeout/fuzz-smoke-report.json"
             },
             "closeout": {
-                "status": "prompt05_closeout_artifacts_required_for_release_grade_verdict",
-                "script": "scripts/prompt05_codec_closeout.py",
-                "performance_artifact": "target/prompt05-codec-closeout/performance-report.json",
-                "verdict_artifact": "target/prompt05-codec-closeout/closeout-verdict.json"
+                "status": "decode_scheduler_closeout_artifacts_required_for_release_grade_verdict",
+                "script": "scripts/decode_scheduler_codec_closeout.py",
+                "performance_artifact": "target/decode_scheduler-codec-closeout/performance-report.json",
+                "verdict_artifact": "target/decode_scheduler-codec-closeout/closeout-verdict.json"
             }
         },
-        "prompt06": {
+        "native_renderer": {
             "renderer_parity_audit": {
                 "status": "reference_aware_corpus_harness",
-                "script": "scripts/prompt06_renderer_parity_audit.py",
-                "baseline_artifact": "target/prompt06-renderer-native-replay/parity-baseline.json",
-                "post_native_artifact": "target/prompt06-renderer-native-replay/parity-after-native-replay.json",
-                "reference_availability_artifact": "target/prompt06-renderer-native-replay/reference-availability.json"
+                "script": "scripts/native_renderer_renderer_parity_audit.py",
+                "baseline_artifact": "target/native_renderer-renderer-native-replay/parity-baseline.json",
+                "post_native_artifact": "target/native_renderer-renderer-native-replay/parity-after-native-replay.json",
+                "reference_availability_artifact": "target/native_renderer-renderer-native-replay/reference-availability.json"
             },
             "native_replay": {
                 "status": "native_text_image_form_display_list_foundation",
                 "text": "BT/ET state and common text-showing operators are represented as native display-list operations",
                 "image": "Image XObject and inline image operations are represented as native display-list operations while decode remains in renderer paths",
                 "form_xobject": "Form XObject invocations are represented as native display-list operations with fallback diagnostics for unsupported groups and limits",
-                "counter_artifact": "target/prompt06-renderer-native-replay/native-replay-counters.json",
-                "regression_script": "scripts/prompt06_native_replay_regression.py"
+                "counter_artifact": "target/native_renderer-renderer-native-replay/native-replay-counters.json",
+                "regression_script": "scripts/native_renderer_native_replay_regression.py"
             },
             "compatibility_fallback_policy": {
                 "status": "measured_by_operation_kind_and_reason",
@@ -3321,24 +3399,24 @@ pub fn feature_report_json() -> Result<String> {
                     "safety_limit_exceeded",
                     "malformed_content"
                 ],
-                "policy_doc": "docs/prompt06_compatibility_fallback_policy.md"
+                "policy_doc": "docs/native_renderer_compatibility_fallback_policy.md"
             },
             "failure_taxonomy": {
                 "status": "json_taxonomy_for_reference_and_wellfriendpdf_failures",
-                "artifact": "target/prompt06-renderer-native-replay/failure-taxonomy.json",
-                "doc": "docs/prompt06_renderer_failure_taxonomy.md"
+                "artifact": "target/native_renderer-renderer-native-replay/failure-taxonomy.json",
+                "doc": "docs/native_renderer_renderer_failure_taxonomy.md"
             },
-            "prompt06b_multi_reference_audit": {
+            "reference_renderer_multi_reference_audit": {
                 "status": "multi_reference_audit_complete",
-                "bootstrap_script": "scripts/prompt06b_bootstrap_reference_renderers.ps1",
-                "audit_script": "scripts/prompt06b_multi_reference_audit.ps1",
-                "tool_manifest_artifact": "target/prompt06-renderer-native-replay/reference-tool-manifest-prompt06b.json",
-                "corpus_manifest_artifact": "target/prompt06-renderer-native-replay/multi-reference-corpus-manifest-prompt06b.json",
-                "render_results_artifact": "target/prompt06-renderer-native-replay/multi-reference-render-results-prompt06b.json",
-                "diff_metrics_artifact": "target/prompt06-renderer-native-replay/multi-reference-diff-metrics-prompt06b.json",
-                "disagreement_summary_artifact": "target/prompt06-renderer-native-replay/reference-disagreement-summary-prompt06b.json",
-                "taxonomy_artifact": "target/prompt06-renderer-native-replay/renderer-parity-taxonomy-prompt06b.json",
-                "html_report": "target/prompt06-renderer-native-replay/prompt06b-html-report/index.html",
+                "bootstrap_script": "scripts/reference_renderer_bootstrap_reference_renderers.ps1",
+                "audit_script": "scripts/reference_renderer_multi_reference_audit.ps1",
+                "tool_manifest_artifact": "target/native_renderer-renderer-native-replay/reference-tool-manifest-reference_renderer.json",
+                "corpus_manifest_artifact": "target/native_renderer-renderer-native-replay/multi-reference-corpus-manifest-reference_renderer.json",
+                "render_results_artifact": "target/native_renderer-renderer-native-replay/multi-reference-render-results-reference_renderer.json",
+                "diff_metrics_artifact": "target/native_renderer-renderer-native-replay/multi-reference-diff-metrics-reference_renderer.json",
+                "disagreement_summary_artifact": "target/native_renderer-renderer-native-replay/reference-disagreement-summary-reference_renderer.json",
+                "taxonomy_artifact": "target/native_renderer-renderer-native-replay/renderer-parity-taxonomy-reference_renderer.json",
+                "html_report": "target/native_renderer-renderer-native-replay/reference_renderer-html-report/index.html",
                 "reference_engines": {
                     "poppler": "pdftoppm",
                     "pdfium": "target-local pypdfium2/pdfium_test-compatible wrapper",
@@ -3354,22 +3432,22 @@ pub fn feature_report_json() -> Result<String> {
                 "multi_reference_audit_complete": true
             }
         },
-        "prompt07_transparency_compositing": {
-            "status": "native_foundation_with_prompt07b_closure",
-            "audit_script": "scripts/prompt07_transparency_compositing_audit.py",
-            "powershell_wrapper": "scripts/prompt07_transparency_compositing_audit.ps1",
+        "transparency_rendering_transparency_compositing": {
+            "status": "native_foundation_with_transparency_closeout_closure",
+            "audit_script": "scripts/transparency_rendering_transparency_compositing_audit.py",
+            "powershell_wrapper": "scripts/transparency_rendering_transparency_compositing_audit.ps1",
             "artifacts": {
-                "corpus_manifest": "target/prompt07-transparency-compositing/corpus-manifest.json",
-                "baseline_results": "target/prompt07-transparency-compositing/baseline-render-results.json",
-                "post_results": "target/prompt07-transparency-compositing/post-implementation-render-results.json",
-                "reference_disagreement_summary": "target/prompt07-transparency-compositing/reference-disagreement-summary.json",
-                "blend_mode_matrix": "target/prompt07-transparency-compositing/blend-mode-matrix.json",
-                "soft_mask_matrix": "target/prompt07-transparency-compositing/soft-mask-matrix.json",
-                "group_isolation_knockout_matrix": "target/prompt07-transparency-compositing/group-isolation-knockout-matrix.json",
-                "fallback_taxonomy": "target/prompt07-transparency-compositing/fallback-taxonomy.json",
-                "memory_budget_report": "target/prompt07-transparency-compositing/memory-budget-report.json",
-                "html_report": "target/prompt07-transparency-compositing/html-report/index.html",
-                "prompt07b_closure_audit": "target/prompt07-transparency-compositing/prompt07b-closure-audit.json"
+                "corpus_manifest": "target/transparency_rendering-transparency-compositing/corpus-manifest.json",
+                "baseline_results": "target/transparency_rendering-transparency-compositing/baseline-render-results.json",
+                "post_results": "target/transparency_rendering-transparency-compositing/post-implementation-render-results.json",
+                "reference_disagreement_summary": "target/transparency_rendering-transparency-compositing/reference-disagreement-summary.json",
+                "blend_mode_matrix": "target/transparency_rendering-transparency-compositing/blend-mode-matrix.json",
+                "soft_mask_matrix": "target/transparency_rendering-transparency-compositing/soft-mask-matrix.json",
+                "group_isolation_knockout_matrix": "target/transparency_rendering-transparency-compositing/group-isolation-knockout-matrix.json",
+                "fallback_taxonomy": "target/transparency_rendering-transparency-compositing/fallback-taxonomy.json",
+                "memory_budget_report": "target/transparency_rendering-transparency-compositing/memory-budget-report.json",
+                "html_report": "target/transparency_rendering-transparency-compositing/html-report/index.html",
+                "transparency_closeout_closure_audit": "target/transparency_rendering-transparency-compositing/transparency_closeout-closure-audit.json"
             },
             "transparency_groups": {
                 "status": "native_common_path",
@@ -3385,7 +3463,7 @@ pub fn feature_report_json() -> Result<String> {
                 ],
                 "bounded_memory": "transparency group RGBA surfaces reserve scheduler memory before allocation",
                 "memory_denial_unit_test": "renderer_offscreen_surface_fails_closed_over_budget",
-                "color_space_status": "DeviceGray_DeviceRGB_DeviceCMYK_common_group_paths_exercised_by_prompt07b",
+                "color_space_status": "DeviceGray_DeviceRGB_DeviceCMYK_common_group_paths_exercised_by_transparency_closeout",
                 "unsupported_reported": [
                     "advanced_icc_device_link_multicolor_group_color_management",
                     "cropped_coordinate_offscreen_surfaces"
@@ -3426,7 +3504,7 @@ pub fn feature_report_json() -> Result<String> {
                     "malformed_mask_fail_closed"
                 ],
                 "bounded_memory": "soft mask group RGBA surfaces reserve scheduler memory before allocation",
-                "matte_background_status": "image_smask_matte_and_extgstate_bc_backdrop_closed_by_prompt07b",
+                "matte_background_status": "image_smask_matte_and_extgstate_bc_backdrop_closed_by_transparency_closeout",
                 "luminosity_color_spaces": ["DeviceGray", "DeviceRGB", "DeviceCMYK"],
                 "unsupported_reported": [
                     "advanced_icc_device_link_matte_conversion",
@@ -3452,10 +3530,10 @@ pub fn feature_report_json() -> Result<String> {
             },
             "reference_audit": {
                 "status": "poppler_pdfium_mupdf_required",
-                "tool_manifest": "target/prompt06-renderer-native-replay/reference-tool-manifest-prompt06b.json",
+                "tool_manifest": "target/native_renderer-renderer-native-replay/reference-tool-manifest-reference_renderer.json",
                 "fixture_count": 47,
                 "memory_cap_mb": 4096,
-                "classification_artifact": "target/prompt07-transparency-compositing/prompt07b-reference-disagreement-summary.json",
+                "classification_artifact": "target/transparency_rendering-transparency-compositing/transparency_closeout-reference-disagreement-summary.json",
                 "wellfriendpdf_outlier_failures": 0,
                 "unclassified_failures": 0
             },
@@ -3464,19 +3542,19 @@ pub fn feature_report_json() -> Result<String> {
                 "Offscreen buffers are scheduler-bounded page-coordinate surfaces with bbox clipping rather than cropped coordinate surfaces"
             ]
         },
-        "prompt07b_transparency_closure": {
+        "transparency_closeout_transparency_closure": {
             "status": "complete",
-            "audit_script": "scripts/prompt07b_transparency_closure_audit.py",
+            "audit_script": "scripts/transparency_closeout_transparency_closure_audit.py",
             "artifacts": {
-                "reference_tool_manifest": "target/prompt07-transparency-compositing/prompt07b-reference-tool-manifest.json",
-                "corpus_manifest": "target/prompt07-transparency-compositing/prompt07b-corpus-manifest.json",
-                "render_results": "target/prompt07-transparency-compositing/prompt07b-render-results.json",
-                "diff_metrics": "target/prompt07-transparency-compositing/prompt07b-diff-metrics.json",
-                "reference_disagreement_summary": "target/prompt07-transparency-compositing/prompt07b-reference-disagreement-summary.json",
-                "transparency_matrix": "target/prompt07-transparency-compositing/prompt07b-transparency-matrix.json",
-                "memory_report": "target/prompt07-transparency-compositing/prompt07b-memory-report.json",
-                "closure_audit": "target/prompt07-transparency-compositing/prompt07b-closure-audit.json",
-                "html_report": "target/prompt07-transparency-compositing/prompt07b-html-report/index.html"
+                "reference_tool_manifest": "target/transparency_rendering-transparency-compositing/transparency_closeout-reference-tool-manifest.json",
+                "corpus_manifest": "target/transparency_rendering-transparency-compositing/transparency_closeout-corpus-manifest.json",
+                "render_results": "target/transparency_rendering-transparency-compositing/transparency_closeout-render-results.json",
+                "diff_metrics": "target/transparency_rendering-transparency-compositing/transparency_closeout-diff-metrics.json",
+                "reference_disagreement_summary": "target/transparency_rendering-transparency-compositing/transparency_closeout-reference-disagreement-summary.json",
+                "transparency_matrix": "target/transparency_rendering-transparency-compositing/transparency_closeout-transparency-matrix.json",
+                "memory_report": "target/transparency_rendering-transparency-compositing/transparency_closeout-memory-report.json",
+                "closure_audit": "target/transparency_rendering-transparency-compositing/transparency_closeout-closure-audit.json",
+                "html_report": "target/transparency_rendering-transparency-compositing/transparency_closeout-html-report/index.html"
             },
             "alpha_image": {
                 "status": "closed",
@@ -3535,26 +3613,26 @@ pub fn feature_report_json() -> Result<String> {
                 "cropped coordinate offscreen surfaces"
             ]
         },
-        "prompt08_text_clipping_shading_patterns": {
+        "advanced_rendering_text_clipping_shading_patterns": {
             "status": "native_common_paths_with_bounded_unsupported_reports",
             "artifacts": {
-                "starting_state": "target/prompt08-text-shading-patterns/starting-state.json",
-                "corpus_manifest": "target/prompt08-text-shading-patterns/corpus-manifest.json",
-                "reference_tool_manifest": "target/prompt08-text-shading-patterns/reference-tool-manifest.json",
-                "text_clipping_matrix": "target/prompt08-text-shading-patterns/text-clipping-matrix.json",
-                "axial_radial_shading_matrix": "target/prompt08-text-shading-patterns/axial-radial-shading-matrix.json",
-                "mesh_patch_shading_matrix": "target/prompt08-text-shading-patterns/mesh-patch-shading-matrix.json",
-                "tiling_pattern_matrix": "target/prompt08-text-shading-patterns/tiling-pattern-matrix.json",
-                "fallback_taxonomy": "target/prompt08-text-shading-patterns/fallback-taxonomy.json",
-                "render_results": "target/prompt08-text-shading-patterns/multi-reference-render-results.json",
-                "diff_metrics": "target/prompt08-text-shading-patterns/visual-diff-metrics.json",
-                "reference_disagreement_summary": "target/prompt08-text-shading-patterns/reference-disagreement-summary.json",
-                "memory_scheduler_report": "target/prompt08-text-shading-patterns/memory-scheduler-report.json",
-                "public_feature_report": "target/prompt08-text-shading-patterns/public-feature-report.json",
-                "html_report": "target/prompt08-text-shading-patterns/html-report/index.html"
+                "starting_state": "target/advanced_rendering-text-shading-patterns/starting-state.json",
+                "corpus_manifest": "target/advanced_rendering-text-shading-patterns/corpus-manifest.json",
+                "reference_tool_manifest": "target/advanced_rendering-text-shading-patterns/reference-tool-manifest.json",
+                "text_clipping_matrix": "target/advanced_rendering-text-shading-patterns/text-clipping-matrix.json",
+                "axial_radial_shading_matrix": "target/advanced_rendering-text-shading-patterns/axial-radial-shading-matrix.json",
+                "mesh_patch_shading_matrix": "target/advanced_rendering-text-shading-patterns/mesh-patch-shading-matrix.json",
+                "tiling_pattern_matrix": "target/advanced_rendering-text-shading-patterns/tiling-pattern-matrix.json",
+                "fallback_taxonomy": "target/advanced_rendering-text-shading-patterns/fallback-taxonomy.json",
+                "render_results": "target/advanced_rendering-text-shading-patterns/multi-reference-render-results.json",
+                "diff_metrics": "target/advanced_rendering-text-shading-patterns/visual-diff-metrics.json",
+                "reference_disagreement_summary": "target/advanced_rendering-text-shading-patterns/reference-disagreement-summary.json",
+                "memory_scheduler_report": "target/advanced_rendering-text-shading-patterns/memory-scheduler-report.json",
+                "public_feature_report": "target/advanced_rendering-text-shading-patterns/public-feature-report.json",
+                "html_report": "target/advanced_rendering-text-shading-patterns/html-report/index.html"
             },
             "text_clipping": {
-                "status": "implemented_with_prompt08b_type3_cid_closure",
+                "status": "implemented_with_type3_cid_rendering_type3_cid_closure",
                 "rendering_modes": [4, 5, 6, 7],
                 "accumulation": "glyph outline masks accumulate during BT/ET and intersect the current clip at ET",
                 "interactions_tested": [
@@ -3568,7 +3646,7 @@ pub fn feature_report_json() -> Result<String> {
                     "image_or_resource_only_Type3_charprocs_that_do_not_yield_safe_path_geometry",
                     "fonts_or_glyphs_without_extractable_outlines"
                 ],
-                "prompt08b_closure": "target/prompt08b-type3-cid-tensor/prompt08b-reference-disagreement-summary.json"
+                "type3_cid_rendering_closure": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-reference-disagreement-summary.json"
             },
             "axial_radial_shadings": {
                 "status": "native",
@@ -3600,7 +3678,7 @@ pub fn feature_report_json() -> Result<String> {
                     "malformed_stream_fail_closed"
                 ],
                 "limits": {
-                    "type7_tensor_exactness": "closed by Prompt 08B for the device-color corpus with tensor-product interior evaluation",
+                    "type7_tensor_exactness": "closed by Type3 CID Rendering for the device-color corpus with tensor-product interior evaluation",
                     "tessellation": "deterministic curvature-scaled bounded subdivision and triangle rasterization"
                 }
             },
@@ -3630,7 +3708,7 @@ pub fn feature_report_json() -> Result<String> {
                 "fixture_count": 26,
                 "reference_engines": ["Poppler", "PDFium", "MuPDF"],
                 "memory_cap_mb": 4096,
-                "classification_artifact": "target/prompt08-text-shading-patterns/reference-disagreement-summary.json",
+                "classification_artifact": "target/advanced_rendering-text-shading-patterns/reference-disagreement-summary.json",
                 "classification_counts": {
                     "all_references_agree_wellfriendpdf_passes": 19,
                     "references_disagree_wellfriendpdf_within_cluster": 3,
@@ -3638,7 +3716,7 @@ pub fn feature_report_json() -> Result<String> {
                     "malformed_reference_failure": 1
                 },
                 "wellfriendpdf_outlier_failures": 0,
-                "prompt08_cluster_tolerance_acceptances": 2
+                "advanced_rendering_cluster_tolerance_acceptances": 2
             },
             "fallback_taxonomy": {
                 "removed_vague_buckets": [
@@ -3654,21 +3732,21 @@ pub fn feature_report_json() -> Result<String> {
                 ]
             }
         },
-        "prompt08b_type3_cid_tensor_closure": {
+        "type3_cid_rendering_type3_cid_tensor_closure": {
             "status": "complete_native_common_paths_with_reference_cluster_limits",
             "artifacts": {
-                "corpus_manifest": "target/prompt08b-type3-cid-tensor/prompt08b-corpus-manifest.json",
-                "reference_tool_manifest": "target/prompt08b-type3-cid-tensor/prompt08b-reference-tool-manifest.json",
-                "render_results": "target/prompt08b-type3-cid-tensor/prompt08b-render-results.json",
-                "diff_metrics": "target/prompt08b-type3-cid-tensor/prompt08b-diff-metrics.json",
-                "reference_disagreement_summary": "target/prompt08b-type3-cid-tensor/prompt08b-reference-disagreement-summary.json",
-                "text_clipping_matrix": "target/prompt08b-type3-cid-tensor/prompt08b-text-clipping-matrix.json",
-                "type3_clip_matrix": "target/prompt08b-type3-cid-tensor/prompt08b-type3-clip-matrix.json",
-                "cid_clip_matrix": "target/prompt08b-type3-cid-tensor/prompt08b-cid-clip-matrix.json",
-                "type7_tensor_matrix": "target/prompt08b-type3-cid-tensor/prompt08b-type7-tensor-matrix.json",
-                "fallback_taxonomy": "target/prompt08b-type3-cid-tensor/prompt08b-fallback-taxonomy.json",
-                "memory_scheduler_report": "target/prompt08b-type3-cid-tensor/prompt08b-memory-scheduler-report.json",
-                "html_report": "target/prompt08b-type3-cid-tensor/prompt08b-html-report/index.html"
+                "corpus_manifest": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-corpus-manifest.json",
+                "reference_tool_manifest": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-reference-tool-manifest.json",
+                "render_results": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-render-results.json",
+                "diff_metrics": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-diff-metrics.json",
+                "reference_disagreement_summary": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-reference-disagreement-summary.json",
+                "text_clipping_matrix": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-text-clipping-matrix.json",
+                "type3_clip_matrix": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-type3-clip-matrix.json",
+                "cid_clip_matrix": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-cid-clip-matrix.json",
+                "type7_tensor_matrix": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-type7-tensor-matrix.json",
+                "fallback_taxonomy": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-fallback-taxonomy.json",
+                "memory_scheduler_report": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-memory-scheduler-report.json",
+                "html_report": "target/type3_cid_rendering-type3-cid-tensor/type3_cid_rendering-html-report/index.html"
             },
             "type3_text_clipping": {
                 "status": "native_charproc_path_collection",
@@ -3733,34 +3811,34 @@ pub fn feature_report_json() -> Result<String> {
                 ]
             }
         },
-        "prompt09_annotation_ocg_progressive_cache": prompt09_renderer_report_value(),
-        "prompt09b_annotation_progressive_cache_validation": prompt09b_validation_report_value(),
-        "prompt10_cjk_rtl_color_glyph_reference_harness": prompt10_renderer_report_value(),
-        "prompt10b_color_glyph_cjk_rtl_fidelity_closure": prompt10b_closure_report_value(),
-        "prompt10c_color_glyph_hinting_cff_closure": prompt10c_closure_report_value(),
-        "prompt10d_full_colrv1_svg_color_glyph_closure": prompt10d_closure_report_value(),
-        "prompt10e_colrv1_gradient_clip_composite_closure": prompt10e_closure_report_value(),
-        "prompt10f_colrv1_porterduff_radial_closure": prompt10f_closure_report_value(),
-        "prompt11_renderer_fuzz_cmm_closeout": prompt11_renderer_fuzz_cmm_closeout_report_value(),
-        "prompt11b_native_littlecms_cmm_backend_closure": prompt11b_native_littlecms_cmm_backend_closure_report_value(),
-        "prompt12_prepress_cmm_device_link_separation_plates": prompt12_prepress_cmm_device_link_separation_plates_report_value(),
-        "prompt12b_nchannel_plate_reference_closure": prompt12b_nchannel_plate_reference_closure_report_value(),
-        "prompt13_full_overprint_prepress_closeout": prompt13_full_overprint_prepress_closeout_report_value(),
-        "prompt14_semantic_intelligence_parenttree_cjk_ml_layout": crate::semantic_intelligence::prompt14_semantic_intelligence_report_value(),
-        "prompt14b_cjk_dictionary_layout_backend_closure": crate::semantic_intelligence::prompt14b_cjk_dictionary_layout_backend_closure_report_value(),
-        "prompt15_semantic_binding_rag_benchmark_closeout": crate::semantic_intelligence::prompt15_semantic_binding_rag_benchmark_closeout_report_value(),
-        "prompt16_xfa_runtime_sandbox_closure": crate::xfa::prompt16_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt17_annotation_xfdf_media_nonaxis_redaction": crate::prompt17::prompt17_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt18_mask_inline_associated_signature_safe_edits": crate::prompt18::prompt18_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt18b_advanced_secure_mutation_closure": crate::prompt18::prompt18b_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt19_form_js_interactive_docx_layout": crate::prompt19::prompt19_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt20_vertical_rtl_patch_vector_ink_editing": crate::prompt20::prompt20_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt20b_multirun_form_appearance_closure": crate::prompt20::prompt20b_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt21_raster_vector_font_persistent_object_stream": crate::prompt21::prompt21_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt22_zopfli_dedup_office_to_pdf_benchmark": crate::prompt22::prompt22_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt22b_resource_dedup_office_benchmark_closure": crate::prompt22::prompt22b_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt23_deterministic_writer_pubsec_aesgcm": crate::prompt23::prompt23_feature_report_value(REPORT_ENVELOPE_VERSION),
-        "prompt24_certificate_trust_pades_ocsp_crl_validation": crate::signature::prompt24_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "annotation_ocg_rendering_annotation_ocg_progressive_cache": annotation_ocg_rendering_renderer_report_value(),
+        "renderer_validation_annotation_progressive_cache_validation": renderer_validation_validation_report_value(),
+        "multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness": multilingual_color_glyphs_renderer_report_value(),
+        "cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_fidelity_closure": cjk_rtl_color_glyph_closeout_closure_report_value(),
+        "color_glyph_hinting_color_glyph_hinting_cff_closure": color_glyph_hinting_closure_report_value(),
+        "colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure": colrv_svg_bitmap_closure_report_value(),
+        "colrv_gradient_composite_colrv1_gradient_clip_composite_closure": colrv_gradient_composite_closure_report_value(),
+        "porterduff_radial_color_glyph_colrv1_porterduff_radial_closure": porterduff_radial_color_glyph_closure_report_value(),
+        "renderer_fuzz_cmm_renderer_fuzz_cmm_closeout": renderer_fuzz_cmm_renderer_fuzz_cmm_closeout_report_value(),
+        "native_cmm_backend_native_littlecms_cmm_backend_closure": native_cmm_backend_native_littlecms_cmm_backend_closure_report_value(),
+        "prepress_cmm_prepress_cmm_device_link_separation_plates": prepress_cmm_prepress_cmm_device_link_separation_plates_report_value(),
+        "nchannel_plate_prepress_nchannel_plate_reference_closure": nchannel_plate_prepress_nchannel_plate_reference_closure_report_value(),
+        "prepress_proofing_full_overprint_prepress_closeout": prepress_proofing_full_overprint_prepress_closeout_report_value(),
+        "semantic_intelligence_semantic_intelligence_parenttree_cjk_ml_layout": crate::semantic_intelligence::semantic_intelligence_semantic_intelligence_report_value(),
+        "cjk_dictionary_layout_cjk_dictionary_layout_backend_closure": crate::semantic_intelligence::cjk_dictionary_layout_cjk_dictionary_layout_backend_closure_report_value(),
+        "semantic_closeout_semantic_binding_rag_benchmark_closeout": crate::semantic_intelligence::semantic_closeout_semantic_binding_rag_benchmark_closeout_report_value(),
+        "xfa_runtime_xfa_runtime_sandbox_closure": crate::xfa::xfa_runtime_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "annotation_media_redaction_annotation_xfdf_media_nonaxis_redaction": crate::annotation_media_redaction::annotation_media_redaction_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "secure_mutation_mask_inline_associated_signature_safe_edits": crate::secure_mutation::secure_mutation_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "secure_mutation_closeout_advanced_secure_mutation_closure": crate::secure_mutation::secure_mutation_closeout_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "form_action_policy_form_js_interactive_docx_layout": crate::form_action_policy::form_action_policy_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "advanced_editing_vertical_rtl_patch_vector_ink_editing": crate::advanced_editing::advanced_editing_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "advanced_editing_closeout_multirun_form_appearance_closure": crate::advanced_editing::advanced_editing_closeout_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "writer_history_raster_vector_font_persistent_object_stream": crate::writer_history::writer_history_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "compression_office_zopfli_dedup_office_to_pdf_benchmark": crate::compression_office::compression_office_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "compression_office_closeout_resource_dedup_office_benchmark_closure": crate::compression_office::compression_office_closeout_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "crypto_writer_deterministic_writer_pubsec_aesgcm": crate::crypto_writer::crypto_writer_feature_report_value(REPORT_ENVELOPE_VERSION),
+        "signature_validation_certificate_trust_pades_ocsp_crl_validation": crate::signature::signature_validation_feature_report_value(REPORT_ENVELOPE_VERSION),
         // Capabilities that are always present in the default build regardless of
         // cargo features (they live in unconditional modules).
         "always_available": [
@@ -3776,23 +3854,23 @@ pub fn feature_report_json() -> Result<String> {
             "annotation_xfdf_export", "annotation_xfdf_import",
             "annotation_appearance_generate", "annotation_appearance_report",
             "rich_media_report", "rich_media_sanitize", "rich_media_flatten_poster",
-            "nonaxis_redaction_plan", "nonaxis_redaction_apply", "prompt17_report",
+            "nonaxis_redaction_plan", "nonaxis_redaction_apply", "annotation_media_redaction_report",
             "redact_image_mask", "redact_inline_image", "associated_files_report",
             "associated_files_extract", "associated_files_add", "associated_files_remove",
             "associated_files_sanitize", "edit_signature_impact", "edit_policy_report",
-            "prompt18_report", "prompt18b_report", "associated_files_update_owner",
+            "secure_mutation_report", "secure_mutation_closeout_report", "associated_files_update_owner",
             "associated_files_remove_owner", "incremental_form_edit",
             "incremental_annotation_edit", "incremental_page_property_edit",
             "form_js_report", "form_action_graph", "form_js_sanitize",
             "form_js_flatten_values", "interactive_data_report",
-            "word_pagination_audit", "prompt19_report", "prompt20_report",
-            "prompt20b_report", "prompt21_report", "prompt21_raster_vector_report",
-            "prompt21_font_reconstruction_report", "prompt21_history_report",
-            "prompt21_object_stream_report", "prompt21_pack_object_streams",
-            "prompt22_report", "prompt22_optimize_pdf",
-            "prompt22_office_package_security", "prompt22_office_to_pdf",
-            "prompt22b_resource_dedup_office_benchmark_closure",
-            "prompt23_report", "writer_determinism_audit", "writer_external_diff",
+            "word_pagination_audit", "form_action_policy_report", "advanced_editing_report",
+            "advanced_editing_closeout_report", "writer_history_report", "writer_history_raster_vector_report",
+            "writer_history_font_reconstruction_report", "writer_history_history_report",
+            "writer_history_object_stream_report", "writer_history_pack_object_streams",
+            "compression_office_report", "compression_office_optimize_pdf",
+            "compression_office_office_package_security", "compression_office_office_to_pdf",
+            "compression_office_closeout_resource_dedup_office_benchmark_closure",
+            "crypto_writer_report", "writer_determinism_audit", "writer_external_diff",
             "writer_closeout_report", "pubsec_report", "aes_gcm_report",
             "pdf_mac_report", "pdf_mac_verify", "crypto_tamper_test",
             "signature_validation", "signature_validation_with_evidence",
@@ -3805,7 +3883,7 @@ pub fn feature_report_json() -> Result<String> {
                 "ProgressiveRenderJob::render_next",
                 "ProgressiveRenderJob::token"
             ],
-            "reason": "Prompt 09 adds an engine-level tile checkpoint model; callback-style binding progress APIs remain later binding work."
+            "reason": "Annotation Ocg Rendering adds an engine-level tile checkpoint model; callback-style binding progress APIs remain later binding work."
         },
         "cancellation": {
             "status": "engine_render_cancellation_supported_binding_tokens_later",
@@ -3829,7 +3907,7 @@ pub fn feature_report_json() -> Result<String> {
 // ── Output-producing operations (bytes + report) ─────────────────────────────
 
 /// Build a PDF overlay preview of supported XFA layout and return the PDF bytes
-/// plus the stable Prompt 16 flatten/render report envelope.
+/// plus the stable XFA Runtime flatten/render report envelope.
 pub fn xfa_render_preview_json(
     bytes: &[u8],
     script_policy: Option<&str>,
@@ -3847,7 +3925,7 @@ pub fn xfa_render_preview_json(
     Ok((out, envelope("xfa_render_report", &report)?))
 }
 
-/// Flatten the supported static XFA subset using an explicit Prompt 16 mode.
+/// Flatten the supported static XFA subset using an explicit XFA Runtime mode.
 pub fn xfa_flatten_json(
     bytes: &[u8],
     mode: Option<&str>,
@@ -3878,13 +3956,13 @@ pub fn xfa_sanitize_json(
     Ok((out, envelope("xfa_sanitize_report", &report)?))
 }
 
-/// Export annotation XFDF plus a deterministic Prompt 17 report.
+/// Export annotation XFDF plus a deterministic annotation/media redaction report.
 pub fn annotation_xfdf_export_json(
     bytes: &[u8],
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let engine = open(bytes, password)?;
-    let (xfdf, report) = crate::prompt17::export_annotation_xfdf(&engine)?;
+    let (xfdf, report) = crate::annotation_media_redaction::export_annotation_xfdf(&engine)?;
     Ok((xfdf, envelope("annotation_xfdf_export_report", &report)?))
 }
 
@@ -3902,7 +3980,8 @@ pub fn annotation_xfdf_import_json(
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
-    let (output, report) = crate::prompt17::import_annotation_xfdf_pdf(&input, xfdf, &options)?;
+    let (output, report) =
+        crate::annotation_media_redaction::import_annotation_xfdf_pdf(&input, xfdf, &options)?;
     Ok((output, envelope("annotation_xfdf_import_report", &report)?))
 }
 
@@ -3919,7 +3998,8 @@ pub fn annotation_appearance_generate_json(
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
-    let (output, report) = crate::prompt17::generate_annotation_appearances_pdf(&input, &options)?;
+    let (output, report) =
+        crate::annotation_media_redaction::generate_annotation_appearances_pdf(&input, &options)?;
     Ok((
         output,
         envelope("annotation_appearance_generation_report", &report)?,
@@ -3938,11 +4018,12 @@ pub fn annotation_appearance_report_json(
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
-    let (_, report) = crate::prompt17::generate_annotation_appearances_pdf(&input, &options)?;
+    let (_, report) =
+        crate::annotation_media_redaction::generate_annotation_appearances_pdf(&input, &options)?;
     envelope("annotation_appearance_report", &report)
 }
 
-/// Apply one of the explicit Prompt 17 rich-media policies.
+/// Apply one of the explicit annotation/media redaction rich-media policies.
 pub fn rich_media_sanitize_json(
     bytes: &[u8],
     mode: Option<&str>,
@@ -3956,11 +4037,11 @@ pub fn rich_media_sanitize_json(
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
-    let (output, report) = crate::prompt17::apply_rich_media_policy_pdf(
+    let (output, report) = crate::annotation_media_redaction::apply_rich_media_policy_pdf(
         &input,
         mode,
         &custom,
-        &crate::prompt17::RichMediaLimits::default(),
+        &crate::annotation_media_redaction::RichMediaLimits::default(),
     )?;
     Ok((output, envelope("rich_media_policy_report", &report)?))
 }
@@ -3974,16 +4055,17 @@ pub fn rich_media_flatten_poster_json(
     rich_media_sanitize_json(bytes, Some("flatten_static_poster"), None, password)
 }
 
-/// Apply the Prompt 17 non-axis polygon redaction plan.
+/// Apply the annotation/media redaction non-axis polygon redaction plan.
 pub fn nonaxis_redaction_apply_json(
     bytes: &[u8],
     options_json: &str,
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let options: crate::prompt17::NonAxisRedactionOptions =
+    let options: crate::annotation_media_redaction::NonAxisRedactionOptions =
         serde_json::from_str(options_json).map_err(json_err)?;
-    let (output, report) = crate::prompt17::apply_nonaxis_image_redaction_pdf(&input, &options)?;
+    let (output, report) =
+        crate::annotation_media_redaction::apply_nonaxis_image_redaction_pdf(&input, &options)?;
     Ok((output, envelope("nonaxis_redaction_apply_report", &report)?))
 }
 
@@ -3994,9 +4076,9 @@ pub fn redact_image_mask_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let options: crate::prompt17::NonAxisRedactionOptions =
+    let options: crate::annotation_media_redaction::NonAxisRedactionOptions =
         serde_json::from_str(options_json).map_err(json_err)?;
-    let (output, report) = crate::prompt18::redact_masked_images_pdf(&input, &options)?;
+    let (output, report) = crate::secure_mutation::redact_masked_images_pdf(&input, &options)?;
     Ok((output, envelope("mask_redaction_apply_report", &report)?))
 }
 
@@ -4016,11 +4098,11 @@ pub fn associated_files_extract_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let engine = open(bytes, password)?;
-    let (filename, payload) = crate::prompt18::associated_file_extract(&engine, stable_id)?;
+    let (filename, payload) = crate::secure_mutation::associated_file_extract(&engine, stable_id)?;
     let report = envelope(
         "associated_files_extract_report",
         &json!({
-            "schema_version": crate::prompt18::PROMPT18_SCHEMA_VERSION,
+            "schema_version": crate::secure_mutation::SECURE_MUTATION_SCHEMA_VERSION,
             "stable_id": stable_id,
             "safe_filename": filename,
             "bytes": payload.len(),
@@ -4038,9 +4120,10 @@ pub fn associated_files_add_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let options: crate::prompt18::AssociatedFileAddRequest =
+    let options: crate::secure_mutation::AssociatedFileAddRequest =
         serde_json::from_str(options_json).map_err(json_err)?;
-    let (output, report) = crate::prompt18::associated_files_add_pdf(&input, &options, payload)?;
+    let (output, report) =
+        crate::secure_mutation::associated_files_add_pdf(&input, &options, payload)?;
     Ok((output, envelope("associated_files_add_report", &report)?))
 }
 
@@ -4055,7 +4138,7 @@ pub fn associated_files_sanitize_json(
         .transpose()
         .map_err(json_err)?
         .unwrap_or_default();
-    let (output, report) = crate::prompt18::associated_files_sanitize_pdf(&input, &options)?;
+    let (output, report) = crate::secure_mutation::associated_files_sanitize_pdf(&input, &options)?;
     Ok((
         output,
         envelope("associated_files_sanitize_report", &report)?,
@@ -4068,11 +4151,11 @@ pub fn associated_files_remove_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let options = crate::prompt18::AssociatedFileSanitizerOptions {
+    let options = crate::secure_mutation::AssociatedFileSanitizerOptions {
         remove_ids: stable_ids.iter().cloned().collect(),
-        ..crate::prompt18::AssociatedFileSanitizerOptions::default()
+        ..crate::secure_mutation::AssociatedFileSanitizerOptions::default()
     };
-    let (output, report) = crate::prompt18::associated_files_sanitize_pdf(&input, &options)?;
+    let (output, report) = crate::secure_mutation::associated_files_sanitize_pdf(&input, &options)?;
     Ok((output, envelope("associated_files_remove_report", &report)?))
 }
 
@@ -4082,9 +4165,10 @@ pub fn associated_files_remove_owner_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let options: crate::prompt18::AssociatedFileOwnerRemoveRequest =
+    let options: crate::secure_mutation::AssociatedFileOwnerRemoveRequest =
         serde_json::from_str(options_json).map_err(json_err)?;
-    let (output, report) = crate::prompt18::associated_files_remove_owner_pdf(&input, &options)?;
+    let (output, report) =
+        crate::secure_mutation::associated_files_remove_owner_pdf(&input, &options)?;
     Ok((
         output,
         envelope("associated_files_remove_owner_report", &report)?,
@@ -4098,10 +4182,10 @@ pub fn associated_files_update_owner_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let options: crate::prompt18::AssociatedFileOwnerUpdateRequest =
+    let options: crate::secure_mutation::AssociatedFileOwnerUpdateRequest =
         serde_json::from_str(options_json).map_err(json_err)?;
     let (output, report) =
-        crate::prompt18::associated_files_update_owner_pdf(&input, &options, payload)?;
+        crate::secure_mutation::associated_files_update_owner_pdf(&input, &options, payload)?;
     Ok((
         output,
         envelope("associated_files_update_owner_report", &report)?,
@@ -4116,7 +4200,7 @@ pub fn incremental_form_edit_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let (output, report) = crate::prompt18::incremental_form_value_update_pdf(
+    let (output, report) = crate::secure_mutation::incremental_form_value_update_pdf(
         &input,
         field_name,
         value,
@@ -4125,7 +4209,7 @@ pub fn incremental_form_edit_json(
     Ok((output, envelope("incremental_form_edit_report", &report)?))
 }
 
-/// Prompt 25 signature-preserving form-fill plan.
+/// Pades LTV signature-preserving form-fill plan.
 ///
 /// This is a planning surface only: it parses DocMDP/FieldMDP policy,
 /// validates the current signatures with the supplied trust/evidence options,
@@ -4142,11 +4226,13 @@ pub fn signature_preserving_form_plan_json(
     let options = crate::signature::verify_options_from_json(options_json)?;
     envelope(
         "signature_preserving_edit_plan",
-        &crate::prompt18::plan_signature_preserving_form_fill(&input, field_name, value, &options)?,
+        &crate::secure_mutation::plan_signature_preserving_form_fill(
+            &input, field_name, value, &options,
+        )?,
     )
 }
 
-/// Prompt 25 signature-preserving form-fill execution.
+/// Pades LTV signature-preserving form-fill execution.
 ///
 /// The output is produced through the existing incremental writer, then
 /// reopened and revalidated with the same signature options. The report only
@@ -4162,7 +4248,7 @@ pub fn signature_preserving_form_edit_json(
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
     let options = crate::signature::verify_options_from_json(options_json)?;
-    let (output, report) = crate::prompt18::apply_signature_preserving_form_fill(
+    let (output, report) = crate::secure_mutation::apply_signature_preserving_form_fill(
         &input,
         field_name,
         value,
@@ -4182,9 +4268,9 @@ pub fn incremental_annotation_edit_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let options: crate::prompt18::IncrementalAnnotationEdit =
+    let options: crate::secure_mutation::IncrementalAnnotationEdit =
         serde_json::from_str(options_json).map_err(json_err)?;
-    let (output, report) = crate::prompt18::incremental_annotation_update_pdf(
+    let (output, report) = crate::secure_mutation::incremental_annotation_update_pdf(
         &input,
         &options,
         signature_policy_override,
@@ -4202,9 +4288,9 @@ pub fn incremental_page_property_edit_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let options: crate::prompt18::IncrementalPagePropertyEdit =
+    let options: crate::secure_mutation::IncrementalPagePropertyEdit =
         serde_json::from_str(options_json).map_err(json_err)?;
-    let (output, report) = crate::prompt18::incremental_page_property_update_pdf(
+    let (output, report) = crate::secure_mutation::incremental_page_property_update_pdf(
         &input,
         &options,
         signature_policy_override,
@@ -4223,7 +4309,7 @@ pub fn incremental_metadata_update_json(
     password: Option<&[u8]>,
 ) -> Result<(Vec<u8>, String)> {
     let input = mutation_input(bytes, password)?;
-    let (output, report) = crate::prompt18::incremental_metadata_update_pdf(
+    let (output, report) = crate::secure_mutation::incremental_metadata_update_pdf(
         &input,
         key,
         value,
@@ -4346,8 +4432,10 @@ pub fn redact_terms_json(
 
 // ── Enum parse helpers (string → engine enum, with honest defaults) ──────────
 
-fn parse_rich_media_mode(value: Option<&str>) -> Result<crate::prompt17::RichMediaPolicyMode> {
-    use crate::prompt17::RichMediaPolicyMode;
+fn parse_rich_media_mode(
+    value: Option<&str>,
+) -> Result<crate::annotation_media_redaction::RichMediaPolicyMode> {
+    use crate::annotation_media_redaction::RichMediaPolicyMode;
     match value.map(str::to_ascii_lowercase).as_deref() {
         None | Some("remove_active_content" | "remove-active-content") => {
             Ok(RichMediaPolicyMode::RemoveActiveContent)
@@ -4367,8 +4455,10 @@ fn parse_rich_media_mode(value: Option<&str>) -> Result<crate::prompt17::RichMed
     }
 }
 
-fn parse_prompt18_edit_operation(value: &str) -> Result<crate::prompt18::EditOperation> {
-    use crate::prompt18::EditOperation;
+fn parse_secure_mutation_edit_operation(
+    value: &str,
+) -> Result<crate::secure_mutation::EditOperation> {
+    use crate::secure_mutation::EditOperation;
     match value.trim().to_ascii_lowercase().replace('-', "_").as_str() {
         "form_value" | "form_value_update" => Ok(EditOperation::FormValueUpdate),
         "form_appearance" | "form_appearance_update" => Ok(EditOperation::FormAppearanceUpdate),
@@ -4392,7 +4482,7 @@ fn parse_prompt18_edit_operation(value: &str) -> Result<crate::prompt18::EditOpe
         "full_rewrite" => Ok(EditOperation::FullRewrite),
         "incremental" | "incremental_save" => Ok(EditOperation::IncrementalSave),
         other => Err(crate::WellfriendError::MalformedPdf(format!(
-            "unknown Prompt 18 edit operation {other}"
+            "unknown secure mutation edit operation {other}"
         ))),
     }
 }
@@ -4615,89 +4705,89 @@ mod tests {
         let v = assert_envelope(&feature_report_json().unwrap(), "feature_report");
         assert!(v["report"]["engine_version"].is_string());
         assert_eq!(
-            v["report"]["prompt04"]["scanner"]["default_implementation"],
+            v["report"]["codec_boundary"]["scanner"]["default_implementation"],
             "safe_first_byte_chunked"
         );
         assert_eq!(
-            v["report"]["prompt04"]["renderer_decode_scheduler"]["status"],
+            v["report"]["codec_boundary"]["renderer_decode_scheduler"]["status"],
             "adopted_for_immediate_renderer_decode_paths"
         );
         assert_eq!(
-            v["report"]["prompt04"]["native_codec_boundary"]["default_posture"],
+            v["report"]["codec_boundary"]["native_codec_boundary"]["default_posture"],
             "deny_native_by_default"
         );
         assert_eq!(
-            v["report"]["prompt05"]["decode_scheduler"]["status"],
-            "adopted_for_prompt05_non_render_decode_paths"
+            v["report"]["decode_scheduler"]["decode_scheduler"]["status"],
+            "adopted_for_decode_scheduler_non_render_decode_paths"
         );
         assert_eq!(
-            v["report"]["prompt05"]["hostile_corpus"]["generator"],
-            "scripts/prompt05_hostile_codec_corpus.py"
+            v["report"]["decode_scheduler"]["hostile_corpus"]["generator"],
+            "scripts/decode_scheduler_hostile_codec_corpus.py"
         );
         assert_eq!(
-            v["report"]["prompt05"]["fuzz_campaign"]["script"],
-            "scripts/prompt05_codec_fuzz_campaign.py"
+            v["report"]["decode_scheduler"]["fuzz_campaign"]["script"],
+            "scripts/decode_scheduler_codec_fuzz_campaign.py"
         );
         assert_eq!(
-            v["report"]["prompt06"]["native_replay"]["status"],
+            v["report"]["native_renderer"]["native_replay"]["status"],
             "native_text_image_form_display_list_foundation"
         );
         assert_eq!(
-            v["report"]["prompt06"]["renderer_parity_audit"]["script"],
-            "scripts/prompt06_renderer_parity_audit.py"
+            v["report"]["native_renderer"]["renderer_parity_audit"]["script"],
+            "scripts/native_renderer_renderer_parity_audit.py"
         );
         assert_eq!(
-            v["report"]["prompt06"]["prompt06b_multi_reference_audit"]["status"],
+            v["report"]["native_renderer"]["reference_renderer_multi_reference_audit"]["status"],
             "multi_reference_audit_complete"
         );
         assert_eq!(
-            v["report"]["prompt06"]["prompt06b_multi_reference_audit"]
+            v["report"]["native_renderer"]["reference_renderer_multi_reference_audit"]
                 ["total_pairwise_comparisons"],
             78
         );
         assert_eq!(
-            v["report"]["prompt07_transparency_compositing"]["status"],
-            "native_foundation_with_prompt07b_closure"
+            v["report"]["transparency_rendering_transparency_compositing"]["status"],
+            "native_foundation_with_transparency_closeout_closure"
         );
         assert_eq!(
-            v["report"]["prompt07_transparency_compositing"]["reference_audit"]["memory_cap_mb"],
+            v["report"]["transparency_rendering_transparency_compositing"]["reference_audit"]
+                ["memory_cap_mb"],
             4096
         );
         assert!(
-            v["report"]["prompt07_transparency_compositing"]["blend_modes"]["implemented"]
+            v["report"]["transparency_rendering_transparency_compositing"]["blend_modes"]
+                ["implemented"]
                 .as_array()
                 .unwrap()
                 .iter()
                 .any(|mode| mode == "Luminosity")
         );
         assert_eq!(
-            v["report"]["prompt07b_transparency_closure"]["status"],
+            v["report"]["transparency_closeout_transparency_closure"]["status"],
             "complete"
         );
         assert_eq!(
-            v["report"]["prompt07b_transparency_closure"]["reference_audit"]
+            v["report"]["transparency_closeout_transparency_closure"]["reference_audit"]
                 ["wellfriendpdf_outlier_failures"],
             0
         );
-        assert!(
-            v["report"]["prompt07b_transparency_closure"]["luminosity_soft_mask_color_spaces"]
-                ["supported"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|space| space == "DeviceCMYK")
-        );
+        assert!(v["report"]["transparency_closeout_transparency_closure"]
+            ["luminosity_soft_mask_color_spaces"]["supported"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|space| space == "DeviceCMYK"));
         assert_eq!(
-            v["report"]["prompt08_text_clipping_shading_patterns"]["status"],
+            v["report"]["advanced_rendering_text_clipping_shading_patterns"]["status"],
             "native_common_paths_with_bounded_unsupported_reports"
         );
         assert_eq!(
-            v["report"]["prompt08_text_clipping_shading_patterns"]["reference_audit"]
+            v["report"]["advanced_rendering_text_clipping_shading_patterns"]["reference_audit"]
                 ["memory_cap_mb"],
             4096
         );
         assert!(
-            v["report"]["prompt08_text_clipping_shading_patterns"]["text_clipping"]
+            v["report"]["advanced_rendering_text_clipping_shading_patterns"]["text_clipping"]
                 ["rendering_modes"]
                 .as_array()
                 .unwrap()
@@ -4705,140 +4795,145 @@ mod tests {
                 .any(|mode| mode.as_i64() == Some(7))
         );
         assert_eq!(
-            v["report"]["prompt08b_type3_cid_tensor_closure"]["status"],
+            v["report"]["type3_cid_rendering_type3_cid_tensor_closure"]["status"],
             "complete_native_common_paths_with_reference_cluster_limits"
         );
         assert_eq!(
-            v["report"]["prompt08b_type3_cid_tensor_closure"]["reference_audit"]
+            v["report"]["type3_cid_rendering_type3_cid_tensor_closure"]["reference_audit"]
                 ["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
-            v["report"]["prompt08b_type3_cid_tensor_closure"]["type7_tensor_patch"]["status"],
+            v["report"]["type3_cid_rendering_type3_cid_tensor_closure"]["type7_tensor_patch"]
+                ["status"],
             "native_tensor_product_interior"
         );
         assert_eq!(
-            v["report"]["prompt09_annotation_ocg_progressive_cache"]["status"],
+            v["report"]["annotation_ocg_rendering_annotation_ocg_progressive_cache"]["status"],
             "implemented_with_bounded_unsupported_reports"
         );
         assert_eq!(
-            v["report"]["prompt09_annotation_ocg_progressive_cache"]["optional_content"]["status"],
+            v["report"]["annotation_ocg_rendering_annotation_ocg_progressive_cache"]
+                ["optional_content"]["status"],
             "default_view_configuration_evaluator"
         );
         assert_eq!(
-            v["report"]["prompt09_annotation_ocg_progressive_cache"]["closure_gates"]
-                ["memory_cap_mb"],
+            v["report"]["annotation_ocg_rendering_annotation_ocg_progressive_cache"]
+                ["closure_gates"]["memory_cap_mb"],
             4096
         );
         assert_eq!(
-            v["report"]["prompt09b_annotation_progressive_cache_validation"]["status"],
+            v["report"]["renderer_validation_annotation_progressive_cache_validation"]["status"],
             "implemented_and_proven"
         );
         assert_eq!(
-            v["report"]["prompt09b_annotation_progressive_cache_validation"]
+            v["report"]["renderer_validation_annotation_progressive_cache_validation"]
                 ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
-            v["report"]["prompt09b_annotation_progressive_cache_validation"]
+            v["report"]["renderer_validation_annotation_progressive_cache_validation"]
                 ["public_report_parity"]["schema_change"],
             "additive_section_only"
         );
         assert_eq!(
-            v["report"]["prompt10_cjk_rtl_color_glyph_reference_harness"]["status"],
+            v["report"]["multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness"]
+                ["status"],
             "implemented_with_bounded_unsupported_reports"
         );
         assert_eq!(
-            v["report"]["prompt10_cjk_rtl_color_glyph_reference_harness"]["closure_gates"]
-                ["memory_cap_mb"],
+            v["report"]["multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness"]
+                ["closure_gates"]["memory_cap_mb"],
             4096
         );
         assert_eq!(
-            v["report"]["prompt10_cjk_rtl_color_glyph_reference_harness"]["color_glyph_rendering"]
-                ["status"],
+            v["report"]["multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness"]
+                ["color_glyph_rendering"]["status"],
             "unsupported_color_tables_are_detected_and_reported"
         );
         assert_eq!(
-            v["report"]["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]["status"],
+            v["report"]["cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_fidelity_closure"]
+                ["status"],
             "complete"
         );
         assert_eq!(
-            v["report"]["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]["color_glyph_rendering"]
-                ["colr_cpal"]["status"],
+            v["report"]["cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_fidelity_closure"]
+                ["color_glyph_rendering"]["colr_cpal"]["status"],
             "implemented_and_proven"
         );
         assert_eq!(
-            v["report"]["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]["multi_reference_audit"]
-                ["wellfriendpdf_outlier_failures"],
+            v["report"]["cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_fidelity_closure"]
+                ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
-            v["report"]["prompt10c_color_glyph_hinting_cff_closure"]["status"],
+            v["report"]["color_glyph_hinting_color_glyph_hinting_cff_closure"]["status"],
             "complete"
         );
         assert_eq!(
-            v["report"]["prompt10c_color_glyph_hinting_cff_closure"]["colrv1"]["status"],
+            v["report"]["color_glyph_hinting_color_glyph_hinting_cff_closure"]["colrv1"]["status"],
             "implemented_with_operator_level_limits"
         );
         assert_eq!(
-            v["report"]["prompt10c_color_glyph_hinting_cff_closure"]["multi_reference_audit"]
-                ["wellfriendpdf_outlier_failures"],
+            v["report"]["color_glyph_hinting_color_glyph_hinting_cff_closure"]
+                ["multi_reference_audit"]["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
-            v["report"]["prompt10c_color_glyph_hinting_cff_closure"]["closure_gates"]
+            v["report"]["color_glyph_hinting_color_glyph_hinting_cff_closure"]["closure_gates"]
                 ["public_report_schema"],
-            "additive_feature_report_prompt10c"
+            "additive_feature_report_color_glyph_hinting"
         );
         assert_eq!(
-            v["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["status"],
+            v["report"]["colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure"]["status"],
             "complete"
         );
         assert_eq!(
-            v["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["svg_in_opentype"]
+            v["report"]["colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure"]["svg_in_opentype"]
                 ["status"],
             "safe_static_subset_rendered_active_constructs_blocked"
         );
         assert_eq!(
-            v["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["bitmap_color_glyphs"]
-                ["sbix"]["status"],
+            v["report"]["colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure"]
+                ["bitmap_color_glyphs"]["sbix"]["status"],
             "png_and_jpeg_rendered_tiff_other_precisely_reported"
         );
         assert_eq!(
-            v["report"]["prompt10d_full_colrv1_svg_color_glyph_closure"]["closure_gates"]
+            v["report"]["colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure"]["closure_gates"]
                 ["public_report_schema"],
-            "additive_feature_report_prompt10d"
+            "additive_feature_report_colrv_svg_bitmap"
         );
         assert_eq!(
-            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["status"],
+            v["report"]["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+                ["status"],
             "complete"
         );
         assert_eq!(
-            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["colrv1_gradients"]
-                ["implemented_operators"][0],
+            v["report"]["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+                ["colrv1_gradients"]["implemented_operators"][0],
             "PaintLinearGradient"
         );
         assert_eq!(
-            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["colrv1_clip_stack"]
-                ["status"],
+            v["report"]["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+                ["colrv1_clip_stack"]["status"],
             "implemented"
         );
         assert_eq!(
-            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["colrv1_composites"]
-                ["implemented_modes"][1],
+            v["report"]["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+                ["colrv1_composites"]["implemented_modes"][1],
             "Multiply"
         );
         assert_eq!(
-            v["report"]["prompt10e_colrv1_gradient_clip_composite_closure"]["closure_gates"]
-                ["public_report_schema"],
-            "additive_feature_report_prompt10e"
+            v["report"]["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+                ["closure_gates"]["public_report_schema"],
+            "additive_feature_report_colrv_gradient_composite"
         );
         assert_eq!(
-            v["report"]["prompt10f_colrv1_porterduff_radial_closure"]["status"],
+            v["report"]["porterduff_radial_color_glyph_colrv1_porterduff_radial_closure"]["status"],
             "complete"
         );
         assert_eq!(
-            v["report"]["prompt10f_colrv1_porterduff_radial_closure"]
+            v["report"]["porterduff_radial_color_glyph_colrv1_porterduff_radial_closure"]
                 ["porter_duff_plus_composites"]["implemented_modes"]
                 .as_array()
                 .unwrap()
@@ -4846,201 +4941,228 @@ mod tests {
             12
         );
         assert_eq!(
-            v["report"]["prompt10f_colrv1_porterduff_radial_closure"]["exact_moving_center_radial"]
-                ["status"],
+            v["report"]["porterduff_radial_color_glyph_colrv1_porterduff_radial_closure"]
+                ["exact_moving_center_radial"]["status"],
             "implemented_with_reference_equivalence"
         );
         assert_eq!(
-            v["report"]["prompt10f_colrv1_porterduff_radial_closure"]["closure_gates"]
-                ["public_report_schema"],
-            "additive_feature_report_prompt10f"
+            v["report"]["porterduff_radial_color_glyph_colrv1_porterduff_radial_closure"]
+                ["closure_gates"]["public_report_schema"],
+            "additive_feature_report_porterduff_radial_color_glyph"
         );
         assert_eq!(
-            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["status"],
+            v["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["status"],
             "complete_with_native_cmm_hard_blocked_precise"
         );
         assert_eq!(
-            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_fuzz"]
+            v["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["renderer_fuzz"]
                 ["fuzz_target_count"],
             25
         );
         assert_eq!(
-            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["renderer_closeout"]
+            v["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["renderer_closeout"]
                 ["wellfriendpdf_outlier_failures"],
             0
         );
         assert_eq!(
-            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["native_cmm_backend"]
+            v["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["native_cmm_backend"]
                 ["backend_used_in_current_build"],
             "safe-rust-plus-qcms"
         );
         assert_eq!(
-            v["report"]["prompt11_renderer_fuzz_cmm_closeout"]["closure_gates"]
+            v["report"]["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]["closure_gates"]
                 ["public_report_schema"],
-            "additive_feature_report_prompt11"
+            "additive_feature_report_renderer_fuzz_cmm"
         );
-        let prompt11b = &v["report"]["prompt11b_native_littlecms_cmm_backend_closure"];
-        assert_eq!(prompt11b["status"], "complete");
-        assert_eq!(prompt11b["feature_flag"]["name"], "native-cmm-lcms2");
+        let native_cmm_backend =
+            &v["report"]["native_cmm_backend_native_littlecms_cmm_backend_closure"];
+        assert_eq!(native_cmm_backend["status"], "complete");
         assert_eq!(
-            prompt11b["native_cmm_compiled"],
+            native_cmm_backend["feature_flag"]["name"],
+            "native-cmm-lcms2"
+        );
+        assert_eq!(
+            native_cmm_backend["native_cmm_compiled"],
             cfg!(feature = "native-cmm-lcms2")
         );
         assert_eq!(
-            prompt11b["native_cmm_available_at_runtime"],
+            native_cmm_backend["native_cmm_available_at_runtime"],
             cfg!(all(
                 feature = "native-cmm-lcms2",
                 not(target_arch = "wasm32")
             ))
         );
         assert_eq!(
-            prompt11b["closure_gates"]["public_report_schema"],
-            "additive_feature_report_prompt11b"
+            native_cmm_backend["closure_gates"]["public_report_schema"],
+            "additive_feature_report_native_cmm_backend"
         );
-        let prompt12 = &v["report"]["prompt12_prepress_cmm_device_link_separation_plates"];
-        assert_eq!(prompt12["status"], "complete");
+        let prepress_cmm = &v["report"]["prepress_cmm_prepress_cmm_device_link_separation_plates"];
+        assert_eq!(prepress_cmm["status"], "complete");
         assert_eq!(
-            prompt12["closure_gates"]["public_report_schema"],
-            "additive_feature_report_prompt12"
+            prepress_cmm["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prepress_cmm"
         );
         assert_eq!(
-            prompt12["native_cmm_compiled"],
+            prepress_cmm["native_cmm_compiled"],
             cfg!(feature = "native-cmm-lcms2")
         );
         assert_eq!(
-            prompt12["separation_framebuffer"]["cache_key_includes_plate_state"],
+            prepress_cmm["separation_framebuffer"]["cache_key_includes_plate_state"],
             true
         );
-        let prompt12b = &v["report"]["prompt12b_nchannel_plate_reference_closure"];
-        assert_eq!(prompt12b["status"], "complete");
+        let nchannel_plate_prepress =
+            &v["report"]["nchannel_plate_prepress_nchannel_plate_reference_closure"];
+        assert_eq!(nchannel_plate_prepress["status"], "complete");
         assert_eq!(
-            prompt12b["closure_gates"]["public_report_schema"],
-            "additive_feature_report_prompt12b"
+            nchannel_plate_prepress["closure_gates"]["public_report_schema"],
+            "additive_feature_report_nchannel_plate_prepress"
         );
         assert_eq!(
-            prompt12b["nchannel_pixel_format"]["max_channels"],
+            nchannel_plate_prepress["nchannel_pixel_format"]["max_channels"],
             prepress::MAX_NCHANNEL_OUTPUT_CHANNELS
         );
         assert_eq!(
-            prompt12b["reference_audit"]["pdfium"],
-            "required_and_run_by_prompt12b_audit"
+            nchannel_plate_prepress["reference_audit"]["pdfium"],
+            "required_and_run_by_nchannel_plate_prepress_audit"
         );
-        let prompt13 = &v["report"]["prompt13_full_overprint_prepress_closeout"];
-        assert_eq!(prompt13["status"], "complete");
+        let prepress_proofing = &v["report"]["prepress_proofing_full_overprint_prepress_closeout"];
+        assert_eq!(prepress_proofing["status"], "complete");
         assert_eq!(
-            prompt13["closure_gates"]["public_report_schema"],
-            "additive_feature_report_prompt13"
+            prepress_proofing["closure_gates"]["public_report_schema"],
+            "additive_feature_report_prepress_proofing"
         );
         assert_eq!(
-            prompt13["reference_audit"]["wellfriendpdf_outlier_failures"],
+            prepress_proofing["reference_audit"]["wellfriendpdf_outlier_failures"],
             0
         );
-        assert_eq!(prompt13["reference_audit"]["unclassified_failures"], 0);
-        let prompt14 = &v["report"]["prompt14_semantic_intelligence_parenttree_cjk_ml_layout"];
-        assert_eq!(prompt14["status"], "complete");
         assert_eq!(
-            prompt14["closure_gates"]["public_report_schema"],
-            "additive_feature_report_prompt14"
+            prepress_proofing["reference_audit"]["unclassified_failures"],
+            0
         );
-        assert_eq!(prompt14["privacy_defaults"]["cloud_upload_default"], false);
+        let semantic_intelligence =
+            &v["report"]["semantic_intelligence_semantic_intelligence_parenttree_cjk_ml_layout"];
+        assert_eq!(semantic_intelligence["status"], "complete");
         assert_eq!(
-            prompt14["ml_layout_hook"]["can_delete_deterministic_text"],
+            semantic_intelligence["closure_gates"]["public_report_schema"],
+            "additive_feature_report_semantic_intelligence"
+        );
+        assert_eq!(
+            semantic_intelligence["privacy_defaults"]["cloud_upload_default"],
             false
         );
-        let prompt14b = &v["report"]["prompt14b_cjk_dictionary_layout_backend_closure"];
-        assert_eq!(prompt14b["status"], "complete");
         assert_eq!(
-            prompt14b["closure_gates"]["public_report_schema"],
-            "additive_feature_report_prompt14b"
+            semantic_intelligence["ml_layout_hook"]["can_delete_deterministic_text"],
+            false
+        );
+        let cjk_dictionary_layout =
+            &v["report"]["cjk_dictionary_layout_cjk_dictionary_layout_backend_closure"];
+        assert_eq!(cjk_dictionary_layout["status"], "complete");
+        assert_eq!(
+            cjk_dictionary_layout["closure_gates"]["public_report_schema"],
+            "additive_feature_report_cjk_dictionary_layout"
         );
         assert_eq!(
-            prompt14b["dictionary_provider"]["external_pack_support"],
+            cjk_dictionary_layout["dictionary_provider"]["external_pack_support"],
             "implemented"
         );
         assert_eq!(
-            prompt14b["layout_backend"]["local_backend_status"],
+            cjk_dictionary_layout["layout_backend"]["local_backend_status"],
             "unsupported_reported_no_runtime"
         );
         assert_eq!(
-            prompt14b["layout_backend"]["privacy_posture"]["cloud_upload_default"],
+            cjk_dictionary_layout["layout_backend"]["privacy_posture"]["cloud_upload_default"],
             false
         );
-        let prompt15 = &v["report"]["prompt15_semantic_binding_rag_benchmark_closeout"];
-        assert_eq!(prompt15["status"], "complete");
+        let semantic_closeout =
+            &v["report"]["semantic_closeout_semantic_binding_rag_benchmark_closeout"];
+        assert_eq!(semantic_closeout["status"], "complete");
         assert_eq!(
-            prompt15["closure_gates"]["public_report_schema"],
-            "additive_feature_report_prompt15"
+            semantic_closeout["closure_gates"]["public_report_schema"],
+            "additive_feature_report_semantic_closeout"
         );
-        assert_eq!(prompt15["closure_gates"]["blocked_count"], 0);
-        assert_eq!(prompt15["privacy"]["cloud_upload_default"], false);
+        assert_eq!(semantic_closeout["closure_gates"]["blocked_count"], 0);
+        assert_eq!(semantic_closeout["privacy"]["cloud_upload_default"], false);
         assert_eq!(
-            prompt15["tableformer_table_transformer_hook"]["model_can_rewrite_deterministic_text"],
+            semantic_closeout["tableformer_table_transformer_hook"]
+                ["model_can_rewrite_deterministic_text"],
             false
         );
-        let prompt22b = &v["report"]["prompt22b_resource_dedup_office_benchmark_closure"];
-        assert_eq!(prompt22b["status"], "implemented_with_limits");
-        assert_eq!(prompt22b["closure_audit"]["blocked_rows"], 0);
-        assert_eq!(prompt22b["dedup_families"]["unsafe_merge_count"], 0);
+        let compression_office_closeout =
+            &v["report"]["compression_office_closeout_resource_dedup_office_benchmark_closure"];
         assert_eq!(
-            prompt22b["office_benchmark"]["production_external_converter_invoked"],
-            false
-        );
-        let prompt23 = &v["report"]["prompt23_deterministic_writer_pubsec_aesgcm"];
-        assert_eq!(prompt23["status"], "implemented_with_limits");
-        assert_eq!(prompt23["blocked_rows"], 0);
-        assert_eq!(
-            prompt23["public_key_handler_status"],
+            compression_office_closeout["status"],
             "implemented_with_limits"
         );
         assert_eq!(
-            prompt23["aes_gcm_decrypt_status"],
+            compression_office_closeout["closure_audit"]["blocked_rows"],
+            0
+        );
+        assert_eq!(
+            compression_office_closeout["dedup_families"]["unsafe_merge_count"],
+            0
+        );
+        assert_eq!(
+            compression_office_closeout["office_benchmark"]
+                ["production_external_converter_invoked"],
+            false
+        );
+        let crypto_writer = &v["report"]["crypto_writer_deterministic_writer_pubsec_aesgcm"];
+        assert_eq!(crypto_writer["status"], "implemented_with_limits");
+        assert_eq!(crypto_writer["blocked_rows"], 0);
+        assert_eq!(
+            crypto_writer["public_key_handler_status"],
             "implemented_with_limits"
         );
-        let prompt24 = &v["report"]["prompt24_certificate_trust_pades_ocsp_crl_validation"];
         assert_eq!(
-            prompt24["status"],
+            crypto_writer["aes_gcm_decrypt_status"],
+            "implemented_with_limits"
+        );
+        let signature_validation =
+            &v["report"]["signature_validation_certificate_trust_pades_ocsp_crl_validation"];
+        assert_eq!(
+            signature_validation["status"],
             "implemented_with_limits_not_release_attested"
         );
         assert_eq!(
-            prompt24["signer_certificate_resolution"],
+            signature_validation["signer_certificate_resolution"],
             "implemented_exact_match_no_arbitrary_fallback"
         );
-        assert_eq!(prompt24["retrieval"]["default"], "offline");
+        assert_eq!(signature_validation["retrieval"]["default"], "offline");
         assert_eq!(
-            prompt24["release_attestation"]["final_closure_commit"],
+            signature_validation["release_attestation"]["final_closure_commit"],
             "absent"
         );
         assert_envelope(
-            &prompt09_renderer_report_json().unwrap(),
-            "prompt09_renderer_report",
+            &annotation_ocg_rendering_renderer_report_json().unwrap(),
+            "annotation_ocg_rendering_renderer_report",
         );
         assert_envelope(
-            &prompt09b_validation_report_json().unwrap(),
-            "prompt09b_validation_report",
+            &renderer_validation_validation_report_json().unwrap(),
+            "renderer_validation_validation_report",
         );
         assert_envelope(
-            &prompt10_renderer_report_json().unwrap(),
-            "prompt10_renderer_report",
+            &multilingual_color_glyphs_renderer_report_json().unwrap(),
+            "multilingual_color_glyphs_renderer_report",
         );
         assert_envelope(
-            &prompt10b_closure_report_json().unwrap(),
-            "prompt10b_closure_report",
+            &cjk_rtl_color_glyph_closeout_closure_report_json().unwrap(),
+            "cjk_rtl_color_glyph_closeout_closure_report",
         );
         assert_envelope(
-            &prompt10c_closure_report_json().unwrap(),
-            "prompt10c_closure_report",
+            &color_glyph_hinting_closure_report_json().unwrap(),
+            "color_glyph_hinting_closure_report",
         );
         assert_envelope(
-            &prompt10d_closure_report_json().unwrap(),
-            "prompt10d_closure_report",
+            &colrv_svg_bitmap_closure_report_json().unwrap(),
+            "colrv_svg_bitmap_closure_report",
         );
         assert_envelope(
-            &prompt10e_closure_report_json().unwrap(),
-            "prompt10e_closure_report",
+            &colrv_gradient_composite_closure_report_json().unwrap(),
+            "colrv_gradient_composite_closure_report",
         );
         assert_envelope(
-            &prompt10f_closure_report_json().unwrap(),
-            "prompt10f_closure_report",
+            &porterduff_radial_color_glyph_closure_report_json().unwrap(),
+            "porterduff_radial_color_glyph_closure_report",
         );
         assert_eq!(
             v["report"]["progress"]["status"],

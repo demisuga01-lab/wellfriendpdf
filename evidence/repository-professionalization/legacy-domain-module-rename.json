@@ -1,0 +1,34 @@
+{
+  "schema": "repository_professionalization.legacy_domain_module_rename.v1",
+  "generated_at": "2026-07-29T19:02:56.3080184Z",
+  "renames": [
+    {
+      "from": "crates/engine/src/annotation_media_redaction.rs",
+      "to": "crates/engine/src/annotation_media_redaction.rs"
+    },
+    {
+      "from": "crates/engine/src/secure_mutation.rs",
+      "to": "crates/engine/src/secure_mutation.rs"
+    },
+    {
+      "from": "crates/engine/src/form_action_policy.rs",
+      "to": "crates/engine/src/form_action_policy.rs"
+    },
+    {
+      "from": "crates/engine/src/advanced_editing.rs",
+      "to": "crates/engine/src/advanced_editing.rs"
+    },
+    {
+      "from": "crates/engine/src/writer_history.rs",
+      "to": "crates/engine/src/writer_history.rs"
+    },
+    {
+      "from": "crates/engine/src/compression_office.rs",
+      "to": "crates/engine/src/compression_office.rs"
+    },
+    {
+      "from": "crates/engine/src/crypto_writer.rs",
+      "to": "crates/engine/src/crypto_writer.rs"
+    }
+  ]
+}

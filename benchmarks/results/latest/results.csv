@@ -1,0 +1,15 @@
+task,category,median_ms,p95_ms,throughput_ops_per_sec_median,input_bytes,failures,peak_rss_kib
+open_parse,core,0.004908,0.005188,203748.981255,642,0,6684
+page_count_model,core,0.004917,0.005077,203376.042302,642,0,6736
+text_extraction,core,0.027812,0.031037,35955.702574,642,0,8080
+render_page_png_72dpi,core,0.136855,0.142674,7307.003763,642,0,10144
+canonical_noop_rewrite,core,0.017596,0.018177,56831.097977,642,0,10400
+linearized_save,core,0.070646,0.074001,14155.083090,642,0,10792
+source_text_replacement_save_reopen,editing,0.744757,0.752469,1342.719840,642,0,11528
+paragraph_reflow_save_reopen,editing,0.513620,0.528513,1946.964682,597,0,12248
+table_cell_edit_save_reopen,editing,37.160841,43.102214,26.910048,865,0,16252
+annotation_create_appearance_save_reopen,editing,0.143185,0.150526,6983.971785,642,0,16252
+form_text_create_appearance_save_reopen,editing,0.133821,0.141412,7472.668714,642,0,16252
+ocr_searchable_layer_save_reopen,ocr,0.204567,0.215203,4888.373980,652,0,16252
+redaction_residual_verification,security,0.446530,0.463986,2239.491188,597,0,16252
+accessibility_structure_repair,security,0.087501,0.094302,11428.440818,642,0,16252

@@ -1,6 +1,6 @@
 //! End-to-end smoke for the canonical-model `parse` entry point.
 //!
-//! PARSER PIVOT prompt 1, Part E.3: run `parse` over a curated set spanning a
+//! PARSER PIVOT binding surface, Part E.3: run `parse` over a curated set spanning a
 //! tagged PDF, an untagged single-column doc, a doc with a figure + caption, and
 //! a doc with running furniture; serialize to Markdown + JSON + HTML; and assert
 //! the structure is faithful and the output is coherent/LLM-ready end-to-end.
@@ -338,7 +338,7 @@ fn p6_serialization_is_deterministic_across_runs() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// Prompt 2: classifier + robustness fixtures
+// Binding Parity: classifier + robustness fixtures
 // ════════════════════════════════════════════════════════════════════════════
 
 /// A pure-scan page: a full-page image XObject and NO text. The classifier must

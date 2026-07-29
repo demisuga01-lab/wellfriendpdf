@@ -1,6 +1,6 @@
 # Parser Foundation Commit Blocker
 
-Prompt 01B parser work is validated locally but cannot be committed as a clean
+Binding SurfaceB parser work is validated locally but cannot be committed as a clean
 parser-only commit from the current worktree without mixing unrelated phase
 work.
 
@@ -24,7 +24,7 @@ work.
   `docs/rendering_fidelity_baseline.md`, `public-benchmark/`, and
   `renderer-benchmark/scripts/rendering_fidelity_gallery.py`.
 
-## Parser-Scope Files Added or Touched by Prompt 01A/01B
+## Parser-Scope Files Added or Touched by Binding SurfaceA/01B
 
 - `crates/engine/src/arlington.rs`
 - `crates/engine/src/generated/arlington_tables.rs`
@@ -89,7 +89,7 @@ purpose is repository hygiene.
 
 ### Changed File Classification
 
-#### 1. Parser Prompt 01A/01B scope
+#### 1. Parser Binding SurfaceA/01B scope
 
 These are parser-scope and should be included in a future parser-only commit,
 subject to separating the shared-file hunks noted below:
@@ -265,16 +265,16 @@ files that also contain known unrelated work.
   dependency changes, not parser dependencies.
 - `crates/wellfriendpdf-capi/*`, `crates/wellfriendpdf-py/*`, `crates/wellfriendpdf-wasm/src/lib.rs`,
   `crates/server/*`, and `bindings/*` remain non-parser work and generated
-  output. They must stay out of Prompt 01.
+  output. They must stay out of Binding Surface.
 
 ### Safe Next Step
 
-To close Prompt 01 with a real parser commit, first isolate or commit the
+To close Binding Surface with a real parser commit, first isolate or commit the
 unrelated OCR, Office, Phase 3 utility, bindings, renderer, and benchmark work.
 After that, re-stage only the parser files listed in bucket 1 plus the
 parser-only hunks in `crates/cli/src/main.rs` and `crates/engine/src/lib.rs`,
 run the full validation gate, and commit as:
 
 ```text
-Complete Prompt 01 parser foundation
+Complete Binding Surface parser foundation
 ```

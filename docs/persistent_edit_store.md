@@ -1,6 +1,6 @@
 # Persistent Edit Store
 
-Prompt 21 adds persistent structural-sharing data structures for editor history reporting:
+writer history adds persistent structural-sharing data structures for editor history reporting:
 
 | Structure | Implementation |
 | --- | --- |
@@ -10,4 +10,4 @@ Prompt 21 adds persistent structural-sharing data structures for editor history 
 
 The store is editor state, not PDF revision history. Saving a version does not mutate prior snapshots, and restore checks schema/hash before decoding bounded JSON.
 
-Artifacts: `persistent-hamt-results-prompt21.json`, `persistent-rrb-results-prompt21.json`, and `persistent-memory-benchmark-prompt21.json`.
+Artifacts: `persistent-hamt-results-writer_history.json`, `persistent-rrb-results-writer_history.json`, and `persistent-memory-benchmark-writer_history.json`.

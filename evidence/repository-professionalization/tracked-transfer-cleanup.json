@@ -1,0 +1,10 @@
+﻿{
+    "removed_generated_transfer_artifacts":  [
+                                                 "evidence/repository-professionalization/worktree.patch",
+                                                 "evidence/repository-professionalization/untracked-files.tar.gz",
+                                                 "evidence/repository-professionalization/untracked-files.txt",
+                                                 "evidence/repository-professionalization/transfer-plan.json",
+                                                 "evidence/repository-professionalization/untracked-transfer.json"
+                                             ],
+    "retained_compact_evidence":  true
+}

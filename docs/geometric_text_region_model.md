@@ -1,7 +1,7 @@
 # Geometric Text Region Model
 
-`GeometricTextRegion` is the canonical Prompt 33 request analysis result. It
-links a page-user-space region to Prompt 31 instructions and Prompt 32 scene
+`GeometricTextRegion` is the canonical text reflow request analysis result. It
+links a page-user-space region to source editing instructions and editing transactions scene
 nodes, records writing direction, clipping policy, known neighbor policy,
 allowed expansion rectangle, and confidence dimensions.
 

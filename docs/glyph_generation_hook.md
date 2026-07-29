@@ -1,6 +1,6 @@
 # Glyph Generation Hook
 
-The Prompt 21 glyph-generation hook is an external backend contract. It is disabled by default and does not upload glyph evidence or call cloud services silently.
+The writer history glyph-generation hook is an external backend contract. It is disabled by default and does not upload glyph evidence or call cloud services silently.
 
 Required backend fields include:
 

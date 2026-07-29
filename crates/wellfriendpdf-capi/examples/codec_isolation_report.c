@@ -1,4 +1,4 @@
-/* Prompt 03 codec-isolation report demo.
+/* Release Packaging codec-isolation report demo.
  *
  * Build (MSVC, after `cargo build -p wellfriendpdf-capi`):
  *   cl /I crates\wellfriendpdf-capi\include crates\wellfriendpdf-capi\examples\codec_isolation_report.c target\debug\wellfriendpdf_capi.dll.lib

@@ -132,7 +132,7 @@ fn custom_truetype_font_embeds_and_extracts_unicode() {
     let mut doc = PdfBuilder::new();
     let custom = doc
         .register_font_bytes(
-            "LiberationSerifPrompt4",
+            "LiberationSerifCodecBoundary",
             include_bytes!("../fonts/LiberationSerif-Regular.ttf").as_slice(),
         )
         .unwrap();

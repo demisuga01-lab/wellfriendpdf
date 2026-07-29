@@ -1,7 +1,0 @@
-{
-  "confidence_threshold": 0.78,
-  "deterministic_primary": true,
-  "low_confidence_policy": "suggestion_not_rewrite",
-  "model_can_delete_deterministic_text": false,
-  "status": "implemented"
-}

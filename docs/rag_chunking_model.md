@@ -1,6 +1,6 @@
 # RAG Chunking Model
 
-Prompt 06 does not replace the existing RAG chunker. It documents how the chunker relates to the new semantic text model.
+Native Renderer does not replace the existing RAG chunker. It documents how the chunker relates to the new semantic text model.
 
 ## Existing Path
 
@@ -15,7 +15,7 @@ ContentEngine::parse_document
 
 This remains the primary RAG-facing path because it already understands headings, tables, figures, page references, block kinds, and serialization policy.
 
-## Prompt 06 Additions
+## Native Renderer Additions
 
 The new semantic text model adds lower-level geometry:
 
@@ -28,7 +28,7 @@ The new semantic text model adds lower-level geometry:
 
 Future RAG chunking can use these fields for span-level citations and highlight previews without changing chunk boundaries.
 
-Prompt 06B adds MCID, StructTree role, and provenance summaries to the same
+Reference Renderer adds MCID, StructTree role, and provenance summaries to the same
 model. RAG citations should prefer spans/search matches whose provenance is
 native PDF text, ToUnicode, or tagged ActualText, and should surface
 low-confidence, hidden/OCR, or unknown provenance to callers.
@@ -41,11 +41,11 @@ low-confidence, hidden/OCR, or unknown provenance to callers.
 
 ## Limits
 
-- The chunker is not switched to the Prompt 06 text model by default.
+- The chunker is not switched to the Native Renderer text model by default.
 - Table chunking remains tied to the existing table/document model.
 - OCR chunking still depends on the existing OCR seam and policy.
 
-## Prompt 15 Advanced Path
+## Semantic Closeout Advanced Path
 
 `crate::advanced_rag` is now the additive provenance-aware path. Use
 `wellfriendpdf chunk --advanced` or `wellfriendpdf semantic-export --view chunks` when chunks

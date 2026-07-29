@@ -1,6 +1,6 @@
 # Text Provenance Model
 
-Prompt 06B makes provenance visible below `TextChunk`. The semantic model can now
+Reference Renderer makes provenance visible below `TextChunk`. The semantic model can now
 explain how characters and matches were recovered.
 
 ## Sources

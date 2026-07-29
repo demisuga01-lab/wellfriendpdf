@@ -1,4 +1,4 @@
-//! Integration smoke tests for RAG chunking on real PDFs (Parser-Pivot prompt 5).
+//! Integration smoke tests for RAG chunking on real PDFs (Parser-Pivot decode scheduler).
 //!
 //! Unit-level chunker behavior (boundaries/overlap/heading-context/metadata/
 //! determinism) is covered in `src/chunk/tests.rs`; these exercise the full

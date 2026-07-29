@@ -39,7 +39,7 @@ A slash command that wraps one persona with the project's skills. Saves the user
 
 **Examples in this repo:** `/review`, `/test`, `/code-simplify`.
 
-**Cost:** same as direct invocation. The slash command is just a saved prompt.
+**Cost:** same as direct invocation. The slash command is just a saved roadmap task.
 
 **Anti-signal:** if the slash command's body is mostly "decide which persona to call," delete it and let the user call the persona directly.
 
@@ -214,7 +214,7 @@ Agent Teams is experimental. In `~/.claude/settings.json`:
 
 Requires Claude Code v2.1.32 or later. The personas in this repo are picked up automatically — no team-config files to author by hand.
 
-### The trigger prompt
+### The trigger roadmap task
 
 Type into the lead session, in natural language:
 
@@ -237,7 +237,7 @@ theories. Update findings as consensus emerges. Only converge when
 two teammates agree they can disprove the others'.
 ```
 
-The lead spawns three teammates referencing the existing persona names. The persona body is **appended** to each teammate's system prompt as additional instructions (on top of the team-coordination instructions the lead installs); the trigger prompt above becomes their task.
+The lead spawns three teammates referencing the existing persona names. The persona body is **appended** to each teammate's system roadmap task as additional instructions (on top of the team-coordination instructions the lead installs); the trigger roadmap task above becomes their task.
 
 ### What happens
 
@@ -266,7 +266,7 @@ Three Sonnet teammates running for ~10–15 minutes of investigation costs notic
 
 ### Anti-pattern in this scenario
 
-Do **not** rebuild this as a `/debug` slash command that fans out subagents. Subagents can't message each other — you'd lose the adversarial debate that makes the pattern work. If a workflow keeps coming up, document the trigger prompt above as a snippet rather than wrapping it in a slash command that misuses subagents.
+Do **not** rebuild this as a `/debug` slash command that fans out subagents. Subagents can't message each other — you'd lose the adversarial debate that makes the pattern work. If a workflow keeps coming up, document the trigger roadmap task above as a snippet rather than wrapping it in a slash command that misuses subagents.
 
 ### When *not* to use Agent Teams
 

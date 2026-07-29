@@ -239,7 +239,7 @@ def docling_text(pdf: Path, out: Path, _args: argparse.Namespace) -> list[str]:
 
 def all_tools() -> list[Tool]:
     return [
-        Tool("wellfriendpdf", "local", None, None, wellfriendpdf_text, "MIT OR Apache-2.0"),
+        Tool("wellfriendpdf", "local", None, None, wellfriendpdf_text, "MIT"),
         Tool("pdf_wellfriendpdf", "python", "pdf_wellfriendpdf", "pdf_wellfriendpdf", lambda p, o, a: pycmd(PY_PDF_WELLFRIENDPDF_TEXT, p, o, a), "MIT"),
         Tool("pymupdf", "python", "fitz", "PyMuPDF", lambda p, o, a: pycmd(PY_PYMUPDF_TEXT, p, o, a), "AGPL-3.0/commercial"),
         Tool("pypdfium2", "python", "pypdfium2", "pypdfium2", lambda p, o, a: pycmd(PY_PYPDFIUM2_TEXT, p, o, a), "Apache-2.0/BSD-3-Clause"),
@@ -637,19 +637,19 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
     top3 = summary["prioritized_fix_list"][:3]
     top_text = ", ".join(f"{x['category']} ({x['files']})" for x in top3) if top3 else "no hard failure category found"
     label = summary.get("label") or "robustness corpus"
-    is_full = "full" in label.lower() or "prompt 10" in label.lower()
+    is_full = "full" in label.lower() or "multilingual color glyphs" in label.lower()
 
     w("# Robustness Benchmark: Wild-PDF Survival\n")
     w(
         f"**Plain-language summary.** On this {label} robustness run, "
         f"Wellfriend survived {wellfriendpdf.get('survival_rate', '-')}% of attempted files and produced parsed text artifacts for "
-        f"{wellfriendpdf.get('parsed_pass_rate', '-')}%. The main Prompt 2 targets are: {top_text}. "
+        f"{wellfriendpdf.get('parsed_pass_rate', '-')}%. The main Binding Parity targets are: {top_text}. "
         "Clean handled errors are separated from crashes/timeouts/OOMs because a clean rejection is acceptable for malformed input, "
         "while a hard failure is not.\n"
     )
     w("## Scope And Corpus\n")
     if is_full:
-        w("This is the scaled Prompt 10 local robustness corpus. It is larger than the 200-file fast loop, but it still has no ground-truth text labels, so it measures survival only and is not an internet-scale robustness track record.\n")
+        w("This is the scaled Multilingual Color Glyphs local robustness corpus. It is larger than the 200-file fast loop, but it still has no ground-truth text labels, so it measures survival only and is not an internet-scale robustness track record.\n")
     else:
         w("This is a SMALL indicative robustness corpus, not a final robustness claim. It has no ground-truth text labels, so it measures survival only.\n")
     c = summary["corpus"]
@@ -710,7 +710,7 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
     w("## Wellfriend Clean-Errors But A Competitor Parses\n")
     clean = summary["wellfriendpdf_clean_error_competitor_parses"]
     if clean:
-        w("These are not crash bugs, but they are best-effort recovery gaps for Prompt 2 if the category is common.\n")
+        w("These are not crash bugs, but they are best-effort recovery gaps for Binding Parity if the category is common.\n")
         w(md(["file", "tag", "root cause", "competitors parsed", "Wellfriend error"], [
             [x["path"], x["stress_tag"], x["root_cause"], ", ".join(x["competitors_parsed"]), x["wellfriendpdf_error"]]
             for x in clean[:50]
@@ -732,12 +732,12 @@ def write_report(summary: dict[str, Any], path: Path) -> None:
     else:
         w("Every file had at least one tool produce a parsed text artifact.")
     w("")
-    w("## Prioritized Fix List For Prompt 2\n")
+    w("## Prioritized Fix List For Binding Parity\n")
     if summary["prioritized_fix_list"]:
         for item in summary["prioritized_fix_list"]:
             w(f"{item['rank']}. **{item['category']}** ({item['files']} files): {item['reason']}")
     else:
-        w("No hard-failure fix category was found; Prompt 2 should focus on the largest clean-error competitor-parse recovery gap.")
+        w("No hard-failure fix category was found; Binding Parity should focus on the largest clean-error competitor-parse recovery gap.")
     w("")
     w("## Still Unmeasured\n")
     if is_full:

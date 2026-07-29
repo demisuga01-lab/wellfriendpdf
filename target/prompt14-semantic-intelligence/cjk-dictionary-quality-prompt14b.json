@@ -1,9 +1,0 @@
-{
-  "deterministic": true,
-  "fixture_sentence_count": 5,
-  "offsets_stable": true,
-  "quality_claim": "deterministic fixture benchmark and user-pack harness, not a claim of bundled large corpus recall",
-  "raw_text_rewritten": false,
-  "status": "implemented_with_limits",
-  "unknown_fallback_predictable": true
-}

@@ -2,7 +2,7 @@
 
 Date: 2026-06-25
 
-This Prompt 3 run improved Wellfriend's strict field-F1 on the deterministic first 200
+This Release Packaging run improved Wellfriend's strict field-F1 on the deterministic first 200
 `has-fields` files from `0.1035` to `0.6635` (indicative, ~200-file subset).
 The dominant failure was not AcroForm parsing: the corpus fields are mostly
 rendered key-value text recovered as paragraphs or tables. Wellfriend was missing
@@ -85,7 +85,7 @@ and recall moved up together.
 - `cargo test -p wellfriendpdf-engine --test extract_fields -- --nocapture`
 - `cargo build --release -p wellfriendpdf-cli`
 - Field benchmark:
-  `python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools wellfriendpdf --tasks fields --output-dir target\competitive-benchmark\prompt3-fields-after --report target\competitive-benchmark\prompt3-fields-after.md --max-workers 4 --timeout 60 --max-memory-mb 2048`
+  `python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools wellfriendpdf --tasks fields --output-dir target\competitive-benchmark\release_packaging-fields-after --report target\competitive-benchmark\release_packaging-fields-after.md --max-workers 4 --timeout 60 --max-memory-mb 2048`
 - Clean first-200 text/table check: text word-F1 `1.0000`, line recall
   `1.0000`; no table-scored files in that slice.
 - Has-tables 200-file check: table cell-F1 `0.85754`, recall `0.95775`,

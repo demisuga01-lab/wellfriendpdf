@@ -25,4 +25,4 @@ Remaining exact limits:
 
 Detection and reporting remain fail-closed. The parser does not silently downgrade PubSec documents to Standard-handler encryption.
 
-Trust-chain validation, OCSP/CRL, PAdES, and TSA validation are not in Prompt 23B scope.
+Trust-chain validation, OCSP/CRL, PAdES, and TSA validation are not in crypto writer closeout scope.

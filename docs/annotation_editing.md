@@ -1,8 +1,8 @@
 # Annotation Editing
 
-Prompt 34 uses `PdfEditor` for supported text, highlight, stamp, and URI-link
+document subsystems uses `PdfEditor` for supported text, highlight, stamp, and URI-link
 creation; source-content edits and rectangle-scoped deletion; and canonical
-flattening. Prompt 17 XFDF import supplies the broader source-linked path for
+flattening. annotation/media redaction XFDF import supplies the broader source-linked path for
 supported geometry, reply, popup, and appearance records. Each changed output
 is reopened and then passes through canonical appearance generation.
 
@@ -10,7 +10,7 @@ Unsupported annotation types, malformed geometry, unsafe actions, and invalid
 reply relationships fail before output. The API never relies on a viewer to
 invent a missing appearance for a supported edited annotation.
 
-Prompt 34 reuses canonical annotation identity, geometry, XFDF, and appearance
+document subsystems reuses canonical annotation identity, geometry, XFDF, and appearance
 generation. Supported appearance regeneration writes real appearance streams;
 unsupported annotation geometry returns an exact refusal.
 

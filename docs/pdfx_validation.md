@@ -6,5 +6,5 @@ output intent, missing profile identification, invalid page boxes, and non-embed
 reported as failures.
 
 Deep DeviceN/Separation/overprint analysis and older PDF/X transparency corpus parity are
-explicit Prompt 27 deferrals. They are not hidden warnings and cannot create a conformant PDF/X
+explicit Crypto Standards Fuzz deferrals. They are not hidden warnings and cannot create a conformant PDF/X
 result. The validator does not claim RIP or print-certification equivalence.

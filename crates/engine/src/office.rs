@@ -488,7 +488,7 @@ fn office_security_report(
         .find(|finding| finding.severity == "block")
         .map(|finding| format!("{}: {}", finding.category, finding.reason));
     OfficePackageSecurityReport {
-        schema_version: "prompt22.office-package-security.v1",
+        schema_version: "compression_office.office-package-security.v1",
         format: format.as_str().to_string(),
         safe_for_conversion: blocked_reason.is_none(),
         part_count,

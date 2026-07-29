@@ -1,6 +1,6 @@
 # Page-Faithful DOCX Layout
 
-Prompt 19 strengthens the existing native OOXML writer rather than adding a
+form action policy strengthens the existing native OOXML writer rather than adding a
 second converter.
 
 Supported page-faithful behavior includes exact per-page width/height,

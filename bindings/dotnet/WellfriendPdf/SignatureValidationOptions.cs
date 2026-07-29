@@ -4,7 +4,7 @@ using System.Security.Cryptography.X509Certificates;
 namespace WellfriendPdf;
 
 /// <summary>
-/// Owned Prompt 24 signature-validation configuration.
+/// Owned Signature Validation signature-validation configuration.
 /// Trust anchors, intermediates, and revocation evidence are copied into a
 /// native SafeHandle. Network retrieval remains disabled unless an explicit
 /// bounded retrieval-policy JSON object enables it.
@@ -282,7 +282,7 @@ public sealed class SignatureValidationOptions : IDisposable
     }
 }
 
-/// <summary>Prompt 24 revocation-policy modes exposed by the native handle.</summary>
+/// <summary>Signature Validation revocation-policy modes exposed by the native handle.</summary>
 public enum SignatureRevocationMode
 {
     NotChecked = 0,

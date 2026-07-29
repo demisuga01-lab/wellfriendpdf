@@ -43,11 +43,11 @@ java --enable-preview --enable-native-access=ALL-UNNAMED `
   -cp bindings/java/target/classes io.wellfriendpdf.WellfriendPdfSmokeTest
 ```
 
-## Prompt 02 Surface
+## Binding Parity Surface
 
 Reports: feature, engine/ABI version, security, parser, color, validation,
 forms, annotations, page operations, interactive content, legacy chunks,
-Prompt 15 semantic bundles, advanced chunks, and provenance-aware search.
+Semantic Closeout semantic bundles, advanced chunks, and provenance-aware search.
 
 Outputs: sanitize, canonicalize, redact terms, DOCX, XLSX, PPTX, and Office to
 PDF conversion helpers.
@@ -56,20 +56,20 @@ Password open is available through `WellfriendPdf.Document.open(path, password)`
 `WellfriendPdf.Document.open(bytes, password)`. Passwords are UTF-8 operation-scoped
 inputs and are not retained on the Java document object.
 
-Maven and Gradle are both package flows. `scripts/prompt02b_java_package_smoke.ps1`
+Maven and Gradle are both package flows. `scripts/java_packaging_java_package_smoke.ps1`
 runs Maven test/package, inspects `bindings/java/target/wellfriendpdf-sdk-0.1.0.jar`,
-and runs a JAR-based package smoke. `scripts/prompt02c_gradle_package_smoke.ps1`
+and runs a JAR-based package smoke. `scripts/gradle_packaging_gradle_package_smoke.ps1`
 downloads pinned Gradle 9.6.1 when needed, runs Gradle `clean test`, `jar`, and
 `build`, inspects `bindings/java/build/libs/wellfriendpdf-sdk-0.1.0.jar`, runs the same
 JAR-based smoke from the Gradle artifact, and writes Maven/Gradle equivalence
 evidence.
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts/prompt02b_java_package_smoke.ps1
-powershell -ExecutionPolicy Bypass -File scripts/prompt02c_gradle_package_smoke.ps1
+powershell -ExecutionPolicy Bypass -File scripts/java_packaging_java_package_smoke.ps1
+powershell -ExecutionPolicy Bypass -File scripts/gradle_packaging_gradle_package_smoke.ps1
 ```
 
 Known limits: progress and cancellation are reported through
-`WellfriendPdf.featureReportJson()` as unsupported for the Prompt 02 binding surface; no
+`WellfriendPdf.featureReportJson()` as unsupported for the Binding Parity binding surface; no
 no-op callbacks or ignored interruption APIs are exposed. Mobile packaging is
 out of scope for this binding.

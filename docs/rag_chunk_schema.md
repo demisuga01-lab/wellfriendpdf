@@ -1,6 +1,6 @@
-# Prompt 15 RAG Chunk Schema
+# Semantic Closeout RAG Chunk Schema
 
-The chunk-set schema is `prompt15.rag_chunk.v1`.
+The chunk-set schema is `semantic_closeout.rag_chunk.v1`.
 
 ## Chunk-Set Fields
 
@@ -53,4 +53,4 @@ structure path, MCIDs, ParentTree status, dictionary hashes, and security state.
 It is intended for deterministic indexing, not as a signature or trust claim.
 
 The machine schema is
-`target/prompt15-semantic-closeout/rag-chunk-schema-prompt15.json`.
+`target/semantic_closeout-semantic-closeout/rag-chunk-schema-semantic_closeout.json`.

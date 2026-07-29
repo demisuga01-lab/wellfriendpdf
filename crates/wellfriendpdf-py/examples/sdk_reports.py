@@ -8,7 +8,7 @@ SAME versioned-JSON envelopes.
     python sdk_reports.py input.pdf [out.json]
 
 With a second argument, writes every report envelope to that path as one JSON
-object (used to generate the Prompt-01 Python smoke artifact).
+object (used to generate the binding-surface Python smoke artifact).
 """
 
 import json
@@ -43,10 +43,10 @@ def main() -> int:
         "pdfua": doc.validate_pdfua(),
         "chunk": doc.chunks(),
         "text_semantic": doc.text_semantic(),
-        "prompt15_semantic": doc.semantic_bundle(),
-        "prompt15_chunks": doc.advanced_chunks(),
-        "prompt15_search": doc.semantic_search("document"),
-        "prompt15_table_status": doc.table_proposal_status(),
+        "semantic_closeout_semantic": doc.semantic_bundle(),
+        "semantic_closeout_chunks": doc.advanced_chunks(),
+        "semantic_closeout_search": doc.semantic_search("document"),
+        "semantic_closeout_table_status": doc.table_proposal_status(),
         "decode_budget": wellfriendpdf.decode_budget_report("DCTDecode", 4096, 4096, 3),
     }
 

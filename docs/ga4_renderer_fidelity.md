@@ -2,7 +2,7 @@
 
 Generated: 2026-06-22T19:21:24Z
 
-GA Prompt 4 targeted the largest remaining Prompt 11 renderer gaps without
+GA Codec Boundary targeted the largest remaining Renderer Fuzz CMM renderer gaps without
 trying to make Wellfriend a visual-proof renderer. PDFium/Poppler remain the visual
 proof references; Wellfriend's renderer is preview/OCR-grade.
 
@@ -11,7 +11,7 @@ proof references; Wellfriend's renderer is preview/OCR-grade.
 Both runs used the same 265-entry benchmark slice, Poppler 26.02.0, 144 DPI,
 20 second timeout, 1024 MB cap, and max 3 pages per file.
 
-| Metric | Prompt 11 baseline | GA4 final |
+| Metric | Renderer Fuzz CMM baseline | GA4 final |
 | --- | ---: | ---: |
 | Weighted score | 87.19 | 91.32 |
 | Visual pass | 78.37% | 86.18% |
@@ -38,11 +38,11 @@ python renderer-benchmark\scripts\renderer_benchmark.py `
   --output-dir renderer-benchmark\results\ga4-full-final
 ```
 
-## Prompt 3 Follow-Up (2026-06-23)
+## Release Packaging Follow-Up (2026-06-23)
 
-Prompt 3 used the same 265-entry slice, Poppler 26.02.0, 144 DPI, 20 second timeout, 1024 MB cap, and max 3 pages per file. The GA6 final gate is the immediate baseline for this pass.
+Release Packaging used the same 265-entry slice, Poppler 26.02.0, 144 DPI, 20 second timeout, 1024 MB cap, and max 3 pages per file. The GA6 final gate is the immediate baseline for this pass.
 
-| Metric | GA6 final | Prompt 3 final |
+| Metric | GA6 final | Release Packaging final |
 | --- | ---: | ---: |
 | Weighted score | 91.29 | 91.82 |
 | Visual pass | 86.12% | 86.94% |
@@ -54,7 +54,7 @@ Prompt 3 used the same 265-entry slice, Poppler 26.02.0, 144 DPI, 20 second time
 | Median Poppler/Wellfriend speed ratio | 1.8929 | 1.9091 |
 | Peak Wellfriend memory | 141.35 MB | 98.44 MB |
 
-| Target | GA6 final | Prompt 3 final | Root cause and fix |
+| Target | GA6 final | Release Packaging final | Root cause and fix |
 | --- | ---: | ---: | --- |
 | `real-multi-column` | 35.29% | 47.06% | Poppler-vs-Wellfriend text antialiasing produced localized large-region false positives on otherwise aligned pages. The benchmark now downgrades only near-threshold large text-AA regions when MAE, SSIM, edge, blankness, and pHash corroborate a clean page. |
 | `real-scanned` | 44.44% | 44.44% | 1-bit and low-bit image rows were unpacked across PDF row padding. Row-aware unpacking plus `/Decode` application improved bitonal scan metrics but did not cross the visual-pass threshold. |
@@ -108,5 +108,5 @@ pin both the accepted noise cases and the rejected real-drift cases.
   ratios, CMYK JPEG, and malformed stream recovery.
 
 These are known limitations, not GA4 regressions. The renderer is materially
-better than the Prompt 11 baseline, but it remains preview/OCR-grade rather
+better than the Renderer Fuzz CMM baseline, but it remains preview/OCR-grade rather
 than visual-proof grade.

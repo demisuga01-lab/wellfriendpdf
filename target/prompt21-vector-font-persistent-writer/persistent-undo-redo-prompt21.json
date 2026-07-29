@@ -1,7 +1,0 @@
-{
-  "branch_redo_policy": "redo is branch-local; creating a new child leaves sibling branch history addressable by version id",
-  "checkpoint_restore_hash_match": true,
-  "redo_restores_child": true,
-  "status": "implemented_with_limits",
-  "undo_restores_parent": true
-}

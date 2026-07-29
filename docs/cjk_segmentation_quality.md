@@ -1,6 +1,6 @@
 # CJK Segmentation Quality
 
-Prompt 14B quality evidence is deterministic fixture evidence plus a
+CJK Dictionary Layout quality evidence is deterministic fixture evidence plus a
 user-pack benchmark harness. It is not a claim that Wellfriend bundles a large
 general-purpose dictionary.
 
@@ -16,6 +16,6 @@ Covered fixture classes:
 - raw extracted text preservation.
 
 Quality artifacts are written under
-`target/prompt14-semantic-intelligence/` and include
-`cjk-dictionary-quality-prompt14b.json` and
-`cjk-segmentation-fixtures-prompt14b.json`.
+`target/semantic_intelligence-semantic-intelligence/` and include
+`cjk-dictionary-quality-cjk_dictionary_layout.json` and
+`cjk-segmentation-fixtures-cjk_dictionary_layout.json`.

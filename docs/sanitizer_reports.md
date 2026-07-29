@@ -1,8 +1,8 @@
 # Sanitizer reports
 
-`scripts/run_prompt29_sanitizers.py` records sanitizer support and runs supported bounded sanitizer checks.
+`scripts/run_malformed_coverage_sanitizers.py` records sanitizer support and runs supported bounded sanitizer checks.
 
-Prompt 29 runs AddressSanitizer-backed cargo-fuzz smoke for the parser target where the current Linux/nightly/cargo-fuzz toolchain supports it. UBSan, MSan, and TSan support is recorded with exact availability and constraints.
+Malformed Coverage runs AddressSanitizer-backed cargo-fuzz smoke for the parser target where the current Linux/nightly/cargo-fuzz toolchain supports it. UBSan, MSan, and TSan support is recorded with exact availability and constraints.
 
 Artifacts:
 

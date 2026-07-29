@@ -117,7 +117,7 @@ pub struct PdfMacWriteReport {
 impl PdfMacReport {
     fn base() -> Self {
         Self {
-            schema_version: "prompt23b.pdf_mac.v1",
+            schema_version: "crypto_writer_closeout.pdf_mac.v1",
             source: "ISO/TS 32004:2024",
             state: PdfMacState::Absent,
             detected: false,
@@ -354,7 +354,7 @@ pub fn write_standalone_pdf_mac(
     Ok((
         bytes,
         PdfMacWriteReport {
-            schema_version: "prompt23b.pdf_mac.write.v1",
+            schema_version: "crypto_writer_closeout.pdf_mac.write.v1",
             source: "ISO/TS 32004:2024",
             status: "implemented_with_limits",
             mac_location: "Standalone",

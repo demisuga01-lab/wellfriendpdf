@@ -1,7 +1,7 @@
 # Interactive and Final Line Layout
 
 Preview uses deterministic greedy UAX #14 filling. Final layout uses bounded
-dynamic programming over the same grapheme-safe candidates and Prompt 20
+dynamic programming over the same grapheme-safe candidates and advanced editing
 shaped advances. The final range list, including supported visual dictionary
 hyphens and mandatory separators, is passed to the canonical source writer.
 

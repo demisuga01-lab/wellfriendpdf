@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prompt 29 bounded malformed-PDF corpus runner.
+"""Malformed Coverage bounded malformed-PDF corpus runner.
 
 The runner deliberately records only summaries in JSON and stores raw tool output
 under the chosen output directory. It accepts public/user corpus roots when
@@ -89,8 +89,8 @@ def default_roots(repo: Path, output_root: Path) -> list[tuple[Path, str, str]]:
         (Path("/home/demisuga01/wellpdf/corpus/unsafe-docs"), "external_public_or_user", "result_only"),
         (repo / "tests/corpus/pdfs", "repo_fixture", "tracked_or_source"),
         (repo / "crates/engine/tests/fixtures", "repo_fixture", "tracked_or_source"),
-        (repo / "fuzz/seeds/prompt28", "committed_seed", "tracked_or_source"),
-        (output_root / "generated-malformed", "generated_prompt29", "result_only"),
+        (repo / "fuzz/seeds/fuzz_campaign", "committed_seed", "tracked_or_source"),
+        (output_root / "generated-malformed", "generated_malformed_coverage", "result_only"),
     ]
     generated_malformed_fixtures(output_root / "generated-malformed")
     return roots
@@ -213,7 +213,7 @@ def page_count(pdfinfo_result: dict[str, object]) -> int | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=Path.cwd())
-    parser.add_argument("--output-root", type=Path, default=Path("target/prompt29-malformed-differential-coverage"))
+    parser.add_argument("--output-root", type=Path, default=Path("target/malformed_coverage-malformed-differential-coverage"))
     parser.add_argument("--wellfriendpdf-bin", type=Path, required=True)
     parser.add_argument("--corpus-root", action="append", type=Path, default=[])
     parser.add_argument("--limit", type=int, default=300)
@@ -332,7 +332,7 @@ def main() -> int:
     counts = Counter(str(row["outcome"]) for row in rows)
     failure_rows = [row for row in rows if row["unclassified_failure"]]
     buckets = {
-        "schema_version": "prompt29.malformed-corpus.failure-buckets.v1",
+        "schema_version": "malformed_coverage.malformed-corpus.failure-buckets.v1",
         "generated_at_utc": utc(),
         "buckets": dict(counts),
         "unclassified": [
@@ -341,7 +341,7 @@ def main() -> int:
         "verdict": "passed" if not failure_rows else "failed",
     }
     scorecard = {
-        "schema_version": "prompt29.malformed-corpus.survival-scorecard.v1",
+        "schema_version": "malformed_coverage.malformed-corpus.survival-scorecard.v1",
         "generated_at_utc": utc(),
         "attempted_count": len(rows),
         "crash_hang_oom_count": len(failure_rows),
@@ -349,9 +349,9 @@ def main() -> int:
         "status_counts": dict(counts),
         "verdict": "passed" if rows and not failure_rows else "failed",
     }
-    write_json(out / "malformed-corpus-source-inventory.json", {"schema_version": "prompt29.corpus-source-inventory.v1", "generated_at_utc": utc(), "sources": sources, "verdict": "passed" if rows else "failed"})
-    write_json(out / "malformed-corpus-manifest.json", {"schema_version": "prompt29.malformed-corpus-manifest.v1", "generated_at_utc": utc(), "files": manifest, "file_count": len(manifest), "verdict": "passed" if manifest else "failed"})
-    write_json(out / "malformed-corpus-run-results.json", {"schema_version": "prompt29.malformed-corpus-run-results.v1", "generated_at_utc": utc(), "rows": rows, "verdict": "passed" if rows and not failure_rows else "failed"})
+    write_json(out / "malformed-corpus-source-inventory.json", {"schema_version": "malformed_coverage.corpus-source-inventory.v1", "generated_at_utc": utc(), "sources": sources, "verdict": "passed" if rows else "failed"})
+    write_json(out / "malformed-corpus-manifest.json", {"schema_version": "malformed_coverage.malformed-corpus-manifest.v1", "generated_at_utc": utc(), "files": manifest, "file_count": len(manifest), "verdict": "passed" if manifest else "failed"})
+    write_json(out / "malformed-corpus-run-results.json", {"schema_version": "malformed_coverage.malformed-corpus-run-results.v1", "generated_at_utc": utc(), "rows": rows, "verdict": "passed" if rows and not failure_rows else "failed"})
     write_jsonl(out / "malformed-corpus-per-file-results.jsonl", rows)
     write_json(out / "malformed-corpus-failure-buckets.json", buckets)
     write_json(out / "malformed-corpus-survival-scorecard.json", scorecard)

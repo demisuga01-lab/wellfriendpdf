@@ -1,0 +1,8 @@
+{
+  "arch": "x86_64",
+  "logical_cores": 16,
+  "os": "linux",
+  "peak_rss_kib_at_end": 16252,
+  "rust_profile": "release",
+  "worker_count": 1
+}

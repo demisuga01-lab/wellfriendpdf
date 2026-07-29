@@ -1,6 +1,6 @@
 # Search And Redaction Text Model
 
-Prompt 06 adds source-quad search. It prepares redaction geometry but does not apply redactions.
+Native Renderer adds source-quad search. It prepares redaction geometry but does not apply redactions.
 
 ## API
 
@@ -41,7 +41,7 @@ Supported by the default normalizer:
 
 `include_hidden` can be enabled for audit/search-all modes.
 
-## Prompt 06B Provenance
+## Reference Renderer Provenance
 
 Search matches now expose the same structure/provenance layer as the semantic
 model:
@@ -52,19 +52,19 @@ model:
   hidden/OCR, unknown, tagged MCID, and synthetic layout sources.
 - `includes_hidden`: whether the match uses hidden/invisible text.
 
-Prompt 07 redaction apply should consume these match quads and provenance fields
+Transparency Rendering redaction apply should consume these match quads and provenance fields
 instead of re-searching raw content streams.
 
 ## Redaction Readiness
 
-Prompt 06 returns conservative glyph/character quads that can drive:
+Native Renderer returns conservative glyph/character quads that can drive:
 
 - preview highlights
 - candidate redaction regions
 - audit output
 - later redaction apply logic
 
-Prompt 06 intentionally does not apply redactions. Applying redactions requires content removal/appearance updates and belongs to Prompt 07 or a focused redaction editing phase.
+Native Renderer intentionally does not apply redactions. Applying redactions requires content removal/appearance updates and belongs to Transparency Rendering or a focused redaction editing phase.
 
 ## Diagnostics
 

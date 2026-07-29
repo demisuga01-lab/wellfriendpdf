@@ -87,7 +87,7 @@ is extractable as page content.
 
 This preserves the original byte prefix exactly and makes the original revision
 recoverable. It is the foundation required for signature-preserving workflows in
-the signature prompt.
+the signature roadmap task.
 
 Encrypted inputs are rejected for incremental editing until encrypted appended
 objects are implemented. Full-rewrite editing currently supports generation-0
@@ -107,6 +107,6 @@ outputs.
 
 ## Follow-Ups
 
-Prompt 7 builds on this editing pillar with higher-level document assembly and
+Transparency Rendering builds on this editing pillar with higher-level document assembly and
 workflow APIs. Encrypted appended objects remain a future extension; encrypted
 inputs are still rejected for incremental editing.

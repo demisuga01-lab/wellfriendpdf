@@ -1,0 +1,17 @@
+{
+  "timestamp_utc": "2026-07-29T18:57:38.3723869Z",
+  "head": "d0926886333a520fe3aa766f3cb9b4f428cfadd3",
+  "head_show": "d0926886333a520fe3aa766f3cb9b4f428cfadd3\nd346915de5125fccf3163847cb3ebec197c49046\nRewrite README from true editing benchmarks and evidence",
+  "status_short": "",
+  "status_sb": "## main...origin/main",
+  "branch": "main",
+  "remote": "origin\thttps://github.com/demisuga01-lab/wellfriendpdf.git (fetch)\norigin\thttps://github.com/demisuga01-lab/wellfriendpdf.git (push)",
+  "origin_main": "d0926886333a520fe3aa766f3cb9b4f428cfadd3",
+  "log12": "d092688 Rewrite README from true editing benchmarks and evidence\nd346915 Close combined release validation true editing validation enterprise release\nf634906 Close combined document security accessibility redaction sanitization\nddca571 Close combined document subsystems tables math ocr forms annotations\n100da3c Close combined document subsystems tables math ocr forms annotations\nd9338d0 Close combined text reflow geometric semantic reflow\n7b33a77 Close combined editing transactions scene transactions fonts shaping\nd771ef3 Close combined source editing provenance operator editing\n2af40fe Close combined release readiness benchmark performance security api release readiness\n123bc01 Close combined malformed coverage malformed corpus differential crash coverage\n77a09bb Close combined fuzz campaign long codec renderer writer fuzz safedocs\n3e6ed70 Close combined crypto standards fuzz verapdf crypto release fuzz parser",
+  "diff_stat": "",
+  "diff_check": "",
+  "diff_check_exit": 0,
+  "expected_head": "d0926886333a520fe3aa766f3cb9b4f428cfadd3",
+  "clean": true,
+  "synced": true
+}

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Browser, Node, and WebWorker WASM binding for the Wellfriend PDF SDK.",
   "type": "module",
-  "license": "MIT OR Apache-2.0",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/demisuga01-lab/wellfriendpdf"

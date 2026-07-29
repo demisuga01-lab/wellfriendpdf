@@ -32,8 +32,8 @@ green. Fuzzing requires a nightly toolchain.
 | `pdfa`              | `wellfriendpdf_engine::fuzz::fuzz_pdfa`               | PDF/A validation and conversion over parsed untrusted PDFs |
 | `editing`           | `wellfriendpdf_engine::fuzz::fuzz_editing`            | Additive editing, redaction, form flattening, and full rewrite |
 | `signature_validation` | `wellfriendpdf_engine::fuzz::fuzz_signature_validation` | Signature/DSS/LTV-like parsing reachable from untrusted signed PDFs |
-| `timestamp_token` | `wellfriendpdf_engine::fuzz::fuzz_timestamp_token` | Prompt 25 RFC 3161 TimeStampToken parsing, message-imprint binding, and malformed token classification |
-| `signature_preserving_edit_plan` | `wellfriendpdf_engine::fuzz::fuzz_signature_preserving_edit_plan` | Prompt 25 DocMDP/FieldMDP-aware append-only edit planning over parsed PDFs |
+| `timestamp_token` | `wellfriendpdf_engine::fuzz::fuzz_timestamp_token` | Pades LTV RFC 3161 TimeStampToken parsing, message-imprint binding, and malformed token classification |
+| `signature_preserving_edit_plan` | `wellfriendpdf_engine::fuzz::fuzz_signature_preserving_edit_plan` | Pades LTV DocMDP/FieldMDP-aware append-only edit planning over parsed PDFs |
 | `structured_pdf`    | `wellfriendpdf_engine::fuzz::fuzz_structured_pdf`     | Grammar-aware valid PDFs with adversarial content, then render/text/model/edit/PDF-A/linearize/signature paths |
 
 The `fuzz_*` entry points are gated behind the engine's `fuzzing` feature
@@ -76,7 +76,7 @@ cargo +nightly fuzz run parse_pdf -- -max_total_time=900 -max_len=65536
 
 ### Decode fuzz campaign harness
 
-Prompt 02B adds a reproducible campaign wrapper:
+Java Packaging adds a reproducible campaign wrapper:
 
 ```sh
 # Short decode-focused campaign. Writes logs under target/fuzz-campaigns/.
@@ -97,19 +97,19 @@ Groups:
 - `risky-codec`: `image_decoders`.
 - `all`: decode/parser targets plus `cos_object`.
 
-Prompt 05 adds `color_report`, which drives the structured color/prepress report
+Decode Scheduler adds `color_report`, which drives the structured color/prepress report
 surface with arbitrary PDF bytes under the engine's fuzzing feature. It covers
 output-intent scanning, ICC metadata handling, color-space inventory,
 Separation/DeviceN diagnostics, overprint state reporting, and the PDF/A/PDF/X
 color validation profile switch.
 
-Prompt 09 adds the deterministic structure-aware mutation helper
-`scripts/prompt09_structure_mutator.py`. It is not a replacement for
+Annotation Ocg Rendering adds the deterministic structure-aware mutation helper
+`scripts/annotation_ocg_rendering_structure_mutator.py`. It is not a replacement for
 coverage-guided fuzzing; it creates malformed-but-recognizable PDFs for parser,
 sanitizer, signature, validation, and writer smoke runs:
 
 ```sh
-python scripts/prompt09_structure_mutator.py crates/engine/tests/fixtures/minimal.pdf --out-dir target/prompt09-structure-mutations
+python scripts/annotation_ocg_rendering_structure_mutator.py crates/engine/tests/fixtures/minimal.pdf --out-dir target/annotation_ocg_rendering-structure-mutations
 cargo check --manifest-path fuzz/Cargo.toml --bins
 ```
 
@@ -122,7 +122,7 @@ Small reviewed seed inputs for decode and font fuzzing live under
 libFuzzer's mutable corpus directory; copy or import them into
 `fuzz/corpus/<target>/` for local campaigns if desired.
 
-Prompt 04B adds font-fidelity seeds for:
+Font Subsystem adds font-fidelity seeds for:
 
 - supported predefined UTF-16 CMap names;
 - unsupported predefined-looking legacy CMap names;

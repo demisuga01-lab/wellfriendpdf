@@ -1,0 +1,70 @@
+# WASM SDK Binding Parity
+
+The WASM SDK is built from `crates/wellfriendpdf-wasm` and targets browser, Node, and
+WebWorker environments. It accepts caller-provided bytes and routes report and
+output operations through `wellfriendpdf_engine::sdk`.
+
+## Package Shape
+
+- Rust crate: `crates/wellfriendpdf-wasm`
+- JS package metadata: `crates/wellfriendpdf-wasm/package.json`
+- TypeScript declarations: `crates/wellfriendpdf-wasm/wellfriendpdf.d.ts`
+- Browser example: `crates/wellfriendpdf-wasm/examples/browser`
+
+Build:
+
+```sh
+cargo build -p wellfriendpdf-wasm --target wasm32-unknown-unknown
+wasm-pack build crates/wellfriendpdf-wasm --target web --out-dir pkg
+```
+
+`cargo build` verifies the Rust/WASM code. `wasm-pack` or `wasm-bindgen` must
+regenerate JS glue before publishing or using newly added methods.
+
+## Public API
+
+Lifecycle and capability queries:
+
+- `new WellfriendPdf(bytes)`
+- `WellfriendPdf.openWithPassword(bytes, password)`
+- `close()`, `isClosed()`
+- `WellfriendPdf.sdkVersion()`, `WellfriendPdf.abiVersion()`
+- `WellfriendPdf.featureReportJson()`
+- `WellfriendPdf.decodeBudgetReportJson(filter, width, height, components)`
+
+Reports:
+
+- `documentInfoJson`
+- `securityReportJson`
+- `riskyContentReportJson`
+- `parserReportJson`
+- `colorReportJson`
+- `validateJson`, `validatePdfaJson`, `validatePdfuaJson`
+- `formsReportJson`, `annotationsReportJson`, `pagesReportJson`
+- `interactiveReportJson`
+- `signatureReportJson`, `fontReportJson`
+- `textSemanticJson`, `semanticDocumentReportJson`, `chunksJson`
+
+Outputs:
+
+- `sanitize(policy?)`
+- `canonicalize(dateEpoch?)`
+- `redactTermsJson(termsJson, strict)`
+
+Legacy extraction/render methods remain public: `parseJson`, `parseMarkdown`,
+`chunk`, `extractText`, `extractStructuredText`, `extractSemanticJson`,
+`extractFieldsJson`, `infoJson`, and `renderPagePng`.
+
+## Ownership and Limits
+
+Input bytes are copied into the WASM object so facade calls can reopen through
+the same byte source. Output bytes are returned as fresh JS-owned `Uint8Array`
+values. A closed document rejects future calls.
+
+WASM does not fetch URLs, read host file paths, write host files, spawn OCR, or
+load native binaries. Java Packaging closes progress/cancellation posture through
+the shared feature report: `progress_not_supported` and
+`cancellation_not_supported_for_binding_parity_bindings` are reported, and the WASM
+SDK does not expose fake callbacks or ignored `AbortSignal` options. Those
+entries are matrixed as unsupported or partial instead of hidden behind no-op
+wrappers.

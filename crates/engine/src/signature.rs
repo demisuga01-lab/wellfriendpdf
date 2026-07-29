@@ -15,11 +15,11 @@
 //!
 //! "Valid" here means **cryptographically valid**: the signature math checks
 //! out against the signer certificate's public key and the signed digest
-//! matches the `/ByteRange` bytes. Prompt 24 additionally provides explicit
+//! matches the `/ByteRange` bytes. Signature Validation additionally provides explicit
 //! anchor-based PKIX validation, caller-supplied and opt-in controlled
 //! AIA/OCSP/CRL evidence, and replayable validated evidence bundles. RSA
 //! PKCS#1 v1.5, RSA-PSS, and the supported ECDSA curves are verified with exact
-//! algorithm parameters. Prompt 25 extends the same validation pipeline with
+//! algorithm parameters. Pades LTV extends the same validation pipeline with
 //! RFC 3161 signature timestamp validation, DSS/VRI evidence replay, B-T/B-LT
 //! level reporting, and signature-preserving edit policy hooks without creating
 //! a second signature engine.
@@ -103,19 +103,19 @@ const MAX_AIA_RETRIEVED_CERTIFICATES: usize = 32;
 const BYTE_RANGE_PLACEHOLDER: &[u8] = b"[9999999999 9999999999 9999999999 9999999999]";
 const MAX_BYTE_RANGE_FIELD: u64 = 9_999_999_999;
 const DEFAULT_CONTENTS_RESERVED_BYTES: usize = 16 * 1024;
-pub const PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION: &str =
-    "prompt24.certificate-trust-pades-ocsp-crl-validation.v1";
-pub const PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION: &str =
-    "prompt25.tsa-dss-ltv-mdp-signature-edits.v1";
+pub const SIGNATURE_VALIDATION_SIGNATURE_VALIDATION_SCHEMA_VERSION: &str =
+    "signature_validation.certificate-trust-pades-ocsp-crl-validation.v1";
+pub const PADES_LTV_SIGNATURE_LTV_EDIT_SCHEMA_VERSION: &str =
+    "pades_ltv.tsa-dss-ltv-mdp-signature-edits.v1";
 
-/// Additive public capability report for the Prompt 24 validation pipeline.
+/// Additive public capability report for the Signature Validation validation pipeline.
 ///
 /// This is deliberately a capability report, not a release verdict. It lets
 /// every SDK binding expose the same supported boundary without promoting
-/// unavailable platform adapters or Prompt 25 functionality to success.
-pub(crate) fn prompt24_feature_report_value(envelope_version: u32) -> Value {
+/// unavailable platform adapters or Pades LTV functionality to success.
+pub(crate) fn signature_validation_feature_report_value(envelope_version: u32) -> Value {
     json!({
-        "schema_version": PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION,
+        "schema_version": SIGNATURE_VALIDATION_SIGNATURE_VALIDATION_SCHEMA_VERSION,
         "status": "implemented_with_limits_not_release_attested",
         "report_envelope_version": envelope_version,
         "pipeline": [
@@ -159,9 +159,9 @@ pub(crate) fn prompt24_feature_report_value(envelope_version: u32) -> Value {
         },
         "pades": {
             "baseline": "implemented_with_explicit_path_and_revocation_policy_result",
-            "signature_timestamps": "implemented_prompt25_rfc3161_signature_timestamp_validation",
-            "dss_vri_ltv": "implemented_prompt25_dss_vri_replay_and_blt_evidence_status",
-            "docmdp_fieldmdp_enforcement": "implemented_prompt25_structural_policy_for_supported_signature_preserving_edits",
+            "signature_timestamps": "implemented_pades_ltv_rfc3161_signature_timestamp_validation",
+            "dss_vri_ltv": "implemented_pades_ltv_dss_vri_replay_and_blt_evidence_status",
+            "docmdp_fieldmdp_enforcement": "implemented_pades_ltv_structural_policy_for_supported_signature_preserving_edits",
             "archive_timestamps_blta": "not_claimed_without_archive_timestamp_validation"
         },
         "binding_runtime_surfaces": {
@@ -180,11 +180,11 @@ pub(crate) fn prompt24_feature_report_value(envelope_version: u32) -> Value {
             "final_closure_commit": "absent"
         },
         "exact_remaining_limits": [
-            "Prompt 25 does not claim B-LTA/archive timestamp validation, general public signing, or viewer-specific certification UI behavior.",
+            "Pades LTV does not claim B-LTA/archive timestamp validation, general public signing, or viewer-specific certification UI behavior.",
             "Platform trust stores are never implicit and remain an optional provider integration.",
             "Only the supported signature algorithms are accepted; all others are explicit unsupported results.",
             "Online retrieval is unavailable to WASM without a host-controlled transport.",
-            "This capability report does not attest final Prompt 25 release gates."
+            "This capability report does not attest final Pades LTV release gates."
         ]
     })
 }
@@ -290,7 +290,7 @@ pub struct SignatureOptions {
     /// The core signer does not contact a TSA. Callers that need PAdES-B-T
     /// obtain a token from their TSA/policy layer and pass the DER token here.
     /// Verification validates the token imprint and TSA signer/path when the
-    /// caller supplies the applicable Prompt 25 trust and revocation policy.
+    /// caller supplies the applicable Pades LTV trust and revocation policy.
     pub timestamp_token_der: Option<Vec<u8>>,
     /// Reserved CMS size in bytes. The DER CMS must fit in this placeholder.
     pub contents_reserved_bytes: usize,
@@ -690,7 +690,7 @@ impl VerifyOptions {
         self
     }
 
-    /// Select a named Prompt 24 policy profile. Selecting an online profile
+    /// Select a named Signature Validation policy profile. Selecting an online profile
     /// is explicit network opt-in, but callers can still replace the bounded
     /// retrieval policy afterwards with [`Self::with_retrieval_policy`].
     pub fn with_policy_profile(mut self, profile: SignatureValidationPolicyProfile) -> Self {
@@ -756,7 +756,7 @@ impl VerifyOptions {
     }
 }
 
-/// Parse Prompt 24 validation options from a stable JSON object.
+/// Parse Signature Validation validation options from a stable JSON object.
 ///
 /// Binary inputs are hex-encoded DER arrays. Supported keys:
 ///
@@ -990,7 +990,7 @@ fn parse_signature_policy_profile(value: &str) -> Result<SignatureValidationPoli
     }
 }
 
-/// Prompt 24 validation policy profile.
+/// Signature Validation validation policy profile.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignatureValidationPolicyProfile {
@@ -1001,7 +1001,7 @@ pub enum SignatureValidationPolicyProfile {
     Custom,
 }
 
-/// Prompt 24 revocation mode.
+/// Signature Validation revocation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SignatureRevocationMode {
@@ -1033,7 +1033,7 @@ impl SignatureRevocationMode {
     }
 }
 
-/// Fine-grained Prompt 24 status taxonomy. This intentionally avoids reducing
+/// Fine-grained Signature Validation status taxonomy. This intentionally avoids reducing
 /// signature validation to one boolean.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -1112,7 +1112,7 @@ pub enum SignatureValidationSubindication {
     NotEvaluated,
 }
 
-/// Prompt 24 policy metadata included in every report.
+/// Signature Validation policy metadata included in every report.
 #[derive(Debug, Clone, Serialize)]
 pub struct SignatureValidationPolicyReport {
     pub profile: SignatureValidationPolicyProfile,
@@ -1252,7 +1252,7 @@ impl Default for CmsValidationReport {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct PadesValidationReport {
-    /// Final Prompt 24 PAdES validation result. This is not a structure-only
+    /// Final Signature Validation PAdES validation result. This is not a structure-only
     /// classifier: it incorporates the separately reported certificate-path
     /// and revocation-policy outcomes when they are available.
     pub status: SignatureValidationState,
@@ -1267,7 +1267,7 @@ pub struct PadesValidationReport {
     /// updates: an earlier PAdES signature can remain conformant for its own
     /// revision even when the current file has changed.
     pub signed_revision_coverage_status: SignatureValidationState,
-    /// Whether the current file still equals the signed revision. Prompt 25
+    /// Whether the current file still equals the signed revision. Pades LTV
     /// policy/edit surfaces apply DocMDP and FieldMDP decisions separately so
     /// this field remains a revision-integrity result, not a permission result.
     pub current_document_status: SignatureValidationState,
@@ -1338,7 +1338,7 @@ impl Default for NetworkValidationReport {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct Prompt24SignatureValidationReport {
+pub struct SignatureValidationSignatureValidationReport {
     pub schema_version: &'static str,
     pub policy: SignatureValidationPolicyReport,
     pub cms: CmsValidationReport,
@@ -1356,10 +1356,10 @@ pub struct Prompt24SignatureValidationReport {
     pub subindication: SignatureValidationSubindication,
 }
 
-impl Default for Prompt24SignatureValidationReport {
+impl Default for SignatureValidationSignatureValidationReport {
     fn default() -> Self {
         Self {
-            schema_version: PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION,
+            schema_version: SIGNATURE_VALIDATION_SIGNATURE_VALIDATION_SCHEMA_VERSION,
             policy: SignatureValidationPolicyReport::default(),
             cms: CmsValidationReport::default(),
             signer_resolution: SignatureValidationState::NotChecked,
@@ -1593,7 +1593,7 @@ impl TimestampValidationReport {
     }
 }
 
-/// DSS/VRI inventory and Prompt 25 validation posture for one signature.
+/// DSS/VRI inventory and Pades LTV validation posture for one signature.
 #[derive(Debug, Clone, Serialize)]
 pub struct DssValidationReport {
     pub status: SignatureValidationState,
@@ -1631,9 +1631,9 @@ impl Default for DssValidationReport {
     }
 }
 
-/// Prompt 25 extension report attached to every canonical signature result.
+/// Pades LTV extension report attached to every canonical signature result.
 #[derive(Debug, Clone, Serialize)]
-pub struct Prompt25SignatureLtvEditReport {
+pub struct PadesLTVSignatureLtvEditReport {
     pub schema_version: &'static str,
     pub timestamp_tokens: Vec<TimestampValidationReport>,
     pub signature_timestamp_status: SignatureValidationState,
@@ -1650,10 +1650,10 @@ pub struct Prompt25SignatureLtvEditReport {
     pub warnings: Vec<String>,
 }
 
-impl Default for Prompt25SignatureLtvEditReport {
+impl Default for PadesLTVSignatureLtvEditReport {
     fn default() -> Self {
         Self {
-            schema_version: PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+            schema_version: PADES_LTV_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
             timestamp_tokens: Vec::new(),
             signature_timestamp_status: SignatureValidationState::NotChecked,
             dss: DssValidationReport::default(),
@@ -1667,7 +1667,7 @@ impl Default for Prompt25SignatureLtvEditReport {
             signature_preserving_edit_status: SignatureValidationState::NotChecked,
             remaining_deferrals: vec![
                 "PAdES B-LTA archive timestamp validation is classified but not promoted without a validated archive timestamp chain".to_string(),
-                "DocMDP/FieldMDP enforcement is evaluated by the Prompt 25 modification classifier before signature-preserving edits".to_string(),
+                "DocMDP/FieldMDP enforcement is evaluated by the Pades LTV modification classifier before signature-preserving edits".to_string(),
             ],
             warnings: Vec::new(),
         }
@@ -1783,13 +1783,13 @@ pub struct SignatureReport {
     pub certificate: Option<CertInfo>,
     /// PAdES/LTV material discovered for this signature.
     pub ltv: LtvReport,
-    /// Prompt 24 structured validation report. This keeps PDF container,
+    /// Signature Validation structured validation report. This keeps PDF container,
     /// CMS math, path trust, revocation, PAdES, and network posture separate.
-    pub prompt24: Prompt24SignatureValidationReport,
-    /// Prompt 25 timestamp, DSS/VRI/LTV, permission, and edit-preservation
+    pub signature_validation: SignatureValidationSignatureValidationReport,
+    /// Pades LTV timestamp, DSS/VRI/LTV, permission, and edit-preservation
     /// layer. It is derived from the same canonical PDF/CMS/PKIX/revocation
-    /// pipeline and does not replace Prompt 24 trust decisions.
-    pub prompt25: Prompt25SignatureLtvEditReport,
+    /// pipeline and does not replace Signature Validation trust decisions.
+    pub pades_ltv: PadesLTVSignatureLtvEditReport,
     /// Machine-readable check separation for security/enterprise reports.
     pub checks: SignatureCheckDetails,
     /// Human-readable note on what was/wasn't checked.
@@ -1909,7 +1909,7 @@ pub fn verify_signatures_with_options_and_evidence(
 /// `messageImprint`, token CMS signature, TSA certificate EKU, and TSA path at
 /// `genTime` using the same explicit trust and revocation options as PDF
 /// signature validation. No network retrieval occurs unless `options`
-/// explicitly enables the bounded Prompt 24 evidence transport.
+/// explicitly enables the bounded Signature Validation evidence transport.
 pub fn verify_signature_timestamp_token_der(
     token_der: &[u8],
     signature_value: &[u8],
@@ -2254,7 +2254,7 @@ pub fn sign_document(
 }
 
 // ===========================================================================
-// Prompt 26 — append-only incremental signing engine
+// Incremental Signing Standards — append-only incremental signing engine
 // ===========================================================================
 
 /// Signing intent: approval, or a certification (DocMDP) signature with an
@@ -2356,7 +2356,7 @@ pub enum IncrementalSigner<'a> {
 }
 
 /// Post-sign validation of a generated signed PDF, produced by reopening the
-/// output and running the Prompt 24/25 validators.
+/// output and running the Signature Validation/25 validators.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct PostSignValidationReport {
     pub structural_open: bool,
@@ -2592,7 +2592,7 @@ fn stage_signature(
     })
 }
 
-/// Reopen a generated signed PDF and validate it with the Prompt 24/25 engine.
+/// Reopen a generated signed PDF and validate it with the Signature Validation/25 engine.
 fn post_sign_validate(signed: &[u8]) -> PostSignValidationReport {
     let mut report = PostSignValidationReport::default();
     let Ok(doc) = crate::document::PdfDocument::open_bytes(signed.to_vec()) else {
@@ -3190,11 +3190,11 @@ fn build_ltv_report(
     };
 
     let note = if has_valid_timestamp && has_validation_material {
-        "PAdES B-T timestamp validated and matching DSS/VRI evidence is present; Prompt 25 report determines whether embedded evidence is sufficient for B-LT".to_string()
+        "PAdES B-T timestamp validated and matching DSS/VRI evidence is present; Pades LTV report determines whether embedded evidence is sufficient for B-LT".to_string()
     } else {
         match pades_level {
             PadesLevel::BaselineLT => {
-                "PAdES B-LT material validated by Prompt 25".to_string()
+                "PAdES B-LT material validated by Pades LTV".to_string()
             }
             PadesLevel::BaselineT => {
                 "PAdES B-T material validated: RFC 3161 signature timestamp imprint, token CMS signature, TSA EKU, and TSA path checks passed under the configured policy".to_string()
@@ -3284,7 +3284,7 @@ fn options_with_dss_evidence(
 fn build_dss_validation_report(
     contents: &[u8],
     dss: &DssIndex,
-    prompt24: &Prompt24SignatureValidationReport,
+    signature_validation: &SignatureValidationSignatureValidationReport,
 ) -> DssValidationReport {
     let material = dss_vri_material_for_signature(contents, dss);
     let evidence_present =
@@ -3294,9 +3294,9 @@ fn build_dss_validation_report(
         && !material.certs.is_empty()
         && (!material.ocsp.is_empty() || !material.crls.is_empty());
     let validation_material_status = if replayable {
-        match prompt24.revocation.status {
+        match signature_validation.revocation.status {
             SignatureValidationState::Valid => {
-                if prompt24.path.status == SignatureValidationState::Valid {
+                if signature_validation.path.status == SignatureValidationState::Valid {
                     SignatureValidationState::Valid
                 } else {
                     SignatureValidationState::Indeterminate
@@ -3360,14 +3360,14 @@ fn build_dss_validation_report(
     }
 }
 
-fn build_prompt25_report(
+fn build_pades_ltv_report(
     contents: &[u8],
     dss: &DssIndex,
     cms: &CmsResult,
     _ltv: &LtvReport,
     coverage: &Coverage,
-    prompt24: &Prompt24SignatureValidationReport,
-) -> Prompt25SignatureLtvEditReport {
+    signature_validation: &SignatureValidationSignatureValidationReport,
+) -> PadesLTVSignatureLtvEditReport {
     let timestamp_tokens = cms.timestamp_reports.clone();
     let signature_timestamp_status = if timestamp_tokens.is_empty() {
         SignatureValidationState::NotChecked
@@ -3384,13 +3384,13 @@ fn build_prompt25_report(
     } else {
         SignatureValidationState::Invalid
     };
-    let dss_report = build_dss_validation_report(contents, dss, prompt24);
+    let dss_report = build_dss_validation_report(contents, dss, signature_validation);
     let lt_ready = signature_timestamp_status == SignatureValidationState::Valid
         && dss_report.dss_present
         && dss_report.vri_matched
         && dss_report.evidence_replayable_offline
-        && prompt24.path.status == SignatureValidationState::Valid
-        && prompt24.revocation.status == SignatureValidationState::Valid;
+        && signature_validation.path.status == SignatureValidationState::Valid
+        && signature_validation.revocation.status == SignatureValidationState::Valid;
     let ltv_status = if lt_ready {
         SignatureValidationState::Valid
     } else if dss_report.dss_present
@@ -3429,7 +3429,7 @@ fn build_prompt25_report(
             SignatureValidationSubindication::ValidationIndeterminate,
         ),
     };
-    let mut report = Prompt25SignatureLtvEditReport {
+    let mut report = PadesLTVSignatureLtvEditReport {
         timestamp_tokens,
         signature_timestamp_status,
         dss: dss_report,
@@ -3441,7 +3441,7 @@ fn build_prompt25_report(
             Coverage::WholeFile => SignatureValidationState::Valid,
             Coverage::ModifiedAfterSigning => SignatureValidationState::ModifiedAfterSigning,
         },
-        ..Prompt25SignatureLtvEditReport::default()
+        ..PadesLTVSignatureLtvEditReport::default()
     };
     report.warnings.extend(report.dss.warnings.clone());
     report
@@ -3682,16 +3682,16 @@ fn verify_one_with_evidence(
         status: SignatureStatus::Error,
         certificate: None,
         ltv: LtvReport::default(),
-        prompt24: Prompt24SignatureValidationReport::default(),
-        prompt25: Prompt25SignatureLtvEditReport::default(),
+        signature_validation: SignatureValidationSignatureValidationReport::default(),
+        pades_ltv: PadesLTVSignatureLtvEditReport::default(),
         checks: SignatureCheckDetails::default(),
         note: String::new(),
     };
 
     if let Some(issue) = &field.discovery_issue {
         report.note = issue.clone();
-        report.prompt24 =
-            prompt24_error_report(options, SignatureValidationState::Malformed, issue);
+        report.signature_validation =
+            signature_validation_error_report(options, SignatureValidationState::Malformed, issue);
         return VerifyOneOutcome {
             reports: vec![report],
             evidence_records: Vec::new(),
@@ -3708,7 +3708,7 @@ fn verify_one_with_evidence(
         }
         None => {
             report.note = "missing or malformed /ByteRange".to_string();
-            report.prompt24 = prompt24_error_report(
+            report.signature_validation = signature_validation_error_report(
                 options,
                 SignatureValidationState::ByteRangeInvalid,
                 "missing or malformed /ByteRange",
@@ -3729,7 +3729,7 @@ fn verify_one_with_evidence(
         }
         None => {
             report.note = "/ByteRange out of bounds for file".to_string();
-            report.prompt24 = prompt24_error_report(
+            report.signature_validation = signature_validation_error_report(
                 options,
                 SignatureValidationState::ByteRangeInvalid,
                 "/ByteRange out of bounds for file",
@@ -3745,7 +3745,7 @@ fn verify_one_with_evidence(
         Some(end) if end <= file.len() => end,
         _ => {
             report.note = "/ByteRange signed revision end overflows or exceeds file".to_string();
-            report.prompt24 = prompt24_error_report(
+            report.signature_validation = signature_validation_error_report(
                 options,
                 SignatureValidationState::ByteRangeInvalid,
                 "/ByteRange signed revision end overflows or exceeds file",
@@ -3775,7 +3775,7 @@ fn verify_one_with_evidence(
         }
         None => {
             report.note = "missing /Contents".to_string();
-            report.prompt24 = prompt24_error_report(
+            report.signature_validation = signature_validation_error_report(
                 options,
                 SignatureValidationState::Malformed,
                 "missing /Contents",
@@ -3791,7 +3791,7 @@ fn verify_one_with_evidence(
         Ok(span) => *span,
         Err(error) => {
             report.note = format!("cannot bind /ByteRange gap to raw /Contents: {error}");
-            report.prompt24 = prompt24_error_report(
+            report.signature_validation = signature_validation_error_report(
                 options,
                 SignatureValidationState::ByteRangeInvalid,
                 &report.note,
@@ -3811,7 +3811,7 @@ fn verify_one_with_evidence(
             contents_span.0,
             contents_span.1
         );
-        report.prompt24 = prompt24_error_report(
+        report.signature_validation = signature_validation_error_report(
             options,
             SignatureValidationState::ByteRangeInvalid,
             &report.note,
@@ -3834,35 +3834,37 @@ fn verify_one_with_evidence(
                 signer_report.cms_signer_count = signer_count;
                 let effective_options = options_with_dss_evidence(options, &contents, dss);
                 let ltv = build_ltv_report(&contents, dss, &result, result.certificate.as_ref());
-                let validation = evaluate_prompt24_validation(Prompt24ValidationInput {
-                    signer: result.signer_cert.as_ref(),
-                    chain: &result.chain,
-                    options: &effective_options,
-                    ltv: &ltv,
-                    cms: &result.cms,
-                    sub_filter: signer_report.sub_filter.as_deref(),
-                    signer_resolution: result.signer_resolution,
-                    coverage: &signer_report.coverage,
-                    validity: &result.validity,
-                });
+                let validation =
+                    evaluate_signature_validation_validation(SignatureValidationValidationInput {
+                        signer: result.signer_cert.as_ref(),
+                        chain: &result.chain,
+                        options: &effective_options,
+                        ltv: &ltv,
+                        cms: &result.cms,
+                        sub_filter: signer_report.sub_filter.as_deref(),
+                        signer_resolution: result.signer_resolution,
+                        coverage: &signer_report.coverage,
+                        validity: &result.validity,
+                    });
                 signer_report.validity = result.validity.clone();
                 signer_report.digest_algorithm = result.digest_algorithm.clone();
                 signer_report.certificate = result.certificate.clone();
                 evidence_records.extend(validation.evidence_records);
                 signer_report.trust = validation.trust;
                 signer_report.ltv = ltv;
-                let mut prompt24 = validation.report;
-                set_validation_indication(&mut prompt24);
-                signer_report.prompt25 = build_prompt25_report(
+                let mut signature_validation = validation.report;
+                set_validation_indication(&mut signature_validation);
+                signer_report.pades_ltv = build_pades_ltv_report(
                     &contents,
                     dss,
                     &result,
                     &signer_report.ltv,
                     &signer_report.coverage,
-                    &prompt24,
+                    &signature_validation,
                 );
-                signer_report.ltv.pades_level = signer_report.prompt25.achieved_pades_level.clone();
-                signer_report.prompt24 = prompt24;
+                signer_report.ltv.pades_level =
+                    signer_report.pades_ltv.achieved_pades_level.clone();
+                signer_report.signature_validation = signature_validation;
                 signer_report.status = overall_status(
                     &signer_report.validity,
                     &signer_report.trust,
@@ -3874,19 +3876,20 @@ fn verify_one_with_evidence(
                     signer_report.validity == SignatureValidity::Valid;
                 signer_report.checks.chain_verified =
                     signer_report.trust == SignatureTrust::Trusted;
-                signer_report.checks.revocation_checked = signer_report.prompt24.revocation.status
-                    != SignatureValidationState::NotChecked;
+                signer_report.checks.revocation_checked =
+                    signer_report.signature_validation.revocation.status
+                        != SignatureValidationState::NotChecked;
                 signer_report.checks.timestamp_present =
                     signer_report.ltv.timestamp_token_count > 0;
                 signer_report.checks.timestamp_verified =
-                    signer_report.prompt25.signature_timestamp_status
+                    signer_report.pades_ltv.signature_timestamp_status
                         == SignatureValidationState::Valid;
                 signer_report.checks.ltv_material_present = signer_report.ltv.dss_present
                     || signer_report.ltv.embedded_certs > 0
                     || signer_report.ltv.embedded_ocsp_responses > 0
                     || signer_report.ltv.embedded_crls > 0;
                 signer_report.checks.ltv_verified =
-                    signer_report.prompt25.ltv_status == SignatureValidationState::Valid;
+                    signer_report.pades_ltv.ltv_status == SignatureValidationState::Valid;
                 signer_report.note = format!(
                     "CMS SignerInfo {}/{}. {}. {}",
                     signer_index + 1,
@@ -3911,7 +3914,7 @@ fn verify_one_with_evidence(
             } else {
                 SignatureValidationState::Malformed
             };
-            report.prompt24 = prompt24_error_report(options, state, &msg);
+            report.signature_validation = signature_validation_error_report(options, state, &msg);
             report.note = msg;
             VerifyOneOutcome {
                 reports: vec![report],
@@ -4063,13 +4066,13 @@ fn cert_in_validity_period(cert: &Certificate) -> bool {
     not_before <= now && now <= not_after
 }
 
-struct Prompt24TrustEvaluation {
+struct SignatureValidationTrustEvaluation {
     trust: SignatureTrust,
-    report: Prompt24SignatureValidationReport,
+    report: SignatureValidationSignatureValidationReport,
     evidence_records: Vec<EvidenceRecord>,
 }
 
-struct Prompt24ValidationInput<'a> {
+struct SignatureValidationValidationInput<'a> {
     signer: Option<&'a Certificate>,
     chain: &'a [Certificate],
     options: &'a VerifyOptions,
@@ -4081,7 +4084,9 @@ struct Prompt24ValidationInput<'a> {
     validity: &'a SignatureValidity,
 }
 
-fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24TrustEvaluation {
+fn evaluate_signature_validation_validation(
+    input: SignatureValidationValidationInput<'_>,
+) -> SignatureValidationTrustEvaluation {
     let signer = input.signer;
     let chain = input.chain;
     let options = input.options;
@@ -4092,16 +4097,18 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
     let coverage = input.coverage;
     let validity = input.validity;
     let (validation_time_unix, validation_time_source) = validation_time(options);
-    let mut report = Prompt24SignatureValidationReport {
+    let mut report = SignatureValidationSignatureValidationReport {
         policy: policy_report(options, validation_time_unix, validation_time_source),
         cms: cms.clone(),
         signer_resolution: signer_resolution_state(signer_resolution),
         certificate_inventory_count: chain.len() + options.intermediates_der.len(),
-        pades: pades_prompt24_report(ltv, coverage, validity, cms, sub_filter, None, None),
-        network: network_prompt24_report(options),
-        ..Prompt24SignatureValidationReport::default()
+        pades: pades_signature_validation_report(
+            ltv, coverage, validity, cms, sub_filter, None, None,
+        ),
+        network: network_signature_validation_report(options),
+        ..SignatureValidationSignatureValidationReport::default()
     };
-    report.deferred_evidence = deferred_prompt24_evidence(ltv);
+    report.deferred_evidence = deferred_signature_validation_evidence(ltv);
 
     if *validity != SignatureValidity::Valid {
         report.overall = match validity {
@@ -4114,7 +4121,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
         };
         report.overall_reason =
             "CMS signature math or digest did not establish a valid signature".to_string();
-        return Prompt24TrustEvaluation {
+        return SignatureValidationTrustEvaluation {
             trust: SignatureTrust::NotVerified,
             report,
             evidence_records: Vec::new(),
@@ -4127,7 +4134,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
         report.pades.certificate_path_status = report.path.status.clone();
         report.overall = report.signer_resolution.clone();
         report.overall_reason = "SignerInfo did not resolve to exactly one certificate".to_string();
-        return Prompt24TrustEvaluation {
+        return SignatureValidationTrustEvaluation {
             trust: SignatureTrust::Untrusted,
             report,
             evidence_records: Vec::new(),
@@ -4143,7 +4150,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
         report.overall = SignatureValidationState::Untrusted;
         report.overall_reason =
             "cryptographic signature is valid, but signer trust was not evaluated".to_string();
-        return Prompt24TrustEvaluation {
+        return SignatureValidationTrustEvaluation {
             trust: SignatureTrust::NotVerified,
             report,
             evidence_records: Vec::new(),
@@ -4165,7 +4172,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
         report.pades.certificate_path_status = report.path.status.clone();
         report.overall = SignatureValidationState::Untrusted;
         report.overall_reason = "no usable trust anchor was available".to_string();
-        return Prompt24TrustEvaluation {
+        return SignatureValidationTrustEvaluation {
             trust: SignatureTrust::Untrusted,
             report,
             evidence_records: Vec::new(),
@@ -4181,7 +4188,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
             report.pades.certificate_path_status = SignatureValidationState::PolicyRejected;
             report.overall = SignatureValidationState::PolicyRejected;
             report.overall_reason = error.to_string();
-            return Prompt24TrustEvaluation {
+            return SignatureValidationTrustEvaluation {
                 trust: SignatureTrust::Untrusted,
                 report,
                 evidence_records: Vec::new(),
@@ -4276,7 +4283,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
         report.overall = SignatureValidationState::Untrusted;
         report.overall_reason =
             "no certificate path validated to a configured trust anchor".to_string();
-        return Prompt24TrustEvaluation {
+        return SignatureValidationTrustEvaluation {
             trust,
             report,
             evidence_records: Vec::new(),
@@ -4301,7 +4308,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
         report.pades.certificate_path_status = SignatureValidationState::PolicyRejected;
         report.overall = SignatureValidationState::PolicyRejected;
         report.overall_reason = error;
-        return Prompt24TrustEvaluation {
+        return SignatureValidationTrustEvaluation {
             trust: SignatureTrust::Untrusted,
             report,
             evidence_records: Vec::new(),
@@ -4342,7 +4349,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
     }
     let crl_signer_candidates =
         crl_signer_candidates(chain, &selected_path, &anchor_certs, &revocation_options);
-    let mut revocation = evaluate_revocation_prompt24(RevocationEvaluationContext {
+    let mut revocation = evaluate_revocation_signature_validation(RevocationEvaluationContext {
         path: &selected_path,
         anchor: anchors.get(selected_anchor_index),
         anchor_certificate: anchor_certs.get(selected_anchor_index),
@@ -4379,7 +4386,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
     if ltv.revocation_status == RevocationStatus::RevokedByEmbeddedCrl {
         revocation.status = SignatureValidationState::Revoked;
         revocation.errors.push(
-            "legacy DSS CRL serial inventory listed the signer; Prompt 24 does not treat unverified DSS CRLs as proof of good status".to_string(),
+            "legacy DSS CRL serial inventory listed the signer; Signature Validation does not treat unverified DSS CRLs as proof of good status".to_string(),
         );
     }
     let online_revocation_failure = retrieval_session.as_ref().is_some_and(|session| {
@@ -4432,7 +4439,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
 
     report.path = path_report;
     report.revocation = revocation;
-    report.pades = pades_prompt24_report(
+    report.pades = pades_signature_validation_report(
         ltv,
         coverage,
         validity,
@@ -4464,7 +4471,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
             .to_string(),
     };
 
-    Prompt24TrustEvaluation {
+    SignatureValidationTrustEvaluation {
         trust,
         report,
         evidence_records: retrieval_session
@@ -4474,7 +4481,7 @@ fn evaluate_prompt24_validation(input: Prompt24ValidationInput<'_>) -> Prompt24T
     }
 }
 
-fn set_validation_indication(report: &mut Prompt24SignatureValidationReport) {
+fn set_validation_indication(report: &mut SignatureValidationSignatureValidationReport) {
     use SignatureValidationIndication::{Failed, Indeterminate, NotEvaluated, Passed};
     use SignatureValidationState as State;
     use SignatureValidationSubindication as Sub;
@@ -4515,13 +4522,13 @@ fn set_validation_indication(report: &mut Prompt24SignatureValidationReport) {
     report.subindication = subindication;
 }
 
-fn prompt24_error_report(
+fn signature_validation_error_report(
     options: &VerifyOptions,
     state: SignatureValidationState,
     reason: &str,
-) -> Prompt24SignatureValidationReport {
+) -> SignatureValidationSignatureValidationReport {
     let (validation_time_unix, validation_time_source) = validation_time(options);
-    let mut report = Prompt24SignatureValidationReport {
+    let mut report = SignatureValidationSignatureValidationReport {
         policy: policy_report(options, validation_time_unix, validation_time_source),
         signer_resolution: SignatureValidationState::NotChecked,
         path: CertificatePathValidationReport {
@@ -4529,10 +4536,10 @@ fn prompt24_error_report(
             validation_error: Some(reason.to_string()),
             ..CertificatePathValidationReport::default()
         },
-        network: network_prompt24_report(options),
+        network: network_signature_validation_report(options),
         overall: state,
         overall_reason: reason.to_string(),
-        ..Prompt24SignatureValidationReport::default()
+        ..SignatureValidationSignatureValidationReport::default()
     };
     set_validation_indication(&mut report);
     report
@@ -5291,7 +5298,7 @@ struct RevocationEvaluationContext<'a> {
     validation_time_unix: u64,
 }
 
-fn evaluate_revocation_prompt24(
+fn evaluate_revocation_signature_validation(
     ctx: RevocationEvaluationContext<'_>,
 ) -> RevocationValidationReport {
     let mut report = RevocationValidationReport {
@@ -5763,7 +5770,7 @@ fn is_revoked(err: &pkix_revocation::Error) -> bool {
     matches!(err, pkix_revocation::Error::Revoked { .. })
 }
 
-fn pades_prompt24_report(
+fn pades_signature_validation_report(
     ltv: &LtvReport,
     coverage: &Coverage,
     validity: &SignatureValidity,
@@ -5777,7 +5784,7 @@ fn pades_prompt24_report(
     let sub_filter = sub_filter.unwrap_or_default();
     let detected_profile = match sub_filter {
         "ETSI.CAdES.detached" => "pades_baseline_b_candidate".to_string(),
-        "ETSI.RFC3161" => "pades_document_timestamp_prompt25_classified".to_string(),
+        "ETSI.RFC3161" => "pades_document_timestamp_pades_ltv_classified".to_string(),
         "adbe.pkcs7.detached" | "adbe.pkcs7.sha1" => "generic_pdf_cms_detached".to_string(),
         "" => "missing_pdf_signature_subfilter".to_string(),
         _ => format!("unsupported_pdf_signature_subfilter:{sub_filter}"),
@@ -5886,7 +5893,7 @@ fn pades_prompt24_report(
     }
 }
 
-fn network_prompt24_report(options: &VerifyOptions) -> NetworkValidationReport {
+fn network_signature_validation_report(options: &VerifyOptions) -> NetworkValidationReport {
     if effective_retrieval_policy(options).enabled {
         NetworkValidationReport {
             status: SignatureValidationState::NotChecked,
@@ -5908,11 +5915,11 @@ fn effective_retrieval_policy(options: &VerifyOptions) -> RetrievalPolicy {
     policy
 }
 
-fn deferred_prompt24_evidence(ltv: &LtvReport) -> Vec<String> {
+fn deferred_signature_validation_evidence(ltv: &LtvReport) -> Vec<String> {
     let mut deferred = Vec::new();
     if ltv.invalid_timestamp_token_count > 0 {
         deferred
-            .push("one or more RFC 3161 timestamp tokens failed Prompt 25 validation".to_string());
+            .push("one or more RFC 3161 timestamp tokens failed Pades LTV validation".to_string());
     }
     if ltv.dss_present && !ltv.vri_matched {
         deferred.push(
@@ -7375,7 +7382,7 @@ fn validate_tsa_path_at_gen_time(
     let ltv = LtvReport::default();
     let coverage = Coverage::WholeFile;
     let validity = SignatureValidity::Valid;
-    let evaluation = evaluate_prompt24_validation(Prompt24ValidationInput {
+    let evaluation = evaluate_signature_validation_validation(SignatureValidationValidationInput {
         signer: Some(tsa_cert),
         chain,
         options: &tsa_options,
@@ -7967,7 +7974,7 @@ fn validation_policy_fingerprint(options: &VerifyOptions) -> String {
         .map(|directory| hex_lower(&Sha256::digest(directory.as_bytes())))
         .unwrap_or_default();
     let text = format!(
-        "schema={PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION}\nprofile={:?}\nrevocation={:?}\nalgorithm_policy={:?}\nvalidation_time={:?}\nmax_depth={}\nmax_candidates={}\nanchors={}\nintermediates={}\ndistrust={}\nnetwork_enabled={}\nhttp={}\nhttps={}\nallow_private={}\nallow_non_default_ports={}\nallow_cross_origin_redirects={}\ncache_directory_sha256={}\nocsp_nonce_policy={:?}\nallowed_hosts={}\ndenied_hosts={}\nallowed_ports={}\nbudget={:?}",
+        "schema={SIGNATURE_VALIDATION_SIGNATURE_VALIDATION_SCHEMA_VERSION}\nprofile={:?}\nrevocation={:?}\nalgorithm_policy={:?}\nvalidation_time={:?}\nmax_depth={}\nmax_candidates={}\nanchors={}\nintermediates={}\ndistrust={}\nnetwork_enabled={}\nhttp={}\nhttps={}\nallow_private={}\nallow_non_default_ports={}\nallow_cross_origin_redirects={}\ncache_directory_sha256={}\nocsp_nonce_policy={:?}\nallowed_hosts={}\ndenied_hosts={}\nallowed_ports={}\nbudget={:?}",
         options.policy_profile,
         options.revocation_mode,
         options.algorithm_policy,
@@ -8013,7 +8020,7 @@ mod tests {
         PdfSigner::from_der(key_der.as_bytes(), &cert_der, &[]).expect("runtime signer parses")
     }
 
-    // ---- Prompt 26 incremental signing engine tests ----
+    // ---- Incremental Signing Standards incremental signing engine tests ----
 
     fn signable_pdf() -> Vec<u8> {
         use crate::authoring::{PageSize, PdfBuilder};
@@ -8072,7 +8079,7 @@ mod tests {
         IncrementalSigningOptions {
             signature: SignatureOptions {
                 field_name: "WellfriendEngineSig".to_string(),
-                signer_name: Some("Wellfriend Prompt 26".to_string()),
+                signer_name: Some("Wellfriend Incremental Signing Standards".to_string()),
                 reason: Some("engine test".to_string()),
                 contents_reserved_bytes: reserved,
                 ..SignatureOptions::default()
@@ -8121,11 +8128,11 @@ mod tests {
         let text = String::from_utf8_lossy(&result.signed_pdf);
         assert!(text.contains("/DocMDP"), "DocMDP transform must be encoded");
         assert!(text.contains("/Perms"), "catalog /Perms must be encoded");
-        // The Prompt 25/18 permission engine must recognize the created DocMDP.
+        // The Pades LTV/18 permission engine must recognize the created DocMDP.
         let engine = crate::engine::ContentEngine::open_bytes(result.signed_pdf.clone()).unwrap();
-        let policy = crate::prompt18::analyze_edit_policy(
+        let policy = crate::secure_mutation::analyze_edit_policy(
             &engine,
-            crate::prompt18::EditOperation::FormValueUpdate,
+            crate::secure_mutation::EditOperation::FormValueUpdate,
         )
         .unwrap();
         assert!(
@@ -8133,7 +8140,7 @@ mod tests {
                 .structural_policies
                 .iter()
                 .any(|p| p.certification_signature && p.docmdp_p == Some(2)),
-            "Prompt 25 permission engine must recognize the created DocMDP P=2 certification signature"
+            "Pades LTV permission engine must recognize the created DocMDP P=2 certification signature"
         );
     }
 
@@ -8334,7 +8341,7 @@ mod tests {
             signing_certificate_reference: SignatureValidationState::Valid,
             cms_algorithm_protection: SignatureValidationState::Valid,
         };
-        let report = pades_prompt24_report(
+        let report = pades_signature_validation_report(
             &LtvReport::default(),
             &Coverage::ModifiedAfterSigning,
             &SignatureValidity::Valid,
@@ -8375,7 +8382,7 @@ mod tests {
             ..CertificatePathValidationReport::default()
         };
         let revocation = RevocationValidationReport::default();
-        let report = pades_prompt24_report(
+        let report = pades_signature_validation_report(
             &LtvReport::default(),
             &Coverage::WholeFile,
             &SignatureValidity::Valid,
@@ -8420,7 +8427,7 @@ mod tests {
         use rsa::signature::{RandomizedSigner as _, SignatureEncoding};
 
         let (certificate, private_key) = crate::pubsec::test_support::ephemeral_identity();
-        let payload = b"prompt24 rsa-pss parameter regression";
+        let payload = b"signature_validation rsa-pss parameter regression";
         let signing_key = rsa::pss::SigningKey::<Sha256>::new_with_salt_len(private_key, 32);
         let signature = signing_key
             .sign_with_rng(&mut rsa::rand_core::OsRng, payload)
@@ -8484,7 +8491,7 @@ mod tests {
     #[test]
     fn rfc3161_signature_timestamp_validates_imprint_tsa_eku_and_path() {
         let tsa = runtime_test_tsa_signer();
-        let signature_value = b"prompt25 cms signature value";
+        let signature_value = b"pades_ltv cms signature value";
         let token = build_timestamp_token_for_test(&tsa, signature_value).unwrap();
         let options =
             VerifyOptions::default().with_trust_anchor_der(tsa.signer_certificate_der().unwrap());
@@ -8520,7 +8527,7 @@ mod tests {
         let report = validate_signature_timestamp_token(
             &token,
             "unit-test".to_string(),
-            b"prompt25 cms signature value",
+            b"pades_ltv cms signature value",
             &options,
             &SignatureAlgorithmPolicy::default(),
         );
@@ -8536,7 +8543,7 @@ mod tests {
     #[test]
     fn cms_multiple_signer_infos_are_validated_independently() {
         let signer = runtime_test_signer();
-        let content = b"prompt24 multi-signer detached CMS regression";
+        let content = b"signature_validation multi-signer detached CMS regression";
         let digest = Sha256::digest(content);
         let cms = build_two_signer_cms_for_test(&signer, digest.as_slice()).unwrap();
 
@@ -8611,7 +8618,7 @@ mod tests {
     #[test]
     fn signature_algorithm_policy_rejects_a_recognized_but_forbidden_scheme() {
         let signer = runtime_test_signer();
-        let content = b"prompt24 algorithm policy regression";
+        let content = b"signature_validation algorithm policy regression";
         let digest = Sha256::digest(content);
         let cms = build_two_signer_cms_for_test(&signer, digest.as_slice()).unwrap();
         let policy = SignatureAlgorithmPolicy {
@@ -8649,7 +8656,7 @@ mod tests {
         let public_key = RsaPublicKey::from(&private_key);
         let spki_der = public_key.to_public_key_der().expect("SPKI DER");
         let spki = SubjectPublicKeyInfoOwned::try_from(spki_der.as_bytes()).expect("SPKI parse");
-        let subject = Name::from_str("CN=Wellfriend Prompt25 TSA,O=Wellfriend,C=US").expect("name");
+        let subject = Name::from_str("CN=Wellfriend PadesLTV TSA,O=Wellfriend,C=US").expect("name");
         let validity = Validity {
             not_before: Time::from(
                 GeneralizedTime::from_unix_duration(std::time::Duration::from_secs(1_704_067_200))

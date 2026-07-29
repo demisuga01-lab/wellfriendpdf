@@ -209,7 +209,7 @@ fn add_pdfx_rules(engine: &ContentEngine, rules: &mut Vec<ValidationRuleResult>)
             "pdfx",
             "pdfx.active_content",
             "document",
-            "No active content detected by the Prompt 09 scanner.",
+            "No active content detected by the Annotation Ocg Rendering scanner.",
         ));
     } else {
         rules.push(fail(

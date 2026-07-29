@@ -10,7 +10,7 @@
 //! ```
 //!
 //! With a second argument, writes the raw report envelopes to that path as a
-//! single JSON object (used to generate the Prompt-01 smoke artifact).
+//! single JSON object (used to generate the binding-surface smoke artifact).
 
 use std::path::PathBuf;
 

@@ -1,0 +1,20 @@
+# Release Packaging Package Platform Matrix
+
+| Surface | Artifact | Wasm Packaging status | Gate |
+| --- | --- | --- | --- |
+| Rust | crate package and examples | passed | `cargo package -p wellfriendpdf-engine --allow-dirty` |
+| CLI | `wellfriendpdf` binary | passed | `cargo build -p wellfriendpdf-cli` |
+| Codec worker | `wellfriendpdf-codec-worker` binary | passed | `cargo build -p wellfriendpdf-engine --bin wellfriendpdf-codec-worker` |
+| C ABI | header and native library | passed | `cargo build -p wellfriendpdf-capi` |
+| Python | wheel | passed on this Windows host | `python -m maturin build ...` |
+| WASM web | wasm-pack web package | passed | `scripts/wasm_packaging_wasm_pack_gate.ps1` |
+| WASM Node | wasm-pack nodejs package and packaged smoke | passed | `scripts/wasm_packaging_wasm_pack_gate.ps1` |
+| .NET | NuGet package | passed on this Windows host | `dotnet pack ...` |
+| Java Maven | JAR smoke | passed on this Windows host | `scripts/java_packaging_java_package_smoke.ps1` |
+| Java Gradle | JAR smoke | passed on this Windows host | `scripts/gradle_packaging_gradle_package_smoke.ps1` |
+
+## Remaining Honest Limits
+
+- Browser smoke is not automated in Wasm Packaging; the web package is built and inspected, while the executable smoke runs in Node against the packaged `nodejs` output.
+- Cross-platform Linux/macOS package artifacts are not built on this Windows host.
+- TypeScript `tsc` is not claimed by Wasm Packaging; generated declarations are inspected and the checked-in `wellfriendpdf.d.ts` is updated for the codec isolation method.

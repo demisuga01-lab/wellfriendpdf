@@ -33,7 +33,7 @@ successful chunk operation as sanitization.
 Redaction must first produce rewritten PDF bytes. Chunk those new bytes, not an
 in-memory pre-redaction model. The sanitized/redaction posture marks signatures
 as potentially invalidated and states that removed content is not included.
-Prompt 15 never reconstructs removed text.
+Semantic Closeout never reconstructs removed text.
 
 Security and signature fields are posture evidence, not a substitute for an
 application's authorization, retention, or legal compliance policy.

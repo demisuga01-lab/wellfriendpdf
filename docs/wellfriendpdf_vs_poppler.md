@@ -2,7 +2,7 @@
 
 Generated: 2026-06-18.
 
-This report replaces the Prompt J positioning report with the final
+This report replaces the Roadmap task J positioning report with the final
 Fidelity-Fix-1-through-4 at-scale baseline. All headline numbers below were
 freshly measured from the current working tree in this session. The default
 headline mode is Compat proof mode.
@@ -103,7 +103,7 @@ rendered-page Tier 3 scale.
 
 | Run | Files | Visual pages | File pass | Visual-page pass | Weighted score | Notes |
 |---|---:|---:|---:|---:|---:|---|
-| Prompt J baseline | 1,335 | 1,923 | 28.76% | 23.50% | 57.94 | Original at-scale baseline before Fixes 1-4. |
+| Roadmap task J baseline | 1,335 | 1,923 | 28.76% | 23.50% | 57.94 | Original at-scale baseline before Fixes 1-4. |
 | Fidelity Fix 1 | 1,335 | 2,002 | 35.66% | 26.84% | not restated here | Fixed the 157-render-failure class from the earlier round. |
 | Fidelity Fix 2 | 1,335 | 2,038 | 37.38% | 29.93% | 61.12 | Large-files and synthetic-transparency reached 100%. |
 | Fidelity Fix 3 | 238 | 849 | 13.87% | 9.54% | 25.25 | Targeted forms/multi-column rerun only, not a full at-scale rerun. |
@@ -171,7 +171,7 @@ Full 0A hostile subset:
 Fresh CVE-class Wellfriend-only safety sweep:
 
 ```text
-Manifest: renderer-benchmark/corpus/prompt-g-cve-class-manifest.json
+Manifest: renderer-benchmark/corpus/roadmap task-g-cve-class-manifest.json
 Entries: 751
 Command shape: wellfriendpdf render <pdf> --format png --dpi 144 --pages 1-5
 Timeout: 20s per file
@@ -258,7 +258,7 @@ Representative medians:
 ### 5.1 Tier
 
 The evidence supports Tier 0 for visual renderer parity at this achieved scale.
-The result is better than the Prompt J baseline, but not close to a production
+The result is better than the Roadmap task J baseline, but not close to a production
 visual-proof bar.
 
 ### 5.2 Wellfriend PDF SDK Visual-Proof Decision

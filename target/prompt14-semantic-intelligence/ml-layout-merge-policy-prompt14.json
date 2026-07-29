@@ -1,8 +1,0 @@
-{
-  "confidence_threshold": 0.78,
-  "conflicts_reported": true,
-  "deterministic_primary": true,
-  "low_confidence_as_suggestion": true,
-  "model_cannot_delete_deterministic_text": true,
-  "schema_version": "prompt14.ml_layout.merge.v1"
-}

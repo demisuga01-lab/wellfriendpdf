@@ -1,0 +1,11 @@
+{
+  "changed_paths": [
+    "crates/engine/tests/signatures.rs",
+    "docs/binding_parity6_incremental_signing_standards_audit.md",
+    "docs/binding_parity7_verapdf_crypto_fuzz_audit.md",
+    "docs/pades_ltv_fuzz_fuzz_blocker_resume_audit.md",
+    "docs/wellfriendpdf_rename_audit.md",
+    "docs/wellfriendpdf_rename_migration.md",
+    "scripts/binding_parity7_closeout_reports.py"
+  ]
+}

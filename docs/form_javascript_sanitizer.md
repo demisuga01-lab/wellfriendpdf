@@ -1,6 +1,6 @@
 # Form JavaScript Sanitizer
 
-The Prompt 19 sanitizer uses the canonical object rewriter. It removes both
+The form action policy sanitizer uses the canonical object rewriter. It removes both
 action objects and the owning `/A`, `/AA`, `/OpenAction`, `/Next`, or
 `/Names/JavaScript` reachability slot required by the selected policy. Sibling
 name trees such as `/Dests` and `/EmbeddedFiles` are preserved.
@@ -25,5 +25,5 @@ wellfriendpdf form-js-sanitize input.pdf --policy preserve_safe_navigation_only 
 ```
 
 On certified/signed inputs a prohibited full rewrite returns the stable
-`unsupported_feature` error unless the caller explicitly requests the Prompt
+`unsupported_feature` error unless the caller explicitly requests the Roadmap task
 18B signature-policy override.

@@ -1,6 +1,6 @@
 # Same-width content-stream patching
 
-The Prompt 20 patcher is a minimal incremental edit for text that can remain in
+The advanced editing patcher is a minimal incremental edit for text that can remain in
 the existing font, encoding, and text geometry. Its lexical layer preserves
 literal versus hexadecimal representation and decoded byte ranges for `Tj`,
 individual `TJ` strings, quote, and double-quote text operators. Eligibility

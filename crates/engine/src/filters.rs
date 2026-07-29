@@ -53,7 +53,7 @@ pub(crate) struct DecodedStreamReader<'a> {
 
 /// Resource limits applied by the shared stream decode layer.
 ///
-/// The defaults intentionally mirror the Prompt 02 hard caps so callers get the
+/// The defaults intentionally mirror the Binding Parity hard caps so callers get the
 /// same behavior unless they explicitly choose a lower-memory or audit profile.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct DecodeLimits {

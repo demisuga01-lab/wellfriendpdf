@@ -80,7 +80,7 @@ be added once the crate commits to a `1.0` stable surface.
 ## Path To Enterprise-Grade
 
 This repository can pin policy, tests, and security posture in code, but three
-enterprise prerequisites remain outside what a prompt can honestly complete:
+enterprise prerequisites remain outside what a roadmap task can honestly complete:
 
 1. An external, independent third-party security audit of the parser/rendering,
    crypto/signature, server, C ABI, and supply-chain surfaces.

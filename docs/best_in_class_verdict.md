@@ -1,4 +1,4 @@
-# Best-in-Class Verdict — Measurement & Checkpoint (Prompt 6)
+# Best-in-Class Verdict — Measurement & Checkpoint (Native Renderer)
 
 This is a **measurement + integration + verdict checkpoint**, not a positioning
 rewrite and not a new-feature plan. It records what was *freshly verified this
@@ -10,7 +10,7 @@ verdict about where Wellfriend stands and what the genuine next step is.
 > extraction, renderer fidelity, multipage render performance, and key-material
 > zeroization — but it did **not** close the High-severity findings from the
 > project's own internal audit (`docs/security/audit_findings.md`). Per the
-> Prompt-6 decision, **no outward-facing security positioning is strengthened
+> native-renderer decision, **no outward-facing security positioning is strengthened
 > here.** The recommended next step is a dedicated *fix-the-Highs* batch
 > **before** any best-in-class positioning is published. See §5.
 
@@ -99,13 +99,13 @@ offer):
 
 ### 3.2 Renderer fidelity **[recorded — not re-swept this session]**
 
-Source: `renderer-benchmark/results/prompt3-final-265/aggregate.md`, generated
-2026-06-23T17:17Z (Prompt 3). **Not re-run here** because the 265-file sweep
+Source: `renderer-benchmark/results/release_packaging-final-265/aggregate.md`, generated
+2026-06-23T17:17Z (Release Packaging). **Not re-run here** because the 265-file sweep
 needs the release binary + a Poppler reference pass, and **PDFium is absent**
 (so the pixel-reference comparison cannot be improved on this host — it was
 already PDFium-absent / Poppler-only when recorded).
 
-- Weighted score **91.82** (up from the ~86.12 pre-Prompt-3 baseline), visual
+- Weighted score **91.82** (up from the ~86.12 pre-release-packaging baseline), visual
   pass **86.94%**, hostile crash/timeout/memory-safety **100%/100%/100%**,
   determinism 24/24, median Poppler/Wellfriend speed ratio 1.91×.
 - Weakest categories (honest): RTL 40%, scanned 44%, multi-column 47%, forms
@@ -128,7 +128,7 @@ qpdf:
 ### 3.4 Performance **[recorded — not re-run this session]**
 
 Source: `docs/perf_prompt_h_summary.md` (release binary, median-of-3) plus the
-Prompt-4 multipage-render perf artifacts. **Not re-run** here (would require a
+codec-boundary multipage-render perf artifacts. **Not re-run** here (would require a
 release rebuild + the cold-start/footprint harness). The honest summary:
 
 - **Decisive wins (footprint/latency):** ~7.5 ms process cold start vs ~158 ms
@@ -154,7 +154,7 @@ release rebuild + the cold-start/footprint harness). The honest summary:
 
 ## 4. Security reality (the part that gates the verdict)
 
-> **UPDATE (2026-06-24) — SUPERSEDED.** This section was the Prompt-6 snapshot,
+> **UPDATE (2026-06-24) — SUPERSEDED.** This section was the native-renderer snapshot,
 > when all 6 Highs were open. They have since been **fixed and test-backed**
 > (commits `d06a600` H-1, `9af3076` H-3, `823fa39` H-4/5/6, `7dcd0de` H-2); the
 > "OPEN" table below is retained as the historical baseline. Current status is
@@ -162,7 +162,7 @@ release rebuild + the cold-start/footprint harness). The honest summary:
 > the external audit + pilot remain the next trust-builders.
 
 The project's own systematic audit (`docs/security/audit_findings.md`) reported
-**0 Critical · 6 High · 8 Medium · 12 Low/Info**. As of the Prompt-6 snapshot,
+**0 Critical · 6 High · 8 Medium · 12 Low/Info**. As of the native-renderer snapshot,
 **all 6 High findings were open** (now resolved — see the update above); that
 checkpoint had closed exactly **one Low** (L-4 key-material zeroization, now real
 via `SecretBytes = Zeroizing<Vec<u8>>` and `.zeroize()` throughout `crypto.rs`).
@@ -199,7 +199,7 @@ as the tracked known-issues record, and `posture.md` now points to it.
 
 ### Where Wellfriend is genuinely best-in-class (on its real strengths)
 - **Pure-Rust, memory-safe, single static binary, self-hostable, four embed
-  surfaces, permissive (MIT/Apache-2.0), one canonical `Document` model** — this
+  surfaces, permissive (MIT), one canonical `Document` model** — this
   breadth-in-one-safe-core with no Python/C++ runtime is a real, defensible
   differentiator.
 - **Footprint & cold start**: ~12.8 MB / ~7.5 ms beats a Python+PyMuPDF stack
@@ -222,13 +222,13 @@ as the tracked known-issues record, and `posture.md` now points to it.
 - **Renderer visual fidelity** (preview-grade; trails Poppler/PDFium).
 - **Messy real-world scans / ML layout** (Docling not benchmarked locally; likely
   ahead on the hardest scans).
-- **Security**: at the Prompt-6 snapshot, 6 open self-identified High findings.
+- **Security**: at the native-renderer snapshot, 6 open self-identified High findings.
   **All 6 are now fixed and test-backed** (see §4 update and
   `audit_findings.md`); the remaining security gap is the external audit + pilot,
   not open code findings.
 
 ### Release readiness
-At the Prompt-6 snapshot this read "not ready to strengthen positioning / not
+At the native-renderer snapshot this read "not ready to strengthen positioning / not
 ready for a strict GA tag" because the 6 Highs were open. **Those are now
 closed**, so the gating work that remains is external, in order:
 

@@ -1,6 +1,0 @@
-{
-  "fallback_policy": "raw semantic text search remains available",
-  "match_count": 1,
-  "match_policy": "dictionary token sequence exact match",
-  "query": "検索エンジン"
-}

@@ -1,19 +1,19 @@
 # CJK Segmentation
 
-Prompt 06 added CJK character tokenization. Prompt 06B added a bounded simple
-segmentation option. Prompt 14 adds optional deterministic dictionary-backed
+Native Renderer added CJK character tokenization. Reference Renderer added a bounded simple
+segmentation option. Semantic Intelligence adds optional deterministic dictionary-backed
 segmentation while preserving the original behavior and raw extracted text.
 
 ## Modes
 
-- `char`: default Prompt 06 behavior; one CJK character per token.
+- `char`: default Native Renderer behavior; one CJK character per token.
 - `simple`: groups contiguous Han, Hiragana, Katakana, or Hangul runs; splits on
   punctuation, script changes, Latin/numeric boundaries, whitespace, and the
   configured max run length.
 - `dictionary`: uses deterministic longest-match segmentation, stable
   tie-breaking, mixed Latin/CJK boundaries, punctuation handling, and
   unknown-character fallback. The default extraction path uses the small
-  built-in fixture provider; Prompt 14B exposes user-supplied production
+  built-in fixture provider; CJK Dictionary Layout exposes user-supplied production
   dictionary packs through the provider API.
 
 ## API

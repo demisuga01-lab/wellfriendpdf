@@ -1,5 +1,5 @@
 //! **Extraction-quality evaluation metrics** — the pure-Rust scoring core for the
-//! extraction benchmark (Parser-Pivot prompt 6).
+//! extraction benchmark (Parser-Pivot native renderer).
 //!
 //! These are standard, deterministic metrics so the numbers are comparable to
 //! how Docling / PyMuPDF / the extraction literature report:

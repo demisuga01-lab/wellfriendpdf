@@ -2,11 +2,11 @@
 
 ## Scope
 
-Prompt 33 extends the Prompt 31 provenance/operator-editing and Prompt 32 scene/transaction/font stack. It owns GeometricBlock and SemanticDocument routing and does not create a second parser, scene graph, font engine, semantic model, writer or binding-specific reflow implementation.
+text reflow extends the source editing provenance/operator-editing and editing transactions scene/transaction/font stack. It owns GeometricBlock and SemanticDocument routing and does not create a second parser, scene graph, font engine, semantic model, writer or binding-specific reflow implementation.
 
 ## Actual implementation status
 
-This document describes the intended Prompt 33 boundary. It is not evidence
+This document describes the intended text reflow boundary. It is not evidence
 that every named capability is implemented. The current executable support is
 limited to a provenance-resolved, bounded, single-region `GeometricBlock`
 source rewrite. Unknown neighboring objects remain locked and a refusal leaves
@@ -23,7 +23,7 @@ restoration for both boundaries.
 
 This is not a persisted cross-process undo token. General source-linked
 downstream movement remains limited: one explicitly dependency-linked,
-same-page path object may move through the canonical Prompt 20 vector mutator
+same-page path object may move through the canonical advanced editing vector mutator
 only when its scene identity, collision-free target, ownership, and interactive
 document restrictions are proven. One caller-associated same-page `/Link` may
 also move when its exact source rectangle, relationship, and delta are supplied;
@@ -42,4 +42,4 @@ binding-parity gate. No release verdict, closure commit, or deployment is
 justified from this document.
 ## Known limits
 
-Prompt 34 owns full table/formula/OCR edit engines. Prompt 35 owns final tagged-PDF/accessibility repair and forensic redaction closure. Prompt 33 reports low-confidence semantic reconstruction and broad page-flow limitations instead of treating inference as exact fact.
+document subsystems owns full table/formula/OCR edit engines. document security owns final tagged-PDF/accessibility repair and forensic redaction closure. text reflow reports low-confidence semantic reconstruction and broad page-flow limitations instead of treating inference as exact fact.

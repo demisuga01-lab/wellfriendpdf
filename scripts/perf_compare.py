@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wellfriend-vs-Poppler performance comparison (Mega-Prompt 15, Part B).
+"""Wellfriend-vs-Poppler performance comparison (Mega-Semantic Closeout, Part B).
 
 The parity harness (scripts/poppler_compare.py) measures *correctness*
 (text similarity, render PSNR). scripts/perf_bench.py measures Wellfriend's own

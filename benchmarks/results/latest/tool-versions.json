@@ -1,0 +1,5 @@
+{
+  "benchmark_harness": "repository_benchmarks.rs",
+  "comparators": "see competitor-comparison for external tools",
+  "wellfriendpdf_engine": "0.1.0"
+}

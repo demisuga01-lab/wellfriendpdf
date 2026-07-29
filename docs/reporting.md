@@ -136,10 +136,10 @@ drawn are reported.)
   the CLI is complete. These are lightweight (no large output) so they need no
   async-job machinery.
 
-## Prompt 12 Prepress Reports
+## Prepress CMM Prepress Reports
 
 `feature-report` and color/prepress reports include the additive section
-`prompt12_prepress_cmm_device_link_separation_plates`. It exposes device-link
+`prepress_cmm_prepress_cmm_device_link_separation_plates`. It exposes device-link
 and multicolor ICC inventory, native/fallback CMM posture, BPC/rendering-intent
 cache posture, sparse separation framebuffer state, spot/DeviceN plate
 summaries, and plate preview hashes.

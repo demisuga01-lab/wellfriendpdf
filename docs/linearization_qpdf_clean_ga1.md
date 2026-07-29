@@ -1,6 +1,6 @@
-# Linearization Hint Tables - GA Prompt 1
+# Linearization Hint Tables - GA Binding Surface
 
-GA Prompt 1 fixes the Prompt 11 v1.0 blocker: qpdf recognized Wellfriend output as
+GA Binding Surface fixes the Renderer Fuzz CMM v1.0 blocker: qpdf recognized Wellfriend output as
 linearized, but reported hint-table warnings.
 
 ## Reproduced Warning

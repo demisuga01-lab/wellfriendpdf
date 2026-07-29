@@ -1,0 +1,26 @@
+{
+  "schema": "repository_professionalization.domain_module_rename.v1",
+  "generated_at": "2026-07-29T19:02:18.7392177Z",
+  "renames": [
+    {
+      "from": "crates/engine/src/source_editing.rs",
+      "to": "crates/engine/src/source_editing.rs"
+    },
+    {
+      "from": "crates/engine/src/editing_transactions.rs",
+      "to": "crates/engine/src/editing_transactions.rs"
+    },
+    {
+      "from": "crates/engine/src/text_reflow.rs",
+      "to": "crates/engine/src/text_reflow.rs"
+    },
+    {
+      "from": "crates/engine/src/document_subsystems.rs",
+      "to": "crates/engine/src/document_subsystems.rs"
+    },
+    {
+      "from": "crates/engine/src/document_security.rs",
+      "to": "crates/engine/src/document_security.rs"
+    }
+  ]
+}

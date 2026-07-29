@@ -1,0 +1,298 @@
+{
+  "schema": "repository_professionalization.identifier_rename_plan.v1",
+  "generated_at": "2026-07-29T19:03:55.7584351Z",
+  "replacements": [
+    {
+      "from": "secure_mutation_closeout",
+      "to": "secure_mutation_closeout"
+    },
+    {
+      "from": "SecureMutationCloseout",
+      "to": "SecureMutationCloseout"
+    },
+    {
+      "from": "SECURE_MUTATION_CLOSEOUT",
+      "to": "SECURE_MUTATION_CLOSEOUT"
+    },
+    {
+      "from": "Secure Mutation Closeout",
+      "to": "secure mutation closeout"
+    },
+    {
+      "from": "advanced_editing_closeout",
+      "to": "advanced_editing_closeout"
+    },
+    {
+      "from": "AdvancedEditingCloseout",
+      "to": "AdvancedEditingCloseout"
+    },
+    {
+      "from": "ADVANCED_EDITING_CLOSEOUT",
+      "to": "ADVANCED_EDITING_CLOSEOUT"
+    },
+    {
+      "from": "Advanced Editing Closeout",
+      "to": "advanced editing closeout"
+    },
+    {
+      "from": "compression_office_closeout",
+      "to": "compression_office_closeout"
+    },
+    {
+      "from": "CompressionOfficeCloseout",
+      "to": "CompressionOfficeCloseout"
+    },
+    {
+      "from": "COMPRESSION_OFFICE_CLOSEOUT",
+      "to": "COMPRESSION_OFFICE_CLOSEOUT"
+    },
+    {
+      "from": "Compression Office Closeout",
+      "to": "compression and Office closeout"
+    },
+    {
+      "from": "crypto_writer_closeout",
+      "to": "crypto_writer_closeout"
+    },
+    {
+      "from": "CryptoWriterCloseout",
+      "to": "CryptoWriterCloseout"
+    },
+    {
+      "from": "CRYPTO_WRITER_CLOSEOUT",
+      "to": "CRYPTO_WRITER_CLOSEOUT"
+    },
+    {
+      "from": "Crypto Writer Closeout",
+      "to": "crypto writer closeout"
+    },
+    {
+      "from": "annotation_media_redaction",
+      "to": "annotation_media_redaction"
+    },
+    {
+      "from": "AnnotationMediaRedaction",
+      "to": "AnnotationMediaRedaction"
+    },
+    {
+      "from": "ANNOTATION_MEDIA_REDACTION",
+      "to": "ANNOTATION_MEDIA_REDACTION"
+    },
+    {
+      "from": "Annotation Media Redaction",
+      "to": "annotation/media redaction"
+    },
+    {
+      "from": "secure_mutation",
+      "to": "secure_mutation"
+    },
+    {
+      "from": "SecureMutation",
+      "to": "SecureMutation"
+    },
+    {
+      "from": "SECURE_MUTATION",
+      "to": "SECURE_MUTATION"
+    },
+    {
+      "from": "Secure Mutation",
+      "to": "secure mutation"
+    },
+    {
+      "from": "form_action_policy",
+      "to": "form_action_policy"
+    },
+    {
+      "from": "FormActionPolicy",
+      "to": "FormActionPolicy"
+    },
+    {
+      "from": "FORM_ACTION_POLICY",
+      "to": "FORM_ACTION_POLICY"
+    },
+    {
+      "from": "Form Action Policy",
+      "to": "form action policy"
+    },
+    {
+      "from": "advanced_editing",
+      "to": "advanced_editing"
+    },
+    {
+      "from": "AdvancedEditing",
+      "to": "AdvancedEditing"
+    },
+    {
+      "from": "ADVANCED_EDITING",
+      "to": "ADVANCED_EDITING"
+    },
+    {
+      "from": "Advanced Editing",
+      "to": "advanced editing"
+    },
+    {
+      "from": "writer_history",
+      "to": "writer_history"
+    },
+    {
+      "from": "WriterHistory",
+      "to": "WriterHistory"
+    },
+    {
+      "from": "WRITER_HISTORY",
+      "to": "WRITER_HISTORY"
+    },
+    {
+      "from": "Writer History",
+      "to": "writer history"
+    },
+    {
+      "from": "compression_office",
+      "to": "compression_office"
+    },
+    {
+      "from": "CompressionOffice",
+      "to": "CompressionOffice"
+    },
+    {
+      "from": "COMPRESSION_OFFICE",
+      "to": "COMPRESSION_OFFICE"
+    },
+    {
+      "from": "Compression Office",
+      "to": "compression and Office"
+    },
+    {
+      "from": "crypto_writer",
+      "to": "crypto_writer"
+    },
+    {
+      "from": "CryptoWriter",
+      "to": "CryptoWriter"
+    },
+    {
+      "from": "CRYPTO_WRITER",
+      "to": "CRYPTO_WRITER"
+    },
+    {
+      "from": "Crypto Writer",
+      "to": "crypto writer"
+    },
+    {
+      "from": "source_editing",
+      "to": "source_editing"
+    },
+    {
+      "from": "SourceEditing",
+      "to": "SourceEditing"
+    },
+    {
+      "from": "SOURCE_EDITING",
+      "to": "SOURCE_EDITING"
+    },
+    {
+      "from": "Source Editing",
+      "to": "source editing"
+    },
+    {
+      "from": "editing_transactions",
+      "to": "editing_transactions"
+    },
+    {
+      "from": "EditingTransactions",
+      "to": "EditingTransactions"
+    },
+    {
+      "from": "EDITING_TRANSACTIONS",
+      "to": "EDITING_TRANSACTIONS"
+    },
+    {
+      "from": "Editing Transactions",
+      "to": "editing transactions"
+    },
+    {
+      "from": "text_reflow",
+      "to": "text_reflow"
+    },
+    {
+      "from": "TextReflow",
+      "to": "TextReflow"
+    },
+    {
+      "from": "TEXT_REFLOW",
+      "to": "TEXT_REFLOW"
+    },
+    {
+      "from": "Text Reflow",
+      "to": "text reflow"
+    },
+    {
+      "from": "document_subsystems",
+      "to": "document_subsystems"
+    },
+    {
+      "from": "DocumentSubsystems",
+      "to": "DocumentSubsystems"
+    },
+    {
+      "from": "DOCUMENT_SUBSYSTEMS",
+      "to": "DOCUMENT_SUBSYSTEMS"
+    },
+    {
+      "from": "Document Subsystems",
+      "to": "document subsystems"
+    },
+    {
+      "from": "document_security",
+      "to": "document_security"
+    },
+    {
+      "from": "DocumentSecurity",
+      "to": "DocumentSecurity"
+    },
+    {
+      "from": "DOCUMENT_SECURITY",
+      "to": "DOCUMENT_SECURITY"
+    },
+    {
+      "from": "Document Security",
+      "to": "document security"
+    },
+    {
+      "from": "release_validation",
+      "to": "release_validation"
+    },
+    {
+      "from": "ReleaseValidation",
+      "to": "ReleaseValidation"
+    },
+    {
+      "from": "RELEASE_VALIDATION",
+      "to": "RELEASE_VALIDATION"
+    },
+    {
+      "from": "Release Validation",
+      "to": "release validation"
+    },
+    {
+      "from": "Roadmap closure",
+      "to": "roadmap closure"
+    },
+    {
+      "from": "roadmap closure",
+      "to": "roadmap closure"
+    },
+    {
+      "from": "release_ready_with_limits",
+      "to": "release-ready, with documented boundaries"
+    },
+    {
+      "from": "implementation_complete",
+      "to": "implementation complete"
+    },
+    {
+      "from": "readme_complete_evidence_backed",
+      "to": "README complete and evidence-backed"
+    }
+  ]
+}

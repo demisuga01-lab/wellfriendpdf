@@ -1,13 +1,13 @@
 # XFA Compatibility
 
-Prompt 34 inventories packets, extracts bounded data/field evidence, and
+document subsystems inventories packets, extracts bounded data/field evidence, and
 records a canonical static-conversion plan. Unrelated source rewrites compare
 packet fingerprints so XFA bytes are not silently changed. Approved static
 flattening delegates to the XFA runtime and can either retain source packets or
 remove them only under an explicit request.
 
 Dynamic XFA, lossy mappings, unsupported scripts/actions, and destructive
-conversion without approval return exact typed limits. Prompt 34 does not claim
+conversion without approval return exact typed limits. document subsystems does not claim
 universal dynamic-XFA conversion.
 
 XFA packets are inventoried and preserved during unrelated canonical edits.

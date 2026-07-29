@@ -2,7 +2,7 @@
 
 Status: `implemented_with_limits`
 
-AESV4 object protection uses the ISO/TS 32003:2023 layout recorded in the Prompt 23B clause matrix:
+AESV4 object protection uses the ISO/TS 32003:2023 layout recorded in the crypto writer closeout clause matrix:
 
 - IV length: 12 bytes.
 - Tag length: 16 bytes.

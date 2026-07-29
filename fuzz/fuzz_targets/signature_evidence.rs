@@ -1,5 +1,5 @@
 #![no_main]
-//! Fuzz Prompt 24 evidence bundles and retrieval-policy parsing without I/O.
+//! Fuzz Signature Validation evidence bundles and retrieval-policy parsing without I/O.
 
 use libfuzzer_sys::fuzz_target;
 use wellfriendpdf_engine::fuzz::fuzz_signature_evidence;

@@ -1780,7 +1780,7 @@ mod tests {
             .expect("system clock after Unix epoch")
             .as_nanos();
         let directory = std::env::temp_dir()
-            .join("prompt24-evidence-cache")
+            .join("signature_validation-evidence-cache")
             .join(format!("{}-{suffix}", std::process::id()));
         let mut policy = RetrievalPolicy::offline();
         policy.cache_directory = Some(directory.to_string_lossy().into_owned());

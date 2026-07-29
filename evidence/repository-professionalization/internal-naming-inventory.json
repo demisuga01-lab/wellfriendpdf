@@ -1,0 +1,10 @@
+{
+  "artifact": "internal-naming-inventory",
+  "redacted": true,
+  "reason": "raw legacy roadmap-number identifiers were intentionally removed from retained evidence",
+  "initial_occurrence_count": 4228,
+  "classification": "legacy_internal_names_migrated_to_product_domain_names",
+  "raw_details_retained": false,
+  "final_audit_artifact": "evidence/repository-professionalization/final-naming-audit.json",
+  "sha256_of_artifact_name": "bc073356a4ac3efae3ace16b01ca64f76146f629d7d7f1243fb0074c80e29d29"
+}

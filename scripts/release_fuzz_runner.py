@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Release fuzz runner used by Prompt 27 and later hardening campaigns.
+"""Release fuzz runner used by Crypto Standards Fuzz and later hardening campaigns.
 
 Runs cargo-fuzz one target at a time with explicit memory/time policy and writes
-machine-readable evidence. The defaults preserve serial Prompt 25B-style fuzzing
+machine-readable evidence. The defaults preserve serial Pades LTV Fuzz-style fuzzing
 posture: dev fuzz builds, high codegen units, no trace compares, bounded input,
-and explicit process-tree RSS caps. Prompt 27+ VPS campaigns use a user-approved
+and explicit process-tree RSS caps. Crypto Standards Fuzz+ VPS campaigns use a user-approved
 16 GiB per-process cap while keeping the overall Wellfriend test allocation
 under 32 GiB.
 """
@@ -395,7 +395,7 @@ def finish_target(
 
 def write_markdown(payload: dict[str, object], path: Path) -> None:
     lines = [
-        "# Prompt 27 release fuzz runner result",
+        "# Crypto Standards Fuzz release fuzz runner result",
         "",
         f"Generated: `{payload['generated_at_utc']}`",
         f"Verdict: `{payload['verdict']}`",
@@ -415,8 +415,8 @@ def main() -> int:
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--targets", default=None)
     parser.add_argument("--group", action="append", default=[])
-    parser.add_argument("--artifact-root", type=Path, default=Path("target/prompt27-verapdf-crypto-fuzz/release-fuzz-artifacts"))
-    parser.add_argument("--json-output", type=Path, default=Path("target/prompt27-verapdf-crypto-fuzz/release-fuzz-runner-smoke.json"))
+    parser.add_argument("--artifact-root", type=Path, default=Path("target/crypto_standards_fuzz-verapdf-crypto-fuzz/release-fuzz-artifacts"))
+    parser.add_argument("--json-output", type=Path, default=Path("target/crypto_standards_fuzz-verapdf-crypto-fuzz/release-fuzz-runner-smoke.json"))
     parser.add_argument("--markdown-output", type=Path, default=None)
     parser.add_argument("--memory-mb", type=int, default=16384)
     parser.add_argument("--smoke-runs", type=int, default=64)
@@ -463,7 +463,7 @@ def main() -> int:
         "repo": str(repo),
         "targets_requested": targets,
         "memory_cap_mib": args.memory_mb,
-        "prompt25b_low_memory_posture": {
+        "pades_ltv_fuzz_low_memory_posture": {
             "cargo_build_jobs": os.environ.get("CARGO_BUILD_JOBS", "1"),
             "cargo_incremental": os.environ.get("CARGO_INCREMENTAL", "0"),
             "dev_build": True,

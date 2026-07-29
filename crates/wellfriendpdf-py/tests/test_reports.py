@@ -1,4 +1,4 @@
-"""Prompt-01 report-surface tests for the Python SDK.
+"""binding-surface report-surface tests for the Python SDK.
 
 Every report method returns a native dict parsed from the shared
 `wellfriendpdf_engine::sdk` versioned-JSON envelope. These assert the envelope shape,
@@ -37,18 +37,18 @@ def test_read_only_report_envelopes():
     _envelope(doc.color_report(profile="pdfa"), "color_report")
     _envelope(doc.forms_report(), "forms_report")
     xfa = _envelope(doc.xfa_report(), "xfa_report")
-    assert xfa["schema_version"] == "prompt16.xfa.v1"
+    assert xfa["schema_version"] == "xfa_runtime.xfa.v1"
     _envelope(doc.xfa_extract(), "xfa_extract_report")
     _envelope(doc.xfa_script_report(), "xfa_script_report")
     _envelope(doc.xfa_security_report(), "xfa_security_report")
     _envelope(doc.xfa_runtime_report(), "xfa_runtime_report")
     _envelope(doc.annotations_report(), "annotation_report")
     media = _envelope(doc.rich_media_report(), "rich_media_report")
-    assert media["schema_version"].startswith("prompt17.")
+    assert media["schema_version"].startswith("annotation_media_redaction.")
     _envelope(doc.annotation_appearance_report(), "annotation_appearance_report")
-    _envelope(doc.prompt17_report(), "prompt17_report")
-    _envelope(doc.prompt18_report(), "prompt18_report")
-    _envelope(doc.prompt18b_report(), "prompt18b_report")
+    _envelope(doc.annotation_media_redaction_report(), "annotation_media_redaction_report")
+    _envelope(doc.secure_mutation_report(), "secure_mutation_report")
+    _envelope(doc.secure_mutation_closeout_report(), "secure_mutation_closeout_report")
     _envelope(doc.associated_files_report(), "associated_files_report")
     _envelope(doc.mask_redaction_report(), "mask_redaction_report")
     _envelope(doc.edit_policy_report("incremental_save"), "edit_policy_report")
@@ -66,9 +66,9 @@ def test_read_only_report_envelopes():
     _envelope(doc.validate_standards_all(), "standards_all_validation")
     _envelope(doc.chunks(), "chunk_set")
     advanced = _envelope(doc.advanced_chunks(), "advanced_rag_chunk_set")
-    assert advanced["schema_version"] == "prompt15.rag_chunk.v1"
+    assert advanced["schema_version"] == "semantic_closeout.rag_chunk.v1"
     semantic = _envelope(doc.semantic_bundle(), "semantic_binding_report")
-    assert semantic["schema_version"] == "prompt15.semantic_binding.v1"
+    assert semantic["schema_version"] == "semantic_closeout.semantic_binding.v1"
     search = _envelope(doc.semantic_search("Hello"), "semantic_search_report")
     assert search["query"] == "Hello"
     assert search["provenance_preserved"] is True
@@ -89,13 +89,13 @@ def test_parser_report_opened_true():
     assert report["opened"] is True
 
 
-def test_prompt20b_report_analyze_and_edit(tmp_path):
+def test_advanced_editing_closeout_report_analyze_and_edit(tmp_path):
     doc = wellfriendpdf.open(FIXTURE)
-    report = _envelope(doc.prompt20b_report(), "prompt20b_report")
-    assert report["schema_version"] == "prompt20b.multirun-form-appearance-closure.v1"
+    report = _envelope(doc.advanced_editing_closeout_report(), "advanced_editing_closeout_report")
+    assert report["schema_version"] == "advanced_editing_closeout.multirun-form-appearance-closure.v1"
 
-    model = _envelope(doc.prompt20b_text_range_analyze(1), "prompt20b_multi_run_range_model")
-    assert model["schema_version"] == "prompt20b.multirun-form-appearance-closure.v1"
+    model = _envelope(doc.advanced_editing_closeout_text_range_analyze(1), "advanced_editing_closeout_multi_run_range_model")
+    assert model["schema_version"] == "advanced_editing_closeout.multirun-form-appearance-closure.v1"
     assert model["logical_text"].startswith("Hello")
     first_span = model["source_spans"][0]
 
@@ -118,9 +118,9 @@ def test_prompt20b_report_analyze_and_edit(tmp_path):
             },
         }
     )
-    out, edit_report = doc.edit_text_range(request, output=tmp_path / "prompt20b-python.pdf")
+    out, edit_report = doc.edit_text_range(request, output=tmp_path / "advanced_editing_closeout-python.pdf")
     assert bytes(out).startswith(b"%PDF-")
-    edited = _envelope(edit_report, "prompt20b_multi_run_text_edit_report")
+    edited = _envelope(edit_report, "advanced_editing_closeout_multi_run_text_edit_report")
     assert edited["replacement_extracts"] is True
     assert edited["old_selected_text_absent"] is True
 
@@ -140,7 +140,7 @@ def test_signature_report_on_signed_fixture():
     assert isinstance(report, list)
 
 
-def test_prompt24_owned_signature_validation_options():
+def test_signature_validation_owned_signature_validation_options():
     if not SIG.exists():
         pytest.skip("signed fixture not present")
 
@@ -168,7 +168,7 @@ def test_prompt24_owned_signature_validation_options():
         options.add_distrusted_certificate_sha256("not-a-fingerprint")
 
 
-def test_prompt24_signature_validation_component_handles_and_cancellation():
+def test_signature_validation_signature_validation_component_handles_and_cancellation():
     if not SIG.exists():
         pytest.skip("signed fixture not present")
 
@@ -212,7 +212,7 @@ def test_prompt24_signature_validation_component_handles_and_cancellation():
         wellfriendpdf.open(SIG).signature_validation(options)
 
 
-def test_prompt25_timestamp_and_signature_preserving_surfaces():
+def test_pades_ltv_timestamp_and_signature_preserving_surfaces():
     timestamp = _envelope(
         wellfriendpdf.timestamp_token_validation(b"not-a-rfc3161-token", b"cms-signature-value"),
         "timestamp_token_validation",
@@ -222,10 +222,10 @@ def test_prompt25_timestamp_and_signature_preserving_surfaces():
 
     doc = wellfriendpdf.open(FORM)
     plan = _envelope(
-        doc.signature_preserving_form_plan("name", "Prompt25", "{}"),
+        doc.signature_preserving_form_plan("name", "PadesLTV", "{}"),
         "signature_preserving_edit_plan",
     )
-    assert plan["schema_version"] == "prompt25.tsa-dss-ltv-mdp-signature-edits.v1"
+    assert plan["schema_version"] == "pades_ltv.tsa-dss-ltv-mdp-signature-edits.v1"
     assert plan["prefix_preservation_required"] is True
 
 
@@ -235,186 +235,186 @@ def test_module_level_reports():
     feature = _envelope(wellfriendpdf.feature_report(), "feature_report")
     assert isinstance(feature["engine_version"], str)
     assert feature["report_envelope_version"] == 1
-    assert feature["prompt04"]["scanner"]["default_implementation"] == "safe_first_byte_chunked"
+    assert feature["codec_boundary"]["scanner"]["default_implementation"] == "safe_first_byte_chunked"
     assert (
-        feature["prompt04"]["renderer_decode_scheduler"]["status"]
+        feature["codec_boundary"]["renderer_decode_scheduler"]["status"]
         == "adopted_for_immediate_renderer_decode_paths"
     )
     assert (
-        feature["prompt05"]["decode_scheduler"]["status"]
-        == "adopted_for_prompt05_non_render_decode_paths"
+        feature["decode_scheduler"]["decode_scheduler"]["status"]
+        == "adopted_for_decode_scheduler_non_render_decode_paths"
     )
-    assert feature["prompt05"]["hostile_corpus"]["generator"].endswith(
-        "prompt05_hostile_codec_corpus.py"
+    assert feature["decode_scheduler"]["hostile_corpus"]["generator"].endswith(
+        "decode_scheduler_hostile_codec_corpus.py"
     )
     assert (
-        feature["prompt06"]["native_replay"]["status"]
+        feature["native_renderer"]["native_replay"]["status"]
         == "native_text_image_form_display_list_foundation"
     )
-    assert feature["prompt06"]["renderer_parity_audit"]["script"].endswith(
-        "prompt06_renderer_parity_audit.py"
+    assert feature["native_renderer"]["renderer_parity_audit"]["script"].endswith(
+        "native_renderer_renderer_parity_audit.py"
     )
     assert (
-        feature["prompt06"]["prompt06b_multi_reference_audit"]["status"]
+        feature["native_renderer"]["reference_renderer_multi_reference_audit"]["status"]
         == "multi_reference_audit_complete"
     )
     assert (
-        feature["prompt07_transparency_compositing"]["status"]
-        == "native_foundation_with_prompt07b_closure"
+        feature["transparency_rendering_transparency_compositing"]["status"]
+        == "native_foundation_with_transparency_closeout_closure"
     )
     assert (
-        feature["prompt07_transparency_compositing"]["reference_audit"]["memory_cap_mb"]
+        feature["transparency_rendering_transparency_compositing"]["reference_audit"]["memory_cap_mb"]
         == 4096
     )
-    assert "Luminosity" in feature["prompt07_transparency_compositing"]["blend_modes"]["implemented"]
-    assert feature["prompt07b_transparency_closure"]["status"] == "complete"
+    assert "Luminosity" in feature["transparency_rendering_transparency_compositing"]["blend_modes"]["implemented"]
+    assert feature["transparency_closeout_transparency_closure"]["status"] == "complete"
     assert (
-        feature["prompt07b_transparency_closure"]["reference_audit"]["wellfriendpdf_outlier_failures"]
+        feature["transparency_closeout_transparency_closure"]["reference_audit"]["wellfriendpdf_outlier_failures"]
         == 0
     )
     assert (
         "DeviceCMYK"
-        in feature["prompt07b_transparency_closure"]["luminosity_soft_mask_color_spaces"][
+        in feature["transparency_closeout_transparency_closure"]["luminosity_soft_mask_color_spaces"][
             "supported"
         ]
     )
-    prompt08 = feature["prompt08_text_clipping_shading_patterns"]
-    assert prompt08["status"] == "native_common_paths_with_bounded_unsupported_reports"
-    assert prompt08["reference_audit"]["memory_cap_mb"] == 4096
-    assert 7 in prompt08["text_clipping"]["rendering_modes"]
-    assert "colored" in prompt08["tiling_patterns"]["paint_types"]
-    prompt08b = feature["prompt08b_type3_cid_tensor_closure"]
-    assert prompt08b["status"] == "complete_native_common_paths_with_reference_cluster_limits"
-    assert prompt08b["reference_audit"]["wellfriendpdf_outlier_failures"] == 0
-    assert prompt08b["type7_tensor_patch"]["status"] == "native_tensor_product_interior"
-    prompt09 = feature["prompt09_annotation_ocg_progressive_cache"]
-    assert prompt09["status"] == "implemented_with_bounded_unsupported_reports"
-    assert prompt09["closure_gates"]["wellfriendpdf_outlier_failures"] == 0
-    prompt09b = feature["prompt09b_annotation_progressive_cache_validation"]
-    assert prompt09b["status"] == "implemented_and_proven"
-    assert prompt09b["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
-    assert prompt09b["multi_reference_audit"]["unclassified_failures"] == 0
-    assert prompt09b["public_report_parity"]["schema_change"] == "additive_section_only"
-    prompt10 = feature["prompt10_cjk_rtl_color_glyph_reference_harness"]
-    assert prompt10["status"] == "implemented_with_bounded_unsupported_reports"
-    assert prompt10["closure_gates"]["memory_cap_mb"] == 4096
+    advanced_rendering = feature["advanced_rendering_text_clipping_shading_patterns"]
+    assert advanced_rendering["status"] == "native_common_paths_with_bounded_unsupported_reports"
+    assert advanced_rendering["reference_audit"]["memory_cap_mb"] == 4096
+    assert 7 in advanced_rendering["text_clipping"]["rendering_modes"]
+    assert "colored" in advanced_rendering["tiling_patterns"]["paint_types"]
+    type3_cid_rendering = feature["type3_cid_rendering_type3_cid_tensor_closure"]
+    assert type3_cid_rendering["status"] == "complete_native_common_paths_with_reference_cluster_limits"
+    assert type3_cid_rendering["reference_audit"]["wellfriendpdf_outlier_failures"] == 0
+    assert type3_cid_rendering["type7_tensor_patch"]["status"] == "native_tensor_product_interior"
+    annotation_ocg_rendering = feature["annotation_ocg_rendering_annotation_ocg_progressive_cache"]
+    assert annotation_ocg_rendering["status"] == "implemented_with_bounded_unsupported_reports"
+    assert annotation_ocg_rendering["closure_gates"]["wellfriendpdf_outlier_failures"] == 0
+    renderer_validation = feature["renderer_validation_annotation_progressive_cache_validation"]
+    assert renderer_validation["status"] == "implemented_and_proven"
+    assert renderer_validation["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
+    assert renderer_validation["multi_reference_audit"]["unclassified_failures"] == 0
+    assert renderer_validation["public_report_parity"]["schema_change"] == "additive_section_only"
+    multilingual_color_glyphs = feature["multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness"]
+    assert multilingual_color_glyphs["status"] == "implemented_with_bounded_unsupported_reports"
+    assert multilingual_color_glyphs["closure_gates"]["memory_cap_mb"] == 4096
     assert (
-        prompt10["color_glyph_rendering"]["status"]
+        multilingual_color_glyphs["color_glyph_rendering"]["status"]
         == "unsupported_color_tables_are_detected_and_reported"
     )
-    prompt10b = feature["prompt10b_color_glyph_cjk_rtl_fidelity_closure"]
-    assert prompt10b["status"] == "complete"
-    assert prompt10b["color_glyph_rendering"]["colr_cpal"]["status"] == "implemented_and_proven"
-    assert prompt10b["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
-    assert prompt10b["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10b"
-    prompt10c = feature["prompt10c_color_glyph_hinting_cff_closure"]
-    assert prompt10c["status"] == "complete"
-    assert prompt10c["colrv1"]["status"] == "implemented_with_operator_level_limits"
-    assert prompt10c["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
-    assert prompt10c["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10c"
-    prompt10d = feature["prompt10d_full_colrv1_svg_color_glyph_closure"]
-    assert prompt10d["status"] == "complete"
+    cjk_rtl_color_glyph_closeout = feature["cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_fidelity_closure"]
+    assert cjk_rtl_color_glyph_closeout["status"] == "complete"
+    assert cjk_rtl_color_glyph_closeout["color_glyph_rendering"]["colr_cpal"]["status"] == "implemented_and_proven"
+    assert cjk_rtl_color_glyph_closeout["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
+    assert cjk_rtl_color_glyph_closeout["closure_gates"]["public_report_schema"] == "additive_feature_report_cjk_rtl_color_glyph_closeout"
+    color_glyph_hinting = feature["color_glyph_hinting_color_glyph_hinting_cff_closure"]
+    assert color_glyph_hinting["status"] == "complete"
+    assert color_glyph_hinting["colrv1"]["status"] == "implemented_with_operator_level_limits"
+    assert color_glyph_hinting["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
+    assert color_glyph_hinting["closure_gates"]["public_report_schema"] == "additive_feature_report_color_glyph_hinting"
+    colrv_svg_bitmap = feature["colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure"]
+    assert colrv_svg_bitmap["status"] == "complete"
     assert (
-        prompt10d["svg_in_opentype"]["status"]
+        colrv_svg_bitmap["svg_in_opentype"]["status"]
         == "safe_static_subset_rendered_active_constructs_blocked"
     )
     assert (
-        prompt10d["bitmap_color_glyphs"]["sbix"]["status"]
+        colrv_svg_bitmap["bitmap_color_glyphs"]["sbix"]["status"]
         == "png_and_jpeg_rendered_tiff_other_precisely_reported"
     )
-    assert prompt10d["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
-    assert prompt10d["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10d"
-    prompt10e = feature["prompt10e_colrv1_gradient_clip_composite_closure"]
-    assert prompt10e["status"] == "complete"
-    assert "PaintLinearGradient" in prompt10e["colrv1_gradients"]["implemented_operators"]
-    assert prompt10e["colrv1_clip_stack"]["status"] == "implemented"
-    assert "Multiply" in prompt10e["colrv1_composites"]["implemented_modes"]
-    assert prompt10e["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
-    assert prompt10e["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10e"
-    prompt10f = feature["prompt10f_colrv1_porterduff_radial_closure"]
-    assert prompt10f["status"] == "complete"
-    assert len(prompt10f["porter_duff_plus_composites"]["implemented_modes"]) == 12
-    assert prompt10f["exact_moving_center_radial"]["status"] == "implemented_with_reference_equivalence"
-    assert prompt10f["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
-    assert prompt10f["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt10f"
-    prompt11 = feature["prompt11_renderer_fuzz_cmm_closeout"]
-    assert prompt11["status"] == "complete_with_native_cmm_hard_blocked_precise"
-    assert prompt11["renderer_fuzz"]["fuzz_target_count"] == 25
-    assert prompt11["renderer_closeout"]["wellfriendpdf_outlier_failures"] == 0
-    assert prompt11["native_cmm_backend"]["backend_used_in_current_build"] == "safe-rust-plus-qcms"
-    assert prompt11["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt11"
-    prompt11b = feature["prompt11b_native_littlecms_cmm_backend_closure"]
-    assert prompt11b["status"] == "complete"
-    assert prompt11b["feature_flag"]["name"] == "native-cmm-lcms2"
-    assert prompt11b["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt11b"
-    prompt12 = feature["prompt12_prepress_cmm_device_link_separation_plates"]
-    assert prompt12["status"] == "complete"
-    assert prompt12["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt12"
-    assert prompt12["separation_framebuffer"]["cache_key_includes_plate_state"] is True
-    prompt12b = feature["prompt12b_nchannel_plate_reference_closure"]
-    assert prompt12b["status"] == "complete"
+    assert colrv_svg_bitmap["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
+    assert colrv_svg_bitmap["closure_gates"]["public_report_schema"] == "additive_feature_report_colrv_svg_bitmap"
+    colrv_gradient_composite = feature["colrv_gradient_composite_colrv1_gradient_clip_composite_closure"]
+    assert colrv_gradient_composite["status"] == "complete"
+    assert "PaintLinearGradient" in colrv_gradient_composite["colrv1_gradients"]["implemented_operators"]
+    assert colrv_gradient_composite["colrv1_clip_stack"]["status"] == "implemented"
+    assert "Multiply" in colrv_gradient_composite["colrv1_composites"]["implemented_modes"]
+    assert colrv_gradient_composite["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
+    assert colrv_gradient_composite["closure_gates"]["public_report_schema"] == "additive_feature_report_colrv_gradient_composite"
+    porterduff_radial_color_glyph = feature["porterduff_radial_color_glyph_colrv1_porterduff_radial_closure"]
+    assert porterduff_radial_color_glyph["status"] == "complete"
+    assert len(porterduff_radial_color_glyph["porter_duff_plus_composites"]["implemented_modes"]) == 12
+    assert porterduff_radial_color_glyph["exact_moving_center_radial"]["status"] == "implemented_with_reference_equivalence"
+    assert porterduff_radial_color_glyph["multi_reference_audit"]["wellfriendpdf_outlier_failures"] == 0
+    assert porterduff_radial_color_glyph["closure_gates"]["public_report_schema"] == "additive_feature_report_porterduff_radial_color_glyph"
+    renderer_fuzz_cmm = feature["renderer_fuzz_cmm_renderer_fuzz_cmm_closeout"]
+    assert renderer_fuzz_cmm["status"] == "complete_with_native_cmm_hard_blocked_precise"
+    assert renderer_fuzz_cmm["renderer_fuzz"]["fuzz_target_count"] == 25
+    assert renderer_fuzz_cmm["renderer_closeout"]["wellfriendpdf_outlier_failures"] == 0
+    assert renderer_fuzz_cmm["native_cmm_backend"]["backend_used_in_current_build"] == "safe-rust-plus-qcms"
+    assert renderer_fuzz_cmm["closure_gates"]["public_report_schema"] == "additive_feature_report_renderer_fuzz_cmm"
+    native_cmm_backend = feature["native_cmm_backend_native_littlecms_cmm_backend_closure"]
+    assert native_cmm_backend["status"] == "complete"
+    assert native_cmm_backend["feature_flag"]["name"] == "native-cmm-lcms2"
+    assert native_cmm_backend["closure_gates"]["public_report_schema"] == "additive_feature_report_native_cmm_backend"
+    prepress_cmm = feature["prepress_cmm_prepress_cmm_device_link_separation_plates"]
+    assert prepress_cmm["status"] == "complete"
+    assert prepress_cmm["closure_gates"]["public_report_schema"] == "additive_feature_report_prepress_cmm"
+    assert prepress_cmm["separation_framebuffer"]["cache_key_includes_plate_state"] is True
+    nchannel_plate_prepress = feature["nchannel_plate_prepress_nchannel_plate_reference_closure"]
+    assert nchannel_plate_prepress["status"] == "complete"
     assert (
-        prompt12b["closure_gates"]["public_report_schema"]
-        == "additive_feature_report_prompt12b"
+        nchannel_plate_prepress["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_nchannel_plate_prepress"
     )
-    assert prompt12b["reference_audit"]["pdfium"] == "required_and_run_by_prompt12b_audit"
-    prompt13 = feature["prompt13_full_overprint_prepress_closeout"]
-    assert prompt13["status"] == "complete"
+    assert nchannel_plate_prepress["reference_audit"]["pdfium"] == "required_and_run_by_nchannel_plate_prepress_audit"
+    prepress_proofing = feature["prepress_proofing_full_overprint_prepress_closeout"]
+    assert prepress_proofing["status"] == "complete"
     assert (
-        prompt13["closure_gates"]["public_report_schema"]
-        == "additive_feature_report_prompt13"
+        prepress_proofing["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_prepress_proofing"
     )
-    assert prompt13["reference_audit"]["wellfriendpdf_outlier_failures"] == 0
-    assert prompt13["reference_audit"]["unclassified_failures"] == 0
-    prompt14 = feature["prompt14_semantic_intelligence_parenttree_cjk_ml_layout"]
-    assert prompt14["status"] == "complete"
+    assert prepress_proofing["reference_audit"]["wellfriendpdf_outlier_failures"] == 0
+    assert prepress_proofing["reference_audit"]["unclassified_failures"] == 0
+    semantic_intelligence = feature["semantic_intelligence_semantic_intelligence_parenttree_cjk_ml_layout"]
+    assert semantic_intelligence["status"] == "complete"
     assert (
-        prompt14["closure_gates"]["public_report_schema"]
-        == "additive_feature_report_prompt14"
+        semantic_intelligence["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_semantic_intelligence"
     )
-    assert prompt14["privacy_defaults"]["cloud_upload_default"] is False
-    prompt14b = feature["prompt14b_cjk_dictionary_layout_backend_closure"]
-    assert prompt14b["status"] == "complete"
+    assert semantic_intelligence["privacy_defaults"]["cloud_upload_default"] is False
+    cjk_dictionary_layout = feature["cjk_dictionary_layout_cjk_dictionary_layout_backend_closure"]
+    assert cjk_dictionary_layout["status"] == "complete"
     assert (
-        prompt14b["closure_gates"]["public_report_schema"]
-        == "additive_feature_report_prompt14b"
+        cjk_dictionary_layout["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_cjk_dictionary_layout"
     )
-    assert prompt14b["dictionary_provider"]["external_pack_support"] == "implemented"
+    assert cjk_dictionary_layout["dictionary_provider"]["external_pack_support"] == "implemented"
     assert (
-        prompt14b["layout_backend"]["local_backend_status"]
+        cjk_dictionary_layout["layout_backend"]["local_backend_status"]
         == "unsupported_reported_no_runtime"
     )
-    prompt15 = feature["prompt15_semantic_binding_rag_benchmark_closeout"]
-    assert prompt15["status"] == "complete"
-    assert prompt15["closure_gates"]["public_report_schema"] == "additive_feature_report_prompt15"
-    assert prompt15["closure_counts"]["blocked"] == 0
-    assert prompt15["privacy"]["cloud_upload_default"] is False
+    semantic_closeout = feature["semantic_closeout_semantic_binding_rag_benchmark_closeout"]
+    assert semantic_closeout["status"] == "complete"
+    assert semantic_closeout["closure_gates"]["public_report_schema"] == "additive_feature_report_semantic_closeout"
+    assert semantic_closeout["closure_counts"]["blocked"] == 0
+    assert semantic_closeout["privacy"]["cloud_upload_default"] is False
     assert (
-        prompt15["tableformer_table_transformer_hook"]
+        semantic_closeout["tableformer_table_transformer_hook"]
         ["model_can_rewrite_deterministic_text"]
         is False
     )
-    prompt16 = feature["prompt16_xfa_runtime_sandbox_closure"]
-    assert prompt16["status"] == "complete_bounded_foundation"
-    assert prompt16["closure_counts"]["blocked"] == 0
+    xfa_runtime = feature["xfa_runtime_xfa_runtime_sandbox_closure"]
+    assert xfa_runtime["status"] == "complete_bounded_foundation"
+    assert xfa_runtime["closure_counts"]["blocked"] == 0
     assert (
-        prompt16["closure_gates"]["public_report_schema"]
-        == "additive_feature_report_prompt16"
+        xfa_runtime["closure_gates"]["public_report_schema"]
+        == "additive_feature_report_xfa_runtime"
     )
-    prompt17 = feature["prompt17_annotation_xfdf_media_nonaxis_redaction"]
-    assert prompt17["status"] == "complete_bounded_foundation"
-    assert prompt17["failure"]["blocked"] == 0
-    assert prompt17["security"]["overlay_only_redaction_success_claims"] == 0
-    prompt18 = feature["prompt18_mask_inline_associated_signature_safe_edits"]
-    assert prompt18["failure"]["blocked"] == 0
-    assert prompt18["security"]["signature_crypto_overclaim"] == 0
-    prompt18b = feature["prompt18b_advanced_secure_mutation_closure"]
-    assert prompt18b["failure"]["blocked"] == 0
-    assert prompt18b["failure"]["security_proof"] == 0
-    prompt23 = feature["prompt23_deterministic_writer_pubsec_aesgcm"]
-    assert prompt23["blocked_rows"] == 0
-    assert prompt23["public_key_handler_status"] == "implemented_with_limits"
-    assert prompt23["aes_gcm_decrypt_status"] == "implemented_with_limits"
+    annotation_media_redaction = feature["annotation_media_redaction_annotation_xfdf_media_nonaxis_redaction"]
+    assert annotation_media_redaction["status"] == "complete_bounded_foundation"
+    assert annotation_media_redaction["failure"]["blocked"] == 0
+    assert annotation_media_redaction["security"]["overlay_only_redaction_success_claims"] == 0
+    secure_mutation = feature["secure_mutation_mask_inline_associated_signature_safe_edits"]
+    assert secure_mutation["failure"]["blocked"] == 0
+    assert secure_mutation["security"]["signature_crypto_overclaim"] == 0
+    secure_mutation_closeout = feature["secure_mutation_closeout_advanced_secure_mutation_closure"]
+    assert secure_mutation_closeout["failure"]["blocked"] == 0
+    assert secure_mutation_closeout["failure"]["security_proof"] == 0
+    crypto_writer = feature["crypto_writer_deterministic_writer_pubsec_aesgcm"]
+    assert crypto_writer["blocked_rows"] == 0
+    assert crypto_writer["public_key_handler_status"] == "implemented_with_limits"
+    assert crypto_writer["aes_gcm_decrypt_status"] == "implemented_with_limits"
     tamper = _envelope(wellfriendpdf.crypto_tamper_test(), "crypto_tamper_test")
     assert tamper["plaintext_release_possible"] is False
     decode = _envelope(
@@ -453,16 +453,16 @@ def test_xfa_owned_output_surfaces_on_non_xfa_pdf(tmp_path):
     doc = wellfriendpdf.open(FIXTURE)
     preview, preview_report = doc.xfa_render(output=tmp_path / "xfa-preview.pdf")
     assert preview[:5] == b"%PDF-"
-    assert _envelope(preview_report, "xfa_render_report")["schema_version"] == "prompt16.xfa.v1"
+    assert _envelope(preview_report, "xfa_render_report")["schema_version"] == "xfa_runtime.xfa.v1"
     flattened, flatten_report = doc.xfa_flatten(mode="extract_only")
     assert flattened[:5] == b"%PDF-"
-    assert _envelope(flatten_report, "xfa_flatten_report")["schema_version"] == "prompt16.xfa.v1"
+    assert _envelope(flatten_report, "xfa_flatten_report")["schema_version"] == "xfa_runtime.xfa.v1"
     sanitized, sanitize_report = doc.xfa_sanitize(mode="remove_all_xfa")
     assert sanitized[:5] == b"%PDF-"
-    assert _envelope(sanitize_report, "xfa_sanitize_report")["schema_version"] == "prompt16.xfa.v1"
+    assert _envelope(sanitize_report, "xfa_sanitize_report")["schema_version"] == "xfa_runtime.xfa.v1"
 
 
-def test_prompt17_owned_output_surfaces(tmp_path):
+def test_annotation_media_redaction_owned_output_surfaces(tmp_path):
     doc = wellfriendpdf.open(FIXTURE)
     xfdf, export_report = doc.annotation_xfdf_export(output=tmp_path / "annotations.xfdf")
     assert xfdf.startswith(b"<?xml")
@@ -514,7 +514,7 @@ def test_invalid_pdf_bytes_raise():
         wellfriendpdf.open(b"%PDF- broken not really")
 
 
-def test_prompt26_incremental_signing(tmp_path):
+def test_incremental_signing_standards_incremental_signing(tmp_path):
     """Real append-only incremental signing through the Python binding: the
     signed output reopens and validates, and the original bytes are preserved."""
     crypto = pytest.importorskip("cryptography")
@@ -531,7 +531,7 @@ def test_prompt26_incremental_signing(tmp_path):
         serialization.PrivateFormat.PKCS8,
         serialization.NoEncryption(),
     ).decode()
-    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Wellfriend Py Prompt26 Test")])
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "Wellfriend Py IncrementalSigningStandards Test")])
     cert = (
         x509.CertificateBuilder()
         .subject_name(name)

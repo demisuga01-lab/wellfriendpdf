@@ -33,7 +33,7 @@ use crate::text::{
 };
 use crate::ContentEngine;
 
-pub const SEMANTIC_BINDING_SCHEMA_VERSION: &str = "prompt15.semantic_binding.v1";
+pub const SEMANTIC_BINDING_SCHEMA_VERSION: &str = "semantic_closeout.semantic_binding.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct SemanticBindingOptions {
@@ -161,7 +161,7 @@ pub fn build_semantic_binding_report(
         include_structure: true,
         include_detailed_provenance: true,
         // External pack segmentation is represented by cjk_token_pages and RAG
-        // metadata. The Prompt 06 word layer keeps its stable built-in modes.
+        // metadata. The Native Renderer word layer keeps its stable built-in modes.
         cjk_segmentation: CjkSegmentationMode::Char,
         ..TextSemanticOptions::default()
     };
@@ -321,7 +321,7 @@ pub fn semantic_search_report(
     );
     let cjk_token_matches = crate::text::cjk_dictionary_token_search(&text.text(), query, provider);
     Ok(SemanticSearchReport {
-        schema_version: "prompt15.semantic_search.v1".to_string(),
+        schema_version: "semantic_closeout.semantic_search.v1".to_string(),
         query: query.to_string(),
         raw_text_fallback: true,
         semantic_matches,

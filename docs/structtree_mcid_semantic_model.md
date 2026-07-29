@@ -1,7 +1,7 @@
 # StructTree and MCID Semantic Model
 
 Tagged PDFs can describe logical structure through `/StructTreeRoot`, role nodes,
-and marked-content IDs. Prompt 06B connects that authored structure to the same
+and marked-content IDs. Reference Renderer connects that authored structure to the same
 geometry-backed text model used for search and redaction planning.
 
 ## Flow
@@ -29,5 +29,5 @@ chars/spans/lines/blocks.
   a broader tagged-PDF validation item.
 - Artifacts are flagged through structure metadata, but default flat extraction
   remains unchanged.
-- Tables/forms/annotations and redaction apply are Prompt 07 work.
+- Tables/forms/annotations and redaction apply are Transparency Rendering work.
 

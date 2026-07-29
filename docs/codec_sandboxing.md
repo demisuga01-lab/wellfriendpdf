@@ -5,9 +5,9 @@ huge geometry, a malformed arithmetic-coded stream can stress CPU paths, and
 symbol-dictionary codecs such as JBIG2 have a history of security-sensitive
 failures. Wellfriend treats stream decoding as hostile by default.
 
-## Prompt 02B Dependency Audit
+## Java Packaging Dependency Audit
 
-Prompt 02B rechecked the risky codec dependency boundary from source and Cargo
+Java Packaging rechecked the risky codec dependency boundary from source and Cargo
 metadata. The current decoder adapters use Rust crates:
 
 - `jpeg-decoder` for DCT/JPEG;
@@ -17,14 +17,14 @@ metadata. The current decoder adapters use Rust crates:
 
 Wellfriend does not link Poppler, PDFium, OpenJPEG, libjpeg, jbig2dec, or other C/C++
 codec libraries for these paths. The engine crate itself also has
-`#![forbid(unsafe_code)]`. Prompt 02B did not perform a line-by-line audit of
+`#![forbid(unsafe_code)]`. Java Packaging did not perform a line-by-line audit of
 all transitive dependency internals, so the claim is limited to the integration
 boundary: Wellfriend invokes Rust crates in-process and enforces Wellfriend-owned caps
 before or around decode.
 
 ## Current Codec Boundaries
 
-| Codec | Implementation | Native code | Current boundary | Prompt 02 posture |
+| Codec | Implementation | Native code | Current boundary | Binding Parity posture |
 | --- | --- | --- | --- | --- |
 | DCTDecode / JPEG | `jpeg-decoder` | No | Metadata read, image budget, decoder buffer limit | Supported with pre-decode geometry cap. |
 | JPXDecode / JPEG 2000 | `hayro-jpeg2000` | No | Header parse, image budget before decode | Supported with pre-decode geometry/channel cap. |
@@ -58,7 +58,7 @@ sandbox, seccomp profile, or OS job object. The current protection is in-process
 pure Rust decoding plus resource limits and fuzz/property tests. This is an
 important safety boundary, but it is not equivalent to process isolation.
 
-Prompt 02B makes this an explicit Outcome C decision:
+Java Packaging makes this an explicit Outcome C decision:
 
 - in-process decoding remains the default because the active risky-codec paths
   are Rust dependencies rather than native libraries;
@@ -100,10 +100,10 @@ codec adapters under `crates/engine/src/images/`.
 - `scripts/run_decode_fuzz_campaign.py --group risky-codec` runs the risky-codec
   fuzz target set.
 
-## Prompt 04 Update
+## Codec Boundary Update
 
-Prompt 03 added `wellfriendpdf-codec-worker` subprocess containment for the supported
-lossless worker codecs. Prompt 04 keeps that worker boundary and adds the
+Release Packaging added `wellfriendpdf-codec-worker` subprocess containment for the supported
+lossless worker codecs. Codec Boundary keeps that worker boundary and adds the
 long-term native/C codec policy:
 
 - pure Rust remains the default;
@@ -114,5 +114,5 @@ long-term native/C codec policy:
 - RLBox/WASM remains unsupported until a reproducible cross-platform prototype
   exists.
 
-The Prompt 04 hard-block evidence for RLBox/WASM is generated at
-`target/prompt04-codec-boundary-scheduler/rlbox-wasm-feasibility.json`.
+The Codec Boundary hard-block evidence for RLBox/WASM is generated at
+`target/codec_boundary-codec-boundary-scheduler/rlbox-wasm-feasibility.json`.

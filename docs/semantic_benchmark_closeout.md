@@ -3,11 +3,11 @@
 Run:
 
 ```powershell
-python scripts/prompt15_semantic_intelligence_benchmark.py
+python scripts/semantic_closeout_semantic_intelligence_benchmark.py
 ```
 
-The generator writes to `target/prompt15-semantic-closeout` and fails if an
-executable Prompt 15 gate or CLI sample fails.
+The generator writes to `target/semantic_closeout-semantic-closeout` and fails if an
+executable Semantic Closeout gate or CLI sample fails.
 
 ## Corpus
 

@@ -1,8 +1,0 @@
-{
-  "schema": "prompt23b.crypto-signature-impact.v1",
-  "status": "implemented_with_limits",
-  "full_rewrite": "invalidates existing ByteRange signatures structurally",
-  "aesv4_full_rewrite": "same full-rewrite signature impact",
-  "encrypted_incremental_update": "unsupported_reported_exact",
-  "signature_validity_claimed": false
-}

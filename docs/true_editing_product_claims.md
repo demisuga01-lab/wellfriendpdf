@@ -1,4 +1,4 @@
-﻿# True Editing Product Claims
+# True Editing Product Claims
 
 Allowed claim:
 
@@ -13,4 +13,4 @@ Required limits:
 - Dynamic XFA conversion is not claimed as universal.
 - External-tool parity is claimed only for tools that actually ran.
 
-Evidence is in `target/prompt36-enterprise-validation/product-claim-matrix.json`.
+Evidence is in `target/release_validation-enterprise-validation/product-claim-matrix.json`.

@@ -3,7 +3,7 @@
 
 Reads results/<run>/files/*.json and groups the failing pages by PRIMARY reason,
 separating genuine renderer bugs from now-passing AA noise. Also lists the
-fixture files for each bug so they can be saved for Prompt B.
+fixture files for each bug so they can be saved for Roadmap task B.
 """
 from __future__ import annotations
 import json
@@ -80,7 +80,7 @@ for reason in sorted(by_reason, key=lambda r: -len(by_reason[r])):
         )
 
 # Emit the unique fixture file paths for real-bug categories.
-print("\n=== REAL-BUG FIXTURE FILES (for Prompt B) ===")
+print("\n=== REAL-BUG FIXTURE FILES (for Roadmap task B) ===")
 real_paths = set()
 for reason, paths in files_by_reason.items():
     if reason in REAL_BUG_REASONS:

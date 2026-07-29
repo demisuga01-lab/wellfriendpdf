@@ -1,6 +1,0 @@
-{
-  "status": "passed",
-  "public_key_handler_status": "implemented_with_limits",
-  "aes_gcm_decrypt_status": "implemented_with_limits",
-  "encrypted_bytes": 11083
-}

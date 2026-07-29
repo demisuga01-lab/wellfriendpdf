@@ -1,6 +1,6 @@
 # Malformed corpus runner
 
-`scripts/run_malformed_corpus.py` is the Prompt 29 malformed-corpus runner.
+`scripts/run_malformed_corpus.py` is the Malformed Coverage malformed-corpus runner.
 
 Important options:
 
@@ -9,7 +9,7 @@ Important options:
 - `--wellfriendpdf-bin` points at the VPS-built CLI binary.
 - `--limit`, `--size-limit-bytes`, `--timeout-seconds`, and `--memory-mb` bound execution.
 
-The runner writes the corpus manifest, JSONL per-file results, failure buckets, and survival scorecard into `target/prompt29-malformed-differential-coverage/`.
+The runner writes the corpus manifest, JSONL per-file results, failure buckets, and survival scorecard into `target/malformed_coverage-malformed-differential-coverage/`.
 
 Structured parser/validator rejection is a clean result. Process crashes, unhandled exceptions, hangs, OOMs, and missing required diagnostics are findings. Missing optional external helpers, such as `pdfinfo`, are classified as unavailable instead of crashing the runner.
 

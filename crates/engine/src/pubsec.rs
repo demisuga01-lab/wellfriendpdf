@@ -1,4 +1,4 @@
-//! PDF public-key security-handler support for scoped Prompt 23B decryption.
+//! PDF public-key security-handler support for scoped crypto writer closeout decryption.
 //!
 //! This module implements the document-level `/Filter /Adobe.PubSec`
 //! decryption path for CMS `EnvelopedData` recipients using RSA key transport.
@@ -159,7 +159,7 @@ pub enum PubSecRecipientIdMode {
     SubjectKeyIdentifier,
 }
 
-/// Full-rewrite public-key encryption options for the supported Prompt 23B
+/// Full-rewrite public-key encryption options for the supported crypto writer closeout
 /// profile: `/Filter /Adobe.PubSec`, `/SubFilter /adbe.pkcs7.s5`,
 /// KeyTransRecipientInfo recipients, AES-CBC CMS content protection, and
 /// AESV2/AESV3 object crypt filters.

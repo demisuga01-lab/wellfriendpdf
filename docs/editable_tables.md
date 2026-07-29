@@ -1,9 +1,9 @@
 # Editable Tables
 
-Prompt 34 projects `analysis::tables::Table` into a deterministic,
+document subsystems projects `analysis::tables::Table` into a deterministic,
 source-linked `EditableTableGraph`. Ruled, borderless, partial-rule, and
 semantic-table evidence stays separate from the editable cell identity. A cell
-edit re-resolves the current table and its origin cell, then invokes Prompt 33
+edit re-resolves the current table and its origin cell, then invokes text reflow
 source rewriting inside that cell's PDF-space bounds. It does not cover the
 cell with replacement artwork.
 
@@ -15,7 +15,7 @@ in verified empty space below or beside the table. They reject page images,
 annotations, source text, merged cells, ambiguous grids, oversized values, and
 missing page capacity rather than moving unknown neighbors or covering content.
 
-`table_set_cell_alignment` retains the resolved cell text and uses Prompt 33
+`table_set_cell_alignment` retains the resolved cell text and uses text reflow
 to rewrite its actual source positioning under a bounded left/right/center/
 justify/start/end policy. It does not draw a replacement text layer.
 
@@ -37,11 +37,11 @@ without writing a replacement layer.
 
 `table_edit_math_cell` is the explicit cross-system path for a born-digital
 mathematical source already resolved inside a table cell. It requires review
-approval, retains the table-cell provenance, and uses the same Prompt 32
-shaping and Prompt 33 cell reflow as a standalone supported math edit.
+approval, retains the table-cell provenance, and uses the same editing transactions
+shaping and text reflow cell reflow as a standalone supported math edit.
 
 `table_move_linked_annotation` resolves the current cell bounds and moves only
-the named source-linked annotation through the canonical Prompt 17 geometry and
+the named source-linked annotation through the canonical annotation/media redaction geometry and
 appearance path. The table source is not repainted or rebuilt; unknown cells
 and invalid bounds are exact refusals.
 
@@ -56,7 +56,7 @@ boundaries until their source paths, downstream dependencies, and page-flow
 constraints can be proven. Table analysis retains span, header, nested-table,
 row/column, bounds, confidence, and provenance evidence for those operations.
 
-Table evidence combines canonical table analysis, Prompt 33 semantic regions,
+Table evidence combines canonical table analysis, text reflow semantic regions,
 and provenance-resolved cell text. Supported cell edits use real source
 rewriting and bounded reflow; ambiguous grids and unsupported pagination
 return typed no-change results.

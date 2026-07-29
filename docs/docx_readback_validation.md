@@ -1,6 +1,6 @@
 # DOCX Readback Validation
 
-Prompt 19 validates generated packages independently of the writer by reopening
+form action policy validates generated packages independently of the writer by reopening
 the ZIP and inspecting `document.xml`, relationships, styles, numbering,
 settings, media, section properties, anchors, text boxes, tables, and links.
 

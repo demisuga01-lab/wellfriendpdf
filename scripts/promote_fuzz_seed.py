@@ -24,8 +24,8 @@ def main() -> int:
     parser.add_argument("target")
     parser.add_argument("seed", type=Path)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--reason", default="prompt27 minimized regression seed")
-    parser.add_argument("--output", type=Path, default=Path("target/prompt27-verapdf-crypto-fuzz/parser-seed-promotion.json"))
+    parser.add_argument("--reason", default="crypto_standards_fuzz minimized regression seed")
+    parser.add_argument("--output", type=Path, default=Path("target/crypto_standards_fuzz-verapdf-crypto-fuzz/parser-seed-promotion.json"))
     args = parser.parse_args()
     repo = args.repo.resolve()
     source = args.seed.resolve()
@@ -36,7 +36,7 @@ def main() -> int:
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, dest)
     payload = {
-        "schema_version": "prompt27.parser-seed-promotion.v1",
+        "schema_version": "crypto_standards_fuzz.parser-seed-promotion.v1",
         "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "target": args.target,
         "source": str(source),

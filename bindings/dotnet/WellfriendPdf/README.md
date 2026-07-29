@@ -44,11 +44,11 @@ Use `using` or `Dispose()` for documents. Native handles are owned by
 `SafeHandle`; output buffers are copied into managed `byte[]` values and freed
 before methods return.
 
-## Prompt 02 Surface
+## Binding Parity Surface
 
 Reports: feature, engine/ABI version, security, parser, color, validation,
 forms, annotations, page operations, interactive content, legacy chunks,
-Prompt 15 semantic bundles, advanced chunks, and provenance-aware search.
+Semantic Closeout semantic bundles, advanced chunks, and provenance-aware search.
 
 Outputs: sanitize, canonicalize, redact terms, DOCX, XLSX, PPTX, and Office to
 PDF conversion helpers.
@@ -58,6 +58,6 @@ Password open is available through `WellfriendDocument.Open(path, password)` and
 inputs and are not retained on the managed document object.
 
 Known limits: progress and cancellation are reported through
-`FeatureReportJson()` as unsupported for the Prompt 02 binding surface; no
+`FeatureReportJson()` as unsupported for the Binding Parity binding surface; no
 no-op callbacks or ignored `CancellationToken` overloads are exposed. Mobile
 packaging is out of scope for this package.

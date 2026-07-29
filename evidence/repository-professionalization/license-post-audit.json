@@ -1,0 +1,12 @@
+{
+  "schema": "repository_professionalization.license_post_audit.v1",
+  "generated_at": "2026-07-29T19:00:59.6276121Z",
+  "forbidden_reference_count": 1,
+  "forbidden_references": [
+    {
+      "path": "docs/licenses.md",
+      "line": 53,
+      "sha256": "7cca1a0b764d6becf30f5b9f01fd4d4249edc4a7f63d5bd2699bfde6bbccdac0"
+    }
+  ]
+}

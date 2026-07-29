@@ -47,7 +47,7 @@ So the implemented modes are:
   low fidelity, no positioning.
 
 The embedded-SVG option was considered but **not** chosen as the default: the
-Mega-Prompt 19 SVG sink rasterizes whole pages that contain images/shadings
+Mega-form action policy SVG sink rasterizes whole pages that contain images/shadings
 anyway, so `--background` gives the same fidelity more directly. Embedded-SVG
 remains a possible future backend.
 
@@ -58,7 +58,7 @@ remains a possible future backend.
   and scales points→px (default `96/72`). MediaBox lower-left (`x0`,`y0`) is
   normalized out.
 - **Reading order / BiDi**: lines come from `ReadingOrderReconstructor`, which
-  already applies column ordering and UAX#9 BiDi (Mega-Prompt 7), so RTL text is
+  already applies column ordering and UAX#9 BiDi (Mega-Transparency Rendering), so RTL text is
   in display order; RTL lines also get `dir="rtl"`.
 - **Escaping / Unicode**: the five HTML-significant characters are escaped
   (`& < > " '`); XML text escapes `& < >`. Output declares

@@ -3,18 +3,18 @@
 Wellfriend has two related semantic surfaces:
 
 - The canonical parse/document model for Markdown, HTML, JSON, Office conversion, and RAG chunking.
-- The Prompt 06 semantic text model for geometry-backed search, redaction preview, and extraction diagnostics.
+- The Native Renderer semantic text model for geometry-backed search, redaction preview, and extraction diagnostics.
 
-The Prompt 06 model is intentionally text-focused. It does not replace the canonical parser model.
+The Native Renderer model is intentionally text-focused. It does not replace the canonical parser model.
 
-Prompt 06B merges tagged-PDF StructTree/MCID metadata into the Prompt 06 text
+Reference Renderer merges tagged-PDF StructTree/MCID metadata into the Native Renderer text
 model. Characters, spans, blocks, and search matches can now carry MCID,
 normalized/original tag role, role source, and compact provenance summaries. The
 older `--semantic --format json` tree remains available for authored-tag
 inspection; `--format model-json` is the geometry-backed surface for search,
 RAG citation, and redaction planning.
 
-## Prompt 06 Text Model
+## Native Renderer Text Model
 
 `TextSemanticDocument`
 
@@ -106,7 +106,7 @@ Roles are heuristic unless they come from the existing tagged-PDF path:
 - `marginalia`
 - `unknown`
 
-Prompt 06 keeps roles non-destructive. A caller can request body-only behavior later, but the model itself preserves the text.
+Native Renderer keeps roles non-destructive. A caller can request body-only behavior later, but the model itself preserves the text.
 
 ## Memory Rules
 

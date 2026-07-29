@@ -1,9 +1,0 @@
-{
-  "corruption_hash_checked": true,
-  "deterministic": true,
-  "format_version": "prompt21.persistent-store.snapshot.v1",
-  "forward_version_policy": "reject forward schema until migration is registered",
-  "snapshot_bytes": 378,
-  "snapshot_sha256": "5c5be6d232ef0bed4d8137236ecea6c86e32f7decbcd10376607f6d97485bcd5",
-  "status": "implemented_with_limits"
-}

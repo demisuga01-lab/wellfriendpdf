@@ -1,4 +1,4 @@
-//! Provenance-aware semantic chunking for Prompt 15.
+//! Provenance-aware semantic chunking for Semantic Closeout.
 //!
 //! This module is additive to [`crate::chunk`]. The established chunk schema is
 //! preserved for existing consumers; this versioned model adds table/cell,
@@ -18,7 +18,7 @@ use crate::text::{
     TextQuad, TextSemanticDocument,
 };
 
-pub const ADVANCED_RAG_CHUNK_SCHEMA_VERSION: &str = "prompt15.rag_chunk.v1";
+pub const ADVANCED_RAG_CHUNK_SCHEMA_VERSION: &str = "semantic_closeout.rag_chunk.v1";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -1486,7 +1486,7 @@ mod tests {
         Document {
             schema_version: SCHEMA_VERSION.to_string(),
             metadata: DocumentMetadata {
-                title: Some("Prompt 15 Fixture".to_string()),
+                title: Some("Semantic Closeout Fixture".to_string()),
                 page_count: 1,
                 ..Default::default()
             },

@@ -1,0 +1,1778 @@
+{
+  "schema": "repository_professionalization.tracked_target_inventory.v1",
+  "generated_at": "2026-07-29T18:59:25.7511565Z",
+  "count": 253,
+  "items": [
+    {
+      "path": "target/binding_parity-binding-parity/binding-gap-matrix.json",
+      "exists": true,
+      "size": 211004,
+      "sha256": "36ef094f71ce6a93aac57398aa0742ab295b6ee2bb192f032c36c10546ddbfe0",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/binding_parity-binding-parity/cross-binding-parity.json",
+      "exists": true,
+      "size": 6967,
+      "sha256": "a99fba47fe40033d185f339907b23485ac30d418738e405591b2d65fa1e993a4",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/binding_parity-binding-parity/dotnet-smoke.json",
+      "exists": true,
+      "size": 4546,
+      "sha256": "1df84626e750d7bc040bf4274875c4bc9f5bf5c1d3cc007a12200f717806ee0f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/binding_parity-binding-parity/gradle-jar-smoke.json",
+      "exists": true,
+      "size": 2473,
+      "sha256": "2e153c32e1825f71dd2a2031e20d85c8077820c5782cd019346215c83cc5666b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/binding_parity-binding-parity/java-maven-gradle-equivalence.json",
+      "exists": true,
+      "size": 3844,
+      "sha256": "a30050afefb40892f2454d4f8ceca683992f8b0a2f41bb0c011b98ac0bd1bf6b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/binding_parity-binding-parity/java-package-smoke.json",
+      "exists": true,
+      "size": 1560,
+      "sha256": "b7878d78c047b6d3f11eb2aaf2e6c7a7beff6ef21fee575281c19223f4565a9f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/binding_parity-binding-parity/java-smoke.json",
+      "exists": true,
+      "size": 5787,
+      "sha256": "0056d867a3330f69f5f01ceb489c89d38061547dd5f133bb48d981edddeb9dc7",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/binding_parity-binding-parity/memory-smoke.json",
+      "exists": true,
+      "size": 1260,
+      "sha256": "8124b7b22ded42d13c7e8504bbd7c1e1228395ce43ab9e6a39c7cd8dfb0ff986",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/binding_parity-binding-parity/wasm-smoke.json",
+      "exists": true,
+      "size": 535,
+      "sha256": "26041228a81dbf91475a04a63a090baed809d6da83300c034c34246c4df44a53",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-dictionary-fixtures-semantic_intelligence.json",
+      "exists": true,
+      "size": 389,
+      "sha256": "0ebfcc189f38575c78c6c2ac9648bab049eb628137afb0ccc78456774efec358",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-dictionary-license-report-semantic_intelligence.json",
+      "exists": true,
+      "size": 423,
+      "sha256": "dd9d7b92dad25c88f36d984b749f436000ca53c028f8b14dc2d1bb08c1308f6d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-dictionary-quality-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 324,
+      "sha256": "ead3c6f514997513769068d81a3f2466e42fd22c2f6cd37770076622b47a3939",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-dictionary-segmentation-matrix-semantic_intelligence.json",
+      "exists": true,
+      "size": 875,
+      "sha256": "6b4267fce83e35ae86496d12340d02d0dd748367b768d4a4cd8365120989ba00",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-rag-token-layer-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 273,
+      "sha256": "374403ab2f73e642a1c7bea54f38956923b7503a0129bef289fc37d3ac9ed34d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-search-rag-integration-semantic_intelligence.json",
+      "exists": true,
+      "size": 307,
+      "sha256": "261c09a27c03f9eba90120d37e34a47b591c0b627910ffab1c465dcb8a0b91ed",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-search-rag-integration-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 270,
+      "sha256": "aaa83ec940216f07012486b4a26e4b247c34eb1cf3707be6227fca63bd403ad7",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-search-token-layer-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 188,
+      "sha256": "e99afb1484ee352485da68f35b534196060be2ad23f264a2288703c524e316b7",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-segmentation-fixtures-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 1656,
+      "sha256": "bcc2d30692e1bf5b6f6aed98e88e27b6e7459d4ce5385b9cf34fd7486a656d0c",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-segmentation-quality-results-semantic_intelligence.json",
+      "exists": true,
+      "size": 237,
+      "sha256": "4f57999fad96ff9520b452536bbc81b24f78c48e7420e94e411ca2bab0707dc3",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk-token-provenance-semantic_intelligence.json",
+      "exists": true,
+      "size": 363,
+      "sha256": "656a11f6cbc22f9f08770dbf902f45376300825723ccfc6cf1792a34cc8175b6",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cloud-layout-backend-status-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 212,
+      "sha256": "b67f0daa6295870c4f4234b330d3e151b4a83519147d3ab38f6e1ab2f68c46bc",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cloud-layout-backend-template-semantic_intelligence.json",
+      "exists": true,
+      "size": 354,
+      "sha256": "b42c62d3fd1209d18d66e7e97e828888724b1eae2ab67659169a4987d266209f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/dictionary-load-report-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 1127,
+      "sha256": "5a8199ad583e1482a0eb9d503f40482dc9743b4fdd6aa285a1e0a7fd11a11901",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/dictionary-memory-index-report-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 390,
+      "sha256": "ff2efd1e4df3094eeee7d88b037e713745666df2cf4597efb795523c9cdd659f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/dictionary-pack-entries-cjk_dictionary_layout.tsv",
+      "exists": true,
+      "size": 417,
+      "sha256": "7b95946c0c4df5d936b4629e91429d256a1c796eb516f36818edaf16ae1a3ee4",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/dictionary-pack-manifest-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 742,
+      "sha256": "cf5e78eda95f26177d80b38e0ffac601162f55c17633a4011aaae1f9b9e53b84",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/dictionary-provider-matrix-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 1949,
+      "sha256": "66b031b32015abdc17ce326afe0f4aa8af65690018a1dbde3c0ea45c177c500f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/feature-report-semantic_intelligence.json",
+      "exists": true,
+      "size": 95477,
+      "sha256": "bb22d7d40e6a13d36743b27896115dc3c5e3eaf1a2c01613f7c0d2905234f755",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/feature-report-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 102032,
+      "sha256": "63cdda70c74b84896220d0b620968826f90c5d551aadefa884c29a8a15f0b43b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/layout-backend-availability-semantic_intelligence.json",
+      "exists": true,
+      "size": 347,
+      "sha256": "2189553bad5f5abad862e5e2e3a6645c3292a7ba4b96f943fe488f89738ac328",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/layout-backend-feasibility-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 360,
+      "sha256": "ee57bff6996ebaf17deaeb446ccea086fc7fa7a56d0b7db82cd136d7e02132db",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/layout-backend-mock-results-semantic_intelligence.json",
+      "exists": true,
+      "size": 260,
+      "sha256": "b18793be0cfbd85b5fee3d759875306f55a759ba467a8399a95e4a70bbee859b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/layout-backend-privacy-audit-semantic_intelligence.json",
+      "exists": true,
+      "size": 248,
+      "sha256": "f54d0d631364c70956cb77b465efa9c03f0b2837bcb40b4903ebf965022abf9a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/layout-proposal-merge-quality-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 203,
+      "sha256": "cc8f7a5e17612d7d0f1666238c20fefc3b85f669da6b5fc6fa830b7a22232272",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/local-layout-backend-status-cjk_dictionary_layout.json",
+      "exists": true,
+      "size": 296,
+      "sha256": "8e2f514c2dce5d72e39ab4ad8012222fb0e286403975ac2a5dd24bd8e0903669",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/local-layout-backend-template-semantic_intelligence.json",
+      "exists": true,
+      "size": 368,
+      "sha256": "f1453303a1d7b1f9d1d8eac856720b6e5afcbfe7a2c31783d945947a6aacbd1f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/ml-layout-fixture-results-semantic_intelligence.json",
+      "exists": true,
+      "size": 272,
+      "sha256": "a75b178a96c1dff356b961f685f0e0925f56c63920022973defd090bd1bd0c66",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/ml-layout-hook-schema-semantic_intelligence.json",
+      "exists": true,
+      "size": 548,
+      "sha256": "04fab1507b99e73a96723d4ec03a2ea324ba76681fff85e0ff1ceda8f83eacab",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/ml-layout-merge-policy-semantic_intelligence.json",
+      "exists": true,
+      "size": 247,
+      "sha256": "5e8af68508034446fb66b0c836cf5b10599ef5526e699f52c8ad452af66add93",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/ml-layout-merge-quality-results-semantic_intelligence.json",
+      "exists": true,
+      "size": 245,
+      "sha256": "bdd72329b26b30e4b342e4e94df4700aef0c5c975bdfb67492ea527098b3df07",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/ml-layout-privacy-policy-semantic_intelligence.json",
+      "exists": true,
+      "size": 331,
+      "sha256": "eb48bc97a2b7be4cda2b122ba81af5d9500e9cecd666a6b515a90e96c26020e8",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/parenttree-conflict-diagnostics-semantic_intelligence.json",
+      "exists": true,
+      "size": 339,
+      "sha256": "d7893d607ed01cfd655c00b4a9b1f80af48a95e08a4831edc707c12ce603da4b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/parenttree-quality-results-semantic_intelligence.json",
+      "exists": true,
+      "size": 273,
+      "sha256": "ab72871da8fde74ccf946064093ee19c688f329b6756bf8750f9d137bd09222a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/parenttree-recovered-graph-semantic_intelligence.json",
+      "exists": true,
+      "size": 588,
+      "sha256": "81eed1392e016cb2414d0ea8e9219b09d5f8a9c20b57d320707ceb1a44a8484e",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/parenttree-recovery-matrix-semantic_intelligence.json",
+      "exists": true,
+      "size": 1112,
+      "sha256": "aa0df59ff98ace5163bfbf1fe441055fba70925002795c859d91d6c164d67a6f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/parenttree-recovery-provenance-semantic_intelligence.json",
+      "exists": true,
+      "size": 305,
+      "sha256": "c7c99f0ca696f5275bbeec54faa9a104219019156d9876480eaeeaeb71359faf",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/semantic_intelligence-audit.json",
+      "exists": true,
+      "size": 2683,
+      "sha256": "e21c7e843f8ce9003500eae394f262387831018c58f3c326429b30cc6de03ae9",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/cjk_dictionary_layout-closure-audit.json",
+      "exists": true,
+      "size": 1949,
+      "sha256": "66b031b32015abdc17ce326afe0f4aa8af65690018a1dbde3c0ea45c177c500f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/semantic_intelligence-semantic-intelligence/semantic-regression-results-semantic_intelligence.json",
+      "exists": true,
+      "size": 392,
+      "sha256": "489f0e78687c06ec9e90fd2df389f3bf49136f948d71d102988ba039681d0708",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-glyph-hook-schema-writer_history.json",
+      "exists": true,
+      "size": 944,
+      "sha256": "0f1d6c0b952c4145ef7d3c8e98040a423a9846b29f34952be5d08ad699c603c2",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-license-provenance-writer_history.json",
+      "exists": true,
+      "size": 564,
+      "sha256": "e54a1a176995e9d1bf568497e720a2d2f1d173130e0abb631b87f7c821861fb2",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-metadata-repair-writer_history.json",
+      "exists": true,
+      "size": 1040,
+      "sha256": "83a84882b06b3491131a5befa042931034a46b58754d1a3e2928e7dd062d13d8",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-outline-repackage-writer_history.json",
+      "exists": true,
+      "size": 977,
+      "sha256": "e253e402557bb84d0fdc3d7b855a53a846712f89b6767a6dc84b8752e2919ee9",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-reconstruction-determinism-writer_history.json",
+      "exists": true,
+      "size": 118,
+      "sha256": "300bd25d02bb81d648fce8a74e9eee727b0422b158faf248c145d7ad42758c4d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-reconstruction-levels-writer_history.json",
+      "exists": true,
+      "size": 5875,
+      "sha256": "6d7e1a73c0ba914d3af1270e1fa39ba0ef6336c9474d6eaaa61139149adecd1f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-reconstruction-reference-results-writer_history.json",
+      "exists": true,
+      "size": 10593,
+      "sha256": "847796ced42dae7b705d26296717a2d03525964f9bbd9975438f55b80cfda298",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-subset-rebuild-writer_history.json",
+      "exists": true,
+      "size": 952,
+      "sha256": "b1c63a00fe21997ec7615e63fe283d0413ef743069e38981be8fbd15ee7ce561",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-type3-posture-writer_history.json",
+      "exists": true,
+      "size": 151,
+      "sha256": "a8bc65822aa7753e7188d3735417e0d0eb5f22de9ef1af7451178a0cd89a9068",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/font-unicode-cmap-repair-writer_history.json",
+      "exists": true,
+      "size": 1973,
+      "sha256": "14f9ee5543f1f1952c792de8e79e3e38b2a23cec0c59edb7cf5e7511260ab659",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-compatibility-writer_history.json",
+      "exists": true,
+      "size": 469,
+      "sha256": "0adfe41a24fd77990c3be9b2431ff7c3ef0f5696534905b2f5ef851256593f2a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-determinism-writer_history.json",
+      "exists": true,
+      "size": 119,
+      "sha256": "34e63c961199ccc865be2a0a90ee26474d9ab1633dfdf64313e9d548381e081d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-eligibility-writer_history.json",
+      "exists": true,
+      "size": 955,
+      "sha256": "7d62f9ad32f2a847b6ad6e4bda222b73530d73251d7bdd6fcd791ab604fb767d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-encryption-writer_history.json",
+      "exists": true,
+      "size": 135,
+      "sha256": "f0f160d8360ece4a73b42ef3f704119f5544cd5c16f4acf00196543ce0561ec9",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-grouping-writer_history.json",
+      "exists": true,
+      "size": 348,
+      "sha256": "021929f5990010ad4bbcd763ebe5a9a62ed28ce46b1d1b33daca897b78904ff2",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-malformed-denial-writer_history.json",
+      "exists": true,
+      "size": 111,
+      "sha256": "096aba44671305740aed5d502f4d642bfd7d1d922477fe3469200ba211c0f8b0",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-pack-report-writer_history.json",
+      "exists": true,
+      "size": 3443,
+      "sha256": "fe57818fc209d310a5ada329e4f334bb641ad8b17faa94d33593ef6298ed5849",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-reference-tool-results-writer_history.json",
+      "exists": true,
+      "size": 2115,
+      "sha256": "2a4bcc88750b79a806db1c9629529512531ddff3b96e1e1e8338563dfd896767",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-reopen-results-writer_history.json",
+      "exists": true,
+      "size": 3437,
+      "sha256": "c27711dbac5351724e3dcee5b2b37599147a8546f93bbcc7f9c70811c51b24ae",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-signature-impact-writer_history.json",
+      "exists": true,
+      "size": 149,
+      "sha256": "6a1df7e0c05178142b2177808a554ec9534abd5ccec50c3608de1ab637a8d0ca",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-size-performance-writer_history.json",
+      "exists": true,
+      "size": 114,
+      "sha256": "69a74c6b1005a4129f70aa81bfe91ebfd72dd5cbbb3e41ce6c803d311365a34b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/object-stream-xref-results-writer_history.json",
+      "exists": true,
+      "size": 93,
+      "sha256": "78b41eabc627a4776514b88ee879f5bb349623bb9c829134ecbe0bfd19fdb803",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-checkpoint-restore-writer_history.json",
+      "exists": true,
+      "size": 369,
+      "sha256": "1a7062661d2ac7e78c15f4d2d0be8a02fbedde1080207ca266d41a660f7569b1",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-compaction-writer_history.json",
+      "exists": true,
+      "size": 107,
+      "sha256": "d5d05c379c7debf3ea679b04df4c34353bd35fa3bf36a9dc545d94de671599ef",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-corruption-denial-writer_history.json",
+      "exists": true,
+      "size": 287,
+      "sha256": "1856af0935d5c86a7f0ac1049669502e3a83f80825a2f30f163b7c22fcf95585",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-hamt-results-writer_history.json",
+      "exists": true,
+      "size": 376,
+      "sha256": "df6981b1d508586f370471a5999a6634937d4eea6da41d250a9e23d8e2706485",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-memory-benchmark-writer_history.json",
+      "exists": true,
+      "size": 298,
+      "sha256": "e3e7e47551b256224dacc7add1f998cda19a2fb7fc710be5208eb0297b0c8004",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-rrb-results-writer_history.json",
+      "exists": true,
+      "size": 361,
+      "sha256": "81d266d1b5a16733c08939bf65d29cc1bf406eaa8ca1dbf8f76865de81217479",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-serialization-determinism-writer_history.json",
+      "exists": true,
+      "size": 369,
+      "sha256": "1a7062661d2ac7e78c15f4d2d0be8a02fbedde1080207ca266d41a660f7569b1",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-store-design-writer_history.md",
+      "exists": true,
+      "size": 333,
+      "sha256": "5e97b361f8981a58c033ada56d9323be5854662ef9e6b4e23ec030867ece0d73",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-store-report-writer_history.json",
+      "exists": true,
+      "size": 3031,
+      "sha256": "2ac2cfc89675f37eaa22ccc2452b61e230032d6afc8576a49f348d0bc1c86e2d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-undo-redo-writer_history.json",
+      "exists": true,
+      "size": 279,
+      "sha256": "b3484e7fb7527b5b84abcf26ff3d4782d3b58c603ba04268df4c502b2f36e57a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/persistent-version-graph-writer_history.json",
+      "exists": true,
+      "size": 552,
+      "sha256": "c9f4b629fb8d59a261309dd263bc6a0d002035fd1230d82ac8018df13dd3de39",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-combined-report.json",
+      "exists": true,
+      "size": 37773,
+      "sha256": "67045875620fd73545de51a7e7a1b284d7c71f90236bb0c3ed1e7a9488dd7936",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-corpus-manifest.json",
+      "exists": true,
+      "size": 531,
+      "sha256": "1be3a7f7a6b7a22d901fc040aa4af7620a7c558c4cd8032a69178821d556cc6c",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-diff-metrics.json",
+      "exists": true,
+      "size": 92,
+      "sha256": "6ab6af2bb6cc60baef470e85b1dbe29c5fe3e94b920ae5c9edbf818a5830b907",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-feature-matrix.json",
+      "exists": true,
+      "size": 9670,
+      "sha256": "180d0cc4c8d768be4e6d8491db38d4491d70f378079b0abf194998982711c880",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-html-report/index.html",
+      "exists": true,
+      "size": 249,
+      "sha256": "05fa4f24f153772f2b7ff9622559a25b1effa9687c4ee9d03aeb0fed6711a269",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-limit-denial-results.json",
+      "exists": true,
+      "size": 1906,
+      "sha256": "9829aca64c4ccd38d41ab58c0bd60cdd07745218bb219fa0ec0d23f9e2ae7ea4",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-metamorphic-results.json",
+      "exists": true,
+      "size": 389,
+      "sha256": "d841a66c73cfbe285b9abc171714849f9c767cef159e9bbd539ee7d25d8cae21",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-object-stream-packed.pdf",
+      "exists": true,
+      "size": 327714,
+      "sha256": "6a1b0f93e5cf4a3daec90b1ce115bc4692fbe8a26d1e9d810d4c14708ad0f6f0",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-performance-memory.json",
+      "exists": true,
+      "size": 328,
+      "sha256": "728a679ecf377860c5b4d39a1c82f0f494790f07e4edd8221840affda867b5e9",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-reference-results.json",
+      "exists": true,
+      "size": 5696,
+      "sha256": "91f572cd2fa2ff8032de29dcc12f2a8820d79f429257c3a857fcd1f7271a64f6",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/writer_history-starting-state.json",
+      "exists": true,
+      "size": 4935,
+      "sha256": "944a1518af9e94a520bb05f58480eae79f4d16169ebe343ce57090f4d072918f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/raster-vectorization-curve-error-writer_history.json",
+      "exists": true,
+      "size": 280,
+      "sha256": "1467c3cac2b3fb2b238427e4a29b2fd35c3f4243938b9a4bbadf25192bb4e021",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/raster-vectorization-determinism-writer_history.json",
+      "exists": true,
+      "size": 119,
+      "sha256": "cd98e585837315319b0cf5ed0761a9d9731fd8a263342647661fe1f6d6b99b4c",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/raster-vectorization-performance-memory-writer_history.json",
+      "exists": true,
+      "size": 408,
+      "sha256": "07600af5c985896c3474f589195a51e191ed56559480871a52553e0a89b979b7",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/raster-vectorization-preprocess-matrix-writer_history.json",
+      "exists": true,
+      "size": 1540,
+      "sha256": "0742de0dc2257d01af7ba13852d1fffd0bf4a0f0b9a40ca498ee372cf6327a92",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/raster-vectorization-primitive-results-writer_history.json",
+      "exists": true,
+      "size": 1797,
+      "sha256": "db40605ff82dfc7821b2ed7c45165e6530727dbc0b77364380def3c3145b7f7d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/raster-vectorization-reference-results-writer_history.json",
+      "exists": true,
+      "size": 4849,
+      "sha256": "b3e3460e56de2f18c75abdb1cfcf08402d28f0cca9ccfedd3e10a05f783bf00b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/raster-vectorization-replacement-writer_history.json",
+      "exists": true,
+      "size": 181,
+      "sha256": "6c85e5ee31fdba5d6be79d06227499b47c45dc69da886c6a4b2db820b2295e53",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/raster-vectorization-text-separation-writer_history.json",
+      "exists": true,
+      "size": 289,
+      "sha256": "6f440c69bd9b4eef12260d27c845f2fc039e6a650f42978d9b97cdd9277058aa",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/writer_history-vector-font-persistent-writer/raster-vectorization-topology-writer_history.json",
+      "exists": true,
+      "size": 312,
+      "sha256": "3e7418c4d5eaa25356d9fa86c84128ff82ffa2fde752266abdaaac13199fea98",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-authentication-failure-crypto_writer.json",
+      "exists": true,
+      "size": 665,
+      "sha256": "4a507d4ad515f594fe1eb89444f2ee1d47e3bb4a5162cb6f70aa2a832133eb0f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-backend-audit-crypto_writer.json",
+      "exists": true,
+      "size": 656,
+      "sha256": "b9d3c76cdf7ab08b718c6133051e33c9e61e4795a2062e493d0d066f1b8fef41",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-decryption-matrix-crypto_writer.json",
+      "exists": true,
+      "size": 660,
+      "sha256": "914993f895c31ef7e3aba6f5c37cd6df693f1cc09f67d468540cb35e62f9b451",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-embedded-file-results-crypto_writer.json",
+      "exists": true,
+      "size": 664,
+      "sha256": "d817cde0f7bf3cd7f92b760b4ea153dcdf37b4bbbab2e9c3a08936d29b46be63",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-encryption-dictionary-crypto_writer.json",
+      "exists": true,
+      "size": 664,
+      "sha256": "9402849da254bba120896cffefeeb00cf18d55a5dd43410883d6f99809ba8745",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-full-rewrite-results-crypto_writer.json",
+      "exists": true,
+      "size": 663,
+      "sha256": "ac6f61241ff4f90deb232e57b04529293444784deb308b891c6e930d4cc067f1",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-incremental-results-crypto_writer.json",
+      "exists": true,
+      "size": 662,
+      "sha256": "b0a98de38fb90a01c91a45eec8d143bc3ea40ea58424f2685c384691bf05aa84",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-incremental-writer-results-crypto_writer.json",
+      "exists": true,
+      "size": 669,
+      "sha256": "62c6086f3f0e106cadf154c316d6b4a18717364be05c3b7df7545c0e43b3c876",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-interoperability-crypto_writer.json",
+      "exists": true,
+      "size": 659,
+      "sha256": "f47c04657d74a9e73d46499914e2883d80cc38a9a9e3aa43659890c0b108a5c0",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-key-size-results-crypto_writer.json",
+      "exists": true,
+      "size": 659,
+      "sha256": "4acf67a8776df14ac0c2c216de8b2a82292c2eb5c78601cc8f26030ae263e891",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-metadata-results-crypto_writer.json",
+      "exists": true,
+      "size": 659,
+      "sha256": "900cf56aba5d20b70106b055d97f17888d170c77c8d9ad699c320b53ab929454",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-nonce-policy-crypto_writer.json",
+      "exists": true,
+      "size": 655,
+      "sha256": "659adcb42cc53cebdf4de6f697c4ee1e014529147cc0ace4b7b63be5f546242c",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-normative-matrix-crypto_writer.json",
+      "exists": true,
+      "size": 659,
+      "sha256": "3dc7ae75ca0de66345a340057755965255aef7909452a28cfa7d5e8f4c103fb5",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-object-results-crypto_writer.json",
+      "exists": true,
+      "size": 657,
+      "sha256": "050702bb03088457594fa774c2b9853b9115aad315f370940a43c0c661bd5e39",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-randomness-report-crypto_writer.json",
+      "exists": true,
+      "size": 660,
+      "sha256": "7909f15d743309f77972af651313a9f6808015a6d4c6d3901c4d96026fe8fa0a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-reopen-proof-crypto_writer.json",
+      "exists": true,
+      "size": 655,
+      "sha256": "86e5e0e9fadb07e9398e787f06687ae0016bd102ac8f95dd630b0720adc20000",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-tag-verification-crypto_writer.json",
+      "exists": true,
+      "size": 659,
+      "sha256": "e20e8945876fd228042cbea3ed3fb9906a9655200ac655a1cd3e097c1bc6b4c2",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-tamper-results-crypto_writer.json",
+      "exists": true,
+      "size": 657,
+      "sha256": "89c9fcc6b2df7aaac57bcdfb120aeb73777e5dcfd697820362ae3fbce0d7936a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aes-gcm-writer-options-crypto_writer.json",
+      "exists": true,
+      "size": 657,
+      "sha256": "496f5d2819605d06cfe850bd1acd35e03c70391a745fe2d19d5d8e0d7cbef841",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aesgcm-decrypt-edit-reencrypt-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 726,
+      "sha256": "05c2b0ebd532da35210e6086fe32f4001131a58a5dc14c23672381ceb0d2a120",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aesgcm-integrity-results-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 810,
+      "sha256": "50387f99559676de0912184ca80f8a64ffb824a18e2bc000171d5a699e3fcbeb",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aesgcm-interoperability-results-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 622,
+      "sha256": "9d23e857b507e8eb98e5fc6fc3e2d85339704da1694fd6264fdcb6720d2e94a6",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aesgcm-no-plaintext-on-failure-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 505,
+      "sha256": "0c75d8383a2d50749a69b81c32ef2f00497e52359db2ca676cf14c59767379a7",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aesgcm-normative-mapping-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 1196,
+      "sha256": "5eceaa798188b146deb4a366ff60adb616f7752029631d3c1cb23fb265c58857",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/aesgcm-tamper-matrix-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 1729,
+      "sha256": "802bdf52ff91b45a8ba2a39962f910382a05b68d1b18514606f2be9fa0101aaf",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/canonical-dictionary-serialization-crypto_writer.json",
+      "exists": true,
+      "size": 725,
+      "sha256": "a58a73ab263203748bf304db8ee1540472b3228b4eb3f0ca88b7738dd0ddb495",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/canonical-number-format-crypto_writer.json",
+      "exists": true,
+      "size": 714,
+      "sha256": "beb27e37a312ef5310100480ec974bef2897ec58580fa9507f78c2e90d8b62c5",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/canonical-object-order-crypto_writer.json",
+      "exists": true,
+      "size": 713,
+      "sha256": "766909fdfa7d1f0808d676dc4e7820c8d95859bffa051523d7c01a07b2fa61cd",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/canonical-stream-serialization-crypto_writer.json",
+      "exists": true,
+      "size": 721,
+      "sha256": "d5d6eaa9e3a87bfd6cce0f3a84b4b473903f21dd1b8adfb9ae0f783b14488827",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/clause-implementation-matrix-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 11943,
+      "sha256": "e1dd2b6183eba1f8d8d5f19f4bf36829ac193686cf4d5dbc4e37f7ae0aab79df",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-aes-gcm-report.json",
+      "exists": true,
+      "size": 1020,
+      "sha256": "2db5e1cae29649e173bbee464d8fb9381e7dbd6ddac0c80ebe14f9b59e1dd35f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-aesgcm-report-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 1341,
+      "sha256": "f88216823999e218ad22febd831d3db436962234915aed0b007785be02322dca",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-aesgcm-runtime-decrypt.json",
+      "exists": true,
+      "size": 322,
+      "sha256": "724341fa3b66e55d686758f27770189e372dd5916b1d6dfa630b8de6c295cd4c",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-aesgcm-runtime-decrypted.pdf",
+      "exists": true,
+      "size": 10443,
+      "sha256": "9e29fde9eb5410b7fe511f9b8f5f1409595959336f87b29d952e3e846aade2a8",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-aesgcm-runtime-encrypt.json",
+      "exists": true,
+      "size": 350,
+      "sha256": "3a9b2b89dbcaca5d2a57faa7dca9dcc3c716a57c2404ebfe6b452e29b367a548",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-aesgcm-runtime-encrypted.pdf",
+      "exists": true,
+      "size": 11083,
+      "sha256": "60544b692e556c2b68f0f0da6ccc69ab909e667a58301b6638ea34cf35502db7",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-crypto-tamper-test.json",
+      "exists": true,
+      "size": 943,
+      "sha256": "50319167dc5362a86413e54a908ce77689afb2cbb459e784d59c9afc45168f21",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-pdf-mac-report-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 1517,
+      "sha256": "b76fdd7688ba200649ddfce596642752cb4ac422b42d9b07a158b1076f4bfd97",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-pdf-mac-verify-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 1520,
+      "sha256": "56c7a8629503ff6aed13d88a9b78b558c5265dda56512652664c868db32774c4",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-crypto_writer-report.json",
+      "exists": true,
+      "size": 24351,
+      "sha256": "d268fef5e571386632c0aee0106a992a81683a72296ddf5918165744485d18c7",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-pubsec-report-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 2098,
+      "sha256": "bddd69cc1ce6e97fbecbe66df94a6cef295d4abf99a58e01c912b1bca1539202",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-pubsec-report.json",
+      "exists": true,
+      "size": 1007,
+      "sha256": "af104fc8c45ab26735f8bce08e8cb8e0a5e98ae3ee29367b1d76eb6b8b05f703",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cli-writer-determinism-audit.json",
+      "exists": true,
+      "size": 2679,
+      "sha256": "9916d829de2bf6b72495a94e7e681cbb3eefa5b111dcaae3584efa91ff2ef9ec",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cms-file-key-extraction-crypto_writer.json",
+      "exists": true,
+      "size": 654,
+      "sha256": "9da5f6dcdf9b1b9e73ae74ad1acf56ccd504efecba908d5fd0a9da9c56a88e9f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cms-key-transport-results-crypto_writer.json",
+      "exists": true,
+      "size": 656,
+      "sha256": "04959cfb2324a664db764bfe319ea661704c0b3caacf659e95579d75e9b05e66",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cms-malformed-denial-crypto_writer.json",
+      "exists": true,
+      "size": 651,
+      "sha256": "82d740b6df634dba8ce94d01a85f33e1c7b54e5c899d4b30206bbd1fd698fd30",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cms-parser-security-crypto_writer.json",
+      "exists": true,
+      "size": 650,
+      "sha256": "5c431e5bd46e02f771d128190270dcbdd7d7aa9d4e5d4b01630e2a3661e65727",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/cms-recipient-matrix-crypto_writer.json",
+      "exists": true,
+      "size": 651,
+      "sha256": "d41f156881641e074cd4e25156262b2dac2bfe4b682c3911218eb6c45f2dae59",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto-cache-security-crypto_writer.json",
+      "exists": true,
+      "size": 712,
+      "sha256": "1dbc2f1de69a5780be6dfff64bfa8744028e6132c2356a336a398d2c9aaa1920",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto-change-recipient-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 1001,
+      "sha256": "2386c2cf0ef3065837444059c505fc0dc55ba56d57401da5898d4290649174cd",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto-reference-availability-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 864,
+      "sha256": "015fc6057a6f7f69bea0e29434149537f98028c89c8195d996e8a259928e836f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto-reference-disagreements-crypto_writer.json",
+      "exists": true,
+      "size": 664,
+      "sha256": "88c214c3f3610e083b9c344a9857abde3113f10cd85fd019ac9fbf28d061cee3",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto-reference-disagreements-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 219,
+      "sha256": "298ebf4de5470d4d8ddd3ba0bf0a2da0606ca755a562de1046cdc9d222bcc61a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto-remove-encryption-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 282,
+      "sha256": "039a5deec8a9398acc6d814edd13c3e94d9658e2393b0c847626772a39f87206",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto-signature-impact-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 335,
+      "sha256": "83dd70a4cded2b7c55cdf03a1631beefdf55249712e6d800a02c199a29dc174e",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto-test-vector-manifest-crypto_writer.json",
+      "exists": true,
+      "size": 661,
+      "sha256": "f32071e11aa3b9cc161c95626488f533ed02127a97954774270b1bf6375eef3b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto-vector-manifest-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 2740,
+      "sha256": "bd774d3ed63a6e31d5a2283f0a1961235987671aa35e8021bc1bcbb6912e6539",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/decrypt-edit-reencrypt-crypto_writer.json",
+      "exists": true,
+      "size": 713,
+      "sha256": "d732e0821e567be6e5af9a45f3d6ee298de8deafbbaad74425b4cf7139bff639",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/deterministic-binding-parity-crypto_writer.json",
+      "exists": true,
+      "size": 719,
+      "sha256": "89ac14ae78794292f6f9110ba8b9b3f5c6bdf762c46a31d2b0a5c2a05f303293",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/deterministic-byte-diff-crypto_writer.json",
+      "exists": true,
+      "size": 714,
+      "sha256": "d2a3a7565c32bb0e80cae353737027dbbbbecc5ca6838c7a9726c635f80cb546",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/deterministic-crosspath-results-crypto_writer.json",
+      "exists": true,
+      "size": 722,
+      "sha256": "8c262b0dc054e76a0478bd5488271f27daf03721b86e91fef8248a6761d2c2db",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/deterministic-crossplatform-results-crypto_writer.json",
+      "exists": true,
+      "size": 726,
+      "sha256": "2e5002ebe9750bbbf53fd92eb92873eca56841f0356788d38565228f31ce4e53",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/deterministic-crossprocess-results-crypto_writer.json",
+      "exists": true,
+      "size": 725,
+      "sha256": "35e7a8487cc0eb05aa6e031e5e7a323becc4b7fe8310d2c0b0ef12cf48a8df17",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/deterministic-environment-report-crypto_writer.json",
+      "exists": true,
+      "size": 723,
+      "sha256": "b3fe537f12626600ff3b080303b3061b7ef2d61d8f49d2bd4f795d5e063097b4",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/deterministic-external-matrix-crypto_writer.json",
+      "exists": true,
+      "size": 720,
+      "sha256": "3a2a935e9fe4fee17bd578757710902bbccd1706464aaefb4c420b5f5e9dc03f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/deterministic-object-diff-crypto_writer.json",
+      "exists": true,
+      "size": 716,
+      "sha256": "246daba9e47341299b48a5b85458b74817ad153d645981116dce056755cdc6f0",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/editing-writer-closeout-scorecard.json",
+      "exists": true,
+      "size": 4920,
+      "sha256": "7ada8a94e91c359f4e86149dcd4eef6d8707b291ab87e303082724a1ff1f2cb4",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/encrypted-dedup-compression-crypto_writer.json",
+      "exists": true,
+      "size": 718,
+      "sha256": "e99b44d53b79ef60321bff930be593c1e3e9271a56ccc94da9eae349f40f116e",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/encrypted-writer-pipeline-crypto_writer.json",
+      "exists": true,
+      "size": 716,
+      "sha256": "bab46a2628c8169642ca79d2ec4fbd0b87694628ad6a933c19159849ae04a810",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/history-secret-exclusion-crypto_writer.json",
+      "exists": true,
+      "size": 715,
+      "sha256": "4d91106199f9c6b4c2b405a47ad85bda5156b1b1ad2bcf2cbcfa0b4c44a644fd",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/incremental-object-allocation-crypto_writer.json",
+      "exists": true,
+      "size": 720,
+      "sha256": "a7c26f80c4fb41e66470961683ffc589915cafd574046f15bc55df03dc341499",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/incremental-objstm-xref-crypto_writer.json",
+      "exists": true,
+      "size": 714,
+      "sha256": "9e85b9c7b81352ccc5b0b033924a4804f92d9c34a7bc4d5a0e176654caa3d5c7",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/incremental-prefix-proof-crypto_writer.json",
+      "exists": true,
+      "size": 715,
+      "sha256": "d4b12387490e54bb9ab746e7bbae403849d5fdc14ea61819b26e80ae4568223b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/incremental-reopen-revision-proof-crypto_writer.json",
+      "exists": true,
+      "size": 724,
+      "sha256": "34e945de8de04edb182d7c1166a06bf30528b0e2aa07d5a709df470ba848f9d8",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/incremental-revision-plan-crypto_writer.json",
+      "exists": true,
+      "size": 716,
+      "sha256": "305b03007c529b4729e7d618386a651772790aeb9619169d6cb21973e16bfd44",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/interop-java/PrimitiveInterop.java",
+      "exists": true,
+      "size": 3075,
+      "sha256": "d479dbfb80c5bf9bac6ce3ff069436af421e603e5f609814880fdda0de65b07a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/interop-java/primitive-interop-output.json",
+      "exists": true,
+      "size": 103,
+      "sha256": "a6b2f36e08e6bfb5af1e0417b9fbdfcf8ed08a7ea850f5f1f8a13c67631563bf",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/interop-poppler-aesgcm-decrypted-1.png",
+      "exists": true,
+      "size": 3094,
+      "sha256": "41f63987bd3a0f53342b026f78d4008d1be30f002c31ae9a08e943e0b2ef5a6b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/interop-poppler-aesgcm-decrypted-rerun-1.png",
+      "exists": true,
+      "size": 3094,
+      "sha256": "41f63987bd3a0f53342b026f78d4008d1be30f002c31ae9a08e943e0b2ef5a6b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/key-provider-matrix-crypto_writer.json",
+      "exists": true,
+      "size": 657,
+      "sha256": "4bed88b123436593b2c894d260d810a46d15509a18a5e11f6f583c6701ab2898",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/key-provider-security-results-crypto_writer.json",
+      "exists": true,
+      "size": 667,
+      "sha256": "fe07356b175ca548374eb125abf0744fcee25379e58ecb83bfbb540b8146a4ed",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/key-provider-security-results-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 1575,
+      "sha256": "6b2d34ef6580170855bfc10457c2f1a837980caa80ed7e077200caa960fbfc87",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/key-zeroization-policy-crypto_writer.json",
+      "exists": true,
+      "size": 660,
+      "sha256": "9d00538929e03c5e864cb30b74e5aebbf8c4b239b1b3e83fad7c006bbd751896",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/linearization-status-crypto_writer.json",
+      "exists": true,
+      "size": 711,
+      "sha256": "efecb57f2f3b8b882af50ac973a167e4960562eebef11cf3cdccc113dfaf938a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/normative-dependency-gate-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 2467,
+      "sha256": "13619790258af0a0b868fe0a8fcd9f1a371481ca353797bdc1a36b12fb830f48",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/normative-source-manifest-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 12451,
+      "sha256": "099e502766a668228f91be07927501139f97adf654b007ffd71e208281c0ef7d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pdf-mac-results-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 2085,
+      "sha256": "d03dcb59db384abbbb27454abf20861e1c4af57e52380c766a234c22331979f8",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-artifact-manifest.json",
+      "exists": true,
+      "size": 3784,
+      "sha256": "372e9904deaa39da1163c03c6843b4ba9d99d92259bdb285d90e202940fb7a31",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-differential-results.json",
+      "exists": true,
+      "size": 711,
+      "sha256": "830e9eeaab33c5bcea489d042233f4cc342163f473d4da156787537d28d0f0ea",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-environment.json",
+      "exists": true,
+      "size": 474,
+      "sha256": "feb52c8b31e951528a9826f442ec6d8ce62d3c5043390a566142319328a0bb81",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-feature-matrix.json",
+      "exists": true,
+      "size": 4933,
+      "sha256": "ac6109945314de78ac807804ec8a3a2caa7973d09510149473998da93761bfa9",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-fuzz-smoke-results.json",
+      "exists": true,
+      "size": 709,
+      "sha256": "60f768f68529f019e0f1a3092062e3a3ed8c8a426e054d129d26dfeae86d0e9c",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-fuzz-target-inventory.json",
+      "exists": true,
+      "size": 712,
+      "sha256": "4d36dd80f85d70dcf5b87263df27114cbbff59a1c5cb1a6de8ffeddfa6d4e674",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-html-report/index.html",
+      "exists": true,
+      "size": 219,
+      "sha256": "e79dca3f89e0daef9a6078dc0c23f66c0c7b84276096c58cc649d464083800ab",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-limit-denial-results.json",
+      "exists": true,
+      "size": 711,
+      "sha256": "1187f2577f295b04f63919ff4b2c0b3802ad64d42ce2c0867f7a202fc396ac9e",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-metamorphic-results.json",
+      "exists": true,
+      "size": 710,
+      "sha256": "6d858bb246cf4d5752dbd0378e3c71e6ce245f5c5268ee544c9bfd031d8597dd",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-performance-memory.json",
+      "exists": true,
+      "size": 709,
+      "sha256": "edd37f7db9411ee71f08e83d94639d5bdaa6d873be443c87a5bcc981b41b0994",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-starting-state.json",
+      "exists": true,
+      "size": 11421,
+      "sha256": "a14b6124225f2fac219551336b62ea1a7e0bdeeb7dc2ea8df7f7d256de778cee",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer-tool-availability.json",
+      "exists": true,
+      "size": 1670,
+      "sha256": "aed4d8c48523d877808a5b36766477532e09e894b6bc988ba5d80451631da21d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-aesv4-interoperability.json",
+      "exists": true,
+      "size": 1004,
+      "sha256": "1db7ea518964b902735aa6fbcae536b0fd74f703e7659569bbe2fa27b61fd6e9",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-binding-runtime-parity.json",
+      "exists": true,
+      "size": 2486,
+      "sha256": "f8edb1521604d397c09d2dc421d461ee545fff423d31bbc7b9265114577498f0",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-blocked-summary.json",
+      "exists": true,
+      "size": 860,
+      "sha256": "8fd71925eefdfd12be9eef2d5dbf5de4cc797cff33edaf94a59884c99a22691c",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-cargo-test-rerun.json",
+      "exists": true,
+      "size": 503,
+      "sha256": "dcbf6d3158c68bc60fcef2a55dc5602494e5b1c85f687f331d7aecfa262566d1",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-cms-provider-interoperability.json",
+      "exists": true,
+      "size": 986,
+      "sha256": "b869954c73d57fc34ce863433efe04b5bbf170198e6071505a87b037e91b7805",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-continuation-start-state.json",
+      "exists": true,
+      "size": 20486,
+      "sha256": "36b07d6afbf7358ce1aa755ac796d5b1c039585c5281bdea136359d05b8f9b35",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-audit-verification.json",
+      "exists": true,
+      "size": 3388,
+      "sha256": "3489ab97c097d34745611bc6767499cf63987464cc5e76c83d5f3e1f73949a81",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-closure-start-state.json",
+      "exists": true,
+      "size": 25143,
+      "sha256": "4e30c6375e422ed1bad33d3e1b6d06a55cce674ecde6b94a1de1b991e17bd03c",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-core-validation.json",
+      "exists": true,
+      "size": 3550,
+      "sha256": "5096bd2ca400ab3af0abd7de0e74d37e87ad7f545267951a3d87717a87f0e86d",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-fuzz-verdict.json",
+      "exists": true,
+      "size": 582,
+      "sha256": "54af97766c4491a4edd06eff9e3b80c37493996fc0ec8f33217e7780a2237a49",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-historical-gates-verdict.json",
+      "exists": true,
+      "size": 452,
+      "sha256": "fa7fbd4f6400c189e3ca7c17c75400cbc51976b94b027c58195ced79e8eb84ee",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-interoperability-verdict.json",
+      "exists": true,
+      "size": 3680,
+      "sha256": "950f6a9ff054ff2055e2f362446852d314e4e477cb391b3f405f69ed58e8a664",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-process-cleanup.json",
+      "exists": true,
+      "size": 273,
+      "sha256": "d9024821358e9cb5835b5c1a043a765bac1822e8611a03ac3c5f24970cd0cccf",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-release-verdict.json",
+      "exists": true,
+      "size": 1543,
+      "sha256": "c7eceb6e009021d47032a80bf6d7d7f1d7996570401e36bccd18f036cbb9f352",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-security-verdict.json",
+      "exists": true,
+      "size": 659,
+      "sha256": "bc7e0fc49b9a36cff88528d3ab46f087c476cf06dbcfccecfbb026fecee93082",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-validation-batch.json",
+      "exists": true,
+      "size": 22750,
+      "sha256": "67b828ab71e4cab51805f1c0055535e828216b8df07be7670555f96bfafe2725",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-final-validation-summary.json",
+      "exists": true,
+      "size": 24448,
+      "sha256": "f1c5219dced2e2fae3831a9db2246400be3679ee81bc890796c4a6b7e9188275",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-focused-crypto-gates.json",
+      "exists": true,
+      "size": 3487,
+      "sha256": "75f6bcf8df2e067b2bb29c4f6eed93fadaceee8200cb6188923d44f35d8d3094",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-fuzz-build-results.json",
+      "exists": true,
+      "size": 1606,
+      "sha256": "a97c6b5a95e04d47fb0bf21a867cead13148226c1fbf2137af1b004c81d5fa7a",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-fuzz-process-cleanup.json",
+      "exists": true,
+      "size": 534,
+      "sha256": "13547c688e10ad56e50994f7ed55edb179ff3d2c453e5a0f66253f07c2c6f7af",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-fuzz-release-verdict.json",
+      "exists": true,
+      "size": 14730,
+      "sha256": "cf9a692a7c74026c1d81620152164e4d9bd18cd7e991bdae0f58239e9ca08a9e",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-fuzz-smoke-results-final.json",
+      "exists": true,
+      "size": 4230,
+      "sha256": "1795ce0b2c53deb09c57021e5a71ca052db46186435de339b09237dc320948b1",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-fuzz-smoke-results.json",
+      "exists": true,
+      "size": 5322,
+      "sha256": "0b46c06cfd710b97e46b9252f2fc598583492616ad7a96f0ff6c7058560fdda7",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-fuzz-target-inventory.json",
+      "exists": true,
+      "size": 6363,
+      "sha256": "5ae4771897d3be1648a3dcb51f28cdfd48d8ac561e492df212d81e4030d61960",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-html-report/index.html",
+      "exists": true,
+      "size": 2729,
+      "sha256": "dd51957f409f27276b6e307170f2394cf788b7656f2e4c7589877f6f7fdc67e2",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-independent-tool-support-matrix.json",
+      "exists": true,
+      "size": 14421,
+      "sha256": "1ed7d5ac25ca97738d80d2d673e31e2890c5ce994237c196a4045c1e7bb43bb8",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-interoperability-results.json",
+      "exists": true,
+      "size": 2702,
+      "sha256": "0b0debf9c50fea07538a2ea8f32a42d80ca25df524382a1eb2fbf5a0be39feec",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-limit-denial-results.json",
+      "exists": true,
+      "size": 923,
+      "sha256": "5359ca9d19af558790ac22b9bb69c663d7d78dfe8815c46d44209d2111b2fdf0",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-malformed-corpus-results.json",
+      "exists": true,
+      "size": 420,
+      "sha256": "424b4a14c04f182800467393592ea5fefac59bc8aec16ac67c3dd5a685c1abe1",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-pdfmac-interoperability.json",
+      "exists": true,
+      "size": 904,
+      "sha256": "6657cceb9ceee5ad8cedb3e65e9b57ad816d5d99f4fdfdf4473d82f067b2b76c",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-performance-memory.json",
+      "exists": true,
+      "size": 948,
+      "sha256": "dd5982392302a6e1f1b6a65747a7771318cf838abcb4535fefac2ac970f34539",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-pubsec-interoperability.json",
+      "exists": true,
+      "size": 1572,
+      "sha256": "383426e5d655847da17ce9af348994f1deb41d8ddc34041026da466cc9686ede",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-starting-state.json",
+      "exists": true,
+      "size": 3337,
+      "sha256": "acabb475498dd15aaa4a57759d427cf2c666083a9c5324b36826389fd6f94b18",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/crypto_writer_closeout-validation-summary.json",
+      "exists": true,
+      "size": 4474,
+      "sha256": "d84c9c200b98ee6e4c5fe45c803eea77449fba53d5ebdac845b0f46aa829c66e",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/public-key-handler-normative-matrix-crypto_writer.json",
+      "exists": true,
+      "size": 673,
+      "sha256": "7df21c4da7cd40779d150718bb6b5a6f69f0ab61d50a17d523186abca68b75d0",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-cryptfilter-results-crypto_writer.json",
+      "exists": true,
+      "size": 664,
+      "sha256": "8b1343d8b21089a2defc6a1076500dd48dce677dd10b2183df69b49a269c112f",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-decrypt-edit-reencrypt-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 1090,
+      "sha256": "c6bdb1491ce59b73d90552a9724b456ee726bbc17653fb62027fe243cb811876",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-embedded-file-results-crypto_writer.json",
+      "exists": true,
+      "size": 666,
+      "sha256": "4e54f4d5a5c99cd555733bc8c3e664fe4995b839810f1130add363ed74417dea",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-interoperability-crypto_writer.json",
+      "exists": true,
+      "size": 661,
+      "sha256": "49107d00a5538573e6bab8a2262362fa12ddcf05f5025c204f191a5f5fe189e9",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-interoperability-results-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 1490,
+      "sha256": "82e10e71634c6e554d8f7435d76e52966095b4ebf27f00ae70d4f4ff09e56093",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-objectstream-results-crypto_writer.json",
+      "exists": true,
+      "size": 665,
+      "sha256": "015dfeab4c3366545ad825453bce8ffb3dd4ba92e60e36a9bf9ccd4192dc3178",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-open-results-crypto_writer.json",
+      "exists": true,
+      "size": 657,
+      "sha256": "4c0f3e678512450c8ab51d9c6eeff850dc98b423bb2d7e2f5208db31fccbb730",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-permissions-report-crypto_writer.json",
+      "exists": true,
+      "size": 663,
+      "sha256": "0ee7290df4e752b007e6c0dca0f058d3e93ea63770f4dc1102547864cef1526e",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-recipient-profile-matrix-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 3154,
+      "sha256": "d9b543395eedc41f915a829e8f6cded1ad874e690bac3a15e94b03a21b8918e0",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-recipient-tamper-results-crypto_writer_closeout.json",
+      "exists": true,
+      "size": 868,
+      "sha256": "c25afb897dccbc95c1ed5dade66167edb733f352ebe1a2e9b77149e5a9d10c40",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-string-stream-results-crypto_writer.json",
+      "exists": true,
+      "size": 666,
+      "sha256": "2f645c6fa28a93f8933d902d19b9cf2e444d82e549bf40bbd86af87bc5e84b63",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/pubsec-wrong-key-results-crypto_writer.json",
+      "exists": true,
+      "size": 662,
+      "sha256": "7bf5f6c85467a33ee0fc24c9fbd99ce4aaddc351be23a436e754d5dc0bb0a063",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/python-wheel-crypto_writer_closeout-smoke.json",
+      "exists": true,
+      "size": 172,
+      "sha256": "30bdb2e8ad89dbb7abdfce413a32b0941a8fb67d7b755bc5cf2ee9a44e994fbc",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/python_crypto_writer_closeout_surface_smoke.py",
+      "exists": true,
+      "size": 749,
+      "sha256": "e8270231f04c45b563c4a2b12621d3e363bf219b488d9f4c72813a702e35aa4b",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/recipient-matching-results-crypto_writer.json",
+      "exists": true,
+      "size": 664,
+      "sha256": "c066b7054b3d5d92b3c3d59aaad5c9abe9149b831f02aa1d5ae95cc811078cc4",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/trailer-id-policy-crypto_writer.json",
+      "exists": true,
+      "size": 708,
+      "sha256": "4e3e76c150a4bbbee29f65ff906837d334b8e342e3f8cc4ec120847165ea48a2",
+      "classification": "tracked_transient_target_artifact"
+    },
+    {
+      "path": "target/crypto_writer-writer-crypto/writer-qpdf-validation-crypto_writer.json",
+      "exists": true,
+      "size": 713,
+      "sha256": "47e5547261a41f08686602af17e65812d06a745398c62e24f8e1f5e7b535f2bb",
+      "classification": "tracked_transient_target_artifact"
+    }
+  ]
+}

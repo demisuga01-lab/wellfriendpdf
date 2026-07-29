@@ -1,5 +1,5 @@
 #![no_main]
-//! Fuzz the Prompt 04 delimiter scanner invariant.
+//! Fuzz the Codec Boundary delimiter scanner invariant.
 //!
 //! Arbitrary bytes may contain marker-like data inside strings, names, comments,
 //! inline images, or binary streams. The accelerated path is only a candidate

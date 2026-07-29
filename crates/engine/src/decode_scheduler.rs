@@ -73,7 +73,7 @@ pub fn renderer_decode_scheduler_adoption_report() -> RendererDecodeSchedulerAdo
         ],
         audited_deferred_paths: vec![
             "render_image_cache stores final tile buffers, not decoded image streams".to_string(),
-            "parallel renderer predecode is intentionally not enabled in Prompt 04".to_string(),
+            "parallel renderer predecode is intentionally not enabled in Codec Boundary".to_string(),
         ],
         timeout_posture: "renderer exposes cooperative cancellation through CancelToken; no binding-level fake progress/cancellation was added".to_string(),
     }
@@ -81,7 +81,7 @@ pub fn renderer_decode_scheduler_adoption_report() -> RendererDecodeSchedulerAdo
 
 pub fn non_render_decode_scheduler_adoption_report() -> NonRenderDecodeSchedulerAdoptionReport {
     NonRenderDecodeSchedulerAdoptionReport {
-        status: "adopted_for_prompt05_non_render_decode_paths".to_string(),
+        status: "adopted_for_decode_scheduler_non_render_decode_paths".to_string(),
         execution_model:
             "synchronous_deterministic_decode_with_shared_scheduler_memory_tokens".to_string(),
         memory_tokens: true,
@@ -109,14 +109,14 @@ pub fn non_render_decode_scheduler_adoption_report() -> NonRenderDecodeScheduler
             "OCR page-image preparation uses renderer decode scheduling when OCR is compiled; no OCR support is claimed without the optional backend"
                 .to_string(),
         timeout_posture:
-            "non-render scheduler observes cooperative cancellation before decode; OS worker timeouts remain enforced by Prompt 03 codec isolation"
+            "non-render scheduler observes cooperative cancellation before decode; OS worker timeouts remain enforced by Release Packaging codec isolation"
                 .to_string(),
         public_report_artifacts: vec![
-            "target/prompt05-codec-closeout/decode-callsite-inventory.json".to_string(),
-            "target/prompt05-codec-closeout/codec-coverage-matrix.json".to_string(),
-            "target/prompt05-codec-closeout/hostile-corpus-run.json".to_string(),
-            "target/prompt05-codec-closeout/fuzz-smoke-report.json".to_string(),
-            "target/prompt05-codec-closeout/closeout-verdict.json".to_string(),
+            "target/decode_scheduler-codec-closeout/decode-callsite-inventory.json".to_string(),
+            "target/decode_scheduler-codec-closeout/codec-coverage-matrix.json".to_string(),
+            "target/decode_scheduler-codec-closeout/hostile-corpus-run.json".to_string(),
+            "target/decode_scheduler-codec-closeout/fuzz-smoke-report.json".to_string(),
+            "target/decode_scheduler-codec-closeout/closeout-verdict.json".to_string(),
         ],
     }
 }

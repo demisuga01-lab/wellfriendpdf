@@ -217,7 +217,7 @@ mod wasm_api {
         }
     }
 
-    /// Owned offline Prompt 24 validation options for the WASM surface.
+    /// Owned offline Signature Validation validation options for the WASM surface.
     ///
     /// WASM accepts caller-supplied trust anchors, intermediates, and
     /// revocation evidence, but has no native network transport.  Enabling a
@@ -520,10 +520,10 @@ mod wasm_api {
             sdk::feature_report_json().map_err(js_err)
         }
 
-        #[wasm_bindgen(js_name = prompt21HistoryReportJson)]
-        pub fn prompt21_history_report_json() -> Result<String, JsValue> {
+        #[wasm_bindgen(js_name = writer_historyHistoryReportJson)]
+        pub fn writer_history_history_report_json() -> Result<String, JsValue> {
             install_panic_hook();
-            sdk::prompt21_history_report_json().map_err(js_err)
+            sdk::writer_history_history_report_json().map_err(js_err)
         }
 
         #[wasm_bindgen(js_name = cryptoTamperTestJson)]
@@ -547,19 +547,23 @@ mod wasm_api {
             .map_err(js_err)
         }
 
-        #[wasm_bindgen(js_name = prompt22OfficeInspectJson)]
-        pub fn prompt22_office_inspect_json(bytes: &[u8], format: &str) -> Result<String, JsValue> {
+        #[wasm_bindgen(js_name = compression_officeOfficeInspectJson)]
+        pub fn compression_office_office_inspect_json(
+            bytes: &[u8],
+            format: &str,
+        ) -> Result<String, JsValue> {
             install_panic_hook();
-            sdk::prompt22_office_inspect_json(bytes, format).map_err(js_err)
+            sdk::compression_office_office_inspect_json(bytes, format).map_err(js_err)
         }
 
-        #[wasm_bindgen(js_name = prompt22OfficeToPdf)]
-        pub fn prompt22_office_to_pdf(
+        #[wasm_bindgen(js_name = compression_officeOfficeToPdf)]
+        pub fn compression_office_office_to_pdf(
             bytes: &[u8],
             format: &str,
         ) -> Result<WellfriendOutput, JsValue> {
             install_panic_hook();
-            let (out, report) = sdk::prompt22_office_to_pdf_json(bytes, format).map_err(js_err)?;
+            let (out, report) =
+                sdk::compression_office_office_to_pdf_json(bytes, format).map_err(js_err)?;
             Ok(WellfriendOutput {
                 bytes: out,
                 report_json: report,
@@ -723,7 +727,7 @@ mod wasm_api {
             self.report(|b| sdk::pdfua_validation_json(b, None))
         }
 
-        /// Prompt 26 clause-mapped PDF/A validation. `target` e.g. "PDF/A-2B".
+        /// Incremental Signing Standards clause-mapped PDF/A validation. `target` e.g. "PDF/A-2B".
         #[wasm_bindgen(js_name = validatePdfaStandardsJson)]
         pub fn validate_pdfa_standards_json(
             &self,
@@ -732,7 +736,7 @@ mod wasm_api {
             self.report(|b| sdk::pdfa_standards_json(b, target.as_deref(), None))
         }
 
-        /// Prompt 26 clause-mapped PDF/UA validation. `target` e.g. "PDF/UA-1".
+        /// Incremental Signing Standards clause-mapped PDF/UA validation. `target` e.g. "PDF/UA-1".
         #[wasm_bindgen(js_name = validatePdfuaStandardsJson)]
         pub fn validate_pdfua_standards_json(
             &self,
@@ -741,7 +745,7 @@ mod wasm_api {
             self.report(|b| sdk::pdfua_standards_json(b, target.as_deref(), None))
         }
 
-        /// Prompt 26 clause-mapped PDF/X validation. `target` e.g. "PDF/X-4".
+        /// Incremental Signing Standards clause-mapped PDF/X validation. `target` e.g. "PDF/X-4".
         #[wasm_bindgen(js_name = validatePdfxStandardsJson)]
         pub fn validate_pdfx_standards_json(
             &self,
@@ -750,7 +754,7 @@ mod wasm_api {
             self.report(|b| sdk::pdfx_standards_json(b, target.as_deref(), None))
         }
 
-        /// Prompt 26 combined PDF/A + PDF/UA + PDF/X validation with
+        /// Incremental Signing Standards combined PDF/A + PDF/UA + PDF/X validation with
         /// cross-profile conflicts.
         #[wasm_bindgen(js_name = validateStandardsAllJson)]
         pub fn validate_standards_all_json(
@@ -769,7 +773,7 @@ mod wasm_api {
             r#"{"in_memory_local_signing":"supported","external_signer_callback":"unsupported_reported_exact","host_filesystem_key_load":"unsupported_reported_exact","network_tsa_acquisition":"unsupported_reported_exact","note":"WASM signs only with caller-supplied in-memory PEM key material; no host filesystem, no network TSA, no JS external-signer callback."}"#.to_string()
         }
 
-        /// Prompt 26 append-only incremental signing plan (in-memory). `certify`
+        /// Incremental Signing Standards append-only incremental signing plan (in-memory). `certify`
         /// in 1..=3 plans a certification (DocMDP) signature; else approval.
         #[wasm_bindgen(js_name = signPlanJson)]
         pub fn sign_plan_json(
@@ -791,7 +795,7 @@ mod wasm_api {
             serde_json::to_string(&plan).map_err(|error| JsValue::from_str(&error.to_string()))
         }
 
-        /// Prompt 26 append-only incremental signing (in-memory). Produces a
+        /// Incremental Signing Standards append-only incremental signing (in-memory). Produces a
         /// signed PDF whose original bytes are preserved as a prefix, reopened
         /// and validated before it is returned. `key_pem`/`cert_pem` are the
         /// caller-supplied in-memory signer material (never logged/persisted).
@@ -892,19 +896,19 @@ mod wasm_api {
             self.report(|b| sdk::nonaxis_redaction_plan_json(b, options_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt17ReportJson)]
-        pub fn prompt17_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt17_report_json(b, None))
+        #[wasm_bindgen(js_name = annotation_media_redactionReportJson)]
+        pub fn annotation_media_redaction_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::annotation_media_redaction_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt18ReportJson)]
-        pub fn prompt18_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt18_report_json(b, None))
+        #[wasm_bindgen(js_name = secure_mutationReportJson)]
+        pub fn secure_mutation_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::secure_mutation_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt18bReportJson)]
-        pub fn prompt18b_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt18b_report_json(b, None))
+        #[wasm_bindgen(js_name = secure_mutation_closeoutReportJson)]
+        pub fn secure_mutation_closeout_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::secure_mutation_closeout_report_json(b, None))
         }
 
         #[wasm_bindgen(js_name = formJsReportJson)]
@@ -927,44 +931,44 @@ mod wasm_api {
             self.report(|b| sdk::word_pagination_audit_json(b, layout, None))
         }
 
-        #[wasm_bindgen(js_name = prompt19ReportJson)]
-        pub fn prompt19_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt19_report_json(b, None))
+        #[wasm_bindgen(js_name = form_action_policyReportJson)]
+        pub fn form_action_policy_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::form_action_policy_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt20ReportJson)]
-        pub fn prompt20_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt20_report_json(b, None))
+        #[wasm_bindgen(js_name = advanced_editingReportJson)]
+        pub fn advanced_editing_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::advanced_editing_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt20bReportJson)]
-        pub fn prompt20b_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt20b_report_json(b, None))
+        #[wasm_bindgen(js_name = advanced_editing_closeoutReportJson)]
+        pub fn advanced_editing_closeout_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::advanced_editing_closeout_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt31ReportJson)]
-        pub fn prompt31_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt31_report_json(b, None))
+        #[wasm_bindgen(js_name = source_editingReportJson)]
+        pub fn source_editing_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::source_editing_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt32ReportJson)]
-        pub fn prompt32_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt32_report_json(b, None))
+        #[wasm_bindgen(js_name = editing_transactionsReportJson)]
+        pub fn editing_transactions_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::editing_transactions_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt21ReportJson)]
-        pub fn prompt21_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt21_report_json(b, None))
+        #[wasm_bindgen(js_name = writer_historyReportJson)]
+        pub fn writer_history_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::writer_history_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt22ReportJson)]
-        pub fn prompt22_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt22_report_json(b, None))
+        #[wasm_bindgen(js_name = compression_officeReportJson)]
+        pub fn compression_office_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::compression_office_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt23ReportJson)]
-        pub fn prompt23_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt23_report_json(b, None))
+        #[wasm_bindgen(js_name = crypto_writerReportJson)]
+        pub fn crypto_writer_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::crypto_writer_report_json(b, None))
         }
 
         #[wasm_bindgen(js_name = writerDeterminismAuditJson)]
@@ -992,245 +996,272 @@ mod wasm_api {
             self.report(|b| sdk::aes_gcm_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt21RasterVectorReportJson)]
-        pub fn prompt21_raster_vector_report_json(
+        #[wasm_bindgen(js_name = writer_historyRasterVectorReportJson)]
+        pub fn writer_history_raster_vector_report_json(
             &self,
             page: usize,
             options_json: Option<String>,
         ) -> Result<String, JsValue> {
             self.report(|b| {
-                sdk::prompt21_raster_vector_report_json(b, page, options_json.as_deref(), None)
+                sdk::writer_history_raster_vector_report_json(
+                    b,
+                    page,
+                    options_json.as_deref(),
+                    None,
+                )
             })
         }
 
-        #[wasm_bindgen(js_name = prompt21FontReconstructionReportJson)]
-        pub fn prompt21_font_reconstruction_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt21_font_reconstruction_report_json(b, None))
+        #[wasm_bindgen(js_name = writer_historyFontReconstructionReportJson)]
+        pub fn writer_history_font_reconstruction_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::writer_history_font_reconstruction_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt21ObjectStreamReportJson)]
-        pub fn prompt21_object_stream_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt21_object_stream_report_json(b, None))
+        #[wasm_bindgen(js_name = writer_historyObjectStreamReportJson)]
+        pub fn writer_history_object_stream_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::writer_history_object_stream_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt20bTextRangeAnalyzeJson)]
-        pub fn prompt20b_text_range_analyze_json(&self, page: usize) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt20b_text_range_analyze_json(b, page, None))
+        #[wasm_bindgen(js_name = advanced_editing_closeoutTextRangeAnalyzeJson)]
+        pub fn advanced_editing_closeout_text_range_analyze_json(
+            &self,
+            page: usize,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::advanced_editing_closeout_text_range_analyze_json(b, page, None))
         }
 
-        #[wasm_bindgen(js_name = prompt31ProvenanceJson)]
-        pub fn prompt31_provenance_json(
+        #[wasm_bindgen(js_name = source_editingProvenanceJson)]
+        pub fn source_editing_provenance_json(
             &self,
             page: usize,
             source_text: String,
             replacement_text: String,
         ) -> Result<String, JsValue> {
             self.report(|b| {
-                sdk::prompt31_provenance_json(b, page, &source_text, &replacement_text, None)
+                sdk::source_editing_provenance_json(b, page, &source_text, &replacement_text, None)
             })
         }
 
-        #[wasm_bindgen(js_name = prompt31EditEligibilityJson)]
-        pub fn prompt31_edit_eligibility_json(
+        #[wasm_bindgen(js_name = source_editingEditEligibilityJson)]
+        pub fn source_editing_edit_eligibility_json(
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt31_edit_eligibility_json(b, &request_json, None))
+            self.report(|b| sdk::source_editing_edit_eligibility_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt31PathProvenanceJson)]
-        pub fn prompt31_path_provenance_json(&self, page: usize) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt31_path_provenance_json(b, page, None))
+        #[wasm_bindgen(js_name = source_editingPathProvenanceJson)]
+        pub fn source_editing_path_provenance_json(&self, page: usize) -> Result<String, JsValue> {
+            self.report(|b| sdk::source_editing_path_provenance_json(b, page, None))
         }
 
-        #[wasm_bindgen(js_name = prompt31ImageEligibilityJson)]
-        pub fn prompt31_image_eligibility_json(
+        #[wasm_bindgen(js_name = source_editingImageEligibilityJson)]
+        pub fn source_editing_image_eligibility_json(
             &self,
             page: usize,
             occurrence: Option<String>,
         ) -> Result<String, JsValue> {
             let _ = occurrence.as_deref();
-            self.report(|b| sdk::prompt31_image_eligibility_json(b, page, None))
+            self.report(|b| sdk::source_editing_image_eligibility_json(b, page, None))
         }
 
-        #[wasm_bindgen(js_name = prompt32SceneReportJson)]
-        pub fn prompt32_scene_report_json(
+        #[wasm_bindgen(js_name = editing_transactionsSceneReportJson)]
+        pub fn editing_transactions_scene_report_json(
             &self,
             pages_json: Option<String>,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt32_scene_report_json(b, pages_json.as_deref(), None))
+            self.report(|b| {
+                sdk::editing_transactions_scene_report_json(b, pages_json.as_deref(), None)
+            })
         }
 
-        #[wasm_bindgen(js_name = prompt32SceneSelectJson)]
-        pub fn prompt32_scene_select_json(&self, request_json: String) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt32_scene_select_json(b, &request_json, None))
-        }
-
-        #[wasm_bindgen(js_name = prompt32TransactionPlanJson)]
-        pub fn prompt32_transaction_plan_json(
+        #[wasm_bindgen(js_name = editing_transactionsSceneSelectJson)]
+        pub fn editing_transactions_scene_select_json(
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt32_transaction_plan_json(b, &request_json, None))
+            self.report(|b| sdk::editing_transactions_scene_select_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt32TextMapJson)]
-        pub fn prompt32_text_map_json(
+        #[wasm_bindgen(js_name = editing_transactionsTransactionPlanJson)]
+        pub fn editing_transactions_transaction_plan_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::editing_transactions_transaction_plan_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = editing_transactionsTextMapJson)]
+        pub fn editing_transactions_text_map_json(
             &self,
             text: String,
             direction: Option<String>,
         ) -> Result<String, JsValue> {
-            sdk::prompt32_text_map_json(&text, direction.as_deref()).map_err(js_err)
+            sdk::editing_transactions_text_map_json(&text, direction.as_deref()).map_err(js_err)
         }
 
-        #[wasm_bindgen(js_name = prompt32ShapeTextJson)]
-        pub fn prompt32_shape_text_json(
+        #[wasm_bindgen(js_name = editing_transactionsShapeTextJson)]
+        pub fn editing_transactions_shape_text_json(
             &self,
             text: String,
             direction: Option<String>,
         ) -> Result<String, JsValue> {
-            sdk::prompt32_shape_text_json(&text, direction.as_deref()).map_err(js_err)
+            sdk::editing_transactions_shape_text_json(&text, direction.as_deref()).map_err(js_err)
         }
 
-        #[wasm_bindgen(js_name = prompt32FontSubsetPlanJson)]
-        pub fn prompt32_font_subset_plan_json(
+        #[wasm_bindgen(js_name = editing_transactionsFontSubsetPlanJson)]
+        pub fn editing_transactions_font_subset_plan_json(
             &self,
             text: String,
             direction: Option<String>,
             policy: Option<String>,
         ) -> Result<String, JsValue> {
-            sdk::prompt32_font_subset_plan_json(&text, direction.as_deref(), policy.as_deref())
-                .map_err(js_err)
+            sdk::editing_transactions_font_subset_plan_json(
+                &text,
+                direction.as_deref(),
+                policy.as_deref(),
+            )
+            .map_err(js_err)
         }
 
-        #[wasm_bindgen(js_name = prompt32FontSubstitutionReportJson)]
-        pub fn prompt32_font_substitution_report_json(
+        #[wasm_bindgen(js_name = editing_transactionsFontSubstitutionReportJson)]
+        pub fn editing_transactions_font_substitution_report_json(
             &self,
             requested_family: String,
             text: String,
             policy: Option<String>,
         ) -> Result<String, JsValue> {
-            sdk::prompt32_font_substitution_report_json(&requested_family, &text, policy.as_deref())
-                .map_err(js_err)
+            sdk::editing_transactions_font_substitution_report_json(
+                &requested_family,
+                &text,
+                policy.as_deref(),
+            )
+            .map_err(js_err)
         }
 
-        #[wasm_bindgen(js_name = prompt33ReportJson)]
-        pub fn prompt33_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_report_json(b, None))
+        #[wasm_bindgen(js_name = text_reflowReportJson)]
+        pub fn text_reflow_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::text_reflow_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33LayoutAnalyzeJson)]
-        pub fn prompt33_layout_analyze_json(
+        #[wasm_bindgen(js_name = text_reflowLayoutAnalyzeJson)]
+        pub fn text_reflow_layout_analyze_json(
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_layout_analyze_json(b, &request_json, None))
+            self.report(|b| sdk::text_reflow_layout_analyze_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33SemanticLayoutJson)]
-        pub fn prompt33_semantic_layout_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_semantic_layout_json(b, None))
+        #[wasm_bindgen(js_name = text_reflowSemanticLayoutJson)]
+        pub fn text_reflow_semantic_layout_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::text_reflow_semantic_layout_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33ReadingOrderReportJson)]
-        pub fn prompt33_reading_order_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_reading_order_report_json(b, None))
+        #[wasm_bindgen(js_name = text_reflowReadingOrderReportJson)]
+        pub fn text_reflow_reading_order_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::text_reflow_reading_order_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33FlowGraphReportJson)]
-        pub fn prompt33_flow_graph_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_flow_graph_report_json(b, None))
+        #[wasm_bindgen(js_name = text_reflowFlowGraphReportJson)]
+        pub fn text_reflow_flow_graph_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::text_reflow_flow_graph_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33ReflowPreviewJson)]
-        pub fn prompt33_reflow_preview_json(
+        #[wasm_bindgen(js_name = text_reflowReflowPreviewJson)]
+        pub fn text_reflow_reflow_preview_json(
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_reflow_preview_json(b, &request_json, None))
+            self.report(|b| sdk::text_reflow_reflow_preview_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33OverflowReportJson)]
-        pub fn prompt33_overflow_report_json(
+        #[wasm_bindgen(js_name = text_reflowOverflowReportJson)]
+        pub fn text_reflow_overflow_report_json(
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_overflow_report_json(b, &request_json, None))
+            self.report(|b| sdk::text_reflow_overflow_report_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33ConstraintsReportJson)]
-        pub fn prompt33_constraints_report_json(
+        #[wasm_bindgen(js_name = text_reflowConstraintsReportJson)]
+        pub fn text_reflow_constraints_report_json(
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_constraints_report_json(b, &request_json, None))
+            self.report(|b| sdk::text_reflow_constraints_report_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33ConfidenceReportJson)]
-        pub fn prompt33_confidence_report_json(
+        #[wasm_bindgen(js_name = text_reflowConfidenceReportJson)]
+        pub fn text_reflow_confidence_report_json(
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_confidence_report_json(b, &request_json, None))
+            self.report(|b| sdk::text_reflow_confidence_report_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33ValidateReflowOutputJson)]
-        pub fn prompt33_validate_reflow_output_json(
+        #[wasm_bindgen(js_name = text_reflowValidateReflowOutputJson)]
+        pub fn text_reflow_validate_reflow_output_json(
             &self,
             output_pdf: Vec<u8>,
             request_json: String,
         ) -> Result<String, JsValue> {
             self.report(|b| {
-                sdk::prompt33_validate_reflow_output_json(b, &output_pdf, &request_json, None)
+                sdk::text_reflow_validate_reflow_output_json(b, &output_pdf, &request_json, None)
             })
         }
 
-        #[wasm_bindgen(js_name = prompt33ReflowOperationReportJson)]
-        pub fn prompt33_reflow_operation_report_json(
+        #[wasm_bindgen(js_name = text_reflowReflowOperationReportJson)]
+        pub fn text_reflow_reflow_operation_report_json(
             &self,
             request_json: String,
         ) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt33_reflow_operation_report_json(b, &request_json, None))
+            self.report(|b| sdk::text_reflow_reflow_operation_report_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt34ReportJson)]
-        pub fn prompt34_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt34_report_json(b, None))
+        #[wasm_bindgen(js_name = document_subsystemsReportJson)]
+        pub fn document_subsystems_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::document_subsystems_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt34AnalyzeJson)]
-        pub fn prompt34_analyze_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt34_analyze_json(b, None))
+        #[wasm_bindgen(js_name = document_subsystemsAnalyzeJson)]
+        pub fn document_subsystems_analyze_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::document_subsystems_analyze_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt34PlanJson)]
-        pub fn prompt34_plan_json(&self, request_json: String) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt34_plan_json(b, &request_json, None))
+        #[wasm_bindgen(js_name = document_subsystemsPlanJson)]
+        pub fn document_subsystems_plan_json(
+            &self,
+            request_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::document_subsystems_plan_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt35ReportJson)]
-        pub fn prompt35_report_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt35_report_json(b, None))
+        #[wasm_bindgen(js_name = document_securityReportJson)]
+        pub fn document_security_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::document_security_report_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt35AnalyzeJson)]
-        pub fn prompt35_analyze_json(&self) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt35_analyze_json(b, None))
+        #[wasm_bindgen(js_name = document_securityAnalyzeJson)]
+        pub fn document_security_analyze_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::document_security_analyze_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt35PlanJson)]
-        pub fn prompt35_plan_json(&self, request_json: String) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt35_plan_json(b, &request_json, None))
+        #[wasm_bindgen(js_name = document_securityPlanJson)]
+        pub fn document_security_plan_json(&self, request_json: String) -> Result<String, JsValue> {
+            self.report(|b| sdk::document_security_plan_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt35VerifyResidualJson)]
-        pub fn prompt35_verify_residual_json(&self, terms_json: String) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt35_verify_residual_json(b, &terms_json, None))
+        #[wasm_bindgen(js_name = document_securityVerifyResidualJson)]
+        pub fn document_security_verify_residual_json(
+            &self,
+            terms_json: String,
+        ) -> Result<String, JsValue> {
+            self.report(|b| sdk::document_security_verify_residual_json(b, &terms_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt20VectorListJson)]
-        pub fn prompt20_vector_list_json(&self, page: usize) -> Result<String, JsValue> {
-            self.report(|b| sdk::prompt20_vector_list_json(b, page, None))
+        #[wasm_bindgen(js_name = advanced_editingVectorListJson)]
+        pub fn advanced_editing_vector_list_json(&self, page: usize) -> Result<String, JsValue> {
+            self.report(|b| sdk::advanced_editing_vector_list_json(b, page, None))
         }
 
         #[wasm_bindgen(js_name = associatedFilesReportJson)]
@@ -1274,7 +1305,7 @@ mod wasm_api {
             self.report(|b| sdk::signature_validation_with_evidence_json(b, options_json, None))
         }
 
-        /// Offline Prompt 24 validation with owned caller-supplied trust and
+        /// Offline Signature Validation validation with owned caller-supplied trust and
         /// evidence.  WASM never performs implicit AIA, OCSP, or CRL retrieval.
         #[wasm_bindgen(js_name = signatureValidation)]
         pub fn signature_validation(
@@ -1289,7 +1320,7 @@ mod wasm_api {
             serde_json::to_string(&reports).map_err(|error| JsValue::from_str(&error.to_string()))
         }
 
-        /// Offline Prompt 24 validation plus a portable, hash-checked evidence
+        /// Offline Signature Validation validation plus a portable, hash-checked evidence
         /// bundle that can be replayed by a later WASM or native invocation.
         #[wasm_bindgen(js_name = signatureValidationWithEvidence)]
         pub fn signature_validation_with_evidence(
@@ -1383,8 +1414,8 @@ mod wasm_api {
             sdk::table_proposal_status_json().map_err(js_err)
         }
 
-        #[wasm_bindgen(js_name = prompt20TextEdit)]
-        pub fn prompt20_text_edit(
+        #[wasm_bindgen(js_name = advanced_editingTextEdit)]
+        pub fn advanced_editing_text_edit(
             &self,
             page: usize,
             old_text: &str,
@@ -1393,7 +1424,7 @@ mod wasm_api {
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
             self.output(|b| {
-                sdk::prompt20_text_edit_json(
+                sdk::advanced_editing_text_edit_json(
                     b,
                     page,
                     old_text,
@@ -1405,85 +1436,93 @@ mod wasm_api {
             })
         }
 
-        #[wasm_bindgen(js_name = prompt31OperatorTextEdit)]
-        pub fn prompt31_operator_text_edit(
+        #[wasm_bindgen(js_name = source_editingOperatorTextEdit)]
+        pub fn source_editing_operator_text_edit(
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt31_operator_text_edit_json(b, &request_json, None))
+            self.output(|b| sdk::source_editing_operator_text_edit_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt32TransactionApply)]
-        pub fn prompt32_transaction_apply(
+        #[wasm_bindgen(js_name = editing_transactionsTransactionApply)]
+        pub fn editing_transactions_transaction_apply(
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt32_transaction_apply_json(b, &request_json, None))
+            self.output(|b| {
+                sdk::editing_transactions_transaction_apply_json(b, &request_json, None)
+            })
         }
 
-        #[wasm_bindgen(js_name = prompt32SceneEditText)]
-        pub fn prompt32_scene_edit_text(
+        #[wasm_bindgen(js_name = editing_transactionsSceneEditText)]
+        pub fn editing_transactions_scene_edit_text(
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt32_scene_edit_text_json(b, &request_json, None))
+            self.output(|b| sdk::editing_transactions_scene_edit_text_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33ReflowRegion)]
-        pub fn prompt33_reflow_region(
+        #[wasm_bindgen(js_name = text_reflowReflowRegion)]
+        pub fn text_reflow_reflow_region(
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt33_reflow_region_json(b, &request_json, None))
+            self.output(|b| sdk::text_reflow_reflow_region_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33ReflowDocument)]
-        pub fn prompt33_reflow_document(
+        #[wasm_bindgen(js_name = text_reflowReflowDocument)]
+        pub fn text_reflow_reflow_document(
             &self,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt33_reflow_document_json(b, &request_json, None))
+            self.output(|b| sdk::text_reflow_reflow_document_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt33UndoReflow)]
-        pub fn prompt33_undo_reflow(
-            &self,
-            output_pdf: Vec<u8>,
-            request_json: String,
-        ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt33_undo_reflow_json(b, &output_pdf, &request_json, None))
-        }
-
-        #[wasm_bindgen(js_name = prompt34Apply)]
-        pub fn prompt34_apply(&self, request_json: String) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt34_apply_json(b, &request_json, None))
-        }
-
-        #[wasm_bindgen(js_name = prompt34Undo)]
-        pub fn prompt34_undo(
+        #[wasm_bindgen(js_name = text_reflowUndoReflow)]
+        pub fn text_reflow_undo_reflow(
             &self,
             output_pdf: Vec<u8>,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt34_undo_json(b, &output_pdf, &request_json, None))
+            self.output(|b| sdk::text_reflow_undo_reflow_json(b, &output_pdf, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt35Apply)]
-        pub fn prompt35_apply(&self, request_json: String) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt35_apply_json(b, &request_json, None))
+        #[wasm_bindgen(js_name = document_subsystemsApply)]
+        pub fn document_subsystems_apply(
+            &self,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::document_subsystems_apply_json(b, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt35Undo)]
-        pub fn prompt35_undo(
+        #[wasm_bindgen(js_name = document_subsystemsUndo)]
+        pub fn document_subsystems_undo(
             &self,
             output_pdf: Vec<u8>,
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt35_undo_json(b, &output_pdf, &request_json, None))
+            self.output(|b| sdk::document_subsystems_undo_json(b, &output_pdf, &request_json, None))
         }
 
-        #[wasm_bindgen(js_name = prompt31PathEdit)]
-        pub fn prompt31_path_edit(
+        #[wasm_bindgen(js_name = document_securityApply)]
+        pub fn document_security_apply(
+            &self,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::document_security_apply_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = document_securityUndo)]
+        pub fn document_security_undo(
+            &self,
+            output_pdf: Vec<u8>,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::document_security_undo_json(b, &output_pdf, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = source_editingPathEdit)]
+        pub fn source_editing_path_edit(
             &self,
             page: usize,
             stable_id: &str,
@@ -1491,7 +1530,7 @@ mod wasm_api {
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
             self.output(|b| {
-                sdk::prompt31_path_edit_json(
+                sdk::source_editing_path_edit_json(
                     b,
                     page,
                     stable_id,
@@ -1502,8 +1541,8 @@ mod wasm_api {
             })
         }
 
-        #[wasm_bindgen(js_name = prompt20VectorEdit)]
-        pub fn prompt20_vector_edit(
+        #[wasm_bindgen(js_name = advanced_editingVectorEdit)]
+        pub fn advanced_editing_vector_edit(
             &self,
             page: usize,
             stable_id: &str,
@@ -1511,7 +1550,7 @@ mod wasm_api {
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
             self.output(|b| {
-                sdk::prompt20_vector_edit_json(
+                sdk::advanced_editing_vector_edit_json(
                     b,
                     page,
                     stable_id,
@@ -1522,8 +1561,8 @@ mod wasm_api {
             })
         }
 
-        #[wasm_bindgen(js_name = prompt20InkFit)]
-        pub fn prompt20_ink_fit(
+        #[wasm_bindgen(js_name = advanced_editingInkFit)]
+        pub fn advanced_editing_ink_fit(
             &self,
             page: usize,
             annotation_index: usize,
@@ -1531,7 +1570,7 @@ mod wasm_api {
             signature_policy_override: bool,
         ) -> Result<WellfriendOutput, JsValue> {
             self.output(|b| {
-                sdk::prompt20_ink_fit_json(
+                sdk::advanced_editing_ink_fit_json(
                     b,
                     page,
                     annotation_index,
@@ -1592,20 +1631,24 @@ mod wasm_api {
 
         #[wasm_bindgen(js_name = editTextRange)]
         pub fn edit_text_range(&self, request_json: String) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt20b_text_range_edit_json(b, &request_json, None))
+            self.output(|b| {
+                sdk::advanced_editing_closeout_text_range_edit_json(b, &request_json, None)
+            })
         }
 
-        #[wasm_bindgen(js_name = prompt21PackObjectStreams)]
-        pub fn prompt21_pack_object_streams(&self) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt21_pack_object_streams_json(b, None))
+        #[wasm_bindgen(js_name = writer_historyPackObjectStreams)]
+        pub fn writer_history_pack_object_streams(&self) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::writer_history_pack_object_streams_json(b, None))
         }
 
-        #[wasm_bindgen(js_name = prompt22Optimize)]
-        pub fn prompt22_optimize(
+        #[wasm_bindgen(js_name = compression_officeOptimize)]
+        pub fn compression_office_optimize(
             &self,
             options_json: Option<String>,
         ) -> Result<WellfriendOutput, JsValue> {
-            self.output(|b| sdk::prompt22_optimize_pdf_json(b, options_json.as_deref(), None))
+            self.output(|b| {
+                sdk::compression_office_optimize_pdf_json(b, options_json.as_deref(), None)
+            })
         }
 
         #[wasm_bindgen(js_name = richMediaSanitize)]

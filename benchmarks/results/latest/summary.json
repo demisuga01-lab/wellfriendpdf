@@ -1,0 +1,162 @@
+{
+  "results": [
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.004908,
+      "p95_ms": 0.005188,
+      "peak_rss_kib": 6684,
+      "task": "open_parse",
+      "throughput_ops_per_sec_median": 203748.98125509373
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.0049169999999999995,
+      "p95_ms": 0.005077,
+      "peak_rss_kib": 6736,
+      "task": "page_count_model",
+      "throughput_ops_per_sec_median": 203376.0423022168
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.027812,
+      "p95_ms": 0.031037000000000002,
+      "peak_rss_kib": 8080,
+      "task": "text_extraction",
+      "throughput_ops_per_sec_median": 35955.7025744283
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.13685499999999998,
+      "p95_ms": 0.142674,
+      "peak_rss_kib": 10144,
+      "task": "render_page_png_72dpi",
+      "throughput_ops_per_sec_median": 7307.003763106939
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.017596,
+      "p95_ms": 0.018177,
+      "peak_rss_kib": 10400,
+      "task": "canonical_noop_rewrite",
+      "throughput_ops_per_sec_median": 56831.09797681291
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.070646,
+      "p95_ms": 0.074001,
+      "peak_rss_kib": 10792,
+      "task": "linearized_save",
+      "throughput_ops_per_sec_median": 14155.083090337741
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.744757,
+      "p95_ms": 0.7524689999999999,
+      "peak_rss_kib": 11528,
+      "task": "source_text_replacement_save_reopen",
+      "throughput_ops_per_sec_median": 1342.7198401626301
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 597,
+      "median_ms": 0.51362,
+      "p95_ms": 0.528513,
+      "peak_rss_kib": 12248,
+      "task": "paragraph_reflow_save_reopen",
+      "throughput_ops_per_sec_median": 1946.9646820606677
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 865,
+      "median_ms": 37.160841,
+      "p95_ms": 43.102214,
+      "peak_rss_kib": 16252,
+      "task": "table_cell_edit_save_reopen",
+      "throughput_ops_per_sec_median": 26.910047595532085
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.14318499999999998,
+      "p95_ms": 0.150526,
+      "peak_rss_kib": 16252,
+      "task": "annotation_create_appearance_save_reopen",
+      "throughput_ops_per_sec_median": 6983.9717847539905
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.133821,
+      "p95_ms": 0.14141199999999998,
+      "peak_rss_kib": 16252,
+      "task": "form_text_create_appearance_save_reopen",
+      "throughput_ops_per_sec_median": 7472.668714177895
+    },
+    {
+      "category": "ocr",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 652,
+      "median_ms": 0.204567,
+      "p95_ms": 0.215203,
+      "peak_rss_kib": 16252,
+      "task": "ocr_searchable_layer_save_reopen",
+      "throughput_ops_per_sec_median": 4888.373980162978
+    },
+    {
+      "category": "security",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 597,
+      "median_ms": 0.44653,
+      "p95_ms": 0.463986,
+      "peak_rss_kib": 16252,
+      "task": "redaction_residual_verification",
+      "throughput_ops_per_sec_median": 2239.491187602177
+    },
+    {
+      "category": "security",
+      "evidence_class": "measured_directly",
+      "failures": 0,
+      "input_bytes": 642,
+      "median_ms": 0.087501,
+      "p95_ms": 0.09430200000000001,
+      "peak_rss_kib": 16252,
+      "task": "accessibility_structure_repair",
+      "throughput_ops_per_sec_median": 11428.440817819226
+    }
+  ],
+  "schema_version": "repository_professionalization.benchmark.summary.v1",
+  "successful_task_count": 14,
+  "task_count": 14,
+  "verdict": "passed"
+}

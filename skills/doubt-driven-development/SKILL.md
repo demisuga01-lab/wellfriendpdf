@@ -54,7 +54,7 @@ Copy this checklist when applying the skill:
 Doubt cycle:
 - [ ] Step 1: CLAIM — wrote the claim + why-it-matters
 - [ ] Step 2: EXTRACT — isolated artifact + contract, stripped reasoning
-- [ ] Step 3: DOUBT — invoked fresh-context reviewer with adversarial prompt
+- [ ] Step 3: DOUBT — invoked fresh-context reviewer with adversarial roadmap task
 - [ ] Step 4: RECONCILE — classified every finding against the artifact text
 - [ ] Step 5: STOP — met stop condition (trivial findings, 3 cycles, or user override)
 ```
@@ -84,7 +84,7 @@ Strip your reasoning. If you hand over conclusions, you'll get back validation o
 
 ### Step 3: DOUBT — Invoke the fresh-context reviewer
 
-The reviewer's prompt **must be adversarial**. Framing decides the answer.
+The reviewer's roadmap task **must be adversarial**. Framing decides the answer.
 
 ```
 Adversarial review. Find what is wrong with this artifact.
@@ -107,7 +107,7 @@ CONTRACT: <paste contract>
 
 In Claude Code, the role-based reviewers in `agents/` start with isolated context by design and are usable here — see `agents/` for the roster and per-domain match.
 
-**The adversarial prompt above takes precedence over the persona's default response shape.** Personas like `code-reviewer` are written to produce balanced verdicts with both strengths and weaknesses; doubt-driven needs issues-only output. Paste the adversarial prompt verbatim into the invocation so it overrides the persona's default. If a persona's response shape can't be overridden cleanly, fall back to a generic subagent with the adversarial prompt.
+**The adversarial roadmap task above takes precedence over the persona's default response shape.** Personas like `code-reviewer` are written to produce balanced verdicts with both strengths and weaknesses; doubt-driven needs issues-only output. Paste the adversarial roadmap task verbatim into the invocation so it overrides the persona's default. If a persona's response shape can't be overridden cleanly, fall back to a generic subagent with the adversarial roadmap task.
 
 #### Cross-model escalation
 
@@ -128,7 +128,7 @@ This question is mandatory in every interactive doubt cycle — even on artifact
 1. Check the tool is in PATH (`which gemini`, `which codex`).
 2. Test it works (`gemini --version` or equivalent) before passing the full prompt — a stale or broken binary may pass `which` but fail on real input.
 3. Confirm the exact invocation with the user, including required flags, auth, and env vars (e.g., API keys). Implementations vary; never assume.
-4. Pass ARTIFACT + CONTRACT + the adversarial prompt **only**. No session context, no CLAIM.
+4. Pass ARTIFACT + CONTRACT + the adversarial roadmap task **only**. No session context, no CLAIM.
 5. Mind shell escaping. If the artifact contains quotes, `$(...)`, or backticks, prefer stdin (`echo … | gemini`) or a heredoc over inline `-p "…"`. When in doubt, ask the user to confirm the invocation before running it.
 6. Take the output into Step 4 (RECONCILE).
 
@@ -137,15 +137,15 @@ This question is mandatory in every interactive doubt cycle — even on artifact
 Example shapes (verify flags against your installed tool — syntax differs across implementations and versions):
 
 ```bash
-# Write the adversarial prompt + ARTIFACT + CONTRACT to a temp file first.
+# Write the adversarial roadmap task + ARTIFACT + CONTRACT to a temp file first.
 # Then pipe via stdin so shell metacharacters in the artifact stay inert.
 
 # Codex (read-only sandbox keeps the CLI from writing to your workspace):
-codex exec --sandbox read-only -C <repo-path> - < /tmp/doubt-prompt.md
+codex exec --sandbox read-only -C <repo-path> - < /tmp/doubt-roadmap task.md
 
 # Gemini ('--approval-mode plan' is read-only; '-p ""' triggers non-interactive
-# mode and the prompt is read from stdin):
-gemini --approval-mode plan -p "" < /tmp/doubt-prompt.md
+# mode and the roadmap task is read from stdin):
+gemini --approval-mode plan -p "" < /tmp/doubt-roadmap task.md
 ```
 
 A read-only sandbox is the load-bearing detail: a doubt artifact may itself contain instructions (intentional or accidental prompt injection) that the cross-model CLI would otherwise execute against your workspace.
@@ -196,7 +196,7 @@ If 3 cycles is "obviously insufficient" because the artifact is large: the artif
 |---|---|
 | "I'm confident, skip the doubt step" | Confidence correlates poorly with correctness on novel problems. Moments of certainty are exactly when blind spots hide. |
 | "Spawning a reviewer is expensive" | Debugging a wrong commit in production is more expensive. The check is bounded; the bug isn't. |
-| "The reviewer will just nitpick" | Only if unscoped. Constrain the prompt to "issues that would make this fail under the contract." |
+| "The reviewer will just nitpick" | Only if unscoped. Constrain the roadmap task to "issues that would make this fail under the contract." |
 | "I'll do doubt at the end with `/review`" | `/review` is a final gate. Doubt-driven catches wrong directions early when course-correction is cheap. By PR time it's too late. |
 | "If I doubt every step I'll never ship" | The skill applies to non-trivial decisions, not every keystroke. Re-read "When NOT to Use." |
 | "Two opinions are always better than one" | Not when the second has less context and produces noise. Reconcile, don't defer. |
@@ -235,7 +235,7 @@ After applying doubt-driven development:
 - [ ] Every non-trivial decision (per the definition above) was named explicitly as a CLAIM before standing
 - [ ] At least one fresh-context review per non-trivial artifact (a failing test produced by TDD's RED step satisfies this for behavioral claims, per Interaction with Other Skills)
 - [ ] The reviewer received ARTIFACT + CONTRACT — NOT the CLAIM, NOT your reasoning
-- [ ] The reviewer's prompt was adversarial ("find issues"), not validating ("is it good")
+- [ ] The reviewer's roadmap task was adversarial ("find issues"), not validating ("is it good")
 - [ ] Findings were classified against the artifact text (not rubber-stamped) using the precedence: contract misread / actionable / trade-off / noise
 - [ ] A stop condition was met (trivial findings, 3 cycles, or user override)
 - [ ] In interactive mode, cross-model was **explicitly offered** to the user (regardless of artifact stakes) and the response was acknowledged in the output

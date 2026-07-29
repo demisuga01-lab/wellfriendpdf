@@ -646,7 +646,7 @@ impl ContentEngine {
     }
 
     /// Collect positioned text runs with active marked-content IDs. This is used
-    /// by the Prompt 06B semantic model bridge so `/StructTreeRoot` MCIDs attach
+    /// by the Reference Renderer semantic model bridge so `/StructTreeRoot` MCIDs attach
     /// to the same character/quad model used by search and redaction planning.
     pub fn collect_page_marked_text_chunks(
         &self,
@@ -755,7 +755,7 @@ impl ContentEngine {
         crate::semantic_intelligence::recover_parenttree_semantics(self, pages)
     }
 
-    /// Report optional Prompt 14 local/cloud layout backend template
+    /// Report optional Semantic Intelligence local/cloud layout backend template
     /// availability. No model is loaded and no cloud call is made.
     pub fn layout_backend_availability_report(
         &self,
@@ -770,7 +770,7 @@ impl ContentEngine {
         Ok(self.extract_semantic_document(pages)?.to_text())
     }
 
-    /// Build the Prompt 06 semantic text model: pages -> blocks -> paragraphs
+    /// Build the Native Renderer semantic text model: pages -> blocks -> paragraphs
     /// -> lines -> words/spans/chars with geometry, confidence, and provenance.
     /// This model is additive and leaves the legacy flat extraction path
     /// unchanged.
@@ -913,7 +913,7 @@ impl ContentEngine {
         self.parse_document(&options)
     }
 
-    /// Build the Prompt 08 shared editable document model. This is the model
+    /// Build the Advanced Rendering shared editable document model. This is the model
     /// conversion and edit-planning surfaces consume before writing PDF, Office,
     /// HTML, Markdown, JSON, or RAG-oriented output.
     pub fn build_editable_document(
@@ -1368,7 +1368,7 @@ impl ContentEngine {
         PageRenderer::render_page_cancellable_with_mode(self, page_number, dpi, cancel, render_mode)
     }
 
-    /// Build the conservative Prompt 03 display list for a page.
+    /// Build the conservative Release Packaging display list for a page.
     ///
     /// This is a replayable vector display list for pages whose drawing
     /// operations fit the current subset. The returned list also records
@@ -1416,7 +1416,7 @@ impl ContentEngine {
         PageRenderer::render_page_bands_with_mode(self, page_number, dpi, band_height, render_mode)
     }
 
-    /// Return the sparse Prompt 12 Separation/DeviceN plate report produced by
+    /// Return the sparse Prepress CMM Separation/DeviceN plate report produced by
     /// the render interpreter for fill/stroke paths.
     pub fn prepress_plate_report(
         &self,

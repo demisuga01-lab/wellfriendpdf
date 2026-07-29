@@ -1,9 +1,9 @@
 # Editable Document Model
 
-The editable model is the shared Prompt 08 bridge between fixed PDF drawing
+The editable model is the shared Advanced Rendering bridge between fixed PDF drawing
 instructions and outputs that need editable structure. It consumes the existing
-canonical `parse::Document`, semantic/layout results from Prompt 06B, table
-results from Prompt 07, and image discovery from the renderer/image locator.
+canonical `parse::Document`, semantic/layout results from Reference Renderer, table
+results from Transparency Rendering, and image discovery from the renderer/image locator.
 
 Pipeline:
 
@@ -31,7 +31,7 @@ Edit-safety levels:
 - `page_regenerate`: page-level regeneration may be needed.
 - `unsupported`: no safe edit path is currently claimed.
 
-Prompt 08B transaction closure:
+Type3 CID Rendering transaction closure:
 
 - `EditTransactionLog` records transactions, patches, and bounded checkpoints.
 - `EditPatch` records stable target IDs, before/after text, and diagnostics.
@@ -50,7 +50,7 @@ JSON stability:
 Known bounded limits:
 
 - The model does not claim perfect paragraph reconstruction for arbitrary PDFs.
-- Exact per-character style/color is retained in the Prompt 06B semantic model
-  but only summarized at editable run level in Prompt 08.
+- Exact per-character style/color is retained in the Reference Renderer semantic model
+  but only summarized at editable run level in Advanced Rendering.
 - Image export currently records placeholders and page image IDs; exact image
   crop/mask export is a later conversion polish item.

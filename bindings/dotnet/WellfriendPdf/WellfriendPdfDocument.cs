@@ -108,9 +108,9 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public static string Prompt21HistoryReportJson()
+    public static string WriterHistoryHistoryReportJson()
     {
-        var status = NativeMethods.wellfriendpdf_prompt21_history_report_json(out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_writer_history_history_report_json(out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
@@ -436,24 +436,24 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt17ReportJson()
+    public string AnnotationMediaRedactionReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt17_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_annotation_media_redaction_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt18ReportJson()
+    public string SecureMutationReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt18_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_secure_mutation_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt18bReportJson()
+    public string SecureMutationCloseoutReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt18b_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_secure_mutation_closeout_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
@@ -485,56 +485,56 @@ public sealed class WellfriendDocument : IDisposable
         return ReportWithString(layout, NativeMethods.wellfriendpdf_document_word_pagination_audit_json);
     }
 
-    public string Prompt19ReportJson()
+    public string FormActionPolicyReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt19_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_form_action_policy_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt20ReportJson()
+    public string AdvancedEditingReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt20_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_advanced_editing_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt20bReportJson()
+    public string AdvancedEditingCloseoutReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt20b_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_advanced_editing_closeout_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt31ReportJson()
+    public string SourceEditingReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt31_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_source_editing_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt32ReportJson()
+    public string EditingTransactionsReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt32_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_editing_transactions_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt21ReportJson()
+    public string WriterHistoryReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt21_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_writer_history_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt21RasterVectorReportJson(nuint page = 1, string? optionsJson = null)
+    public string WriterHistoryRasterVectorReportJson(nuint page = 1, string? optionsJson = null)
     {
         ThrowIfDisposed();
         if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
         var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt21_raster_vector_report_json(
+            var status = NativeMethods.wellfriendpdf_document_writer_history_raster_vector_report_json(
                 _handle, (UIntPtr)page, optionsPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -547,41 +547,41 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt21FontReconstructionReportJson()
+    public string WriterHistoryFontReconstructionReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt21_font_reconstruction_report_json(
+        var status = NativeMethods.wellfriendpdf_document_writer_history_font_reconstruction_report_json(
             _handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt21ObjectStreamReportJson()
+    public string WriterHistoryObjectStreamReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt21_object_stream_report_json(
+        var status = NativeMethods.wellfriendpdf_document_writer_history_object_stream_report_json(
             _handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public WellfriendBinaryResult Prompt21PackObjectStreams()
+    public WellfriendBinaryResult WriterHistoryPackObjectStreams()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt21_pack_object_streams_pdf(
+        var status = NativeMethods.wellfriendpdf_document_writer_history_pack_object_streams_pdf(
             _handle, out var buffer, out var json, out var error);
         return NativeMethods.TakeOutput(status, buffer, json, error);
     }
 
-    public string Prompt22ReportJson()
+    public string CompressionOfficeReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt22_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_compression_office_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt23ReportJson()
+    public string CryptoWriterReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt23_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_crypto_writer_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
@@ -617,7 +617,7 @@ public sealed class WellfriendDocument : IDisposable
     }
 
     /// <summary>
-    /// Validates signatures with an owned Prompt 24 configuration handle.
+    /// Validates signatures with an owned Signature Validation configuration handle.
     /// The handle exposes explicit trust anchors, intermediates, evidence, and
     /// bounded retrieval policy without requiring callers to assemble a raw
     /// options JSON payload.
@@ -632,7 +632,7 @@ public sealed class WellfriendDocument : IDisposable
     }
 
     /// <summary>
-    /// Validates signatures with an owned Prompt 24 configuration handle and
+    /// Validates signatures with an owned Signature Validation configuration handle and
     /// returns the report plus a portable accepted-evidence bundle.
     /// </summary>
     public string SignatureValidationWithEvidence(SignatureValidationOptions options)
@@ -701,13 +701,13 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeOutput(status, buffer, json, error);
     }
 
-    public WellfriendBinaryResult Prompt22Optimize(string? optionsJson = null)
+    public WellfriendBinaryResult CompressionOfficeOptimize(string? optionsJson = null)
     {
         ThrowIfDisposed();
         var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt22_optimize_pdf(
+            var status = NativeMethods.wellfriendpdf_document_compression_office_optimize_pdf(
                 _handle, optionsPtr, out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }
@@ -720,11 +720,11 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt20bTextRangeAnalyzeJson(nuint page = 1)
+    public string AdvancedEditingCloseoutTextRangeAnalyzeJson(nuint page = 1)
     {
         ThrowIfDisposed();
         if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
-        var status = NativeMethods.wellfriendpdf_document_prompt20b_text_range_analyze_json(
+        var status = NativeMethods.wellfriendpdf_document_advanced_editing_closeout_text_range_analyze_json(
             _handle, (UIntPtr)page, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
@@ -736,7 +736,7 @@ public sealed class WellfriendDocument : IDisposable
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt20b_text_range_edit_json(
+            var status = NativeMethods.wellfriendpdf_document_advanced_editing_closeout_text_range_edit_json(
                 _handle, requestPtr, out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }
@@ -746,7 +746,7 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt31ProvenanceJson(nuint page, string sourceText, string replacementText)
+    public string SourceEditingProvenanceJson(nuint page, string sourceText, string replacementText)
     {
         ThrowIfDisposed();
         if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
@@ -756,7 +756,7 @@ public sealed class WellfriendDocument : IDisposable
         var replacementPtr = NativeMethods.StringToNativeOrNull(replacementText);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt31_provenance_json(
+            var status = NativeMethods.wellfriendpdf_document_source_editing_provenance_json(
                 _handle, (UIntPtr)page, sourcePtr, replacementPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -767,14 +767,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt31EditEligibilityJson(string requestJson)
+    public string SourceEditingEditEligibilityJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt31_edit_eligibility_json(
+            var status = NativeMethods.wellfriendpdf_document_source_editing_edit_eligibility_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -784,14 +784,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt31OperatorTextEdit(string requestJson)
+    public WellfriendBinaryResult SourceEditingOperatorTextEdit(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt31_operator_text_edit_json(
+            var status = NativeMethods.wellfriendpdf_document_source_editing_operator_text_edit_json(
                 _handle, requestPtr, out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }
@@ -801,16 +801,16 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt31PathProvenanceJson(nuint page)
+    public string SourceEditingPathProvenanceJson(nuint page)
     {
         ThrowIfDisposed();
         if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
-        var status = NativeMethods.wellfriendpdf_document_prompt31_path_provenance_json(
+        var status = NativeMethods.wellfriendpdf_document_source_editing_path_provenance_json(
             _handle, (UIntPtr)page, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public WellfriendBinaryResult Prompt31PathEdit(
+    public WellfriendBinaryResult SourceEditingPathEdit(
         nuint page, string stableId, string operationJson, string? optionsJson = null)
     {
         ThrowIfDisposed();
@@ -822,7 +822,7 @@ public sealed class WellfriendDocument : IDisposable
         var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt31_path_edit_json(
+            var status = NativeMethods.wellfriendpdf_document_source_editing_path_edit_json(
                 _handle, (UIntPtr)page, idPtr, operationPtr, optionsPtr,
                 out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
@@ -835,13 +835,13 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt32SceneReportJson(string? pagesJson = null)
+    public string EditingTransactionsSceneReportJson(string? pagesJson = null)
     {
         ThrowIfDisposed();
         var pagesPtr = NativeMethods.StringToNativeOrNull(pagesJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt32_scene_report_json(
+            var status = NativeMethods.wellfriendpdf_document_editing_transactions_scene_report_json(
                 _handle, pagesPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -851,14 +851,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt32SceneSelectJson(string requestJson)
+    public string EditingTransactionsSceneSelectJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt32_scene_select_json(
+            var status = NativeMethods.wellfriendpdf_document_editing_transactions_scene_select_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -868,14 +868,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt32TransactionPlanJson(string requestJson)
+    public string EditingTransactionsTransactionPlanJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt32_transaction_plan_json(
+            var status = NativeMethods.wellfriendpdf_document_editing_transactions_transaction_plan_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -885,14 +885,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt32TransactionApply(string requestJson)
+    public WellfriendBinaryResult EditingTransactionsTransactionApply(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt32_transaction_apply_json(
+            var status = NativeMethods.wellfriendpdf_document_editing_transactions_transaction_apply_json(
                 _handle, requestPtr, out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }
@@ -902,7 +902,7 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt32TextMapJson(string text, string? direction = null)
+    public string EditingTransactionsTextMapJson(string text, string? direction = null)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(text);
@@ -910,7 +910,7 @@ public sealed class WellfriendDocument : IDisposable
         var directionPtr = NativeMethods.StringToNativeOrNull(direction);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt32_text_map_json(
+            var status = NativeMethods.wellfriendpdf_document_editing_transactions_text_map_json(
                 _handle, textPtr, directionPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -921,7 +921,7 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt32ShapeTextJson(string text, string? direction = null)
+    public string EditingTransactionsShapeTextJson(string text, string? direction = null)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(text);
@@ -929,7 +929,7 @@ public sealed class WellfriendDocument : IDisposable
         var directionPtr = NativeMethods.StringToNativeOrNull(direction);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt32_shape_text_json(
+            var status = NativeMethods.wellfriendpdf_document_editing_transactions_shape_text_json(
                 _handle, textPtr, directionPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -940,7 +940,7 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt32FontSubsetPlanJson(string text, string? direction = null, string? policy = null)
+    public string EditingTransactionsFontSubsetPlanJson(string text, string? direction = null, string? policy = null)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(text);
@@ -949,7 +949,7 @@ public sealed class WellfriendDocument : IDisposable
         var policyPtr = NativeMethods.StringToNativeOrNull(policy);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt32_font_subset_plan_json(
+            var status = NativeMethods.wellfriendpdf_document_editing_transactions_font_subset_plan_json(
                 _handle, textPtr, directionPtr, policyPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -961,7 +961,7 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt32FontSubstitutionReportJson(string requestedFamily, string text, string? policy = null)
+    public string EditingTransactionsFontSubstitutionReportJson(string requestedFamily, string text, string? policy = null)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestedFamily);
@@ -971,7 +971,7 @@ public sealed class WellfriendDocument : IDisposable
         var policyPtr = NativeMethods.StringToNativeOrNull(policy);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt32_font_substitution_report_json(
+            var status = NativeMethods.wellfriendpdf_document_editing_transactions_font_substitution_report_json(
                 _handle, familyPtr, textPtr, policyPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -983,21 +983,21 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt33ReportJson()
+    public string TextReflowReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt33_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_text_reflow_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt33LayoutAnalyzeJson(string requestJson)
+    public string TextReflowLayoutAnalyzeJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_layout_analyze_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_layout_analyze_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1007,35 +1007,35 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt33SemanticLayoutJson()
+    public string TextReflowSemanticLayoutJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt33_semantic_layout_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_text_reflow_semantic_layout_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt33ReadingOrderReportJson()
+    public string TextReflowReadingOrderReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt33_reading_order_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_text_reflow_reading_order_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt33FlowGraphReportJson()
+    public string TextReflowFlowGraphReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt33_flow_graph_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_text_reflow_flow_graph_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt33ReflowPreviewJson(string requestJson)
+    public string TextReflowReflowPreviewJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_preview_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_reflow_preview_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1045,14 +1045,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt33OverflowReportJson(string requestJson)
+    public string TextReflowOverflowReportJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_overflow_report_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_overflow_report_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1062,14 +1062,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt33ConstraintsReportJson(string requestJson)
+    public string TextReflowConstraintsReportJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_constraints_report_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_constraints_report_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1079,14 +1079,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt33ConfidenceReportJson(string requestJson)
+    public string TextReflowConfidenceReportJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_confidence_report_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_confidence_report_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1097,10 +1097,10 @@ public sealed class WellfriendDocument : IDisposable
     }
 
     /// <summary>
-    /// Validates explicitly supplied Prompt 33 output against this immutable
+    /// Validates explicitly supplied text reflow output against this immutable
     /// source document. The output bytes remain owned by the caller.
     /// </summary>
-    public string Prompt33ValidateReflowOutputJson(byte[] outputPdf, string requestJson)
+    public string TextReflowValidateReflowOutputJson(byte[] outputPdf, string requestJson)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(outputPdf);
@@ -1108,7 +1108,7 @@ public sealed class WellfriendDocument : IDisposable
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_validate_reflow_output_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_validate_reflow_output_json(
                 _handle, outputPdf, (UIntPtr)outputPdf.Length, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1118,14 +1118,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt33ReflowRegion(string requestJson)
+    public WellfriendBinaryResult TextReflowReflowRegion(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_region_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_reflow_region_json(
                 _handle, requestPtr, out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }
@@ -1135,14 +1135,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt33ReflowDocument(string requestJson)
+    public WellfriendBinaryResult TextReflowReflowDocument(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_document_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_reflow_document_json(
                 _handle, requestPtr, out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }
@@ -1153,12 +1153,12 @@ public sealed class WellfriendDocument : IDisposable
     }
 
     /// <summary>
-    /// Replays the specified Prompt 33 operation against this immutable source,
+    /// Replays the specified text reflow operation against this immutable source,
     /// verifies <paramref name="outputPdf"/>, then executes the canonical
     /// transaction undo. Stale output is rejected rather than treated as an
     /// unverified restoration request.
     /// </summary>
-    public WellfriendBinaryResult Prompt33UndoReflow(byte[] outputPdf, string requestJson)
+    public WellfriendBinaryResult TextReflowUndoReflow(byte[] outputPdf, string requestJson)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(outputPdf);
@@ -1166,7 +1166,7 @@ public sealed class WellfriendDocument : IDisposable
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_undo_reflow_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_undo_reflow_json(
                 _handle, outputPdf, (UIntPtr)outputPdf.Length, requestPtr,
                 out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
@@ -1177,14 +1177,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt33ReflowApproveStructureJson(string correctionJson)
+    public string TextReflowReflowApproveStructureJson(string correctionJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(correctionJson);
         var correctionPtr = NativeMethods.StringToNativeOrNull(correctionJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_approve_structure_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_reflow_approve_structure_json(
                 _handle, correctionPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1194,14 +1194,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt33ReflowOperationReportJson(string requestJson)
+    public string TextReflowReflowOperationReportJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt33_reflow_operation_report_json(
+            var status = NativeMethods.wellfriendpdf_document_text_reflow_reflow_operation_report_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1211,28 +1211,28 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt34ReportJson()
+    public string DocumentSubsystemsReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt34_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_document_subsystems_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt34AnalyzeJson()
+    public string DocumentSubsystemsAnalyzeJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt34_analyze_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_document_subsystems_analyze_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt34PlanJson(string requestJson)
+    public string DocumentSubsystemsPlanJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt34_plan_json(
+            var status = NativeMethods.wellfriendpdf_document_document_subsystems_plan_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1242,14 +1242,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt34Apply(string requestJson)
+    public WellfriendBinaryResult DocumentSubsystemsApply(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt34_apply_json(
+            var status = NativeMethods.wellfriendpdf_document_document_subsystems_apply_json(
                 _handle, requestPtr, out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }
@@ -1259,7 +1259,7 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt34Undo(byte[] outputPdf, string requestJson)
+    public WellfriendBinaryResult DocumentSubsystemsUndo(byte[] outputPdf, string requestJson)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(outputPdf);
@@ -1267,7 +1267,7 @@ public sealed class WellfriendDocument : IDisposable
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt34_undo_json(
+            var status = NativeMethods.wellfriendpdf_document_document_subsystems_undo_json(
                 _handle, outputPdf, (UIntPtr)outputPdf.Length, requestPtr,
                 out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
@@ -1278,28 +1278,28 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt35ReportJson()
+    public string DocumentSecurityReportJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt35_report_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_document_security_report_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt35AnalyzeJson()
+    public string DocumentSecurityAnalyzeJson()
     {
         ThrowIfDisposed();
-        var status = NativeMethods.wellfriendpdf_document_prompt35_analyze_json(_handle, out var json, out var error);
+        var status = NativeMethods.wellfriendpdf_document_document_security_analyze_json(_handle, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public string Prompt35PlanJson(string requestJson)
+    public string DocumentSecurityPlanJson(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt35_plan_json(
+            var status = NativeMethods.wellfriendpdf_document_document_security_plan_json(
                 _handle, requestPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1309,14 +1309,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt35Apply(string requestJson)
+    public WellfriendBinaryResult DocumentSecurityApply(string requestJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(requestJson);
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt35_apply_json(
+            var status = NativeMethods.wellfriendpdf_document_document_security_apply_json(
                 _handle, requestPtr, out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
         }
@@ -1326,7 +1326,7 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt35Undo(byte[] outputPdf, string requestJson)
+    public WellfriendBinaryResult DocumentSecurityUndo(byte[] outputPdf, string requestJson)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(outputPdf);
@@ -1334,7 +1334,7 @@ public sealed class WellfriendDocument : IDisposable
         var requestPtr = NativeMethods.StringToNativeOrNull(requestJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt35_undo_json(
+            var status = NativeMethods.wellfriendpdf_document_document_security_undo_json(
                 _handle, outputPdf, (UIntPtr)outputPdf.Length, requestPtr,
                 out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
@@ -1345,14 +1345,14 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt35VerifyResidualJson(string termsJson)
+    public string DocumentSecurityVerifyResidualJson(string termsJson)
     {
         ThrowIfDisposed();
         ArgumentException.ThrowIfNullOrWhiteSpace(termsJson);
         var termsPtr = NativeMethods.StringToNativeOrNull(termsJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt35_verify_residual_json(
+            var status = NativeMethods.wellfriendpdf_document_document_security_verify_residual_json(
                 _handle, termsPtr, out var json, out var error);
             return NativeMethods.TakeJson(status, json, error);
         }
@@ -1362,16 +1362,16 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public string Prompt20VectorListJson(nuint page = 1)
+    public string AdvancedEditingVectorListJson(nuint page = 1)
     {
         ThrowIfDisposed();
         if (page == 0) throw new ArgumentOutOfRangeException(nameof(page));
-        var status = NativeMethods.wellfriendpdf_document_prompt20_vector_list_json(
+        var status = NativeMethods.wellfriendpdf_document_advanced_editing_vector_list_json(
             _handle, (UIntPtr)page, out var json, out var error);
         return NativeMethods.TakeJson(status, json, error);
     }
 
-    public WellfriendBinaryResult Prompt20TextEdit(
+    public WellfriendBinaryResult AdvancedEditingTextEdit(
         nuint page, string oldText, string newText, string mode = "rtl-reflow", string? optionsJson = null)
     {
         ThrowIfDisposed();
@@ -1385,7 +1385,7 @@ public sealed class WellfriendDocument : IDisposable
         var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt20_text_edit_json(
+            var status = NativeMethods.wellfriendpdf_document_advanced_editing_text_edit_json(
                 _handle, (UIntPtr)page, oldPtr, newPtr, modePtr, optionsPtr,
                 out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
@@ -1399,7 +1399,7 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt20VectorEdit(
+    public WellfriendBinaryResult AdvancedEditingVectorEdit(
         nuint page, string stableId, string operationJson, string? optionsJson = null)
     {
         ThrowIfDisposed();
@@ -1411,7 +1411,7 @@ public sealed class WellfriendDocument : IDisposable
         var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt20_vector_edit_json(
+            var status = NativeMethods.wellfriendpdf_document_advanced_editing_vector_edit_json(
                 _handle, (UIntPtr)page, idPtr, operationPtr, optionsPtr,
                 out var buffer, out var json, out var error);
             return NativeMethods.TakeOutput(status, buffer, json, error);
@@ -1424,7 +1424,7 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult Prompt20InkFit(
+    public WellfriendBinaryResult AdvancedEditingInkFit(
         nuint page, nuint annotationIndex = 0, string? optionsJson = null,
         bool signaturePolicyOverride = false)
     {
@@ -1433,7 +1433,7 @@ public sealed class WellfriendDocument : IDisposable
         var optionsPtr = NativeMethods.StringToNativeOrNull(optionsJson);
         try
         {
-            var status = NativeMethods.wellfriendpdf_document_prompt20_ink_fit_json(
+            var status = NativeMethods.wellfriendpdf_document_advanced_editing_ink_fit_json(
                 _handle, (UIntPtr)page, (UIntPtr)annotationIndex, optionsPtr,
                 signaturePolicyOverride ? 1 : 0,
                 out var buffer, out var json, out var error);
@@ -1633,10 +1633,10 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
-    public WellfriendBinaryResult RedactImageMask(string optionsJson) => Prompt18StringOutput(
+    public WellfriendBinaryResult RedactImageMask(string optionsJson) => SecureMutationStringOutput(
         optionsJson, NativeMethods.wellfriendpdf_document_redact_image_mask_json);
 
-    public WellfriendBinaryResult RedactInlineImage(string optionsJson) => Prompt18StringOutput(
+    public WellfriendBinaryResult RedactInlineImage(string optionsJson) => SecureMutationStringOutput(
         optionsJson, NativeMethods.wellfriendpdf_document_redact_inline_image_json);
 
     public WellfriendBinaryResult AssociatedFileAdd(byte[] payload, string optionsJson)
@@ -1678,7 +1678,7 @@ public sealed class WellfriendDocument : IDisposable
     }
 
     public WellfriendBinaryResult AssociatedFileRemoveOwner(string optionsJson) =>
-        Prompt18StringOutput(optionsJson, NativeMethods.wellfriendpdf_document_associated_files_remove_owner_json);
+        SecureMutationStringOutput(optionsJson, NativeMethods.wellfriendpdf_document_associated_files_remove_owner_json);
 
     public WellfriendBinaryResult IncrementalFormEdit(
         string fieldName, string value, bool signaturePolicyOverride = false)
@@ -1746,20 +1746,20 @@ public sealed class WellfriendDocument : IDisposable
 
     public WellfriendBinaryResult IncrementalAnnotationEdit(
         string optionsJson, bool signaturePolicyOverride = false) =>
-        Prompt18bPolicyOutput(optionsJson, signaturePolicyOverride,
+        SecureMutationCloseoutPolicyOutput(optionsJson, signaturePolicyOverride,
             NativeMethods.wellfriendpdf_document_incremental_annotation_edit_json);
 
     public WellfriendBinaryResult IncrementalPagePropertyEdit(
         string optionsJson, bool signaturePolicyOverride = false) =>
-        Prompt18bPolicyOutput(optionsJson, signaturePolicyOverride,
+        SecureMutationCloseoutPolicyOutput(optionsJson, signaturePolicyOverride,
             NativeMethods.wellfriendpdf_document_incremental_page_property_edit_json);
 
-    private delegate int Prompt18bPolicyOutputCall(
+    private delegate int SecureMutationCloseoutPolicyOutputCall(
         NativeMethods.DocumentHandle document, IntPtr value, bool signaturePolicyOverride,
         out NativeMethods.WellfriendBuffer buffer, out IntPtr json, out IntPtr error);
 
-    private WellfriendBinaryResult Prompt18bPolicyOutput(
-        string value, bool signaturePolicyOverride, Prompt18bPolicyOutputCall call)
+    private WellfriendBinaryResult SecureMutationCloseoutPolicyOutput(
+        string value, bool signaturePolicyOverride, SecureMutationCloseoutPolicyOutputCall call)
     {
         ThrowIfDisposed();
         var valuePtr = NativeMethods.StringToNativeOrNull(value);
@@ -1776,25 +1776,25 @@ public sealed class WellfriendDocument : IDisposable
     }
 
     public WellfriendBinaryResult AssociatedFileExtract(string stableId) =>
-        Prompt18StringOutput(stableId, NativeMethods.wellfriendpdf_document_associated_files_extract_json);
+        SecureMutationStringOutput(stableId, NativeMethods.wellfriendpdf_document_associated_files_extract_json);
 
     public WellfriendBinaryResult AssociatedFilesRemove(string stableIdsJson) =>
-        Prompt18StringOutput(stableIdsJson, NativeMethods.wellfriendpdf_document_associated_files_remove_json);
+        SecureMutationStringOutput(stableIdsJson, NativeMethods.wellfriendpdf_document_associated_files_remove_json);
 
     public WellfriendBinaryResult AssociatedFilesSanitize(string? optionsJson = null) =>
-        Prompt18StringOutput(optionsJson, NativeMethods.wellfriendpdf_document_associated_files_sanitize_json);
+        SecureMutationStringOutput(optionsJson, NativeMethods.wellfriendpdf_document_associated_files_sanitize_json);
 
     public WellfriendBinaryResult FormJavaScriptSanitize(string? optionsJson = null) =>
-        Prompt18StringOutput(optionsJson, NativeMethods.wellfriendpdf_document_form_js_sanitize_json);
+        SecureMutationStringOutput(optionsJson, NativeMethods.wellfriendpdf_document_form_js_sanitize_json);
 
     public WellfriendBinaryResult FormJavaScriptFlattenValues(string? optionsJson = null) =>
-        Prompt18StringOutput(optionsJson, NativeMethods.wellfriendpdf_document_form_js_flatten_values_json);
+        SecureMutationStringOutput(optionsJson, NativeMethods.wellfriendpdf_document_form_js_flatten_values_json);
 
-    private delegate int Prompt18OutputCall(
+    private delegate int SecureMutationOutputCall(
         NativeMethods.DocumentHandle document, IntPtr value, out NativeMethods.WellfriendBuffer buffer,
         out IntPtr json, out IntPtr error);
 
-    private WellfriendBinaryResult Prompt18StringOutput(string? value, Prompt18OutputCall call)
+    private WellfriendBinaryResult SecureMutationStringOutput(string? value, SecureMutationOutputCall call)
     {
         ThrowIfDisposed();
         var valuePtr = NativeMethods.StringToNativeOrNull(value);

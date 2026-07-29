@@ -1,4 +1,4 @@
-"""Prompt 03 codec isolation report example.
+"""Release Packaging codec isolation report example.
 
 Build/install the wheel, then run:
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Minimize a cargo-fuzz crash artifact and record Prompt 27 evidence."""
+"""Minimize a cargo-fuzz crash artifact and record Crypto Standards Fuzz evidence."""
 
 from __future__ import annotations
 
@@ -24,12 +24,12 @@ def main() -> int:
     parser.add_argument("target")
     parser.add_argument("crash", type=Path)
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
-    parser.add_argument("--output", type=Path, default=Path("target/prompt27-verapdf-crypto-fuzz/parser-crash-triage.json"))
+    parser.add_argument("--output", type=Path, default=Path("target/crypto_standards_fuzz-verapdf-crypto-fuzz/parser-crash-triage.json"))
     parser.add_argument("--timeout", type=int, default=900)
     args = parser.parse_args()
     repo = args.repo.resolve()
     crash = args.crash.resolve()
-    minimized = repo / "target" / "prompt27-verapdf-crypto-fuzz" / "minimized" / args.target / crash.name
+    minimized = repo / "target" / "crypto_standards_fuzz-verapdf-crypto-fuzz" / "minimized" / args.target / crash.name
     minimized.parent.mkdir(parents=True, exist_ok=True)
     cmd = ["cargo", "+nightly", "fuzz", "tmin", args.target, str(crash), str(minimized), "-D"]
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -42,7 +42,7 @@ def main() -> int:
         timeout=args.timeout,
     )
     payload = {
-        "schema_version": "prompt27.parser-crash-triage.v1",
+        "schema_version": "crypto_standards_fuzz.parser-crash-triage.v1",
         "generated_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "started_at_utc": started,
         "target": args.target,

@@ -1,10 +1,10 @@
 # RTL logical and visual range mapping
 
-Prompt 20B records logical Unicode offsets, source PDF string-token provenance, and `BidiRunProvenance` visual run order. A visual selection is accepted only after a caller resolves it to one unambiguous logical span; duplicate extracted text is not selected by nearest x-coordinate.
+advanced editing closeout records logical Unicode offsets, source PDF string-token provenance, and `BidiRunProvenance` visual run order. A visual selection is accepted only after a caller resolves it to one unambiguous logical span; duplicate extracted text is not selected by nearest x-coordinate.
 
 Existing PDF codes/CIDs/GIDs remain source provenance. Only inserted Unicode is shaped. Bidi controls, malformed mappings, and missing glyphs are fail-closed diagnostics.
 
-Prompt 20B range mapping records logical offsets before visual ordering. RTL
+advanced editing closeout range mapping records logical offsets before visual ordering. RTL
 selection spans must be supplied as logical ranges or as visual selections that
 the caller has already resolved to one unambiguous logical range. Wellfriend does
 not sort glyphs by x coordinate to infer text order.

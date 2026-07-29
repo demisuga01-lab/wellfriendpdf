@@ -1,6 +1,6 @@
 # Decode Security Scorecard
 
-Prompt 02B closes the Prompt 02 leftover list by adding public diagnostics,
+Java Packaging closes the Binding Parity leftover list by adding public diagnostics,
 configurable limits, a cache utility, memory-token scheduling, scanner
 abstraction, fuzz/corpus harnesses, and a documented sandbox decision. This
 scorecard is intentionally blunt: DONE means implemented and tested; DEFERRED
@@ -10,17 +10,17 @@ WITH REASON means intentionally bounded and documented.
 
 | Item | Status | Implementation | Caps | Diagnostics | Fuzz/corpus | Isolation | Remaining risk |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| FlateDecode | DONE | `filters.rs` zlib/raw deflate | decoded bytes, chain depth, ratio profile field | `DecodeDiagnostic` via report | `filters`, seeds, property tests | in-process Rust | no known Prompt 02B leftover |
+| FlateDecode | DONE | `filters.rs` zlib/raw deflate | decoded bytes, chain depth, ratio profile field | `DecodeDiagnostic` via report | `filters`, seeds, property tests | in-process Rust | no known Java Packaging leftover |
 | LZWDecode | DONE | `filters.rs` | decoded bytes, EarlyChange validation | `DecodeDiagnostic` via report | `filters`, unit caps | in-process Rust | bounded materialization for some paths |
-| RunLengthDecode | DONE | `filters.rs` | decoded bytes | `DecodeDiagnostic` via report | `filters`, seeds, unit caps | in-process Rust | no known Prompt 02B leftover |
-| ASCIIHexDecode | DONE | `filters.rs` | decoded bytes | malformed/cap diagnostics | `filters`, seeds, unit caps | in-process Rust | no known Prompt 02B leftover |
-| ASCII85Decode | DONE | `filters.rs` | decoded bytes | malformed/cap diagnostics | `filters`, seeds, unit caps | in-process Rust | no known Prompt 02B leftover |
-| PNG/TIFF predictors | DONE | `filters.rs` | row bytes, columns, colors | predictor diagnostics | `predictor`, unit/property tests | in-process Rust | no known Prompt 02B leftover |
+| RunLengthDecode | DONE | `filters.rs` | decoded bytes | `DecodeDiagnostic` via report | `filters`, seeds, unit caps | in-process Rust | no known Java Packaging leftover |
+| ASCIIHexDecode | DONE | `filters.rs` | decoded bytes | malformed/cap diagnostics | `filters`, seeds, unit caps | in-process Rust | no known Java Packaging leftover |
+| ASCII85Decode | DONE | `filters.rs` | decoded bytes | malformed/cap diagnostics | `filters`, seeds, unit caps | in-process Rust | no known Java Packaging leftover |
+| PNG/TIFF predictors | DONE | `filters.rs` | row bytes, columns, colors | predictor diagnostics | `predictor`, unit/property tests | in-process Rust | no known Java Packaging leftover |
 | DCT/JPEG | DONE WITH BOUNDED LIMIT | `jpeg-decoder` adapter | width, height, pixels, decoded bytes | image budget diagnostics | `image_decoders`, corpus runner | in-process Rust | no OS process sandbox |
 | JPX/JPEG2000 | DONE WITH BOUNDED LIMIT | `hayro-jpeg2000` adapter | width, height, components, pixels | image budget diagnostics | `image_decoders`, corpus runner | in-process Rust | no OS process sandbox |
 | CCITTFaxDecode | DONE WITH BOUNDED LIMIT | `hayro-ccitt` adapter | rows, columns, pixels | image budget diagnostics | `image_decoders`, corpus runner | in-process Rust | no OS process sandbox |
 | JBIG2Decode | DONE WITH BOUNDED LIMIT | `hayro-jbig2` adapter | page/region pixels, decoded bytes | image budget diagnostics | `image_decoders`, corpus runner | in-process Rust | no OS process sandbox; no JBIG2 writing |
-| Unknown filters | DONE | central filter resolver | no decoded allocation | `decode_unsupported_filter` | unit/fuzz | n/a | no known Prompt 02B leftover |
+| Unknown filters | DONE | central filter resolver | no decoded allocation | `decode_unsupported_filter` | unit/fuzz | n/a | no known Java Packaging leftover |
 
 ## Cross-Cutting Infrastructure
 
@@ -37,9 +37,9 @@ WITH REASON means intentionally bounded and documented.
 | Parser-report integration | DONE | opt-in `decode` section and top-level mapped diagnostics | full-document stream decode is opt-in to avoid surprising cost |
 | 2 GB discipline | DONE WITH BOUNDED LIMIT | `DecodeLimits`, scheduler memory tokens, cache budget | aggregate memory depends on callers using scheduler for broad parallel jobs |
 
-## Prompt 02B Closure
+## Java Packaging Closure
 
-Nothing remains as a hidden Prompt 02 leftover. The exact bounded future items are:
+Nothing remains as a hidden Binding Parity leftover. The exact bounded future items are:
 
 - direct Python/C ABI decode diagnostic exposure during a binding-surface pass;
 - OS-level codec isolation if Wellfriend adopts native codec libraries or fuzz/corpus

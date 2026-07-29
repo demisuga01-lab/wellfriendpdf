@@ -36,7 +36,7 @@ must stay visible in `deny.toml`, `.github/workflows/security-audit.yml`, and
 `crypto_review.md`; any additional advisory must fail CI unless separately
 reviewed and documented.
 
-During the 2026-06-26 Prompt 9 hardening pass, `cargo audit` found
+During the 2026-06-26 Annotation Ocg Rendering hardening pass, `cargo audit` found
 `RUSTSEC-2026-0176` and `RUSTSEC-2026-0177` in PyO3 0.27.2. Those advisories
 were resolved by upgrading the Python binding to PyO3 0.29.0 rather than adding
 an exception.

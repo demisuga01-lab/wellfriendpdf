@@ -20,7 +20,7 @@ functions, and future prepress validation. Wellfriend centralizes them in
 - decoded sample stream goes through the central stream decode path
 - malformed functions return an empty result rather than panicking
 
-Prompt 05 adds a checked sample-count cap so hostile `/Size` arrays cannot
+Decode Scheduler adds a checked sample-count cap so hostile `/Size` arrays cannot
 multiply into large allocations or unbounded bit reads.
 
 ## Type 4 Calculator Subset
@@ -30,7 +30,7 @@ boolean operations, stack manipulation, and `if`/`ifelse` procedures. The
 interpreter intentionally has no file, network, system, dictionary, loop, or
 VM-level PostScript behavior.
 
-Prompt 05 limits:
+Decode Scheduler limits:
 
 - `MAX_TYPE4_TOKENS = 16_384`
 - `MAX_TYPE4_STACK = 1_024`

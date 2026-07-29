@@ -1,6 +1,6 @@
 # Accessibility Repair After Mutations
 
-Prompt 35 provides a repair-after-mutation action for changes introduced by
+document security provides a repair-after-mutation action for changes introduced by
 earlier true-editing prompts. The repair path records the mutation class,
 applies the canonical PDF/UA best-effort repair when supported, validates the
 result, and includes accessibility effects in the operation report.

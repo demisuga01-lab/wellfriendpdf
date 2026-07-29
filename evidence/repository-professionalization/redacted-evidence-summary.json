@@ -1,0 +1,14 @@
+{
+  "rewritten": [
+    {
+      "path": "evidence/repository-professionalization/internal-naming-inventory.json",
+      "sha256": "2d041d51203fc82e3bc6809df3d37c18a0c7f7a8a7024b85393db1a4cc3bd6a1",
+      "size": 516
+    },
+    {
+      "path": "evidence/repository-professionalization/domain-path-rename-remaining.json",
+      "sha256": "14268cf8555dd6d1ba818ffbb10053af151410ce9cd53115e2d3343954ef1fce",
+      "size": 477
+    }
+  ]
+}

@@ -228,21 +228,21 @@ enum Commands {
     /// Report annotation appearance generation decisions
     AnnotationAppearanceReport(AnnotationAppearanceReportArgs),
     /// Inventory RichMedia, Sound, Movie, Screen, Rendition, and 3D content
-    RichMediaReport(Prompt17ReportArgs),
+    RichMediaReport(AnnotationMediaRedactionReportArgs),
     /// Apply an explicit rich-media sanitizer policy
     RichMediaSanitize(RichMediaSanitizeArgs),
     /// Flatten static media posters without decoding or executing media
-    RichMediaFlattenPoster(Prompt17OutputArgs),
+    RichMediaFlattenPoster(AnnotationMediaRedactionOutputArgs),
     /// Plan/apply polygonal non-axis image redaction
     RedactImageNonaxis(NonAxisRedactionArgs),
-    /// Combined Prompt 17 report
-    Prompt17Report(Prompt17ReportArgs),
+    /// Combined annotation/media redaction report
+    AnnotationMediaRedactionReport(AnnotationMediaRedactionReportArgs),
     /// Secure mask/soft-mask image redaction
     RedactImageMask(NonAxisRedactionArgs),
     /// Secure inline-image partial redaction
     RedactInlineImage(NonAxisRedactionArgs),
     /// Inventory embedded and associated files
-    AssociatedFilesReport(Prompt17ReportArgs),
+    AssociatedFilesReport(AnnotationMediaRedactionReportArgs),
     /// Extract one associated file by stable id
     AssociatedFilesExtract(AssociatedFilesExtractArgs),
     /// Add an associated file
@@ -257,202 +257,202 @@ enum Commands {
     EditSignatureImpact(EditPolicyArgs),
     /// Report the signature-aware edit-policy decision
     EditPolicyReport(EditPolicyArgs),
-    /// Combined Prompt 18 report
-    Prompt18Report(Prompt17ReportArgs),
-    /// Combined Prompt 18B closure report
-    Prompt18bReport(Prompt17ReportArgs),
+    /// Combined secure mutation report
+    SecureMutationReport(AnnotationMediaRedactionReportArgs),
+    /// Combined secure mutation closeout closure report
+    SecureMutationCloseoutReport(AnnotationMediaRedactionReportArgs),
     /// Inventory PDF form JavaScript and action graphs without executing scripts
-    FormJsReport(Prompt17ReportArgs),
-    /// Sanitize PDF actions under an explicit Prompt 19 policy
-    FormJsSanitize(Prompt19SanitizeArgs),
+    FormJsReport(AnnotationMediaRedactionReportArgs),
+    /// Sanitize PDF actions under an explicit form action policy policy
+    FormJsSanitize(FormActionPolicySanitizeArgs),
     /// Evaluate the bounded calculation subset, write values, then remove actions
-    FormJsFlattenValues(Prompt19SanitizeArgs),
+    FormJsFlattenValues(FormActionPolicySanitizeArgs),
     /// Combined interactive/data consistency close-out report
-    InteractiveDataReport(Prompt17ReportArgs),
+    InteractiveDataReport(AnnotationMediaRedactionReportArgs),
     /// Audit DOCX pagination structure for one layout mode
     WordPaginationAudit(WordPaginationAuditArgs),
-    /// Combined Prompt 19 form/action/interactive/DOCX report
-    Prompt19Report(Prompt17ReportArgs),
-    /// Combined Prompt 20 vertical/RTL, same-width, vector, and ink report
-    Prompt20Report(Prompt17ReportArgs),
-    /// Combined Prompt 20B multi-run, Form ownership, and appearance report
-    Prompt20bReport(Prompt17ReportArgs),
-    /// Combined Prompt 21 raster/vector, font, persistent history, and writer report
-    Prompt21Report(Prompt17ReportArgs),
-    /// Combined Prompt 22 zopfli, dedup, Office conversion, and benchmark report
-    Prompt22Report(Prompt17ReportArgs),
-    /// Combined Prompt 23 deterministic writer, PubSec, and AES-GCM report
-    Prompt23Report(Prompt17ReportArgs),
+    /// Combined form action policy form/action/interactive/DOCX report
+    FormActionPolicyReport(AnnotationMediaRedactionReportArgs),
+    /// Combined advanced editing vertical/RTL, same-width, vector, and ink report
+    AdvancedEditingReport(AnnotationMediaRedactionReportArgs),
+    /// Combined advanced editing closeout multi-run, Form ownership, and appearance report
+    AdvancedEditingCloseoutReport(AnnotationMediaRedactionReportArgs),
+    /// Combined writer history raster/vector, font, persistent history, and writer report
+    WriterHistoryReport(AnnotationMediaRedactionReportArgs),
+    /// Combined compression and Office zopfli, dedup, Office conversion, and benchmark report
+    CompressionOfficeReport(AnnotationMediaRedactionReportArgs),
+    /// Combined crypto writer deterministic writer, PubSec, and AES-GCM report
+    CryptoWriterReport(AnnotationMediaRedactionReportArgs),
     /// Audit deterministic writer reproducibility through the production writer
-    WriterDeterminismAudit(Prompt17ReportArgs),
+    WriterDeterminismAudit(AnnotationMediaRedactionReportArgs),
     /// Produce an object-aware deterministic writer external diff report
-    WriterExternalDiff(Prompt17ReportArgs),
+    WriterExternalDiff(AnnotationMediaRedactionReportArgs),
     /// Report advanced writer canonicalization and close-out posture
-    WriterCloseoutReport(Prompt17ReportArgs),
+    WriterCloseoutReport(AnnotationMediaRedactionReportArgs),
     /// Report public-key security-handler support and exact unsupported status
-    PubsecReport(Prompt17ReportArgs),
+    PubsecReport(AnnotationMediaRedactionReportArgs),
     /// Public-key security-handler decrypt command; report-only until supported
-    PubsecDecrypt(Prompt23CryptoReportArgs),
+    PubsecDecrypt(CryptoWriterCryptoReportArgs),
     /// Public-key security-handler encrypt command for supported KeyTrans recipients
-    PubsecEncrypt(Prompt23CryptoReportArgs),
+    PubsecEncrypt(CryptoWriterCryptoReportArgs),
     /// Add a public-key recipient by full-rewrite re-encryption to the supplied recipient set
-    PubsecAddRecipient(Prompt23CryptoReportArgs),
+    PubsecAddRecipient(CryptoWriterCryptoReportArgs),
     /// Remove a public-key recipient by full-rewrite re-encryption to the supplied recipient set
-    PubsecRemoveRecipient(Prompt23CryptoReportArgs),
+    PubsecRemoveRecipient(CryptoWriterCryptoReportArgs),
     /// Replace public-key recipients by full-rewrite re-encryption to the supplied recipient set
-    PubsecReplaceRecipient(Prompt23CryptoReportArgs),
+    PubsecReplaceRecipient(CryptoWriterCryptoReportArgs),
     /// Public-key security-handler full-rewrite re-encrypt command
-    PubsecReencrypt(Prompt23CryptoReportArgs),
+    PubsecReencrypt(CryptoWriterCryptoReportArgs),
     /// Public-key decrypt/edit/re-encrypt workflow using the supported full-rewrite policy
-    PubsecDecryptEditReencrypt(Prompt23CryptoReportArgs),
+    PubsecDecryptEditReencrypt(CryptoWriterCryptoReportArgs),
     /// Report ISO/TS 32004 PDF-MAC structure and exact verification posture
-    PdfMacReport(Prompt17ReportArgs),
+    PdfMacReport(AnnotationMediaRedactionReportArgs),
     /// Verify ISO/TS 32004 PDF-MAC where supported; never claims validity from structure alone
-    PdfMacVerify(Prompt17ReportArgs),
+    PdfMacVerify(AnnotationMediaRedactionReportArgs),
     /// Create AESV4 encrypted PDF output with a standalone ISO/TS 32004 PDF-MAC token
-    PdfMacCreate(Prompt23CryptoReportArgs),
+    PdfMacCreate(CryptoWriterCryptoReportArgs),
     /// Report PDF AES-GCM support and exact remaining limits
-    AesGcmReport(Prompt17ReportArgs),
+    AesGcmReport(AnnotationMediaRedactionReportArgs),
     /// AES-GCM decrypt command; writes plaintext only with --pdf-output
-    AesGcmDecrypt(Prompt23CryptoReportArgs),
+    AesGcmDecrypt(CryptoWriterCryptoReportArgs),
     /// AES-GCM encrypt command; writes encrypted PDF only with --pdf-output
-    AesGcmEncrypt(Prompt23CryptoReportArgs),
-    /// Run/report Prompt 23 crypto tamper policy checks
-    CryptoTamperTest(Prompt23TamperArgs),
+    AesGcmEncrypt(CryptoWriterCryptoReportArgs),
+    /// Run/report crypto writer crypto tamper policy checks
+    CryptoTamperTest(CryptoWriterTamperArgs),
     /// Analyze bounded raster-to-vector candidates on a page
-    RasterVectorReport(Prompt21RasterVectorArgs),
+    RasterVectorReport(WriterHistoryRasterVectorArgs),
     /// Alias for raster-vector-report; exports the vector model by default
-    RasterVectorize(Prompt21RasterVectorArgs),
+    RasterVectorize(WriterHistoryRasterVectorArgs),
     /// Inspect safe font reconstruction eligibility and glyph hook policy
-    FontReconstruct(Prompt17ReportArgs),
+    FontReconstruct(AnnotationMediaRedactionReportArgs),
     /// Inspect safe font reconstruction eligibility and glyph hook policy
-    FontReconstructionReport(Prompt17ReportArgs),
-    /// Report Prompt 21 persistent edit history structures
-    HistoryReport(Prompt21HistoryArgs),
-    /// Export a Prompt 21 persistent history snapshot report
-    HistorySnapshot(Prompt21HistoryArgs),
-    /// Validate Prompt 21 persistent history restore posture
-    HistoryRestore(Prompt21HistoryArgs),
-    /// Report Prompt 21 persistent history diff posture
-    HistoryDiff(Prompt21HistoryArgs),
+    FontReconstructionReport(AnnotationMediaRedactionReportArgs),
+    /// Report writer history persistent edit history structures
+    HistoryReport(WriterHistoryHistoryArgs),
+    /// Export a writer history persistent history snapshot report
+    HistorySnapshot(WriterHistoryHistoryArgs),
+    /// Validate writer history persistent history restore posture
+    HistoryRestore(WriterHistoryHistoryArgs),
+    /// Report writer history persistent history diff posture
+    HistoryDiff(WriterHistoryHistoryArgs),
     /// Inspect object-stream packing eligibility and xref-stream results
-    ObjectStreamReport(Prompt17ReportArgs),
+    ObjectStreamReport(AnnotationMediaRedactionReportArgs),
     /// Save a full-rewrite PDF using object streams and an xref stream
-    SaveObjectStreams(Prompt21SaveObjectStreamsArgs),
-    /// Save a full-rewrite PDF with Prompt 22 compression and dedup planning
-    Prompt22Optimize(Prompt22OptimizeArgs),
-    /// Inspect a DOCX/PPTX/XLSX package under Prompt 22 security limits
-    Prompt22OfficeInspect(Prompt22OfficeArgs),
-    /// Convert DOCX/PPTX/XLSX to PDF through the Prompt 22 native conversion report path
-    Prompt22OfficeToPdf(Prompt22OfficeToPdfArgs),
+    SaveObjectStreams(WriterHistorySaveObjectStreamsArgs),
+    /// Save a full-rewrite PDF with compression and Office compression and dedup planning
+    CompressionOfficeOptimize(CompressionOfficeOptimizeArgs),
+    /// Inspect a DOCX/PPTX/XLSX package under compression and Office security limits
+    CompressionOfficeOfficeInspect(CompressionOfficeOfficeArgs),
+    /// Convert DOCX/PPTX/XLSX to PDF through the compression and Office native conversion report path
+    CompressionOfficeOfficeToPdf(CompressionOfficeOfficeToPdfArgs),
     /// Analyze or edit a logical text range spanning text-showing operators
-    EditTextRange(Prompt20bTextRangeArgs),
+    EditTextRange(AdvancedEditingCloseoutTextRangeArgs),
     /// Report source-level provenance for an operator-preserving text selection
-    ProvenanceReport(Prompt31TextSelectionArgs),
+    ProvenanceReport(SourceEditingTextSelectionArgs),
     /// Check whether an operator-preserving edit can be applied without escalation
-    EditEligibility(Prompt31TextSelectionArgs),
+    EditEligibility(SourceEditingTextSelectionArgs),
     /// Replace text by mutating the original text-showing operator, not an overlay
-    EditTextOperator(Prompt31TextEditArgs),
-    /// Edit one source path/vector operator through the Prompt 31 routed API
-    EditPathOperator(Prompt31PathEditArgs),
+    EditTextOperator(SourceEditingTextEditArgs),
+    /// Edit one source path/vector operator through the source editing routed API
+    EditPathOperator(SourceEditingPathEditArgs),
     /// Report exact unsupported/source eligibility for image occurrence edits
-    EditImageOccurrence(Prompt31ImageArgs),
+    EditImageOccurrence(SourceEditingImageArgs),
     /// Clone/edit one Form occurrence through source-level vector routing
-    EditFormOccurrence(Prompt31PathEditArgs),
-    /// Report the Prompt 31 true-editing operation schema and limits
-    EditOperationReport(Prompt17ReportArgs),
-    /// Prompt 32 editable scene/snapshot/transaction/font architecture report
-    Prompt32Report(Prompt17ReportArgs),
+    EditFormOccurrence(SourceEditingPathEditArgs),
+    /// Report the source editing true-editing operation schema and limits
+    EditOperationReport(AnnotationMediaRedactionReportArgs),
+    /// editing transactions editable scene/snapshot/transaction/font architecture report
+    EditingTransactionsReport(AnnotationMediaRedactionReportArgs),
     /// Build a source-linked editable scene graph
-    SceneReport(Prompt32SceneReportArgs),
+    SceneReport(EditingTransactionsSceneReportArgs),
     /// Resolve a scene node by id, point, or region
-    SceneSelect(Prompt32SceneSelectArgs),
-    /// Plan an atomic Prompt 32 edit transaction
-    TransactionPlan(Prompt32TransactionArgs),
-    /// Apply an atomic Prompt 32 edit transaction
-    TransactionApply(Prompt32TransactionArgs),
-    /// Report Prompt 32 exact undo/restoration policy for a transaction
-    TransactionUndo(Prompt32TransactionArgs),
+    SceneSelect(EditingTransactionsSceneSelectArgs),
+    /// Plan an atomic editing transactions edit transaction
+    TransactionPlan(EditingTransactionsTransactionArgs),
+    /// Apply an atomic editing transactions edit transaction
+    TransactionApply(EditingTransactionsTransactionArgs),
+    /// Report editing transactions exact undo/restoration policy for a transaction
+    TransactionUndo(EditingTransactionsTransactionArgs),
     /// Report PDF-code/CID/GID/Unicode/grapheme/shaping mapping
-    TextMap(Prompt32TextArgs),
+    TextMap(EditingTransactionsTextArgs),
     /// Preview canonical OpenType shaping for text
-    ShapeText(Prompt32TextArgs),
+    ShapeText(EditingTransactionsTextArgs),
     /// Plan deterministic font subset reconstruction
-    FontSubsetPlan(Prompt32TextArgs),
-    /// Alias for font-subset-plan; Prompt 32 reports exact build limits
-    FontSubsetBuild(Prompt32TextArgs),
+    FontSubsetPlan(EditingTransactionsTextArgs),
+    /// Alias for font-subset-plan; editing transactions reports exact build limits
+    FontSubsetBuild(EditingTransactionsTextArgs),
     /// Report deterministic font substitution policy and scoring
-    FontSubstitutionReport(Prompt32FontSubstitutionArgs),
+    FontSubstitutionReport(EditingTransactionsFontSubstitutionArgs),
     /// Scene-facing local text edit compiled to source-level operator mutation
-    SceneEditText(Prompt32TransactionArgs),
-    /// Prompt 33 geometric/semantic reflow architecture report
-    Prompt33Report(Prompt17ReportArgs),
+    SceneEditText(EditingTransactionsTransactionArgs),
+    /// text reflow geometric/semantic reflow architecture report
+    TextReflowReport(AnnotationMediaRedactionReportArgs),
     /// Analyze source-linked geometric and semantic layout
-    LayoutAnalyze(Prompt33ReflowArgs),
+    LayoutAnalyze(TextReflowReflowArgs),
     /// Report deterministic reading order
-    ReadingOrderReport(Prompt17ReportArgs),
+    ReadingOrderReport(AnnotationMediaRedactionReportArgs),
     /// Report cross-column/cross-page flow graph
-    FlowGraphReport(Prompt17ReportArgs),
-    /// Preview Prompt 33 reflow without mutating
-    ReflowPreview(Prompt33ReflowArgs),
-    /// Report ordered Prompt 33 overflow evidence without mutating
-    OverflowReport(Prompt33ReflowArgs),
-    /// Report bounded Prompt 33 hard/soft constraints without mutating
-    ReflowConstraints(Prompt33ReflowArgs),
-    /// Report Prompt 33 confidence/review enforcement without mutating
-    ReflowConfidence(Prompt33ReflowArgs),
-    /// Validate a completed local Prompt 33 reflow with explicit source, output, and request files
-    ReflowValidate(Prompt33ValidateArgs),
+    FlowGraphReport(AnnotationMediaRedactionReportArgs),
+    /// Preview text reflow reflow without mutating
+    ReflowPreview(TextReflowReflowArgs),
+    /// Report ordered text reflow overflow evidence without mutating
+    OverflowReport(TextReflowReflowArgs),
+    /// Report bounded text reflow hard/soft constraints without mutating
+    ReflowConstraints(TextReflowReflowArgs),
+    /// Report text reflow confidence/review enforcement without mutating
+    ReflowConfidence(TextReflowReflowArgs),
+    /// Validate a completed local text reflow reflow with explicit source, output, and request files
+    ReflowValidate(TextReflowValidateArgs),
     /// Apply supported GeometricBlock reflow
-    ReflowRegion(Prompt33ReflowArgs),
+    ReflowRegion(TextReflowReflowArgs),
     /// Apply supported SemanticDocument reflow
-    ReflowDocument(Prompt33ReflowArgs),
-    /// Replay and execute a verified Prompt 33 undo without overwriting either input PDF
-    ReflowUndo(Prompt33UndoArgs),
+    ReflowDocument(TextReflowReflowArgs),
+    /// Replay and execute a verified text reflow undo without overwriting either input PDF
+    ReflowUndo(TextReflowUndoArgs),
     /// Store/preview a reviewed semantic-structure correction
-    ReflowApproveStructure(Prompt33StructureCorrectionArgs),
-    /// Report Prompt 33 transaction and undo evidence
-    ReflowOperationReport(Prompt33ReflowArgs),
-    /// Report Prompt 34 tables, math, OCR, annotation, form, and XFA capabilities
-    Prompt34Report(Prompt17ReportArgs),
-    /// Analyze source-linked Prompt 34 tables, math, OCR layers, annotations, forms, and XFA
-    Prompt34Analyze(Prompt17ReportArgs),
-    /// Plan a typed Prompt 34 operation from an explicit JSON request
-    Prompt34Plan(Prompt34RequestArgs),
-    /// Apply a typed Prompt 34 operation and write a distinct output PDF
-    Prompt34Apply(Prompt34ApplyArgs),
-    /// Replay and undo a Prompt 34 operation into a distinct restored PDF
-    Prompt34Undo(Prompt34UndoArgs),
-    /// Report Prompt 35 accessibility, redaction, sanitizer, and residual-verification capabilities
-    Prompt35Report(Prompt17ReportArgs),
-    /// Analyze Prompt 35 tagged-PDF, accessibility, redaction, and sanitizer state
-    Prompt35Analyze(Prompt17ReportArgs),
-    /// Plan a typed Prompt 35 operation from an explicit JSON request
-    Prompt35Plan(Prompt35RequestArgs),
-    /// Apply a typed Prompt 35 operation and write a distinct output PDF
-    Prompt35Apply(Prompt35ApplyArgs),
-    /// Replay and undo a Prompt 35 operation into a distinct restored PDF
-    Prompt35Undo(Prompt35UndoArgs),
-    /// Run Prompt 35 residual verification from a JSON term list
-    Prompt35VerifyResidual(Prompt35VerifyArgs),
+    ReflowApproveStructure(TextReflowStructureCorrectionArgs),
+    /// Report text reflow transaction and undo evidence
+    ReflowOperationReport(TextReflowReflowArgs),
+    /// Report document subsystems tables, math, OCR, annotation, form, and XFA capabilities
+    DocumentSubsystemsReport(AnnotationMediaRedactionReportArgs),
+    /// Analyze source-linked document subsystems tables, math, OCR layers, annotations, forms, and XFA
+    DocumentSubsystemsAnalyze(AnnotationMediaRedactionReportArgs),
+    /// Plan a typed document subsystems operation from an explicit JSON request
+    DocumentSubsystemsPlan(DocumentSubsystemsRequestArgs),
+    /// Apply a typed document subsystems operation and write a distinct output PDF
+    DocumentSubsystemsApply(DocumentSubsystemsApplyArgs),
+    /// Replay and undo a document subsystems operation into a distinct restored PDF
+    DocumentSubsystemsUndo(DocumentSubsystemsUndoArgs),
+    /// Report document security accessibility, redaction, sanitizer, and residual-verification capabilities
+    DocumentSecurityReport(AnnotationMediaRedactionReportArgs),
+    /// Analyze document security tagged-PDF, accessibility, redaction, and sanitizer state
+    DocumentSecurityAnalyze(AnnotationMediaRedactionReportArgs),
+    /// Plan a typed document security operation from an explicit JSON request
+    DocumentSecurityPlan(DocumentSecurityRequestArgs),
+    /// Apply a typed document security operation and write a distinct output PDF
+    DocumentSecurityApply(DocumentSecurityApplyArgs),
+    /// Replay and undo a document security operation into a distinct restored PDF
+    DocumentSecurityUndo(DocumentSecurityUndoArgs),
+    /// Run document security residual verification from a JSON term list
+    DocumentSecurityVerifyResidual(DocumentSecurityVerifyArgs),
     /// Alias for vector-list focused on Form invocation ownership
-    FormInstanceReport(Prompt20VectorListArgs),
+    FormInstanceReport(AdvancedEditingVectorListArgs),
     /// Alias for vector-edit with clone-edit-one-instance policy
-    FormCloneOne(Prompt20VectorEditArgs),
+    FormCloneOne(AdvancedEditingVectorEditArgs),
     /// Alias for vector-list focused on shared annotation appearances
-    AnnotationAppearanceSharedReport(Prompt20VectorListArgs),
+    AnnotationAppearanceSharedReport(AdvancedEditingVectorListArgs),
     /// Alias for vector-edit with clone-edit-one-instance appearance policy
-    AnnotationAppearanceCloneOne(Prompt20VectorEditArgs),
+    AnnotationAppearanceCloneOne(AdvancedEditingVectorEditArgs),
     /// List stable editable vector objects on a page
-    VectorList(Prompt20VectorListArgs),
+    VectorList(AdvancedEditingVectorListArgs),
     /// Edit one stable vector object using a VectorEditOperation JSON file
-    VectorEdit(Prompt20VectorEditArgs),
+    VectorEdit(AdvancedEditingVectorEditArgs),
     /// Delete one stable vector object
-    VectorDelete(Prompt20VectorDirectArgs),
+    VectorDelete(AdvancedEditingVectorDirectArgs),
     /// Duplicate one stable vector object
-    VectorDuplicate(Prompt20VectorDirectArgs),
+    VectorDuplicate(AdvancedEditingVectorDirectArgs),
     /// Fit one Ink annotation and regenerate its cubic appearance
-    InkFit(Prompt20InkFitArgs),
+    InkFit(AdvancedEditingInkFitArgs),
     /// Incrementally edit a form value under signature policy
     EditForm(EditFormArgs),
     /// Incrementally add/update an annotation under signature policy
@@ -463,7 +463,7 @@ enum Commands {
     AnnotationsFlatten(AnnotationsFlattenArgs),
     /// Report page boxes, labels/outlines/destinations, and page-op preservation risks
     PagesReport(PagesReportArgs),
-    /// Combined Prompt 07 interactive/data-layer report
+    /// roadmap closure 07 interactive/data-layer report
     InteractiveReport(InteractiveReportArgs),
     /// Apply true redaction from search terms and/or explicit rectangles
     Redact(RedactArgs),
@@ -471,7 +471,7 @@ enum Commands {
     /// with overlap + heading context) as a JSON chunks array for embedding
     /// pipelines. Tables/figures stay intact; headings drive boundaries.
     Chunk(ChunkArgs),
-    /// Export the Prompt 15 semantic binding bundle, advanced RAG chunks,
+    /// Export the Semantic Closeout semantic binding bundle, advanced RAG chunks,
     /// dictionary tokens, tables, search results, or ML proposal status as JSON.
     SemanticExport(SemanticExportArgs),
     /// Score an extraction result against ground truth using standard metrics
@@ -483,7 +483,7 @@ enum Commands {
     ExtractImages(ExtractImagesArgs),
     /// Render PDF pages to images as a ZIP
     Render(RenderArgs),
-    /// Emit Prompt 06 display-list/native-replay counters for rendered pages
+    /// Emit Native Renderer display-list/native-replay counters for rendered pages
     RenderCompare(RenderCompareArgs),
     /// Rasterize PDF pages to individual JPG/PNG image files
     #[command(alias = "pdf-to-image")]
@@ -502,7 +502,7 @@ enum Commands {
     PdfToMarkdown(PdfToMarkdownArgs),
     /// Convert PDF content to JSON through the editable model
     PdfToJson(PdfToJsonArgs),
-    /// Export the shared Prompt 08 editable document model as JSON
+    /// Export the shared Advanced Rendering editable document model as JSON
     ExportEditableModel(ExportEditableModelArgs),
     /// Replace text by full-rewrite redaction plus replacement text overlay
     EditText(EditTextArgs),
@@ -538,15 +538,15 @@ enum Commands {
     ToHtml(ToHtmlArgs),
     /// Verify digital signatures in a PDF (pdfsig-equivalent)
     VerifySig(VerifySigArgs),
-    /// List PDF signature fields and Prompt 24 validation state
+    /// List PDF signature fields and Signature Validation validation state
     SignatureList(VerifySigArgs),
-    /// Validate PDF detached signatures with Prompt 24 policy inputs
+    /// Validate PDF detached signatures with Signature Validation policy inputs
     SignatureVerify(VerifySigArgs),
-    /// Validate PAdES baseline posture with Prompt 24 policy inputs
+    /// Validate PAdES baseline posture with Signature Validation policy inputs
     PadesVerify(VerifySigArgs),
-    /// Plan a Prompt 25 signature-preserving incremental form fill
+    /// Plan a Pades LTV signature-preserving incremental form fill
     SignaturePreservingPlan(SignaturePreservingFormArgs),
-    /// Apply a Prompt 25 signature-preserving incremental form fill
+    /// Apply a Pades LTV signature-preserving incremental form fill
     SignaturePreservingEdit(SignaturePreservingFormArgs),
     /// Validate a caller-supplied RFC 3161 signature timestamp token
     TimestampVerify(TimestampVerifyArgs),
@@ -554,13 +554,13 @@ enum Commands {
     SignatureTimestamps(VerifySigArgs),
     /// Inspect DSS/VRI evidence and replay posture for PDF signatures
     DssInspect(VerifySigArgs),
-    /// Verify Prompt 25 PAdES LTV status from timestamp and DSS/VRI evidence
+    /// Verify Pades LTV PAdES LTV status from timestamp and DSS/VRI evidence
     LtvVerify(VerifySigArgs),
     /// Report achieved PAdES baseline/timestamp/LT level for PDF signatures
     PadesLevelReport(VerifySigArgs),
-    /// Build signer certificate paths for PDF signatures with Prompt 24 inputs
+    /// Build signer certificate paths for PDF signatures with Signature Validation inputs
     CertificatePathBuild(VerifySigArgs),
-    /// Validate signer certificate paths against explicit Prompt 24 trust anchors
+    /// Validate signer certificate paths against explicit Signature Validation trust anchors
     CertificatePathVerify(VerifySigArgs),
     /// Validate OCSP evidence for PDF signature certificate paths
     OcspCheck(VerifySigArgs),
@@ -578,23 +578,23 @@ enum Commands {
     EvidenceReplay(VerifySigArgs),
     /// Emit encryption, signature, and active-content security diagnostics
     SecurityReport(SecurityReportArgs),
-    /// Alias for verify-sig with Prompt 09 signature status fields
+    /// Alias for verify-sig with Annotation Ocg Rendering signature status fields
     SignatureReport(VerifySigArgs),
     /// Remove active/risky PDF content according to a sanitizer policy
     Sanitize(SanitizeArgs),
     /// Validate supported PDF/A, PDF/UA, PDF/X, and security profile subsets
     Validate(ValidateArgs),
-    /// Prompt 26 clause-mapped PDF/A validation (ISO 19005)
+    /// Incremental Signing Standards clause-mapped PDF/A validation (ISO 19005)
     PdfaValidate(StandardsValidateArgs),
-    /// Prompt 26 clause-mapped PDF/UA validation (ISO 14289-1)
+    /// Incremental Signing Standards clause-mapped PDF/UA validation (ISO 14289-1)
     PdfuaValidate(StandardsValidateArgs),
-    /// Prompt 26 clause-mapped PDF/X validation (ISO 15930)
+    /// Incremental Signing Standards clause-mapped PDF/X validation (ISO 15930)
     PdfxValidate(StandardsValidateArgs),
-    /// Prompt 26 combined PDF/A+UA+X clause-mapped validation with cross-profile conflicts
+    /// Incremental Signing Standards combined PDF/A+UA+X clause-mapped validation with cross-profile conflicts
     StandardsValidate(StandardsValidateArgs),
-    /// Prompt 26 append-only incremental signing (approval or certification)
+    /// Incremental Signing Standards append-only incremental signing (approval or certification)
     SignatureSign(SignatureSignArgs),
-    /// Prompt 26 signature /Contents placeholder capacity plan (writes no output)
+    /// Incremental Signing Standards signature /Contents placeholder capacity plan (writes no output)
     SignaturePlanPlaceholder(SignatureSignArgs),
     /// Write a deterministic canonical full-rewrite copy and audit report
     Canonicalize(CanonicalizeArgs),
@@ -895,7 +895,7 @@ struct ExtractTextArgs {
     #[arg(long)]
     semantic: bool,
     /// Output format for --structured/--semantic: text, json, or model-json
-    /// (Prompt 06 geometry/provenance model). Ignored without either flag.
+    /// (Native Renderer geometry/provenance model). Ignored without either flag.
     #[arg(long, default_value = "text")]
     format: String,
     /// Include detailed structure attachment in model-json output.
@@ -1224,7 +1224,7 @@ struct XfaSanitizeArgs {
 }
 
 #[derive(Parser)]
-struct Prompt17ReportArgs {
+struct AnnotationMediaRedactionReportArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Output JSON report; defaults to stdout
@@ -1236,7 +1236,7 @@ struct Prompt17ReportArgs {
 }
 
 #[derive(Parser)]
-struct Prompt23CryptoReportArgs {
+struct CryptoWriterCryptoReportArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Output JSON report; defaults to stdout
@@ -1278,18 +1278,18 @@ struct Prompt23CryptoReportArgs {
 }
 
 #[derive(Parser)]
-struct Prompt23TamperArgs {
+struct CryptoWriterTamperArgs {
     /// Output JSON report; defaults to stdout
     #[arg(short, long)]
     output: Option<PathBuf>,
 }
 
 #[derive(Parser)]
-struct Prompt17OutputArgs {
+struct AnnotationMediaRedactionOutputArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Output PDF
-    #[arg(short, long, default_value = "prompt17-output.pdf")]
+    #[arg(short, long, default_value = "annotation_media_redaction-output.pdf")]
     output: PathBuf,
     /// Optional JSON report path
     #[arg(long)]
@@ -1306,7 +1306,7 @@ struct Prompt17OutputArgs {
 }
 
 #[derive(Parser)]
-struct Prompt21RasterVectorArgs {
+struct WriterHistoryRasterVectorArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// One-based page number
@@ -1324,14 +1324,14 @@ struct Prompt21RasterVectorArgs {
 }
 
 #[derive(Parser)]
-struct Prompt21HistoryArgs {
+struct WriterHistoryHistoryArgs {
     /// Output JSON report; defaults to stdout
     #[arg(short, long)]
     output: Option<PathBuf>,
 }
 
 #[derive(Parser)]
-struct Prompt21SaveObjectStreamsArgs {
+struct WriterHistorySaveObjectStreamsArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Output PDF
@@ -1352,13 +1352,13 @@ struct Prompt21SaveObjectStreamsArgs {
 }
 
 #[derive(Parser)]
-struct Prompt22OptimizeArgs {
+struct CompressionOfficeOptimizeArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Output PDF
-    #[arg(short, long, default_value = "prompt22-optimized.pdf")]
+    #[arg(short, long, default_value = "compression_office-optimized.pdf")]
     output: PathBuf,
-    /// Optional Prompt22OptimizeOptions JSON file
+    /// Optional CompressionOfficeOptimizeOptions JSON file
     #[arg(long)]
     options: Option<PathBuf>,
     /// Optional JSON report path
@@ -1376,7 +1376,7 @@ struct Prompt22OptimizeArgs {
 }
 
 #[derive(Parser)]
-struct Prompt22OfficeArgs {
+struct CompressionOfficeOfficeArgs {
     /// Path to the input DOCX/PPTX/XLSX file
     input: PathBuf,
     /// Office format: docx, pptx, or xlsx
@@ -1388,11 +1388,11 @@ struct Prompt22OfficeArgs {
 }
 
 #[derive(Parser)]
-struct Prompt22OfficeToPdfArgs {
+struct CompressionOfficeOfficeToPdfArgs {
     /// Path to the input DOCX/PPTX/XLSX file
     input: PathBuf,
     /// Output PDF
-    #[arg(short, long, default_value = "prompt22-office.pdf")]
+    #[arg(short, long, default_value = "compression_office-office.pdf")]
     output: PathBuf,
     /// Office format: docx, pptx, or xlsx
     #[arg(long)]
@@ -1409,16 +1409,16 @@ struct Prompt22OfficeToPdfArgs {
 }
 
 #[derive(Parser)]
-struct Prompt19SanitizeArgs {
+struct FormActionPolicySanitizeArgs {
     /// Path to the input PDF
     pdf: PathBuf,
-    /// Prompt 19 policy mode
+    /// form action policy policy mode
     #[arg(long, default_value = "remove_javascript_only")]
     policy: String,
     /// Optional complete FormJsSanitizerOptions JSON
     #[arg(long)]
     options: Option<PathBuf>,
-    /// Permit a Prompt 18B signature-policy override when structurally required
+    /// Permit a secure mutation closeout signature-policy override when structurally required
     #[arg(long)]
     signature_policy_override: bool,
     /// Output PDF
@@ -1439,7 +1439,7 @@ struct Prompt19SanitizeArgs {
 }
 
 #[derive(Parser)]
-struct Prompt20VectorListArgs {
+struct AdvancedEditingVectorListArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// One-based page number
@@ -1454,7 +1454,7 @@ struct Prompt20VectorListArgs {
 }
 
 #[derive(Parser)]
-struct Prompt31TextSelectionArgs {
+struct SourceEditingTextSelectionArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// One-based page number
@@ -1475,7 +1475,7 @@ struct Prompt31TextSelectionArgs {
 }
 
 #[derive(Parser)]
-struct Prompt31TextEditArgs {
+struct SourceEditingTextEditArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// One-based page number
@@ -1502,7 +1502,7 @@ struct Prompt31TextEditArgs {
 }
 
 #[derive(Parser)]
-struct Prompt31PathEditArgs {
+struct SourceEditingPathEditArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Stable vector/path ID from vector-list
@@ -1532,7 +1532,7 @@ struct Prompt31PathEditArgs {
 }
 
 #[derive(Parser)]
-struct Prompt31ImageArgs {
+struct SourceEditingImageArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// One-based page number
@@ -1550,7 +1550,7 @@ struct Prompt31ImageArgs {
 }
 
 #[derive(Parser)]
-struct Prompt32SceneReportArgs {
+struct EditingTransactionsSceneReportArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// One-based pages to include; repeat --page. Empty means bounded all-pages.
@@ -1565,7 +1565,7 @@ struct Prompt32SceneReportArgs {
 }
 
 #[derive(Parser)]
-struct Prompt32SceneSelectArgs {
+struct EditingTransactionsSceneSelectArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// One-based page number
@@ -1595,7 +1595,7 @@ struct Prompt32SceneSelectArgs {
 }
 
 #[derive(Parser)]
-struct Prompt32TransactionArgs {
+struct EditingTransactionsTransactionArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Optional JSON SceneTextEditRequest; otherwise CLI text args are used
@@ -1611,7 +1611,7 @@ struct Prompt32TransactionArgs {
     #[arg(long = "replacement-text", default_value = "")]
     replacement_text: String,
     /// Output PDF for apply commands
-    #[arg(short, long, default_value = "prompt32-scene-edited.pdf")]
+    #[arg(short, long, default_value = "editing_transactions-scene-edited.pdf")]
     output: PathBuf,
     /// Optional JSON report path
     #[arg(long)]
@@ -1631,7 +1631,7 @@ struct Prompt32TransactionArgs {
 }
 
 #[derive(Parser)]
-struct Prompt32TextArgs {
+struct EditingTransactionsTextArgs {
     /// Text to inspect or shape
     text: String,
     /// Direction override: ltr or rtl
@@ -1646,7 +1646,7 @@ struct Prompt32TextArgs {
 }
 
 #[derive(Parser)]
-struct Prompt32FontSubstitutionArgs {
+struct EditingTransactionsFontSubstitutionArgs {
     /// Requested font family
     requested_family: String,
     /// Text requiring font coverage
@@ -1660,7 +1660,7 @@ struct Prompt32FontSubstitutionArgs {
 }
 
 #[derive(Parser)]
-struct Prompt33ReflowArgs {
+struct TextReflowReflowArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Optional JSON GeometricReflowRequest; otherwise CLI args are used
@@ -1703,7 +1703,7 @@ struct Prompt33ReflowArgs {
     #[arg(long)]
     signature_policy_override: bool,
     /// Output PDF for apply commands
-    #[arg(short, long, default_value = "prompt33-reflow-edited.pdf")]
+    #[arg(short, long, default_value = "text_reflow-reflow-edited.pdf")]
     output: PathBuf,
     /// Optional JSON report path
     #[arg(long)]
@@ -1717,7 +1717,7 @@ struct Prompt33ReflowArgs {
 }
 
 #[derive(Parser)]
-struct Prompt33StructureCorrectionArgs {
+struct TextReflowStructureCorrectionArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// JSON correction object path
@@ -1731,7 +1731,7 @@ struct Prompt33StructureCorrectionArgs {
 }
 
 #[derive(Parser)]
-struct Prompt33ValidateArgs {
+struct TextReflowValidateArgs {
     /// Original input PDF used for the reflow
     pdf: PathBuf,
     /// Completed reflow output PDF to validate (read-only)
@@ -1749,7 +1749,7 @@ struct Prompt33ValidateArgs {
 }
 
 #[derive(Parser)]
-struct Prompt33UndoArgs {
+struct TextReflowUndoArgs {
     /// Original input PDF used for the reflow
     pdf: PathBuf,
     /// Completed reflow output PDF to verify and undo (read-only)
@@ -1770,10 +1770,10 @@ struct Prompt33UndoArgs {
 }
 
 #[derive(Parser)]
-struct Prompt34RequestArgs {
+struct DocumentSubsystemsRequestArgs {
     /// Path to the input PDF
     pdf: PathBuf,
-    /// Typed Prompt34Request JSON file
+    /// Typed DocumentSubsystemsRequest JSON file
     #[arg(long)]
     request: PathBuf,
     /// Output JSON; defaults to stdout
@@ -1785,14 +1785,14 @@ struct Prompt34RequestArgs {
 }
 
 #[derive(Parser)]
-struct Prompt34ApplyArgs {
+struct DocumentSubsystemsApplyArgs {
     /// Path to the input PDF
     pdf: PathBuf,
-    /// Typed Prompt34Request JSON file
+    /// Typed DocumentSubsystemsRequest JSON file
     #[arg(long)]
     request: PathBuf,
     /// Distinct output PDF; existing files are never overwritten
-    #[arg(short, long, default_value = "prompt34-edited.pdf")]
+    #[arg(short, long, default_value = "document_subsystems-edited.pdf")]
     output: PathBuf,
     /// Optional JSON operation report; existing files are never overwritten
     #[arg(long)]
@@ -1803,13 +1803,13 @@ struct Prompt34ApplyArgs {
 }
 
 #[derive(Parser)]
-struct Prompt34UndoArgs {
-    /// Original input PDF used for Prompt 34 apply
+struct DocumentSubsystemsUndoArgs {
+    /// Original input PDF used for document subsystems apply
     pdf: PathBuf,
-    /// Edited PDF returned by prompt34-apply
+    /// Edited PDF returned by document_subsystems-apply
     #[arg(long = "output-pdf")]
     output_pdf: PathBuf,
-    /// Exact Typed Prompt34Request JSON file used to apply
+    /// Exact Typed DocumentSubsystemsRequest JSON file used to apply
     #[arg(long)]
     request: PathBuf,
     /// Distinct restored PDF output; existing files are never overwritten
@@ -1824,10 +1824,10 @@ struct Prompt34UndoArgs {
 }
 
 #[derive(Parser)]
-struct Prompt35RequestArgs {
+struct DocumentSecurityRequestArgs {
     /// Path to the input PDF
     pdf: PathBuf,
-    /// Typed Prompt35Request JSON file
+    /// Typed DocumentSecurityRequest JSON file
     #[arg(long)]
     request: PathBuf,
     /// Output JSON; defaults to stdout
@@ -1839,14 +1839,14 @@ struct Prompt35RequestArgs {
 }
 
 #[derive(Parser)]
-struct Prompt35ApplyArgs {
+struct DocumentSecurityApplyArgs {
     /// Path to the input PDF
     pdf: PathBuf,
-    /// Typed Prompt35Request JSON file
+    /// Typed DocumentSecurityRequest JSON file
     #[arg(long)]
     request: PathBuf,
     /// Distinct output PDF; existing files are never overwritten
-    #[arg(short, long, default_value = "prompt35-edited.pdf")]
+    #[arg(short, long, default_value = "document_security-edited.pdf")]
     output: PathBuf,
     /// Optional JSON operation report; existing files are never overwritten
     #[arg(long)]
@@ -1857,13 +1857,13 @@ struct Prompt35ApplyArgs {
 }
 
 #[derive(Parser)]
-struct Prompt35UndoArgs {
-    /// Original input PDF used for Prompt 35 apply
+struct DocumentSecurityUndoArgs {
+    /// Original input PDF used for document security apply
     pdf: PathBuf,
-    /// Edited PDF returned by prompt35-apply
+    /// Edited PDF returned by document_security-apply
     #[arg(long = "output-pdf")]
     output_pdf: PathBuf,
-    /// Exact Typed Prompt35Request JSON file used to apply
+    /// Exact Typed DocumentSecurityRequest JSON file used to apply
     #[arg(long)]
     request: PathBuf,
     /// Distinct restored PDF output; existing files are never overwritten
@@ -1878,7 +1878,7 @@ struct Prompt35UndoArgs {
 }
 
 #[derive(Parser)]
-struct Prompt35VerifyArgs {
+struct DocumentSecurityVerifyArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// JSON array of terms to verify as absent
@@ -1893,7 +1893,7 @@ struct Prompt35VerifyArgs {
 }
 
 #[derive(Parser)]
-struct Prompt20VectorEditArgs {
+struct AdvancedEditingVectorEditArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Stable vector object ID from vector-list
@@ -1923,7 +1923,7 @@ struct Prompt20VectorEditArgs {
 }
 
 #[derive(Parser)]
-struct Prompt20VectorDirectArgs {
+struct AdvancedEditingVectorDirectArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// Stable vector object ID from vector-list
@@ -1956,7 +1956,7 @@ struct Prompt20VectorDirectArgs {
 }
 
 #[derive(Parser)]
-struct Prompt20bTextRangeArgs {
+struct AdvancedEditingCloseoutTextRangeArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// One-based page number used by --analyze
@@ -1986,7 +1986,7 @@ struct Prompt20bTextRangeArgs {
 }
 
 #[derive(Parser)]
-struct Prompt20InkFitArgs {
+struct AdvancedEditingInkFitArgs {
     /// Path to the input PDF
     pdf: PathBuf,
     /// One-based page number
@@ -2566,7 +2566,7 @@ struct ChunkArgs {
     /// Keep page furniture (headers/footers/page numbers) in chunk text.
     #[arg(long)]
     keep_furniture: bool,
-    /// Emit the Prompt 15 provenance-aware chunk schema.
+    /// Emit the Semantic Closeout provenance-aware chunk schema.
     #[arg(long)]
     advanced: bool,
     /// Advanced chunk mode: hybrid, page, section, paragraph, table,
@@ -2957,7 +2957,7 @@ struct EditTextArgs {
     /// Emit a JSON result summary
     #[arg(long)]
     json: bool,
-    /// Permit a Prompt 18B signature-policy override when structurally required
+    /// Permit a secure mutation closeout signature-policy override when structurally required
     #[arg(long)]
     signature_policy_override: bool,
 }
@@ -3273,7 +3273,7 @@ struct VerifySigArgs {
     /// JSON file containing the shared SignatureAlgorithmPolicy object.
     #[arg(long = "algorithm-policy", value_name = "JSON")]
     algorithm_policy: Option<PathBuf>,
-    /// Import a content-addressed Prompt 24 evidence bundle for offline replay.
+    /// Import a content-addressed Signature Validation evidence bundle for offline replay.
     #[arg(long = "evidence-in", value_name = "JSON")]
     evidence_in: Option<PathBuf>,
     /// Export cryptographically accepted path/revocation evidence to a new
@@ -3341,7 +3341,7 @@ struct TimestampVerifyArgs {
     /// JSON file containing the shared SignatureAlgorithmPolicy object.
     #[arg(long = "algorithm-policy", value_name = "JSON")]
     algorithm_policy: Option<PathBuf>,
-    /// Import a Prompt 24/25 evidence bundle for offline replay.
+    /// Import a Signature Validation/25 evidence bundle for offline replay.
     #[arg(long = "evidence-in", value_name = "JSON")]
     evidence_in: Option<PathBuf>,
     /// Opt in to bounded HTTP/HTTPS AIA, OCSP, and CRL retrieval.
@@ -3569,9 +3569,11 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::RichMediaSanitize(args) => run_rich_media_sanitize(args),
         Commands::RichMediaFlattenPoster(args) => run_rich_media_flatten_poster(args),
         Commands::RedactImageNonaxis(args) => run_nonaxis_redaction(args),
-        Commands::Prompt17Report(args) => run_prompt17_report(args),
-        Commands::RedactImageMask(args) => run_prompt18_redaction(args, true),
-        Commands::RedactInlineImage(args) => run_prompt18_redaction(args, false),
+        Commands::AnnotationMediaRedactionReport(args) => {
+            run_annotation_media_redaction_report(args)
+        }
+        Commands::RedactImageMask(args) => run_secure_mutation_redaction(args, true),
+        Commands::RedactInlineImage(args) => run_secure_mutation_redaction(args, false),
         Commands::AssociatedFilesReport(args) => run_associated_files_report(args),
         Commands::AssociatedFilesExtract(args) => run_associated_files_extract(args),
         Commands::AssociatedFilesAdd(args) => run_associated_files_add(args),
@@ -3580,19 +3582,19 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::AssociatedFilesSanitize(args) => run_associated_files_sanitize(args),
         Commands::EditSignatureImpact(args) => run_edit_policy_report(args, true),
         Commands::EditPolicyReport(args) => run_edit_policy_report(args, false),
-        Commands::Prompt18Report(args) => run_prompt18_report(args),
-        Commands::Prompt18bReport(args) => run_prompt18b_report(args),
+        Commands::SecureMutationReport(args) => run_secure_mutation_report(args),
+        Commands::SecureMutationCloseoutReport(args) => run_secure_mutation_closeout_report(args),
         Commands::FormJsReport(args) => run_form_js_report(args),
         Commands::FormJsSanitize(args) => run_form_js_sanitize(args, false),
         Commands::FormJsFlattenValues(args) => run_form_js_sanitize(args, true),
         Commands::InteractiveDataReport(args) => run_interactive_data_closeout_report(args),
         Commands::WordPaginationAudit(args) => run_word_pagination_audit(args),
-        Commands::Prompt19Report(args) => run_prompt19_report(args),
-        Commands::Prompt20Report(args) => run_prompt20_report(args),
-        Commands::Prompt20bReport(args) => run_prompt20b_report(args),
-        Commands::Prompt21Report(args) => run_prompt21_report(args),
-        Commands::Prompt22Report(args) => run_prompt22_report(args),
-        Commands::Prompt23Report(args) => run_prompt23_report(args),
+        Commands::FormActionPolicyReport(args) => run_form_action_policy_report(args),
+        Commands::AdvancedEditingReport(args) => run_advanced_editing_report(args),
+        Commands::AdvancedEditingCloseoutReport(args) => run_advanced_editing_closeout_report(args),
+        Commands::WriterHistoryReport(args) => run_writer_history_report(args),
+        Commands::CompressionOfficeReport(args) => run_compression_office_report(args),
+        Commands::CryptoWriterReport(args) => run_crypto_writer_report(args),
         Commands::WriterDeterminismAudit(args) => run_writer_determinism_audit(args),
         Commands::WriterExternalDiff(args) => run_writer_external_diff(args),
         Commands::WriterCloseoutReport(args) => run_writer_closeout_report(args),
@@ -3619,82 +3621,90 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::AesGcmDecrypt(args) => run_aes_gcm_decrypt(args),
         Commands::AesGcmEncrypt(args) => run_aes_gcm_encrypt(args),
         Commands::CryptoTamperTest(args) => run_crypto_tamper_test(args),
-        Commands::RasterVectorReport(args) => run_prompt21_raster_vector_report(args),
-        Commands::RasterVectorize(args) => run_prompt21_raster_vector_report(args),
-        Commands::FontReconstruct(args) => run_prompt21_font_reconstruction_report(args),
-        Commands::FontReconstructionReport(args) => run_prompt21_font_reconstruction_report(args),
-        Commands::HistoryReport(args) => run_prompt21_history_report(args),
-        Commands::HistorySnapshot(args) => run_prompt21_history_report(args),
-        Commands::HistoryRestore(args) => run_prompt21_history_report(args),
-        Commands::HistoryDiff(args) => run_prompt21_history_report(args),
-        Commands::ObjectStreamReport(args) => run_prompt21_object_stream_report(args),
-        Commands::SaveObjectStreams(args) => run_prompt21_save_object_streams(args),
-        Commands::Prompt22Optimize(args) => run_prompt22_optimize(args),
-        Commands::Prompt22OfficeInspect(args) => run_prompt22_office_inspect(args),
-        Commands::Prompt22OfficeToPdf(args) => run_prompt22_office_to_pdf(args),
-        Commands::EditTextRange(args) => run_prompt20b_text_range(args),
-        Commands::ProvenanceReport(args) => run_prompt31_provenance(args),
-        Commands::EditEligibility(args) => run_prompt31_eligibility(args),
-        Commands::EditTextOperator(args) => run_prompt31_text_edit(args),
-        Commands::EditPathOperator(args) => run_prompt31_path_edit(args),
-        Commands::EditImageOccurrence(args) => run_prompt31_image_eligibility(args),
+        Commands::RasterVectorReport(args) => run_writer_history_raster_vector_report(args),
+        Commands::RasterVectorize(args) => run_writer_history_raster_vector_report(args),
+        Commands::FontReconstruct(args) => run_writer_history_font_reconstruction_report(args),
+        Commands::FontReconstructionReport(args) => {
+            run_writer_history_font_reconstruction_report(args)
+        }
+        Commands::HistoryReport(args) => run_writer_history_history_report(args),
+        Commands::HistorySnapshot(args) => run_writer_history_history_report(args),
+        Commands::HistoryRestore(args) => run_writer_history_history_report(args),
+        Commands::HistoryDiff(args) => run_writer_history_history_report(args),
+        Commands::ObjectStreamReport(args) => run_writer_history_object_stream_report(args),
+        Commands::SaveObjectStreams(args) => run_writer_history_save_object_streams(args),
+        Commands::CompressionOfficeOptimize(args) => run_compression_office_optimize(args),
+        Commands::CompressionOfficeOfficeInspect(args) => {
+            run_compression_office_office_inspect(args)
+        }
+        Commands::CompressionOfficeOfficeToPdf(args) => run_compression_office_office_to_pdf(args),
+        Commands::EditTextRange(args) => run_advanced_editing_closeout_text_range(args),
+        Commands::ProvenanceReport(args) => run_source_editing_provenance(args),
+        Commands::EditEligibility(args) => run_source_editing_eligibility(args),
+        Commands::EditTextOperator(args) => run_source_editing_text_edit(args),
+        Commands::EditPathOperator(args) => run_source_editing_path_edit(args),
+        Commands::EditImageOccurrence(args) => run_source_editing_image_eligibility(args),
         Commands::EditFormOccurrence(mut args) => {
             args.shared_form_policy = "clone-edit-one-instance".to_string();
-            run_prompt31_path_edit(args)
+            run_source_editing_path_edit(args)
         }
-        Commands::EditOperationReport(args) => run_prompt31_report(args),
-        Commands::Prompt32Report(args) => run_prompt32_report(args),
-        Commands::SceneReport(args) => run_prompt32_scene_report(args),
-        Commands::SceneSelect(args) => run_prompt32_scene_select(args),
-        Commands::TransactionPlan(args) => run_prompt32_transaction_plan(args),
-        Commands::TransactionApply(args) => run_prompt32_transaction_apply(args),
-        Commands::TransactionUndo(args) => run_prompt32_transaction_undo(args),
-        Commands::TextMap(args) => run_prompt32_text_map(args),
-        Commands::ShapeText(args) => run_prompt32_shape_text(args),
-        Commands::FontSubsetPlan(args) => run_prompt32_font_subset_plan(args),
-        Commands::FontSubsetBuild(args) => run_prompt32_font_subset_plan(args),
-        Commands::FontSubstitutionReport(args) => run_prompt32_font_substitution_report(args),
-        Commands::SceneEditText(args) => run_prompt32_transaction_apply(args),
-        Commands::Prompt33Report(args) => run_prompt33_report(args),
-        Commands::LayoutAnalyze(args) => run_prompt33_layout_analyze(args),
-        Commands::ReadingOrderReport(args) => run_prompt33_reading_order_report(args),
-        Commands::FlowGraphReport(args) => run_prompt33_flow_graph_report(args),
-        Commands::ReflowPreview(args) => run_prompt33_reflow_preview(args),
-        Commands::OverflowReport(args) => run_prompt33_overflow_report(args),
-        Commands::ReflowConstraints(args) => run_prompt33_constraints_report(args),
-        Commands::ReflowConfidence(args) => run_prompt33_confidence_report(args),
-        Commands::ReflowValidate(args) => run_prompt33_reflow_validate(args),
-        Commands::ReflowRegion(args) => run_prompt33_reflow_region(args),
-        Commands::ReflowDocument(args) => run_prompt33_reflow_document(args),
-        Commands::ReflowUndo(args) => run_prompt33_reflow_undo(args),
-        Commands::ReflowApproveStructure(args) => run_prompt33_reflow_approve_structure(args),
-        Commands::ReflowOperationReport(args) => run_prompt33_reflow_operation_report(args),
-        Commands::Prompt34Report(args) => run_prompt34_report(args),
-        Commands::Prompt34Analyze(args) => run_prompt34_analyze(args),
-        Commands::Prompt34Plan(args) => run_prompt34_plan(args),
-        Commands::Prompt34Apply(args) => run_prompt34_apply(args),
-        Commands::Prompt34Undo(args) => run_prompt34_undo(args),
-        Commands::Prompt35Report(args) => run_prompt35_report(args),
-        Commands::Prompt35Analyze(args) => run_prompt35_analyze(args),
-        Commands::Prompt35Plan(args) => run_prompt35_plan(args),
-        Commands::Prompt35Apply(args) => run_prompt35_apply(args),
-        Commands::Prompt35Undo(args) => run_prompt35_undo(args),
-        Commands::Prompt35VerifyResidual(args) => run_prompt35_verify_residual(args),
-        Commands::FormInstanceReport(args) => run_prompt20_vector_list(args),
+        Commands::EditOperationReport(args) => run_source_editing_report(args),
+        Commands::EditingTransactionsReport(args) => run_editing_transactions_report(args),
+        Commands::SceneReport(args) => run_editing_transactions_scene_report(args),
+        Commands::SceneSelect(args) => run_editing_transactions_scene_select(args),
+        Commands::TransactionPlan(args) => run_editing_transactions_transaction_plan(args),
+        Commands::TransactionApply(args) => run_editing_transactions_transaction_apply(args),
+        Commands::TransactionUndo(args) => run_editing_transactions_transaction_undo(args),
+        Commands::TextMap(args) => run_editing_transactions_text_map(args),
+        Commands::ShapeText(args) => run_editing_transactions_shape_text(args),
+        Commands::FontSubsetPlan(args) => run_editing_transactions_font_subset_plan(args),
+        Commands::FontSubsetBuild(args) => run_editing_transactions_font_subset_plan(args),
+        Commands::FontSubstitutionReport(args) => {
+            run_editing_transactions_font_substitution_report(args)
+        }
+        Commands::SceneEditText(args) => run_editing_transactions_transaction_apply(args),
+        Commands::TextReflowReport(args) => run_text_reflow_report(args),
+        Commands::LayoutAnalyze(args) => run_text_reflow_layout_analyze(args),
+        Commands::ReadingOrderReport(args) => run_text_reflow_reading_order_report(args),
+        Commands::FlowGraphReport(args) => run_text_reflow_flow_graph_report(args),
+        Commands::ReflowPreview(args) => run_text_reflow_reflow_preview(args),
+        Commands::OverflowReport(args) => run_text_reflow_overflow_report(args),
+        Commands::ReflowConstraints(args) => run_text_reflow_constraints_report(args),
+        Commands::ReflowConfidence(args) => run_text_reflow_confidence_report(args),
+        Commands::ReflowValidate(args) => run_text_reflow_reflow_validate(args),
+        Commands::ReflowRegion(args) => run_text_reflow_reflow_region(args),
+        Commands::ReflowDocument(args) => run_text_reflow_reflow_document(args),
+        Commands::ReflowUndo(args) => run_text_reflow_reflow_undo(args),
+        Commands::ReflowApproveStructure(args) => run_text_reflow_reflow_approve_structure(args),
+        Commands::ReflowOperationReport(args) => run_text_reflow_reflow_operation_report(args),
+        Commands::DocumentSubsystemsReport(args) => run_document_subsystems_report(args),
+        Commands::DocumentSubsystemsAnalyze(args) => run_document_subsystems_analyze(args),
+        Commands::DocumentSubsystemsPlan(args) => run_document_subsystems_plan(args),
+        Commands::DocumentSubsystemsApply(args) => run_document_subsystems_apply(args),
+        Commands::DocumentSubsystemsUndo(args) => run_document_subsystems_undo(args),
+        Commands::DocumentSecurityReport(args) => run_document_security_report(args),
+        Commands::DocumentSecurityAnalyze(args) => run_document_security_analyze(args),
+        Commands::DocumentSecurityPlan(args) => run_document_security_plan(args),
+        Commands::DocumentSecurityApply(args) => run_document_security_apply(args),
+        Commands::DocumentSecurityUndo(args) => run_document_security_undo(args),
+        Commands::DocumentSecurityVerifyResidual(args) => {
+            run_document_security_verify_residual(args)
+        }
+        Commands::FormInstanceReport(args) => run_advanced_editing_vector_list(args),
         Commands::FormCloneOne(mut args) => {
             args.shared_form_policy = "clone-edit-one-instance".to_string();
-            run_prompt20_vector_edit(args)
+            run_advanced_editing_vector_edit(args)
         }
-        Commands::AnnotationAppearanceSharedReport(args) => run_prompt20_vector_list(args),
+        Commands::AnnotationAppearanceSharedReport(args) => run_advanced_editing_vector_list(args),
         Commands::AnnotationAppearanceCloneOne(mut args) => {
             args.shared_form_policy = "clone-edit-one-instance".to_string();
-            run_prompt20_vector_edit(args)
+            run_advanced_editing_vector_edit(args)
         }
-        Commands::VectorList(args) => run_prompt20_vector_list(args),
-        Commands::VectorEdit(args) => run_prompt20_vector_edit(args),
-        Commands::VectorDelete(args) => run_prompt20_vector_direct(args, false),
-        Commands::VectorDuplicate(args) => run_prompt20_vector_direct(args, true),
-        Commands::InkFit(args) => run_prompt20_ink_fit(args),
+        Commands::VectorList(args) => run_advanced_editing_vector_list(args),
+        Commands::VectorEdit(args) => run_advanced_editing_vector_edit(args),
+        Commands::VectorDelete(args) => run_advanced_editing_vector_direct(args, false),
+        Commands::VectorDuplicate(args) => run_advanced_editing_vector_direct(args, true),
+        Commands::InkFit(args) => run_advanced_editing_ink_fit(args),
         Commands::EditForm(args) => run_edit_form(args),
         Commands::EditAnnotation(args) => run_edit_mutation(args, true),
         Commands::EditPageProperty(args) => run_edit_mutation(args, false),
@@ -4653,7 +4663,7 @@ fn run_annotation_appearance_report(
     Ok(())
 }
 
-fn run_rich_media_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_rich_media_report(args: AnnotationMediaRedactionReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::rich_media_report_json(
         &bytes,
@@ -4686,7 +4696,9 @@ fn run_rich_media_sanitize(args: RichMediaSanitizeArgs) -> Result<(), Box<dyn Er
     Ok(())
 }
 
-fn run_rich_media_flatten_poster(args: Prompt17OutputArgs) -> Result<(), Box<dyn Error>> {
+fn run_rich_media_flatten_poster(
+    args: AnnotationMediaRedactionOutputArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let (output, report) = wellfriendpdf_engine::sdk::rich_media_flatten_poster_json(
         &bytes,
@@ -4733,9 +4745,11 @@ fn run_nonaxis_redaction(args: NonAxisRedactionArgs) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-fn run_prompt17_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_annotation_media_redaction_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt17_report_json(
+    let report = wellfriendpdf_engine::sdk::annotation_media_redaction_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4743,25 +4757,29 @@ fn run_prompt17_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_prompt18_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_secure_mutation_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt18_report_json(
+    let report = wellfriendpdf_engine::sdk::secure_mutation_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt18b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_secure_mutation_closeout_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt18b_report_json(
+    let report = wellfriendpdf_engine::sdk::secure_mutation_closeout_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_form_js_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_form_js_report(args: AnnotationMediaRedactionReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::form_js_report_json(
         &bytes,
@@ -4770,7 +4788,10 @@ fn run_form_js_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_form_js_sanitize(args: Prompt19SanitizeArgs, flatten: bool) -> Result<(), Box<dyn Error>> {
+fn run_form_js_sanitize(
+    args: FormActionPolicySanitizeArgs,
+    flatten: bool,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let options = if let Some(path) = &args.options {
         std::fs::read_to_string(path)?
@@ -4819,14 +4840,16 @@ fn run_form_js_sanitize(args: Prompt19SanitizeArgs, flatten: bool) -> Result<(),
     write_xfa_operation_report(&report, args.report.as_ref(), args.json)?;
     if !args.json {
         eprintln!(
-            "Wrote Prompt 19 action-policy output -> {}",
+            "Wrote form action policy action-policy output -> {}",
             args.output.display()
         );
     }
     Ok(())
 }
 
-fn run_interactive_data_closeout_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_interactive_data_closeout_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::interactive_data_closeout_report_json(
         &bytes,
@@ -4852,7 +4875,7 @@ fn run_word_pagination_audit(args: WordPaginationAuditArgs) -> Result<(), Box<dy
         "libreoffice": args.libreoffice.as_ref().map(|path| serde_json::json!({
             "path": path.display().to_string(),
             "exists": path.exists(),
-            "status": "configured_for_external_export; prompt19 audit harness owns execution"
+            "status": "configured_for_external_export; form_action_policy audit harness owns execution"
         })).unwrap_or_else(|| serde_json::json!({"status": "not_requested"}))
     });
     if args.fail_on_unsupported
@@ -4868,49 +4891,59 @@ fn run_word_pagination_audit(args: WordPaginationAuditArgs) -> Result<(), Box<dy
     write_output_optional(&args.output, &pretty)
 }
 
-fn run_prompt19_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_form_action_policy_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt19_report_json(
+    let report = wellfriendpdf_engine::sdk::form_action_policy_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt20_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_advanced_editing_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt20_report_json(
+    let report = wellfriendpdf_engine::sdk::advanced_editing_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt20b_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_advanced_editing_closeout_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt20b_report_json(
+    let report = wellfriendpdf_engine::sdk::advanced_editing_closeout_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt21_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_writer_history_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt21_report_json(
+    let report = wellfriendpdf_engine::sdk::writer_history_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt21_raster_vector_report(args: Prompt21RasterVectorArgs) -> Result<(), Box<dyn Error>> {
+fn run_writer_history_raster_vector_report(
+    args: WriterHistoryRasterVectorArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let options_json = match args.options {
         Some(path) => Some(std::fs::read_to_string(path)?),
         None => None,
     };
-    let report = wellfriendpdf_engine::sdk::prompt21_raster_vector_report_json(
+    let report = wellfriendpdf_engine::sdk::writer_history_raster_vector_report_json(
         &bytes,
         args.page,
         options_json.as_deref(),
@@ -4919,34 +4952,38 @@ fn run_prompt21_raster_vector_report(args: Prompt21RasterVectorArgs) -> Result<(
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt21_font_reconstruction_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
-    let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt21_font_reconstruction_report_json(
-        &bytes,
-        args.password.as_deref().map(str::as_bytes),
-    )?;
-    write_output_optional(&args.output, &pretty_json(&report)?)
-}
-
-fn run_prompt21_history_report(args: Prompt21HistoryArgs) -> Result<(), Box<dyn Error>> {
-    let report = wellfriendpdf_engine::sdk::prompt21_history_report_json()?;
-    write_output_optional(&args.output, &pretty_json(&report)?)
-}
-
-fn run_prompt21_object_stream_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
-    let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt21_object_stream_report_json(
-        &bytes,
-        args.password.as_deref().map(str::as_bytes),
-    )?;
-    write_output_optional(&args.output, &pretty_json(&report)?)
-}
-
-fn run_prompt21_save_object_streams(
-    args: Prompt21SaveObjectStreamsArgs,
+fn run_writer_history_font_reconstruction_report(
+    args: AnnotationMediaRedactionReportArgs,
 ) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let (output, report) = wellfriendpdf_engine::sdk::prompt21_pack_object_streams_json(
+    let report = wellfriendpdf_engine::sdk::writer_history_font_reconstruction_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_writer_history_history_report(args: WriterHistoryHistoryArgs) -> Result<(), Box<dyn Error>> {
+    let report = wellfriendpdf_engine::sdk::writer_history_history_report_json()?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_writer_history_object_stream_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let report = wellfriendpdf_engine::sdk::writer_history_object_stream_report_json(
+        &bytes,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_writer_history_save_object_streams(
+    args: WriterHistorySaveObjectStreamsArgs,
+) -> Result<(), Box<dyn Error>> {
+    let bytes = std::fs::read(&args.pdf)?;
+    let (output, report) = wellfriendpdf_engine::sdk::writer_history_pack_object_streams_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
@@ -4963,25 +5000,31 @@ fn run_prompt21_save_object_streams(
     Ok(())
 }
 
-fn run_prompt22_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_compression_office_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt22_report_json(
+    let report = wellfriendpdf_engine::sdk::compression_office_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt23_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_crypto_writer_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
-    let report = wellfriendpdf_engine::sdk::prompt23_report_json(
+    let report = wellfriendpdf_engine::sdk::crypto_writer_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_writer_determinism_audit(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_writer_determinism_audit(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::writer_determinism_audit_json(
         &bytes,
@@ -4990,7 +5033,9 @@ fn run_writer_determinism_audit(args: Prompt17ReportArgs) -> Result<(), Box<dyn 
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_writer_external_diff(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_writer_external_diff(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::writer_external_diff_json(
         &bytes,
@@ -4999,7 +5044,9 @@ fn run_writer_external_diff(args: Prompt17ReportArgs) -> Result<(), Box<dyn Erro
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_writer_closeout_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_writer_closeout_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::writer_closeout_report_json(
         &bytes,
@@ -5008,7 +5055,7 @@ fn run_writer_closeout_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Er
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_pubsec_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_pubsec_report(args: AnnotationMediaRedactionReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::pubsec_report_json(
         &bytes,
@@ -5017,7 +5064,7 @@ fn run_pubsec_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_pubsec_decrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_pubsec_decrypt(args: CryptoWriterCryptoReportArgs) -> Result<(), Box<dyn Error>> {
     let output = args
         .pdf_output
         .as_ref()
@@ -5043,7 +5090,7 @@ fn run_pubsec_decrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Erro
     write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
 }
 
-fn run_pubsec_encrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_pubsec_encrypt(args: CryptoWriterCryptoReportArgs) -> Result<(), Box<dyn Error>> {
     let output = args
         .pdf_output
         .as_ref()
@@ -5070,12 +5117,12 @@ fn run_pubsec_encrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Erro
     write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
 }
 
-fn run_pubsec_reencrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_pubsec_reencrypt(args: CryptoWriterCryptoReportArgs) -> Result<(), Box<dyn Error>> {
     run_pubsec_reencrypt_with_operation(args, "pubsec_reencrypt")
 }
 
 fn run_pubsec_reencrypt_with_operation(
-    args: Prompt23CryptoReportArgs,
+    args: CryptoWriterCryptoReportArgs,
     operation: &str,
 ) -> Result<(), Box<dyn Error>> {
     let output = args
@@ -5108,7 +5155,7 @@ fn run_pubsec_reencrypt_with_operation(
     write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
 }
 
-fn run_pdf_mac_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_pdf_mac_report(args: AnnotationMediaRedactionReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::pdf_mac_report_json(
         &bytes,
@@ -5117,7 +5164,7 @@ fn run_pdf_mac_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_pdf_mac_verify(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_pdf_mac_verify(args: AnnotationMediaRedactionReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::pdf_mac_verify_json(
         &bytes,
@@ -5126,7 +5173,7 @@ fn run_pdf_mac_verify(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_pdf_mac_create(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_pdf_mac_create(args: CryptoWriterCryptoReportArgs) -> Result<(), Box<dyn Error>> {
     let output = args
         .pdf_output
         .as_ref()
@@ -5157,7 +5204,7 @@ fn run_pdf_mac_create(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Erro
 }
 
 fn load_pubsec_provider(
-    args: &Prompt23CryptoReportArgs,
+    args: &CryptoWriterCryptoReportArgs,
 ) -> Result<wellfriendpdf_engine::PubSecKeyProvider, Box<dyn Error>> {
     if let Some(pfx_path) = &args.pfx {
         if !args.certificate.is_empty() || !args.private_key.is_empty() {
@@ -5188,7 +5235,9 @@ fn load_pubsec_provider(
     Ok(wellfriendpdf_engine::PubSecKeyProvider::single(identity))
 }
 
-fn read_private_key_password(args: &Prompt23CryptoReportArgs) -> Result<Vec<u8>, Box<dyn Error>> {
+fn read_private_key_password(
+    args: &CryptoWriterCryptoReportArgs,
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let Some(path) = &args.private_key_password_file else {
         return Ok(Vec::new());
     };
@@ -5200,7 +5249,7 @@ fn read_private_key_password(args: &Prompt23CryptoReportArgs) -> Result<Vec<u8>,
 }
 
 fn pubsec_encrypt_options_from_args(
-    args: &Prompt23CryptoReportArgs,
+    args: &CryptoWriterCryptoReportArgs,
 ) -> Result<wellfriendpdf_engine::PubSecEncryptOptions, Box<dyn Error>> {
     let recipient_paths = if args.recipient_certificate.is_empty() {
         &args.certificate
@@ -5234,7 +5283,7 @@ fn refuse_overwrite(path: &std::path::Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_aes_gcm_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_aes_gcm_report(args: AnnotationMediaRedactionReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::aes_gcm_report_json(
         &bytes,
@@ -5243,7 +5292,7 @@ fn run_aes_gcm_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_aes_gcm_encrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_aes_gcm_encrypt(args: CryptoWriterCryptoReportArgs) -> Result<(), Box<dyn Error>> {
     use wellfriendpdf_engine::crypto::{secret_bytes, EncryptAlgorithm, EncryptParams};
 
     let output = args
@@ -5283,7 +5332,7 @@ fn run_aes_gcm_encrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Err
     write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
 }
 
-fn run_aes_gcm_decrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_aes_gcm_decrypt(args: CryptoWriterCryptoReportArgs) -> Result<(), Box<dyn Error>> {
     let output = args
         .pdf_output
         .as_ref()
@@ -5307,18 +5356,20 @@ fn run_aes_gcm_decrypt(args: Prompt23CryptoReportArgs) -> Result<(), Box<dyn Err
     write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
 }
 
-fn run_crypto_tamper_test(args: Prompt23TamperArgs) -> Result<(), Box<dyn Error>> {
+fn run_crypto_tamper_test(args: CryptoWriterTamperArgs) -> Result<(), Box<dyn Error>> {
     let report = wellfriendpdf_engine::sdk::crypto_tamper_test_json()?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt22_optimize(args: Prompt22OptimizeArgs) -> Result<(), Box<dyn Error>> {
+fn run_compression_office_optimize(
+    args: CompressionOfficeOptimizeArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let options_json = match args.options {
         Some(path) => Some(std::fs::read_to_string(path)?),
         None => None,
     };
-    let (output, report) = wellfriendpdf_engine::sdk::prompt22_optimize_pdf_json(
+    let (output, report) = wellfriendpdf_engine::sdk::compression_office_optimize_pdf_json(
         &bytes,
         options_json.as_deref(),
         args.password.as_deref().map(str::as_bytes),
@@ -5336,16 +5387,21 @@ fn run_prompt22_optimize(args: Prompt22OptimizeArgs) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-fn run_prompt22_office_inspect(args: Prompt22OfficeArgs) -> Result<(), Box<dyn Error>> {
+fn run_compression_office_office_inspect(
+    args: CompressionOfficeOfficeArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.input)?;
-    let report = wellfriendpdf_engine::sdk::prompt22_office_inspect_json(&bytes, &args.format)?;
+    let report =
+        wellfriendpdf_engine::sdk::compression_office_office_inspect_json(&bytes, &args.format)?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt22_office_to_pdf(args: Prompt22OfficeToPdfArgs) -> Result<(), Box<dyn Error>> {
+fn run_compression_office_office_to_pdf(
+    args: CompressionOfficeOfficeToPdfArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.input)?;
     let (output, report) =
-        wellfriendpdf_engine::sdk::prompt22_office_to_pdf_json(&bytes, &args.format)?;
+        wellfriendpdf_engine::sdk::compression_office_office_to_pdf_json(&bytes, &args.format)?;
     if !args.dry_run {
         std::fs::write(&args.output, output)?;
     }
@@ -5359,7 +5415,9 @@ fn run_prompt22_office_to_pdf(args: Prompt22OfficeToPdfArgs) -> Result<(), Box<d
     Ok(())
 }
 
-fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn Error>> {
+fn run_advanced_editing_closeout_text_range(
+    args: AdvancedEditingCloseoutTextRangeArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let _selection_mode = if args.visual_selection {
         "visual_selection_resolved_to_logical"
@@ -5368,7 +5426,7 @@ fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn 
     };
     let _logical_requested = args.logical;
     if args.analyze {
-        let report = wellfriendpdf_engine::sdk::prompt20b_text_range_analyze_json(
+        let report = wellfriendpdf_engine::sdk::advanced_editing_closeout_text_range_analyze_json(
             &bytes,
             args.page,
             args.password.as_deref().map(str::as_bytes),
@@ -5379,11 +5437,12 @@ fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn 
         .request
         .ok_or_else(|| usage_error("edit-text-range requires --request or --analyze"))?;
     let request_json = std::fs::read_to_string(request)?;
-    let (output, report) = wellfriendpdf_engine::sdk::prompt20b_text_range_edit_json(
-        &bytes,
-        &request_json,
-        args.password.as_deref().map(str::as_bytes),
-    )?;
+    let (output, report) =
+        wellfriendpdf_engine::sdk::advanced_editing_closeout_text_range_edit_json(
+            &bytes,
+            &request_json,
+            args.password.as_deref().map(str::as_bytes),
+        )?;
     std::fs::write(args.output, output)?;
     let pretty = pretty_json(&report)?;
     if let Some(path) = args.report {
@@ -5394,18 +5453,22 @@ fn run_prompt20b_text_range(args: Prompt20bTextRangeArgs) -> Result<(), Box<dyn 
     Ok(())
 }
 
-fn run_prompt31_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_source_editing_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt31_report_json(
+    let report = wellfriendpdf_engine::sdk::source_editing_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&None, &pretty_json(&report)?)
 }
 
-fn run_prompt31_provenance(args: Prompt31TextSelectionArgs) -> Result<(), Box<dyn Error>> {
+fn run_source_editing_provenance(
+    args: SourceEditingTextSelectionArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt31_provenance_json(
+    let report = wellfriendpdf_engine::sdk::source_editing_provenance_json(
         &input,
         args.page,
         &args.source_text,
@@ -5415,7 +5478,9 @@ fn run_prompt31_provenance(args: Prompt31TextSelectionArgs) -> Result<(), Box<dy
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt31_eligibility(args: Prompt31TextSelectionArgs) -> Result<(), Box<dyn Error>> {
+fn run_source_editing_eligibility(
+    args: SourceEditingTextSelectionArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let request = serde_json::json!({
         "requested_mode": "operator_preserving",
@@ -5424,7 +5489,7 @@ fn run_prompt31_eligibility(args: Prompt31TextSelectionArgs) -> Result<(), Box<d
         "replacement_text": args.replacement_text,
         "signature_policy_override": false
     });
-    let report = wellfriendpdf_engine::sdk::prompt31_edit_eligibility_json(
+    let report = wellfriendpdf_engine::sdk::source_editing_edit_eligibility_json(
         &input,
         &request.to_string(),
         args.password.as_deref().map(str::as_bytes),
@@ -5432,7 +5497,7 @@ fn run_prompt31_eligibility(args: Prompt31TextSelectionArgs) -> Result<(), Box<d
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt31_text_edit(args: Prompt31TextEditArgs) -> Result<(), Box<dyn Error>> {
+fn run_source_editing_text_edit(args: SourceEditingTextEditArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let request = serde_json::json!({
         "requested_mode": "operator_preserving",
@@ -5441,7 +5506,7 @@ fn run_prompt31_text_edit(args: Prompt31TextEditArgs) -> Result<(), Box<dyn Erro
         "replacement_text": args.replacement_text,
         "signature_policy_override": args.signature_policy_override
     });
-    let (output, report) = wellfriendpdf_engine::sdk::prompt31_operator_text_edit_json(
+    let (output, report) = wellfriendpdf_engine::sdk::source_editing_operator_text_edit_json(
         &input,
         &request.to_string(),
         args.password.as_deref().map(str::as_bytes),
@@ -5456,7 +5521,7 @@ fn run_prompt31_text_edit(args: Prompt31TextEditArgs) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-fn run_prompt31_path_edit(args: Prompt31PathEditArgs) -> Result<(), Box<dyn Error>> {
+fn run_source_editing_path_edit(args: SourceEditingPathEditArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let operation = if let Some(path) = args.operation {
         std::fs::read_to_string(path)?
@@ -5469,7 +5534,7 @@ fn run_prompt31_path_edit(args: Prompt31PathEditArgs) -> Result<(), Box<dyn Erro
         "shared_form_policy": args.shared_form_policy
     });
     let options_json = options.to_string();
-    let (output, report) = wellfriendpdf_engine::sdk::prompt31_path_edit_json(
+    let (output, report) = wellfriendpdf_engine::sdk::source_editing_path_edit_json(
         &input,
         args.page,
         &args.id,
@@ -5487,10 +5552,12 @@ fn run_prompt31_path_edit(args: Prompt31PathEditArgs) -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-fn run_prompt31_image_eligibility(args: Prompt31ImageArgs) -> Result<(), Box<dyn Error>> {
+fn run_source_editing_image_eligibility(
+    args: SourceEditingImageArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let _ = args.occurrence.as_deref();
-    let report = wellfriendpdf_engine::sdk::prompt31_image_eligibility_json(
+    let report = wellfriendpdf_engine::sdk::source_editing_image_eligibility_json(
         &input,
         args.page,
         args.password.as_deref().map(str::as_bytes),
@@ -5498,23 +5565,27 @@ fn run_prompt31_image_eligibility(args: Prompt31ImageArgs) -> Result<(), Box<dyn
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt32_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_editing_transactions_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt32_report_json(
+    let report = wellfriendpdf_engine::sdk::editing_transactions_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt32_scene_report(args: Prompt32SceneReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_editing_transactions_scene_report(
+    args: EditingTransactionsSceneReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let pages = if args.page.is_empty() {
         None
     } else {
         Some(serde_json::to_string(&args.page)?)
     };
-    let report = wellfriendpdf_engine::sdk::prompt32_scene_report_json(
+    let report = wellfriendpdf_engine::sdk::editing_transactions_scene_report_json(
         &input,
         pages.as_deref(),
         args.password.as_deref().map(str::as_bytes),
@@ -5522,7 +5593,9 @@ fn run_prompt32_scene_report(args: Prompt32SceneReportArgs) -> Result<(), Box<dy
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt32_scene_select(args: Prompt32SceneSelectArgs) -> Result<(), Box<dyn Error>> {
+fn run_editing_transactions_scene_select(
+    args: EditingTransactionsSceneSelectArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let point = match (args.x, args.y) {
         (Some(x), Some(y)) => Some([x, y]),
@@ -5534,7 +5607,7 @@ fn run_prompt32_scene_select(args: Prompt32SceneSelectArgs) -> Result<(), Box<dy
     let region = args
         .region
         .as_deref()
-        .map(parse_prompt32_region)
+        .map(parse_editing_transactions_region)
         .transpose()?;
     let request = serde_json::json!({
         "page": args.page,
@@ -5543,7 +5616,7 @@ fn run_prompt32_scene_select(args: Prompt32SceneSelectArgs) -> Result<(), Box<dy
         "region": region,
         "cycle_index": args.cycle_index,
     });
-    let report = wellfriendpdf_engine::sdk::prompt32_scene_select_json(
+    let report = wellfriendpdf_engine::sdk::editing_transactions_scene_select_json(
         &input,
         &request.to_string(),
         args.password.as_deref().map(str::as_bytes),
@@ -5551,10 +5624,12 @@ fn run_prompt32_scene_select(args: Prompt32SceneSelectArgs) -> Result<(), Box<dy
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt32_transaction_plan(args: Prompt32TransactionArgs) -> Result<(), Box<dyn Error>> {
+fn run_editing_transactions_transaction_plan(
+    args: EditingTransactionsTransactionArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt32_request_json(&args)?;
-    let report = wellfriendpdf_engine::sdk::prompt32_transaction_plan_json(
+    let request = editing_transactions_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::editing_transactions_transaction_plan_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5567,10 +5642,12 @@ fn run_prompt32_transaction_plan(args: Prompt32TransactionArgs) -> Result<(), Bo
     }
 }
 
-fn run_prompt32_transaction_apply(args: Prompt32TransactionArgs) -> Result<(), Box<dyn Error>> {
+fn run_editing_transactions_transaction_apply(
+    args: EditingTransactionsTransactionArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt32_request_json(&args)?;
-    let (output, report) = wellfriendpdf_engine::sdk::prompt32_transaction_apply_json(
+    let request = editing_transactions_request_json(&args)?;
+    let (output, report) = wellfriendpdf_engine::sdk::editing_transactions_transaction_apply_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5585,19 +5662,21 @@ fn run_prompt32_transaction_apply(args: Prompt32TransactionArgs) -> Result<(), B
     Ok(())
 }
 
-fn run_prompt32_transaction_undo(args: Prompt32TransactionArgs) -> Result<(), Box<dyn Error>> {
+fn run_editing_transactions_transaction_undo(
+    args: EditingTransactionsTransactionArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt32_request_json(&args)?;
-    let plan_json = wellfriendpdf_engine::sdk::prompt32_transaction_plan_json(
+    let request = editing_transactions_request_json(&args)?;
+    let plan_json = wellfriendpdf_engine::sdk::editing_transactions_transaction_plan_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
     )?;
     let report = serde_json::json!({
         "schema_version": wellfriendpdf_engine::REPORT_ENVELOPE_VERSION,
-        "kind": "prompt32_transaction_undo",
+        "kind": "editing_transactions_transaction_undo",
         "report": {
-            "schema_version": wellfriendpdf_engine::PROMPT32_SCHEMA_VERSION,
+            "schema_version": wellfriendpdf_engine::EDITING_TRANSACTIONS_SCHEMA_VERSION,
             "plan": serde_json::from_str::<serde_json::Value>(&plan_json)?["report"].clone(),
             "undo_policy": "exact_preimage_restore_or_declared_non_invertible_before_commit",
             "raw_preimage_not_logged": true,
@@ -5607,20 +5686,30 @@ fn run_prompt32_transaction_undo(args: Prompt32TransactionArgs) -> Result<(), Bo
     write_output_optional(&args.report, &serde_json::to_string_pretty(&report)?)
 }
 
-fn run_prompt32_text_map(args: Prompt32TextArgs) -> Result<(), Box<dyn Error>> {
-    let report =
-        wellfriendpdf_engine::sdk::prompt32_text_map_json(&args.text, args.direction.as_deref())?;
+fn run_editing_transactions_text_map(
+    args: EditingTransactionsTextArgs,
+) -> Result<(), Box<dyn Error>> {
+    let report = wellfriendpdf_engine::sdk::editing_transactions_text_map_json(
+        &args.text,
+        args.direction.as_deref(),
+    )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt32_shape_text(args: Prompt32TextArgs) -> Result<(), Box<dyn Error>> {
-    let report =
-        wellfriendpdf_engine::sdk::prompt32_shape_text_json(&args.text, args.direction.as_deref())?;
+fn run_editing_transactions_shape_text(
+    args: EditingTransactionsTextArgs,
+) -> Result<(), Box<dyn Error>> {
+    let report = wellfriendpdf_engine::sdk::editing_transactions_shape_text_json(
+        &args.text,
+        args.direction.as_deref(),
+    )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt32_font_subset_plan(args: Prompt32TextArgs) -> Result<(), Box<dyn Error>> {
-    let report = wellfriendpdf_engine::sdk::prompt32_font_subset_plan_json(
+fn run_editing_transactions_font_subset_plan(
+    args: EditingTransactionsTextArgs,
+) -> Result<(), Box<dyn Error>> {
+    let report = wellfriendpdf_engine::sdk::editing_transactions_font_subset_plan_json(
         &args.text,
         args.direction.as_deref(),
         args.policy.as_deref(),
@@ -5628,10 +5717,10 @@ fn run_prompt32_font_subset_plan(args: Prompt32TextArgs) -> Result<(), Box<dyn E
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt32_font_substitution_report(
-    args: Prompt32FontSubstitutionArgs,
+fn run_editing_transactions_font_substitution_report(
+    args: EditingTransactionsFontSubstitutionArgs,
 ) -> Result<(), Box<dyn Error>> {
-    let report = wellfriendpdf_engine::sdk::prompt32_font_substitution_report_json(
+    let report = wellfriendpdf_engine::sdk::editing_transactions_font_substitution_report_json(
         &args.requested_family,
         &args.text,
         args.policy.as_deref(),
@@ -5639,19 +5728,19 @@ fn run_prompt32_font_substitution_report(
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_report(args: AnnotationMediaRedactionReportArgs) -> Result<(), Box<dyn Error>> {
     let bytes = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_report_json(
+    let report = wellfriendpdf_engine::sdk::text_reflow_report_json(
         &bytes,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_layout_analyze(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_layout_analyze(args: TextReflowReflowArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt33_request_json(&args)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_layout_analyze_json(
+    let request = text_reflow_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::text_reflow_layout_analyze_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5659,28 +5748,32 @@ fn run_prompt33_layout_analyze(args: Prompt33ReflowArgs) -> Result<(), Box<dyn E
     write_output_optional(&args.json_output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_reading_order_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_reading_order_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_reading_order_report_json(
+    let report = wellfriendpdf_engine::sdk::text_reflow_reading_order_report_json(
         &input,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_flow_graph_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_flow_graph_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_flow_graph_report_json(
+    let report = wellfriendpdf_engine::sdk::text_reflow_flow_graph_report_json(
         &input,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_reflow_preview(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_reflow_preview(args: TextReflowReflowArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt33_request_json(&args)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_reflow_preview_json(
+    let request = text_reflow_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::text_reflow_reflow_preview_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5688,10 +5781,10 @@ fn run_prompt33_reflow_preview(args: Prompt33ReflowArgs) -> Result<(), Box<dyn E
     write_output_optional(&args.json_output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_overflow_report(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_overflow_report(args: TextReflowReflowArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt33_request_json(&args)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_overflow_report_json(
+    let request = text_reflow_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::text_reflow_overflow_report_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5699,10 +5792,10 @@ fn run_prompt33_overflow_report(args: Prompt33ReflowArgs) -> Result<(), Box<dyn 
     write_output_optional(&args.json_output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_constraints_report(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_constraints_report(args: TextReflowReflowArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt33_request_json(&args)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_constraints_report_json(
+    let request = text_reflow_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::text_reflow_constraints_report_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5710,10 +5803,10 @@ fn run_prompt33_constraints_report(args: Prompt33ReflowArgs) -> Result<(), Box<d
     write_output_optional(&args.json_output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_confidence_report(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_confidence_report(args: TextReflowReflowArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt33_request_json(&args)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_confidence_report_json(
+    let request = text_reflow_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::text_reflow_confidence_report_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5721,11 +5814,11 @@ fn run_prompt33_confidence_report(args: Prompt33ReflowArgs) -> Result<(), Box<dy
     write_output_optional(&args.json_output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_reflow_validate(args: Prompt33ValidateArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_reflow_validate(args: TextReflowValidateArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let output = std::fs::read(&args.output_pdf)?;
     let request = std::fs::read_to_string(&args.request)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_validate_reflow_output_json(
+    let report = wellfriendpdf_engine::sdk::text_reflow_validate_reflow_output_json(
         &input,
         &output,
         &request,
@@ -5734,10 +5827,10 @@ fn run_prompt33_reflow_validate(args: Prompt33ValidateArgs) -> Result<(), Box<dy
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_reflow_region(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_reflow_region(args: TextReflowReflowArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt33_request_json(&args)?;
-    let (output, report) = wellfriendpdf_engine::sdk::prompt33_reflow_region_json(
+    let request = text_reflow_request_json(&args)?;
+    let (output, report) = wellfriendpdf_engine::sdk::text_reflow_reflow_region_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5752,10 +5845,10 @@ fn run_prompt33_reflow_region(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Er
     Ok(())
 }
 
-fn run_prompt33_reflow_document(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_reflow_document(args: TextReflowReflowArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt33_request_json(&args)?;
-    let (output, report) = wellfriendpdf_engine::sdk::prompt33_reflow_document_json(
+    let request = text_reflow_request_json(&args)?;
+    let (output, report) = wellfriendpdf_engine::sdk::text_reflow_reflow_document_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5770,22 +5863,24 @@ fn run_prompt33_reflow_document(args: Prompt33ReflowArgs) -> Result<(), Box<dyn 
     Ok(())
 }
 
-fn run_prompt33_reflow_undo(args: Prompt33UndoArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_reflow_undo(args: TextReflowUndoArgs) -> Result<(), Box<dyn Error>> {
     if args.restored_pdf == args.pdf || args.restored_pdf == args.output_pdf {
         return Err(
-            "prompt33 reflow-undo requires --restored-pdf distinct from both input PDFs".into(),
+            "text_reflow reflow-undo requires --restored-pdf distinct from both input PDFs".into(),
         );
     }
     if args.restored_pdf.exists() {
-        return Err("prompt33 reflow-undo refuses to overwrite an existing --restored-pdf".into());
+        return Err(
+            "text_reflow reflow-undo refuses to overwrite an existing --restored-pdf".into(),
+        );
     }
     if args.report.as_ref().is_some_and(|path| path.exists()) {
-        return Err("prompt33 reflow-undo refuses to overwrite an existing --report".into());
+        return Err("text_reflow reflow-undo refuses to overwrite an existing --report".into());
     }
     let input = read_edit_input(&args.pdf, &args.password)?;
     let output = std::fs::read(&args.output_pdf)?;
     let request = std::fs::read_to_string(&args.request)?;
-    let (restored, report) = wellfriendpdf_engine::sdk::prompt33_undo_reflow_json(
+    let (restored, report) = wellfriendpdf_engine::sdk::text_reflow_undo_reflow_json(
         &input,
         &output,
         &request,
@@ -5801,12 +5896,12 @@ fn run_prompt33_reflow_undo(args: Prompt33UndoArgs) -> Result<(), Box<dyn Error>
     Ok(())
 }
 
-fn run_prompt33_reflow_approve_structure(
-    args: Prompt33StructureCorrectionArgs,
+fn run_text_reflow_reflow_approve_structure(
+    args: TextReflowStructureCorrectionArgs,
 ) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let correction = std::fs::read_to_string(args.correction)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_reflow_approve_structure_json(
+    let report = wellfriendpdf_engine::sdk::text_reflow_reflow_approve_structure_json(
         &input,
         &correction,
         args.password.as_deref().map(str::as_bytes),
@@ -5814,10 +5909,12 @@ fn run_prompt33_reflow_approve_structure(
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt33_reflow_operation_report(args: Prompt33ReflowArgs) -> Result<(), Box<dyn Error>> {
+fn run_text_reflow_reflow_operation_report(
+    args: TextReflowReflowArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let request = prompt33_request_json(&args)?;
-    let report = wellfriendpdf_engine::sdk::prompt33_reflow_operation_report_json(
+    let request = text_reflow_request_json(&args)?;
+    let report = wellfriendpdf_engine::sdk::text_reflow_reflow_operation_report_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5825,28 +5922,32 @@ fn run_prompt33_reflow_operation_report(args: Prompt33ReflowArgs) -> Result<(), 
     write_output_optional(&args.json_output, &pretty_json(&report)?)
 }
 
-fn run_prompt34_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_subsystems_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt34_report_json(
+    let report = wellfriendpdf_engine::sdk::document_subsystems_report_json(
         &input,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt34_analyze(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_subsystems_analyze(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt34_analyze_json(
+    let report = wellfriendpdf_engine::sdk::document_subsystems_analyze_json(
         &input,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt34_plan(args: Prompt34RequestArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_subsystems_plan(args: DocumentSubsystemsRequestArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let request = std::fs::read_to_string(args.request)?;
-    let report = wellfriendpdf_engine::sdk::prompt34_plan_json(
+    let report = wellfriendpdf_engine::sdk::document_subsystems_plan_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5854,19 +5955,21 @@ fn run_prompt34_plan(args: Prompt34RequestArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt34_apply(args: Prompt34ApplyArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_subsystems_apply(args: DocumentSubsystemsApplyArgs) -> Result<(), Box<dyn Error>> {
     if args.output == args.pdf {
-        return Err("prompt34-apply requires --output distinct from the input PDF".into());
+        return Err(
+            "document_subsystems-apply requires --output distinct from the input PDF".into(),
+        );
     }
     if args.output.exists() {
-        return Err("prompt34-apply refuses to overwrite an existing --output".into());
+        return Err("document_subsystems-apply refuses to overwrite an existing --output".into());
     }
     if args.report.as_ref().is_some_and(|path| path.exists()) {
-        return Err("prompt34-apply refuses to overwrite an existing --report".into());
+        return Err("document_subsystems-apply refuses to overwrite an existing --report".into());
     }
     let input = read_edit_input(&args.pdf, &args.password)?;
     let request = std::fs::read_to_string(args.request)?;
-    let (output, report) = wellfriendpdf_engine::sdk::prompt34_apply_json(
+    let (output, report) = wellfriendpdf_engine::sdk::document_subsystems_apply_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5880,20 +5983,24 @@ fn run_prompt34_apply(args: Prompt34ApplyArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_prompt34_undo(args: Prompt34UndoArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_subsystems_undo(args: DocumentSubsystemsUndoArgs) -> Result<(), Box<dyn Error>> {
     if args.restored_pdf == args.pdf || args.restored_pdf == args.output_pdf {
-        return Err("prompt34-undo requires --restored-pdf distinct from both input PDFs".into());
+        return Err(
+            "document_subsystems-undo requires --restored-pdf distinct from both input PDFs".into(),
+        );
     }
     if args.restored_pdf.exists() {
-        return Err("prompt34-undo refuses to overwrite an existing --restored-pdf".into());
+        return Err(
+            "document_subsystems-undo refuses to overwrite an existing --restored-pdf".into(),
+        );
     }
     if args.report.as_ref().is_some_and(|path| path.exists()) {
-        return Err("prompt34-undo refuses to overwrite an existing --report".into());
+        return Err("document_subsystems-undo refuses to overwrite an existing --report".into());
     }
     let input = read_edit_input(&args.pdf, &args.password)?;
     let output = std::fs::read(args.output_pdf)?;
     let request = std::fs::read_to_string(args.request)?;
-    let (restored, report) = wellfriendpdf_engine::sdk::prompt34_undo_json(
+    let (restored, report) = wellfriendpdf_engine::sdk::document_subsystems_undo_json(
         &input,
         &output,
         &request,
@@ -5908,28 +6015,32 @@ fn run_prompt34_undo(args: Prompt34UndoArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_prompt35_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_security_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt35_report_json(
+    let report = wellfriendpdf_engine::sdk::document_security_report_json(
         &input,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt35_analyze(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_security_analyze(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
-    let report = wellfriendpdf_engine::sdk::prompt35_analyze_json(
+    let report = wellfriendpdf_engine::sdk::document_security_analyze_json(
         &input,
         args.password.as_deref().map(str::as_bytes),
     )?;
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt35_plan(args: Prompt35RequestArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_security_plan(args: DocumentSecurityRequestArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let request = std::fs::read_to_string(args.request)?;
-    let report = wellfriendpdf_engine::sdk::prompt35_plan_json(
+    let report = wellfriendpdf_engine::sdk::document_security_plan_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5937,19 +6048,19 @@ fn run_prompt35_plan(args: Prompt35RequestArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn run_prompt35_apply(args: Prompt35ApplyArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_security_apply(args: DocumentSecurityApplyArgs) -> Result<(), Box<dyn Error>> {
     if args.output == args.pdf {
-        return Err("prompt35-apply requires --output distinct from the input PDF".into());
+        return Err("document_security-apply requires --output distinct from the input PDF".into());
     }
     if args.output.exists() {
-        return Err("prompt35-apply refuses to overwrite an existing --output".into());
+        return Err("document_security-apply refuses to overwrite an existing --output".into());
     }
     if args.report.as_ref().is_some_and(|path| path.exists()) {
-        return Err("prompt35-apply refuses to overwrite an existing --report".into());
+        return Err("document_security-apply refuses to overwrite an existing --report".into());
     }
     let input = read_edit_input(&args.pdf, &args.password)?;
     let request = std::fs::read_to_string(args.request)?;
-    let (output, report) = wellfriendpdf_engine::sdk::prompt35_apply_json(
+    let (output, report) = wellfriendpdf_engine::sdk::document_security_apply_json(
         &input,
         &request,
         args.password.as_deref().map(str::as_bytes),
@@ -5963,20 +6074,24 @@ fn run_prompt35_apply(args: Prompt35ApplyArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_prompt35_undo(args: Prompt35UndoArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_security_undo(args: DocumentSecurityUndoArgs) -> Result<(), Box<dyn Error>> {
     if args.restored_pdf == args.pdf || args.restored_pdf == args.output_pdf {
-        return Err("prompt35-undo requires --restored-pdf distinct from both input PDFs".into());
+        return Err(
+            "document_security-undo requires --restored-pdf distinct from both input PDFs".into(),
+        );
     }
     if args.restored_pdf.exists() {
-        return Err("prompt35-undo refuses to overwrite an existing --restored-pdf".into());
+        return Err(
+            "document_security-undo refuses to overwrite an existing --restored-pdf".into(),
+        );
     }
     if args.report.as_ref().is_some_and(|path| path.exists()) {
-        return Err("prompt35-undo refuses to overwrite an existing --report".into());
+        return Err("document_security-undo refuses to overwrite an existing --report".into());
     }
     let input = read_edit_input(&args.pdf, &args.password)?;
     let output = std::fs::read(args.output_pdf)?;
     let request = std::fs::read_to_string(args.request)?;
-    let (restored, report) = wellfriendpdf_engine::sdk::prompt35_undo_json(
+    let (restored, report) = wellfriendpdf_engine::sdk::document_security_undo_json(
         &input,
         &output,
         &request,
@@ -5991,10 +6106,12 @@ fn run_prompt35_undo(args: Prompt35UndoArgs) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn run_prompt35_verify_residual(args: Prompt35VerifyArgs) -> Result<(), Box<dyn Error>> {
+fn run_document_security_verify_residual(
+    args: DocumentSecurityVerifyArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let terms = std::fs::read_to_string(args.terms)?;
-    let report = wellfriendpdf_engine::sdk::prompt35_verify_residual_json(
+    let report = wellfriendpdf_engine::sdk::document_security_verify_residual_json(
         &input,
         &terms,
         args.password.as_deref().map(str::as_bytes),
@@ -6002,14 +6119,14 @@ fn run_prompt35_verify_residual(args: Prompt35VerifyArgs) -> Result<(), Box<dyn 
     write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
-fn prompt33_request_json(args: &Prompt33ReflowArgs) -> Result<String, Box<dyn Error>> {
+fn text_reflow_request_json(args: &TextReflowReflowArgs) -> Result<String, Box<dyn Error>> {
     if let Some(path) = &args.request {
         return Ok(std::fs::read_to_string(path)?);
     }
     let region = args
         .region
         .as_deref()
-        .map(parse_prompt32_region)
+        .map(parse_editing_transactions_region)
         .transpose()?;
     Ok(serde_json::json!({
         "requested_mode": args.mode,
@@ -6029,7 +6146,9 @@ fn prompt33_request_json(args: &Prompt33ReflowArgs) -> Result<String, Box<dyn Er
     .to_string())
 }
 
-fn prompt32_request_json(args: &Prompt32TransactionArgs) -> Result<String, Box<dyn Error>> {
+fn editing_transactions_request_json(
+    args: &EditingTransactionsTransactionArgs,
+) -> Result<String, Box<dyn Error>> {
     if let Some(path) = &args.request {
         return Ok(std::fs::read_to_string(path)?);
     }
@@ -6046,7 +6165,7 @@ fn prompt32_request_json(args: &Prompt32TransactionArgs) -> Result<String, Box<d
     .to_string())
 }
 
-fn parse_prompt32_region(value: &str) -> Result<[f64; 4], Box<dyn Error>> {
+fn parse_editing_transactions_region(value: &str) -> Result<[f64; 4], Box<dyn Error>> {
     let values = value
         .split(',')
         .map(|item| item.trim().parse::<f64>())
@@ -6057,13 +6176,17 @@ fn parse_prompt32_region(value: &str) -> Result<[f64; 4], Box<dyn Error>> {
     Ok([values[0], values[1], values[2], values[3]])
 }
 
-fn run_prompt20_vector_list(args: Prompt20VectorListArgs) -> Result<(), Box<dyn Error>> {
+fn run_advanced_editing_vector_list(
+    args: AdvancedEditingVectorListArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let report = wellfriendpdf_engine::list_vector_objects(&input, args.page)?;
     write_output_optional(&args.output, &serde_json::to_string_pretty(&report)?)
 }
 
-fn run_prompt20_vector_edit(args: Prompt20VectorEditArgs) -> Result<(), Box<dyn Error>> {
+fn run_advanced_editing_vector_edit(
+    args: AdvancedEditingVectorEditArgs,
+) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let operation: wellfriendpdf_engine::VectorEditOperation =
         serde_json::from_str(&std::fs::read_to_string(&args.operation)?)?;
@@ -6075,7 +6198,9 @@ fn run_prompt20_vector_edit(args: Prompt20VectorEditArgs) -> Result<(), Box<dyn 
         &wellfriendpdf_engine::VectorEditOptions {
             signature_policy_override: args.signature_policy_override,
             deterministic: true,
-            shared_form_policy: parse_prompt20_shared_form_policy(&args.shared_form_policy)?,
+            shared_form_policy: parse_advanced_editing_shared_form_policy(
+                &args.shared_form_policy,
+            )?,
         },
     )?;
     std::fs::write(&args.output, output)?;
@@ -6088,8 +6213,8 @@ fn run_prompt20_vector_edit(args: Prompt20VectorEditArgs) -> Result<(), Box<dyn 
     Ok(())
 }
 
-fn run_prompt20_vector_direct(
-    args: Prompt20VectorDirectArgs,
+fn run_advanced_editing_vector_direct(
+    args: AdvancedEditingVectorDirectArgs,
     duplicate: bool,
 ) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
@@ -6109,7 +6234,9 @@ fn run_prompt20_vector_direct(
         &wellfriendpdf_engine::VectorEditOptions {
             signature_policy_override: args.signature_policy_override,
             deterministic: true,
-            shared_form_policy: parse_prompt20_shared_form_policy(&args.shared_form_policy)?,
+            shared_form_policy: parse_advanced_editing_shared_form_policy(
+                &args.shared_form_policy,
+            )?,
         },
     )?;
     std::fs::write(&args.output, output)?;
@@ -6122,7 +6249,7 @@ fn run_prompt20_vector_direct(
     Ok(())
 }
 
-fn parse_prompt20_shared_form_policy(
+fn parse_advanced_editing_shared_form_policy(
     value: &str,
 ) -> Result<wellfriendpdf_engine::SharedFormEditPolicy, Box<dyn Error>> {
     match value {
@@ -6138,7 +6265,7 @@ fn parse_prompt20_shared_form_policy(
     }
 }
 
-fn run_prompt20_ink_fit(args: Prompt20InkFitArgs) -> Result<(), Box<dyn Error>> {
+fn run_advanced_editing_ink_fit(args: AdvancedEditingInkFitArgs) -> Result<(), Box<dyn Error>> {
     let input = read_edit_input(&args.pdf, &args.password)?;
     let options = args
         .options
@@ -6165,7 +6292,10 @@ fn run_prompt20_ink_fit(args: Prompt20InkFitArgs) -> Result<(), Box<dyn Error>> 
     Ok(())
 }
 
-fn run_prompt18_redaction(args: NonAxisRedactionArgs, masked: bool) -> Result<(), Box<dyn Error>> {
+fn run_secure_mutation_redaction(
+    args: NonAxisRedactionArgs,
+    masked: bool,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let mut options_value: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&args.plan)?)?;
@@ -6198,7 +6328,9 @@ fn run_prompt18_redaction(args: NonAxisRedactionArgs, masked: bool) -> Result<()
     write_xfa_operation_report(&report, args.report.as_ref(), args.json)
 }
 
-fn run_associated_files_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+fn run_associated_files_report(
+    args: AnnotationMediaRedactionReportArgs,
+) -> Result<(), Box<dyn Error>> {
     let bytes = std::fs::read(&args.pdf)?;
     let report = wellfriendpdf_engine::sdk::associated_files_report_json(
         &bytes,
@@ -6797,7 +6929,7 @@ fn run_semantic_export(args: SemanticExportArgs) -> Result<(), Box<dyn Error>> {
                 })
                 .collect::<Vec<_>>();
             serde_json::json!({
-                "schema_version": "prompt15.semantic_search.v1",
+                "schema_version": "semantic_closeout.semantic_search.v1",
                 "query": query,
                 "semantic_matches": report.search_results,
                 "cjk_token_matches": cjk_token_matches,
@@ -7137,7 +7269,7 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
     let report = serde_json::json!({
         "schema_version": 1,
         "kind": "render_compare",
-        "prompt": "combined_prompt_06",
+        "feature_area": "combined_native_renderer",
         "input": args.pdf.display().to_string(),
         "dpi": dpi,
         "render_quality": args.render_quality,
@@ -7564,12 +7696,12 @@ fn run_edit_text(args: EditTextArgs) -> Result<(), Box<dyn Error>> {
     ) {
         if args.insert_at.is_some() || args.delete_range.is_some() {
             return Err(usage_error(
-                "Prompt 20 rtl/vertical/same-width modes currently accept replacement operations only",
+                "advanced editing rtl/vertical/same-width modes currently accept replacement operations only",
             ));
         }
-        let page = *pages
-            .first()
-            .ok_or_else(|| usage_error("Prompt 20 edit requires at least one selected page"))?;
+        let page = *pages.first().ok_or_else(|| {
+            usage_error("advanced editing edit requires at least one selected page")
+        })?;
         let (bytes, report) = if args.mode == "same-width-patch" {
             let (bytes, report) = wellfriendpdf_engine::apply_same_width_patch(
                 &input,
@@ -8804,18 +8936,18 @@ fn run_verify_sig(args: VerifySigArgs, mode: SignatureCliMode) -> Result<(), Box
             r.ltv.embedded_certs, r.ltv.embedded_ocsp_responses, r.ltv.embedded_crls, revocation
         );
         println!(
-            "  - Prompt 25:   level={:?}, timestamp={:?}, ltv={:?}, indication={:?}/{:?}",
-            r.prompt25.achieved_pades_level,
-            r.prompt25.signature_timestamp_status,
-            r.prompt25.ltv_status,
-            r.prompt25.validation_indication,
-            r.prompt25.validation_subindication
+            "  - Pades LTV:   level={:?}, timestamp={:?}, ltv={:?}, indication={:?}/{:?}",
+            r.pades_ltv.achieved_pades_level,
+            r.pades_ltv.signature_timestamp_status,
+            r.pades_ltv.ltv_status,
+            r.pades_ltv.validation_indication,
+            r.pades_ltv.validation_subindication
         );
         println!(
             "      DSS/VRI replay: matched={}, replayable={}, status={:?}",
-            r.prompt25.dss.vri_matched,
-            r.prompt25.dss.evidence_replayable_offline,
-            r.prompt25.dss.status
+            r.pades_ltv.dss.vri_matched,
+            r.pades_ltv.dss.evidence_replayable_offline,
+            r.pades_ltv.dss.status
         );
         if let Some(c) = &r.certificate {
             println!("  - Certificate:");
@@ -9008,8 +9140,9 @@ fn finish_signature_cli_validation(
         )));
     }
     if reports.iter().any(|report| {
-        report.prompt24.network.status == SignatureValidationState::NetworkFailure
-            || report.prompt24.revocation.status == SignatureValidationState::NetworkFailure
+        report.signature_validation.network.status == SignatureValidationState::NetworkFailure
+            || report.signature_validation.revocation.status
+                == SignatureValidationState::NetworkFailure
     }) {
         return Err(Box::new(CliError::new(
             CliExitCode::Network,
@@ -9046,12 +9179,12 @@ fn finish_signature_cli_validation(
         SignatureCliMode::PadesVerify => {
             if reports.iter().all(|report| {
                 report.status == SignatureStatus::Trusted
-                    && report.prompt24.pades.status == SignatureValidationState::Valid
+                    && report.signature_validation.pades.status == SignatureValidationState::Valid
             }) {
                 Ok(())
             } else if reports.iter().any(|report| {
                 matches!(
-                    report.prompt24.pades.status,
+                    report.signature_validation.pades.status,
                     SignatureValidationState::UnsupportedProfile
                         | SignatureValidationState::DeferredToLaterPrompt
                         | SignatureValidationState::UnsupportedAlgorithm
@@ -9059,7 +9192,7 @@ fn finish_signature_cli_validation(
             }) {
                 Err(Box::new(CliError::new(
                     CliExitCode::Unsupported,
-                    "PAdES baseline requirements were not supported or are deferred to Prompt 25",
+                    "PAdES baseline requirements were not supported or are deferred to Pades LTV",
                 )))
             } else {
                 Err(Box::new(CliError::new(
@@ -9071,12 +9204,12 @@ fn finish_signature_cli_validation(
         SignatureCliMode::LtvVerify => {
             if reports
                 .iter()
-                .all(|report| report.prompt25.ltv_status == SignatureValidationState::Valid)
+                .all(|report| report.pades_ltv.ltv_status == SignatureValidationState::Valid)
             {
                 Ok(())
             } else if reports.iter().any(|report| {
                 matches!(
-                    report.prompt25.ltv_status,
+                    report.pades_ltv.ltv_status,
                     SignatureValidationState::UnsupportedAlgorithm
                         | SignatureValidationState::UnsupportedProfile
                 )
@@ -9093,15 +9226,17 @@ fn finish_signature_cli_validation(
             }
         }
         SignatureCliMode::CertificatePathBuild => {
-            if reports
-                .iter()
-                .all(|report| !report.prompt24.path.selected_path_subjects.is_empty())
-            {
+            if reports.iter().all(|report| {
+                !report
+                    .signature_validation
+                    .path
+                    .selected_path_subjects
+                    .is_empty()
+            }) {
                 Ok(())
-            } else if reports
-                .iter()
-                .any(|report| report.prompt24.path.status == SignatureValidationState::PathNotFound)
-            {
+            } else if reports.iter().any(|report| {
+                report.signature_validation.path.status == SignatureValidationState::PathNotFound
+            }) {
                 Err(Box::new(CliError::new(
                     CliExitCode::Indeterminate,
                     "certificate path construction did not find a bounded candidate path",
@@ -9114,14 +9249,13 @@ fn finish_signature_cli_validation(
             }
         }
         SignatureCliMode::CertificatePathVerify => {
-            if reports
-                .iter()
-                .all(|report| report.prompt24.path.status == SignatureValidationState::Valid)
-            {
+            if reports.iter().all(|report| {
+                report.signature_validation.path.status == SignatureValidationState::Valid
+            }) {
                 Ok(())
             } else if reports.iter().any(|report| {
                 matches!(
-                    report.prompt24.path.status,
+                    report.signature_validation.path.status,
                     SignatureValidationState::Untrusted
                         | SignatureValidationState::PathNotFound
                         | SignatureValidationState::NotChecked
@@ -9141,10 +9275,9 @@ fn finish_signature_cli_validation(
         SignatureCliMode::OcspCheck => finish_revocation_evidence_cli(reports, "ocsp", "OCSP"),
         SignatureCliMode::CrlCheck => finish_revocation_evidence_cli(reports, "crl", "CRL"),
         SignatureCliMode::RevocationCheck => {
-            if reports
-                .iter()
-                .all(|report| report.prompt24.revocation.status == SignatureValidationState::Valid)
-            {
+            if reports.iter().all(|report| {
+                report.signature_validation.revocation.status == SignatureValidationState::Valid
+            }) {
                 Ok(())
             } else {
                 Err(Box::new(CliError::new(
@@ -9167,7 +9300,8 @@ fn finish_revocation_evidence_cli(
     label: &str,
 ) -> Result<(), Box<dyn Error>> {
     if reports.iter().any(|report| {
-        report.prompt24.revocation.status == wellfriendpdf_engine::SignatureValidationState::Revoked
+        report.signature_validation.revocation.status
+            == wellfriendpdf_engine::SignatureValidationState::Revoked
     }) {
         return Err(Box::new(CliError::new(
             CliExitCode::Revoked,
@@ -9175,9 +9309,10 @@ fn finish_revocation_evidence_cli(
         )));
     }
     if reports.iter().all(|report| {
-        report.prompt24.revocation.status == wellfriendpdf_engine::SignatureValidationState::Valid
+        report.signature_validation.revocation.status
+            == wellfriendpdf_engine::SignatureValidationState::Valid
             && report
-                .prompt24
+                .signature_validation
                 .revocation
                 .certificate_decisions
                 .iter()
@@ -9598,7 +9733,7 @@ fn run_standards_validate(
                 report.counts.pass,
                 report.counts.fail,
                 report.counts.unsupported_reported_exact,
-                report.counts.deferred_prompt27_corpus_parity
+                report.counts.deferred_crypto_standards_fuzz_corpus_parity
             );
             (
                 serde_json::to_string_pretty(&report)?,
@@ -10628,7 +10763,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt15_cli_surfaces_parse_without_ambiguous_flags() {
+    fn semantic_closeout_cli_surfaces_parse_without_ambiguous_flags() {
         let semantic = Cli::try_parse_from([
             "wellfriendpdf",
             "semantic-export",
@@ -10671,7 +10806,7 @@ mod tests {
     }
 
     #[test]
-    fn prompt24_certificate_inputs_accept_pem_detection_without_misclassifying_der() {
+    fn signature_validation_certificate_inputs_accept_pem_detection_without_misclassifying_der() {
         assert!(certificate_input_is_pem(
             b"\n-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
         ));

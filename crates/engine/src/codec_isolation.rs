@@ -1,6 +1,6 @@
 //! OS subprocess isolation for bounded codec decode work.
 //!
-//! Prompt 03 starts with lossless stream filters because they are already
+//! Release Packaging starts with lossless stream filters because they are already
 //! centralized in the engine and can be moved across a process boundary without
 //! changing PDF object ownership. This is containment, not a complete sandbox:
 //! the parent process owns policy, limits, timeout handling, response
@@ -1074,7 +1074,7 @@ pub fn worker_handle_request(
             &request.request_id,
             "unsupported_codec",
             vec![format!(
-                "{} is not enabled in the Prompt 03 worker",
+                "{} is not enabled in the Release Packaging worker",
                 request.codec_kind
             )],
             None,

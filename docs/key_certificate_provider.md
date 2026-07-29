@@ -2,7 +2,7 @@
 
 Status: `implemented_with_limits`
 
-Prompt 23B source acquisition cleared the normative blocker for PDF public-key security handlers. The engine now has explicit in-memory providers for scoped PubSec decrypt/open plus certificate-only recipient inputs for PubSec writer/re-encryption.
+crypto writer closeout source acquisition cleared the normative blocker for PDF public-key security handlers. The engine now has explicit in-memory providers for scoped PubSec decrypt/open plus certificate-only recipient inputs for PubSec writer/re-encryption.
 
 Implemented provider properties:
 

@@ -1,5 +1,5 @@
 #![no_main]
-//! Fuzz Prompt 04 font-name recovery, deterministic fallback provider
+//! Fuzz Codec Boundary font-name recovery, deterministic fallback provider
 //! selection, and generated-text shaping.
 
 use libfuzzer_sys::fuzz_target;

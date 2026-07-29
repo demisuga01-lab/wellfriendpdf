@@ -1,0 +1,30 @@
+{
+  "refreshed": [
+    {
+      "file": "crates\\engine\\tests\\fixtures\\sig_valid.pdf",
+      "sha256": "12c5d2e125ec68be860d4931457fbdabfcd3272b301f3028a60405dfb7d4bf94",
+      "size": 6017
+    },
+    {
+      "file": "crates\\engine\\tests\\fixtures\\sig_two.pdf",
+      "sha256": "d2b305da51d09535fc63823e4a8c9d499ff3ea8a89fbb344530f4c3f4c8deda0",
+      "size": 11515
+    },
+    {
+      "file": "crates\\engine\\tests\\fixtures\\sig_ecdsa_p256.pdf",
+      "sha256": "4bfb252d28451ea12b4062949ed3558962608ad8d9b0ea20e69185c4f2570a47",
+      "size": 5308
+    },
+    {
+      "file": "crates\\engine\\tests\\fixtures\\sig_pades_b_ecdsa_p256.pdf",
+      "sha256": "8173d006f38a8e6db27916ffc7eb10d54fe7405ee34d8104f1602edc27251041",
+      "size": 5162
+    },
+    {
+      "file": "crates\\engine\\tests\\fixtures\\sig_ecdsa_p256_cert.pem",
+      "sha256": "5e06493836ac8f358eceeaa1eac7349b32e71c7a5c6b78f22be5b2b4023d8e7a",
+      "size": 692
+    }
+  ],
+  "source": "vps-final-snapshot"
+}

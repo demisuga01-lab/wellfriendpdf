@@ -6,13 +6,13 @@ Starting commit: `7c8838e` (`Reach large-file streaming target`)
 
 Parent reports:
 
-- Prompt 1 baseline: `docs/large_file_performance_baseline.md`
-- Prompt 2 report: `docs/large_file_performance_prompt2.md`
-- Prompt 3 report: `docs/large_file_performance_prompt3.md`
+- Binding Surface baseline: `docs/large_file_performance_baseline.md`
+- Binding Parity report: `docs/large_file_performance_binding_parity.md`
+- Release Packaging report: `docs/large_file_performance_release_packaging.md`
 
 ## Verdict
 
-Prompt 3 proved the 4.0 GB / 1000s-pages target for unfiltered synthetic content streams at about 20 MB peak working set. This follow-up closes the disclosed gap for filtered page content streams. A synthetic 4.0 GiB decoded Flate-content PDF now opens, extracts text, scans images, and renders pages 1-3 under the fixed 2 GB Job Object cap with about 9-11 MiB peak working set. Real-file text outputs for the 80 MB and 703 MB samples remain SHA-256 identical to Prompt 3.
+Release Packaging proved the 4.0 GB / 1000s-pages target for unfiltered synthetic content streams at about 20 MB peak working set. This follow-up closes the disclosed gap for filtered page content streams. A synthetic 4.0 GiB decoded Flate-content PDF now opens, extracts text, scans images, and renders pages 1-3 under the fixed 2 GB Job Object cap with about 9-11 MiB peak working set. Real-file text outputs for the 80 MB and 703 MB samples remain SHA-256 identical to Release Packaging.
 
 The honest remaining caveat is scope: this proves streaming decode/tokenization for page content filters. Image codecs (`DCTDecode`, `JPXDecode`, `CCITTFaxDecode`, `JBIG2Decode`) remain owned by the image pipeline and its existing caps, and a real 3-4 GB customer PDF is still needed when available.
 
@@ -37,7 +37,7 @@ The honest remaining caveat is scope: this proves streaming decode/tokenization 
 
 ## Measurement Method
 
-The Prompt 1 harness was reused unchanged:
+The Binding Surface harness was reused unchanged:
 
 - Worker: `target/release/examples/large_file_probe.exe`
 - Wrapper: `scripts/large_file_profile.py`
@@ -55,7 +55,7 @@ Generated compressed-content fixtures:
 
 ## Before vs After
 
-All rows ran under the fixed 2048 MB cap. The before rows are the current Prompt 3 code with only the generator addition, before the streaming decoder change.
+All rows ran under the fixed 2048 MB cap. The before rows are the current Release Packaging code with only the generator addition, before the streaming decoder change.
 
 | Run | Result | Operation | Decoded content | Done | Wall | Peak WS | TTFP |
 |---|---:|---|---:|---:|---:|---:|---:|
@@ -84,14 +84,14 @@ Serial/parallel aggregate text on the same 4.0 GiB decoded compressed fixture:
 
 ## Real Files
 
-| Run | Result | Operation | File | Done | Wall | Peak WS | TTFP | Prompt 3 comparison |
+| Run | Result | Operation | File | Done | Wall | Peak WS | TTFP | Release Packaging comparison |
 |---|---:|---|---:|---:|---:|---:|---:|---|
-| `followup-real-80mb-text` | ok | text page mode | 80.2 MB / 274p | 274p | 5.5s | 23.4 MiB | 24 ms | Prompt 3: 5.5s, 23.7 MiB |
-| `followup-real-703mb-text` | ok | text page mode | 703.4 MB / 52p | 52p | 0.3s | 84.4 MiB | 90 ms | Prompt 3: 0.5s, 84.4 MiB |
+| `followup-real-80mb-text` | ok | text page mode | 80.2 MB / 274p | 274p | 5.5s | 23.4 MiB | 24 ms | Release Packaging: 5.5s, 23.7 MiB |
+| `followup-real-703mb-text` | ok | text page mode | 703.4 MB / 52p | 52p | 0.3s | 84.4 MiB | 90 ms | Release Packaging: 0.5s, 84.4 MiB |
 
-Text output SHA-256 against Prompt 3:
+Text output SHA-256 against Release Packaging:
 
-| File | Prompt 3 SHA-256 | Follow-up SHA-256 | Result |
+| File | Release Packaging SHA-256 | Follow-up SHA-256 | Result |
 |---|---|---|---|
 | `real-80mb-pp80` | `104A47F5535AA9222F897C5FCFE920511F22BEEC21C523FC8FD9BB11FCB6CEF5` | `104A47F5535AA9222F897C5FCFE920511F22BEEC21C523FC8FD9BB11FCB6CEF5` | identical |
 | `real-703mb-atlas` | `AC2C2725ECAE4D38CE077D5367B6D6E80A68DA4E51DED7869A4135F3D7293958` | `AC2C2725ECAE4D38CE077D5367B6D6E80A68DA4E51DED7869A4135F3D7293958` | identical |

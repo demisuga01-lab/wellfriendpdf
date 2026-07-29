@@ -15,14 +15,14 @@ Alternatively, `wasm-pack` can produce the same web package:
 wasm-pack build crates/wellfriendpdf-wasm --target web --out-dir examples/browser/pkg
 ```
 
-The release evidence path is the Prompt 03B gate:
+The release evidence path is the Wasm Packaging gate:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\prompt03b_wasm_pack_gate.ps1
+powershell -ExecutionPolicy Bypass -File scripts\wasm_packaging_wasm_pack_gate.ps1
 ```
 
 That gate bootstraps target-local `wasm-pack 0.13.1`, builds both web and Node
-package outputs under `target/prompt03-packaging-codec-isolation/wasm-pack/`,
+package outputs under `target/release_packaging-packaging-codec-isolation/wasm-pack/`,
 inspects generated files, and imports the packaged Node output in a smoke test.
 
 Then serve `crates/wellfriendpdf-wasm/examples/browser` with any static server and open
@@ -33,14 +33,14 @@ is uploaded.
 
 ## Scope
 
-The Prompt 02 WASM wrapper exposes open-from-bytes, optional password open,
+The Binding Parity WASM wrapper exposes open-from-bytes, optional password open,
 close and use-after-close checks, page count, parser methods (`parseMarkdown`,
 `parseJson`), RAG `chunk`, key-value `extractFieldsJson`, plain/structured text
 extraction, info JSON, render-page-to-PNG, facade-backed report JSON methods
 for inspection/security/parser/color/validation/forms/annotations/pages/fonts/
 signatures/semantics, output methods for sanitize, canonicalize, and
 redact-terms workflows, and `WellfriendPdf.codecIsolationReportJson(filter, bytes,
-policy)` for Prompt 03 codec policy diagnostics.
+policy)` for Release Packaging codec policy diagnostics.
 
 Use `policy="in_process"` for browser-safe local decode reports. Subprocess
 policies return a structured unavailable/fail-closed report because
@@ -51,7 +51,7 @@ external process, so the WASM surface is digital-born only. The WASM wrapper
 also does not expose server endpoints, filesystem batch tools, async jobs,
 C/Python bindings, native binary loading, or multi-threaded rayon execution.
 
-Verified for Prompt 03B: `scripts/prompt03b_wasm_pack_gate.ps1` produces real
+Verified for Wasm Packaging: `scripts/wasm_packaging_wasm_pack_gate.ps1` produces real
 wasm-pack web and Node package directories and runs packaged Node smoke.
 Regenerate the checked-in example `pkg/` glue with the commands above before
 using newly added methods from `wellfriendpdf_wasm.js`.

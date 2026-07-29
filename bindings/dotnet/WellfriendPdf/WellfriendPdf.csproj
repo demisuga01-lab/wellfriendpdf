@@ -9,7 +9,7 @@
     <Description>Idiomatic .NET binding for the Wellfriend PDF SDK.</Description>
     <RepositoryUrl>https://github.com/demisuga01-lab/wellfriendpdf</RepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageLicenseExpression>MIT OR Apache-2.0</PackageLicenseExpression>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>pdf;wellfriendpdf;sdk;native;documents</PackageTags>
     <PackageProjectUrl>https://github.com/demisuga01-lab/wellfriendpdf</PackageProjectUrl>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>

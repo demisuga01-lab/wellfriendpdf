@@ -1,0 +1,331 @@
+{
+  "schema": "repository_professionalization.license_audit.v1",
+  "generated_at": "2026-07-29T19:00:05.7629092Z",
+  "occurrence_count": 54,
+  "occurrences": [
+    {
+      "path": ".github/workflows/release.yml",
+      "line": 181,
+      "classification": "source_or_doc",
+      "sha256": "9fa735d443a91dd13146beb6d13ebc010c0f5053ae4dcc1330c74efc2d0ba452"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "line": 206,
+      "classification": "source_or_doc",
+      "sha256": "9fa735d443a91dd13146beb6d13ebc010c0f5053ae4dcc1330c74efc2d0ba452"
+    },
+    {
+      "path": "NOTICE",
+      "line": 4,
+      "classification": "project_metadata",
+      "sha256": "3c7f6d13084f6756ec58dd5e9a6577f35ee8b5a76d1c394fa391b6d5b802c689"
+    },
+    {
+      "path": "NOTICE",
+      "line": 5,
+      "classification": "project_metadata",
+      "sha256": "3c7f6d13084f6756ec58dd5e9a6577f35ee8b5a76d1c394fa391b6d5b802c689"
+    },
+    {
+      "path": "NOTICE",
+      "line": 42,
+      "classification": "project_metadata",
+      "sha256": "3c7f6d13084f6756ec58dd5e9a6577f35ee8b5a76d1c394fa391b6d5b802c689"
+    },
+    {
+      "path": "NOTICE",
+      "line": 47,
+      "classification": "project_metadata",
+      "sha256": "3c7f6d13084f6756ec58dd5e9a6577f35ee8b5a76d1c394fa391b6d5b802c689"
+    },
+    {
+      "path": "NOTICE",
+      "line": 48,
+      "classification": "project_metadata",
+      "sha256": "3c7f6d13084f6756ec58dd5e9a6577f35ee8b5a76d1c394fa391b6d5b802c689"
+    },
+    {
+      "path": "README.md",
+      "line": 9,
+      "classification": "project_metadata",
+      "sha256": "c1b0e8be709d4471029204363a93d4e4baa7fa72d959f5b24070f8626b644e8e"
+    },
+    {
+      "path": "README.md",
+      "line": 334,
+      "classification": "project_metadata",
+      "sha256": "c1b0e8be709d4471029204363a93d4e4baa7fa72d959f5b24070f8626b644e8e"
+    },
+    {
+      "path": "bindings/dotnet/WellfriendPdf/WellfriendPdf.csproj",
+      "line": 12,
+      "classification": "project_metadata",
+      "sha256": "f0a408828f1650acce5779abd6e8391ab22f02dd57407d8fe061a7d81732fd0b"
+    },
+    {
+      "path": "bindings/java/build.gradle",
+      "line": 71,
+      "classification": "project_metadata",
+      "sha256": "85fab5c180a934b752050940a18b088e36fb58fea85670addfb523add01dddd1"
+    },
+    {
+      "path": "bindings/java/pom.xml",
+      "line": 15,
+      "classification": "project_metadata",
+      "sha256": "e6fc4e60c4835955f030e3ef2d52738a82fb20dc242a0c2f18426c7c514a3ccf"
+    },
+    {
+      "path": "crates/cli/Cargo.toml",
+      "line": 6,
+      "classification": "project_metadata",
+      "sha256": "98319a48d0ff284b1087a0d7da8f6f16ac599143a1d75a17ed6cca6b18e0c858"
+    },
+    {
+      "path": "crates/engine/Cargo.toml",
+      "line": 6,
+      "classification": "project_metadata",
+      "sha256": "202b9730f567062f7c1e14f4367955a2de328017fa5a7544fbbe6af47287c57b"
+    },
+    {
+      "path": "crates/engine/src/text_reflow.rs",
+      "line": 1542,
+      "classification": "source_or_doc",
+      "sha256": "4ddb6cc1154034cf7a47d23d122def50178696be6db64f067c94528ad737dc3d"
+    },
+    {
+      "path": "crates/server/Cargo.toml",
+      "line": 6,
+      "classification": "project_metadata",
+      "sha256": "0874e997ebce275714762fe3fee67d283698ac7131a584f4367a76b025bfc7ab"
+    },
+    {
+      "path": "crates/wellfriendpdf-capi/Cargo.toml",
+      "line": 6,
+      "classification": "project_metadata",
+      "sha256": "28796ab06c6113a7df81e2df3d95bc25d3154866c73ba5232991474b3538f9dc"
+    },
+    {
+      "path": "crates/wellfriendpdf-ocr-tesseract/Cargo.toml",
+      "line": 6,
+      "classification": "project_metadata",
+      "sha256": "267bf0955ec8c0bbfc4ba040805b74c9f5decd83d328db01aae03e4c5171ddc8"
+    },
+    {
+      "path": "crates/wellfriendpdf-py/Cargo.toml",
+      "line": 6,
+      "classification": "project_metadata",
+      "sha256": "32cfce3984017e29fb2da0f347129eaf45b7a32b47daba6a56c2bcb45fa63b1e"
+    },
+    {
+      "path": "crates/wellfriendpdf-py/pyproject.toml",
+      "line": 11,
+      "classification": "project_metadata",
+      "sha256": "07a05a5a5333fb98d405fbc9066e95c7d72f7009a061678a93442a9b3230ae31"
+    },
+    {
+      "path": "crates/wellfriendpdf-wasm/Cargo.toml",
+      "line": 6,
+      "classification": "project_metadata",
+      "sha256": "db320523a613f9e63a24b450845d1ac6e31fb8e31c6a7df06d46dc1f47114827"
+    },
+    {
+      "path": "crates/wellfriendpdf-wasm/package.json",
+      "line": 6,
+      "classification": "project_metadata",
+      "sha256": "db046abd57d0d9462d99b2dec5f193278b6bee194ea915d8b674a8abd500444e"
+    },
+    {
+      "path": "docs/benchmark_public.md",
+      "line": 34,
+      "classification": "source_or_doc",
+      "sha256": "acae58cec4413a5d62b0f4b8dde887ac3233098e2faa636b9d94b21bb33e30a5"
+    },
+    {
+      "path": "docs/best_in_class_verdict.md",
+      "line": 202,
+      "classification": "source_or_doc",
+      "sha256": "deda3ca028a9832b44eb0cefb38ab7c19dac29eaa80f1ff09384b0e1db435b5c"
+    },
+    {
+      "path": "docs/competitive_benchmark.md",
+      "line": 47,
+      "classification": "source_or_doc",
+      "sha256": "dd8f30a0af3a549f807faafc8c6e945aac166f12554a02a4ac85a52e64c62adf"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 11,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 12,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 13,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 25,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 36,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 38,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 39,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 43,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 44,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 45,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 46,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 47,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 52,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 53,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 57,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/licenses.md",
+      "line": 61,
+      "classification": "project_metadata",
+      "sha256": "22b2565eba32d93dc376a5cc1cf8e4260021a026c0a28dc8ae5df5984d48fc3c"
+    },
+    {
+      "path": "docs/packaging.md",
+      "line": 57,
+      "classification": "source_or_doc",
+      "sha256": "6bf3a506a243fa5eaea7e0b14c7a81092161c8b2a1bc62263f59e838afb6e7f7"
+    },
+    {
+      "path": "docs/parser_positioning.md",
+      "line": 37,
+      "classification": "source_or_doc",
+      "sha256": "04fc9b23db55746cf9bdad871163fe0fa051186dda8d8b6dcc8fecfc33cbc61b"
+    },
+    {
+      "path": "docs/reflow_constraint_solver.md",
+      "line": 9,
+      "classification": "source_or_doc",
+      "sha256": "61a4df2cc2a2778c1a858048b17d6192ae91d4a0919c52ffa4cd8f0a9e8eaacf"
+    },
+    {
+      "path": "docs/robustness_benchmark.md",
+      "line": 73,
+      "classification": "source_or_doc",
+      "sha256": "57cd5d8bb40c1d21d89e07451a9cb7734acb391683d4008803b9568121d14972"
+    },
+    {
+      "path": "docs/wellfriendpdf_sdk.md",
+      "line": 291,
+      "classification": "source_or_doc",
+      "sha256": "8ee09352f5bf409b6f75ae069085e764d9f8fbd91f8f9439b09f387f06319a4d"
+    },
+    {
+      "path": "docs/wellfriendpdf_sdk.md",
+      "line": 309,
+      "classification": "source_or_doc",
+      "sha256": "8ee09352f5bf409b6f75ae069085e764d9f8fbd91f8f9439b09f387f06319a4d"
+    },
+    {
+      "path": "extraction-benchmark/scripts/competitive_benchmark.py",
+      "line": 248,
+      "classification": "source_or_doc",
+      "sha256": "a57c6eb2a2787fbf6893d926927e9246513803b82f1defafe60a01fd6a49ca61"
+    },
+    {
+      "path": "extraction-benchmark/scripts/competitive_benchmark.py",
+      "line": 260,
+      "classification": "source_or_doc",
+      "sha256": "a57c6eb2a2787fbf6893d926927e9246513803b82f1defafe60a01fd6a49ca61"
+    },
+    {
+      "path": "extraction-benchmark/scripts/competitive_benchmark.py",
+      "line": 261,
+      "classification": "source_or_doc",
+      "sha256": "a57c6eb2a2787fbf6893d926927e9246513803b82f1defafe60a01fd6a49ca61"
+    },
+    {
+      "path": "extraction-benchmark/scripts/competitive_benchmark.py",
+      "line": 262,
+      "classification": "source_or_doc",
+      "sha256": "a57c6eb2a2787fbf6893d926927e9246513803b82f1defafe60a01fd6a49ca61"
+    },
+    {
+      "path": "public-benchmark/scripts/run_text_benchmark.py",
+      "line": 242,
+      "classification": "source_or_doc",
+      "sha256": "be8bd068f19604436a43103719493b66f036824897c36b881d1a6c1e0759b28f"
+    },
+    {
+      "path": "robustness-benchmark/scripts/robustness_benchmark.py",
+      "line": 242,
+      "classification": "source_or_doc",
+      "sha256": "8ee9c62736352dd79677cf4fe72e9cbe14d0889caf85373db3f88c71f4bc1f77"
+    },
+    {
+      "path": "scripts/release_readiness_benchmark_closeout_reports.py",
+      "line": 209,
+      "classification": "source_or_doc",
+      "sha256": "b95a03f0170e6e332729fe58a9170e6367178a71cfa541061be04de7bfe6baed"
+    }
+  ]
+}

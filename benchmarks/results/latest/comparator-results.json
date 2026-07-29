@@ -1,0 +1,151 @@
+{
+  "schema_version": "repository_professionalization.comparator_benchmark.v1",
+  "input": "crates/engine/tests/fixtures/multi_stream.pdf",
+  "image_input": "crates/engine/tests/fixtures/image_only.pdf",
+  "results": [
+    {
+      "task": "qpdf_check",
+      "tool": "qpdf",
+      "operation": "structural_check",
+      "iterations": 10,
+      "successes": 10,
+      "failures": 0,
+      "median_ms": 1.6891839914023876,
+      "p95_ms": 1.7953829956240952,
+      "last_result": {
+        "exit": 0
+      },
+      "failure_samples": [],
+      "evidence_class": "measured_directly"
+    },
+    {
+      "task": "qpdf_rewrite",
+      "tool": "qpdf",
+      "operation": "structural_rewrite",
+      "iterations": 10,
+      "successes": 10,
+      "failures": 0,
+      "median_ms": 1.7910670139826834,
+      "p95_ms": 1.8224340165033937,
+      "last_result": {
+        "output_bytes": 867
+      },
+      "failure_samples": [],
+      "evidence_class": "measured_directly"
+    },
+    {
+      "task": "poppler_pdfinfo",
+      "tool": "Poppler pdfinfo",
+      "operation": "page_count",
+      "iterations": 10,
+      "successes": 10,
+      "failures": 0,
+      "median_ms": 3.8583370042033494,
+      "p95_ms": 3.966359014157206,
+      "last_result": {
+        "exit": 0
+      },
+      "failure_samples": [],
+      "evidence_class": "measured_directly"
+    },
+    {
+      "task": "poppler_pdftotext",
+      "tool": "Poppler pdftotext",
+      "operation": "text_extraction",
+      "iterations": 10,
+      "successes": 10,
+      "failures": 0,
+      "median_ms": 3.9752229931764305,
+      "p95_ms": 4.171967972069979,
+      "last_result": {
+        "text_bytes": 14
+      },
+      "failure_samples": [],
+      "evidence_class": "measured_directly"
+    },
+    {
+      "task": "pikepdf_open_save",
+      "tool": "pikepdf (qpdf wrapper)",
+      "operation": "open_save",
+      "iterations": 10,
+      "successes": 10,
+      "failures": 0,
+      "median_ms": 0.34725997829809785,
+      "p95_ms": 0.37985999369993806,
+      "last_result": {
+        "pages": 1,
+        "output_bytes": 910
+      },
+      "failure_samples": [],
+      "evidence_class": "measured_directly"
+    },
+    {
+      "task": "pypdfium2_page_count",
+      "tool": "pypdfium2 (PDFium wrapper)",
+      "operation": "page_count",
+      "iterations": 10,
+      "successes": 10,
+      "failures": 0,
+      "median_ms": 0.03756699152290821,
+      "p95_ms": 0.05104701267555356,
+      "last_result": {
+        "pages": 1
+      },
+      "failure_samples": [],
+      "evidence_class": "measured_directly"
+    },
+    {
+      "task": "pymupdf_text_render",
+      "tool": "PyMuPDF (MuPDF wrapper)",
+      "operation": "text_and_render",
+      "iterations": 10,
+      "successes": 10,
+      "failures": 0,
+      "median_ms": 0.5129690398462117,
+      "p95_ms": 0.5897340015508235,
+      "last_result": {
+        "pages": 1,
+        "text_chars": 12,
+        "pixels": 484704
+      },
+      "failure_samples": [],
+      "evidence_class": "measured_directly"
+    },
+    {
+      "task": "pdfplumber_text",
+      "tool": "pdfplumber",
+      "operation": "text_extraction",
+      "iterations": 10,
+      "successes": 10,
+      "failures": 0,
+      "median_ms": 0.668391992803663,
+      "p95_ms": 0.7241659914143384,
+      "last_result": {
+        "text_chars": 11
+      },
+      "failure_samples": [],
+      "evidence_class": "measured_directly"
+    }
+  ],
+  "tools": {
+    "qpdf": {
+      "available": true,
+      "version": "qpdf version 12.3.2"
+    },
+    "pdfinfo": {
+      "available": true,
+      "version": "pdfinfo version 26.01.0"
+    },
+    "pdftotext": {
+      "available": true,
+      "version": "pdftotext version 26.01.0"
+    },
+    "mutool": {
+      "available": false
+    }
+  },
+  "notes": [
+    "Wrappers are reported with their underlying engine relationship.",
+    "Unavailable tools are not scored as failures."
+  ]
+}

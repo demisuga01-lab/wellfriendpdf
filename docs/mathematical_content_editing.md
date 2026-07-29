@@ -3,7 +3,7 @@
 Born-digital formula-like text is parsed into a source-linked expression tree
 covering rows, fractions, radicals, scripts, fenced expressions, identifiers,
 operators, numbers, and unknown leaves. Replacement is deliberately approval
-gated and is written through Prompt 32/33 shaping and font reconstruction.
+gated and is written through editing transactions/33 shaping and font reconstruction.
 
 The deterministic bracket-matrix form `[[a,b];[c,d]]` is also executable:
 `math_edit_matrix_cell` changes exactly one resolved cell, rebuilds the source
@@ -13,11 +13,11 @@ are never flattened or approximated as ordinary prose.
 
 `table_edit_math_cell` is the explicit cross-system route for an approved
 born-digital math source that is already provenance-resolved inside a table
-cell. It delegates source positioning to the same Prompt 32 shaping and
-Prompt 33 cell reflow path as other supported mathematical edits.
+cell. It delegates source positioning to the same editing transactions shaping and
+text reflow cell reflow path as other supported mathematical edits.
 
 `math_move_resize` retains a resolved born-digital source expression and
-rewrites its actual Prompt 33 region bounds after explicit approval. It is a
+rewrites its actual text reflow region bounds after explicit approval. It is a
 bounded source-geometry operation, not a flattened equation image or overlay.
 
 `math_edit_fraction_part` changes exactly the numerator or denominator of one
@@ -39,7 +39,7 @@ and cannot be destructively replaced through this route. Advanced OpenType MATH
 construction remains an exact `math_metrics_unavailable` boundary whenever the
 resolved source font does not expose usable canonical metrics.
 
-Supported mathematical text changes use Prompt 32 shaping/subsets and Prompt
+Supported mathematical text changes use editing transactions shaping/subsets and Roadmap task
 33 source rewriting. Unresolved outlined or raster formulas retain the original
 visual source and require explicit approval before replacement.
 
@@ -52,4 +52,4 @@ review or unsupported boundaries.
 
 `math_edit_radicand` supports resolved `sqrt(...)` and Unicode radical source
 notation. The operation preserves the notation, rewrites only the radicand
-through Prompt 33, and refuses malformed or multiline source fragments.
+through text reflow, and refuses malformed or multiline source fragments.

@@ -10,7 +10,8 @@ use crate::error::{Result, WellfriendError};
 use crate::fonts::FontDecodeSource;
 use crate::text::{MarkedTextChunk, ReadingOrderReconstructor, TextChunk};
 
-const PROMPT14B_CJK_PROVIDER_SCHEMA_VERSION: &str = "prompt14b.cjk_dictionary_provider.v1";
+const CJK_DICTIONARY_LAYOUT_CJK_PROVIDER_SCHEMA_VERSION: &str =
+    "cjk_dictionary_layout.cjk_dictionary_provider.v1";
 const DEFAULT_MAX_CHUNKS_PER_PAGE: usize = 250_000;
 const DEFAULT_MAX_CHARS_PER_PAGE: usize = 2_000_000;
 const DEFAULT_MAX_STRUCTURE_NODES: usize = 250_000;
@@ -279,7 +280,8 @@ pub struct CjkDictionaryProvider {
     max_token_chars: usize,
 }
 
-const BUILTIN_CJK_DICTIONARY_NAME: &str = "wellfriendpdf-prompt14-synthetic-cjk-test-dictionary";
+const BUILTIN_CJK_DICTIONARY_NAME: &str =
+    "wellfriendpdf-semantic_intelligence-synthetic-cjk-test-dictionary";
 const BUILTIN_CJK_DICTIONARY_VERSION: &str = "2026-07-09";
 const BUILTIN_CJK_DICTIONARY_LICENSE: &str = "CC0-1.0 synthetic fixture terms";
 
@@ -345,7 +347,7 @@ impl CjkDictionaryProvider {
         let metadata = builtin_cjk_dictionary_metadata();
         let memory_footprint_bytes = metadata.memory_footprint_bytes;
         let report = CjkDictionaryLoadReport {
-            schema_version: PROMPT14B_CJK_PROVIDER_SCHEMA_VERSION.to_string(),
+            schema_version: CJK_DICTIONARY_LAYOUT_CJK_PROVIDER_SCHEMA_VERSION.to_string(),
             provider_status: "loaded_builtin_fixture".to_string(),
             limits,
             packs: vec![CjkDictionaryPackStatus {
@@ -525,7 +527,7 @@ impl CjkDictionaryProvider {
             .map(|pack| pack.metadata.clone())
             .collect::<Vec<_>>();
         let report = CjkDictionaryLoadReport {
-            schema_version: PROMPT14B_CJK_PROVIDER_SCHEMA_VERSION.to_string(),
+            schema_version: CJK_DICTIONARY_LAYOUT_CJK_PROVIDER_SCHEMA_VERSION.to_string(),
             provider_status: "loaded_external_packs".to_string(),
             limits,
             packs,

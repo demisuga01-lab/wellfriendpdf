@@ -1,6 +1,6 @@
 # Table, Formula, and OCR Accessibility
 
-Prompt 35 links accessibility repair to Prompt 34 table, mathematical-content,
+document security links accessibility repair to document subsystems table, mathematical-content,
 and OCR operations.
 
 - Table edits can trigger structure repair for table roles, cells, captions, and

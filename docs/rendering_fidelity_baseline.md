@@ -182,7 +182,7 @@ The largest remaining bucket is still text/font fidelity:
   remaining errors are mostly font substitution, hinting, weight, and image/text
   antialiasing differences rather than gross page-geometry failures.
 
-Prompt 04 adds the font subsystem seam for this bucket: deterministic bundled
+Codec Boundary adds the font subsystem seam for this bucket: deterministic bundled
 font-provider reporting, structured font diagnostics, shared renderer text
 decoding, generated-output shaping API, and byte-budgeted glyph cache metrics.
 It does not claim that font-edge, CJK, or RTL visual parity is fully closed;
@@ -206,15 +206,15 @@ file-level probes like this pass. If a broader hinting or fallback-font change
 regresses `real-font-edge` or Tracemonkey/TAMReview, prefer a narrower font
 metric or glyph-positioning mechanism over a global rasterizer change.
 
-## Prompt 03 Architecture Follow-Up
+## Release Packaging Architecture Follow-Up
 
-Prompt 03 added a conservative vector display-list and CPU render-device seam in
+Release Packaging added a conservative vector display-list and CPU render-device seam in
 `crates/engine/src/render/display_list.rs`. The default immediate renderer was
 left unchanged for compatibility, while `ContentEngine::build_page_display_list`
 and `ContentEngine::render_page_display_list_with_mode` expose the new replay
 path for vector-compatible pages.
 
-The Prompt 03 validation run used a small Poppler-backed smoke slice, not the
+The Release Packaging validation run used a small Poppler-backed smoke slice, not the
 full Phase 7 stress corpus:
 
 | metric | baseline | after |
@@ -229,10 +229,10 @@ The architectural win is replayability and pixel-equivalence for supported
 vector pages, verified by unit tests. It is not a new claim that Wellfriend is
 Poppler/PDFium/MuPDF-class.
 
-## Prompt 03B Expanded Renderer Slice
+## Wasm Packaging Expanded Renderer Slice
 
-Prompt 03B expanded the reference-renderer check from the five-file synthetic
-Prompt 03 smoke to a deterministic 50-file slice covering synthetic vector,
+Wasm Packaging expanded the reference-renderer check from the five-file synthetic
+Release Packaging smoke to a deterministic 50-file slice covering synthetic vector,
 geometry, text, image, transparency, forms, real text, complex vector, forms,
 scanned, CJK, RTL, multi-column, JPEG 2000, large-page, and hostile malformed
 categories. The run used Poppler `26.02.0`; PDFium was not configured and was
@@ -241,12 +241,12 @@ reported as skipped by the benchmark harness.
 Command:
 
 ```powershell
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt03b-renderer-slice-manifest.json --wellfriendpdf-bin target\debug\wellfriendpdf.exe --dpi 72 --timeout-sec 30 --max-memory-mb 1024 --max-pages-per-file 1 --limit 50 --determinism-sample 5 --threshold-profile renderer --output-dir target\prompt03b-renderer-benchmark
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\wasm_packaging-renderer-slice-manifest.json --wellfriendpdf-bin target\debug\wellfriendpdf.exe --dpi 72 --timeout-sec 30 --max-memory-mb 1024 --max-pages-per-file 1 --limit 50 --determinism-sample 5 --threshold-profile renderer --output-dir target\wasm_packaging-renderer-benchmark
 ```
 
 Results:
 
-| metric | Prompt 03 smoke | Prompt 03B expanded slice |
+| metric | Release Packaging smoke | Wasm Packaging expanded slice |
 | --- | ---: | ---: |
 | files | 5 | 50 |
 | visual pages compared | 5 | 42 |
@@ -256,7 +256,7 @@ Results:
 | hostile crash-free/timeout-safe/memory-bounded | N/A | 100.0% |
 | determinism sample | 2/2 stable | 5/5 stable |
 
-Prompt 03B's score is not directly comparable to the five-file Prompt 03 smoke
+Wasm Packaging's score is not directly comparable to the five-file Release Packaging smoke
 because the corpus is much broader and intentionally includes real and hostile
 fixtures. The important outcomes are broader coverage, explicit display-list
 fallback accounting, deterministic re-rendering, and no new renderer crash or
@@ -265,12 +265,12 @@ memory-bound failure on the capped slice.
 Worst remaining blockers in this slice were `function_based_shading.pdf`,
 `IdentityToUnicodeMap_charCodeOf.pdf`, `ThuluthFeatures.pdf`, `bug_jpx.pdf`,
 and `jp2k-resetprob.pdf`. Those map to function/shading fidelity, font/text
-semantics, and JPEG 2000/image behavior rather than to the Prompt 03B replay
+semantics, and JPEG 2000/image behavior rather than to the Wasm Packaging replay
 seam itself.
 
-## Prompt 04B Font Slice Rerun
+## Font Subsystem Font Slice Rerun
 
-Prompt 04B reran the same 24-file font/text Poppler slice used by Prompt 04:
+Font Subsystem reran the same 24-file font/text Poppler slice used by Codec Boundary:
 `real-cjk-text`, `real-font-edge`, and `real-rtl-text`, one rendered page per
 file at 72 DPI. The release CLI was rebuilt first.
 
@@ -278,12 +278,12 @@ Command:
 
 ```powershell
 cargo build --release -p wellfriendpdf-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04b-font-render-benchmark --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\font_subsystem-font-render-benchmark --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Results:
 
-| metric | Prompt 04 | Prompt 04B |
+| metric | Codec Boundary | Font Subsystem |
 | --- | ---: | ---: |
 | files | 24 | 24 |
 | visual pages compared | 24 | 24 |
@@ -293,7 +293,7 @@ Results:
 | peak Wellfriend memory | 11.72 MB | 11.28 MB |
 | determinism | 5/5 stable | 5/5 stable |
 
-Prompt 04B improved the font subsystem's authoring, reporting, CMap, vertical
+Font Subsystem improved the font subsystem's authoring, reporting, CMap, vertical
 advance, and explicit fallback behavior, but it did not improve this visual
 slice. The remaining failing files are still dominated by glyph rasterizer,
 font-substitution, hinting, and text-shape differences against Poppler. The
@@ -301,9 +301,9 @@ font-substitution, hinting, and text-shape differences against Poppler. The
 visible vertical text, while the Poppler reference image in this harness is
 effectively blank for that fixture.
 
-## Prompt 04C Font Slice Rerun
+## Font Failure Analysis Font Slice Rerun
 
-Prompt 04C reran the same 24-file font/text Poppler slice after implementing
+Font Failure Analysis reran the same 24-file font/text Poppler slice after implementing
 true sfnt/glyf subsetting for generated Type0/CIDFontType2 output and a narrow
 non-CID `.notdef`/control-glyph paint guard.
 
@@ -311,12 +311,12 @@ Command:
 
 ```powershell
 cargo build --release -p wellfriendpdf-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04c-font-render-benchmark-v2 --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\font_failure_analysis-font-render-benchmark-v2 --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Results:
 
-| metric | Prompt 04B | Prompt 04C |
+| metric | Font Subsystem | Font Failure Analysis |
 | --- | ---: | ---: |
 | files | 24 | 24 |
 | visual pages compared | 24 | 24 |
@@ -327,14 +327,14 @@ Results:
 
 Local metrics moved in the Standard14/font-edge bucket
 (`pdfjs_full_standard_fonts` exact match 89.0344 -> 89.4102), but not enough to
-move the aggregate pass threshold. The remaining Prompt 04 visual blockers are
+move the aggregate pass threshold. The remaining Codec Boundary visual blockers are
 not generated-output embedding problems; they require a focused CFF/Type1C,
 CJK/RTL glyph positioning, or raster/hinting fidelity pass, or a formal
 acceptance-gate change.
 
-## Prompt 04D Font Slice Rerun
+## Font Rendering Failure Font Slice Rerun
 
-Prompt 04D kept the same original 24-file font/text Poppler slice as the
+Font Rendering Failure kept the same original 24-file font/text Poppler slice as the
 acceptance anchor and targeted the first high-confidence font-phase-resolvable
 failure: `pdfjs_full_glyph_accent.pdf`. Extraction already recovered
 `accent U+00E3`, but the renderer missed the Type1C/CFF `atilde` outline because
@@ -345,12 +345,12 @@ Command:
 
 ```powershell
 cargo build --release -p wellfriendpdf-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04d-font-after-cff-seac --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\font_rendering_failure-font-after-cff-seac --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Results:
 
-| metric | Prompt 04C / 04D baseline | Prompt 04D |
+| metric | Font Failure Analysis / 04D baseline | Font Rendering Failure |
 | --- | ---: | ---: |
 | files | 24 | 24 |
 | visual pages compared | 24 | 24 |
@@ -361,11 +361,11 @@ Results:
 
 The changed file was `pdfjs_full_glyph_accent`: fail at 95.35% exact match to
 pass at 100.0%. No files regressed. Detailed per-file classification is in
-`docs/font_prompt04d_failure_analysis.md`.
+`docs/font_font_rendering_failure_failure_analysis.md`.
 
-## Prompt 04E Final Font Audit Rerun
+## Font Final Parity Final Font Audit Rerun
 
-Prompt 04E kept the exact original 24-file font/text Poppler slice as the
+Font Final Parity kept the exact original 24-file font/text Poppler slice as the
 acceptance anchor and audited the remaining concrete font/text fundamentals:
 CFF width operands and hint masks, CFF subroutine fallback behavior, PDF
 text-state/TJ spacing, Tr invisible/clipping modes, partial ToUnicode fallback,
@@ -375,12 +375,12 @@ Command:
 
 ```powershell
 cargo build --release -p wellfriendpdf-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\prompt04e-font-after-audit --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest renderer-benchmark\corpus\manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --category real-cjk-text,real-font-edge,real-rtl-text --output-dir target\font_final_parity-font-after-audit --dpi 72 --max-pages-per-file 1 --timeout-sec 120 --max-memory-mb 2048 --determinism-sample 5 --threshold-profile renderer
 ```
 
 Results:
 
-| metric | Prompt 04D anchor | Prompt 04E audit |
+| metric | Font Rendering Failure anchor | Font Final Parity audit |
 | --- | ---: | ---: |
 | files | 24 | 24 |
 | visual pages compared | 24 | 24 |
@@ -390,17 +390,17 @@ Results:
 | peak Wellfriend memory | 11.99 MB | 11.55 MB |
 | determinism | 5/5 stable | 5/5 stable |
 
-The aggregate score did not move beyond Prompt 04D, but no files regressed and
+The aggregate score did not move beyond Font Rendering Failure, but no files regressed and
 the final font-semantics checklist is now covered by focused tests or explicit
 bounded decisions. The unchanged blockers remain CJK/RTL raster or fallback
 metric drift, `font_ascent_descent.pdf`, and two blank-reference mismatches that
 need another reference renderer or benchmark policy decision. Details are in
-`docs/font_prompt04e_final_parity_audit.md`.
+`docs/font_font_final_parity_final_parity_audit.md`.
 
-## Prompt 05 Color/Prepress Slice
+## Decode Scheduler Color/Prepress Slice
 
-Prompt 05 added a dedicated color/prepress slice using a temporary manifest
-under `target/prompt05-color-baseline-manifest.json`. The 24 files cover
+Decode Scheduler added a dedicated color/prepress slice using a temporary manifest
+under `target/decode_scheduler-color-baseline-manifest.json`. The 24 files cover
 synthetic CMYK pages, pdf.js DeviceN/color-space/function fixtures, Indexed
 samples, CMYK JPEG, shadings, and tiling patterns.
 
@@ -408,12 +408,12 @@ Command:
 
 ```powershell
 cargo build --release -p wellfriendpdf-cli
-python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\prompt05-color-baseline-manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --dpi 96 --timeout-sec 30 --max-memory-mb 2048 --max-pages-per-file 1 --output-dir target\prompt05-color-after --determinism-sample 4 --threshold-profile renderer
+python renderer-benchmark\scripts\renderer_benchmark.py --manifest target\decode_scheduler-color-baseline-manifest.json --wellfriendpdf-bin target\release\wellfriendpdf.exe --dpi 96 --timeout-sec 30 --max-memory-mb 2048 --max-pages-per-file 1 --output-dir target\decode_scheduler-color-after --determinism-sample 4 --threshold-profile renderer
 ```
 
 Results:
 
-| metric | Prompt 05 baseline | Prompt 05 after |
+| metric | Decode Scheduler baseline | Decode Scheduler after |
 | --- | ---: | ---: |
 | files | 24 | 24 |
 | visual pages compared | 23 | 23 |
@@ -423,14 +423,14 @@ Results:
 | peak Wellfriend memory | 19.69 MB | 19.68 MB |
 | determinism | 4/4 stable | 4/4 stable |
 
-Prompt 05 did not target new raster fidelity for mesh/pattern/image edge cases,
+Decode Scheduler did not target new raster fidelity for mesh/pattern/image edge cases,
 so the visual score is unchanged. The color work closes architecture,
 diagnostic, cap, report, overprint-state, and output-intent validation gaps
 without regressing the benchmark.
 
-Prompt 05B reran the same anchor before and after color/prepress closure work:
+Color Management reran the same anchor before and after color/prepress closure work:
 
-| metric | Prompt 05B before | Prompt 05B after |
+| metric | Color Management before | Color Management after |
 | --- | ---: | ---: |
 | files | 24 | 24 |
 | visual pages compared | 23 | 23 |
@@ -440,21 +440,21 @@ Prompt 05B reran the same anchor before and after color/prepress closure work:
 | peak Wellfriend memory | 19.48 MB | 19.47 MB |
 | determinism | 4/4 stable | 4/4 stable |
 
-Prompt 05B adds qcms transform-cache/fidelity reporting, stronger
+Color Management adds qcms transform-cache/fidelity reporting, stronger
 Separation/DeviceN preview diagnostics, common-case DeviceCMYK fill overprint
 preview, and stricter color-only PDF/A/PDF/X output-intent checks. Details are
-tracked in `docs/color_prompt05b_closure_audit.md`.
+tracked in `docs/color_color_management_closure_audit.md`.
 
-## Prompt 06 Extraction Anchor
+## Native Renderer Extraction Anchor
 
-Prompt 06 is text/layout work, not renderer fidelity work. The flat extraction
+Native Renderer is text/layout work, not renderer fidelity work. The flat extraction
 gate was rerun before and after the additive semantic text model to prove no
 text drift:
 
 ```powershell
 cargo build --release -p wellfriendpdf-cli
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\prompt06-text-before --report target\competitive-benchmark\prompt06-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\prompt06-text-after --report target\competitive-benchmark\prompt06-text-after.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\native_renderer-text-before --report target\competitive-benchmark\native_renderer-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\native_renderer-text-after --report target\competitive-benchmark\native_renderer-text-after.md --max-workers 4 --timeout 60 --max-memory-mb 2048
 ```
 
 | metric | before | after |
@@ -469,13 +469,13 @@ python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdf
 
 Artifacts:
 
-- `target\competitive-benchmark\prompt06-text-before`
-- `target\competitive-benchmark\prompt06-text-after`
-- `target\prompt06-model-smoke.json`
+- `target\competitive-benchmark\native_renderer-text-before`
+- `target\competitive-benchmark\native_renderer-text-after`
+- `target\native_renderer-model-smoke.json`
 
-## Prompt 06B Semantic Closure Anchor
+## Reference Renderer Semantic Closure Anchor
 
-Prompt 06B is additive semantic-model work. The pre-change gates were rerun
+Reference Renderer is additive semantic-model work. The pre-change gates were rerun
 before code changes:
 
 | metric | before | after |
@@ -489,27 +489,27 @@ before code changes:
 
 Artifacts:
 
-- `target\competitive-benchmark\prompt06b-text-before`
-- `target\competitive-benchmark\prompt06b-fields-before`
-- `target\competitive-benchmark\prompt06b-tables-before`
-- `target\competitive-benchmark\prompt06b-text-after`
-- `target\competitive-benchmark\prompt06b-fields-after`
-- `target\competitive-benchmark\prompt06b-tables-after`
+- `target\competitive-benchmark\reference_renderer-text-before`
+- `target\competitive-benchmark\reference_renderer-fields-before`
+- `target\competitive-benchmark\reference_renderer-tables-before`
+- `target\competitive-benchmark\reference_renderer-text-after`
+- `target\competitive-benchmark\reference_renderer-fields-after`
+- `target\competitive-benchmark\reference_renderer-tables-after`
 
-## Prompt 07 Interactive/Data Anchor
+## Transparency Rendering Interactive/Data Anchor
 
-Prompt 07 targets tables, forms, annotations, page operations, and true
+Transparency Rendering targets tables, forms, annotations, page operations, and true
 redaction. The baseline gates before code changes were rerun with the same
 competitive benchmark harness:
 
 ```powershell
 cargo build --release -p wellfriendpdf-cli
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-tables --limit 200 --tools wellfriendpdf --tasks tables --output-dir target\competitive-benchmark\prompt07-tables-before --report target\competitive-benchmark\prompt07-tables-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools wellfriendpdf --tasks fields --output-dir target\competitive-benchmark\prompt07-fields-before --report target\competitive-benchmark\prompt07-fields-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
-python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\prompt07-text-before --report target\competitive-benchmark\prompt07-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-tables --limit 200 --tools wellfriendpdf --tasks tables --output-dir target\competitive-benchmark\transparency_rendering-tables-before --report target\competitive-benchmark\transparency_rendering-tables-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --category has-fields --limit 200 --tools wellfriendpdf --tasks fields --output-dir target\competitive-benchmark\transparency_rendering-fields-before --report target\competitive-benchmark\transparency_rendering-fields-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
+python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdfsdk\test_corpus --limit 200 --tools wellfriendpdf --tasks text --output-dir target\competitive-benchmark\transparency_rendering-text-before --report target\competitive-benchmark\transparency_rendering-text-before.md --max-workers 4 --timeout 60 --max-memory-mb 2048
 ```
 
-| metric | Prompt 07 before | Prompt 07 after |
+| metric | Transparency Rendering before | Transparency Rendering after |
 | --- | ---: | ---: |
 | table files | 200 | 200 |
 | table cell-F1 in current scorer | 0.987 | 0.987 |
@@ -521,29 +521,29 @@ python extraction-benchmark\scripts\competitive_benchmark.py --corpus E:\wellpdf
 | text word-F1 | 1.000 | 1.000 |
 | text reading order | 0.960 | 0.960 |
 
-Prompt 07 adds interactive reports, CLI surfaces, and a redaction safety fix in
+Transparency Rendering adds interactive reports, CLI surfaces, and a redaction safety fix in
 the full-rewrite path. It does not intentionally change text/table/field
 extraction scoring.
 
 Artifacts:
 
-- `target\competitive-benchmark\prompt07-tables-before`
-- `target\competitive-benchmark\prompt07-fields-before`
-- `target\competitive-benchmark\prompt07-text-before`
-- `target\competitive-benchmark\prompt07-tables-after`
-- `target\competitive-benchmark\prompt07-fields-after`
-- `target\competitive-benchmark\prompt07-text-after`
+- `target\competitive-benchmark\transparency_rendering-tables-before`
+- `target\competitive-benchmark\transparency_rendering-fields-before`
+- `target\competitive-benchmark\transparency_rendering-text-before`
+- `target\competitive-benchmark\transparency_rendering-tables-after`
+- `target\competitive-benchmark\transparency_rendering-fields-after`
+- `target\competitive-benchmark\transparency_rendering-text-after`
 
-## Prompt 07B Interactive/Data Closure Anchor
+## Transparency Closeout Interactive/Data Closure Anchor
 
-Prompt 07B is additive interactive/data-layer closure: FDF/XFDF field exchange,
+Transparency Closeout is additive interactive/data-layer closure: FDF/XFDF field exchange,
 annotation appearance flattening, metadata-preserving crop, visual scale/n-up,
 partial image redaction, and attachment removal policy. It is not intended to
 change table, field, or text extraction scoring.
 
 Expected unchanged gates:
 
-| metric | Prompt 07 / 07B anchor |
+| metric | Transparency Rendering / 07B anchor |
 | --- | ---: |
 | table shape-F1 | 0.96232 |
 | table cell-F1 in current scorer | 0.987 |
@@ -553,22 +553,22 @@ Expected unchanged gates:
 | text word-F1 | 1.0 |
 | semantic reading order | 0.96019 |
 
-Prompt 07B artifacts:
+Transparency Closeout artifacts:
 
-- `target\prompt07b-baseline`
-- `target\prompt07b-*`
-- `target\competitive-benchmark\prompt07b-*`
+- `target\transparency_closeout-baseline`
+- `target\transparency_closeout-*`
+- `target\competitive-benchmark\transparency_closeout-*`
 
-## Prompt 08 Editing/Conversion Anchor
+## Advanced Rendering Editing/Conversion Anchor
 
-Prompt 08 is an additive editing and conversion phase. It introduces a shared
+Advanced Rendering is an additive editing and conversion phase. It introduces a shared
 editable model, model-backed HTML/Markdown/JSON exports, routes Office exports
 through the editable model, adds a verified text replacement path, and adds
 deterministic versioning helpers. It is not intended to change extraction gates.
 
 Expected unchanged gates:
 
-| metric | Prompt 08 anchor |
+| metric | Advanced Rendering anchor |
 | --- | ---: |
 | table shape-F1 | 0.96232 |
 | table cell-F1 in current scorer | 0.987 |
@@ -578,25 +578,25 @@ Expected unchanged gates:
 | text word-F1 | 1.0 |
 | semantic reading order | 0.96019 |
 
-Prompt 08 baseline artifacts:
+Advanced Rendering baseline artifacts:
 
-- `target\prompt08-baseline`
+- `target\advanced_rendering-baseline`
 
-Prompt 08 implementation artifacts:
+Advanced Rendering implementation artifacts:
 
-- `target\prompt08-artifacts`
-- `target\competitive-benchmark\prompt08-*`
+- `target\advanced_rendering-artifacts`
+- `target\competitive-benchmark\advanced_rendering-*`
 
-## Prompt 09 Security/Trust Anchor
+## Annotation Ocg Rendering Security/Trust Anchor
 
-Prompt 09 is an additive trust/compliance phase. It adds security reports,
+Annotation Ocg Rendering is an additive trust/compliance phase. It adds security reports,
 signature check separation, sanitizer policies, standards-profile reports,
 structure-aware mutation, and deterministic canonical output audit. It is not
 intended to change rendering, text, field, or table extraction gates.
 
 Expected unchanged gates:
 
-| metric | Prompt 09 anchor |
+| metric | Annotation Ocg Rendering anchor |
 | --- | ---: |
 | table shape-F1 | 0.96232 |
 | table cell-F1 in current scorer | 0.987 |
@@ -606,8 +606,8 @@ Expected unchanged gates:
 | text word-F1 | 1.0 |
 | semantic reading order | 0.96019 |
 
-Prompt 09 artifacts:
+Annotation Ocg Rendering artifacts:
 
-- `target\prompt09-baseline`
-- `target\prompt09-structure-mutations`
-- `target\prompt09-differential`
+- `target\annotation_ocg_rendering-baseline`
+- `target\annotation_ocg_rendering-structure-mutations`
+- `target\annotation_ocg_rendering-differential`

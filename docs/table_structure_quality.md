@@ -1,6 +1,6 @@
 # Table Structure Quality
 
-This is the Prompt 7 table-structure pass. The numbers below are indicative (approx 200-file subset), measured on the first 200 `has-tables` files from `test_corpus/` with Python JSON ground-truth loading, subprocess isolation, `--max-workers 4`, 60s timeout, and 2048 MB memory cap. They are not final benchmark claims; Prompt 10 owns the full validation run.
+This is the Transparency Rendering table-structure pass. The numbers below are indicative (approx 200-file subset), measured on the first 200 `has-tables` files from `test_corpus/` with Python JSON ground-truth loading, subprocess isolation, `--max-workers 4`, 60s timeout, and 2048 MB memory cap. They are not final benchmark claims; Multilingual Color Glyphs owns the full validation run.
 
 ## Summary
 
@@ -14,7 +14,7 @@ Wellfriend's table quality improved from a high-recall/low-precision shape to a 
 | corpus | `test_corpus/`, `has-tables`, first 200 files by deterministic harness order |
 | harness | `extraction-benchmark/scripts/competitive_benchmark.py` |
 | task | `tables` |
-| command | `python extraction-benchmark/scripts/competitive_benchmark.py --corpus E:/wellpdfsdk/test_corpus --output-dir target/roadmap-prompt7/after1 --report target/roadmap-prompt7/after1.md --wellfriendpdf-bin target/debug/wellfriendpdf.exe --category has-tables --limit 200 --tasks tables --tools wellfriendpdf,pymupdf,pdfplumber --max-workers 4 --timeout 60 --max-memory-mb 2048 --checkpoint-every 25` |
+| command | `python extraction-benchmark/scripts/competitive_benchmark.py --corpus E:/wellpdfsdk/test_corpus --output-dir target/roadmap-transparency_rendering/after1 --report target/roadmap-transparency_rendering/after1.md --wellfriendpdf-bin target/debug/wellfriendpdf.exe --category has-tables --limit 200 --tasks tables --tools wellfriendpdf,pymupdf,pdfplumber --max-workers 4 --timeout 60 --max-memory-mb 2048 --checkpoint-every 25` |
 | timeout | 60s per subprocess |
 | memory cap | 2048 MB |
 | concurrency | 4 workers |
@@ -64,7 +64,7 @@ This is detection/structure logic only. The scorer was not loosened.
 
 ## Residual Gap
 
-Wellfriend now beats PyMuPDF and pdfplumber on this indicative subset for cell-F1, precision, recall, and TEDS-approx, but over-detection is not eliminated. Files such as `pdf_000400`, `pdf_000191`, and `pdf_000106` still contain residual false table fragments, mostly from complex ruled page furniture that has enough grid evidence to pass the stricter filter. Prompt 10 should validate whether this pattern persists on the full corpus before adding heavier page-region merging or semantic filtering.
+Wellfriend now beats PyMuPDF and pdfplumber on this indicative subset for cell-F1, precision, recall, and TEDS-approx, but over-detection is not eliminated. Files such as `pdf_000400`, `pdf_000191`, and `pdf_000106` still contain residual false table fragments, mostly from complex ruled page furniture that has enough grid evidence to pass the stricter filter. Multilingual Color Glyphs should validate whether this pattern persists on the full corpus before adding heavier page-region merging or semantic filtering.
 
 ## Regression Coverage
 

@@ -642,7 +642,7 @@ HardLight, SoftLight + the four non-separable). Implemented all:
   `set_lum`/`set_sat` helpers and a new `blend_rgb` triple entry point;
   `buffer.rs::blend_pixel` routes non-separable modes (gated by `is_separable`)
   through `blend_rgb` instead of per-channel.
-- **Luminosity-constant discrepancy (flagged per the prompt):** the blend-mode
+- **Luminosity-constant discrepancy (flagged per the roadmap task):** the blend-mode
   `Lum()` uses the PDF-spec weights **0.30/0.59/0.11** (§11.3.5.3). Round 3's
   soft-mask luminosity (`AlphaMask::from_luminosity`, `buffer.rs`) uses **Rec.601
   0.299/0.587/0.114**, deliberately chosen to match Poppler's SplashBitmap. These

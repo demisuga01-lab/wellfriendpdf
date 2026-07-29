@@ -1,6 +1,6 @@
 # Residual Data Verification
 
-Prompt 35 residual verification checks post-edit bytes and decoded content for
+document security residual verification checks post-edit bytes and decoded content for
 requested residual terms, metadata families, embedded-file evidence, and active
 content families.
 

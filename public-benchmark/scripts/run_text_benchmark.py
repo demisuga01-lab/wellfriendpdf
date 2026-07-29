@@ -239,7 +239,7 @@ def optional_command_cmd(binary: str) -> Callable[[Path, Path, argparse.Namespac
 
 def tool_definitions() -> list[Tool]:
     return [
-        Tool("wellfriendpdf", "local", None, "MIT OR Apache-2.0", wellfriendpdf_cmd),
+        Tool("wellfriendpdf", "local", None, "MIT", wellfriendpdf_cmd),
         Tool("pdf_wellfriendpdf", "python", "pdf_wellfriendpdf", "MIT", lambda p, o, a: python_cmd(PY_PDF_WELLFRIENDPDF, p, o, a)),
         Tool("pymupdf", "python", "fitz", "AGPL-3.0/commercial", lambda p, o, a: python_cmd(PY_PYMUPDF, p, o, a)),
         Tool("pypdfium2", "python", "pypdfium2", "Apache-2.0/BSD-3-Clause", lambda p, o, a: python_cmd(PY_PYPDFIUM2, p, o, a)),

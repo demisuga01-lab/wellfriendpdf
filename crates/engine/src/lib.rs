@@ -70,9 +70,11 @@
 //! but less stable while the crate remains pre-1.0. See `docs/api_overview.md`
 //! and `docs/stability.md` in the repository for the full policy.
 
+pub mod advanced_editing;
 pub mod advanced_rag;
 pub mod analysis;
 pub mod analyzer;
+pub mod annotation_media_redaction;
 pub mod arlington;
 pub mod attachments;
 pub mod authoring;
@@ -82,15 +84,20 @@ pub mod classify;
 pub mod codec_isolation;
 pub mod color_report;
 pub mod compliance;
+pub mod compression_office;
 pub mod content;
 pub mod crypto;
+pub mod crypto_writer;
 pub mod decode_cache;
 pub mod decode_scanner;
 pub mod decode_scheduler;
 pub mod docmodel;
 pub mod document;
+pub mod document_security;
+pub mod document_subsystems;
 pub mod editable;
 pub mod editing;
+pub mod editing_transactions;
 pub mod engine;
 pub mod error;
 pub mod eval;
@@ -98,6 +105,7 @@ pub mod extract;
 pub mod filters;
 pub mod fonts;
 pub mod fonts_report;
+pub mod form_action_policy;
 pub mod form_exchange;
 #[cfg(feature = "fuzzing")]
 pub mod fuzz;
@@ -114,41 +122,54 @@ pub mod parser;
 pub mod parser_report;
 pub mod pdf_mac;
 pub mod prepress;
-pub mod prompt17;
-pub mod prompt18;
-pub mod prompt19;
-pub mod prompt20;
-pub mod prompt21;
-pub mod prompt22;
-pub mod prompt23;
-pub mod prompt31;
-pub mod prompt32;
-pub mod prompt33;
-pub mod prompt34;
-pub mod prompt35;
 pub mod pubsec;
 pub mod reader;
 pub mod render;
 pub mod sdk;
+pub mod secure_mutation;
 pub mod security;
 pub mod semantic;
 pub mod semantic_binding;
 pub mod semantic_intelligence;
 pub mod signature;
 pub mod signature_evidence;
+pub mod source_editing;
 pub mod standards;
 pub mod standards_engine;
 pub mod structural;
 pub mod table_intelligence;
 pub mod text;
+pub mod text_reflow;
 pub mod utilities;
 pub mod versioning;
 pub mod writer;
+pub mod writer_history;
 pub mod xfa;
 
 /// Semantic version of the wellfriendpdf-engine crate.
 pub const ENGINE_VERSION: &str = env!("CARGO_PKG_VERSION");
 
+pub use advanced_editing::{
+    advanced_editing_report, analyze_advanced_text_reflow, analyze_multi_run_text_range,
+    analyze_same_width_patch, apply_same_width_patch, edit_advanced_text_pdf,
+    edit_advanced_text_pdf_with_layout, edit_advanced_text_pdf_with_positioned_visual_layout,
+    edit_advanced_text_pdf_with_visual_layout, edit_multi_run_text_range, edit_vector_object,
+    fit_annotation_ink_pdf, fit_ink_stroke, fit_ink_strokes, list_vector_objects,
+    move_link_annotation_rect_pdf, AdvancedEditingMutationCheckpoint, AdvancedEditingMutationPatch,
+    AdvancedEditingMutationSession, AdvancedEditingSupportStatus, AdvancedTextEditOptions,
+    AdvancedTextEditReport, AdvancedTextMode, AnnotationInkFitReport, BidiRunProvenance,
+    CacheInvalidationReport, CubicBezier, EditableVectorObject, ExplicitLayoutLine,
+    GeneratedLineAdjustment, GeneratedTextAlignment, InkFitOptions, InkFitPolicy, InkFitReport,
+    InkFitResult, InkPoint, InkStrokeSetResult, LinkAnnotationMoveReport, MultiRunRangeModel,
+    MultiRunSourceSpan, MultiRunStylePolicy, MultiRunTextEditReport, MultiRunTextRangeRequest,
+    PatchStringRepresentation, PositionedExplicitLayoutLine, SameWidthMode,
+    SameWidthPatchApplyReport, SameWidthPatchEligibility, SameWidthPatchEligibilityReport,
+    SameWidthPatchOptions, SharedFormEditPolicy, TextGlyphProvenance, TextOverflowPolicy,
+    TextReflowAnalysis, TextReflowLimits, VectorColor, VectorEditOperation, VectorEditOptions,
+    VectorEditReport, VectorFillRule, VectorFormInvocation, VectorGroupProvenance, VectorMatrix,
+    VectorObjectInventory, VectorPaintMode, VectorPathSegment, VectorProvenance, VectorStrokeStyle,
+    VerticalGlyphOrientation, ADVANCED_EDITING_SCHEMA_VERSION,
+};
 pub use advanced_rag::{
     advanced_chunk_document, AdvancedChunkContext, AdvancedChunkMode, AdvancedChunkOptions,
     AdvancedRagChunk, AdvancedRagChunkSet, ChunkSecurityPosture, RagCitation, RagCjkToken,
@@ -158,6 +179,19 @@ pub use analysis::graphics::{
     collect_graphics, collect_graphics_with_images, DrawnGraphics, ImagePlacement, Rect, Segment,
 };
 pub use analyzer::{PdfAnalyzer, TextLayerAnalysis, TextLayerRecommendation};
+pub use annotation_media_redaction::{
+    apply_nonaxis_image_redaction_pdf, apply_rich_media_policy_pdf, export_annotation_xfdf,
+    generate_annotation_appearances_pdf, import_annotation_xfdf_pdf, parse_annotation_xfdf,
+    plan_nonaxis_image_redaction, rich_media_inventory, AnnotationAppearanceMetadata,
+    AnnotationAppearanceOptions, AnnotationAppearancePolicy, AnnotationAppearanceReport,
+    AnnotationConflictPolicy, AnnotationDeletePolicy, AnnotationXfdfDocument,
+    AnnotationXfdfExportReport, AnnotationXfdfImportOptions, AnnotationXfdfImportReport,
+    AnnotationXfdfRecord, NonAxisRedactionApplyReport, NonAxisRedactionFallbackPolicy,
+    NonAxisRedactionOptions, NonAxisRedactionPlan, NonAxisRedactionRequest,
+    RedactionCoordinateSpace, RichMediaCounts, RichMediaCustomPolicy, RichMediaInventoryReport,
+    RichMediaLimits, RichMediaPolicyMode, RichMediaPolicyReport,
+    ANNOTATION_MEDIA_REDACTION_SCHEMA_VERSION,
+};
 pub use arlington::{
     arlington_coverage, validate_arlington_dictionary, validate_arlington_dictionary_at_path,
     ArlingtonCoverage, ArlingtonValidationMode,
@@ -198,6 +232,15 @@ pub use compliance::{
     validate_pdfua, ComplianceSeverity, ComplianceViolation, PdfAConversionReport, PdfAProfile,
     PdfAValidationReport, PdfUaValidationReport,
 };
+pub use compression_office::{
+    compression_office_report, inspect_office_package_for_compression_office,
+    office_to_pdf_with_report, optimize_pdf as compression_office_optimize_pdf,
+    CompressionOfficeCompressionMode, CompressionOfficeCompressionOptions,
+    CompressionOfficeDedupFamilyReport, CompressionOfficeDedupReport,
+    CompressionOfficeOptimizeOptions, CompressionOfficeOptimizeReport, CompressionOfficeReport,
+    CompressionOfficeStatus, CompressionOfficeWriterMode,
+    COMPRESSION_OFFICE_CLOSEOUT_SCHEMA_VERSION,
+};
 pub use content::{
     concat_matrix, BlendMode, Color, ColorSpace, ContentOperation, ContentParser, GraphicsState,
     Matrix, Operand, TextState, IDENTITY_MATRIX,
@@ -211,6 +254,12 @@ pub use crypto::{
     verify_v5_owner_password, verify_v5_perms, verify_v5_user_password, CryptMethod,
     EncryptAlgorithm, EncryptParams, EncryptState, EncryptionInfo, Rc4, SecretBytes, V5Fields,
     PADDING,
+};
+pub use crypto_writer::{
+    aes_gcm_report_bytes, crypto_tamper_test_report, crypto_writer_report,
+    deterministic_writer_audit, public_key_handler_report_bytes, writer_closeout_report,
+    writer_external_diff_report, CryptoWriterFeatureMatrixRow, CryptoWriterReport,
+    CryptoWriterStatus, CRYPTO_WRITER_ARTIFACT_ROOT, CRYPTO_WRITER_SCHEMA_VERSION,
 };
 pub use decode_cache::{DecodeCache, DecodeCacheKey, DecodeCacheMetrics};
 pub use decode_scanner::{
@@ -230,6 +279,22 @@ pub use docmodel::{
     ModelSource, RegionKind,
 };
 pub use document::{PdfDocument, PdfPage};
+pub use document_security::{
+    analyze_document_security, apply_document_security, document_security_feature_matrix,
+    plan_document_security, undo_document_security, verify_residual_data,
+    AccessibilityMutationKind, DocumentSecurityAction, DocumentSecurityAnalysisReport,
+    DocumentSecurityOperationReport, DocumentSecurityRequest, DocumentSecurityStatus,
+    DocumentSecuritySubsystem, DocumentSecurityTypedResult, ResidualFinding,
+    ResidualVerificationReport, SanitizationPreset, StructureSelector,
+    DOCUMENT_SECURITY_SCHEMA_VERSION,
+};
+pub use document_subsystems::{
+    analyze_document_subsystems, apply_document_subsystems, document_subsystems_feature_matrix,
+    plan_document_subsystems, undo_document_subsystems, DocumentSubsystemsAction,
+    DocumentSubsystemsAnalysisReport, DocumentSubsystemsOperationReport, DocumentSubsystemsRequest,
+    DocumentSubsystemsSubsystem, EditableTableGraph, OcrSearchableWord,
+    DOCUMENT_SUBSYSTEMS_SCHEMA_VERSION,
+};
 pub use editable::{
     build_editable_document, build_editable_document_with_parse_options, EditCheckpoint,
     EditOperation, EditPatch, EditSafety, EditTransaction, EditTransactionLog, EditableBlock,
@@ -245,6 +310,17 @@ pub use editing::{
     ParagraphEditOperation, ParagraphEditSerializationMode, ParagraphReflowOptions,
     ParagraphReflowReport, PdfEditor, RedactionOptions, TextReplacementOptions,
     TextReplacementReport, WatermarkOptions,
+};
+pub use editing_transactions::{
+    apply_scene_text_transaction, build_document_snapshot, build_scene_graph,
+    clone_on_write_report, dirty_region_report, editing_transactions_feature_matrix,
+    editing_transactions_report, embedding_permission_report, font_subset_plan,
+    plan_scene_text_transaction, scene_select, substitution_report, text_identity_report,
+    undo_restoration_report, DocumentSnapshot, EditTransactionReport, EditableSceneGraph,
+    EditingTransactionsEvidenceKind, EditingTransactionsStatus, FontIdentityReport,
+    GraphemeClusterRecord, SceneNode, SceneNodeKind, SceneSelectionReport, SceneSelectionRequest,
+    SceneTextEditRequest, ShapingGlyphRecord, TransactionState,
+    EDITING_TRANSACTIONS_SCHEMA_VERSION,
 };
 pub use engine::{
     max_decode_pixels, max_render_pixels, ContentEngine, ExtractionProfile, PageRegion,
@@ -271,6 +347,15 @@ pub use fonts::{
     TextDirection, TextShaper,
 };
 pub use fonts_report::{list_fonts, FontInfo};
+pub use form_action_policy::{
+    flatten_calculated_values_pdf, form_action_graph, form_action_policy_policy_matrix,
+    form_action_policy_report, form_javascript_inventory, form_js_sanitize_pdf,
+    interactive_data_closeout_report, word_pagination_audit, ActionInventoryEntry, CalculationEdge,
+    CalculationFlattenReport, CalculationResult, CustomActionPolicy, DocxLayoutAuditReport,
+    FormActionGraphReport, FormActionPolicySupportStatus, FormJsInventoryReport, FormJsLimits,
+    FormJsPolicyMode, FormJsSanitizerOptions, FormJsSanitizerReport,
+    FORM_ACTION_POLICY_SCHEMA_VERSION,
+};
 pub use form_exchange::{
     apply_form_data_pdf, export_form_data, parse_form_data, FormDataApplyReport, FormDataField,
     FormDataFormat, FormDataSet,
@@ -320,130 +405,10 @@ pub use pdf_mac::{
 };
 pub use prepress::{
     classify_icc_profile, IccProfileClass, IccProfileInfo, NChannelPixelFormatReport,
-    NChannelSample, PlateContribution, PlateKind, PlatePreviewHash, PlatePreviewReport,
-    PlateSummary, Prompt12BPrepressReport, Prompt12PrepressReport, RenderingIntentBpcReport,
-    SeparationFramebuffer, SeparationFramebufferReport,
+    NChannelSample, NchannelPlatePrepressPrepressReport, PlateContribution, PlateKind,
+    PlatePreviewHash, PlatePreviewReport, PlateSummary, PrepressCMMPrepressReport,
+    RenderingIntentBpcReport, SeparationFramebuffer, SeparationFramebufferReport,
     DEFAULT_SEPARATION_FRAMEBUFFER_BUDGET_BYTES, MAX_NCHANNEL_OUTPUT_CHANNELS, MAX_PREPRESS_PLATES,
-};
-pub use prompt17::{
-    apply_nonaxis_image_redaction_pdf, apply_rich_media_policy_pdf, export_annotation_xfdf,
-    generate_annotation_appearances_pdf, import_annotation_xfdf_pdf, parse_annotation_xfdf,
-    plan_nonaxis_image_redaction, rich_media_inventory, AnnotationAppearanceMetadata,
-    AnnotationAppearanceOptions, AnnotationAppearancePolicy, AnnotationAppearanceReport,
-    AnnotationConflictPolicy, AnnotationDeletePolicy, AnnotationXfdfDocument,
-    AnnotationXfdfExportReport, AnnotationXfdfImportOptions, AnnotationXfdfImportReport,
-    AnnotationXfdfRecord, NonAxisRedactionApplyReport, NonAxisRedactionFallbackPolicy,
-    NonAxisRedactionOptions, NonAxisRedactionPlan, NonAxisRedactionRequest,
-    RedactionCoordinateSpace, RichMediaCounts, RichMediaCustomPolicy, RichMediaInventoryReport,
-    RichMediaLimits, RichMediaPolicyMode, RichMediaPolicyReport, PROMPT17_SCHEMA_VERSION,
-};
-pub use prompt18::{
-    analyze_edit_policy, analyze_edit_policy_for_target, apply_signature_preserving_form_fill,
-    associated_file_extract, associated_files_add_pdf, associated_files_inventory,
-    associated_files_remove_owner_pdf, associated_files_sanitize_pdf,
-    associated_files_update_owner_pdf, incremental_annotation_update_pdf,
-    incremental_form_value_update_pdf, incremental_metadata_update_pdf,
-    incremental_page_property_update_pdf, mask_redaction_inventory, prompt18_report,
-    prompt18b_report, redact_masked_images_pdf, AfRelationship, AssociatedFileAddRequest,
-    AssociatedFileOwnerRemoveRequest, AssociatedFileOwnerType, AssociatedFileOwnerUpdateRequest,
-    AssociatedFileRecord, AssociatedFileSanitizerOptions, AssociatedFileSanitizerPolicy,
-    AssociatedFilesInventoryReport, AssociatedFilesMutationReport,
-    EditOperation as SignatureEditOperation, EditPolicyDecision, EditPolicyReport,
-    IncrementalAnnotationEdit, IncrementalMutationReport, IncrementalPagePropertyEdit,
-    MaskInventoryReport, MaskInventoryRow, MaskRedactionStrategy, PostEditSignatureReport,
-    Prompt18SupportStatus, SignatureImpactSummary, SignaturePreservingEditPlan,
-    SignaturePreservingEditResult, StructuralSignaturePolicy, PROMPT18B_SCHEMA_VERSION,
-    PROMPT18_SCHEMA_VERSION,
-};
-pub use prompt19::{
-    flatten_calculated_values_pdf, form_action_graph, form_javascript_inventory,
-    form_js_sanitize_pdf, interactive_data_closeout_report, prompt19_policy_matrix,
-    prompt19_report, word_pagination_audit, ActionInventoryEntry, CalculationEdge,
-    CalculationFlattenReport, CalculationResult, CustomActionPolicy, DocxLayoutAuditReport,
-    FormActionGraphReport, FormJsInventoryReport, FormJsLimits, FormJsPolicyMode,
-    FormJsSanitizerOptions, FormJsSanitizerReport, Prompt19SupportStatus, PROMPT19_SCHEMA_VERSION,
-};
-pub use prompt20::{
-    analyze_advanced_text_reflow, analyze_multi_run_text_range, analyze_same_width_patch,
-    apply_same_width_patch, edit_advanced_text_pdf, edit_advanced_text_pdf_with_layout,
-    edit_advanced_text_pdf_with_positioned_visual_layout,
-    edit_advanced_text_pdf_with_visual_layout, edit_multi_run_text_range, edit_vector_object,
-    fit_annotation_ink_pdf, fit_ink_stroke, fit_ink_strokes, list_vector_objects,
-    move_link_annotation_rect_pdf, prompt20_report, AdvancedTextEditOptions,
-    AdvancedTextEditReport, AdvancedTextMode, AnnotationInkFitReport, BidiRunProvenance,
-    CacheInvalidationReport, CubicBezier, EditableVectorObject, ExplicitLayoutLine,
-    GeneratedLineAdjustment, GeneratedTextAlignment, InkFitOptions, InkFitPolicy, InkFitReport,
-    InkFitResult, InkPoint, InkStrokeSetResult, LinkAnnotationMoveReport, MultiRunRangeModel,
-    MultiRunSourceSpan, MultiRunStylePolicy, MultiRunTextEditReport, MultiRunTextRangeRequest,
-    PatchStringRepresentation, PositionedExplicitLayoutLine, Prompt20MutationCheckpoint,
-    Prompt20MutationPatch, Prompt20MutationSession, Prompt20SupportStatus, SameWidthMode,
-    SameWidthPatchApplyReport, SameWidthPatchEligibility, SameWidthPatchEligibilityReport,
-    SameWidthPatchOptions, SharedFormEditPolicy, TextGlyphProvenance, TextOverflowPolicy,
-    TextReflowAnalysis, TextReflowLimits, VectorColor, VectorEditOperation, VectorEditOptions,
-    VectorEditReport, VectorFillRule, VectorFormInvocation, VectorGroupProvenance, VectorMatrix,
-    VectorObjectInventory, VectorPaintMode, VectorPathSegment, VectorProvenance, VectorStrokeStyle,
-    VerticalGlyphOrientation, PROMPT20_SCHEMA_VERSION,
-};
-pub use prompt21::{
-    font_reconstruction_report, object_stream_packing_report, pack_object_streams_pdf,
-    persistent_store_report, prompt21_report, raster_vectorization_report, vectorize_raw_image,
-    FontReconstructionReport, ObjectStreamPackingReport, PersistentStoreReport, Prompt21Report,
-    RasterVectorOutputMode, RasterVectorizationOptions, RasterVectorizationReport,
-    PROMPT21_ARTIFACT_ROOT, PROMPT21_SCHEMA_VERSION,
-};
-pub use prompt22::{
-    inspect_office_package_for_prompt22, office_to_pdf_with_report,
-    optimize_pdf as prompt22_optimize_pdf, prompt22_report, Prompt22CompressionMode,
-    Prompt22CompressionOptions, Prompt22DedupFamilyReport, Prompt22DedupReport,
-    Prompt22OptimizeOptions, Prompt22OptimizeReport, Prompt22Report, Prompt22Status,
-    Prompt22WriterMode, PROMPT22B_SCHEMA_VERSION,
-};
-pub use prompt23::{
-    aes_gcm_report_bytes, crypto_tamper_test_report, deterministic_writer_audit, prompt23_report,
-    public_key_handler_report_bytes, writer_closeout_report, writer_external_diff_report,
-    Prompt23FeatureMatrixRow, Prompt23Report, Prompt23Status, PROMPT23_ARTIFACT_ROOT,
-    PROMPT23_SCHEMA_VERSION,
-};
-pub use prompt31::{
-    edit_path_operator, edit_text_operator, operator_image_eligibility, operator_path_provenance,
-    operator_text_eligibility, operator_text_provenance, prompt31_report,
-    OperatorEditOperationReport, OperatorEditRefusal, OperatorTextEditRequest,
-    OperatorTextEligibilityReport, ProvenanceSelectionReport, ProvenanceStrength,
-    SourceInstructionIdentity, TrueEditingMode, PROMPT31_SCHEMA_VERSION,
-};
-pub use prompt32::{
-    apply_scene_text_transaction, build_document_snapshot, build_scene_graph,
-    clone_on_write_report, dirty_region_report, embedding_permission_report, font_subset_plan,
-    plan_scene_text_transaction, prompt32_feature_matrix, prompt32_report, scene_select,
-    substitution_report, text_identity_report, undo_restoration_report, DocumentSnapshot,
-    EditTransactionReport, EditableSceneGraph, FontIdentityReport, GraphemeClusterRecord,
-    Prompt32EvidenceKind, Prompt32Status, SceneNode, SceneNodeKind, SceneSelectionReport,
-    SceneSelectionRequest, SceneTextEditRequest, ShapingGlyphRecord, TransactionState,
-    PROMPT32_SCHEMA_VERSION,
-};
-pub use prompt33::{
-    analyze_geometric_region, analyze_semantic_layout, apply_reflow_document, apply_reflow_region,
-    approve_structure_correction, evaluate_reflow_confidence, flow_graph_report, line_break_text,
-    no_overlay_no_clipping_report, paragraph_style_model, preview_reflow, prompt33_feature_matrix,
-    prompt33_report, query_confidence, query_constraints, query_overflow, reading_order_report,
-    score_reading_order_fixture, transaction_undo_report, undo_reflow_from_replay,
-    validate_reflow_output, ConfidenceDecision, ConstraintSolverReport, GeometricReflowRequest,
-    GeometricTextRegion, LayoutConstraint, LayoutLine, LineBreakRecord, LineBreakingResult,
-    NeighborPolicy, OverflowStatus, ParagraphStyleModel, Prompt33EvidenceKind, Prompt33Status,
-    ReflowConfidencePolicy, ReflowMutationSession, ReflowTransactionReport, ReflowUndoReport,
-    SemanticLayoutReport, SemanticRegionEdge, SemanticRegionNode, PROMPT33_SCHEMA_VERSION,
-};
-pub use prompt34::{
-    analyze_prompt34, apply_prompt34, plan_prompt34, prompt34_feature_matrix, undo_prompt34,
-    EditableTableGraph, OcrSearchableWord, Prompt34Action, Prompt34AnalysisReport,
-    Prompt34OperationReport, Prompt34Request, Prompt34Subsystem, PROMPT34_SCHEMA_VERSION,
-};
-pub use prompt35::{
-    analyze_prompt35, apply_prompt35, plan_prompt35, prompt35_feature_matrix, undo_prompt35,
-    verify_residual_data, AccessibilityMutationKind, Prompt35Action, Prompt35AnalysisReport,
-    Prompt35OperationReport, Prompt35Request, Prompt35Status, Prompt35Subsystem,
-    Prompt35TypedResult, ResidualFinding, ResidualVerificationReport, SanitizationPreset,
-    StructureSelector, PROMPT35_SCHEMA_VERSION,
 };
 pub use pubsec::{
     encrypt_pdf_pubsec, parse_pubsec_encryption_info, recover_pubsec_file_key,
@@ -464,6 +429,24 @@ pub use render::{
 };
 pub use render::{render_page_svg, svg, text_decode};
 pub use sdk::REPORT_ENVELOPE_VERSION;
+pub use secure_mutation::{
+    analyze_edit_policy, analyze_edit_policy_for_target, apply_signature_preserving_form_fill,
+    associated_file_extract, associated_files_add_pdf, associated_files_inventory,
+    associated_files_remove_owner_pdf, associated_files_sanitize_pdf,
+    associated_files_update_owner_pdf, incremental_annotation_update_pdf,
+    incremental_form_value_update_pdf, incremental_metadata_update_pdf,
+    incremental_page_property_update_pdf, mask_redaction_inventory, redact_masked_images_pdf,
+    secure_mutation_closeout_report, secure_mutation_report, AfRelationship,
+    AssociatedFileAddRequest, AssociatedFileOwnerRemoveRequest, AssociatedFileOwnerType,
+    AssociatedFileOwnerUpdateRequest, AssociatedFileRecord, AssociatedFileSanitizerOptions,
+    AssociatedFileSanitizerPolicy, AssociatedFilesInventoryReport, AssociatedFilesMutationReport,
+    EditOperation as SignatureEditOperation, EditPolicyDecision, EditPolicyReport,
+    IncrementalAnnotationEdit, IncrementalMutationReport, IncrementalPagePropertyEdit,
+    MaskInventoryReport, MaskInventoryRow, MaskRedactionStrategy, PostEditSignatureReport,
+    SecureMutationSupportStatus, SignatureImpactSummary, SignaturePreservingEditPlan,
+    SignaturePreservingEditResult, StructuralSignaturePolicy,
+    SECURE_MUTATION_CLOSEOUT_SCHEMA_VERSION, SECURE_MUTATION_SCHEMA_VERSION,
+};
 pub use security::{
     canonicalize_pdf, sanitize_pdf, scan_risky_content, security_report, CanonicalizeOptions,
     CanonicalizeReport, RiskyContentReport, SanitizerOptions, SanitizerPolicy, SanitizerReport,
@@ -484,8 +467,8 @@ pub use semantic_intelligence::{
     LayoutMergePolicy, LayoutMergeReport, LayoutPrivacyMode, LayoutProposalRegion,
     LayoutProposalSet, LayoutRegionGeometry, LayoutRegionLabel, MockCloudLayoutBackend,
     MockLocalLayoutBackend, ParentTreeDiagnostic, ParentTreePageSummary, ParentTreeRecoveredNode,
-    ParentTreeRecoveryReport, ParentTreeRecoveryStatus, Prompt14SemanticIntelligenceReport,
-    SemanticEvidenceKind,
+    ParentTreeRecoveryReport, ParentTreeRecoveryStatus, SemanticEvidenceKind,
+    SemanticIntelligenceSemanticIntelligenceReport,
 };
 pub use signature::{
     add_ltv_material, plan_signature_placeholder, sign_document, sign_incremental,
@@ -494,20 +477,28 @@ pub use signature::{
     CertificatePathValidationReport, CertificateRevocationDecision, CmsSigningRequest,
     CmsSigningResult, ConfiguredTrustAnchor, Coverage, DocumentTimestampStatus, ExternalSigner,
     IncrementalSignResult, IncrementalSigner, IncrementalSigningOptions, IntermediateStore,
-    LtvMaterial, LtvReport, NetworkEvidenceReport, NetworkValidationReport, PadesLevel,
-    PadesValidationReport, PdfSigner, PostSignValidationReport, Prompt24SignatureValidationReport,
-    Prompt25SignatureLtvEditReport, RevocationStatus, RevocationValidationReport,
+    LtvMaterial, LtvReport, NetworkEvidenceReport, NetworkValidationReport,
+    PadesLTVSignatureLtvEditReport, PadesLevel, PadesValidationReport, PdfSigner,
+    PostSignValidationReport, RevocationStatus, RevocationValidationReport,
     SignatureAlgorithmPolicy, SignatureCheckDetails, SignatureOptions, SignaturePlaceholderPlan,
     SignatureReport, SignatureRevocationMode, SignatureStatus, SignatureTrust,
     SignatureValidationIndication, SignatureValidationOutcome, SignatureValidationPolicyProfile,
-    SignatureValidationPolicyReport, SignatureValidationState, SignatureValidationSubindication,
-    SignatureValidity, SigningIntent, TimestampTokenType, TimestampValidationReport, TrustStore,
-    VerifyOptions, PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION,
-    PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+    SignatureValidationPolicyReport, SignatureValidationSignatureValidationReport,
+    SignatureValidationState, SignatureValidationSubindication, SignatureValidity, SigningIntent,
+    TimestampTokenType, TimestampValidationReport, TrustStore, VerifyOptions,
+    PADES_LTV_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+    SIGNATURE_VALIDATION_SIGNATURE_VALIDATION_SCHEMA_VERSION,
 };
 pub use signature_evidence::{
     EvidenceBundle, EvidenceKind, EvidenceRecord, EvidenceStore, NetworkBudget, OcspNoncePolicy,
     RetrievalKind, RetrievalMethod, RetrievalPolicy, RetrievalTrace,
+};
+pub use source_editing::{
+    edit_path_operator, edit_text_operator, operator_image_eligibility, operator_path_provenance,
+    operator_text_eligibility, operator_text_provenance, source_editing_report,
+    OperatorEditOperationReport, OperatorEditRefusal, OperatorTextEditRequest,
+    OperatorTextEligibilityReport, ProvenanceSelectionReport, ProvenanceStrength,
+    SourceInstructionIdentity, TrueEditingMode, SOURCE_EDITING_SCHEMA_VERSION,
 };
 pub use standards::{
     validate_standards_profile, StandardsProfile, StandardsValidationReport, ValidationRuleResult,
@@ -549,6 +540,19 @@ pub use text::{
     TextSemanticOptions, TextSemanticPage, TextSemanticParagraph, TextSemanticSpan,
     TextSemanticWord, TextStructureContext, TextStructureEntry, TextStructurePageSummary,
 };
+pub use text_reflow::{
+    analyze_geometric_region, analyze_semantic_layout, apply_reflow_document, apply_reflow_region,
+    approve_structure_correction, evaluate_reflow_confidence, flow_graph_report, line_break_text,
+    no_overlay_no_clipping_report, paragraph_style_model, preview_reflow, query_confidence,
+    query_constraints, query_overflow, reading_order_report, score_reading_order_fixture,
+    text_reflow_feature_matrix, text_reflow_report, transaction_undo_report,
+    undo_reflow_from_replay, validate_reflow_output, ConfidenceDecision, ConstraintSolverReport,
+    GeometricReflowRequest, GeometricTextRegion, LayoutConstraint, LayoutLine, LineBreakRecord,
+    LineBreakingResult, NeighborPolicy, OverflowStatus, ParagraphStyleModel,
+    ReflowConfidencePolicy, ReflowMutationSession, ReflowTransactionReport, ReflowUndoReport,
+    SemanticLayoutReport, SemanticRegionEdge, SemanticRegionNode, TextReflowEvidenceKind,
+    TextReflowStatus, TEXT_REFLOW_SCHEMA_VERSION,
+};
 pub use utilities::{
     add_page_numbers_pdf, attachments_json, crop_pdf, crop_pdf_pages, decrypt_pdf, encrypt_pdf,
     encrypt_pdf_with_pdf_mac, export_pdf_pages_to_images, fonts_json, html_string,
@@ -566,6 +570,14 @@ pub use writer::{
     build_merged, build_subset, rewrite_document, rewrite_document_objects,
     rewrite_document_with_mode, rewrite_references, serialize_object, write_document_linearized,
     write_document_roundtrip, OutputObject, PdfWriter, WriterMode,
+};
+pub use writer_history::{
+    font_reconstruction_report, object_stream_packing_report, pack_object_streams_pdf,
+    persistent_store_report, raster_vectorization_report, vectorize_raw_image,
+    writer_history_report, FontReconstructionReport, ObjectStreamPackingReport,
+    PersistentStoreReport, RasterVectorOutputMode, RasterVectorizationOptions,
+    RasterVectorizationReport, WriterHistoryReport, WRITER_HISTORY_ARTIFACT_ROOT,
+    WRITER_HISTORY_SCHEMA_VERSION,
 };
 pub use xfa::{
     extract_xfa, sanitize_xfa_pdf, xfa_flatten_pdf, xfa_inventory, xfa_inventory_cancellable,
@@ -618,6 +630,13 @@ pub use xfa::{
 /// [`ExtractOptions::ocr`]. Everything here works **without** the CLI, the
 /// server, or any non-Rust binding.
 pub mod prelude {
+    pub use crate::annotation_media_redaction::{
+        apply_nonaxis_image_redaction_pdf, apply_rich_media_policy_pdf, export_annotation_xfdf,
+        generate_annotation_appearances_pdf, import_annotation_xfdf_pdf,
+        plan_nonaxis_image_redaction, rich_media_inventory, AnnotationAppearanceOptions,
+        AnnotationXfdfImportOptions, NonAxisRedactionOptions, NonAxisRedactionRequest,
+        RichMediaPolicyMode,
+    };
     pub use crate::authoring::{
         CustomFontId, FlowDocument, FontFace, GraphicsStyle, ImageHandle, Margins,
         PageSize as AuthorPageSize, ParagraphStyle, PathBuilder, PdfBuilder, PdfMetadata,
@@ -629,6 +648,21 @@ pub mod prelude {
         convert_to_pdfa, convert_to_pdfa_checked, improve_pdfua_best_effort, validate_pdfa,
         validate_pdfua, ComplianceSeverity, ComplianceViolation, PdfAConversionReport, PdfAProfile,
         PdfAValidationReport, PdfUaValidationReport,
+    };
+    pub use crate::compression_office::{
+        compression_office_report, inspect_office_package_for_compression_office,
+        office_to_pdf_with_report, optimize_pdf as compression_office_optimize_pdf,
+        CompressionOfficeCompressionMode, CompressionOfficeCompressionOptions,
+        CompressionOfficeDedupFamilyReport, CompressionOfficeDedupReport,
+        CompressionOfficeOptimizeOptions, CompressionOfficeOptimizeReport, CompressionOfficeReport,
+        CompressionOfficeStatus, CompressionOfficeWriterMode,
+        COMPRESSION_OFFICE_CLOSEOUT_SCHEMA_VERSION,
+    };
+    pub use crate::crypto_writer::{
+        aes_gcm_report_bytes, crypto_tamper_test_report, crypto_writer_report,
+        deterministic_writer_audit, public_key_handler_report_bytes, writer_closeout_report,
+        writer_external_diff_report, CryptoWriterFeatureMatrixRow, CryptoWriterReport,
+        CryptoWriterStatus, CRYPTO_WRITER_ARTIFACT_ROOT, CRYPTO_WRITER_SCHEMA_VERSION,
     };
     pub use crate::editable::{
         build_editable_document, EditableBuildOptions, EditableDocument, EditableRole,
@@ -658,53 +692,34 @@ pub mod prelude {
         parse, Block, BlockKind, Document, DocumentMetadata, Page, ParseOptions, SerializeOptions,
         SourceInfo, SCHEMA_VERSION,
     };
-    pub use crate::prompt17::{
-        apply_nonaxis_image_redaction_pdf, apply_rich_media_policy_pdf, export_annotation_xfdf,
-        generate_annotation_appearances_pdf, import_annotation_xfdf_pdf,
-        plan_nonaxis_image_redaction, rich_media_inventory, AnnotationAppearanceOptions,
-        AnnotationXfdfImportOptions, NonAxisRedactionOptions, NonAxisRedactionRequest,
-        RichMediaPolicyMode,
-    };
-    pub use crate::prompt18::{
+    pub use crate::secure_mutation::{
         analyze_edit_policy, apply_signature_preserving_form_fill, associated_file_extract,
         associated_files_add_pdf, associated_files_inventory, associated_files_remove_owner_pdf,
         associated_files_sanitize_pdf, associated_files_update_owner_pdf,
         incremental_annotation_update_pdf, incremental_form_value_update_pdf,
         incremental_metadata_update_pdf, incremental_page_property_update_pdf,
-        mask_redaction_inventory, prompt18_report, prompt18b_report, redact_masked_images_pdf,
-        AssociatedFileAddRequest, AssociatedFileOwnerRemoveRequest,
+        mask_redaction_inventory, redact_masked_images_pdf, secure_mutation_closeout_report,
+        secure_mutation_report, AssociatedFileAddRequest, AssociatedFileOwnerRemoveRequest,
         AssociatedFileOwnerUpdateRequest, AssociatedFileSanitizerOptions,
         EditOperation as SignatureEditOperation, IncrementalAnnotationEdit,
         IncrementalPagePropertyEdit, PostEditSignatureReport, SignaturePreservingEditPlan,
         SignaturePreservingEditResult,
-    };
-    pub use crate::prompt22::{
-        inspect_office_package_for_prompt22, office_to_pdf_with_report,
-        optimize_pdf as prompt22_optimize_pdf, prompt22_report, Prompt22CompressionMode,
-        Prompt22CompressionOptions, Prompt22DedupFamilyReport, Prompt22DedupReport,
-        Prompt22OptimizeOptions, Prompt22OptimizeReport, Prompt22Report, Prompt22Status,
-        Prompt22WriterMode, PROMPT22B_SCHEMA_VERSION,
-    };
-    pub use crate::prompt23::{
-        aes_gcm_report_bytes, crypto_tamper_test_report, deterministic_writer_audit,
-        prompt23_report, public_key_handler_report_bytes, writer_closeout_report,
-        writer_external_diff_report, Prompt23FeatureMatrixRow, Prompt23Report, Prompt23Status,
-        PROMPT23_ARTIFACT_ROOT, PROMPT23_SCHEMA_VERSION,
     };
     pub use crate::signature::{
         add_ltv_material, sign_document, verify_options_from_json,
         verify_signature_timestamp_token_der, verify_signatures, verify_signatures_with_options,
         verify_signatures_with_options_and_evidence, CertInfo, CertificatePathValidationReport,
         CertificateRevocationDecision, ConfiguredTrustAnchor, Coverage, IntermediateStore,
-        LtvMaterial, LtvReport, NetworkValidationReport, PadesLevel, PadesValidationReport,
-        PdfSigner, Prompt24SignatureValidationReport, Prompt25SignatureLtvEditReport,
-        RevocationStatus, RevocationValidationReport, SignatureAlgorithmPolicy, SignatureOptions,
-        SignatureReport, SignatureRevocationMode, SignatureStatus, SignatureTrust,
-        SignatureValidationIndication, SignatureValidationOutcome,
+        LtvMaterial, LtvReport, NetworkValidationReport, PadesLTVSignatureLtvEditReport,
+        PadesLevel, PadesValidationReport, PdfSigner, RevocationStatus, RevocationValidationReport,
+        SignatureAlgorithmPolicy, SignatureOptions, SignatureReport, SignatureRevocationMode,
+        SignatureStatus, SignatureTrust, SignatureValidationIndication, SignatureValidationOutcome,
         SignatureValidationPolicyProfile, SignatureValidationPolicyReport,
-        SignatureValidationState, SignatureValidationSubindication, SignatureValidity,
-        TimestampTokenType, TimestampValidationReport, TrustStore, VerifyOptions,
-        PROMPT24_SIGNATURE_VALIDATION_SCHEMA_VERSION, PROMPT25_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+        SignatureValidationSignatureValidationReport, SignatureValidationState,
+        SignatureValidationSubindication, SignatureValidity, TimestampTokenType,
+        TimestampValidationReport, TrustStore, VerifyOptions,
+        PADES_LTV_SIGNATURE_LTV_EDIT_SCHEMA_VERSION,
+        SIGNATURE_VALIDATION_SIGNATURE_VALIDATION_SCHEMA_VERSION,
     };
     pub use crate::writer::{build_merged, build_subset};
     pub use crate::ENGINE_VERSION;

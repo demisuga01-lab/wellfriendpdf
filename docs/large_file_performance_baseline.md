@@ -4,9 +4,9 @@ Date: 2026-07-02
 
 Commit measured: `01c592b718f17513083d32556c5b206e9159454d`
 
-This is the Prompt 1 measurement-only baseline. No reader/parser/engine implementation was changed.
+This is the Binding Surface measurement-only baseline. No reader/parser/engine implementation was changed.
 
-Prompt 2 follow-up: `docs/large_file_performance_prompt2.md` records the streaming-reader re-architecture results, before/after profile, correctness checks, and remaining Prompt 3 gap. This document remains the pre-change baseline.
+Binding Parity follow-up: `docs/large_file_performance_binding_parity.md` records the streaming-reader re-architecture results, before/after profile, correctness checks, and remaining Release Packaging gap. This document remains the pre-change baseline.
 
 ## Headline Gap
 
@@ -208,7 +208,7 @@ The page-count result is the clearest time bottleneck: 1000 to 5000 pages is 5x 
 
 5. Unbounded object stream cache.
    - Evidence: code stores decoded object streams in an unbounded nested `HashMap`.
-   - Measurement note: not dominant in this fixture set, but it is a required Prompt 2 fix because object-stream-heavy files can grow cache with document object count.
+   - Measurement note: not dominant in this fixture set, but it is a required Binding Parity fix because object-stream-heavy files can grow cache with document object count.
 
 ### Dominant Time Bottlenecks
 
@@ -227,7 +227,7 @@ The page-count result is the clearest time bottleneck: 1000 to 5000 pages is 5x 
 | Real files measured | 703 MB / 398 pages | No real-file failure in available set |
 | Tiny high-page-count files | 5000 pages | Completes but page-by-page time is unacceptable |
 
-## Prompt 2 Priority List
+## Binding Parity Priority List
 
 1. Replace path open with a seekable source (`from_path` backed by mmap or buffered random access) so file size does not imply an equal-sized heap `Vec<u8>`. Keep `from_bytes` for small/WASM callers.
 2. Route parser/object reads through the seekable source by offset. `xref` already carries object offsets; use that instead of parsing from a monolithic slice.

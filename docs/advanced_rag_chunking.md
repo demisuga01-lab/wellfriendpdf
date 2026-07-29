@@ -1,6 +1,6 @@
 # Advanced RAG Chunking
 
-Prompt 15 adds `advanced_rag` alongside the legacy chunk set. It uses the
+Semantic Closeout adds `advanced_rag` alongside the legacy chunk set. It uses the
 canonical document for structural boundaries and joins detailed text,
 structure, ParentTree, dictionary, table, and security evidence into each
 chunk.
@@ -36,7 +36,7 @@ mutated.
 
 ## CJK
 
-The Prompt 14B dictionary provider guides split boundaries. Known words are
+The CJK Dictionary Layout dictionary provider guides split boundaries. Known words are
 kept whole when the requested size permits. Raw text and offsets remain
 unchanged, and dictionary pack source/license/version/hash metadata travels
 with chunks. Missing or disabled dictionaries fall back deterministically.

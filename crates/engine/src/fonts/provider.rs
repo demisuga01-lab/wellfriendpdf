@@ -3,7 +3,7 @@
 //! PDF rendering and generated output need a common way to resolve embedded,
 //! Standard 14, and fallback fonts without depending on whatever happens to be
 //! installed on the host. This module exposes the stable provider seam used by
-//! Prompt 04 while the existing renderer continues to consume byte slices.
+//! Codec Boundary while the existing renderer continues to consume byte slices.
 
 use crate::render::font_rasterizer::get_fallback_font;
 

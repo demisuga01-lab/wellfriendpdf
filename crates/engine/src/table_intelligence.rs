@@ -17,8 +17,8 @@ use crate::semantic_intelligence::{
     LayoutRegionGeometry,
 };
 
-pub const TABLE_PROPOSAL_SCHEMA_VERSION: &str = "prompt15.table_proposal.v1";
-pub const TABLE_PROPOSAL_MERGE_SCHEMA_VERSION: &str = "prompt15.table_merge.v1";
+pub const TABLE_PROPOSAL_SCHEMA_VERSION: &str = "semantic_closeout.table_proposal.v1";
+pub const TABLE_PROPOSAL_MERGE_SCHEMA_VERSION: &str = "semantic_closeout.table_merge.v1";
 
 const MAX_TABLE_PROPOSALS: usize = 4_096;
 const MAX_BOUNDARIES_PER_TABLE: usize = 8_192;
@@ -778,7 +778,7 @@ pub fn mock_tableformer_proposal_set(page: usize) -> TableProposalSet {
         backend_id: "mock-tableformer-local".to_string(),
         backend_type: LayoutBackendKind::MockLocal,
         model_name: "tableformer-contract-fixture".to_string(),
-        model_version: "prompt15".to_string(),
+        model_version: "semantic_closeout".to_string(),
         model_hash: "sha256:mock-tableformer-no-weights".to_string(),
         model_source: "generated contract fixture".to_string(),
         model_license: "CC0-1.0 synthetic fixture".to_string(),

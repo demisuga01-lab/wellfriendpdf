@@ -23,7 +23,7 @@ pdf.close();
 ## Package Shape
 
 - For release evidence, run
-  `powershell -ExecutionPolicy Bypass -File scripts\prompt03b_wasm_pack_gate.ps1`
+  `powershell -ExecutionPolicy Bypass -File scripts\wasm_packaging_wasm_pack_gate.ps1`
   from the repository root. The gate bootstraps target-local `wasm-pack 0.13.1`,
   builds web and Node package directories, inspects contents, and runs a
   packaged Node smoke.
@@ -32,7 +32,7 @@ pdf.close();
   browser/WebWorker use and
   `wasm-pack build crates/wellfriendpdf-wasm --target nodejs --out-dir pkg-node` for
   Node use.
-- `wellfriendpdf.d.ts` documents the Prompt 02/03 public TypeScript surface.
+- `wellfriendpdf.d.ts` documents the Binding Parity/03 public TypeScript surface.
 
 The checked-in browser example under `examples/browser` must be regenerated
 after source changes; its prebuilt `pkg/` directory is an example artifact, not
@@ -44,10 +44,10 @@ Public report methods include document info, security, risky-content, parser,
 color, validation, forms, annotations, page operations, interactive content,
 signature, font, semantic text, semantic document, chunks, and decode-budget
 reports, plus `WellfriendPdf.codecIsolationReportJson(filter, bytes, policy)` for
-Prompt 03 codec policy diagnostics. Output-producing methods include
+Release Packaging codec policy diagnostics. Output-producing methods include
 `sanitize`, `canonicalize`, and `redactTermsJson`.
 
-Prompt 15 adds `semanticBundleJson`, `advancedChunksJson`,
+Semantic Closeout adds `semanticBundleJson`, `advancedChunksJson`,
 `semanticSearchJson`, and static `tableProposalStatusJson`. These are local,
 byte-only browser surfaces. They do not assume a filesystem or native ML
 runtime and do not upload input.

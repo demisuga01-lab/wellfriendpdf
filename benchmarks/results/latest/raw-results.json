@@ -1,0 +1,312 @@
+{
+  "commit": "working_tree",
+  "corpus": {
+    "categories": [
+      {
+        "bytes": 642,
+        "name": "born_digital_text",
+        "pages": 1,
+        "sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057"
+      },
+      {
+        "bytes": 597,
+        "name": "paragraph_reflow_text",
+        "pages": 1,
+        "sha256": "d304b46c64f3a923b16551666e99387842e1e391e961927dbcd6caf24372320c"
+      },
+      {
+        "bytes": 865,
+        "name": "ruled_table",
+        "pages": 1,
+        "sha256": "9dd92bdd38439689e43b6172c502f43b55726b85586245e81f0b3308b04237e7"
+      },
+      {
+        "bytes": 652,
+        "name": "compact_scan_fixture",
+        "pages": 1,
+        "sha256": "3db9f6bd77f5235febb49923b8c7e1bfdb075c20b59e566696f3237278dacc45"
+      }
+    ],
+    "file_count": 4,
+    "name": "repository-generated compact benchmark corpus",
+    "provenance": "repository-generated fixtures plus checked-in compact scan fixture",
+    "total_bytes": 2756
+  },
+  "results": [
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 25,
+      "last_result": {
+        "pages": 1
+      },
+      "median_ms": 0.004908,
+      "p95_ms": 0.005188,
+      "peak_rss_kib": 6684,
+      "successes": 25,
+      "task": "open_parse",
+      "throughput_ops_per_sec_median": 203748.98125509373
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 25,
+      "last_result": {
+        "pages": 1
+      },
+      "median_ms": 0.0049169999999999995,
+      "p95_ms": 0.005077,
+      "peak_rss_kib": 6736,
+      "successes": 25,
+      "task": "page_count_model",
+      "throughput_ops_per_sec_median": 203376.0423022168
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 25,
+      "last_result": {
+        "text_len": 4
+      },
+      "median_ms": 0.027812,
+      "p95_ms": 0.031037000000000002,
+      "peak_rss_kib": 8080,
+      "successes": 25,
+      "task": "text_extraction",
+      "throughput_ops_per_sec_median": 35955.7025744283
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 12,
+      "last_result": {
+        "png_bytes": 2272
+      },
+      "median_ms": 0.13685499999999998,
+      "p95_ms": 0.142674,
+      "peak_rss_kib": 10144,
+      "successes": 12,
+      "task": "render_page_png_72dpi",
+      "throughput_ops_per_sec_median": 7307.003763106939
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 16,
+      "last_result": {
+        "objects": 5,
+        "output_bytes": 642
+      },
+      "median_ms": 0.017596,
+      "p95_ms": 0.018177,
+      "peak_rss_kib": 10400,
+      "successes": 16,
+      "task": "canonical_noop_rewrite",
+      "throughput_ops_per_sec_median": 56831.09797681291
+    },
+    {
+      "category": "core",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 16,
+      "last_result": {
+        "output_bytes": 1204
+      },
+      "median_ms": 0.070646,
+      "p95_ms": 0.074001,
+      "peak_rss_kib": 10792,
+      "successes": 16,
+      "task": "linearized_save",
+      "throughput_ops_per_sec_median": 14155.083090337741
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 16,
+      "last_result": {
+        "changed_pages": [
+          1
+        ],
+        "old_absent": true,
+        "output_bytes": 873,
+        "replacement_present": true
+      },
+      "median_ms": 0.744757,
+      "p95_ms": 0.7524689999999999,
+      "peak_rss_kib": 11528,
+      "successes": 16,
+      "task": "source_text_replacement_save_reopen",
+      "throughput_ops_per_sec_median": 1342.7198401626301
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 597,
+      "input_sha256": "d304b46c64f3a923b16551666e99387842e1e391e961927dbcd6caf24372320c",
+      "iterations": 12,
+      "last_result": {
+        "edits": 1,
+        "lines": 1,
+        "output_bytes": 932
+      },
+      "median_ms": 0.51362,
+      "p95_ms": 0.528513,
+      "peak_rss_kib": 12248,
+      "successes": 12,
+      "task": "paragraph_reflow_save_reopen",
+      "throughput_ops_per_sec_median": 1946.9646820606677
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 865,
+      "input_sha256": "9dd92bdd38439689e43b6172c502f43b55726b85586245e81f0b3308b04237e7",
+      "iterations": 12,
+      "last_result": {
+        "operation": "table_cell_source_rewrite",
+        "output_bytes": 385275,
+        "replacement_present": true
+      },
+      "median_ms": 37.160841,
+      "p95_ms": 43.102214,
+      "peak_rss_kib": 16252,
+      "successes": 12,
+      "task": "table_cell_edit_save_reopen",
+      "throughput_ops_per_sec_median": 26.910047595532085
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 12,
+      "last_result": {
+        "operation": "annotation_create_and_appearance_regeneration",
+        "output_bytes": 1199
+      },
+      "median_ms": 0.14318499999999998,
+      "p95_ms": 0.150526,
+      "peak_rss_kib": 16252,
+      "successes": 12,
+      "task": "annotation_create_appearance_save_reopen",
+      "throughput_ops_per_sec_median": 6983.9717847539905
+    },
+    {
+      "category": "editing",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 12,
+      "last_result": {
+        "operation": "acroform_source_edit",
+        "output_bytes": 981
+      },
+      "median_ms": 0.133821,
+      "p95_ms": 0.14141199999999998,
+      "peak_rss_kib": 16252,
+      "successes": 12,
+      "task": "form_text_create_appearance_save_reopen",
+      "throughput_ops_per_sec_median": 7472.668714177895
+    },
+    {
+      "category": "ocr",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 652,
+      "input_sha256": "3db9f6bd77f5235febb49923b8c7e1bfdb075c20b59e566696f3237278dacc45",
+      "iterations": 12,
+      "last_result": {
+        "operation": "ocr_searchable_layer_creation",
+        "output_bytes": 886,
+        "searchable_text_present": true
+      },
+      "median_ms": 0.204567,
+      "p95_ms": 0.215203,
+      "peak_rss_kib": 16252,
+      "successes": 12,
+      "task": "ocr_searchable_layer_save_reopen",
+      "throughput_ops_per_sec_median": 4888.373980162978
+    },
+    {
+      "category": "security",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 597,
+      "input_sha256": "d304b46c64f3a923b16551666e99387842e1e391e961927dbcd6caf24372320c",
+      "iterations": 12,
+      "last_result": {
+        "output_bytes": 703,
+        "status": "verified_absent",
+        "typed_result": "ok"
+      },
+      "median_ms": 0.44653,
+      "p95_ms": 0.463986,
+      "peak_rss_kib": 16252,
+      "successes": 12,
+      "task": "redaction_residual_verification",
+      "throughput_ops_per_sec_median": 2239.491187602177
+    },
+    {
+      "category": "security",
+      "evidence_class": "measured_directly",
+      "failure_samples": [],
+      "failures": 0,
+      "input_bytes": 642,
+      "input_sha256": "5f6388d1ede3c186beb61b7f4212a02adbd2be00ae14b9e196d9efcbbc51e057",
+      "iterations": 12,
+      "last_result": {
+        "changed_structure_nodes": 1,
+        "output_bytes": 737
+      },
+      "median_ms": 0.087501,
+      "p95_ms": 0.09430200000000001,
+      "peak_rss_kib": 16252,
+      "successes": 12,
+      "task": "accessibility_structure_repair",
+      "throughput_ops_per_sec_median": 11428.440817819226
+    }
+  ],
+  "run_policy": {
+    "single_process": true,
+    "warmups": 3,
+    "worker_count": 1
+  },
+  "schema_version": "repository_professionalization.benchmark.raw.v1"
+}

@@ -31,16 +31,16 @@ public sealed class WellfriendPdfSmokeTests
             ["annotations"] = doc.AnnotationsReportJson(),
             ["rich_media"] = doc.RichMediaReportJson(),
             ["annotation_appearance"] = doc.AnnotationAppearanceReportJson(),
-            ["prompt17"] = doc.Prompt17ReportJson(),
-            ["prompt18"] = doc.Prompt18ReportJson(),
-            ["prompt18b"] = doc.Prompt18bReportJson(),
+            ["annotation_media_redaction"] = doc.AnnotationMediaRedactionReportJson(),
+            ["secure_mutation"] = doc.SecureMutationReportJson(),
+            ["secure_mutation_closeout"] = doc.SecureMutationCloseoutReportJson(),
             ["form_js"] = doc.FormJavaScriptReportJson(),
             ["form_action_graph"] = doc.FormActionGraphJson(),
             ["interactive_data"] = doc.InteractiveDataReportJson(),
             ["word_pagination"] = doc.WordPaginationAuditJson(),
-            ["prompt19"] = doc.Prompt19ReportJson(),
-            ["prompt20"] = doc.Prompt20ReportJson(),
-            ["prompt20b"] = doc.Prompt20bReportJson(),
+            ["form_action_policy"] = doc.FormActionPolicyReportJson(),
+            ["advanced_editing"] = doc.AdvancedEditingReportJson(),
+            ["advanced_editing_closeout"] = doc.AdvancedEditingCloseoutReportJson(),
             ["associated_files"] = doc.AssociatedFilesReportJson(),
             ["edit_policy"] = doc.EditPolicyReportJson("incremental_save"),
             ["pages"] = doc.PagesReportJson(),
@@ -68,11 +68,11 @@ public sealed class WellfriendPdfSmokeTests
             AssertReport(report);
         }
 
-        using (var prompt20bDoc = WellfriendDocument.Open(FixturePath("multi_stream.pdf")))
+        using (var advanced_editing_closeoutDoc = WellfriendDocument.Open(FixturePath("multi_stream.pdf")))
         {
-            var rangeModel = prompt20bDoc.Prompt20bTextRangeAnalyzeJson();
+            var rangeModel = advanced_editing_closeoutDoc.AdvancedEditingCloseoutTextRangeAnalyzeJson();
             AssertReport(rangeModel);
-            Assert.Contains("prompt20b_multi_run_range_model", rangeModel);
+            Assert.Contains("advanced_editing_closeout_multi_run_range_model", rangeModel);
             var rangeDoc = JsonDocument.Parse(rangeModel);
             var firstRange = rangeDoc.RootElement.GetProperty("report").GetProperty("source_spans")[0].GetProperty("logical_range");
             var requestJson = $$"""
@@ -94,11 +94,11 @@ public sealed class WellfriendPdfSmokeTests
               }
             }
             """;
-            var rangeEdited = prompt20bDoc.EditTextRange(requestJson);
+            var rangeEdited = advanced_editing_closeoutDoc.EditTextRange(requestJson);
             Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(rangeEdited.Bytes, 0, 5));
-            Assert.Contains("prompt20b_multi_run_text_edit_report", rangeEdited.ReportJson);
-            reports["prompt20b_range_model"] = rangeModel;
-            reports["prompt20b_range_edit"] = rangeEdited.ReportJson;
+            Assert.Contains("advanced_editing_closeout_multi_run_text_edit_report", rangeEdited.ReportJson);
+            reports["advanced_editing_closeout_range_model"] = rangeModel;
+            reports["advanced_editing_closeout_range_edit"] = rangeEdited.ReportJson;
         }
 
         var docx = doc.ToDocx();
@@ -139,7 +139,7 @@ public sealed class WellfriendPdfSmokeTests
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(OfficeConverters.DocxToPdf(docx), 0, 5));
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(OfficeConverters.XlsxToPdf(xlsx), 0, 5));
         Assert.StartsWith("%PDF-", Encoding.ASCII.GetString(OfficeConverters.PptxToPdf(pptx), 0, 5));
-        WritePrompt02Artifact(FixturePath(), reports, sanitized, canonicalized);
+        WriteBindingParityArtifact(FixturePath(), reports, sanitized, canonicalized);
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public sealed class WellfriendPdfSmokeTests
     }
 
     [Fact]
-    public void Prompt25TimestampAndSignaturePreservingPlanUseNativeRuntime()
+    public void PadesLTVTimestampAndSignaturePreservingPlanUseNativeRuntime()
     {
         var timestampJson = WellfriendDocument.TimestampTokenValidationJson(
             Encoding.ASCII.GetBytes("not-a-rfc3161-token"),
@@ -182,20 +182,20 @@ public sealed class WellfriendPdfSmokeTests
         }
 
         using var doc = WellfriendDocument.Open(FixturePath("form_160f.pdf"));
-        var planJson = doc.SignaturePreservingFormPlan("name", "Prompt25");
+        var planJson = doc.SignaturePreservingFormPlan("name", "PadesLTV");
         using (var parsed = JsonDocument.Parse(planJson))
         {
             Assert.Equal("signature_preserving_edit_plan", parsed.RootElement.GetProperty("kind").GetString());
             var report = parsed.RootElement.GetProperty("report");
             Assert.Equal(
-                "prompt25.tsa-dss-ltv-mdp-signature-edits.v1",
+                "pades_ltv.tsa-dss-ltv-mdp-signature-edits.v1",
                 report.GetProperty("schema_version").GetString());
             Assert.True(report.GetProperty("prefix_preservation_required").GetBoolean());
         }
     }
 
     [Fact]
-    public void Prompt26StandardsSigningAndPermissionReportsUseOwnedNativeRuntime()
+    public void IncrementalSigningStandardsStandardsSigningAndPermissionReportsUseOwnedNativeRuntime()
     {
         var sourceBytes = File.ReadAllBytes(FixturePath());
         using var doc = WellfriendDocument.Open(sourceBytes);
@@ -217,7 +217,7 @@ public sealed class WellfriendPdfSmokeTests
 
         using var key = RSA.Create(2048);
         var request = new System.Security.Cryptography.X509Certificates.CertificateRequest(
-            "CN=Wellfriend Prompt 26 .NET",
+            "CN=Wellfriend Incremental Signing Standards .NET",
             key,
             HashAlgorithmName.SHA256,
             RSASignaturePadding.Pkcs1);
@@ -241,7 +241,7 @@ public sealed class WellfriendPdfSmokeTests
             keyPem,
             certPem,
             placeholderSize: 4096,
-            fieldName: "Prompt26DotNet",
+            fieldName: "IncrementalSigningStandardsDotNet",
             reason: "managed runtime smoke");
         Assert.True(signed.Bytes.Length > sourceBytes.Length);
         Assert.True(sourceBytes.AsSpan().SequenceEqual(signed.Bytes.AsSpan(0, sourceBytes.Length)));
@@ -289,7 +289,7 @@ public sealed class WellfriendPdfSmokeTests
     }
 
     [Fact]
-    public void FeatureReportRecordsPrompt02BProgressAndCancellationPosture()
+    public void FeatureReportRecordsJavaPackagingProgressAndCancellationPosture()
     {
         var feature = WellfriendDocument.FeatureReportJson();
         Assert.Contains("\"progress\"", feature);
@@ -297,75 +297,75 @@ public sealed class WellfriendPdfSmokeTests
         Assert.Contains("\"cancellation\"", feature);
         Assert.Contains("engine_render_cancellation_supported_binding_tokens_later", feature);
         Assert.Contains("\"codec_isolation\"", feature);
-        Assert.Contains("\"prompt07_transparency_compositing\"", feature);
-        Assert.Contains("native_foundation_with_prompt07b_closure", feature);
-        Assert.Contains("\"prompt07b_transparency_closure\"", feature);
+        Assert.Contains("\"transparency_rendering_transparency_compositing\"", feature);
+        Assert.Contains("native_foundation_with_transparency_closeout_closure", feature);
+        Assert.Contains("\"transparency_closeout_transparency_closure\"", feature);
         Assert.Contains("\"wellfriendpdf_outlier_failures\":0", feature);
         Assert.Contains("\"memory_cap_mb\":4096", feature);
         Assert.Contains("\"Luminosity\"", feature);
-        Assert.Contains("\"prompt08_text_clipping_shading_patterns\"", feature);
+        Assert.Contains("\"advanced_rendering_text_clipping_shading_patterns\"", feature);
         Assert.Contains("native_common_paths_with_bounded_unsupported_reports", feature);
         Assert.Contains("\"rendering_modes\":[4,5,6,7]", feature);
-        Assert.Contains("\"prompt08b_type3_cid_tensor_closure\"", feature);
+        Assert.Contains("\"type3_cid_rendering_type3_cid_tensor_closure\"", feature);
         Assert.Contains("complete_native_common_paths_with_reference_cluster_limits", feature);
         Assert.Contains("native_tensor_product_interior", feature);
-        Assert.Contains("\"prompt09_annotation_ocg_progressive_cache\"", feature);
+        Assert.Contains("\"annotation_ocg_rendering_annotation_ocg_progressive_cache\"", feature);
         Assert.Contains("implemented_with_bounded_unsupported_reports", feature);
-        Assert.Contains("\"prompt09b_annotation_progressive_cache_validation\"", feature);
+        Assert.Contains("\"renderer_validation_annotation_progressive_cache_validation\"", feature);
         Assert.Contains("implemented_and_proven", feature);
         Assert.Contains("\"schema_change\":\"additive_section_only\"", feature);
-        Assert.Contains("\"prompt10_cjk_rtl_color_glyph_reference_harness\"", feature);
+        Assert.Contains("\"multilingual_color_glyphs_cjk_rtl_color_glyph_reference_harness\"", feature);
         Assert.Contains("unsupported_color_tables_are_detected_and_reported", feature);
-        Assert.Contains("\"additive_feature_report_prompt10\"", feature);
-        Assert.Contains("\"prompt10b_color_glyph_cjk_rtl_fidelity_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_multilingual_color_glyphs\"", feature);
+        Assert.Contains("\"cjk_rtl_color_glyph_closeout_color_glyph_cjk_rtl_fidelity_closure\"", feature);
         Assert.Contains("\"implemented_with_precise_security_and_exotic_limits\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt10b\"", feature);
-        Assert.Contains("\"prompt10c_color_glyph_hinting_cff_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_cjk_rtl_color_glyph_closeout\"", feature);
+        Assert.Contains("\"color_glyph_hinting_color_glyph_hinting_cff_closure\"", feature);
         Assert.Contains("\"implemented_with_operator_level_limits\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt10c\"", feature);
-        Assert.Contains("\"prompt10d_full_colrv1_svg_color_glyph_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_color_glyph_hinting\"", feature);
+        Assert.Contains("\"colrv_svg_bitmap_full_colrv1_svg_color_glyph_closure\"", feature);
         Assert.Contains("\"safe_static_subset_rendered_active_constructs_blocked\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt10d\"", feature);
-        Assert.Contains("\"prompt10e_colrv1_gradient_clip_composite_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_colrv_svg_bitmap\"", feature);
+        Assert.Contains("\"colrv_gradient_composite_colrv1_gradient_clip_composite_closure\"", feature);
         Assert.Contains("\"implemented_with_exact_mode_limits\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt10e\"", feature);
-        Assert.Contains("\"prompt10f_colrv1_porterduff_radial_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_colrv_gradient_composite\"", feature);
+        Assert.Contains("\"porterduff_radial_color_glyph_colrv1_porterduff_radial_closure\"", feature);
         Assert.Contains("\"DestinationAtop\"", feature);
         Assert.Contains("\"implemented_with_reference_equivalence\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt10f\"", feature);
-        Assert.Contains("\"prompt11_renderer_fuzz_cmm_closeout\"", feature);
+        Assert.Contains("\"additive_feature_report_porterduff_radial_color_glyph\"", feature);
+        Assert.Contains("\"renderer_fuzz_cmm_renderer_fuzz_cmm_closeout\"", feature);
         Assert.Contains("\"hard_blocked_precise_no_default_native_dependency\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt11\"", feature);
-        Assert.Contains("\"prompt11b_native_littlecms_cmm_backend_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_renderer_fuzz_cmm\"", feature);
+        Assert.Contains("\"native_cmm_backend_native_littlecms_cmm_backend_closure\"", feature);
         Assert.Contains("\"native-cmm-lcms2\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt11b\"", feature);
-        Assert.Contains("\"prompt12_prepress_cmm_device_link_separation_plates\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt12\"", feature);
+        Assert.Contains("\"additive_feature_report_native_cmm_backend\"", feature);
+        Assert.Contains("\"prepress_cmm_prepress_cmm_device_link_separation_plates\"", feature);
+        Assert.Contains("\"additive_feature_report_prepress_cmm\"", feature);
         Assert.Contains("\"cache_key_includes_plate_state\":true", feature);
-        Assert.Contains("\"prompt12b_nchannel_plate_reference_closure\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt12b\"", feature);
-        Assert.Contains("\"required_and_run_by_prompt12b_audit\"", feature);
-        Assert.Contains("\"prompt13_full_overprint_prepress_closeout\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt13\"", feature);
+        Assert.Contains("\"nchannel_plate_prepress_nchannel_plate_reference_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_nchannel_plate_prepress\"", feature);
+        Assert.Contains("\"required_and_run_by_nchannel_plate_prepress_audit\"", feature);
+        Assert.Contains("\"prepress_proofing_full_overprint_prepress_closeout\"", feature);
+        Assert.Contains("\"additive_feature_report_prepress_proofing\"", feature);
         Assert.Contains("\"wellfriendpdf_outlier_failures\":0", feature);
-        Assert.Contains("\"prompt14_semantic_intelligence_parenttree_cjk_ml_layout\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt14\"", feature);
+        Assert.Contains("\"semantic_intelligence_semantic_intelligence_parenttree_cjk_ml_layout\"", feature);
+        Assert.Contains("\"additive_feature_report_semantic_intelligence\"", feature);
         Assert.Contains("\"cloud_upload_default\":false", feature);
-        Assert.Contains("\"prompt14b_cjk_dictionary_layout_backend_closure\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt14b\"", feature);
+        Assert.Contains("\"cjk_dictionary_layout_cjk_dictionary_layout_backend_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_cjk_dictionary_layout\"", feature);
         Assert.Contains("\"external_pack_support\":\"implemented\"", feature);
         Assert.Contains("\"local_backend_status\":\"unsupported_reported_no_runtime\"", feature);
-        Assert.Contains("\"prompt15_semantic_binding_rag_benchmark_closeout\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt15\"", feature);
+        Assert.Contains("\"semantic_closeout_semantic_binding_rag_benchmark_closeout\"", feature);
+        Assert.Contains("\"additive_feature_report_semantic_closeout\"", feature);
         Assert.Contains("\"model_can_rewrite_deterministic_text\":false", feature);
         Assert.Contains("\"blocked\":0", feature);
-        Assert.Contains("\"prompt16_xfa_runtime_sandbox_closure\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt16\"", feature);
+        Assert.Contains("\"xfa_runtime_xfa_runtime_sandbox_closure\"", feature);
+        Assert.Contains("\"additive_feature_report_xfa_runtime\"", feature);
         Assert.Contains("\"scripts_disabled_events_not_executed\"", feature);
-        Assert.Contains("\"prompt17_annotation_xfdf_media_nonaxis_redaction\"", feature);
-        Assert.Contains("\"additive_feature_report_prompt17\"", feature);
+        Assert.Contains("\"annotation_media_redaction_annotation_xfdf_media_nonaxis_redaction\"", feature);
+        Assert.Contains("\"additive_feature_report_annotation_media_redaction\"", feature);
         Assert.Contains("\"overlay_only_redaction_success_claims\":0", feature);
-        Assert.Contains("\"prompt23_deterministic_writer_pubsec_aesgcm\"", feature);
+        Assert.Contains("\"crypto_writer_deterministic_writer_pubsec_aesgcm\"", feature);
         Assert.Contains("\"public_key_handler_status\":\"implemented_with_limits\"", feature);
         Assert.Contains("\"aes_gcm_decrypt_status\":\"implemented_with_limits\"", feature);
         Assert.NotNull(typeof(WellfriendDocument).GetMethod(
@@ -399,15 +399,15 @@ public sealed class WellfriendPdfSmokeTests
     }
 
     [Fact]
-    public void Prompt32SceneTransactionFontSurfacesAreSharedAndOwned()
+    public void EditingTransactionsSceneTransactionFontSurfacesAreSharedAndOwned()
     {
         using var doc = WellfriendDocument.Open(FixturePath("multi_stream.pdf"));
 
-        var closeout = doc.Prompt32ReportJson();
-        Assert.Contains("prompt32.scene-transactions-fonts-shaping.v1", closeout);
+        var closeout = doc.EditingTransactionsReportJson();
+        Assert.Contains("editing_transactions.scene-transactions-fonts-shaping.v1", closeout);
 
-        var scene = doc.Prompt32SceneReportJson("[1]");
-        Assert.Contains("prompt32_scene_report", scene);
+        var scene = doc.EditingTransactionsSceneReportJson("[1]");
+        Assert.Contains("editing_transactions_scene_report", scene);
         Assert.Contains("\"nodes\"", scene);
         Assert.Contains("\"snapshot_id\"", scene);
         Assert.Contains("\"revision_id\"", scene);
@@ -420,62 +420,62 @@ public sealed class WellfriendPdfSmokeTests
           "replacement_text":"HELLO"
         }
         """;
-        var plan = doc.Prompt32TransactionPlanJson(request);
-        Assert.Contains("prompt32_transaction_plan", plan);
+        var plan = doc.EditingTransactionsTransactionPlanJson(request);
+        Assert.Contains("editing_transactions_transaction_plan", plan);
         Assert.Contains("transaction_id", plan);
         Assert.Contains("operator_preserving", plan);
 
-        var identity = doc.Prompt32TextMapJson("A\u0301B", "ltr");
-        Assert.Contains("prompt32_text_map", identity);
+        var identity = doc.EditingTransactionsTextMapJson("A\u0301B", "ltr");
+        Assert.Contains("editing_transactions_text_map", identity);
         Assert.Contains("grapheme_clusters", identity);
 
-        var subset = doc.Prompt32FontSubsetPlanJson("Hello", "ltr", "reuse_embedded_subset");
-        Assert.Contains("prompt32_font_subset_plan", subset);
+        var subset = doc.EditingTransactionsFontSubsetPlanJson("Hello", "ltr", "reuse_embedded_subset");
+        Assert.Contains("editing_transactions_font_subset_plan", subset);
         Assert.Contains("deterministic_subset_tag", subset);
 
-        var substitution = doc.Prompt32FontSubstitutionReportJson("Prompt32MissingFont", "Hello", "explicit_approval_required");
-        Assert.Contains("prompt32_font_substitution_report", substitution);
-        Assert.Contains("Prompt32MissingFont", substitution);
+        var substitution = doc.EditingTransactionsFontSubstitutionReportJson("EditingTransactionsMissingFont", "Hello", "explicit_approval_required");
+        Assert.Contains("editing_transactions_font_substitution_report", substitution);
+        Assert.Contains("EditingTransactionsMissingFont", substitution);
     }
 
     [Fact]
-    public void Prompt33GeometricSemanticReflowSurfacesAreSharedAndOwned()
+    public void TextReflowGeometricSemanticReflowSurfacesAreSharedAndOwned()
     {
         using var doc = WellfriendDocument.Open(FixturePath("multi_stream.pdf"));
         const string request = "{\"requested_mode\":\"geometric_block\",\"page\":1,\"source_text\":\"Hello\",\"replacement_text\":\"World\",\"region\":[10.0,10.0,260.0,90.0],\"language\":\"en\",\"hyphenation\":true,\"layout_constraints\":[{\"constraint_id\":\"dotnet_soft_height\",\"variable\":\"region_height\",\"relation\":\"ge\",\"value\":500.0,\"priority\":\"weak\"}]}";
 
-        Assert.Contains("prompt33.geometric-semantic-reflow.v1", doc.Prompt33ReportJson());
-        Assert.Contains("prompt33_layout_analyze", doc.Prompt33LayoutAnalyzeJson(request));
-        Assert.Contains("prompt33_semantic_layout", doc.Prompt33SemanticLayoutJson());
-        Assert.Contains("prompt33_reading_order_report", doc.Prompt33ReadingOrderReportJson());
-        Assert.Contains("prompt33_flow_graph_report", doc.Prompt33FlowGraphReportJson());
-        Assert.Contains("prompt33_reflow_preview", doc.Prompt33ReflowPreviewJson(request));
-        Assert.Contains("prompt33_overflow_report", doc.Prompt33OverflowReportJson(request));
-        var constraints = doc.Prompt33ConstraintsReportJson(request);
-        Assert.Contains("prompt33_constraints_report", constraints);
+        Assert.Contains("text_reflow.geometric-semantic-reflow.v1", doc.TextReflowReportJson());
+        Assert.Contains("text_reflow_layout_analyze", doc.TextReflowLayoutAnalyzeJson(request));
+        Assert.Contains("text_reflow_semantic_layout", doc.TextReflowSemanticLayoutJson());
+        Assert.Contains("text_reflow_reading_order_report", doc.TextReflowReadingOrderReportJson());
+        Assert.Contains("text_reflow_flow_graph_report", doc.TextReflowFlowGraphReportJson());
+        Assert.Contains("text_reflow_reflow_preview", doc.TextReflowReflowPreviewJson(request));
+        Assert.Contains("text_reflow_overflow_report", doc.TextReflowOverflowReportJson(request));
+        var constraints = doc.TextReflowConstraintsReportJson(request);
+        Assert.Contains("text_reflow_constraints_report", constraints);
         Assert.Contains("dotnet_soft_height", constraints);
-        Assert.Contains("prompt33_confidence_report", doc.Prompt33ConfidenceReportJson(request));
-        Assert.Contains("prompt33_reflow_operation_report", doc.Prompt33ReflowOperationReportJson(request));
-        var geometric = doc.Prompt33ReflowRegion(request);
-        Assert.Contains("prompt33_reflow_region", geometric.ReportJson);
+        Assert.Contains("text_reflow_confidence_report", doc.TextReflowConfidenceReportJson(request));
+        Assert.Contains("text_reflow_reflow_operation_report", doc.TextReflowReflowOperationReportJson(request));
+        var geometric = doc.TextReflowReflowRegion(request);
+        Assert.Contains("text_reflow_reflow_region", geometric.ReportJson);
         Assert.Contains(
-            "prompt33_validate_reflow_output",
-            doc.Prompt33ValidateReflowOutputJson(geometric.Bytes, request));
-        var undo = doc.Prompt33UndoReflow(geometric.Bytes, request);
-        Assert.Contains("prompt33_undo_reflow", undo.ReportJson);
+            "text_reflow_validate_reflow_output",
+            doc.TextReflowValidateReflowOutputJson(geometric.Bytes, request));
+        var undo = doc.TextReflowUndoReflow(geometric.Bytes, request);
+        Assert.Contains("text_reflow_undo_reflow", undo.ReportJson);
         Assert.Contains("\"byte_exact_restoration\":true", undo.ReportJson);
         Assert.Equal(File.ReadAllBytes(FixturePath("multi_stream.pdf")), undo.Bytes);
         var correctionError = Assert.Throws<WellfriendPdfException>(() =>
-            doc.Prompt33ReflowApproveStructureJson("{\"node\":\"reviewed\"}"));
+            doc.TextReflowReflowApproveStructureJson("{\"node\":\"reviewed\"}"));
         Assert.Contains("structure_update_failed", correctionError.Message);
     }
 
     [Fact]
-    public void Prompt34RuntimeSurfacesUseTheCanonicalCore()
+    public void DocumentSubsystemsRuntimeSurfacesUseTheCanonicalCore()
     {
         using var doc = WellfriendDocument.Open(FixturePath("multi_stream.pdf"));
-        Assert.Contains("prompt34.tables-math-ocr-forms-annotations.v1", doc.Prompt34ReportJson());
-        Assert.Contains("prompt34_analyze", doc.Prompt34AnalyzeJson());
+        Assert.Contains("document_subsystems.tables-math-ocr-forms-annotations.v1", doc.DocumentSubsystemsReportJson());
+        Assert.Contains("document_subsystems_analyze", doc.DocumentSubsystemsAnalyzeJson());
     }
 
     [Fact]
@@ -514,13 +514,13 @@ public sealed class WellfriendPdfSmokeTests
         Assert.Contains("\"schema_version\"", json);
     }
 
-    private static void WritePrompt02Artifact(
+    private static void WriteBindingParityArtifact(
         string fixture,
         IReadOnlyDictionary<string, string> reports,
         WellfriendBinaryResult sanitized,
         WellfriendBinaryResult canonicalized)
     {
-        var artifactDir = Environment.GetEnvironmentVariable("WELLFRIENDPDF_PROMPT02_ARTIFACT_DIR");
+        var artifactDir = Environment.GetEnvironmentVariable("WELLFRIENDPDF_BINDING_PARITY_ARTIFACT_DIR");
         if (string.IsNullOrWhiteSpace(artifactDir))
         {
             return;

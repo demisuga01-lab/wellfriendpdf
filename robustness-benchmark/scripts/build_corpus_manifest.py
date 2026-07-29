@@ -394,9 +394,9 @@ def main() -> int:
             "label": "indicative (approx 200-file subset)",
         },
         "network_status": {
-            "mozilla_pdfjs_raw": "reachable during Prompt 1 HEAD probe",
-            "veraPDF_corpus": "reachable during Prompt 1 HEAD probe",
-            "govdocs1_zip": "reachable during Prompt 1 HEAD probe but not downloaded because first zip is about 486 MB",
+            "mozilla_pdfjs_raw": "reachable during Binding Surface HEAD probe",
+            "veraPDF_corpus": "reachable during Binding Surface HEAD probe",
+            "govdocs1_zip": "reachable during Binding Surface HEAD probe but not downloaded because first zip is about 486 MB",
             "local_public_benchmark": "used when present; corpus PDFs are gitignored",
         },
         "source_counts": source_counts,

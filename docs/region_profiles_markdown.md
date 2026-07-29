@@ -1,6 +1,6 @@
 # Region Extraction, Profiles, And Markdown Headings
 
-Prompt 6 closes three API-parity gaps across the Rust API, CLI, and Python
+Native Renderer closes three API-parity gaps across the Rust API, CLI, and Python
 binding: scoped extraction, named extraction profiles, and explicit Markdown
 heading control.
 
