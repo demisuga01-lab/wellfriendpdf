@@ -1,0 +1,28 @@
+{
+  "schema": "readme.competitor_comparison.v1",
+  "generated_for_commit": "d346915de5125fccf3163847cb3ebec197c49046",
+  "vps_result_folder": "/home/demisuga01/wellpdf/results/readme-competitor-20260729T175541Z",
+  "tools": [
+    {"name": "PDFium", "status": "measured_comparable", "relationship": "measured through pypdfium2 wrapper", "version": "PDFium 152.0.7947.0", "official_source": "https://github.com/chromium/pdfium"},
+    {"name": "MuPDF", "status": "measured_comparable", "relationship": "measured through PyMuPDF binding", "version": "MuPDF 1.29.0 via PyMuPDF 1.28.0", "official_source": "https://mupdf.readthedocs.io/"},
+    {"name": "PyMuPDF", "status": "measured_comparable", "relationship": "MuPDF Python binding", "version": "1.28.0", "official_source": "https://pymupdf.readthedocs.io/"},
+    {"name": "Poppler", "status": "measured_comparable", "version": "26.01.0 utilities", "official_source": "https://poppler.freedesktop.org/"},
+    {"name": "qpdf", "status": "measured_comparable", "version": "12.3.2", "official_source": "https://qpdf.readthedocs.io/"},
+    {"name": "pikepdf", "status": "measured_comparable", "relationship": "qpdf wrapper", "version": "10.10.0", "official_source": "https://pikepdf.readthedocs.io/"},
+    {"name": "PDFBox", "status": "measured_comparable", "version": "3.0.8", "official_source": "https://pdfbox.apache.org/"},
+    {"name": "PDF.js", "status": "documented_not_benchmarked", "official_source": "https://mozilla.github.io/pdf.js/"},
+    {"name": "veraPDF", "status": "unavailable", "official_source": "https://verapdf.org/"},
+    {"name": "pyHanko", "status": "supported_not_benchmarked", "official_source": "https://pyhanko.readthedocs.io/"},
+    {"name": "pdfcpu", "status": "unavailable", "official_source": "https://github.com/pdfcpu/pdfcpu"},
+    {"name": "Docling", "status": "documented_not_benchmarked", "official_source": "https://docling-project.github.io/docling/"},
+    {"name": "pdfplumber", "status": "measured_comparable", "version": "0.11.10", "official_source": "https://github.com/jsvine/pdfplumber"},
+    {"name": "Camelot", "status": "supported_not_benchmarked", "version": "2.0.0", "official_source": "https://camelot-py.readthedocs.io/"},
+    {"name": "Tesseract", "status": "supported_not_benchmarked", "version": "5.5.0 command available", "official_source": "https://github.com/tesseract-ocr/tesseract"},
+    {"name": "OCRmyPDF", "status": "unavailable", "official_source": "https://ocrmypdf.readthedocs.io/"},
+    {"name": "iText", "status": "documented_not_benchmarked", "official_source": "https://itextpdf.com/"},
+    {"name": "Apryse", "status": "documented_not_benchmarked", "official_source": "https://apryse.com/products/core-sdk/pdf"},
+    {"name": "Nutrient", "status": "documented_not_benchmarked", "official_source": "https://www.nutrient.io/sdk/document-engine/"},
+    {"name": "Foxit PDF SDK", "status": "documented_not_benchmarked", "official_source": "https://developers.foxit.com/products/pdf-sdk/"},
+    {"name": "Adobe PDF Library / Datalogics", "status": "documented_not_benchmarked", "official_source": "https://www.datalogics.com/adobe-pdf-library"}
+  ]
+}

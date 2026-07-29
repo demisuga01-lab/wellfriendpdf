@@ -1,0 +1,33 @@
+{
+  "schema": "readme.current_evidence.v1",
+  "commit": "d346915de5125fccf3163847cb3ebec197c49046",
+  "generated_for": "README rewrite",
+  "release": {
+    "implementation_status": "complete",
+    "release_posture": "release_ready_with_limits",
+    "evidence_class": "validated_in_repository",
+    "artifact": "target/prompt36-enterprise-validation/final-release-verdict.json"
+  },
+  "prompt36": {
+    "acceptance_count": 42,
+    "acceptance_status": "complete",
+    "max_peak_rss_kib": 6618920,
+    "memory_budget_kib": 33554432,
+    "fuzz_target_count": 43,
+    "fuzz_runs_per_target": 64,
+    "binding_status": "pass_with_exact_gradle_host_limit"
+  },
+  "readme_direct_comparison": {
+    "vps_result_folder": "/home/demisuga01/wellpdf/results/readme-competitor-20260729T175541Z",
+    "artifact": "target/readme-rewrite/readme-direct-comparisons-qpdf-clean.json",
+    "operation_count": 11,
+    "pass_count": 11,
+    "evidence_class": "measured_directly",
+    "limitations": [
+      "single compact repository-owned fixture",
+      "not a corpus benchmark",
+      "not an aggregate ranking",
+      "wrapper relationships disclosed"
+    ]
+  }
+}
