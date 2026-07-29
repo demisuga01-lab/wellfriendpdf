@@ -4243,6 +4243,142 @@ pub unsafe extern "C" fn wellfriendpdf_document_prompt34_undo_json(
     }
 }
 
+/// Return the Prompt 35 accessibility/redaction/sanitization feature report.
+///
+/// # Safety
+/// `document` must be live and output pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt35_report_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt35_report_json(bytes, None)
+        })
+    }
+}
+
+/// Analyze Prompt 35 structure, repair, redaction, and sanitizer state.
+///
+/// # Safety
+/// Standard immutable document and owned string output rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt35_analyze_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt35_analyze_json(bytes, None)
+        })
+    }
+}
+
+/// Plan a typed Prompt 35 operation without changing the document handle.
+///
+/// # Safety
+/// `request_json` must be NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt35_plan_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt35_plan_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Apply a typed Prompt 35 operation, returning owned output bytes and report.
+///
+/// # Safety
+/// Standard document, request, and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt35_apply_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt35_apply_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Replay and undo a typed Prompt 35 operation from an immutable source handle.
+///
+/// # Safety
+/// `output_pdf` must point to `output_pdf_len` readable bytes unless empty and
+/// `request_json` must be NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt35_undo_json(
+    document: *const WellfriendDocument,
+    output_pdf: *const u8,
+    output_pdf_len: usize,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let output = unsafe { read_input_bytes(output_pdf, output_pdf_len, "output_pdf") };
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let output = output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            let request = request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            sdk::prompt35_undo_json(bytes, output, &request, None)
+        })
+    }
+}
+
+/// Run Prompt 35 residual-data verification with a JSON term array.
+///
+/// # Safety
+/// `terms_json` must be NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt35_verify_residual_json(
+    document: *const WellfriendDocument,
+    terms_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let terms = unsafe { required_c_string(terms_json, "terms_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt35_verify_residual_json(
+                bytes,
+                &terms
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
 /// Store or preview a Prompt 33 reviewed structure correction.
 ///
 /// # Safety

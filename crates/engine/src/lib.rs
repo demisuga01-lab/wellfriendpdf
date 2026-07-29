@@ -125,6 +125,7 @@ pub mod prompt31;
 pub mod prompt32;
 pub mod prompt33;
 pub mod prompt34;
+pub mod prompt35;
 pub mod pubsec;
 pub mod reader;
 pub mod render;
@@ -436,6 +437,13 @@ pub use prompt34::{
     analyze_prompt34, apply_prompt34, plan_prompt34, prompt34_feature_matrix, undo_prompt34,
     EditableTableGraph, OcrSearchableWord, Prompt34Action, Prompt34AnalysisReport,
     Prompt34OperationReport, Prompt34Request, Prompt34Subsystem, PROMPT34_SCHEMA_VERSION,
+};
+pub use prompt35::{
+    analyze_prompt35, apply_prompt35, plan_prompt35, prompt35_feature_matrix, undo_prompt35,
+    verify_residual_data, AccessibilityMutationKind, Prompt35Action, Prompt35AnalysisReport,
+    Prompt35OperationReport, Prompt35Request, Prompt35Status, Prompt35Subsystem,
+    Prompt35TypedResult, ResidualFinding, ResidualVerificationReport, SanitizationPreset,
+    StructureSelector, PROMPT35_SCHEMA_VERSION,
 };
 pub use pubsec::{
     encrypt_pdf_pubsec, parse_pubsec_encryption_info, recover_pubsec_file_key,

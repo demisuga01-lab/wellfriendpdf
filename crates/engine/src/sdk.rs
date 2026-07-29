@@ -1370,6 +1370,84 @@ pub fn prompt34_undo_json(
     Ok((restored, envelope("prompt34_undo", &report)?))
 }
 
+/// Prompt 35 tagged-PDF accessibility, redaction, sanitization, and residual
+/// verification feature report.
+pub fn prompt35_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt35_report",
+        &serde_json::json!({
+            "feature_matrix": crate::prompt35::prompt35_feature_matrix(),
+            "source_bytes": input.len()
+        }),
+    )
+}
+
+/// Analyze Prompt 35 structure, accessibility, redaction, and sanitizer state.
+pub fn prompt35_analyze_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    envelope(
+        "prompt35_analyze",
+        &crate::prompt35::analyze_prompt35(&input)?,
+    )
+}
+
+/// Plan a typed Prompt 35 operation without mutating bytes.
+pub fn prompt35_plan_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::prompt35::Prompt35Request>(request_json).map_err(json_err)?;
+    envelope(
+        "prompt35_plan",
+        &crate::prompt35::plan_prompt35(&input, &request)?,
+    )
+}
+
+/// Apply one supported Prompt 35 operation through the canonical writer.
+pub fn prompt35_apply_json(
+    bytes: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::prompt35::Prompt35Request>(request_json).map_err(json_err)?;
+    let (output, report) = crate::prompt35::apply_prompt35(&input, &request)?;
+    Ok((output, envelope("prompt35_apply", &report)?))
+}
+
+/// Restore the immutable Prompt 35 transaction preimage after output verification.
+pub fn prompt35_undo_json(
+    bytes: &[u8],
+    output: &[u8],
+    request_json: &str,
+    password: Option<&[u8]>,
+) -> Result<(Vec<u8>, String)> {
+    let input = mutation_input(bytes, password)?;
+    let request =
+        serde_json::from_str::<crate::prompt35::Prompt35Request>(request_json).map_err(json_err)?;
+    let (restored, report) = crate::prompt35::undo_prompt35(&input, output, &request)?;
+    Ok((restored, envelope("prompt35_undo", &report)?))
+}
+
+/// Run Prompt 35 residual-data verification without mutating the document.
+pub fn prompt35_verify_residual_json(
+    bytes: &[u8],
+    terms_json: &str,
+    password: Option<&[u8]>,
+) -> Result<String> {
+    let input = mutation_input(bytes, password)?;
+    let terms = serde_json::from_str::<Vec<String>>(terms_json).map_err(json_err)?;
+    envelope(
+        "prompt35_verify_residual",
+        &crate::prompt35::verify_residual_data(&input, &terms)?,
+    )
+}
+
 /// Prompt 18 mask/soft-mask inventory and secure fallback posture.
 pub fn mask_redaction_report_json(bytes: &[u8], password: Option<&[u8]>) -> Result<String> {
     let engine = open(bytes, password)?;

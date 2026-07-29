@@ -1208,6 +1208,26 @@ mod wasm_api {
             self.report(|b| sdk::prompt34_plan_json(b, &request_json, None))
         }
 
+        #[wasm_bindgen(js_name = prompt35ReportJson)]
+        pub fn prompt35_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt35_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt35AnalyzeJson)]
+        pub fn prompt35_analyze_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt35_analyze_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt35PlanJson)]
+        pub fn prompt35_plan_json(&self, request_json: String) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt35_plan_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt35VerifyResidualJson)]
+        pub fn prompt35_verify_residual_json(&self, terms_json: String) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt35_verify_residual_json(b, &terms_json, None))
+        }
+
         #[wasm_bindgen(js_name = prompt20VectorListJson)]
         pub fn prompt20_vector_list_json(&self, page: usize) -> Result<String, JsValue> {
             self.report(|b| sdk::prompt20_vector_list_json(b, page, None))
@@ -1446,6 +1466,20 @@ mod wasm_api {
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
             self.output(|b| sdk::prompt34_undo_json(b, &output_pdf, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt35Apply)]
+        pub fn prompt35_apply(&self, request_json: String) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt35_apply_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt35Undo)]
+        pub fn prompt35_undo(
+            &self,
+            output_pdf: Vec<u8>,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt35_undo_json(b, &output_pdf, &request_json, None))
         }
 
         #[wasm_bindgen(js_name = prompt31PathEdit)]

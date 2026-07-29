@@ -1534,6 +1534,66 @@ impl PyDocument {
         ))
     }
 
+    /// Prompt 35 accessibility/redaction/sanitization report and operations.
+    fn prompt35_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt35_report_json(bytes, None))
+    }
+
+    fn prompt35_analyze<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt35_analyze_json(bytes, None))
+    }
+
+    fn prompt35_plan<'py>(&self, py: Python<'py>, request_json: &str) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt35_plan_json(bytes, request_json, None)
+        })
+    }
+
+    #[pyo3(signature = (request_json, output=None))]
+    fn prompt35_apply<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::prompt35_apply_json(&bytes, request_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (output_pdf, request_json, output=None))]
+    fn prompt35_undo<'py>(
+        &self,
+        py: Python<'py>,
+        output_pdf: &[u8],
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (restored, report) =
+            run_wellfriendpdf(|| sdk::prompt35_undo_json(&bytes, output_pdf, request_json, None))?;
+        write_optional(&output, &restored)?;
+        Ok((
+            PyBytes::new(py, &restored).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    fn prompt35_verify_residual<'py>(
+        &self,
+        py: Python<'py>,
+        terms_json: &str,
+    ) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt35_verify_residual_json(bytes, terms_json, None)
+        })
+    }
+
     fn associated_files_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::associated_files_report_json(bytes, None))
     }

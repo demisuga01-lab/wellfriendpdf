@@ -423,6 +423,18 @@ enum Commands {
     Prompt34Apply(Prompt34ApplyArgs),
     /// Replay and undo a Prompt 34 operation into a distinct restored PDF
     Prompt34Undo(Prompt34UndoArgs),
+    /// Report Prompt 35 accessibility, redaction, sanitizer, and residual-verification capabilities
+    Prompt35Report(Prompt17ReportArgs),
+    /// Analyze Prompt 35 tagged-PDF, accessibility, redaction, and sanitizer state
+    Prompt35Analyze(Prompt17ReportArgs),
+    /// Plan a typed Prompt 35 operation from an explicit JSON request
+    Prompt35Plan(Prompt35RequestArgs),
+    /// Apply a typed Prompt 35 operation and write a distinct output PDF
+    Prompt35Apply(Prompt35ApplyArgs),
+    /// Replay and undo a Prompt 35 operation into a distinct restored PDF
+    Prompt35Undo(Prompt35UndoArgs),
+    /// Run Prompt 35 residual verification from a JSON term list
+    Prompt35VerifyResidual(Prompt35VerifyArgs),
     /// Alias for vector-list focused on Form invocation ownership
     FormInstanceReport(Prompt20VectorListArgs),
     /// Alias for vector-edit with clone-edit-one-instance policy
@@ -1807,6 +1819,75 @@ struct Prompt34UndoArgs {
     #[arg(long)]
     report: Option<PathBuf>,
     /// Password for the original encrypted PDF
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt35RequestArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Typed Prompt35Request JSON file
+    #[arg(long)]
+    request: PathBuf,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt35ApplyArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// Typed Prompt35Request JSON file
+    #[arg(long)]
+    request: PathBuf,
+    /// Distinct output PDF; existing files are never overwritten
+    #[arg(short, long, default_value = "prompt35-edited.pdf")]
+    output: PathBuf,
+    /// Optional JSON operation report; existing files are never overwritten
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Password for encrypted PDFs
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt35UndoArgs {
+    /// Original input PDF used for Prompt 35 apply
+    pdf: PathBuf,
+    /// Edited PDF returned by prompt35-apply
+    #[arg(long = "output-pdf")]
+    output_pdf: PathBuf,
+    /// Exact Typed Prompt35Request JSON file used to apply
+    #[arg(long)]
+    request: PathBuf,
+    /// Distinct restored PDF output; existing files are never overwritten
+    #[arg(long = "restored-pdf")]
+    restored_pdf: PathBuf,
+    /// Optional JSON inverse report; existing files are never overwritten
+    #[arg(long)]
+    report: Option<PathBuf>,
+    /// Password for the original encrypted PDF
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
+struct Prompt35VerifyArgs {
+    /// Path to the input PDF
+    pdf: PathBuf,
+    /// JSON array of terms to verify as absent
+    #[arg(long)]
+    terms: PathBuf,
+    /// Output JSON; defaults to stdout
+    #[arg(short, long)]
+    output: Option<PathBuf>,
+    /// Password for encrypted PDFs
     #[arg(long)]
     password: Option<String>,
 }
@@ -3593,6 +3674,12 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Prompt34Plan(args) => run_prompt34_plan(args),
         Commands::Prompt34Apply(args) => run_prompt34_apply(args),
         Commands::Prompt34Undo(args) => run_prompt34_undo(args),
+        Commands::Prompt35Report(args) => run_prompt35_report(args),
+        Commands::Prompt35Analyze(args) => run_prompt35_analyze(args),
+        Commands::Prompt35Plan(args) => run_prompt35_plan(args),
+        Commands::Prompt35Apply(args) => run_prompt35_apply(args),
+        Commands::Prompt35Undo(args) => run_prompt35_undo(args),
+        Commands::Prompt35VerifyResidual(args) => run_prompt35_verify_residual(args),
         Commands::FormInstanceReport(args) => run_prompt20_vector_list(args),
         Commands::FormCloneOne(mut args) => {
             args.shared_form_policy = "clone-edit-one-instance".to_string();
@@ -5819,6 +5906,100 @@ fn run_prompt34_undo(args: Prompt34UndoArgs) -> Result<(), Box<dyn Error>> {
         println!("{}", pretty_json(&report)?);
     }
     Ok(())
+}
+
+fn run_prompt35_report(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let report = wellfriendpdf_engine::sdk::prompt35_report_json(
+        &input,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt35_analyze(args: Prompt17ReportArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let report = wellfriendpdf_engine::sdk::prompt35_analyze_json(
+        &input,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt35_plan(args: Prompt35RequestArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = std::fs::read_to_string(args.request)?;
+    let report = wellfriendpdf_engine::sdk::prompt35_plan_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
+}
+
+fn run_prompt35_apply(args: Prompt35ApplyArgs) -> Result<(), Box<dyn Error>> {
+    if args.output == args.pdf {
+        return Err("prompt35-apply requires --output distinct from the input PDF".into());
+    }
+    if args.output.exists() {
+        return Err("prompt35-apply refuses to overwrite an existing --output".into());
+    }
+    if args.report.as_ref().is_some_and(|path| path.exists()) {
+        return Err("prompt35-apply refuses to overwrite an existing --report".into());
+    }
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let request = std::fs::read_to_string(args.request)?;
+    let (output, report) = wellfriendpdf_engine::sdk::prompt35_apply_json(
+        &input,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.output, output)?;
+    if let Some(report_path) = args.report {
+        std::fs::write(report_path, pretty_json(&report)?)?;
+    } else {
+        println!("{}", pretty_json(&report)?);
+    }
+    Ok(())
+}
+
+fn run_prompt35_undo(args: Prompt35UndoArgs) -> Result<(), Box<dyn Error>> {
+    if args.restored_pdf == args.pdf || args.restored_pdf == args.output_pdf {
+        return Err("prompt35-undo requires --restored-pdf distinct from both input PDFs".into());
+    }
+    if args.restored_pdf.exists() {
+        return Err("prompt35-undo refuses to overwrite an existing --restored-pdf".into());
+    }
+    if args.report.as_ref().is_some_and(|path| path.exists()) {
+        return Err("prompt35-undo refuses to overwrite an existing --report".into());
+    }
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let output = std::fs::read(args.output_pdf)?;
+    let request = std::fs::read_to_string(args.request)?;
+    let (restored, report) = wellfriendpdf_engine::sdk::prompt35_undo_json(
+        &input,
+        &output,
+        &request,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    std::fs::write(&args.restored_pdf, restored)?;
+    if let Some(report_path) = args.report {
+        std::fs::write(report_path, pretty_json(&report)?)?;
+    } else {
+        println!("{}", pretty_json(&report)?);
+    }
+    Ok(())
+}
+
+fn run_prompt35_verify_residual(args: Prompt35VerifyArgs) -> Result<(), Box<dyn Error>> {
+    let input = read_edit_input(&args.pdf, &args.password)?;
+    let terms = std::fs::read_to_string(args.terms)?;
+    let report = wellfriendpdf_engine::sdk::prompt35_verify_residual_json(
+        &input,
+        &terms,
+        args.password.as_deref().map(str::as_bytes),
+    )?;
+    write_output_optional(&args.output, &pretty_json(&report)?)
 }
 
 fn prompt33_request_json(args: &Prompt33ReflowArgs) -> Result<String, Box<dyn Error>> {

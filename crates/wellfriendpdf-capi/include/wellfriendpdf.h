@@ -1027,6 +1027,39 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_undo_json(
     WellfriendBuffer *out_buffer,
     char **out_json,
     char **error_out);
+/* Prompt 35 tagged-PDF accessibility, redaction, sanitization, and residual APIs. */
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_analyze_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_plan_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_apply_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_undo_json(
+    const WellfriendDocument *document,
+    const uint8_t *output_pdf,
+    size_t output_pdf_len,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt35_verify_residual_json(
+    const WellfriendDocument *document,
+    const char *terms_json,
+    char **out_json,
+    char **error_out);
 WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_vector_list_json(
     const WellfriendDocument *document,
     size_t page,
