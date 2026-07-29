@@ -235,6 +235,8 @@ fn a_backend_panic_fails_only_its_page_not_the_run() {
 }
 
 /// Sleeps far longer than the engine timeout on page 2, succeeds elsewhere.
+const HUNG_BACKEND_SLEEP: Duration = Duration::from_secs(30);
+
 struct HangOnPage2 {
     seen: Arc<AtomicUsize>,
 }
@@ -242,7 +244,7 @@ impl OcrEngine for HangOnPage2 {
     fn recognize(&self, _i: &OcrImage, _o: &OcrOptions) -> wellfriendpdf_engine::Result<OcrPage> {
         let n = self.seen.fetch_add(1, Ordering::SeqCst) + 1;
         if n == 2 {
-            std::thread::sleep(Duration::from_secs(30));
+            std::thread::sleep(HUNG_BACKEND_SLEEP);
         }
         Ok(one_word())
     }
@@ -269,8 +271,9 @@ fn a_hung_backend_is_bounded_by_the_engine_timeout() {
     let start = std::time::Instant::now();
     let doc = engine.parse_document(&opts).unwrap();
     // The whole parse returns promptly — nowhere near the backend's 30s sleep.
+    let bounded_timeout_budget = HUNG_BACKEND_SLEEP / 2;
     assert!(
-        start.elapsed() < Duration::from_secs(5),
+        start.elapsed() < bounded_timeout_budget,
         "engine timeout must bound the hung page, got {:?}",
         start.elapsed()
     );

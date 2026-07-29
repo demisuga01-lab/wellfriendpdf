@@ -1291,6 +1291,7 @@ fn analyze_ocr_layers(input: &[u8]) -> Result<Value> {
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn supported_ocr_add_searchable_text(
     input: &[u8],
     page: usize,
@@ -1507,7 +1508,7 @@ fn import_static_xfa_datasets_pdf(input: &[u8], datasets_xml: &str) -> Result<(V
             )
         })?;
     let packet_items = resolve_pdf_array(reader, Some(xfa));
-    if packet_items.len() < 2 || packet_items.len() % 2 != 0 {
+    if packet_items.len() < 2 || !packet_items.len().is_multiple_of(2) {
         return Err(WellfriendError::UnsupportedFeature(
             "prompt34 xfa_conversion_lossy: XFA datasets import requires an even packet array"
                 .to_string(),
@@ -2178,10 +2179,7 @@ fn supported_annotation_create(
             bounds[2],
             bounds[3]
         );
-        let annotation_id = format!(
-            "wf-p34-{}",
-            digest(fingerprint.as_bytes())[..24].to_string()
-        );
+        let annotation_id = format!("wf-p34-{}", &digest(fingerprint.as_bytes())[..24]);
         let xfdf = format!(
             concat!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
@@ -2289,10 +2287,7 @@ fn supported_annotation_create_reply(
         bounds[2],
         bounds[3]
     );
-    let reply_id = format!(
-        "wf-p34-reply-{}",
-        digest(fingerprint.as_bytes())[..24].to_string()
-    );
+    let reply_id = format!("wf-p34-reply-{}", &digest(fingerprint.as_bytes())[..24]);
     let xfdf = format!(
         concat!(
             "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
@@ -6022,7 +6017,7 @@ mod tests {
             "<< /Length {} >>\nstream\n{content}\nendstream",
             content.len()
         );
-        let objects = vec![
+        let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_string(),
@@ -6057,7 +6052,7 @@ mod tests {
         let template = r#"<template xmlns="http://www.xfa.org/schema/xfa-template/3.3/"><subform name="form1" layout="position"><field name="name" x="20pt" y="20pt" w="120pt" h="20pt"><value><text>Initial</text></value><ui><textEdit/></ui></field></subform></template>"#;
         let datasets = r#"<datasets xmlns="http://www.xfa.org/schema/xfa-data/1.0/"><data><person><name>Initial</name></person></data></datasets>"#;
         let content = "q Q\n";
-        let objects = vec![
+        let objects = [
             "<< /Type /Catalog /Pages 2 0 R /AcroForm 6 0 R >>".to_string(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
             "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 200] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>".to_string(),
