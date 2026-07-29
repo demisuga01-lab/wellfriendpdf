@@ -233,6 +233,22 @@ pub struct AnnotationXfdfImportReport {
     pub exact_limits: Vec<String>,
 }
 
+/// Result of a source-linked annotation move or resize.  Geometry arrays are
+/// transformed in the original annotation coordinate space before the
+/// canonical XFDF importer rewrites the real annotation dictionary and its
+/// appearance.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnnotationGeometryEditReport {
+    pub schema_version: String,
+    pub annotation_id: String,
+    pub source_page: usize,
+    pub output_page: usize,
+    pub old_rect: [f64; 4],
+    pub new_rect: [f64; 4],
+    pub transformed_geometry: Vec<String>,
+    pub canonical_import: AnnotationXfdfImportReport,
+}
+
 pub fn export_annotation_xfdf(
     engine: &ContentEngine,
 ) -> Result<(Vec<u8>, AnnotationXfdfExportReport)> {
@@ -265,6 +281,137 @@ pub fn export_annotation_xfdf(
         ],
     };
     Ok((bytes, report))
+}
+
+/// Move or resize one existing annotation without recreating it from a visual
+/// approximation.  The record is first exported from the exact source object,
+/// then only that record is re-imported after its rectangle and coordinate
+/// linked geometry have been transformed.  This preserves `/NM`, contents,
+/// replies, popup relationships, colors, flags, and other supported scalar
+/// fields while leaving unrelated annotations untouched.
+pub fn move_resize_annotation_pdf(
+    input: &[u8],
+    annotation_id: &str,
+    page: usize,
+    new_rect: [f64; 4],
+) -> Result<(Vec<u8>, AnnotationGeometryEditReport)> {
+    if annotation_id.trim().is_empty() {
+        return Err(WellfriendError::UnsupportedFeature(
+            "annotation geometry update requires a nonempty stable annotation id".to_string(),
+        ));
+    }
+    if page == 0 {
+        return Err(WellfriendError::MalformedPdf(
+            "annotation geometry update pages are one-based".to_string(),
+        ));
+    }
+    if !valid_annotation_rect(new_rect) {
+        return Err(WellfriendError::MalformedPdf(
+            "annotation geometry update requires finite nonempty rectangle".to_string(),
+        ));
+    }
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    if page > engine.page_count()? {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "annotation geometry update page {page} is outside the document"
+        )));
+    }
+    let (xfdf, _) = export_annotation_xfdf(&engine)?;
+    let mut document = parse_annotation_xfdf(&xfdf)?;
+    let record = document
+        .annotations
+        .iter_mut()
+        .find(|record| record.id == annotation_id)
+        .ok_or_else(|| {
+            WellfriendError::UnsupportedFeature(format!(
+                "annotation geometry update cannot resolve stable annotation id {annotation_id}"
+            ))
+        })?;
+    let old_rect = record.rect.ok_or_else(|| {
+        WellfriendError::UnsupportedFeature(format!(
+            "annotation geometry update cannot safely move annotation {annotation_id} without an exact Rect"
+        ))
+    })?;
+    if !valid_annotation_rect(old_rect) {
+        return Err(WellfriendError::MalformedPdf(format!(
+            "annotation geometry update found invalid Rect for annotation {annotation_id}"
+        )));
+    }
+    let source_page = record.page;
+    let mut transformed_geometry = Vec::new();
+    transform_annotation_coordinates(&mut record.vertices, old_rect, new_rect);
+    if !record.vertices.is_empty() {
+        transformed_geometry.push("vertices".to_string());
+    }
+    transform_annotation_coordinates(&mut record.quad_points, old_rect, new_rect);
+    if !record.quad_points.is_empty() {
+        transformed_geometry.push("quad_points".to_string());
+    }
+    transform_annotation_coordinates(&mut record.line, old_rect, new_rect);
+    if !record.line.is_empty() {
+        transformed_geometry.push("line".to_string());
+    }
+    transform_annotation_coordinates(&mut record.callout, old_rect, new_rect);
+    if !record.callout.is_empty() {
+        transformed_geometry.push("callout".to_string());
+    }
+    for stroke in &mut record.ink_lists {
+        transform_annotation_coordinates(stroke, old_rect, new_rect);
+    }
+    if !record.ink_lists.is_empty() {
+        transformed_geometry.push("ink_lists".to_string());
+    }
+    record.page = page;
+    record.rect = Some(new_rect);
+    // Importing the selected record only is important: a move/resize must not
+    // rewrite, sanitize, or regenerate unrelated annotations as a side effect.
+    let selected = record.clone();
+    document.annotations = vec![selected];
+    document.diagnostics.clear();
+    let edited_xfdf = write_annotation_xfdf(&document);
+    let options = AnnotationXfdfImportOptions {
+        fail_on_unsupported: true,
+        ..AnnotationXfdfImportOptions::default()
+    };
+    let (output, canonical_import) =
+        import_annotation_xfdf_pdf(input, edited_xfdf.as_bytes(), &options)?;
+    Ok((
+        output,
+        AnnotationGeometryEditReport {
+            schema_version: PROMPT17_SCHEMA_VERSION.to_string(),
+            annotation_id: annotation_id.to_string(),
+            source_page,
+            output_page: page,
+            old_rect,
+            new_rect,
+            transformed_geometry,
+            canonical_import,
+        },
+    ))
+}
+
+fn valid_annotation_rect(rect: [f64; 4]) -> bool {
+    rect.iter().all(|value| value.is_finite()) && rect[0] != rect[2] && rect[1] != rect[3]
+}
+
+fn transform_annotation_coordinates(values: &mut [f64], old_rect: [f64; 4], new_rect: [f64; 4]) {
+    let old_x0 = old_rect[0].min(old_rect[2]);
+    let old_y0 = old_rect[1].min(old_rect[3]);
+    let old_width = (old_rect[2] - old_rect[0]).abs();
+    let old_height = (old_rect[3] - old_rect[1]).abs();
+    let new_x0 = new_rect[0].min(new_rect[2]);
+    let new_y0 = new_rect[1].min(new_rect[3]);
+    let new_width = (new_rect[2] - new_rect[0]).abs();
+    let new_height = (new_rect[3] - new_rect[1]).abs();
+    if old_width <= f64::EPSILON || old_height <= f64::EPSILON {
+        return;
+    }
+    for pair in values.chunks_exact_mut(2) {
+        if pair[0].is_finite() && pair[1].is_finite() {
+            pair[0] = new_x0 + (pair[0] - old_x0) * new_width / old_width;
+            pair[1] = new_y0 + (pair[1] - old_y0) * new_height / old_height;
+        }
+    }
 }
 
 pub fn parse_annotation_xfdf(bytes: &[u8]) -> Result<AnnotationXfdfDocument> {

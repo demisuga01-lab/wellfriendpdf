@@ -471,6 +471,14 @@ public sealed class WellfriendPdfSmokeTests
     }
 
     [Fact]
+    public void Prompt34RuntimeSurfacesUseTheCanonicalCore()
+    {
+        using var doc = WellfriendDocument.Open(FixturePath("multi_stream.pdf"));
+        Assert.Contains("prompt34.tables-math-ocr-forms-annotations.v1", doc.Prompt34ReportJson());
+        Assert.Contains("prompt34_analyze", doc.Prompt34AnalyzeJson());
+    }
+
+    [Fact]
     public void DisposeIsIdempotent()
     {
         var doc = WellfriendDocument.Open(FixturePath());

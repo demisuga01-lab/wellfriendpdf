@@ -1138,6 +1138,31 @@ public final class WellfriendPdf {
                 handle, Native.PROMPT33_OPERATION_REPORT, requestJson, "prompt33_reflow_operation_report");
         }
 
+        public String prompt34ReportJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT34_REPORT, "prompt34_report");
+        }
+
+        public String prompt34AnalyzeJson() {
+            ensureOpen();
+            return Native.documentReport(handle, Native.PROMPT34_ANALYZE, "prompt34_analyze");
+        }
+
+        public String prompt34PlanJson(String requestJson) {
+            ensureOpen();
+            return Native.documentStringReport(handle, Native.PROMPT34_PLAN, requestJson, "prompt34_plan");
+        }
+
+        public BinaryResult prompt34Apply(String requestJson) {
+            ensureOpen();
+            return Native.prompt33RequestOutput(handle, Native.PROMPT34_APPLY, requestJson, "prompt34_apply");
+        }
+
+        public BinaryResult prompt34Undo(byte[] outputPdf, String requestJson) {
+            ensureOpen();
+            return Native.prompt34Undo(handle, outputPdf, requestJson, "prompt34_undo");
+        }
+
         public String prompt20VectorListJson(long page) {
             ensureOpen();
             if (page < 1) throw new IllegalArgumentException("page must be one-based");
@@ -1626,6 +1651,10 @@ public final class WellfriendPdf {
         private static final MethodHandle PROMPT31_REPORT = documentReport("wellfriendpdf_document_prompt31_report_json");
         private static final MethodHandle PROMPT32_REPORT = documentReport("wellfriendpdf_document_prompt32_report_json");
         private static final MethodHandle PROMPT33_REPORT = documentReport("wellfriendpdf_document_prompt33_report_json");
+        private static final MethodHandle PROMPT34_REPORT = documentReport("wellfriendpdf_document_prompt34_report_json");
+        private static final MethodHandle PROMPT34_ANALYZE = documentReport("wellfriendpdf_document_prompt34_analyze_json");
+        private static final MethodHandle PROMPT34_PLAN =
+            documentStringReport("wellfriendpdf_document_prompt34_plan_json");
         private static final MethodHandle PROMPT21_REPORT = documentReport("wellfriendpdf_document_prompt21_report_json");
         private static final MethodHandle PROMPT21_RASTER_VECTOR_REPORT = downcall(
             "wellfriendpdf_document_prompt21_raster_vector_report_json",
@@ -1991,6 +2020,17 @@ public final class WellfriendPdf {
             documentStringReport("wellfriendpdf_document_prompt33_reflow_approve_structure_json");
         private static final MethodHandle PROMPT33_OPERATION_REPORT =
             documentStringReport("wellfriendpdf_document_prompt33_reflow_operation_report_json");
+        private static final MethodHandle PROMPT34_APPLY = downcall(
+            "wellfriendpdf_document_prompt34_apply_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROMPT34_UNDO = downcall(
+            "wellfriendpdf_document_prompt34_undo_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle PROMPT20_VECTOR_LIST = downcall(
             "wellfriendpdf_document_prompt20_vector_list_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
@@ -2956,6 +2996,34 @@ public final class WellfriendPdf {
                 MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
                 MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
                 int status = (int) PROMPT33_UNDO_REFLOW.invokeExact(
+                    handle, output, (long) outputPdf.length, request, buffer, jsonOut, err);
+                throwError(status, err);
+                return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend " + operation + " failed", ex);
+            }
+        }
+
+        private static BinaryResult prompt34Undo(
+            MemorySegment handle, byte[] outputPdf, String requestJson, String operation
+        ) {
+            Objects.requireNonNull(outputPdf, "outputPdf");
+            Objects.requireNonNull(requestJson, "requestJson");
+            if (requestJson.isBlank()) {
+                throw new IllegalArgumentException("requestJson must not be blank");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment output = outputPdf.length == 0 ? MemorySegment.NULL : arena.allocate(outputPdf.length);
+                if (outputPdf.length > 0) {
+                    output.copyFrom(MemorySegment.ofArray(outputPdf));
+                }
+                MemorySegment request = arena.allocateFrom(requestJson);
+                MemorySegment buffer = arena.allocate(BUFFER_LAYOUT);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) PROMPT34_UNDO.invokeExact(
                     handle, output, (long) outputPdf.length, request, buffer, jsonOut, err);
                 throwError(status, err);
                 return new BinaryResult(takeBuffer(buffer), takeString(jsonOut));

@@ -959,7 +959,12 @@ fn edit_advanced_text_pdf_internal(
     let extracted = reopened.get_page_text(page_number)?;
     let replacement_extracts = extracted.contains(new_text)
         || explicit_final_lines.is_some_and(|_| layout_extraction_equivalent(&extracted, new_text));
-    let old_absent = !extracted.contains(old_text);
+    // Positional-only edits (for example, Prompt 34 table-cell alignment)
+    // intentionally preserve the logical text sequence. In that case the
+    // old-token absence proof would be tautologically impossible, so retain
+    // the independent source/incremental/output checks while marking the
+    // textual proof satisfied by exact logical identity.
+    let old_absent = old_text == new_text || !extracted.contains(old_text);
     if !replacement_extracts || !old_absent || !output.starts_with(input) {
         return Err(WellfriendError::MalformedPdf(format!(
             "prompt20 RTL/vertical edit failed proof: replacement_extracts={replacement_extracts}, old_text_absent={old_absent}, prefix_preserved={}",

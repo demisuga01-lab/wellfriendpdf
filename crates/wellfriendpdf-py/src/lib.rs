@@ -1483,6 +1483,57 @@ impl PyDocument {
         })
     }
 
+    /// Prompt 34 feature report.  Operations use the shared JSON request
+    /// contract so Python cannot diverge from the Rust/C/WASM engines.
+    fn prompt34_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt34_report_json(bytes, None))
+    }
+
+    fn prompt34_analyze<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| sdk::prompt34_analyze_json(bytes, None))
+    }
+
+    fn prompt34_plan<'py>(&self, py: Python<'py>, request_json: &str) -> PyResult<Py<PyAny>> {
+        self.report_json(py, |bytes| {
+            sdk::prompt34_plan_json(bytes, request_json, None)
+        })
+    }
+
+    #[pyo3(signature = (request_json, output=None))]
+    fn prompt34_apply<'py>(
+        &self,
+        py: Python<'py>,
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (out, report) =
+            run_wellfriendpdf(|| sdk::prompt34_apply_json(&bytes, request_json, None))?;
+        write_optional(&output, &out)?;
+        Ok((
+            PyBytes::new(py, &out).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
+    #[pyo3(signature = (output_pdf, request_json, output=None))]
+    fn prompt34_undo<'py>(
+        &self,
+        py: Python<'py>,
+        output_pdf: &[u8],
+        request_json: &str,
+        output: Option<PathBuf>,
+    ) -> PyResult<(Py<PyBytes>, Py<PyAny>)> {
+        let bytes = self.file_bytes();
+        let (restored, report) =
+            run_wellfriendpdf(|| sdk::prompt34_undo_json(&bytes, output_pdf, request_json, None))?;
+        write_optional(&output, &restored)?;
+        Ok((
+            PyBytes::new(py, &restored).unbind(),
+            parse_json_str(py, &report)?,
+        ))
+    }
+
     fn associated_files_report<'py>(&self, py: Python<'py>) -> PyResult<Py<PyAny>> {
         self.report_json(py, |bytes| sdk::associated_files_report_json(bytes, None))
     }

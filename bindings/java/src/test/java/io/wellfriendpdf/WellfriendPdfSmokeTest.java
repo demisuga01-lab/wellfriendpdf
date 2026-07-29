@@ -56,6 +56,10 @@ public final class WellfriendPdfSmokeTest {
             reports.put("prompt20", doc.prompt20ReportJson());
             reports.put("prompt20b", doc.prompt20bReportJson());
             reports.put("prompt32", doc.prompt32ReportJson());
+            reports.put("prompt34", doc.prompt34ReportJson());
+            assertTrue(
+                reports.get("prompt34").contains("prompt34.tables-math-ocr-forms-annotations.v1"),
+                "Prompt34 feature schema");
             assertTrue(
                 reports.get("prompt32").contains("prompt32.scene-transactions-fonts-shaping.v1"),
                 "Prompt32 closeout schema");
@@ -103,6 +107,9 @@ public final class WellfriendPdfSmokeTest {
                         }
                         """;
                 reports.put("prompt33", prompt15.prompt33ReportJson());
+                assertTrue(
+                    prompt15.prompt34AnalyzeJson().contains("prompt34_analyze"),
+                    "Prompt34 source-linked analysis");
                 assertTrue(
                     reports.get("prompt33").contains("prompt33.geometric-semantic-reflow.v1"),
                     "Prompt33 schema");

@@ -999,6 +999,34 @@ WELLFRIENDPDF_API int wellfriendpdf_document_prompt33_reflow_operation_report_js
     const char *request_json,
     char **out_json,
     char **error_out);
+/* Prompt 34 source-linked table, math, OCR, annotation, form, and XFA APIs. */
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_report_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_analyze_json(
+    const WellfriendDocument *document,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_plan_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_apply_json(
+    const WellfriendDocument *document,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
+WELLFRIENDPDF_API int wellfriendpdf_document_prompt34_undo_json(
+    const WellfriendDocument *document,
+    const uint8_t *output_pdf,
+    size_t output_pdf_len,
+    const char *request_json,
+    WellfriendBuffer *out_buffer,
+    char **out_json,
+    char **error_out);
 WELLFRIENDPDF_API int wellfriendpdf_document_prompt20_vector_list_json(
     const WellfriendDocument *document,
     size_t page,

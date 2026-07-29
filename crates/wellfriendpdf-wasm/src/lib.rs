@@ -1193,6 +1193,21 @@ mod wasm_api {
             self.report(|b| sdk::prompt33_reflow_operation_report_json(b, &request_json, None))
         }
 
+        #[wasm_bindgen(js_name = prompt34ReportJson)]
+        pub fn prompt34_report_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt34_report_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt34AnalyzeJson)]
+        pub fn prompt34_analyze_json(&self) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt34_analyze_json(b, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt34PlanJson)]
+        pub fn prompt34_plan_json(&self, request_json: String) -> Result<String, JsValue> {
+            self.report(|b| sdk::prompt34_plan_json(b, &request_json, None))
+        }
+
         #[wasm_bindgen(js_name = prompt20VectorListJson)]
         pub fn prompt20_vector_list_json(&self, page: usize) -> Result<String, JsValue> {
             self.report(|b| sdk::prompt20_vector_list_json(b, page, None))
@@ -1417,6 +1432,20 @@ mod wasm_api {
             request_json: String,
         ) -> Result<WellfriendOutput, JsValue> {
             self.output(|b| sdk::prompt33_undo_reflow_json(b, &output_pdf, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt34Apply)]
+        pub fn prompt34_apply(&self, request_json: String) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt34_apply_json(b, &request_json, None))
+        }
+
+        #[wasm_bindgen(js_name = prompt34Undo)]
+        pub fn prompt34_undo(
+            &self,
+            output_pdf: Vec<u8>,
+            request_json: String,
+        ) -> Result<WellfriendOutput, JsValue> {
+            self.output(|b| sdk::prompt34_undo_json(b, &output_pdf, &request_json, None))
         }
 
         #[wasm_bindgen(js_name = prompt31PathEdit)]

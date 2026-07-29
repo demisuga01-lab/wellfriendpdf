@@ -4129,6 +4129,120 @@ pub unsafe extern "C" fn wellfriendpdf_document_prompt33_undo_reflow_json(
     }
 }
 
+/// Return the Prompt 34 table, math, OCR, annotation, form, and XFA feature
+/// report for an immutable document handle.
+///
+/// # Safety
+/// `document` must be live and output pointers writable.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt34_report_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt34_report_json(bytes, None)
+        })
+    }
+}
+
+/// Analyze source-linked Prompt 34 subsystems.
+///
+/// # Safety
+/// Standard immutable document and owned string output rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt34_analyze_json(
+    document: *const WellfriendDocument,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt34_analyze_json(bytes, None)
+        })
+    }
+}
+
+/// Plan a typed Prompt 34 operation without changing the document handle.
+///
+/// # Safety
+/// `request_json` must be NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt34_plan_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_json_impl(document, out_json, error_out, |bytes| {
+            sdk::prompt34_plan_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Apply a typed Prompt 34 operation, returning owned output bytes and the
+/// canonical transaction/appearance report.
+///
+/// # Safety
+/// Standard document, request, and owned-output pointer rules apply.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt34_apply_json(
+    document: *const WellfriendDocument,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            sdk::prompt34_apply_json(
+                bytes,
+                &request
+                    .clone()
+                    .map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?,
+                None,
+            )
+        })
+    }
+}
+
+/// Replay and undo a typed Prompt 34 operation against an immutable source
+/// handle, returning restored owned bytes and a typed inverse report.
+///
+/// # Safety
+/// `output_pdf` must point to `output_pdf_len` readable bytes unless empty and
+/// `request_json` must be NUL-terminated UTF-8.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_prompt34_undo_json(
+    document: *const WellfriendDocument,
+    output_pdf: *const u8,
+    output_pdf_len: usize,
+    request_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let output = unsafe { read_input_bytes(output_pdf, output_pdf_len, "output_pdf") };
+    let request = unsafe { required_c_string(request_json, "request_json") };
+    unsafe {
+        report_output_impl(document, out_buffer, out_json, error_out, |bytes| {
+            let output = output.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            let request = request.map_err(wellfriendpdf_engine::WellfriendError::invalid_input)?;
+            sdk::prompt34_undo_json(bytes, output, &request, None)
+        })
+    }
+}
+
 /// Store or preview a Prompt 33 reviewed structure correction.
 ///
 /// # Safety
@@ -6331,6 +6445,14 @@ mod tests {
         assert_eq!(
             prompt31["report"]["schema_version"],
             "prompt31.provenance-operator-editing.v1"
+        );
+        let prompt34 = report_envelope(
+            wellfriendpdf_document_prompt34_report_json,
+            "prompt34_report",
+        );
+        assert_eq!(
+            prompt34["report"]["feature_matrix"]["schema_version"],
+            "prompt34.tables-math-ocr-forms-annotations.v1"
         );
         report_envelope(
             wellfriendpdf_document_associated_files_report_json,

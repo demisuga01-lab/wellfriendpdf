@@ -434,8 +434,8 @@ pub use prompt33::{
 };
 pub use prompt34::{
     analyze_prompt34, apply_prompt34, plan_prompt34, prompt34_feature_matrix, undo_prompt34,
-    Prompt34AnalysisReport, Prompt34OperationReport, Prompt34Request, Prompt34Subsystem,
-    PROMPT34_SCHEMA_VERSION,
+    EditableTableGraph, OcrSearchableWord, Prompt34Action, Prompt34AnalysisReport,
+    Prompt34OperationReport, Prompt34Request, Prompt34Subsystem, PROMPT34_SCHEMA_VERSION,
 };
 pub use pubsec::{
     encrypt_pdf_pubsec, parse_pubsec_encryption_info, recover_pubsec_file_key,

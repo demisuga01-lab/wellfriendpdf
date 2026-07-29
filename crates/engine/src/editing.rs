@@ -57,6 +57,10 @@ pub struct EditTextStyle {
     pub fill: Color,
     pub opacity: f64,
     pub rotation_degrees: f64,
+    /// PDF text rendering mode. Mode 3 creates a searchable but non-painting
+    /// text layer; modes outside the PDF 0..=7 range are rejected before
+    /// serialization.
+    pub rendering_mode: i32,
 }
 
 impl Default for EditTextStyle {
@@ -66,6 +70,7 @@ impl Default for EditTextStyle {
             fill: Color::black(),
             opacity: 1.0,
             rotation_degrees: 0.0,
+            rendering_mode: 0,
         }
     }
 }
@@ -90,6 +95,14 @@ impl EditTextStyle {
 
     pub fn rotation_degrees(mut self, rotation: f64) -> Self {
         self.rotation_degrees = rotation;
+        self
+    }
+
+    /// Set the PDF `Tr` text rendering mode. Callers that create searchable
+    /// OCR text use mode 3, which participates in extraction but never paints
+    /// over the original scan.
+    pub fn rendering_mode(mut self, mode: i32) -> Self {
+        self.rendering_mode = mode;
         self
     }
 }
@@ -5384,6 +5397,7 @@ fn write_text(
     y: f64,
     style: &EditTextStyle,
 ) {
+    let rendering_mode = style.rendering_mode.clamp(0, 7);
     let rotation = style.rotation_degrees.to_radians();
     let cos = rotation.cos();
     let sin = rotation.sin();
@@ -5394,9 +5408,10 @@ fn write_text(
     write_fill_color(out, &style.fill);
     out.extend_from_slice(
         format!(
-            "BT /{} {} Tf {} {} {} {} {} {} Tm <{}> Tj ET\nQ\n",
+            "BT /{} {} Tf {} Tr {} {} {} {} {} {} Tm <{}> Tj ET\nQ\n",
             font,
             fmt_num(style.font_size),
+            rendering_mode,
             fmt_num(cos),
             fmt_num(sin),
             fmt_num(-sin),
