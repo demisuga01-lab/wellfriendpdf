@@ -1,0 +1,149 @@
+{
+  "kind": "ocr_provider_matrix",
+  "report": [
+    {
+      "active": false,
+      "configured": false,
+      "family": "hosted_api",
+      "kind": "open_ai_compatible",
+      "model_hash": null,
+      "provider": "openai_compatible",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "self_hosted",
+      "kind": "tesseract",
+      "model_hash": null,
+      "provider": "tesseract",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "self_hosted",
+      "kind": "paddle_ocr",
+      "model_hash": null,
+      "provider": "paddle_ocr",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "self_hosted",
+      "kind": "onnx_runtime",
+      "model_hash": null,
+      "provider": "onnx_runtime",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "self_hosted",
+      "kind": "open_vino",
+      "model_hash": null,
+      "provider": "openvino",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "self_hosted",
+      "kind": "local_open_ai_compatible",
+      "model_hash": null,
+      "provider": "local_openai_compatible",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "self_hosted",
+      "kind": "tensor_rt_cuda",
+      "model_hash": null,
+      "provider": "tensorrt_cuda",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "self_hosted",
+      "kind": "compact_cpu",
+      "model_hash": null,
+      "provider": "compact_cpu",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "self_hosted",
+      "kind": "user_plugin",
+      "model_hash": null,
+      "provider": "user_plugin",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "cloud_document_intelligence",
+      "kind": "google_document_ai",
+      "model_hash": null,
+      "provider": "google_document_ai",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "cloud_document_intelligence",
+      "kind": "azure_document_intelligence",
+      "model_hash": null,
+      "provider": "azure_document_intelligence",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "cloud_document_intelligence",
+      "kind": "aws_textract",
+      "model_hash": null,
+      "provider": "aws_textract",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    },
+    {
+      "active": false,
+      "configured": false,
+      "family": "cloud_document_intelligence",
+      "kind": "generic_enterprise",
+      "model_hash": null,
+      "provider": "generic_enterprise",
+      "reason": "provider_contract_available_not_configured",
+      "status": "inactive_missing_provider",
+      "version": null
+    }
+  ],
+  "schema_version": 1
+}

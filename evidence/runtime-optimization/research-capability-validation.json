@@ -1,0 +1,21 @@
+{
+  "status": "pass",
+  "secret_leaks": [],
+  "files": [
+    {
+      "file": "research-forced-standard.json",
+      "sha256": "73a542f3e0b6523e105d3f37857348433ac2252c57b5493c975223db121b0da3",
+      "top": "runtime_effective_config"
+    },
+    {
+      "file": "research-allowed.json",
+      "sha256": "73a542f3e0b6523e105d3f37857348433ac2252c57b5493c975223db121b0da3",
+      "top": "runtime_effective_config"
+    },
+    {
+      "file": "provider-secret-hygiene.json",
+      "sha256": "22d4c9747bc6b4f51f7e7f0d8c3c44e5f0d5388afba5fd88874a7ca0245b3459",
+      "top": "runtime_config_validation"
+    }
+  ]
+}

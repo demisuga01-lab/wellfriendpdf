@@ -125,6 +125,7 @@ pub mod prepress;
 pub mod pubsec;
 pub mod reader;
 pub mod render;
+pub mod runtime;
 pub mod sdk;
 pub mod secure_mutation;
 pub mod security;
@@ -428,6 +429,7 @@ pub use render::{
     BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
 };
 pub use render::{render_page_svg, svg, text_decode};
+pub use runtime::*;
 pub use sdk::REPORT_ENVELOPE_VERSION;
 pub use secure_mutation::{
     analyze_edit_policy, analyze_edit_policy_for_target, apply_signature_preserving_form_fill,

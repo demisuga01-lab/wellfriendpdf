@@ -108,6 +108,46 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeJson(status, json, error);
     }
 
+    public static string RuntimeCapabilitiesJson(string? configJson = null)
+    {
+        var configPtr = NativeMethods.StringToNativeOrNull(configJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_runtime_capabilities_json(configPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (configPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(configPtr);
+            }
+        }
+    }
+
+    public static string RuntimeConfigJson(string? configJson = null)
+    {
+        var configPtr = NativeMethods.StringToNativeOrNull(configJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_runtime_effective_config_json(configPtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (configPtr != IntPtr.Zero)
+            {
+                Marshal.FreeCoTaskMem(configPtr);
+            }
+        }
+    }
+
+    public static string OcrProviderMatrixJson()
+    {
+        var status = NativeMethods.wellfriendpdf_ocr_provider_matrix_json(out var json, out var error);
+        return NativeMethods.TakeJson(status, json, error);
+    }
+
     public static string WriterHistoryHistoryReportJson()
     {
         var status = NativeMethods.wellfriendpdf_writer_history_history_report_json(out var json, out var error);

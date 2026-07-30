@@ -3342,6 +3342,22 @@ pub fn feature_report_json() -> Result<String> {
             "pdfa": cfg!(feature = "pdfa"),
             "ocr": cfg!(feature = "ocr"),
         },
+        "runtime": {
+            "schema_version": crate::runtime::RUNTIME_CONFIG_SCHEMA_VERSION,
+            "public_modes": ["standard", "research"],
+            "default_mode": "standard",
+            "standard_gpu_required": false,
+            "minimum_standard": {
+                "vcpu": crate::runtime::MINIMUM_STANDARD_VCPU,
+                "ram_bytes": crate::runtime::MINIMUM_STANDARD_RAM_BYTES
+            },
+            "recommended_standard": {
+                "vcpu": crate::runtime::RECOMMENDED_STANDARD_VCPU,
+                "ram_bytes": crate::runtime::RECOMMENDED_STANDARD_RAM_BYTES
+            },
+            "ocr_provider_families": ["hosted_api", "self_hosted", "cloud_document_intelligence"],
+            "binding_surfaces": ["Rust", "CLI", "Python", "C ABI", "WASM", ".NET", "Java", "server"]
+        },
         "codec_isolation": codec_isolation,
         "codec_boundary": {
             "native_codec_boundary": native_codec_boundary,
@@ -3902,6 +3918,76 @@ pub fn feature_report_json() -> Result<String> {
         "report": features,
     }))
     .map_err(json_err)
+}
+
+fn runtime_config_from_json(config_json: Option<&str>) -> Result<crate::runtime::RuntimeConfig> {
+    match config_json {
+        Some(raw) if !raw.trim().is_empty() => crate::runtime::RuntimeConfig::from_config_str(raw),
+        _ => Ok(crate::runtime::RuntimeConfig::standard()),
+    }
+}
+
+/// Effective runtime configuration and capability report. `config_json` accepts
+/// the shared JSON/TOML-like runtime configuration shape and never serializes
+/// secret values.
+pub fn runtime_effective_config_json(config_json: Option<&str>) -> Result<String> {
+    let cfg = runtime_config_from_json(config_json)?;
+    let effective = cfg.effective(
+        crate::runtime::HostRuntimeProfile::detect(),
+        crate::runtime::HostRuntimePolicy::default(),
+    )?;
+    envelope("runtime_effective_config", &effective)
+}
+
+/// Runtime capability report for the two public modes.
+pub fn runtime_capabilities_json(config_json: Option<&str>) -> Result<String> {
+    let cfg = runtime_config_from_json(config_json)?;
+    let effective = cfg.effective(
+        crate::runtime::HostRuntimeProfile::detect(),
+        crate::runtime::HostRuntimePolicy::default(),
+    )?;
+    envelope("runtime_capabilities", &effective.capabilities)
+}
+
+/// OCR provider-family matrix. Provider contracts are returned even when the
+/// corresponding runtime is not configured.
+pub fn ocr_provider_matrix_json() -> Result<String> {
+    envelope(
+        "ocr_provider_matrix",
+        &crate::runtime::ocr_provider_matrix(),
+    )
+}
+
+/// Validate runtime configuration and report requested-versus-effective mode.
+pub fn runtime_validate_config_json(config_json: Option<&str>) -> Result<String> {
+    let cfg = runtime_config_from_json(config_json)?;
+    cfg.validate()?;
+    let effective = cfg.effective(
+        crate::runtime::HostRuntimeProfile::detect(),
+        crate::runtime::HostRuntimePolicy::default(),
+    )?;
+    envelope(
+        "runtime_config_validation",
+        &serde_json::json!({
+            "schema_version": crate::runtime::RUNTIME_CONFIG_SCHEMA_VERSION,
+            "valid": true,
+            "requested_mode": effective.requested_mode,
+            "effective_mode": effective.effective_mode,
+            "decisions": effective.decisions,
+            "secret_values_serialized": effective.secret_hygiene.secret_values_serialized
+        }),
+    )
+}
+
+/// Compact Standard-mode resource-contract probe for validation harnesses.
+pub fn standard_runtime_probe_json(vcpu: u16, ram_bytes: u64) -> Result<String> {
+    let report = crate::runtime::standard_validation_probe(crate::runtime::HostRuntimeProfile {
+        vcpu: vcpu.max(1),
+        ram_bytes,
+        gpu_present: false,
+        wasm: cfg!(target_arch = "wasm32"),
+    })?;
+    envelope("standard_runtime_probe", &report)
 }
 
 // ── Output-producing operations (bytes + report) ─────────────────────────────

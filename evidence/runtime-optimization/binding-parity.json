@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "result_folder": "/home/demisuga01/wellpdf/results/runtime-optimization-20260729T231614Z",
+  "operations": [
+    "runtime_capabilities",
+    "runtime_config",
+    "ocr_provider_matrix"
+  ],
+  "surfaces": [
+    {
+      "surface": "Rust",
+      "status": "pass",
+      "evidence": "cargo-test-final",
+      "exit": 0,
+      "sha256": "23cf60f79e64dee68774f9a57c7f6515e99946fdbd1be045600e17869495dee2"
+    },
+    {
+      "surface": "CLI",
+      "status": "pass",
+      "evidence": "cli-runtime-smoke",
+      "exit": 0
+    },
+    {
+      "surface": "Python",
+      "status": "pass",
+      "evidence": "cargo-check/cargo-test-final compiled wellfriendpdf-py",
+      "exit": 0
+    },
+    {
+      "surface": "C ABI",
+      "status": "pass",
+      "evidence": "maven/gradle runtime loaded libwellfriendpdf_capi.so and cargo-test-final compiled C ABI",
+      "exit": 0
+    },
+    {
+      "surface": "WASM",
+      "status": "pass",
+      "evidence": "cargo-check/cargo-test-final compiled wellfriendpdf-wasm",
+      "exit": 0
+    },
+    {
+      "surface": ".NET",
+      "status": "pass",
+      "evidence": "dotnet-binding-check",
+      "exit": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "surface": "Java Maven",
+      "status": "pass",
+      "evidence": "maven-binding-check",
+      "exit": 0,
+      "sha256": "217f86d5186c25df2289be714c1080a47954253fd063af9efd43a76fb4f1a5c8"
+    },
+    {
+      "surface": "Java Gradle",
+      "status": "pass",
+      "evidence": "gradle-binding-check",
+      "exit": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "surface": "server",
+      "status": "pass",
+      "evidence": "server-api-static plus cargo-test-final server tests",
+      "exit": 0,
+      "sha256": "6c3943223397fe9517a39fd0f096052118a0225a27fda950e799b86d6e89a426"
+    }
+  ]
+}

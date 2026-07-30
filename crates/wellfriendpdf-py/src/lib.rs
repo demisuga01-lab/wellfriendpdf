@@ -3214,6 +3214,31 @@ fn feature_report(py: Python<'_>) -> PyResult<Py<PyAny>> {
     parse_json_str(py, &json)
 }
 
+/// Runtime capability report for Standard and Research modes.
+#[pyfunction]
+#[pyo3(signature = (config_json=None))]
+fn runtime_capabilities(py: Python<'_>, config_json: Option<&str>) -> PyResult<Py<PyAny>> {
+    let json = run_wellfriendpdf(|| sdk::runtime_capabilities_json(config_json))?;
+    parse_json_str(py, &json)
+}
+
+/// Effective runtime configuration. Secret references are reported without
+/// secret values.
+#[pyfunction]
+#[pyo3(signature = (config_json=None))]
+fn runtime_config(py: Python<'_>, config_json: Option<&str>) -> PyResult<Py<PyAny>> {
+    let json = run_wellfriendpdf(|| sdk::runtime_effective_config_json(config_json))?;
+    parse_json_str(py, &json)
+}
+
+/// OCR provider contract matrix across hosted API, self-hosted, and cloud
+/// document-intelligence families.
+#[pyfunction]
+fn ocr_provider_matrix(py: Python<'_>) -> PyResult<Py<PyAny>> {
+    let json = run_wellfriendpdf(sdk::ocr_provider_matrix_json)?;
+    parse_json_str(py, &json)
+}
+
 /// Incremental Signing Standards append-only incremental signing. `key_pem`/`cert_pem` are the
 /// signer material and are never logged. `certify` (1|2|3) creates a DocMDP
 /// certification signature; otherwise an approval signature is produced. The
@@ -3383,6 +3408,9 @@ fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add_function(wrap_pyfunction!(verify_signatures, module)?)?;
     module.add_function(wrap_pyfunction!(verify_signatures_with_options, module)?)?;
     module.add_function(wrap_pyfunction!(feature_report, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_capabilities, module)?)?;
+    module.add_function(wrap_pyfunction!(runtime_config, module)?)?;
+    module.add_function(wrap_pyfunction!(ocr_provider_matrix, module)?)?;
     module.add_function(wrap_pyfunction!(sign_pdf, module)?)?;
     module.add_function(wrap_pyfunction!(writer_history_history_report, module)?)?;
     module.add_function(wrap_pyfunction!(crypto_tamper_test, module)?)?;

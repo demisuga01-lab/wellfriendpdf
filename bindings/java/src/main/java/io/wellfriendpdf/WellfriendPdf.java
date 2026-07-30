@@ -28,6 +28,26 @@ public final class WellfriendPdf {
         return Native.featureReportJson();
     }
 
+    public static String runtimeCapabilitiesJson(String configJson) {
+        return Native.runtimeCapabilitiesJson(configJson);
+    }
+
+    public static String runtimeCapabilitiesJson() {
+        return runtimeCapabilitiesJson(null);
+    }
+
+    public static String runtimeConfigJson(String configJson) {
+        return Native.runtimeConfigJson(configJson);
+    }
+
+    public static String runtimeConfigJson() {
+        return runtimeConfigJson(null);
+    }
+
+    public static String ocrProviderMatrixJson() {
+        return Native.ocrProviderMatrixJson();
+    }
+
     public static String writer_historyHistoryReportJson() {
         return Native.writer_historyHistoryReportJson();
     }
@@ -2226,6 +2246,18 @@ public final class WellfriendPdf {
             "wellfriendpdf_feature_report_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
+        private static final MethodHandle RUNTIME_EFFECTIVE_CONFIG = downcall(
+            "wellfriendpdf_runtime_effective_config_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RUNTIME_CAPABILITIES = downcall(
+            "wellfriendpdf_runtime_capabilities_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle OCR_PROVIDER_MATRIX = downcall(
+            "wellfriendpdf_ocr_provider_matrix_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
         private static final MethodHandle CRYPTO_TAMPER_TEST = downcall(
             "wellfriendpdf_crypto_tamper_test_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
@@ -2341,6 +2373,45 @@ public final class WellfriendPdf {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Wellfriend feature_report failed", ex);
+            }
+        }
+
+        private static String runtimeCapabilitiesJson(String configJson) {
+            return runtimeConfigCall(
+                RUNTIME_CAPABILITIES, configJson, "Wellfriend runtime_capabilities failed");
+        }
+
+        private static String runtimeConfigJson(String configJson) {
+            return runtimeConfigCall(
+                RUNTIME_EFFECTIVE_CONFIG, configJson, "Wellfriend runtime_config failed");
+        }
+
+        private static String ocrProviderMatrixJson() {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) OCR_PROVIDER_MATRIX.invokeExact(jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend ocr_provider_matrix failed", ex);
+            }
+        }
+
+        private static String runtimeConfigCall(MethodHandle handle, String configJson, String context) {
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment config = configJson == null ? MemorySegment.NULL : arena.allocateFrom(configJson);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) handle.invokeExact(config, jsonOut, err);
+                throwError(status, err);
+                return takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException(context, ex);
             }
         }
 

@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "result_folder": "/home/demisuga01/wellpdf/results/runtime-optimization-20260729T231614Z",
+  "stage": {
+    "name": "standard-runtime-profiles",
+    "exit": 0,
+    "duration_sec": 105,
+    "peak_rss_kib": 2722640,
+    "sha256": "738a3783e1e1236369a885f81d3387269737a43679a6938b8cdb82b6bf925524"
+  },
+  "profiles": [
+    {
+      "file": "benchmarks/results/standard-runtime/minimum-2vcpu-6gb.json",
+      "vcpu": 2,
+      "ram_bytes": 6442450944,
+      "effective_mode": "standard",
+      "gpu_required": false,
+      "all_core_features_available": true,
+      "correctness_weakened": false,
+      "outputs_reopen_contract_unchanged": true,
+      "sha256": "cc135872d77b45b467fe3c932a20c63d653f7c68530d36dceb01ff6c72bae173"
+    },
+    {
+      "file": "benchmarks/results/standard-runtime/recommended-4vcpu-8gb.json",
+      "vcpu": 4,
+      "ram_bytes": 8589934592,
+      "effective_mode": "standard",
+      "gpu_required": false,
+      "all_core_features_available": true,
+      "correctness_weakened": false,
+      "outputs_reopen_contract_unchanged": true,
+      "sha256": "1d2f51f8d0c51bf4e6c71de3b483b4d50b625fe07c74f54007d455fff4801088"
+    },
+    {
+      "file": "benchmarks/results/standard-runtime/scaling.json",
+      "vcpu": 8,
+      "ram_bytes": 17179869184,
+      "effective_mode": "standard",
+      "gpu_required": false,
+      "all_core_features_available": true,
+      "correctness_weakened": false,
+      "outputs_reopen_contract_unchanged": true,
+      "sha256": "7b0fdc521e0cf170e6115de31ff7565edea337f881ffe2b6078cf94d4428af59"
+    }
+  ]
+}

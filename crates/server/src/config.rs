@@ -56,6 +56,17 @@ pub struct ServerConfig {
     /// system temp dir (or the `WELLFRIENDPDF_JOB_RESULT_DIR` env override). Tests set
     /// this to a unique dir so on-disk cleanup can be verified in isolation.
     pub job_result_dir: Option<String>,
+    /// Canonical engine runtime configuration. Publicly exposes only Standard
+    /// and Research; host policy may still force Standard.
+    pub runtime_config: wellfriendpdf_engine::RuntimeConfig,
+    /// Administrative policy: disallow Research even if a request asks for it.
+    pub force_standard: bool,
+    /// Administrative policy: allow Research when explicitly configured.
+    pub allow_research: bool,
+    /// Administrative policy: permit externally hosted OCR/document providers.
+    pub allow_external_network_providers: bool,
+    /// Administrative policy: require OCR to stay local/self-hosted.
+    pub local_only_ocr: bool,
 }
 
 impl Default for ServerConfig {
@@ -100,6 +111,11 @@ impl Default for ServerConfig {
             // Bound total retained jobs regardless of retention timing.
             max_jobs: 1_000,
             job_result_dir: None,
+            runtime_config: wellfriendpdf_engine::RuntimeConfig::standard(),
+            force_standard: false,
+            allow_research: false,
+            allow_external_network_providers: false,
+            local_only_ocr: true,
         }
     }
 }
@@ -221,6 +237,38 @@ impl ServerConfig {
             }
         }
 
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_FORCE_STANDARD") {
+            cfg.force_standard = parse_bool_env(&value);
+        }
+
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_ALLOW_RESEARCH") {
+            cfg.allow_research = parse_bool_env(&value);
+        }
+
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_ALLOW_EXTERNAL_PROVIDERS") {
+            cfg.allow_external_network_providers = parse_bool_env(&value);
+        }
+
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_LOCAL_ONLY_OCR") {
+            cfg.local_only_ocr = parse_bool_env(&value);
+        }
+
+        if let Ok(raw) = std::env::var("WELLFRIENDPDF_RUNTIME_CONFIG_JSON") {
+            if let Ok(runtime) = wellfriendpdf_engine::RuntimeConfig::from_config_str(&raw) {
+                cfg.runtime_config = runtime;
+            }
+        } else if let Ok(path) = std::env::var("WELLFRIENDPDF_RUNTIME_CONFIG_FILE") {
+            if let Ok(runtime) = wellfriendpdf_engine::RuntimeConfig::from_path(path) {
+                cfg.runtime_config = runtime;
+            }
+        } else if let Ok(mode) = std::env::var("WELLFRIENDPDF_MODE")
+            .or_else(|_| std::env::var("WELLFRIENDPDF_RUNTIME_MODE"))
+        {
+            if let Ok(mode) = mode.parse::<wellfriendpdf_engine::ExecutionMode>() {
+                cfg.runtime_config = wellfriendpdf_engine::RuntimeConfig::from_mode(mode);
+            }
+        }
+
         cfg
     }
 
@@ -238,6 +286,13 @@ impl ServerConfig {
                     .to_string(),
             );
         }
+        self.runtime_config
+            .validate()
+            .map_err(|err| format!("runtime configuration error: {err}"))?;
+        let policy = self.runtime_policy();
+        self.runtime_config
+            .effective(wellfriendpdf_engine::HostRuntimeProfile::detect(), policy)
+            .map_err(|err| format!("runtime effective configuration error: {err}"))?;
         Ok(())
     }
 
@@ -246,6 +301,29 @@ impl ServerConfig {
     /// dev-opt-in unauthenticated mode.
     pub fn auth_enforced(&self) -> bool {
         !self.api_keys.is_empty()
+    }
+
+    pub fn runtime_policy(&self) -> wellfriendpdf_engine::HostRuntimePolicy {
+        wellfriendpdf_engine::HostRuntimePolicy {
+            force_standard: self.force_standard,
+            allow_research: self.allow_research,
+            allow_external_network_providers: self.allow_external_network_providers,
+            local_only_ocr: self.local_only_ocr,
+            max_memory_bytes: None,
+            max_cpu_workers: None,
+            max_provider_cost_micros: self.runtime_config.providers.max_provider_cost_micros,
+            allowed_tenants_for_research: Vec::new(),
+        }
+    }
+
+    pub fn effective_runtime(
+        &self,
+    ) -> Result<wellfriendpdf_engine::EffectiveRuntimeConfig, wellfriendpdf_engine::WellfriendError>
+    {
+        self.runtime_config.effective(
+            wellfriendpdf_engine::HostRuntimeProfile::detect(),
+            self.runtime_policy(),
+        )
     }
 }
 

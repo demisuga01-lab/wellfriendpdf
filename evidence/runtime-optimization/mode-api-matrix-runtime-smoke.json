@@ -1,0 +1,9 @@
+{
+  "status": "pass",
+  "checks": {
+    "cli-capabilities-standard.json": "runtime_capabilities",
+    "cli-runtime-research.json": "runtime_effective_config",
+    "cli-providers-list.json": "ocr_provider_matrix",
+    "cli-providers-check.json": "runtime_config_validation"
+  }
+}

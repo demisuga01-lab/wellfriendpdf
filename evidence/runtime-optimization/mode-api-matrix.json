@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "public_modes": ["standard", "research"],
+  "default": "standard",
+  "surfaces": [
+    {"surface": "Rust", "mode_selection": "RuntimeConfig.mode", "ocr_selection": "OcrRuntimeConfig"},
+    {"surface": "CLI", "mode_selection": "--mode", "ocr_selection": "runtime config and providers commands"},
+    {"surface": "server", "mode_selection": "WELLFRIENDPDF_MODE plus admin policy", "ocr_selection": "runtime config provider policy"},
+    {"surface": "Python", "mode_selection": "runtime_config(config_json)", "ocr_selection": "ocr_provider_matrix()"},
+    {"surface": "C ABI", "mode_selection": "wellfriendpdf_runtime_effective_config_json", "ocr_selection": "wellfriendpdf_ocr_provider_matrix_json"},
+    {"surface": "WASM", "mode_selection": "runtimeConfigJson", "ocr_selection": "ocrProviderMatrixJson"},
+    {"surface": ".NET", "mode_selection": "WellfriendDocument.RuntimeConfigJson", "ocr_selection": "WellfriendDocument.OcrProviderMatrixJson"},
+    {"surface": "Java", "mode_selection": "WellfriendPdf.runtimeConfigJson", "ocr_selection": "WellfriendPdf.ocrProviderMatrixJson"}
+  ]
+}

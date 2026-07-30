@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "scope": "runtime architecture validation, not final market comparison",
+  "baseline_commit": "768105bcddf6a6a54d7583fa2ac42bc82b2bd6f3",
+  "result_folder": "/home/demisuga01/wellpdf/results/runtime-optimization-20260729T231614Z",
+  "measurements": [
+    {
+      "name": "standard_runtime_profiles",
+      "status": "pass",
+      "stage": "standard-runtime-profiles",
+      "exit": 0,
+      "duration_sec": 105,
+      "peak_rss_kib": 2722640,
+      "sha256": "738a3783e1e1236369a885f81d3387269737a43679a6938b8cdb82b6bf925524",
+      "outputs": [
+        "benchmarks/results/standard-runtime/minimum-2vcpu-6gb.json",
+        "benchmarks/results/standard-runtime/recommended-4vcpu-8gb.json",
+        "benchmarks/results/standard-runtime/scaling.json"
+      ],
+      "claim_boundary": "validates admission, memory coordination, no-GPU Standard behavior, and correctness-preserving effective config; it is not a market performance comparison"
+    },
+    {
+      "name": "full_workspace_tests_after_runtime_surface_changes",
+      "status": "pass",
+      "stage": "cargo-test-final",
+      "exit": 0,
+      "duration_sec": 636,
+      "peak_rss_kib": 3016828,
+      "sha256": "23cf60f79e64dee68774f9a57c7f6515e99946fdbd1be045600e17869495dee2",
+      "claim_boundary": "validates current source after runtime mode, OCR provider, server, and binding changes"
+    },
+    {
+      "name": "research_capability_fallback",
+      "status": "pass",
+      "stage": "research-capability-validation",
+      "exit": 0,
+      "duration_sec": 1,
+      "peak_rss_kib": 30032,
+      "claim_boundary": "validates no-GPU/no-provider fallback and secret-redacted configuration reports; it does not claim Research acceleration speed or quality"
+    }
+  ],
+  "status": "pass"
+}

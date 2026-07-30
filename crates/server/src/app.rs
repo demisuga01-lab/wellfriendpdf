@@ -71,6 +71,11 @@ use crate::routes;
 // GET /api/v1/version
 //   Returns server and engine version info.
 //
+// GET /api/v1/capabilities
+// GET /api/v1/runtime-config
+// GET /api/v1/providers
+//   Runtime mode, effective resource policy, and provider capability reports.
+//
 // GET /health
 //   Docker/k8s health check.
 //
@@ -123,6 +128,15 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
         .route("/api/v1/health", get(routes::health::health))
         .route("/api/v1/version", get(routes::health::version))
         .route("/api/v1/readiness", get(routes::health::readiness))
+        .route(
+            "/api/v1/capabilities",
+            get(routes::health::runtime_capabilities),
+        )
+        .route(
+            "/api/v1/runtime-config",
+            get(routes::health::runtime_config),
+        )
+        .route("/api/v1/providers", get(routes::health::providers))
         .route("/api/v1/extract-text", post(routes::extract_text::handler))
         .route(
             "/api/v1/extract-images",

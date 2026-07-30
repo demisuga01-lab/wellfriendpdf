@@ -1,0 +1,65 @@
+﻿{
+    "schema_version":  1,
+    "task":  "runtime_optimization_two_mode_architecture",
+    "timestamp_utc":  "2026-07-29T22:22:42.1975432Z",
+    "root":  "E:\\wellpdfsdk",
+    "expected_start_head":  "768105bcddf6a6a54d7583fa2ac42bc82b2bd6f3",
+    "head":  "768105bcddf6a6a54d7583fa2ac42bc82b2bd6f3",
+    "origin_main":  "768105bcddf6a6a54d7583fa2ac42bc82b2bd6f3",
+    "branch":  "main",
+    "clean_worktree":  true,
+    "local_equals_origin":  true,
+    "expected_head_match":  true,
+    "command_results":  [
+                            {
+                                "name":  "rev_parse_head",
+                                "exit":  0,
+                                "output":  "768105bcddf6a6a54d7583fa2ac42bc82b2bd6f3\r\n"
+                            },
+                            {
+                                "name":  "show_head",
+                                "exit":  0,
+                                "output":  "768105bcddf6a6a54d7583fa2ac42bc82b2bd6f3\r\nd0926886333a520fe3aa766f3cb9b4f428cfadd3\r\nProfessionalize README benchmarks naming and MIT license\r\n"
+                            },
+                            {
+                                "name":  "status_short",
+                                "exit":  0,
+                                "output":  ""
+                            },
+                            {
+                                "name":  "status_sb",
+                                "exit":  0,
+                                "output":  "## main...origin/main\r\n"
+                            },
+                            {
+                                "name":  "branch",
+                                "exit":  0,
+                                "output":  "main\r\n"
+                            },
+                            {
+                                "name":  "remote",
+                                "exit":  0,
+                                "output":  "origin\thttps://github.com/demisuga01-lab/wellfriendpdf.git (fetch)\r\norigin\thttps://github.com/demisuga01-lab/wellfriendpdf.git (push)\r\n"
+                            },
+                            {
+                                "name":  "log",
+                                "exit":  0,
+                                "output":  "768105b Professionalize README benchmarks naming and MIT license\r\nd092688 Rewrite README from true editing benchmarks and evidence\r\nd346915 Close combined prompt 36 true editing validation enterprise release\r\nf634906 Close combined prompt 35 accessibility redaction sanitization\r\nddca571 Close combined prompt 34 tables math ocr forms annotations\r\n100da3c Close combined prompt 34 tables math ocr forms annotations\r\nd9338d0 Close combined prompt 33 geometric semantic reflow\r\n7b33a77 Close combined prompt 32 scene transactions fonts shaping\r\nd771ef3 Close combined prompt 31 provenance operator editing\r\n2af40fe Close combined prompt 30 performance security api release readiness\r\n123bc01 Close combined prompt 29 malformed corpus differential crash coverage\r\n77a09bb Close combined prompt 28 long codec renderer writer fuzz safedocs\r\n"
+                            },
+                            {
+                                "name":  "diff_stat",
+                                "exit":  0,
+                                "output":  ""
+                            },
+                            {
+                                "name":  "diff_check",
+                                "exit":  0,
+                                "output":  ""
+                            },
+                            {
+                                "name":  "origin_main",
+                                "exit":  0,
+                                "output":  "768105bcddf6a6a54d7583fa2ac42bc82b2bd6f3\r\n"
+                            }
+                        ]
+}

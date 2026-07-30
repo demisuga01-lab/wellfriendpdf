@@ -31,11 +31,31 @@ Developers use the SDK to build:
 | Standards and accessibility | Internal PDF/A, PDF/UA, PDF/X, WTPDF-oriented checks and accessibility repair helpers; external certification is not claimed. |
 | Bindings | Rust core plus CLI, Python, C ABI, WASM, .NET, Maven, Gradle, and server surfaces over the same engine path. |
 
+## Choose an execution mode
+
+Wellfriend exposes exactly two public runtime modes. The mode changes scheduling, cache sizing, provider routing, and optional acceleration policy; it does not change document meaning or silently reduce correctness.
+
+| Mode | Best for | Hardware | GPU/LLM | Behavior |
+|---|---|---|---|---|
+| Standard | Production, self-hosting, APIs, desktops, ordinary servers | 2 vCPU / 6 GB minimum; 4 vCPU / 8 GB recommended | Not required | Complete adaptive CPU engine with bounded memory, tiling/banding, disk spill, copy-through writing, retained display lists, and safe scaling. |
+| Research | Controlled R&D and enterprise experimentation | Standard baseline plus capacity for configured accelerators, models, providers, or workers | Optional | Standard plus opt-in GPU/model/provider/ensemble/distributed contracts. Missing accelerators fall back to Standard and are reported inactive. |
+
+Standard is the default. On a 2 vCPU / 6 GB host it reduces concurrency, cache size, prefetch, and speculative work while preserving the supported feature set. On larger hosts it admits more concurrent documents, pages, render jobs, OCR regions, validation tasks, and server requests within configured limits. Research is not the default recommendation for an ordinary commercial website; it needs capacity planning, tenant policy, monitoring, provider budgets, data-governance rules, and deliberate fallback testing.
+
+```bash
+wellfriendpdf --mode standard capabilities
+wellfriendpdf --mode research runtime-config --effective
+wellfriendpdf providers list
+```
+
+Runtime configuration is shared across Rust, CLI, Python, C ABI, WASM, .NET, Java, and server APIs. Server operators can force Standard, disable external providers, require local OCR, cap memory/concurrency/provider spend, and expose safe capability reports without serializing secrets.
+
 ## Quick start
 
 ```bash
 cargo build -p wellfriendpdf-cli --release
 ./target/release/wellfriendpdf --help
+./target/release/wellfriendpdf --mode standard capabilities
 ./target/release/wellfriendpdf info input.pdf
 ./target/release/wellfriendpdf extract-text input.pdf --structured --format json
 ```

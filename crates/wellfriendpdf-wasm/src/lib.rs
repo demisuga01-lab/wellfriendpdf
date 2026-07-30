@@ -520,6 +520,24 @@ mod wasm_api {
             sdk::feature_report_json().map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = runtimeCapabilitiesJson)]
+        pub fn runtime_capabilities_json(config_json: Option<String>) -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::runtime_capabilities_json(config_json.as_deref()).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = runtimeConfigJson)]
+        pub fn runtime_config_json(config_json: Option<String>) -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::runtime_effective_config_json(config_json.as_deref()).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = ocrProviderMatrixJson)]
+        pub fn ocr_provider_matrix_json() -> Result<String, JsValue> {
+            install_panic_hook();
+            sdk::ocr_provider_matrix_json().map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = writer_historyHistoryReportJson)]
         pub fn writer_history_history_report_json() -> Result<String, JsValue> {
             install_panic_hook();

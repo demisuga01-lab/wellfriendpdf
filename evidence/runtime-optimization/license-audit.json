@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "pass",
+  "license": "MIT",
+  "validation": {
+    "stage": "static-validation",
+    "exit": 0,
+    "sha256": "667b47b1ae02463f38682ae3784253440bf9a253e401abde8a56aa418c68a273"
+  },
+  "prohibited_dependencies_added": [],
+  "gpl_agpl_dependencies_added_to_production_tree": [],
+  "prohibited_tools_not_added": [
+    "Ghostscript",
+    "OCRmyPDF",
+    "pngquant",
+    "libimagequant"
+  ],
+  "large_model_weights_bundled": false,
+  "proprietary_sdk_binaries_bundled": false,
+  "private_corpora_bundled": false
+}

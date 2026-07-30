@@ -43,6 +43,13 @@ fn long_version() -> &'static str {
     after_help = "Command groups:\n  Extraction: extract-text, extract-tables, extract-fields, extract-images, parse, document-model, chunk\n  Rendering/conversion: render, render-compare, pdf-to-jpg, image-to-pdf, pdf-to-xlsx, pdf-to-pptx, pdf-to-docx, xlsx-to-pdf, pptx-to-pdf, docx-to-pdf, to-html\n  Structure/editing: merge, split, extract-pages, organize, rotate, watermark, add-page-numbers, optimize, repair, linearize\n  Info/security: info, parser-report, security-report, signature-report, sanitize, validate, canonicalize, fonts, detach, verify-sig, encrypt, decrypt, analyze, eval-score\n\nExamples:\n  wellfriendpdf extract-text input.pdf --structured --format json\n  wellfriendpdf parser-report input.pdf --mode audit\n  wellfriendpdf pdf-to-jpg input.pdf --out-dir pages --dpi 150\n  wellfriendpdf image-to-pdf img1.jpg img2.png --out combined.pdf\n  wellfriendpdf pdf-to-xlsx report.pdf --out report.xlsx\n  wellfriendpdf pdf-to-pptx deck.pdf --out deck.pptx\n  wellfriendpdf pdf-to-docx report.pdf --out report.docx\n  wellfriendpdf xlsx-to-pdf workbook.xlsx --out workbook.pdf\n  wellfriendpdf watermark input.pdf --text CONFIDENTIAL --out out.pdf"
 )]
 struct Cli {
+    /// Public execution mode. Standard is the default; Research enables only
+    /// operator-configured optional accelerators/providers and falls back safely.
+    #[arg(long, global = true, value_name = "standard|research")]
+    mode: Option<String>,
+    /// Runtime configuration file (JSON or the documented TOML-like subset).
+    #[arg(long = "runtime-config-file", global = true, value_name = "PATH")]
+    runtime_config_file: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -116,6 +123,43 @@ impl fmt::Display for CliError {
 
 impl Error for CliError {}
 
+#[derive(Parser)]
+struct RuntimeReportArgs {
+    /// Write JSON to this path instead of stdout
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+struct RuntimeConfigArgs {
+    /// Emit the immutable effective configuration after host and admin policy
+    #[arg(long)]
+    effective: bool,
+    /// Validate the requested configuration and report the effective mode
+    #[arg(long)]
+    validate: bool,
+    /// Write JSON to this path instead of stdout
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Parser)]
+struct ProvidersArgs {
+    #[command(subcommand)]
+    command: ProviderCommand,
+    /// Write JSON to this path instead of stdout
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Subcommand)]
+enum ProviderCommand {
+    /// List provider contracts and configured availability
+    List,
+    /// Validate provider configuration and secret-hygiene posture
+    Check,
+}
+
 fn usage_error(message: impl Into<String>) -> Box<dyn Error> {
     Box::new(CliError::new(CliExitCode::Usage, message))
 }
@@ -176,6 +220,12 @@ fn classify_error(err: &(dyn Error + 'static)) -> CliExitCode {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Report runtime capabilities for Standard and Research modes
+    Capabilities(RuntimeReportArgs),
+    /// Validate or display the effective runtime configuration
+    RuntimeConfig(RuntimeConfigArgs),
+    /// List or check configured OCR/provider backends
+    Providers(ProvidersArgs),
     /// Extract plain text from a PDF
     ExtractText(ExtractTextArgs),
     /// Detect and extract tables from a PDF as CSV or JSON (no Poppler equivalent)
@@ -3543,7 +3593,13 @@ fn run_cli() -> ExitCode {
 }
 
 fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
+    let runtime_config_json = runtime_config_json_from_cli(&cli)?;
     match cli.command {
+        Commands::Capabilities(args) => {
+            run_runtime_capabilities(args, runtime_config_json.as_deref())
+        }
+        Commands::RuntimeConfig(args) => run_runtime_config(args, runtime_config_json.as_deref()),
+        Commands::Providers(args) => run_runtime_providers(args, runtime_config_json.as_deref()),
         Commands::ExtractText(args) => run_extract_text(args),
         Commands::ExtractTables(args) => run_extract_tables(args),
         Commands::Parse(args) => run_parse(args),
@@ -3795,6 +3851,55 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::Repair(args) => run_repair(args),
         Commands::Linearize(args) => run_linearize(args),
     }
+}
+
+fn runtime_config_json_from_cli(cli: &Cli) -> Result<Option<String>, Box<dyn Error>> {
+    let mut cfg = match &cli.runtime_config_file {
+        Some(path) => wellfriendpdf_engine::RuntimeConfig::from_path(path)?,
+        None => wellfriendpdf_engine::RuntimeConfig::standard(),
+    };
+    if let Some(env_cfg) = wellfriendpdf_engine::RuntimeConfig::from_env()? {
+        cfg = env_cfg;
+    }
+    if let Some(mode) = &cli.mode {
+        cfg.mode = mode.parse::<wellfriendpdf_engine::ExecutionMode>()?;
+    }
+    cfg.validate()?;
+    Ok(Some(serde_json::to_string(&cfg)?))
+}
+
+fn run_runtime_capabilities(
+    args: RuntimeReportArgs,
+    config_json: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let json = wellfriendpdf_engine::sdk::runtime_capabilities_json(config_json)?;
+    write_output_optional(&args.output, &pretty_json(&json)?)
+}
+
+fn run_runtime_config(
+    args: RuntimeConfigArgs,
+    config_json: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let json = if args.validate {
+        wellfriendpdf_engine::sdk::runtime_validate_config_json(config_json)?
+    } else {
+        wellfriendpdf_engine::sdk::runtime_effective_config_json(config_json)?
+    };
+    let _ = args.effective;
+    write_output_optional(&args.output, &pretty_json(&json)?)
+}
+
+fn run_runtime_providers(
+    args: ProvidersArgs,
+    config_json: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    let json = match args.command {
+        ProviderCommand::List => wellfriendpdf_engine::sdk::ocr_provider_matrix_json()?,
+        ProviderCommand::Check => {
+            wellfriendpdf_engine::sdk::runtime_validate_config_json(config_json)?
+        }
+    };
+    write_output_optional(&args.output, &pretty_json(&json)?)
 }
 
 fn run_extract_text(args: ExtractTextArgs) -> Result<(), Box<dyn Error>> {

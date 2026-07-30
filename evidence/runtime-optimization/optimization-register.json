@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "adoption_policy": "retain only when it improves the workload, enables the low-resource contract, or provides isolated Research infrastructure without degrading Standard",
+  "entries": [
+    {"optimization": "two_public_runtime_modes", "classification": "retained_default", "evidence": "ExecutionMode standard/research"},
+    {"optimization": "adaptive_resource_governor", "classification": "retained_default", "evidence": "ResourceGovernor"},
+    {"optimization": "shared_memory_coordinator", "classification": "retained_default", "evidence": "MemoryCoordinator"},
+    {"optimization": "standard_2vcpu_6gb_profile", "classification": "retained_default", "evidence": "HostRuntimeProfile::minimum_standard"},
+    {"optimization": "recommended_4vcpu_8gb_profile", "classification": "retained_default", "evidence": "HostRuntimeProfile::recommended_standard"},
+    {"optimization": "ocr_provider_family_contracts", "classification": "retained_default", "evidence": "OcrRuntimeProvider and provider matrix"},
+    {"optimization": "research_gpu_model_provider_scaffolding", "classification": "retained_research_only", "evidence": "ResearchConfig and CapabilityState"},
+    {"optimization": "simd_parser_renderer_dispatch", "classification": "retained_adaptive", "evidence": "runtime config plus existing renderer/parser feature reports"},
+    {"optimization": "pgo_lto_allocator_ab", "classification": "unavailable", "evidence": "requires release-candidate measurement task"},
+    {"optimization": "prohibited_external_tools", "classification": "incompatible_license", "evidence": "license audit rejects prohibited dependencies"}
+  ]
+}

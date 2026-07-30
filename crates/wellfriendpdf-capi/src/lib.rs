@@ -2582,6 +2582,78 @@ unsafe fn report_output_impl(
     })
 }
 
+/// Effective runtime configuration JSON. `config_json` may be NULL or a
+/// NUL-terminated JSON/TOML-like runtime configuration string. The returned
+/// string is owned by the caller and must be freed with
+/// `wellfriendpdf_string_free`.
+///
+/// # Safety
+/// `out_json`/`error_out` must be writable when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_runtime_effective_config_json(
+    config_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let config = unsafe { optional_c_string(config_json) };
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let config = config.map_err(|err| err.to_string())?;
+        let json = wellfriendpdf(sdk::runtime_effective_config_json(config.as_deref()))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Runtime capability report JSON for the two public modes.
+///
+/// # Safety
+/// `out_json`/`error_out` must be writable when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_runtime_capabilities_json(
+    config_json: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    let config = unsafe { optional_c_string(config_json) };
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let config = config.map_err(|err| err.to_string())?;
+        let json = wellfriendpdf(sdk::runtime_capabilities_json(config.as_deref()))?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// OCR provider-family matrix JSON.
+///
+/// # Safety
+/// `out_json`/`error_out` must be writable when non-null.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_ocr_provider_matrix_json(
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let json = wellfriendpdf(sdk::ocr_provider_matrix_json())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
 /// Security report JSON. See `report_json_impl` for ownership.
 ///
 /// # Safety
