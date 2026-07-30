@@ -1,0 +1,239 @@
+﻿{
+    "schema_version":  "wellfriend.real_5000_benchmark.v1",
+    "created_utc":  "2026-07-30T10:14:58Z",
+    "wellfriend_commit":  "2487a008e8d01b3ce1527d6554c4defa9339b086",
+    "vps_result_dir":  "/home/demisuga01/wellpdf/results/real-5000-comparator-20260730T082710Z",
+    "vps_corpus_dir":  "/home/demisuga01/wellpdf/corpus/real-5000-20260730T082710Z",
+    "corpus":  {
+                   "source":  "arXiv public PDF URLs",
+                   "kind":  "real external downloaded PDFs, not generated fixtures",
+                   "file_count":  5044,
+                   "pdf_magic_count":  5044,
+                   "duplicate_sha256_count":  0,
+                   "sha_match_count":  5044,
+                   "byte_match_count":  5044,
+                   "total_bytes":  17059245901,
+                   "min_bytes":  48500,
+                   "max_bytes":  87230322,
+                   "qpdf_page_count_success":  5036,
+                   "qpdf_page_count_failures":  8,
+                   "total_pages_qpdf":  116784
+               },
+    "benchmark_rows":  [
+                           {
+                               "failures":  2,
+                               "median_sec":  0.06356619999860413,
+                               "notes":  [
+
+                                         ],
+                               "p95_sec":  0.1637128290021792,
+                               "runs":  5044,
+                               "successes":  5042,
+                               "task":  "extract_text",
+                               "tool":  "wellfriend",
+                               "total_sec":  327.70556742011104
+                           },
+                           {
+                               "failures":  2,
+                               "median_sec":  0.11371190298814327,
+                               "notes":  [
+
+                                         ],
+                               "p95_sec":  0.36417199799325317,
+                               "runs":  5044,
+                               "successes":  5042,
+                               "task":  "parse_json",
+                               "tool":  "wellfriend",
+                               "total_sec":  831.8794301208109
+                           },
+                           {
+                               "failures":  3,
+                               "median_sec":  0.1637963990215212,
+                               "notes":  [
+
+                                         ],
+                               "p95_sec":  0.5144116970477626,
+                               "runs":  5044,
+                               "successes":  5041,
+                               "task":  "render_first_page_72",
+                               "tool":  "wellfriend",
+                               "total_sec":  1268.1173998332815
+                           },
+                           {
+                               "failures":  133,
+                               "median_sec":  0.0638554530160036,
+                               "notes":  [
+
+                                         ],
+                               "p95_sec":  0.6148804900003597,
+                               "runs":  5044,
+                               "successes":  4911,
+                               "task":  "structural_check",
+                               "tool":  "qpdf",
+                               "total_sec":  813.9994793990627
+                           },
+                           {
+                               "failures":  0,
+                               "median_sec":  0.06386738599394448,
+                               "notes":  [
+
+                                         ],
+                               "p95_sec":  0.26409474201500416,
+                               "runs":  5044,
+                               "successes":  5044,
+                               "task":  "extract_text",
+                               "tool":  "poppler",
+                               "total_sec":  586.1408856053604
+                           },
+                           {
+                               "failures":  0,
+                               "median_sec":  0.11379913400742225,
+                               "notes":  [
+
+                                         ],
+                               "p95_sec":  0.16420250397641212,
+                               "runs":  5044,
+                               "successes":  5044,
+                               "task":  "render_first_page_72",
+                               "tool":  "poppler",
+                               "total_sec":  682.1929827239364
+                           },
+                           {
+                               "failures":  3,
+                               "median_sec":  0.16399149197968654,
+                               "notes":  [
+
+                                         ],
+                               "p95_sec":  0.5141300840186886,
+                               "runs":  5044,
+                               "successes":  5041,
+                               "task":  "extract_text",
+                               "tool":  "mupdf",
+                               "total_sec":  1248.5474696218153
+                           },
+                           {
+                               "failures":  2,
+                               "median_sec":  0.031462037994060665,
+                               "notes":  [
+
+                                         ],
+                               "p95_sec":  0.06358853302663192,
+                               "runs":  5044,
+                               "successes":  5042,
+                               "task":  "render_first_page_72",
+                               "tool":  "mupdf",
+                               "total_sec":  179.39308717974927
+                           },
+                           {
+                               "failures":  0,
+                               "median_sec":  0.0017515820218250155,
+                               "p95_sec":  0.00469196803169325,
+                               "runs":  5044,
+                               "successes":  5044,
+                               "task":  "open_pages",
+                               "tool":  "pikepdf",
+                               "total_sec":  11.423742591112386
+                           },
+                           {
+                               "failures":  0,
+                               "median_sec":  0.006046750495443121,
+                               "p95_sec":  0.012925237999297678,
+                               "runs":  5044,
+                               "successes":  5044,
+                               "task":  "open_extract_first_page",
+                               "tool":  "pymupdf",
+                               "total_sec":  35.526381028757896
+                           },
+                           {
+                               "failures":  0,
+                               "median_sec":  0.007066635007504374,
+                               "notes":  [
+                                             "pypdfium2 wrapper around bundled PDFium build"
+                                         ],
+                               "p95_sec":  0.023571847996208817,
+                               "runs":  5044,
+                               "successes":  5044,
+                               "task":  "open_render_first_page",
+                               "tool":  "pypdfium2",
+                               "total_sec":  49.97435619379394
+                           },
+                           {
+                               "failures":  0,
+                               "median_sec":  0.09107979951659217,
+                               "p95_sec":  0.1734064890188165,
+                               "runs":  5044,
+                               "successes":  5044,
+                               "task":  "extract_first_page",
+                               "tool":  "pdfplumber",
+                               "total_sec":  528.8798226321233
+                           },
+                           {
+                               "failures":  0,
+                               "median_sec":  0.004654446500000631,
+                               "p95_sec":  0.030567692000000535,
+                               "runs":  5044,
+                               "successes":  5044,
+                               "task":  "open_first_page",
+                               "tool":  "pdfjs",
+                               "total_sec":  45.039337177
+                           },
+                           {
+                               "failures":  0,
+                               "runs":  5044,
+                               "successes":  5044,
+                               "task":  "open_pages",
+                               "tool":  "pdfbox",
+                               "total_sec":  28.670450308
+                           },
+                           {
+                               "failures":  3,
+                               "median_sec":  0.015497466461965814,
+                               "p95_sec":  0.11361760599538684,
+                               "runs":  5044,
+                               "successes":  5041,
+                               "task":  "validate",
+                               "tool":  "pdfcpu",
+                               "total_sec":  172.09866986144334
+                           },
+                           {
+                               "exit":  9,
+                               "failures":  5044,
+                               "notes":  [
+                                             "single-directory PDF/A validation run over real corpus; nonzero tool exit means non-PDF/A or failed inputs, not benchmark harness failure"
+                                         ],
+                               "observed_report_markers":  0,
+                               "runs":  5044,
+                               "stderr_sha256":  "0195dc7b5b8f7b74f0c879dc4d8f2a4c1691cbb4c91ef75c4f747c3210e68070",
+                               "stderr_size":  3960735,
+                               "stdout_sha256":  "ba4f3a31ef178222d1214030990b417ce96198ae2d21a3fd3b362367f60f01a7",
+                               "stdout_size":  9868417,
+                               "successes":  0,
+                               "task":  "pdfa_validate_directory",
+                               "tool":  "verapdf"
+                           },
+                           {
+                               "failures":  1,
+                               "median_sec":  0.016663184971548617,
+                               "p95_sec":  0.03956742101581767,
+                               "runs":  5044,
+                               "signature_field_total":  0,
+                               "successes":  5043,
+                               "task":  "signature_fields",
+                               "tool":  "pyhanko",
+                               "total_sec":  98.76275705330772
+                           }
+                       ],
+    "row_count":  17,
+    "qualifying_5000_row_count":  17,
+    "artifact_hashes":  {
+                            "real-5000-final-evidence.json":  "9fd0e92efd438c927ba266afc82564479c690e8669b6617a1f1ca86e7b9fb408",
+                            "summary.json":  "f0dbc212f271e1189289f7230b0c00bf31f2e32ed32f614f18f12247acec5f27",
+                            "real-corpus-validation.json":  "6752f69130e877a82b188267198ae8ff0a63edca1a155bcb2940a54678ee40bc"
+                        },
+    "notes":  [
+                  "The corpus PDFs were downloaded from public arXiv PDF URLs on the VPS; Python was used for orchestration only.",
+                  "The corpus is large and real but domain-skewed toward academic PDFs.",
+                  "Tool failures are retained as measured outcomes, not hidden or converted to passes.",
+                  "Raw PDFs, raw logs, and per-file sample JSONL are retained only on the VPS and are not committed."
+              ]
+}

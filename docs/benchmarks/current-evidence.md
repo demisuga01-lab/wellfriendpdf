@@ -1,6 +1,12 @@
 # Current benchmark evidence
 
-Benchmarks were run on the validation VPS in release mode with one worker. The committed numbers come from `benchmarks/results/latest/summary.json` and `benchmarks/results/latest/comparator-results.json`.
+Benchmarks were run on the validation VPS. Compact engineering fixtures remain in `benchmarks/results/latest/` and `benchmarks/results/release-candidate/`. A real public 5,044-PDF run is committed in `benchmarks/results/real-5000/real-5000-aggregate.json`.
+
+## Real public corpus
+
+The real corpus contains 5,044 downloaded arXiv PDFs, 17,059,245,901 bytes, and 116,784 qpdf-counted pages across the 5,036 files where qpdf page counting succeeded. The PDFs were downloaded from public URLs and were not generated fixtures.
+
+See `docs/benchmarks/real-5000-results.md` for the measured Wellfriend, qpdf, Poppler, MuPDF, PDFium-wrapper, PDF.js, PDFBox, pdfcpu, veraPDF, and pyHanko rows.
 
 ## Wellfriend measured tasks
 

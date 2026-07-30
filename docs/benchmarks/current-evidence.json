@@ -1,6 +1,14 @@
 {
   "schema_version": "repository_professionalization.current_evidence.v1",
   "status": "benchmark_backed_current_snapshot",
+  "large_real_corpus": {
+    "artifact": "benchmarks/results/real-5000/real-5000-aggregate.json",
+    "corpus_kind": "real_external_arxiv_pdfs_downloaded_by_url_not_generated",
+    "file_count": 5044,
+    "total_bytes": 17059245901,
+    "qpdf_counted_pages": 116784,
+    "measured_tool_rows": 17
+  },
   "wellfriend": {
     "results": [
       {

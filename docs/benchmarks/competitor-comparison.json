@@ -1,6 +1,26 @@
 {
   "schema_version": "repository_professionalization.competitor_comparison.v1",
   "method": "task_specific_no_aggregate_winner",
+  "large_real_corpus": {
+    "artifact": "benchmarks/results/real-5000/real-5000-aggregate.json",
+    "file_count": 5044,
+    "measured_tools": [
+      "wellfriend",
+      "qpdf",
+      "poppler",
+      "mupdf",
+      "pikepdf",
+      "pymupdf",
+      "pypdfium2",
+      "pdfplumber",
+      "pdfjs",
+      "pdfbox",
+      "pdfcpu",
+      "verapdf",
+      "pyhanko"
+    ],
+    "note": "Tool-specific operations differ; no aggregate winner is assigned."
+  },
   "results": [
     {
       "tool": "qpdf",

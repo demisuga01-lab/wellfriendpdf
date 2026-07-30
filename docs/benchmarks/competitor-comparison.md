@@ -1,3 +1,5 @@
 # Competitor comparison
 
-Directly measured in this compact run: Wellfriend Standard, Poppler command-line tools, qpdf structural checks, and available MuPDF/Tesseract inventory where applicable. Commercial SDKs are documentation-only because no licensed benchmark executable was available. PDFium, PDF.js, veraPDF, and pyHanko were not measured in this run.
+Directly measured on the real 5,044-PDF VPS corpus: Wellfriend Standard, qpdf, Poppler, MuPDF, pikepdf, PyMuPDF, pypdfium2/PDFium, pdfplumber, PDF.js, PDFBox, pdfcpu, veraPDF, and pyHanko. Commercial SDKs remain documentation-only because no licensed benchmark executable was available.
+
+The large-corpus evidence is in `benchmarks/results/real-5000/real-5000-aggregate.json` and summarized in `docs/benchmarks/real-5000-results.md`. Wrapper relationships are explicit: pikepdf wraps qpdf, PyMuPDF wraps MuPDF, and pypdfium2 wraps a bundled PDFium build.
