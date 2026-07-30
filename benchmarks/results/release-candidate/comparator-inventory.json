@@ -1,0 +1,120 @@
+{
+  "schema_version": 1,
+  "tools": [
+    {
+      "tool": "qpdf",
+      "available": true,
+      "status": "available",
+      "version": "qpdf version 12.3.2",
+      "path": "/usr/bin/qpdf",
+      "directly_measured": true
+    },
+    {
+      "tool": "pdftoppm",
+      "available": true,
+      "status": "available",
+      "version": "pdftoppm version 26.01.0",
+      "path": "/usr/bin/pdftoppm",
+      "directly_measured": true
+    },
+    {
+      "tool": "pdftotext",
+      "available": true,
+      "status": "available",
+      "version": "pdftotext version 26.01.0",
+      "path": "/usr/bin/pdftotext",
+      "directly_measured": true
+    },
+    {
+      "tool": "mutool",
+      "available": false,
+      "status": "unavailable",
+      "version": null,
+      "directly_measured": false
+    },
+    {
+      "tool": "python3",
+      "available": true,
+      "status": "available",
+      "version": "Python 3.14.4",
+      "path": "/usr/bin/python3",
+      "directly_measured": false
+    },
+    {
+      "tool": "java",
+      "available": true,
+      "status": "available",
+      "version": "openjdk version \"25.0.3\" 2026-04-21",
+      "path": "/usr/bin/java",
+      "directly_measured": false
+    },
+    {
+      "tool": "mvn",
+      "available": true,
+      "status": "available",
+      "version": "\u001b[1mApache Maven 3.9.12\u001b[m",
+      "path": "/usr/bin/mvn",
+      "directly_measured": false
+    },
+    {
+      "tool": "dotnet",
+      "available": true,
+      "status": "available",
+      "version": "10.0.110",
+      "path": "/usr/bin/dotnet",
+      "directly_measured": false
+    },
+    {
+      "tool": "node",
+      "available": true,
+      "status": "available",
+      "version": "v22.22.1",
+      "path": "/usr/bin/node",
+      "directly_measured": false
+    },
+    {
+      "tool": "tesseract",
+      "available": true,
+      "status": "available",
+      "version": "tesseract 5.5.0",
+      "path": "/usr/bin/tesseract",
+      "directly_measured": true
+    },
+    {
+      "tool": "PDFium/pypdfium2",
+      "status": "unavailable",
+      "directly_measured": false,
+      "reason": "not installed in release-candidate window"
+    },
+    {
+      "tool": "PDF.js",
+      "status": "unavailable",
+      "directly_measured": false,
+      "reason": "Node harness not provisioned in release-candidate window"
+    },
+    {
+      "tool": "PDFBox",
+      "status": "available_via_maven_when_requested",
+      "directly_measured": false,
+      "reason": "used as package/runtime check where Maven resolves it"
+    },
+    {
+      "tool": "veraPDF",
+      "status": "unavailable",
+      "directly_measured": false,
+      "reason": "not installed in release-candidate window"
+    },
+    {
+      "tool": "pyHanko",
+      "status": "unavailable",
+      "directly_measured": false,
+      "reason": "not installed in release-candidate window"
+    },
+    {
+      "tool": "commercial SDKs",
+      "status": "documentation_only",
+      "directly_measured": false,
+      "reason": "no licensed benchmark build available"
+    }
+  ]
+}

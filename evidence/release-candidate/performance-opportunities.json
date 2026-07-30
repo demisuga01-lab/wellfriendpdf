@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "status": "tracked",
+  "entries": [
+    {
+      "area": "large_corpus_market_campaign",
+      "recommendation": "Run the preferred 15k-25k PDF campaign before broad public performance marketing."
+    },
+    {
+      "area": "qpdf_structural_failures",
+      "recommendation": "Partition malformed fixture results by source category in future scorecards."
+    }
+  ]
+}

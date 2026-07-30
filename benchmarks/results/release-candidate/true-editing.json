@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "rows": [
+    {
+      "task": "edited_qpdf_check",
+      "tool": "qpdf",
+      "runs": 1,
+      "successes": 1,
+      "failures": 0,
+      "median_sec": 0.009217296028509736,
+      "p95_sec": 0.009217296028509736,
+      "pages_or_files_per_sec": 108.49168746527513
+    },
+    {
+      "task": "source_linked_text_replace",
+      "tool": "wellfriend",
+      "runs": 1,
+      "successes": 1,
+      "failures": 0,
+      "median_sec": 0.013849854993168265,
+      "p95_sec": 0.013849854993168265,
+      "pages_or_files_per_sec": 72.20292201566524
+    }
+  ],
+  "unique_verified_capabilities": [
+    "source-linked edit with qpdf reopen check",
+    "transaction/reflow/redaction coverage from cargo-test-final"
+  ]
+}

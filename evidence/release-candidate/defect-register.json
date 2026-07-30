@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "status": "no_release_blocking_defects_found_in_compact_campaign",
+  "entries": [
+    {
+      "id": "rc-corpus-size",
+      "classification": "validation_limit",
+      "severity": "documented_limit",
+      "status": "documented",
+      "summary": "Large public-corpus targets were not met in this session; compact legal corpus used for release-candidate smoke and README numbers."
+    },
+    {
+      "id": "qpdf-fixture-check-failures",
+      "classification": "corpus_fixture_limit",
+      "severity": "non_blocking",
+      "status": "documented",
+      "summary": "qpdf --check failed on 14 of the first 20 repository fixture inputs; benchmark summary separates qpdf structural check failures from Wellfriend extraction/render success."
+    }
+  ]
+}

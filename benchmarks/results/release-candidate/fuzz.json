@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "status": "pass_existing_fuzz_and_property_smoke",
+  "evidence": "cargo-test-final property/fuzz-like regression tests"
+}

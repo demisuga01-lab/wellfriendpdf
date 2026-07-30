@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "hostname": "instance-20260724-154357",
+  "kernel": "7.0.0-1008-gcp",
+  "result_folder": "/home/demisuga01/wellpdf/results/release-candidate-20260730T061042Z",
+  "source_commit": "b741608b1d865d5fca4f9716a665413dfb9a3f6e"
+}

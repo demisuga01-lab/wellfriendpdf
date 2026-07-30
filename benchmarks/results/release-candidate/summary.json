@@ -1,0 +1,147 @@
+{
+  "schema_version": 1,
+  "mode": "standard",
+  "corpus": {
+    "schema_version": 1,
+    "created_utc": "2026-07-30T00:42:59Z",
+    "file_count": 100,
+    "page_count": 622,
+    "bytes": 9071147,
+    "target_status": "compact_practical_corpus_large_targets_not_met_time_bounded",
+    "constraints": [
+      "remaining session time",
+      "no untrusted random PDFs",
+      "no large public downloads retained in git"
+    ],
+    "manifest_sha256": "8fed7552a0266c9f4fd7279f6e5881be94e1fdb6df08e0455c78a53fe524152f"
+  },
+  "rows": [
+    {
+      "task": "edited_qpdf_check",
+      "tool": "qpdf",
+      "runs": 1,
+      "successes": 1,
+      "failures": 0,
+      "median_sec": 0.009217296028509736,
+      "p95_sec": 0.009217296028509736,
+      "pages_or_files_per_sec": 108.49168746527513
+    },
+    {
+      "task": "extract_text",
+      "tool": "poppler",
+      "runs": 20,
+      "successes": 20,
+      "failures": 0,
+      "median_sec": 0.006595398503122851,
+      "p95_sec": 0.013916305033490062,
+      "pages_or_files_per_sec": 96.08633205443138
+    },
+    {
+      "task": "extract_text",
+      "tool": "wellfriend",
+      "runs": 20,
+      "successes": 20,
+      "failures": 0,
+      "median_sec": 0.002590806019725278,
+      "p95_sec": 0.01896978501463309,
+      "pages_or_files_per_sec": 195.63080296743283
+    },
+    {
+      "task": "parse_info",
+      "tool": "wellfriend",
+      "runs": 20,
+      "successes": 20,
+      "failures": 0,
+      "median_sec": 0.002539974986575544,
+      "p95_sec": 0.0032124389545060694,
+      "pages_or_files_per_sec": 374.27142890935227
+    },
+    {
+      "task": "qpdf_check",
+      "tool": "qpdf",
+      "runs": 20,
+      "successes": 6,
+      "failures": 14,
+      "median_sec": 0.0031145514803938568,
+      "p95_sec": 0.009545577981043607,
+      "pages_or_files_per_sec": 138.71600781139097
+    },
+    {
+      "task": "render_150",
+      "tool": "poppler",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.014918161992682144,
+      "p95_sec": 0.08697590400697663,
+      "pages_or_files_per_sec": 15.848365815862083
+    },
+    {
+      "task": "render_150",
+      "tool": "wellfriend",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.008318091975525022,
+      "p95_sec": 0.027363684959709644,
+      "pages_or_files_per_sec": 13.579416833510793
+    },
+    {
+      "task": "render_300",
+      "tool": "poppler",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.035570410487707704,
+      "p95_sec": 0.26685091597028077,
+      "pages_or_files_per_sec": 5.629687689912523
+    },
+    {
+      "task": "render_300",
+      "tool": "wellfriend",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.028184963011881337,
+      "p95_sec": 0.09097435098374262,
+      "pages_or_files_per_sec": 8.577181881445098
+    },
+    {
+      "task": "render_72",
+      "tool": "poppler",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.008467345993267372,
+      "p95_sec": 0.030388041981495917,
+      "pages_or_files_per_sec": 48.074127623252046
+    },
+    {
+      "task": "render_72",
+      "tool": "wellfriend",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.0038297649880405515,
+      "p95_sec": 0.02332715003285557,
+      "pages_or_files_per_sec": 21.757232562691332
+    },
+    {
+      "task": "source_linked_text_replace",
+      "tool": "wellfriend",
+      "runs": 1,
+      "successes": 1,
+      "failures": 0,
+      "median_sec": 0.013849854993168265,
+      "p95_sec": 0.013849854993168265,
+      "pages_or_files_per_sec": 72.20292201566524
+    }
+  ],
+  "raw_row_count": 130,
+  "result_classification": "compact_release_candidate_measurement",
+  "limits": [
+    "compact corpus; large target not met in available session",
+    "commercial SDKs documentation-only",
+    "PDFium/PDF.js/veraPDF/pyHanko unavailable in this run"
+  ]
+}

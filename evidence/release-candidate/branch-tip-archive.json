@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "branches": [
+    {
+      "name": "main",
+      "scope": "local",
+      "tip": "b741608b1d865d5fca4f9716a665413dfb9a3f6e",
+      "fully_merged_into_main": true
+    },
+    {
+      "name": "release/v1.0-rc",
+      "scope": "local",
+      "tip": "2aec538cab9529651c98f85022d482dec5322f14",
+      "merge_base_with_main": "2aec538cab9529651c98f85022d482dec5322f14",
+      "fully_merged_into_main": true
+    },
+    {
+      "name": "origin/main",
+      "scope": "remote",
+      "tip": "b741608b1d865d5fca4f9716a665413dfb9a3f6e",
+      "fully_merged_into_main": true
+    },
+    {
+      "name": "origin/release/v1.0-rc",
+      "scope": "remote",
+      "tip": "2aec538cab9529651c98f85022d482dec5322f14",
+      "merge_base_with_main": "2aec538cab9529651c98f85022d482dec5322f14",
+      "fully_merged_into_main": true
+    }
+  ]
+}

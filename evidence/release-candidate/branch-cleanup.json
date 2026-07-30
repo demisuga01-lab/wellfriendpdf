@@ -1,0 +1,39 @@
+{
+  "current_head": "b741608b1d865d5fca4f9716a665413dfb9a3f6e",
+  "external_bundle": {
+    "planned_after_final_commit": true,
+    "reason": "bundle must include final release-candidate commit and is created outside the repository after the single final source commit",
+    "tracked_post_cleanup_hash_location": "/home/demisuga01/wellpdf/results/release-candidate-20260730T061042Z/branch-cleanup-final.json"
+  },
+  "local_branches_before": [
+    "main b741608b1d865d5fca4f9716a665413dfb9a3f6e",
+    "release/v1.0-rc 2aec538cab9529651c98f85022d482dec5322f14"
+  ],
+  "origin_main": "b741608b1d865d5fca4f9716a665413dfb9a3f6e",
+  "release_branch_fully_merged_local": true,
+  "release_branch_fully_merged_remote": true,
+  "release_branch_tip": "2aec538cab9529651c98f85022d482dec5322f14",
+  "remote_branches_before": [
+    "origin b741608b1d865d5fca4f9716a665413dfb9a3f6e",
+    "origin/main b741608b1d865d5fca4f9716a665413dfb9a3f6e",
+    "origin/release/v1.0-rc 2aec538cab9529651c98f85022d482dec5322f14"
+  ],
+  "remote_release_branch_tip": "2aec538cab9529651c98f85022d482dec5322f14",
+  "rules": {
+    "delete_local_after_final_commit": [
+      "release/v1.0-rc"
+    ],
+    "delete_remote_after_final_commit": [
+      "origin/release/v1.0-rc"
+    ],
+    "do_not_delete": [
+      "main",
+      "origin/main",
+      "origin/HEAD"
+    ],
+    "keep_branch": "main"
+  },
+  "schema_version": 1,
+  "status": "planned_pre_final_commit_post_commit_deletion_required",
+  "timestamp_utc": "2026-07-30T01:15:00Z"
+}

@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "status": "updated_for_release_candidate",
+  "old_internal_paths_removed_from_hero": true,
+  "numbers_source": "benchmarks/results/release-candidate/summary.json"
+}

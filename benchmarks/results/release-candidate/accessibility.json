@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "status": "pass_via_cargo_test_final_and_prompt36_evidence",
+  "human_review_boundary": "semantic quality still requires human review"
+}

@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "status": "pass_compact_stress",
+  "evidence": "pathological_hardening, jobs_integration, standard-runtime-profiles"
+}

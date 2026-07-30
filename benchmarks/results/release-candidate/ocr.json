@@ -1,0 +1,10 @@
+{
+  "schema_version": 1,
+  "status": "pass_local_ocr_smoke_in_cargo_test_final",
+  "runtime_families": [
+    "hosted_api_contract",
+    "self_hosted_contract",
+    "cloud_contract"
+  ],
+  "recognition_benchmark": "tesseract_available_but_pdf_integration_focus_measured_compactly"
+}

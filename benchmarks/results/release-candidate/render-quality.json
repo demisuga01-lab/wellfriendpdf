@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "status": "reference_smoke_passed_no_catastrophic_failures_observed",
+  "method": "command success plus existing cargo-test rendering quality suite",
+  "quality_failures": 0
+}

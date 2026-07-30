@@ -1,0 +1,65 @@
+{
+  "schema_version": 1,
+  "rows": [
+    {
+      "task": "render_150",
+      "tool": "poppler",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.014918161992682144,
+      "p95_sec": 0.08697590400697663,
+      "pages_or_files_per_sec": 15.848365815862083
+    },
+    {
+      "task": "render_150",
+      "tool": "wellfriend",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.008318091975525022,
+      "p95_sec": 0.027363684959709644,
+      "pages_or_files_per_sec": 13.579416833510793
+    },
+    {
+      "task": "render_300",
+      "tool": "poppler",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.035570410487707704,
+      "p95_sec": 0.26685091597028077,
+      "pages_or_files_per_sec": 5.629687689912523
+    },
+    {
+      "task": "render_300",
+      "tool": "wellfriend",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.028184963011881337,
+      "p95_sec": 0.09097435098374262,
+      "pages_or_files_per_sec": 8.577181881445098
+    },
+    {
+      "task": "render_72",
+      "tool": "poppler",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.008467345993267372,
+      "p95_sec": 0.030388041981495917,
+      "pages_or_files_per_sec": 48.074127623252046
+    },
+    {
+      "task": "render_72",
+      "tool": "wellfriend",
+      "runs": 8,
+      "successes": 8,
+      "failures": 0,
+      "median_sec": 0.0038297649880405515,
+      "p95_sec": 0.02332715003285557,
+      "pages_or_files_per_sec": 21.757232562691332
+    }
+  ]
+}

@@ -1,0 +1,1045 @@
+{
+  "schema_version": 1,
+  "rows": [
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0033641260233707726,
+      "exit": 0,
+      "stdout_bytes": 578,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002939798985607922,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.0075893140165135264,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.003389904974028468,
+      "exit": 3,
+      "stdout_bytes": 167,
+      "stderr_bytes": 230
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0027351019671186805,
+      "exit": 0,
+      "stdout_bytes": 577,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.00251913903048262,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.0066415430046617985,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0021422739955596626,
+      "exit": 3,
+      "stdout_bytes": 170,
+      "stderr_bytes": 233
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0026537899975664914,
+      "exit": 0,
+      "stdout_bytes": 577,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.0026532990159466863,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006863604998216033,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0019573159515857697,
+      "exit": 3,
+      "stdout_bytes": 166,
+      "stderr_bytes": 229
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0024942209711298347,
+      "exit": 0,
+      "stdout_bytes": 577,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.0024909059866331518,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.0062826540088281035,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.002951016998849809,
+      "exit": 3,
+      "stdout_bytes": 171,
+      "stderr_bytes": 234
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0024890730273909867,
+      "exit": 0,
+      "stdout_bytes": 763,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.01896978501463309,
+      "exit": 0,
+      "stdout_bytes": 353,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.013916305033490062,
+      "exit": 0,
+      "stdout_bytes": 258,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.004212599014863372,
+      "exit": 3,
+      "stdout_bytes": 163,
+      "stderr_bytes": 251
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0028144820244051516,
+      "exit": 0,
+      "stdout_bytes": 577,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002799950016196817,
+      "exit": 0,
+      "stdout_bytes": 4,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006849093013443053,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0021985379862599075,
+      "exit": 3,
+      "stdout_bytes": 160,
+      "stderr_bytes": 223
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0030168050434440374,
+      "exit": 0,
+      "stdout_bytes": 787,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.0046394390519708395,
+      "exit": 0,
+      "stdout_bytes": 2903,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.010962272994220257,
+      "exit": 0,
+      "stdout_bytes": 2844,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.009545577981043607,
+      "exit": 0,
+      "stdout_bytes": 265,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.002657976991031319,
+      "exit": 0,
+      "stdout_bytes": 577,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002590986026916653,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006422523991204798,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0029498450458049774,
+      "exit": 0,
+      "stdout_bytes": 266,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0024408409954048693,
+      "exit": 0,
+      "stdout_bytes": 577,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002528211975004524,
+      "exit": 0,
+      "stdout_bytes": 4,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006162123056128621,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0028979170019738376,
+      "exit": 3,
+      "stdout_bytes": 162,
+      "stderr_bytes": 225
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.002530685975216329,
+      "exit": 0,
+      "stdout_bytes": 577,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002590626012533903,
+      "exit": 0,
+      "stdout_bytes": 13,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006228572980035096,
+      "exit": 0,
+      "stdout_bytes": 14,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.002962452999781817,
+      "exit": 0,
+      "stdout_bytes": 268,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0024823640123941004,
+      "exit": 0,
+      "stdout_bytes": 666,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.0025168859865516424,
+      "exit": 0,
+      "stdout_bytes": 4,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.0061293040052987635,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0030095839756540954,
+      "exit": 3,
+      "stdout_bytes": 176,
+      "stderr_bytes": 239
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0024940610164776444,
+      "exit": 0,
+      "stdout_bytes": 666,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002438477997202426,
+      "exit": 0,
+      "stdout_bytes": 4,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006549254001583904,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0020301759941503406,
+      "exit": 3,
+      "stdout_bytes": 181,
+      "stderr_bytes": 244
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0024099849979393184,
+      "exit": 0,
+      "stdout_bytes": 666,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002475754008628428,
+      "exit": 0,
+      "stdout_bytes": 4,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006112959003075957,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0019346619956195354,
+      "exit": 3,
+      "stdout_bytes": 172,
+      "stderr_bytes": 235
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0023995389929041266,
+      "exit": 0,
+      "stdout_bytes": 607,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002520380017813295,
+      "exit": 0,
+      "stdout_bytes": 4,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006046119029633701,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.001939148991368711,
+      "exit": 3,
+      "stdout_bytes": 169,
+      "stderr_bytes": 232
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.002480280993040651,
+      "exit": 0,
+      "stdout_bytes": 607,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002506529970560223,
+      "exit": 0,
+      "stdout_bytes": 4,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006135153002105653,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0030306149856187403,
+      "exit": 3,
+      "stdout_bytes": 177,
+      "stderr_bytes": 240
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0025978070334531367,
+      "exit": 0,
+      "stdout_bytes": 661,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002631296985782683,
+      "exit": 0,
+      "stdout_bytes": 4,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006745017017237842,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0021778559894300997,
+      "exit": 3,
+      "stdout_bytes": 162,
+      "stderr_bytes": 226
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.002519519010093063,
+      "exit": 0,
+      "stdout_bytes": 660,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.0024729000288061798,
+      "exit": 0,
+      "stdout_bytes": 4,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006081982981413603,
+      "exit": 0,
+      "stdout_bytes": 1,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0030389389721676707,
+      "exit": 3,
+      "stdout_bytes": 164,
+      "stderr_bytes": 227
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0030947920167818666,
+      "exit": 0,
+      "stdout_bytes": 671,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.034132108034100384,
+      "exit": 0,
+      "stdout_bytes": 78032,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.07243194797774777,
+      "exit": 0,
+      "stdout_bytes": 82972,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.02234744100132957,
+      "exit": 0,
+      "stdout_bytes": 267,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0032124389545060694,
+      "exit": 0,
+      "stdout_bytes": 763,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.002920520957559347,
+      "exit": 0,
+      "stdout_bytes": 106,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.007147300988435745,
+      "exit": 0,
+      "stdout_bytes": 107,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.0032666499610058963,
+      "exit": 0,
+      "stdout_bytes": 262,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "parse_info",
+      "tool": "wellfriend",
+      "seconds": 0.0025492639979347587,
+      "exit": 0,
+      "stdout_bytes": 763,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "wellfriend",
+      "seconds": 0.0028963939985260367,
+      "exit": 0,
+      "stdout_bytes": 301,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "extract_text",
+      "tool": "poppler",
+      "seconds": 0.006849104014690965,
+      "exit": 0,
+      "stdout_bytes": 294,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.002181872958317399,
+      "exit": 0,
+      "stdout_bytes": 263,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "wellfriend",
+      "seconds": 0.002683516009710729,
+      "exit": 0,
+      "stdout_bytes": 142,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "poppler",
+      "seconds": 0.00858971499837935,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "wellfriend",
+      "seconds": 0.0028998799971304834,
+      "exit": 0,
+      "stdout_bytes": 142,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "poppler",
+      "seconds": 0.007567360997200012,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "wellfriend",
+      "seconds": 0.0026993490173481405,
+      "exit": 0,
+      "stdout_bytes": 142,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "poppler",
+      "seconds": 0.007355834008194506,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "wellfriend",
+      "seconds": 0.002762194024398923,
+      "exit": 0,
+      "stdout_bytes": 142,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "poppler",
+      "seconds": 0.007208343013189733,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "wellfriend",
+      "seconds": 0.02332715003285557,
+      "exit": 0,
+      "stdout_bytes": 142,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "poppler",
+      "seconds": 0.030388041981495917,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "wellfriend",
+      "seconds": 0.004805428034160286,
+      "exit": 0,
+      "stdout_bytes": 142,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "poppler",
+      "seconds": 0.01774691097671166,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "render_72",
+      "tool": "wellfriend",
+      "seconds": 0.32375665503786877,
+      "exit": 0,
+      "stdout_bytes": 142,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "poppler",
+      "seconds": 0.07920849299989641,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "wellfriend",
+      "seconds": 0.00475964997895062,
+      "exit": 0,
+      "stdout_bytes": 142,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_72",
+      "tool": "poppler",
+      "seconds": 0.008344976988155395,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "wellfriend",
+      "seconds": 0.0033034749794751406,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "poppler",
+      "seconds": 0.011022562975995243,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "wellfriend",
+      "seconds": 0.0032241559820249677,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "poppler",
+      "seconds": 0.008985036984086037,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "wellfriend",
+      "seconds": 0.003268031985498965,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "poppler",
+      "seconds": 0.010402023035567254,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "wellfriend",
+      "seconds": 0.003138117026537657,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "poppler",
+      "seconds": 0.010140330996364355,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "wellfriend",
+      "seconds": 0.027363684959709644,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "poppler",
+      "seconds": 0.08697590400697663,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "wellfriend",
+      "seconds": 0.013332708971574903,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "poppler",
+      "seconds": 0.06904509797459468,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "render_150",
+      "tool": "wellfriend",
+      "seconds": 0.5171644359943457,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "poppler",
+      "seconds": 0.2893991890014149,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "wellfriend",
+      "seconds": 0.01833230903139338,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_150",
+      "tool": "poppler",
+      "seconds": 0.018813761009369045,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "wellfriend",
+      "seconds": 0.009575162956025451,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "poppler",
+      "seconds": 0.033599408983718604,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "wellfriend",
+      "seconds": 0.012443365005310625,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "poppler",
+      "seconds": 0.03084015002241358,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "wellfriend",
+      "seconds": 0.012930225988384336,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "poppler",
+      "seconds": 0.03450462699402124,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "wellfriend",
+      "seconds": 0.009185288043227047,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "poppler",
+      "seconds": 0.03487872797995806,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "wellfriend",
+      "seconds": 0.09097435098374262,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "poppler",
+      "seconds": 0.26685091597028077,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "wellfriend",
+      "seconds": 0.04343970003537834,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "poppler",
+      "seconds": 0.23110810201615095,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 66
+    },
+    {
+      "name": "render_300",
+      "tool": "wellfriend",
+      "seconds": 0.7078671109629795,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "poppler",
+      "seconds": 0.7529939509695396,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "wellfriend",
+      "seconds": 0.04629207804100588,
+      "exit": 0,
+      "stdout_bytes": 144,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "render_300",
+      "tool": "poppler",
+      "seconds": 0.03626209299545735,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "source_linked_text_replace",
+      "tool": "wellfriend",
+      "seconds": 0.013849854993168265,
+      "exit": 0,
+      "stdout_bytes": 0,
+      "stderr_bytes": 0
+    },
+    {
+      "name": "edited_qpdf_check",
+      "tool": "qpdf",
+      "seconds": 0.009217296028509736,
+      "exit": 0,
+      "stdout_bytes": 223,
+      "stderr_bytes": 0
+    }
+  ]
+}

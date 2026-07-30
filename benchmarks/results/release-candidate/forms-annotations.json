@@ -1,0 +1,5 @@
+{
+  "schema_version": 1,
+  "status": "pass_via_cargo_test_final_and_cli_surface",
+  "evidence": "cargo-test-final plus annotations/forms commands"
+}

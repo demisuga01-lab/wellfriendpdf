@@ -1,0 +1,24 @@
+name: release-candidate-consistency
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  consistency:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Rust format check
+        run: cargo fmt --all --check
+      - name: README benchmark consistency
+        run: python3 scripts/release_candidate_consistency.py
+      - name: License and naming smoke
+        run: |
+          test -f LICENSE
+          grep -q "MIT License" LICENSE
+          grep -q "standard" README.md
+          grep -q "research" README.md

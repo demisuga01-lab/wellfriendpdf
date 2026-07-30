@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "rows": [
+    {
+      "task": "extract_text",
+      "tool": "poppler",
+      "runs": 20,
+      "successes": 20,
+      "failures": 0,
+      "median_sec": 0.006595398503122851,
+      "p95_sec": 0.013916305033490062,
+      "pages_or_files_per_sec": 96.08633205443138
+    },
+    {
+      "task": "extract_text",
+      "tool": "wellfriend",
+      "runs": 20,
+      "successes": 20,
+      "failures": 0,
+      "median_sec": 0.002590806019725278,
+      "p95_sec": 0.01896978501463309,
+      "pages_or_files_per_sec": 195.63080296743283
+    },
+    {
+      "task": "parse_info",
+      "tool": "wellfriend",
+      "runs": 20,
+      "successes": 20,
+      "failures": 0,
+      "median_sec": 0.002539974986575544,
+      "p95_sec": 0.0032124389545060694,
+      "pages_or_files_per_sec": 374.27142890935227
+    },
+    {
+      "task": "qpdf_check",
+      "tool": "qpdf",
+      "runs": 20,
+      "successes": 6,
+      "failures": 14,
+      "median_sec": 0.0031145514803938568,
+      "p95_sec": 0.009545577981043607,
+      "pages_or_files_per_sec": 138.71600781139097
+    }
+  ]
+}

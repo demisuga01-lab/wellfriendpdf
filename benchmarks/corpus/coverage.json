@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "coverage": {
+    "repository_fixtures": 95,
+    "generated_release_smoke": 5,
+    "pages": 622,
+    "bytes": 9071147
+  },
+  "gaps": [
+    "large public corpus target deferred by time window"
+  ]
+}
