@@ -92,7 +92,7 @@ Final renderer evidence is tracked in `evidence/renderer-capability/` and summar
 
 ### 5,044-PDF feature-surface coverage
 
-This is a command/runtime coverage campaign over the real public corpus. It is separate from the all-pages visual-rendering benchmark below. The editing smoke is intentionally read-only: it does not overwrite corpus PDFs, and it treats precise typed refusals as valid outcomes while counting panics, timeouts, and unclassified nonzero exits as failures.
+This is a command/runtime coverage campaign over the real public corpus. It is separate from the all-pages visual-rendering benchmark below. The editing smoke never overwrites corpus PDFs. It uses temporary outputs for apply-capable paths, treats precise typed refusals as valid outcomes, and counts panics, timeouts, and unclassified nonzero exits as failures.
 
 | Surface | Files | Successes | Failures | Median | P95 |
 |---|---:|---:|---:|---:|---:|
@@ -110,14 +110,16 @@ This is a command/runtime coverage campaign over the real public corpus. It is s
 | Document security analysis | 5,044 | 5,044 | 0 | 1,305.186 ms | 5,557.550 ms |
 | Page-1 render-compare smoke | 5,044 | 5,044 | 0 | 100.243 ms | 341.289 ms |
 | Editing/reflow planning smoke | 5,044 | 5,044 | 0 | nested by stage | nested by stage |
+| Operator-preserving apply smoke | 5,044 | 5,044 | 0 | 308.560 ms | 687.430 ms |
 
-The full stage list, hashes, and nested editing-smoke breakdown are in `docs/benchmarks/all-feature-corpus.md`.
+The operator-preserving apply smoke produced temporary edited PDFs for 486 files and exact typed ineligibility for the rest. The full stage list, hashes, and nested editing-smoke breakdown are in `docs/benchmarks/all-feature-corpus.md`.
 
 ### Visual rendering comparison
 
 | Renderer | Real-corpus operation | Successes | Pages rendered | Median | P95 | P99 | Command failures |
 |---|---|---:|---:|---:|---:|---:|---:|
 | Wellfriend Standard | all pages, raw 72-DPI render evidence | 5,044 / 5,044 | 116,975 | 947.4 ms | 4,170.3 ms | 11,414.4 ms | 0 |
+| Wellfriend display-list path | all pages, raw 72-DPI render evidence | 5,044 / 5,044 | 116,975 | 970.4 ms | 4,269.2 ms | 11,114.6 ms | 0 |
 | pypdfium2 / PDFium wrapper | all pages, 72-DPI wrapper render | 5,044 / 5,044 | 116,975 | 127.5 ms | 792.2 ms | 1,621.4 ms | 0 |
 | MuPDF `mutool` | all pages, 72-DPI render | 5,041 / 5,044 | 116,975 | 413.1 ms | 1,314.2 ms | 2,604.3 ms | 3 |
 | PyMuPDF / MuPDF binding | all pages, 72-DPI binding render | 5,044 / 5,044 | 116,975 | 1,402.6 ms | 4,265.9 ms | 6,958.2 ms | 0 |
@@ -125,7 +127,7 @@ The full stage list, hashes, and nested editing-smoke breakdown are in `docs/ben
 | Apache PDFBox | all pages, 72-DPI render | 5,044 / 5,044 | 116,975 | 4,186.3 ms | 10,581.1 ms | 16,796.8 ms | 0 |
 | PDF.js / Node canvas | all pages, 72-DPI render | 5,039 / 5,044 | 116,866 | 1,857.5 ms | 14,541.5 ms | 64,698.3 ms | 5 |
 
-The older first-page table below is retained as a separate benchmark tier. Do not compare it directly with the all-pages renderer campaign above.
+The display-list path is retained for renderer architecture and replay diagnostics, but this all-pages run did not beat the immediate Wellfriend path and does not yet match the faster PDFium-wrapper raster speed. The older first-page table below is retained as a separate benchmark tier. Do not compare it directly with the all-pages renderer campaign above.
 
 | Renderer | Real-corpus operation | Median | P95 | Command failures |
 |---|---:|---:|---:|---:|

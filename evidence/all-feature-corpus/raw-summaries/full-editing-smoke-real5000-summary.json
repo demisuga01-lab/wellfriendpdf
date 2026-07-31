@@ -82,6 +82,46 @@
       "successes": 5044,
       "timeouts": 0
     },
+    "reflow_region_apply": {
+      "error_classes": {
+        "none": 1,
+        "typed_refusal": 5043
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 492.699,
+      "p95_ms": 1263.978,
+      "p99_ms": 2093.724,
+      "skipped": 1,
+      "successes": 5044,
+      "timeouts": 0
+    },
+    "reflow_region_undo": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 5044,
+      "successes": 5044,
+      "timeouts": 0
+    },
+    "reflow_region_validate": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 5044,
+      "successes": 5044,
+      "timeouts": 0
+    },
     "scene_report_page1": {
       "error_classes": {
         "none": 5044
@@ -97,7 +137,7 @@
     }
   },
   "kind": "wellfriend_editing_corpus_smoke",
-  "latest_rows": 35308,
+  "latest_rows": 50440,
   "pdf_files": 5044,
   "schema_version": 1,
   "stages": [
@@ -107,7 +147,10 @@
     "reflow_preview",
     "overflow_report",
     "reflow_constraints",
-    "reflow_confidence"
+    "reflow_confidence",
+    "reflow_region_apply",
+    "reflow_region_validate",
+    "reflow_region_undo"
   ],
-  "total_rows": 35340
+  "total_rows": 50472
 }

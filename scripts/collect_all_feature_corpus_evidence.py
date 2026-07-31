@@ -30,6 +30,7 @@ SUMMARY_FILES = {
     "document_security_analyze": "full-document_security_analyze-summary.json",
     "render_compare_page1": "full-render_compare_page1-summary.json",
     "editing_smoke": "full-editing-smoke-real5000-summary.json",
+    "source_operator_apply": "full-source-operator-apply-summary.json",
 }
 
 
@@ -65,7 +66,7 @@ def load_stage(result_dir: Path, name: str, filename: str) -> dict[str, Any]:
             "failures": failures,
             "by_stage": by_stage,
         }
-    metrics = next(iter(by_stage.values()), {})
+    metrics = by_stage.get(name) or next(iter(by_stage.values()), {})
     return {
         "stage": name,
         "available": True,
@@ -113,7 +114,9 @@ def write_markdown(report: dict[str, Any], path: Path) -> None:
             "",
             "## Editing smoke scope",
             "",
-            "The editing smoke is read-only against the source corpus. It extracts page-1 text, builds a scene report, checks operator-preserving edit eligibility, and runs GeometricBlock reflow planning/report surfaces with temporary outputs. It does not overwrite corpus PDFs.",
+            "The editing smoke does not overwrite corpus PDFs. It extracts page-1 text, builds a scene report, checks operator-preserving edit eligibility, runs GeometricBlock reflow planning/report surfaces, and attempts temporary output-producing edit paths where source evidence permits.",
+            "",
+            "The `source_operator_apply` stage is a separate temporary-output corpus pass for operator-preserving text edits. Successful rows write edited PDFs in a temporary directory and record output/report sizes; unsupported source mappings remain typed refusals.",
             "",
             "## Scope notes",
             "",

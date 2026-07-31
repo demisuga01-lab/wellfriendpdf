@@ -27,11 +27,14 @@ This file is generated from compact VPS stage summaries. Raw PDFs and raw logs s
 | document_subsystems_analyze | 5044 | 5044 | 0 | 1194.613 | 5464.166 | `252dbe4b19c8d140238d1d1e5d129605a3c785b2801acda5d0bbad5b0935cbaa` |
 | document_security_analyze | 5044 | 5044 | 0 | 1305.186 | 5557.55 | `5d01dd049530f616cfa40ca01d250abf08156c434c3256ba84110c93a3ae7ecc` |
 | render_compare_page1 | 5044 | 5044 | 0 | 100.243 | 341.289 | `537237d33581cd5154d7a73586856f073b58d8183bab57d4bb4c5177ec755751` |
-| editing_smoke | 5044 | 5044 | 0 | see nested | see nested | `fc6b575c5019eac03a8a7b8ec41e19353f283944d6ffd7cb40b890b59a73a051` |
+| editing_smoke | 5044 | 5044 | 0 | see nested | see nested | `fc97226ccb0062860d509afb5652b4fb64e95be7794ddefaf5df855fba8b8ff1` |
+| source_operator_apply | 5044 | 5044 | 0 | 308.56 | 687.43 | `6c0f365c3448862b7a5464772d5c295862a59fa7c8a4a91d5144d920638e5351` |
 
 ## Editing smoke scope
 
-The editing smoke is read-only against the source corpus. It extracts page-1 text, builds a scene report, checks operator-preserving edit eligibility, and runs GeometricBlock reflow planning/report surfaces with temporary outputs. It does not overwrite corpus PDFs.
+The editing smoke does not overwrite corpus PDFs. It extracts page-1 text, builds a scene report, checks operator-preserving edit eligibility, runs GeometricBlock reflow planning/report surfaces, and attempts temporary output-producing edit paths where source evidence permits.
+
+The `source_operator_apply` stage is a separate temporary-output corpus pass for operator-preserving text edits. Successful rows write edited PDFs in a temporary directory and record output/report sizes; unsupported source mappings remain typed refusals.
 
 ## Scope notes
 

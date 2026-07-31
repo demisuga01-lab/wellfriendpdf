@@ -1,0 +1,158 @@
+{
+  "by_stage": {
+    "edit_eligibility": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "extract_page1_text": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "overflow_report": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "reflow_confidence": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "reflow_constraints": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "reflow_preview": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "reflow_region_apply": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "reflow_region_undo": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "reflow_region_validate": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "scene_report_page1": {
+      "applied_outputs": 0,
+      "error_classes": {},
+      "failures": 0,
+      "files": 0,
+      "median_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "skipped": 0,
+      "successes": 0,
+      "timeouts": 0
+    },
+    "source_operator_apply": {
+      "applied_outputs": 486,
+      "error_classes": {
+        "none": 487,
+        "parse": 55,
+        "typed_refusal": 4502
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 308.56,
+      "p95_ms": 687.43,
+      "p99_ms": 1111.175,
+      "skipped": 1,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "kind": "wellfriend_editing_corpus_smoke",
+  "latest_rows": 5044,
+  "pdf_files": 5044,
+  "schema_version": 1,
+  "stages": [
+    "extract_page1_text",
+    "scene_report_page1",
+    "edit_eligibility",
+    "reflow_preview",
+    "overflow_report",
+    "reflow_constraints",
+    "reflow_confidence",
+    "source_operator_apply",
+    "reflow_region_apply",
+    "reflow_region_validate",
+    "reflow_region_undo"
+  ],
+  "total_rows": 5044
+}
