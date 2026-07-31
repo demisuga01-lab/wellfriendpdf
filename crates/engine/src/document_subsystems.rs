@@ -33,6 +33,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const DOCUMENT_SUBSYSTEMS_SCHEMA_VERSION: &str =
     "document_subsystems.tables-math-ocr-forms-annotations.v1";
+const MAX_DOCUMENT_SUBSYSTEM_ANALYSIS_PAGES: usize = 2;
+const MAX_DOCUMENT_SUBSYSTEM_SAMPLE_ITEMS: usize = 256;
+const MAX_OCR_SOURCE_LINKS_PER_PAGE: usize = 128;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -658,7 +661,10 @@ fn no_change_limit(subsystem: &DocumentSubsystemsSubsystem) -> Vec<String> {
 fn editable_tables(input: &[u8]) -> Result<Vec<EditableTableGraph>> {
     let engine = ContentEngine::open_bytes(input.to_vec())?;
     let mut tables = Vec::new();
-    for page in 1..=engine.page_count()? {
+    for page in 1..=engine
+        .page_count()?
+        .min(MAX_DOCUMENT_SUBSYSTEM_ANALYSIS_PAGES)
+    {
         for (index, table) in engine.extract_tables(page)?.into_iter().enumerate() {
             let table_id = format!("p{page}:table:{index}");
             tables.push(EditableTableGraph {
@@ -734,10 +740,18 @@ fn math_leaf(
 }
 
 fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
+    parse_math_node_with_depth(text, id, provenance, 0)
+}
+
+fn parse_math_node_with_depth(text: &str, id: &str, provenance: &Value, depth: usize) -> MathNode {
     let trimmed = text.trim();
+    if depth >= 32 {
+        return math_leaf(MathNodeKind::Unknown, trimmed, id, provenance);
+    }
     if let Some(rows) = bracket_matrix_rows(trimmed) {
         let children = rows
             .into_iter()
+            .take(32)
             .enumerate()
             .map(|(row_index, row)| MathNode {
                 node_id: format!("{id}:row:{row_index}"),
@@ -745,15 +759,17 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
                 source_text: row.join(","),
                 children: row
                     .into_iter()
+                    .take(64)
                     .enumerate()
                     .map(|(column_index, cell)| MathNode {
                         node_id: format!("{id}:row:{row_index}:cell:{column_index}"),
                         kind: MathNodeKind::MatrixCell,
                         source_text: cell.trim().to_string(),
-                        children: vec![parse_math_node(
+                        children: vec![parse_math_node_with_depth(
                             cell.trim(),
                             &format!("{id}:row:{row_index}:cell:{column_index}:value"),
                             provenance,
+                            depth + 1,
                         )],
                         provenance: provenance.clone(),
                         confidence: 0.9,
@@ -778,14 +794,14 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
             kind: MathNodeKind::Row,
             source_text: trimmed.to_string(),
             children: vec![
-                parse_math_node(left, &format!("{id}:left"), provenance),
+                parse_math_node_with_depth(left, &format!("{id}:left"), provenance, depth + 1),
                 math_leaf(
                     MathNodeKind::Operator,
                     "=",
                     &format!("{id}:equals"),
                     provenance,
                 ),
-                parse_math_node(right, &format!("{id}:right"), provenance),
+                parse_math_node_with_depth(right, &format!("{id}:right"), provenance, depth + 1),
             ],
             provenance: provenance.clone(),
             confidence: 0.9,
@@ -797,8 +813,18 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
             kind: MathNodeKind::Fraction,
             source_text: trimmed.to_string(),
             children: vec![
-                parse_math_node(numerator, &format!("{id}:numerator"), provenance),
-                parse_math_node(denominator, &format!("{id}:denominator"), provenance),
+                parse_math_node_with_depth(
+                    numerator,
+                    &format!("{id}:numerator"),
+                    provenance,
+                    depth + 1,
+                ),
+                parse_math_node_with_depth(
+                    denominator,
+                    &format!("{id}:denominator"),
+                    provenance,
+                    depth + 1,
+                ),
             ],
             provenance: provenance.clone(),
             confidence: 0.82,
@@ -814,8 +840,8 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
             },
             source_text: trimmed.to_string(),
             children: vec![
-                parse_math_node(base, &format!("{id}:base"), provenance),
-                parse_math_node(script, &format!("{id}:sup"), provenance),
+                parse_math_node_with_depth(base, &format!("{id}:base"), provenance, depth + 1),
+                parse_math_node_with_depth(script, &format!("{id}:sup"), provenance, depth + 1),
             ],
             provenance: provenance.clone(),
             confidence: 0.78,
@@ -827,8 +853,8 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
             kind: MathNodeKind::Subscript,
             source_text: trimmed.to_string(),
             children: vec![
-                parse_math_node(base, &format!("{id}:base"), provenance),
-                parse_math_node(script, &format!("{id}:sub"), provenance),
+                parse_math_node_with_depth(base, &format!("{id}:base"), provenance, depth + 1),
+                parse_math_node_with_depth(script, &format!("{id}:sub"), provenance, depth + 1),
             ],
             provenance: provenance.clone(),
             confidence: 0.78,
@@ -842,10 +868,11 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
             node_id: id.to_string(),
             kind: MathNodeKind::Radical,
             source_text: trimmed.to_string(),
-            children: vec![parse_math_node(
+            children: vec![parse_math_node_with_depth(
                 inner,
                 &format!("{id}:radicand"),
                 provenance,
+                depth + 1,
             )],
             provenance: provenance.clone(),
             confidence: 0.86,
@@ -856,7 +883,12 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
             node_id: id.to_string(),
             kind: MathNodeKind::Radical,
             source_text: trimmed.to_string(),
-            children: vec![parse_math_node(rest, &format!("{id}:radicand"), provenance)],
+            children: vec![parse_math_node_with_depth(
+                rest,
+                &format!("{id}:radicand"),
+                provenance,
+                depth + 1,
+            )],
             provenance: provenance.clone(),
             confidence: 0.86,
         };
@@ -866,10 +898,11 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
             node_id: id.to_string(),
             kind: MathNodeKind::Fenced,
             source_text: trimmed.to_string(),
-            children: vec![parse_math_node(
+            children: vec![parse_math_node_with_depth(
                 &trimmed[1..trimmed.len() - 1],
                 &format!("{id}:inner"),
                 provenance,
+                depth + 1,
             )],
             provenance: provenance.clone(),
             confidence: 0.82,
@@ -889,8 +922,11 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
     }
     let children = trimmed
         .split_whitespace()
+        .take(MAX_DOCUMENT_SUBSYSTEM_SAMPLE_ITEMS)
         .enumerate()
-        .map(|(index, part)| parse_math_node(part, &format!("{id}:token:{index}"), provenance))
+        .map(|(index, part)| {
+            parse_math_node_with_depth(part, &format!("{id}:token:{index}"), provenance, depth + 1)
+        })
         .collect::<Vec<_>>();
     MathNode {
         node_id: id.to_string(),
@@ -905,7 +941,10 @@ fn parse_math_node(text: &str, id: &str, provenance: &Value) -> MathNode {
 pub fn analyze_math_expressions(input: &[u8]) -> Result<Vec<MathExpression>> {
     let engine = ContentEngine::open_bytes(input.to_vec())?;
     let mut expressions = Vec::new();
-    for page in 1..=engine.page_count()? {
+    for page in 1..=engine
+        .page_count()?
+        .min(MAX_DOCUMENT_SUBSYSTEM_ANALYSIS_PAGES)
+    {
         for (index, chunk) in engine
             .collect_page_text_chunks(page)?
             .into_iter()
@@ -1259,7 +1298,10 @@ fn analyze_ocr_layers(input: &[u8]) -> Result<Value> {
     let classifications =
         crate::classify_document(&engine, &[], &crate::ClassifyConfig::default())?;
     let mut pages = Vec::new();
-    for classification in classifications {
+    for classification in classifications
+        .into_iter()
+        .take(MAX_DOCUMENT_SUBSYSTEM_ANALYSIS_PAGES)
+    {
         let page = classification.page as usize;
         let words = engine.extract_page_words(page)?;
         let source = match classification.source {
@@ -1272,11 +1314,13 @@ fn analyze_ocr_layers(input: &[u8]) -> Result<Value> {
             "classification": classification,
             "layer_state": source,
             "existing_word_count": words.len(),
-            "source_links": words.into_iter().map(|word| json!({
+            "source_link_count": words.len(),
+            "source_links_sample": words.into_iter().take(MAX_OCR_SOURCE_LINKS_PER_PAGE).map(|word| json!({
                 "text": word.text,
                 "bounds": [word.x0, word.y0, word.x1, word.y1],
                 "page": word.page,
             })).collect::<Vec<_>>(),
+            "source_link_sample_limit": MAX_OCR_SOURCE_LINKS_PER_PAGE,
             "recognition_provider": if source == "scan_provider_required" {
                 "provider_unavailable_without_explicit_OcrEngine"
             } else {
@@ -1288,6 +1332,11 @@ fn analyze_ocr_layers(input: &[u8]) -> Result<Value> {
         "canonical_provider_interface": "ocr::OcrEngine",
         "canonical_preprocess": "ocr::preprocess::preprocess",
         "layers": ["original_scan", "searchable_text", "editable_reconstruction"],
+        "analysis_scope": {
+            "max_pages": MAX_DOCUMENT_SUBSYSTEM_ANALYSIS_PAGES,
+            "source_link_sample_per_page": MAX_OCR_SOURCE_LINKS_PER_PAGE,
+            "full_page_provider_rerun_available_from_scoped_ocr_apis": true
+        },
         "pages": pages,
         "scan_preserved_by_default": true,
     }))
@@ -5571,9 +5620,35 @@ pub fn analyze_document_subsystems(input: &[u8]) -> Result<DocumentSubsystemsAna
     let tables = editable_tables(input)?;
     let mathematical_expressions = analyze_math_expressions(input)?;
     let ocr_layers = analyze_ocr_layers(input)?;
+    let semantic_nodes_sample = semantic
+        .nodes
+        .iter()
+        .take(MAX_DOCUMENT_SUBSYSTEM_SAMPLE_ITEMS)
+        .cloned()
+        .collect::<Vec<_>>();
+    let semantic_edges_sample = semantic
+        .edges
+        .iter()
+        .take(MAX_DOCUMENT_SUBSYSTEM_SAMPLE_ITEMS)
+        .cloned()
+        .collect::<Vec<_>>();
     let table_evidence = json!({
         "canonical_module": "analysis::tables + table_intelligence + text_reflow semantic regions",
-        "semantic_regions": semantic,
+        "semantic_regions": {
+            "node_count": semantic.nodes.len(),
+            "edge_count": semantic.edges.len(),
+            "nodes_sample": semantic_nodes_sample,
+            "edges_sample": semantic_edges_sample,
+            "sample_limit": MAX_DOCUMENT_SUBSYSTEM_SAMPLE_ITEMS,
+            "reading_order": semantic.reading_order,
+            "flow_graph": semantic.flow_graph,
+            "region_graph_invariants": semantic.region_graph_invariants,
+            "review_required": semantic.review_required,
+            "analysis_scope": {
+                "max_public_report_pages": crate::text_reflow::MAX_PUBLIC_SEMANTIC_REPORT_PAGES,
+                "document_wide_reports_use_word_line_paragraph_detail": true
+            }
+        },
         "tables": tables,
         "supported_detection": ["ruled", "borderless", "partially_ruled", "repeated_header_candidates"],
         "status": "source_linked_analysis"

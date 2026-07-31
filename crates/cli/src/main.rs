@@ -3904,10 +3904,35 @@ fn runtime_config_json_from_cli(cli: &Cli) -> Result<Option<String>, Box<dyn Err
         cfg = env_cfg;
     }
     if let Some(mode) = &cli.mode {
-        cfg.mode = mode.parse::<wellfriendpdf_engine::ExecutionMode>()?;
+        match mode.parse::<wellfriendpdf_engine::ExecutionMode>() {
+            Ok(parsed) => cfg.mode = parsed,
+            Err(err) if cli_mode_value_is_command_local(&cli.command, mode) => {
+                let _ = err;
+            }
+            Err(err) => return Err(Box::new(err)),
+        }
     }
     cfg.validate()?;
     Ok(Some(serde_json::to_string(&cfg)?))
+}
+
+fn cli_mode_value_is_command_local(command: &Commands, mode: &str) -> bool {
+    let value = mode.to_ascii_lowercase();
+    match command {
+        Commands::ParserReport(_) => matches!(value.as_str(), "strict" | "repair" | "audit"),
+        Commands::LayoutAnalyze(_)
+        | Commands::ReflowPreview(_)
+        | Commands::OverflowReport(_)
+        | Commands::ReflowConstraints(_)
+        | Commands::ReflowConfidence(_)
+        | Commands::ReflowRegion(_)
+        | Commands::ReflowDocument(_)
+        | Commands::ReflowOperationReport(_) => matches!(
+            value.as_str(),
+            "operator_preserving" | "geometric_block" | "semantic_document"
+        ),
+        _ => false,
+    }
 }
 
 fn run_runtime_capabilities(
@@ -10123,7 +10148,29 @@ fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
     let engine = open_engine(&args.pdf, &args.password)?;
     let profile = wellfriendpdf_engine::StandardsProfile::parse(&args.profile)
         .ok_or_else(|| usage_error(format!("unknown validation profile '{}'", args.profile)))?;
-    let report = wellfriendpdf_engine::validate_standards_profile(&engine, profile)?;
+    let fail_on = parse_validate_fail_on(&args.fail_on, args.fail_on_warning)?;
+    let report = match wellfriendpdf_engine::validate_standards_profile(&engine, profile.clone()) {
+        Ok(report) => report,
+        Err(err) if fail_on == "never" => wellfriendpdf_engine::StandardsValidationReport {
+            schema_version: 1,
+            profile,
+            passed: false,
+            rules: vec![wellfriendpdf_engine::ValidationRuleResult {
+                profile: args.profile.clone(),
+                rule_id: "wellfriend.validation.unavailable".to_string(),
+                severity: wellfriendpdf_engine::ValidationSeverity::Error,
+                status: wellfriendpdf_engine::ValidationStatus::Fail,
+                location: "document".to_string(),
+                message: format!("validation unavailable: {err}"),
+            }],
+            arlington_status: "unavailable_due_to_validation_error".to_string(),
+            arlington_source: "not_evaluated".to_string(),
+            arlington_commit: String::new(),
+            arlington_rule_count: 0,
+            certification_claimed: false,
+        },
+        Err(err) => return Err(Box::new(err)),
+    };
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
@@ -10148,7 +10195,6 @@ fn run_validate(args: ValidateArgs) -> Result<(), Box<dyn Error>> {
         .rules
         .iter()
         .any(|rule| matches!(rule.status, wellfriendpdf_engine::ValidationStatus::Warn));
-    let fail_on = parse_validate_fail_on(&args.fail_on, args.fail_on_warning)?;
     if (fail_on == "error" && has_fail) || (fail_on == "warning" && (has_fail || has_warn)) {
         return Err(Box::new(CliError::new(
             CliExitCode::Input,

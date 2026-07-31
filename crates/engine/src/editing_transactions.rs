@@ -452,6 +452,18 @@ pub fn build_document_snapshot(input: &[u8], parent: Option<&str>) -> Result<Doc
 }
 
 pub fn build_scene_graph(input: &[u8], pages: &[usize]) -> Result<EditableSceneGraph> {
+    build_scene_graph_with_options(input, pages, true)
+}
+
+pub fn build_scene_graph_for_analysis(input: &[u8], pages: &[usize]) -> Result<EditableSceneGraph> {
+    build_scene_graph_with_options(input, pages, false)
+}
+
+fn build_scene_graph_with_options(
+    input: &[u8],
+    pages: &[usize],
+    resolve_text_provenance: bool,
+) -> Result<EditableSceneGraph> {
     let engine = ContentEngine::open_bytes(input.to_vec())?;
     let page_count = engine.page_count()?;
     let selected_pages = if pages.is_empty() {
@@ -472,8 +484,11 @@ pub fn build_scene_graph(input: &[u8], pages: &[usize]) -> Result<EditableSceneG
         let bounds = page_bounds(&engine, page);
         let text = engine.get_page_text(page).unwrap_or_default();
         if !text.trim().is_empty() {
-            let provenance =
-                operator_text_provenance(input, page, text.trim_end(), text.trim_end()).ok();
+            let provenance = if resolve_text_provenance {
+                operator_text_provenance(input, page, text.trim_end(), text.trim_end()).ok()
+            } else {
+                None
+            };
             let source_instruction_ids = provenance
                 .as_ref()
                 .map(|report| {
@@ -639,6 +654,7 @@ pub fn build_scene_graph(input: &[u8], pages: &[usize]) -> Result<EditableSceneG
         bounded_query_limits: json!({
             "max_pages": 64,
             "max_vector_nodes_per_page": 2048,
+            "text_source_instruction_resolution": if resolve_text_provenance { "enabled" } else { "deferred_for_document_wide_analysis" },
             "cycle_safe": true,
             "no_network": true
         }),

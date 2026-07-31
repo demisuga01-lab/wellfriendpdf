@@ -17,9 +17,9 @@ use crate::advanced_editing::{
 };
 use crate::authoring::{PageSize as AuthorPageSize, PdfBuilder, TextStyle};
 use crate::editing_transactions::{
-    build_document_snapshot, build_scene_graph, dirty_region_report, text_identity_report,
-    undo_restoration_report, DocumentSnapshot, EditTransactionReport, EditableSceneGraph,
-    SceneTextEditRequest, TransactionState,
+    build_document_snapshot, build_scene_graph, build_scene_graph_for_analysis,
+    dirty_region_report, text_identity_report, undo_restoration_report, DocumentSnapshot,
+    EditTransactionReport, EditableSceneGraph, SceneTextEditRequest, TransactionState,
 };
 use crate::filters::decode_stream_lossless;
 use crate::source_editing::{operator_text_provenance, TrueEditingMode};
@@ -41,6 +41,7 @@ use unicode_linebreak::{break_property, linebreaks, BreakOpportunity};
 use unicode_segmentation::UnicodeSegmentation;
 
 pub const TEXT_REFLOW_SCHEMA_VERSION: &str = "text_reflow.geometric-semantic-reflow.v1";
+pub(crate) const MAX_PUBLIC_SEMANTIC_REPORT_PAGES: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -2206,6 +2207,14 @@ pub fn paragraph_style_model(
     request: &GeometricReflowRequest,
 ) -> Result<ParagraphStyleModel> {
     let region = analyze_geometric_region(input, request)?;
+    paragraph_style_model_from_region(input, request, &region)
+}
+
+fn paragraph_style_model_from_region(
+    input: &[u8],
+    request: &GeometricReflowRequest,
+    region: &GeometricTextRegion,
+) -> Result<ParagraphStyleModel> {
     let source_style_runs = paragraph_source_style_runs(input, request);
     let font_identity =
         text_identity_report(&request.replacement_text, request.direction.as_deref())
@@ -2228,9 +2237,9 @@ pub fn paragraph_style_model(
             "evidence": TextReflowEvidenceKind::DeterministicFontShaping,
         })],
         base_direction: direction_label(request.direction.as_deref()),
-        writing_mode: region.writing_mode,
+        writing_mode: region.writing_mode.clone(),
         style_runs: if source_style_runs.is_empty() {
-            region.style_runs
+            region.style_runs.clone()
         } else {
             source_style_runs
         },
@@ -2256,9 +2265,9 @@ pub fn paragraph_style_model(
         source_region: region.region_id.clone(),
         allowed_expansion_region: "same_as_geometric_region_unless_policy_supplies_expansion"
             .into(),
-        locked_neighbors: region.locked_neighbors,
+        locked_neighbors: region.locked_neighbors.clone(),
         flow_successor_predecessor: [None, None],
-        confidence: region.confidence,
+        confidence: region.confidence.clone(),
         evidence: vec![
             json!({"kind": TextReflowEvidenceKind::ExactSourceFact, "source": "SourceEditing provenance when source text resolves"}),
             json!({"kind": TextReflowEvidenceKind::HeuristicInference, "source": "paragraph grouping from source-linked scene text"}),
@@ -2266,9 +2275,273 @@ pub fn paragraph_style_model(
     })
 }
 
+fn geometric_preview_semantic_layout(
+    input: &[u8],
+    request: &GeometricReflowRequest,
+    region: &GeometricTextRegion,
+) -> SemanticLayoutReport {
+    let region_id = stable_id(
+        "semantic-geometric-preview",
+        &[
+            input,
+            request.source_text.as_bytes(),
+            request.replacement_text.as_bytes(),
+        ],
+    );
+    let node = SemanticRegionNode {
+        node_id: region_id.clone(),
+        node_type: "PageRegion".to_string(),
+        page: request.page,
+        source_scene_nodes: region.source_scene_nodes.clone(),
+        source_instructions: region.source_instructions.clone(),
+        bounds: [
+            region.polygon_or_rect[0][0],
+            region.polygon_or_rect[0][1],
+            region.polygon_or_rect[2][0],
+            region.polygon_or_rect[2][1],
+        ],
+        text_hash: digest_hex(request.source_text.as_bytes()),
+        evidence_kind: TextReflowEvidenceKind::DeterministicGeometry,
+        confidence: region.confidence.clone(),
+        coordinate_space: "page_user_space".to_string(),
+        source_evidence: json!({
+            "kind": "deterministic_geometric_derivation",
+            "source_scene_nodes": region.source_scene_nodes.clone(),
+            "source_instructions": region.source_instructions.clone(),
+            "preview_scope": "geometric_block_single_region",
+        }),
+        transaction_revision: stable_id("semantic-preview-revision", &[input]),
+        alternatives: Vec::new(),
+    };
+    SemanticLayoutReport {
+        schema_version: TEXT_REFLOW_SCHEMA_VERSION.to_string(),
+        document_id: stable_id("semantic-layout-geometric-preview", &[input]),
+        nodes: vec![node],
+        edges: Vec::new(),
+        algorithms_used: vec![
+            "geometric_block_preview_uses_resolved_region_only".to_string(),
+            "full_document_semantic_reconstruction_reserved_for_semantic_document_mode".to_string(),
+        ],
+        exact_vs_inferred: json!({
+            "exact_source_facts": region.source_instructions.len(),
+            "deterministic_geometric_derivations": 1,
+            "heuristic_inferences": 0,
+            "model_assisted": 0,
+            "scope": "single_geometric_region_preview",
+        }),
+        reading_order: json!({
+            "status": "not_recomputed_for_geometric_block_preview",
+            "reason": "GeometricBlock preview is local; SemanticDocument mode uses the document precedence graph.",
+            "review_required": false,
+        }),
+        flow_graph: json!({
+            "status": "not_recomputed_for_geometric_block_preview",
+            "declared_downstream_vector_moves": request.downstream_vector_moves.len(),
+            "declared_downstream_link_moves": request.downstream_link_moves.len(),
+        }),
+        region_graph_invariants: json!({
+            "status": "pass",
+            "no_dangling_nodes": true,
+            "valid_page_ownership": true,
+            "valid_source_references": !region.source_instructions.is_empty(),
+            "bounded_edge_count": true,
+            "incremental_invalidation_scope": "resolved_geometric_region",
+        }),
+        review_required: Vec::new(),
+        document_subsystems_boundaries: vec![
+            "geometric_block_preview_does_not_reconstruct_global_tables_math_ocr_forms_annotations"
+                .to_string(),
+        ],
+        document_security_boundaries: vec![
+            "preview_no_mutation_no_source_bytes_changed".to_string()
+        ],
+    }
+}
+
+fn no_change_preview_reflow(
+    input: &[u8],
+    request: &GeometricReflowRequest,
+) -> Result<ReflowTransactionReport> {
+    let snapshot = build_document_snapshot(input, None)?;
+    let rect = region_for_request(input, request)?;
+    let page_box = page_bounds(input, request.page)?;
+    let confidence_dimensions = json!({
+        "geometry": 1.0,
+        "text_mapping": 1.0,
+        "font_identity": 1.0,
+        "reading_order": 1.0,
+        "semantic_type": 1.0,
+        "cross_page_flow": 1.0,
+        "source": "no_change_request_does_not_require_source_mutation",
+    });
+    let region = GeometricTextRegion {
+        schema_version: TEXT_REFLOW_SCHEMA_VERSION.to_string(),
+        region_id: stable_id(
+            "geometric-no-change-region",
+            &[input, request.source_text.as_bytes()],
+        ),
+        source_scene_nodes: Vec::new(),
+        source_semantic_nodes: Vec::new(),
+        source_instructions: vec!["no-change-preview:source-bytes-not-mutated".to_string()],
+        page_id: request.page,
+        page_box,
+        writing_mode: if matches!(request.direction.as_deref(), Some("vertical_rl")) {
+            "vertical-rl".to_string()
+        } else {
+            "horizontal-tb".to_string()
+        },
+        base_direction: direction_label(request.direction.as_deref()),
+        language: request
+            .language
+            .clone()
+            .unwrap_or_else(|| "und".to_string()),
+        polygon_or_rect: vec![
+            [rect[0], rect[1]],
+            [rect[2], rect[1]],
+            [rect[2], rect[3]],
+            [rect[0], rect[3]],
+        ],
+        padding: [0.0, 0.0, 0.0, 0.0],
+        transforms: vec!["page_user_space".to_string()],
+        clipping: "not_evaluated_no_change_preview".to_string(),
+        style_runs: vec![json!({
+            "source_range": [0, request.source_text.len()],
+            "unicode_range": [0, request.source_text.chars().count()],
+            "font_policy": request.font_policy,
+            "preserved": "not_mutated",
+        })],
+        paragraph_ids: vec![stable_id(
+            "paragraph-no-change",
+            &[input, request.source_text.as_bytes()],
+        )],
+        allowed_expansion_region: request.allowed_expansion_region.unwrap_or(rect),
+        locked_neighbors: Vec::new(),
+        movable_neighbors: Vec::new(),
+        exclusion_zones: Vec::new(),
+        downstream_flow_targets: Vec::new(),
+        born_digital_ocr_or_inferred: "not_reconstructed_no_change_preview".to_string(),
+        confidence: confidence_dimensions,
+        edit_policy: json!({
+            "no_change_requested": true,
+            "mutation_required": false,
+            "safe_to_return_without_source_rewrite": true,
+        }),
+    };
+    let line_breaking = line_break_with_ordered_local_expansion(input, request, rect)?;
+    let constraints = constraint_solver_report(&region, request, &line_breaking);
+    let confidence = evaluate_reflow_confidence(
+        &region.confidence,
+        request.requested_mode,
+        &ReflowConfidencePolicy::default(),
+    );
+    let paragraph = ParagraphStyleModel {
+        schema_version: TEXT_REFLOW_SCHEMA_VERSION.to_string(),
+        paragraph_id: region.paragraph_ids[0].clone(),
+        source_semantic_links: Vec::new(),
+        source_provenance_links: region.source_instructions.clone(),
+        language: region.language.clone(),
+        script_runs: vec![json!({
+            "script": "not_recomputed_no_change_preview",
+            "direction": direction_label(request.direction.as_deref()),
+            "evidence": TextReflowEvidenceKind::ExactSourceFact,
+        })],
+        base_direction: region.base_direction.clone(),
+        writing_mode: region.writing_mode.clone(),
+        style_runs: region.style_runs.clone(),
+        font_identity: text_identity_report(
+            &request.replacement_text,
+            request.direction.as_deref(),
+        )
+        .map(|report| json!(report))
+        .unwrap_or_else(|err| json!({"status": "unsupported_exact", "reason": err.to_string()})),
+        line_height: request.line_height,
+        alignment: request.alignment.clone(),
+        first_line_indent: 0.0,
+        hanging_indent: 0.0,
+        start_end_indents: [0.0, 0.0],
+        margins: [0.0, 0.0, 0.0, 0.0],
+        spacing_before_after: [0.0, 0.0],
+        tab_stops: Vec::new(),
+        hyphenation_policy: if request.hyphenation {
+            "explicit_language_policy".into()
+        } else {
+            "disabled".into()
+        },
+        widow_orphan_policy: "not_recomputed_no_change_preview".into(),
+        keep_with_next: false,
+        keep_together: false,
+        list_relationship: None,
+        baseline_grid: None,
+        source_region: region.region_id.clone(),
+        allowed_expansion_region: "not_used_no_change_preview".into(),
+        locked_neighbors: Vec::new(),
+        flow_successor_predecessor: [None, None],
+        confidence: region.confidence.clone(),
+        evidence: vec![json!({
+            "kind": TextReflowEvidenceKind::ExactSourceFact,
+            "source": "source and replacement text are identical; no PDF bytes are changed",
+        })],
+    };
+    Ok(ReflowTransactionReport {
+        schema_version: TEXT_REFLOW_SCHEMA_VERSION.to_string(),
+        transaction_id: stable_id(
+            "reflow-no-change-transaction",
+            &[input, request.source_text.as_bytes()],
+        ),
+        input_snapshot: snapshot,
+        requested_mode: request.requested_mode,
+        eligible_modes: Vec::new(),
+        applied_mode: None,
+        escalation_reason: None,
+        scope_of_movement: "no_change_requested_no_movement".to_string(),
+        confidence,
+        region: region.clone(),
+        paragraph,
+        line_breaking,
+        constraints,
+        overflow_status: OverflowStatus::FitInRegion,
+        semantic_layout: geometric_preview_semantic_layout(input, request, &region),
+        objects_moved: Vec::new(),
+        pages_columns_affected: vec![json!({
+            "page": request.page,
+            "kind": "no_change_preview",
+            "source_region": rect,
+        })],
+        source_instructions_regenerated: Vec::new(),
+        fonts_resources_changed: Vec::new(),
+        flow_graph_changes: Vec::new(),
+        reading_order_changes: Vec::new(),
+        structure_changes: Vec::new(),
+        signature_impact: signature_impact(request),
+        conformance_impact: conformance_impact(request),
+        validation_evidence: json!({
+            "preview_does_not_mutate": true,
+            "no_change_requested": true,
+            "no_overlay": true,
+            "no_silent_clipping": true,
+        }),
+        inverse_operation: None,
+        undo_proof: json!({"preview_no_change": true, "source_bytes_unchanged": true}),
+        refusal: Some(json!({
+            "code": "no_change_requested",
+            "message": "source_text and replacement_text are identical; no reflow mutation is required",
+            "no_change_proof": true,
+        })),
+        editing_transactions_transaction: None,
+    })
+}
+
 pub fn preview_reflow(
     input: &[u8],
     request: &GeometricReflowRequest,
+) -> Result<ReflowTransactionReport> {
+    preview_reflow_internal(input, request, true)
+}
+
+fn preview_reflow_internal(
+    input: &[u8],
+    request: &GeometricReflowRequest,
+    allow_no_change_fast_path: bool,
 ) -> Result<ReflowTransactionReport> {
     if request.requested_mode == TrueEditingMode::OperatorPreserving {
         return Err(WellfriendError::UnsupportedFeature(
@@ -2276,9 +2549,12 @@ pub fn preview_reflow(
                 .to_string(),
         ));
     }
+    if allow_no_change_fast_path && request.source_text == request.replacement_text {
+        return no_change_preview_reflow(input, request);
+    }
     let snapshot = build_document_snapshot(input, None)?;
     let region = analyze_geometric_region(input, request)?;
-    let paragraph = paragraph_style_model(input, request)?;
+    let paragraph = paragraph_style_model_from_region(input, request, &region)?;
     let rect = region_for_request(input, request)?;
     let line_breaking = line_break_with_ordered_local_expansion(input, request, rect)?;
     let planned_downstream_vector_moves = validate_downstream_vector_moves(input, request)?;
@@ -2286,7 +2562,11 @@ pub fn preview_reflow(
     let effective_region =
         effective_region_for_report(input, request, line_breaking.overflow_status)?;
     let constraints = constraint_solver_report(&region, request, &line_breaking);
-    let semantic_layout = analyze_semantic_layout(input, Some(request))?;
+    let semantic_layout = if request.requested_mode == TrueEditingMode::SemanticDocument {
+        analyze_semantic_layout(input, Some(request))?
+    } else {
+        geometric_preview_semantic_layout(input, request, &region)
+    };
     let eligible = eligibility_modes(&region, &line_breaking, request);
     let confidence = evaluate_reflow_confidence(
         &region.confidence,
@@ -2923,7 +3203,7 @@ fn apply_source_linked_reflow(
                 .to_string(),
         ));
     }
-    let mut report = preview_reflow(input, request)?;
+    let mut report = preview_reflow_internal(input, request, false)?;
     if let Some(refusal) = report.refusal.as_ref() {
         return Err(WellfriendError::UnsupportedFeature(format!(
             "text_reflow {}: {}",
@@ -3968,12 +4248,33 @@ pub fn analyze_semantic_layout(
     // graph to evaluate repeated headers/footers and explicit page-flow
     // candidates.  Keeping the distinction here prevents a silent mode
     // upgrade while avoiding full-document analysis for keystroke previews.
+    let public_report_pages = if request.is_none() {
+        let engine = ContentEngine::open_bytes(input.to_vec())?;
+        let page_count = engine.page_count()?;
+        (1..=page_count.min(MAX_PUBLIC_SEMANTIC_REPORT_PAGES)).collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     let graph_pages = match request {
         Some(item) if item.requested_mode == TrueEditingMode::GeometricBlock => vec![item.page],
+        None => public_report_pages.clone(),
         _ => Vec::new(),
     };
-    let graph = build_scene_graph(input, &graph_pages)?;
-    semantic_layout_from_graph(input, &graph, request)
+    let graph = if request.is_none() {
+        build_scene_graph_for_analysis(input, &graph_pages)?
+    } else {
+        build_scene_graph(input, &graph_pages)?
+    };
+    semantic_layout_from_graph(
+        input,
+        &graph,
+        request,
+        if request.is_none() {
+            Some(public_report_pages.as_slice())
+        } else {
+            None
+        },
+    )
 }
 
 fn quad_bounds(quad: crate::text::TextQuad) -> [f64; 4] {
@@ -5029,22 +5330,45 @@ fn semantic_layout_from_graph(
     input: &[u8],
     graph: &EditableSceneGraph,
     request: Option<&GeometricReflowRequest>,
+    analysis_pages: Option<&[usize]>,
 ) -> Result<SemanticLayoutReport> {
-    const MAX_RUNTIME_SEMANTIC_NODES: usize = 16_384;
-    const MAX_RUNTIME_SEMANTIC_EDGES: usize = 32_768;
+    // The runtime graph is used by document-wide analysis surfaces as well as
+    // edit planning. Ordinary long technical PDFs can exceed 16k word/line/glyph
+    // nodes before any unsafe condition has occurred, so the cap must protect
+    // memory without turning normal corpus analysis into a false failure.
+    const MAX_RUNTIME_SEMANTIC_NODES: usize = 262_144;
+    const MAX_RUNTIME_SEMANTIC_EDGES: usize = 524_288;
 
     let engine = ContentEngine::open_bytes(input.to_vec())?;
-    let requested_pages = match request {
-        Some(item) if item.requested_mode == TrueEditingMode::GeometricBlock => vec![item.page],
-        _ => (1..=graph.page_count.min(64)).collect(),
+    let requested_pages = if let Some(pages) = analysis_pages {
+        pages.to_vec()
+    } else {
+        match request {
+            Some(item) if item.requested_mode == TrueEditingMode::GeometricBlock => vec![item.page],
+            _ => (1..=graph.page_count.min(64)).collect(),
+        }
     };
     // This is the existing Native Renderer semantic model and XY-cut layout engine,
     // not a text reflow parser.  It carries geometry, text, word/char spans,
     // MCID/structure facts, role evidence, bidi direction, and bounded limits.
-    let semantic = engine.extract_text_semantic_model(
-        &requested_pages,
-        crate::text::TextSemanticOptions::default(),
-    )?;
+    let semantic_options = if request.is_none() {
+        let include_chars_for_public_report =
+            input.len() <= 1_000_000 && requested_pages.len() <= MAX_PUBLIC_SEMANTIC_REPORT_PAGES;
+        crate::text::TextSemanticOptions {
+            // Document-wide public reports are used on large real-world
+            // corpora. Keep source-linked word/line/paragraph/region evidence,
+            // but do not materialize one runtime graph node per character
+            // unless a scoped edit/reflow request needs that detail. Small
+            // documents retain glyph nodes so graph invariant tests and
+            // lightweight callers still see the complete runtime hierarchy.
+            include_chars: include_chars_for_public_report,
+            include_detailed_provenance: false,
+            ..crate::text::TextSemanticOptions::default()
+        }
+    } else {
+        crate::text::TextSemanticOptions::default()
+    };
+    let semantic = engine.extract_text_semantic_model(&requested_pages, semantic_options)?;
     // Preserve the exact analysis scope before the canonical semantic pages
     // are consumed to construct runtime nodes below.
     let analyzed_graph_pages = semantic
@@ -5107,6 +5431,7 @@ fn semantic_layout_from_graph(
     }
     let mut nodes = Vec::<SemanticRegionNode>::new();
     let mut edges = Vec::<SemanticRegionEdge>::new();
+    let mut edge_index = BTreeMap::<String, usize>::new();
     let mut reading_nodes = Vec::<String>::new();
     let mut footnote_markers = Vec::<(usize, String, String)>::new();
     let mut footnote_bodies = Vec::<(usize, String, String)>::new();
@@ -5139,7 +5464,8 @@ fn semantic_layout_from_graph(
         // the same relationship. Keep one canonical edge ID and preserve the
         // additional evidence as alternatives instead of emitting duplicate
         // IDs that make graph serialization and incremental updates unsafe.
-        if let Some(existing) = edges.iter_mut().find(|edge| edge.edge_id == edge_id) {
+        if let Some(existing_index) = edge_index.get(&edge_id).copied() {
+            let existing = &mut edges[existing_index];
             let evidence_changed = existing.source_evidence != source_evidence;
             if confidence > existing.confidence {
                 existing.alternatives.push(json!({
@@ -5166,8 +5492,9 @@ fn semantic_layout_from_graph(
                 "text_reflow resource_limit_exceeded: semantic runtime edge cap {MAX_RUNTIME_SEMANTIC_EDGES}"
             )));
         }
+        let inserted_index = edges.len();
         edges.push(SemanticRegionEdge {
-            edge_id,
+            edge_id: edge_id.clone(),
             source,
             target,
             relationship: relationship.to_string(),
@@ -5176,6 +5503,7 @@ fn semantic_layout_from_graph(
             source_evidence,
             alternatives: Vec::new(),
         });
+        edge_index.insert(edge_id, inserted_index);
         Ok(())
     };
 
@@ -5758,20 +6086,16 @@ fn semantic_layout_from_graph(
             )?;
         }
     }
+    let node_page_by_id = nodes
+        .iter()
+        .map(|node| (node.node_id.clone(), node.page))
+        .collect::<BTreeMap<_, _>>();
     for pair in reading_nodes.windows(2) {
         if pair[0] == pair[1] {
             continue;
         }
-        let source_page = nodes
-            .iter()
-            .find(|node| node.node_id == pair[0])
-            .map(|node| node.page)
-            .unwrap_or(0);
-        let target_page = nodes
-            .iter()
-            .find(|node| node.node_id == pair[1])
-            .map(|node| node.page)
-            .unwrap_or(0);
+        let source_page = node_page_by_id.get(&pair[0]).copied().unwrap_or(0);
+        let target_page = node_page_by_id.get(&pair[1]).copied().unwrap_or(0);
         add_edge(
             pair[0].clone(),
             pair[1].clone(),
@@ -5896,6 +6220,7 @@ fn semantic_layout_from_graph(
 
 pub fn reading_order_report(input: &[u8]) -> Result<Value> {
     let semantic = analyze_semantic_layout(input, None)?;
+    let confidence_edges_sample = semantic.edges.iter().take(512).cloned().collect::<Vec<_>>();
     Ok(json!({
         "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
         "status": "implemented_with_limits",
@@ -5906,7 +6231,13 @@ pub fn reading_order_report(input: &[u8]) -> Result<Value> {
         "machine_order": semantic.reading_order["machine_order"],
         "removed_cycle_edges": semantic.reading_order["removed_cycle_edges"],
         "review_required": semantic.reading_order["review_required"],
-        "confidence_edges": semantic.edges,
+        "confidence_edge_count": semantic.edges.len(),
+        "confidence_edges_sample": confidence_edges_sample,
+        "report_detail_limit": {
+            "edge_sample_limit": 512,
+            "full_graph_available_from_semantic_layout_api": true,
+            "document_wide_reports_use_word_line_paragraph_detail": true
+        },
         "region_graph_invariants": semantic.region_graph_invariants,
         "stable_deterministic": semantic.reading_order["stable_deterministic_candidate_sort"],
     }))
@@ -5914,11 +6245,21 @@ pub fn reading_order_report(input: &[u8]) -> Result<Value> {
 
 pub fn flow_graph_report(input: &[u8]) -> Result<Value> {
     let semantic = analyze_semantic_layout(input, None)?;
+    let nodes_sample = semantic.nodes.iter().take(512).cloned().collect::<Vec<_>>();
+    let edges_sample = semantic.edges.iter().take(512).cloned().collect::<Vec<_>>();
     Ok(json!({
         "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
         "status": "analysis_candidates_with_bounded_source_linked_flow_adapters",
-        "nodes": semantic.nodes,
-        "edges": semantic.edges,
+        "node_count": semantic.nodes.len(),
+        "edge_count": semantic.edges.len(),
+        "nodes_sample": nodes_sample,
+        "edges_sample": edges_sample,
+        "report_detail_limit": {
+            "node_sample_limit": 512,
+            "edge_sample_limit": 512,
+            "full_graph_available_from_semantic_layout_api": true,
+            "document_wide_reports_use_word_line_paragraph_detail": true
+        },
         "region_graph_invariants": semantic.region_graph_invariants,
         "relationships": [
             "paragraph_to_paragraph",
@@ -5977,44 +6318,117 @@ pub fn no_overlay_no_clipping_report(
 /// This does not mutate a document or promise that an unavailable downstream
 /// stage can apply; callers receive the exact currently planned/refused state.
 pub fn query_overflow(input: &[u8], request: &GeometricReflowRequest) -> Result<Value> {
-    let preview = preview_reflow(input, request)?;
+    if request.source_text == request.replacement_text {
+        let preview = no_change_preview_reflow(input, request)?;
+        return Ok(json!({
+            "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
+            "requested_mode": request.requested_mode,
+            "preview_only": true,
+            "overflow_status": preview.overflow_status,
+            "overflow_amount": preview.line_breaking.overflow_amount,
+            "final_line_count": preview.line_breaking.lines.len(),
+            "final_cost": preview.line_breaking.final_cost,
+            "hyphenation": preview.line_breaking.hyphenation,
+            "ordered_stage_evidence": preview.line_breaking.exact_limits,
+            "refusal": preview.refusal,
+            "no_change_proof": true,
+        }));
+    }
+    let region = analyze_geometric_region(input, request)?;
+    let rect = region_for_request(input, request)?;
+    let line_breaking = line_break_with_ordered_local_expansion(input, request, rect)?;
+    let constraints = constraint_solver_report(&region, request, &line_breaking);
+    let refusal = refusal_for(&region, &line_breaking, &constraints, request);
     Ok(json!({
         "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
         "requested_mode": request.requested_mode,
         "preview_only": true,
-        "overflow_status": preview.overflow_status,
-        "overflow_amount": preview.line_breaking.overflow_amount,
-        "final_line_count": preview.line_breaking.lines.len(),
-        "final_cost": preview.line_breaking.final_cost,
-        "hyphenation": preview.line_breaking.hyphenation,
-        "ordered_stage_evidence": preview.line_breaking.exact_limits,
-        "refusal": preview.refusal,
+        "overflow_status": line_breaking.overflow_status,
+        "overflow_amount": line_breaking.overflow_amount,
+        "final_line_count": line_breaking.lines.len(),
+        "final_cost": line_breaking.final_cost,
+        "hyphenation": line_breaking.hyphenation,
+        "ordered_stage_evidence": line_breaking.exact_limits,
+        "refusal": refusal,
         "no_change_proof": true,
     }))
 }
 
 /// Query the bounded hard/soft Cassowary report produced for a reflow request.
 pub fn query_constraints(input: &[u8], request: &GeometricReflowRequest) -> Result<Value> {
-    let preview = preview_reflow(input, request)?;
+    if request.source_text == request.replacement_text {
+        let preview = no_change_preview_reflow(input, request)?;
+        return Ok(json!({
+            "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
+            "requested_mode": request.requested_mode,
+            "preview_only": true,
+            "constraints": preview.constraints,
+            "refusal": preview.refusal,
+            "no_change_proof": true,
+        }));
+    }
+    let region = analyze_geometric_region(input, request)?;
+    let rect = region_for_request(input, request)?;
+    let line_breaking = line_break_with_ordered_local_expansion(input, request, rect)?;
+    let constraints = constraint_solver_report(&region, request, &line_breaking);
+    let refusal = refusal_for(&region, &line_breaking, &constraints, request);
     Ok(json!({
         "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
         "requested_mode": request.requested_mode,
         "preview_only": true,
-        "constraints": preview.constraints,
-        "refusal": preview.refusal,
+        "constraints": constraints,
+        "refusal": refusal,
         "no_change_proof": true,
     }))
 }
 
 /// Query central confidence/review enforcement for a proposed reflow.
 pub fn query_confidence(input: &[u8], request: &GeometricReflowRequest) -> Result<Value> {
-    let preview = preview_reflow(input, request)?;
+    if request.source_text == request.replacement_text {
+        let preview = no_change_preview_reflow(input, request)?;
+        return Ok(json!({
+            "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
+            "requested_mode": request.requested_mode,
+            "preview_only": true,
+            "confidence": preview.confidence,
+            "refusal": preview.refusal,
+            "no_change_proof": true,
+        }));
+    }
+    let region = analyze_geometric_region(input, request)?;
+    let rect = region_for_request(input, request)?;
+    let line_breaking = line_break_with_ordered_local_expansion(input, request, rect)?;
+    let constraints = constraint_solver_report(&region, request, &line_breaking);
+    let confidence = evaluate_reflow_confidence(
+        &region.confidence,
+        request.requested_mode,
+        &ReflowConfidencePolicy::default(),
+    );
+    let confidence_decision =
+        serde_json::from_value::<ConfidenceDecision>(confidence["decision"].clone())
+            .unwrap_or(ConfidenceDecision::Refuse);
+    let refusal = refusal_for(&region, &line_breaking, &constraints, request).or_else(|| {
+        if matches!(
+            confidence_decision,
+            ConfidenceDecision::ReviewRequired | ConfidenceDecision::Refuse
+        ) && !request.approve_low_confidence_structure
+        {
+            Some(json!({
+                "code": if confidence_decision == ConfidenceDecision::Refuse { "refuse" } else { "review_required" },
+                "message": "text_reflow confidence policy does not permit an unreviewed apply",
+                "confidence": confidence.clone(),
+                "no_change_proof": true,
+            }))
+        } else {
+            None
+        }
+    });
     Ok(json!({
         "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
         "requested_mode": request.requested_mode,
         "preview_only": true,
-        "confidence": preview.confidence,
-        "refusal": preview.refusal,
+        "confidence": confidence,
+        "refusal": refusal,
         "no_change_proof": true,
     }))
 }
@@ -6089,8 +6503,11 @@ pub fn transaction_undo_report(input: &[u8], request: &GeometricReflowRequest) -
 }
 
 pub fn text_reflow_report(input: &[u8]) -> Result<Value> {
-    let scene = build_scene_graph(input, &[])?;
-    let semantic = semantic_layout_from_graph(input, &scene, None)?;
+    let engine = ContentEngine::open_bytes(input.to_vec())?;
+    let pages =
+        (1..=engine.page_count()?.min(MAX_PUBLIC_SEMANTIC_REPORT_PAGES)).collect::<Vec<_>>();
+    let scene = build_scene_graph_for_analysis(input, &pages)?;
+    let semantic = semantic_layout_from_graph(input, &scene, None, Some(pages.as_slice()))?;
     Ok(json!({
         "schema_version": TEXT_REFLOW_SCHEMA_VERSION,
         "status": "implemented_with_open_text_reflow_gates",

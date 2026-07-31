@@ -1,0 +1,22 @@
+{
+  "by_stage": {
+    "validate": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 36.836,
+      "p95_ms": 103.356,
+      "p99_ms": 224.629,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "corpus_files": 5044,
+  "schema_version": "wellfriend.all_feature_corpus.v1",
+  "stages": [
+    "validate"
+  ],
+  "total_stage_runs": 5044
+}

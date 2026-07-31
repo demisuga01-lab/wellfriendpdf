@@ -770,11 +770,31 @@ fn annotation_report_document(document: &PdfDocument) -> Result<AnnotationReport
     let mut unsafe_actions = 0usize;
     let mut diagnostics = Vec::new();
     for page in &pages {
-        let page_obj = reader.get_and_resolve(page.object_number, page.generation_number)?;
+        let page_obj = match reader.get_and_resolve(page.object_number, page.generation_number) {
+            Ok(page_obj) => page_obj,
+            Err(err) => {
+                diagnostics.push(InteractiveDiagnostic::warning_on_page(
+                    "annotation.page.resolve_failed",
+                    page.page_number,
+                    format!("annotation inventory skipped unresolved page object: {err}"),
+                ));
+                continue;
+            }
+        };
         let Some(page_dict) = page_obj.as_dict() else {
             continue;
         };
-        let annot_refs = resolve_annotation_entries(reader, page_dict.get("Annots"))?;
+        let annot_refs = match resolve_annotation_entries(reader, page_dict.get("Annots")) {
+            Ok(annot_refs) => annot_refs,
+            Err(err) => {
+                diagnostics.push(InteractiveDiagnostic::warning_on_page(
+                    "annotation.annots.resolve_failed",
+                    page.page_number,
+                    format!("annotation inventory skipped unresolved annotation reference: {err}"),
+                ));
+                continue;
+            }
+        };
         for (index, (annot_ref, annot_obj)) in annot_refs.into_iter().enumerate() {
             let Some(dict) = annot_obj.as_dict() else {
                 continue;

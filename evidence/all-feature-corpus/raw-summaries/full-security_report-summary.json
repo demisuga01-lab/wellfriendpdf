@@ -1,0 +1,22 @@
+{
+  "by_stage": {
+    "security_report": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 25.046,
+      "p95_ms": 72.022,
+      "p99_ms": 121.902,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "corpus_files": 5044,
+  "schema_version": "wellfriend.all_feature_corpus.v1",
+  "stages": [
+    "security_report"
+  ],
+  "total_stage_runs": 5044
+}

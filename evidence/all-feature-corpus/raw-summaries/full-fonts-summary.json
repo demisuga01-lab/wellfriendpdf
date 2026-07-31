@@ -1,0 +1,22 @@
+{
+  "by_stage": {
+    "fonts": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 24.337,
+      "p95_ms": 55.416,
+      "p99_ms": 81.329,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "corpus_files": 5044,
+  "schema_version": "wellfriend.all_feature_corpus.v1",
+  "stages": [
+    "fonts"
+  ],
+  "total_stage_runs": 5044
+}

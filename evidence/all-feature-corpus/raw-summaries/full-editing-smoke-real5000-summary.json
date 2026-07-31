@@ -1,0 +1,113 @@
+{
+  "by_stage": {
+    "edit_eligibility": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 390.631,
+      "p95_ms": 1002.471,
+      "p99_ms": 1569.313,
+      "skipped": 1,
+      "successes": 5044,
+      "timeouts": 0
+    },
+    "extract_page1_text": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 646.189,
+      "p95_ms": 9843.842,
+      "p99_ms": 15314.613,
+      "skipped": 0,
+      "successes": 5044,
+      "timeouts": 0
+    },
+    "overflow_report": {
+      "error_classes": {
+        "none": 5033,
+        "typed_refusal": 11
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 47.079,
+      "p95_ms": 309.038,
+      "p99_ms": 663.998,
+      "skipped": 1,
+      "successes": 5044,
+      "timeouts": 0
+    },
+    "reflow_confidence": {
+      "error_classes": {
+        "none": 5033,
+        "typed_refusal": 11
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 47.405,
+      "p95_ms": 309.561,
+      "p99_ms": 653.107,
+      "skipped": 1,
+      "successes": 5044,
+      "timeouts": 0
+    },
+    "reflow_constraints": {
+      "error_classes": {
+        "none": 5033,
+        "typed_refusal": 11
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 47.25,
+      "p95_ms": 302.75,
+      "p99_ms": 657.88,
+      "skipped": 1,
+      "successes": 5044,
+      "timeouts": 0
+    },
+    "reflow_preview": {
+      "error_classes": {
+        "none": 5033,
+        "typed_refusal": 11
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 50.398,
+      "p95_ms": 313.111,
+      "p99_ms": 669.886,
+      "skipped": 1,
+      "successes": 5044,
+      "timeouts": 0
+    },
+    "scene_report_page1": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 307.411,
+      "p95_ms": 868.142,
+      "p99_ms": 1436.156,
+      "skipped": 0,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "kind": "wellfriend_editing_corpus_smoke",
+  "latest_rows": 35308,
+  "pdf_files": 5044,
+  "schema_version": 1,
+  "stages": [
+    "extract_page1_text",
+    "scene_report_page1",
+    "edit_eligibility",
+    "reflow_preview",
+    "overflow_report",
+    "reflow_constraints",
+    "reflow_confidence"
+  ],
+  "total_rows": 35340
+}

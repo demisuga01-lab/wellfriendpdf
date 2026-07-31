@@ -1,0 +1,22 @@
+{
+  "by_stage": {
+    "reading_order_report": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 972.761,
+      "p95_ms": 5357.27,
+      "p99_ms": 27926.377,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "corpus_files": 5044,
+  "schema_version": "wellfriend.all_feature_corpus.v1",
+  "stages": [
+    "reading_order_report"
+  ],
+  "total_stage_runs": 5044
+}

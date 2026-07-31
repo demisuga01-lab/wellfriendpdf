@@ -1,0 +1,22 @@
+{
+  "by_stage": {
+    "render_compare_page1": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 100.243,
+      "p95_ms": 341.289,
+      "p99_ms": 546.154,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "corpus_files": 5044,
+  "schema_version": "wellfriend.all_feature_corpus.v1",
+  "stages": [
+    "render_compare_page1"
+  ],
+  "total_stage_runs": 5044
+}

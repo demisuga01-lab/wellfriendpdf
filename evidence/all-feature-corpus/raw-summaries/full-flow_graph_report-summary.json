@@ -1,0 +1,22 @@
+{
+  "by_stage": {
+    "flow_graph_report": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 995.009,
+      "p95_ms": 5388.723,
+      "p99_ms": 28235.433,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "corpus_files": 5044,
+  "schema_version": "wellfriend.all_feature_corpus.v1",
+  "stages": [
+    "flow_graph_report"
+  ],
+  "total_stage_runs": 5044
+}

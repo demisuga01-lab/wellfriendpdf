@@ -1,0 +1,22 @@
+{
+  "by_stage": {
+    "extract_tables": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 100.313,
+      "p95_ms": 315.007,
+      "p99_ms": 651.297,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "corpus_files": 5044,
+  "schema_version": "wellfriend.all_feature_corpus.v1",
+  "stages": [
+    "extract_tables"
+  ],
+  "total_stage_runs": 5044
+}

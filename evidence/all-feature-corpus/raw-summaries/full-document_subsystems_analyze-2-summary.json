@@ -1,0 +1,22 @@
+{
+  "by_stage": {
+    "document_subsystems_analyze": {
+      "error_classes": {
+        "none": 5044
+      },
+      "failures": 0,
+      "files": 5044,
+      "median_ms": 1194.613,
+      "p95_ms": 5464.166,
+      "p99_ms": 27381.181,
+      "successes": 5044,
+      "timeouts": 0
+    }
+  },
+  "corpus_files": 5044,
+  "schema_version": "wellfriend.all_feature_corpus.v1",
+  "stages": [
+    "document_subsystems_analyze"
+  ],
+  "total_stage_runs": 5044
+}
