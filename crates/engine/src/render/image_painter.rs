@@ -131,8 +131,9 @@ impl ImagePainter {
         footprint_x: f64,
         footprint_y: f64,
         smooth_mode: SmoothMode,
+        use_area_average: bool,
     ) -> [u8; 4] {
-        if footprint_x > 1.0 || footprint_y > 1.0 {
+        if use_area_average && (footprint_x > 1.0 || footprint_y > 1.0) {
             Self::area_average_sample(image, u, v, footprint_x.max(1.0), footprint_y.max(1.0))
         } else {
             match smooth_mode {
@@ -173,6 +174,7 @@ impl ImagePainter {
         } else {
             smooth_mode
         };
+        let use_area_average = buf.render_mode().is_high_quality();
         let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
         if x0 > x1 || y0 > y1 {
             return;
@@ -182,7 +184,15 @@ impl ImagePainter {
             for px in x0..=x1 {
                 let u = (px as f64 + 0.5 - px_min) / dst_w;
                 let v = (py as f64 + 0.5 - py_min) / dst_h;
-                let sample = Self::sample(image, u, v, footprint_x, footprint_y, smooth);
+                let sample = Self::sample(
+                    image,
+                    u,
+                    v,
+                    footprint_x,
+                    footprint_y,
+                    smooth,
+                    use_area_average,
+                );
                 let coverage = if image.channels == 4 {
                     sample[3] as f32 / 255.0
                 } else {
@@ -230,6 +240,7 @@ impl ImagePainter {
         } else {
             smooth_mode
         };
+        let use_area_average = buf.render_mode().is_high_quality();
         let (x0, x1, y0, y1) = clipped_bounds(buf, px_min, px_max, py_min, py_max);
         if x0 > x1 || y0 > y1 {
             return;
@@ -242,7 +253,15 @@ impl ImagePainter {
                     continue;
                 }
 
-                let sample = Self::sample(image, u, v, footprint_x, footprint_y, smooth);
+                let sample = Self::sample(
+                    image,
+                    u,
+                    v,
+                    footprint_x,
+                    footprint_y,
+                    smooth,
+                    use_area_average,
+                );
                 let coverage = if image.channels == 4 {
                     sample[3] as f32 / 255.0
                 } else {
@@ -620,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn minified_image_paint_uses_area_average() {
+    fn high_quality_minified_image_paint_uses_area_average() {
         let mut pixels = Vec::new();
         for y in 0..4 {
             for x in 0..4 {
@@ -637,7 +656,12 @@ mod tests {
         };
         let vp = Viewport::new([0.0, 0.0, 2.0, 2.0], 72);
         let ctm = Transform2D::new(2.0, 0.0, 0.0, 2.0, 0.0, 0.0);
-        let mut buf = PixelBuffer::new_filled(2, 2, WHITE);
+        let mut buf = PixelBuffer::new_filled_with_mode(
+            2,
+            2,
+            WHITE,
+            crate::render::buffer::RenderMode::HighQuality,
+        );
 
         ImagePainter::paint_image(&mut buf, &image, &ctm, &vp);
 

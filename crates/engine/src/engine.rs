@@ -1391,6 +1391,31 @@ impl ContentEngine {
         PageRenderer::render_page_display_list_with_mode(self, page_number, dpi, render_mode)
     }
 
+    /// Render a page through display-list replay with cancellation.
+    pub fn render_page_display_list_cancellable_with_mode(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        cancel: &crate::cancel::CancelToken,
+        render_mode: RenderMode,
+    ) -> Result<Option<PixelBuffer>> {
+        let list = PageRenderer::build_display_list(self, page_number, dpi)?;
+        if !list.is_fully_supported() {
+            Ok(None)
+        } else {
+            Ok(Some(
+                PageRenderer::render_display_list_cancellable_with_mode(
+                    self,
+                    page_number,
+                    dpi,
+                    &list,
+                    cancel,
+                    render_mode,
+                )?,
+            ))
+        }
+    }
+
     /// Render a pixel-space page tile through the display-list path where
     /// possible, falling back to the compatibility renderer only when the list
     /// reports an explicit unsupported reason.

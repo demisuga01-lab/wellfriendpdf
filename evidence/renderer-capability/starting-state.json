@@ -1,0 +1,38 @@
+{
+  "schema_version": "wellfriend.renderer_capability.starting_state.v1",
+  "local_head": "37c7309185fd0d51b5cb6979f6a765b13d9d8fac",
+  "local_head_subject": "Add real 5000 PDF benchmark evidence",
+  "branch": "main",
+  "remote": "https://github.com/demisuga01-lab/wellfriendpdf.git",
+  "attached_prompt_files": [
+    {
+      "path": "C:\\Users\\payme\\.codex\\attachments\\0c61d4f1-02f9-41e8-8e9b-dcdd739fab25\\pasted-text-1.txt",
+      "bytes": 50059,
+      "lines": 2604,
+      "sha256": "907516B1A6D81EE277F69F008256703C3542762DD5C6140C68F020457E42CC79"
+    },
+    {
+      "path": "C:\\Users\\payme\\.codex\\attachments\\0c61d4f1-02f9-41e8-8e9b-dcdd739fab25\\pasted-text-2.txt",
+      "bytes": 50058,
+      "lines": 2603,
+      "sha256": "32495D9B101CF9EC2D593A56FDD5AC6D9FFB60297C523CF9DB7F9ED525064883"
+    }
+  ],
+  "prompt_file_relationship": "same prompt content except a trailing blank line in pasted-text-1.txt",
+  "baseline_real_5000_corpus": {
+    "source": "public arXiv PDFs already downloaded on VPS/block storage",
+    "file_count": 5044,
+    "bytes": 17059245901,
+    "qpdf_counted_pages": 116784,
+    "duplicate_sha256_count": 0
+  },
+  "new_vps": {
+    "ssh": "ubuntu@51.77.178.150",
+    "operator_budget": "8 vCPU / 16 GiB RAM",
+    "block_mount": "/mnt/wellpdf-block",
+    "real_5000_corpus": "/mnt/wellpdf-block/corpus/real-5000-current",
+    "result_dir": "/mnt/wellpdf-block/results/renderer-capability-20260730T172700Z"
+  },
+  "local_validation_policy": "No cargo build or test stages are run on the user's Windows device; heavy validation is executed on the VPS.",
+  "status": "implementation_and_vps_validation_in_progress"
+}

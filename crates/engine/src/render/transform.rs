@@ -223,6 +223,16 @@ pub struct Viewport {
     pub height_px: u32,
     /// Page display rotation in clockwise degrees.
     pub rotation: u32,
+    /// Pixel-space x offset of this viewport inside the full rendered page.
+    ///
+    /// Full-page viewports use `(0, 0)`. Tile and band viewports keep the same
+    /// PDF page coordinate system but subtract this offset from the final
+    /// page-to-device transform, so all renderers can execute the canonical page
+    /// program directly into a bounded tile buffer instead of rendering a full
+    /// page and cropping it.
+    pub origin_x_px: u32,
+    /// Pixel-space y offset of this viewport inside the full rendered page.
+    pub origin_y_px: u32,
 }
 
 impl Viewport {
@@ -241,6 +251,8 @@ impl Viewport {
             width_px,
             height_px,
             rotation: 0,
+            origin_x_px: 0,
+            origin_y_px: 0,
         }
     }
 
@@ -255,9 +267,33 @@ impl Viewport {
                 width_px: base.height_px,
                 height_px: base.width_px,
                 rotation,
+                origin_x_px: 0,
+                origin_y_px: 0,
             },
             0 | 180 => Self { rotation, ..base },
             _ => Self { rotation, ..base },
+        }
+    }
+
+    /// Return a tile/band viewport over this full-page viewport.
+    ///
+    /// The tile is expressed in full rendered-page pixels. Coordinates produced
+    /// by [`to_transform`](Self::to_transform) become tile-local while
+    /// `media_box`, `dpi`, and `rotation` remain identical to the full page.
+    pub fn pixel_window(&self, x: u32, y: u32, width: u32, height: u32) -> Self {
+        let clamped_x = x.min(self.width_px);
+        let clamped_y = y.min(self.height_px);
+        let clamped_width = width.min(self.width_px.saturating_sub(clamped_x));
+        let clamped_height = height.min(self.height_px.saturating_sub(clamped_y));
+        Self {
+            media_box: self.media_box,
+            dpi: self.dpi,
+            scale: self.scale,
+            width_px: clamped_width,
+            height_px: clamped_height,
+            rotation: self.rotation,
+            origin_x_px: self.origin_x_px.saturating_add(clamped_x),
+            origin_y_px: self.origin_y_px.saturating_add(clamped_y),
         }
     }
 
@@ -298,7 +334,7 @@ impl Viewport {
         let y2 = self.media_box[3];
         let s = self.scale;
 
-        match self.rotation % 360 {
+        let mut transform = match self.rotation % 360 {
             0 => Transform2D {
                 a: s,
                 b: 0.0,
@@ -349,7 +385,10 @@ impl Viewport {
                 e: -x1 * s,
                 f: y2 * s,
             },
-        }
+        };
+        transform.e -= self.origin_x_px as f64;
+        transform.f -= self.origin_y_px as f64;
+        transform
     }
 }
 
@@ -608,6 +647,23 @@ mod tests {
     fn viewport_new_has_rotation_zero() {
         let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
         assert_eq!(vp.rotation, 0);
+        assert_eq!(vp.origin_x_px, 0);
+        assert_eq!(vp.origin_y_px, 0);
+    }
+
+    #[test]
+    fn pixel_window_subtracts_tile_origin_from_transform() {
+        let full = Viewport::new([0.0, 0.0, 200.0, 100.0], 72);
+        let tile = full.pixel_window(25, 10, 50, 40);
+        assert_eq!(tile.width_px, 50);
+        assert_eq!(tile.height_px, 40);
+        assert_eq!(tile.origin_x_px, 25);
+        assert_eq!(tile.origin_y_px, 10);
+
+        let (fx, fy) = full.page_to_pixel_f64(25.0, 90.0);
+        let (tx, ty) = tile.page_to_pixel_f64(25.0, 90.0);
+        assert_eq!((fx, fy), (25.0, 10.0));
+        assert_eq!((tx, ty), (0.0, 0.0));
     }
 
     #[test]

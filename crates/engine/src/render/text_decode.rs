@@ -50,11 +50,21 @@ pub fn decode_text_bytes(
     let Some(font_dict) = resources.fonts.get(font_name) else {
         return latin1_glyphs(bytes);
     };
+    let resolver = FontResolver::new(font_dict, reader);
+    decode_text_bytes_with_resolver(bytes, font_dict, &resolver, reader)
+}
+
+/// Decode a text string using a caller-owned resolver cache.
+pub fn decode_text_bytes_with_resolver(
+    bytes: &[u8],
+    font_dict: &PdfDictionary,
+    resolver: &FontResolver,
+    reader: &PdfReader,
+) -> Vec<DecodedGlyph> {
     if detect_font_subtype(font_dict) == FontSubtype::Type0 {
-        return decode_type0_text(bytes, font_dict, reader);
+        return decode_type0_text_with_resolver(bytes, font_dict, resolver, reader);
     }
 
-    let resolver = FontResolver::new(font_dict, reader);
     let has_explicit_widths = font_dict.get_array("Widths").is_some();
     let mut glyphs = Vec::new();
     let code_size = resolver.code_size().max(1);
@@ -94,13 +104,13 @@ pub fn decode_text_bytes(
     glyphs
 }
 
-fn decode_type0_text(
+fn decode_type0_text_with_resolver(
     bytes: &[u8],
     font_dict: &PdfDictionary,
+    resolver: &FontResolver,
     reader: &PdfReader,
 ) -> Vec<DecodedGlyph> {
     let descendant_font = get_descendant_font(font_dict, reader);
-    let resolver = FontResolver::new(font_dict, reader);
     let render_as_gid = cid_font_has_embedded_program(descendant_font.as_ref(), reader);
     let mut glyphs = Vec::new();
     let mut idx = 0usize;

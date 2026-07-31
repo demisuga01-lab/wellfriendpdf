@@ -1,0 +1,55 @@
+{
+  "corpus": {
+    "bytes": 17059245901,
+    "duplicate_sha256": 0,
+    "external_pages": 116975,
+    "files": 5044,
+    "path": "/mnt/wellpdf-block/corpus/real-5000-current",
+    "qpdf_pages": 116784
+  },
+  "failure_closure": {
+    "remaining_failure_subset_failures": 0,
+    "remaining_failure_subset_files": 26,
+    "stage_artifact": "stages/wellfriend-all-pages-failures-pattern-solid-300s-r3.json",
+    "stage_sha256": "91ded079667525b8abe34b8b7bb3a8d9e22c96fff9c9b33039665ff1ffc9d021"
+  },
+  "generated_from": "VPS aggregate summaries only; raw per-file logs remain on block storage",
+  "previous_wellfriend_all_pages": {
+    "failed_files": 30,
+    "median_ms": 1028.75506,
+    "p95_ms": 4980.782612999999,
+    "p99_ms": 19200.608247,
+    "pages_rendered": 116493,
+    "successful_files": 5014,
+    "summary_artifact": "artifacts/wellfriend-render-all-pages-72-resolvercache-summary.json",
+    "summary_sha256": "0da61039206924adf3a056a7220eb83f2cdcf03e836ff4863c402cec2d176802"
+  },
+  "result_dir": "/mnt/wellpdf-block/results/renderer-capability-20260730T172700Z",
+  "schema_version": "wellfriend.renderer_capability.final.v1",
+  "wellfriend_final": {
+    "duration_sec": 991,
+    "evidence": "raw",
+    "failed_files": 0,
+    "files": 5044,
+    "max_ms": 82152.472169,
+    "median_ms": 947.4176640000001,
+    "median_render_ms": 876.1361289999999,
+    "p95_ms": 4170.261071,
+    "p95_render_ms": 4022.111328,
+    "p99_ms": 11414.396147,
+    "p99_render_ms": 11278.312436,
+    "pages_attempted": 116975,
+    "pages_rendered": 116975,
+    "peak_rss_kib": "3624676",
+    "pipeline": "immediate",
+    "render_quality": "compat",
+    "stage_artifact": "stages/wellfriend-render-all-pages-final-current-2.json",
+    "stage_sha256": "3977b2cbe9d625594c94706cf1937f993e6f0d57dd382d12072fc09d0b862a16",
+    "successful_files": 5044,
+    "summary_artifact": "wellfriend-render-all-pages-final-current-2-summary.json",
+    "summary_sha256": "c77d1bc8325484be5025924db19e0a811ab8cd3417eda3394d0055e7b79a58b0",
+    "timeout_ms": 300000,
+    "tool": "wellfriendpdf",
+    "workers": 8
+  }
+}

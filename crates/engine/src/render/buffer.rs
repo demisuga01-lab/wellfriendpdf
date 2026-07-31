@@ -154,6 +154,7 @@ pub struct ClipMask {
     pub width: u32,
     pub height: u32,
     mask: Vec<u8>,
+    solid: Option<bool>,
 }
 
 impl ClipMask {
@@ -164,7 +165,29 @@ impl ClipMask {
             width,
             height,
             mask: vec![255u8; len],
+            solid: Some(true),
         }
+    }
+
+    /// All-clipped mask: no in-bounds pixel is visible.
+    pub fn empty(width: u32, height: u32) -> Self {
+        let len = (width as usize).checked_mul(height as usize).unwrap_or(0);
+        Self {
+            width,
+            height,
+            mask: vec![0u8; len],
+            solid: Some(false),
+        }
+    }
+
+    #[inline]
+    pub fn is_all_visible(&self) -> bool {
+        self.solid == Some(true)
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.solid == Some(false)
     }
 
     /// Query whether pixel (x, y) is inside the clip.
@@ -172,6 +195,9 @@ impl ClipMask {
     pub fn is_visible(&self, x: i32, y: i32) -> bool {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return true;
+        }
+        if let Some(solid) = self.solid {
+            return solid;
         }
         let idx = match (y as usize)
             .checked_mul(self.width as usize)
@@ -195,6 +221,9 @@ impl ClipMask {
             return;
         };
         if let Some(value) = self.mask.get_mut(idx) {
+            if *value != if visible { 255 } else { 0 } {
+                self.solid = None;
+            }
             *value = if visible { 255 } else { 0 };
         }
     }
@@ -211,9 +240,22 @@ impl ClipMask {
             );
             return;
         }
+        if other.is_all_visible() || self.is_empty() {
+            return;
+        }
+        if self.is_all_visible() {
+            *self = other.clone();
+            return;
+        }
+        if other.is_empty() {
+            self.mask.fill(0);
+            self.solid = Some(false);
+            return;
+        }
         for (a, b) in self.mask.iter_mut().zip(other.mask.iter()) {
             *a = (*a).min(*b);
         }
+        self.solid = None;
     }
 
     /// Union this mask with another mask.
@@ -228,9 +270,22 @@ impl ClipMask {
             );
             return;
         }
+        if other.is_empty() || self.is_all_visible() {
+            return;
+        }
+        if self.is_empty() {
+            *self = other.clone();
+            return;
+        }
+        if other.is_all_visible() {
+            self.mask.fill(255);
+            self.solid = Some(true);
+            return;
+        }
         for (a, b) in self.mask.iter_mut().zip(other.mask.iter()) {
             *a = (*a).max(*b);
         }
+        self.solid = None;
     }
 
     /// Fill a rectangular mask region with visible or clipped.
@@ -247,6 +302,15 @@ impl ClipMask {
             return;
         }
 
+        if x0 == 0 && y0 == 0 && x1 == self.width as i32 && y1 == self.height as i32 {
+            self.mask.fill(value);
+            self.solid = Some(visible);
+            return;
+        }
+
+        if self.solid != Some(visible) {
+            self.solid = None;
+        }
         for row in y0..y1 {
             let start = row as usize * self.width as usize + x0 as usize;
             let end = row as usize * self.width as usize + x1 as usize;
@@ -262,8 +326,7 @@ impl ClipMask {
     }
 
     fn scanline_fill(flat: &FlatPath, width: u32, height: u32, rule: FillRule) -> Self {
-        let mut clip = Self::all_visible(width, height);
-        clip.mask.fill(0);
+        let mut clip = Self::empty(width, height);
 
         let mut edges = Vec::new();
         for subpath in &flat.subpaths {
@@ -1010,6 +1073,15 @@ impl PixelBuffer {
     /// Return RGBA bytes.
     pub fn to_rgba_bytes(&self) -> Vec<u8> {
         self.data.clone()
+    }
+
+    /// Borrow the internal RGBA bytes without allocating.
+    ///
+    /// This is intended for hashing, comparison, and zero-copy binding paths
+    /// that do not need ownership of the pixel buffer. The byte layout is the
+    /// same as [`PixelBuffer::to_rgba_bytes`].
+    pub fn rgba_bytes(&self) -> &[u8] {
+        &self.data
     }
 
     /// Convert to a RawImage for use with ImageEncoder.

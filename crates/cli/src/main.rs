@@ -533,6 +533,8 @@ enum Commands {
     ExtractImages(ExtractImagesArgs),
     /// Render PDF pages to images as a ZIP
     Render(RenderArgs),
+    /// Render a PDF corpus in one process and write JSONL/summary evidence
+    RenderCorpus(RenderCorpusArgs),
     /// Emit Native Renderer display-list/native-replay counters for rendered pages
     RenderCompare(RenderCompareArgs),
     /// Rasterize PDF pages to individual JPG/PNG image files
@@ -2787,6 +2789,45 @@ struct RenderCompareArgs {
 }
 
 #[derive(Parser)]
+struct RenderCorpusArgs {
+    /// Directory containing PDF files. Traversal is recursive and deterministic.
+    corpus: PathBuf,
+    /// JSONL per-file output path
+    #[arg(long)]
+    jsonl: PathBuf,
+    /// Aggregate summary JSON output path
+    #[arg(long)]
+    summary: PathBuf,
+    /// Page selection: first or all
+    #[arg(long, default_value = "first", value_parser = ["first", "all"])]
+    pages: String,
+    /// Resolution in DPI
+    #[arg(short, long, default_value = "72")]
+    dpi: u32,
+    /// Raster compositing mode: compat or high-quality
+    #[arg(long, default_value = "compat", value_parser = ["compat", "high", "high-quality", "hq"])]
+    render_quality: String,
+    /// Rendering pipeline: immediate or display-list
+    #[arg(long, default_value = "display-list", value_parser = ["immediate", "display-list"])]
+    pipeline: String,
+    /// Evidence mode: raw hashes only, PNG encode only, or both
+    #[arg(long, default_value = "raw", value_parser = ["raw", "png", "both"])]
+    evidence: String,
+    /// Optional cap on files for smoke/debug runs
+    #[arg(long)]
+    max_files: Option<usize>,
+    /// Bounded worker count for independent files
+    #[arg(long, default_value_t = 1)]
+    workers: usize,
+    /// Per-page render timeout in milliseconds for corpus validation
+    #[arg(long, default_value_t = 30000)]
+    timeout_ms: u64,
+    /// Password for encrypted PDFs (the empty user password is tried automatically)
+    #[arg(long)]
+    password: Option<String>,
+}
+
+#[derive(Parser)]
 struct PdfToJpgArgs {
     /// Path to the PDF file
     pdf: PathBuf,
@@ -3773,6 +3814,7 @@ fn dispatch(cli: Cli) -> Result<(), Box<dyn Error>> {
         Commands::EvalScore(args) => run_eval_score(args),
         Commands::ExtractImages(args) => run_extract_images(args),
         Commands::Render(args) => run_render(args),
+        Commands::RenderCorpus(args) => run_render_corpus(args),
         Commands::RenderCompare(args) => run_render_compare(args),
         Commands::PdfToJpg(args) => run_pdf_to_jpg(args),
         Commands::ImageToPdf(args) => run_image_to_pdf(args),
@@ -7509,6 +7551,355 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         );
     }
     Ok(())
+}
+
+fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
+    use std::io::{BufWriter, Write};
+    use std::time::Instant;
+    use wellfriendpdf_engine::RenderMode;
+
+    let dpi = args.dpi.clamp(24, 600);
+    let render_mode = RenderMode::from_name(&args.render_quality)
+        .ok_or_else(|| format!("unknown render quality '{}'", args.render_quality))?;
+    let mut files = collect_pdf_paths(&args.corpus)?;
+    if let Some(max_files) = args.max_files {
+        files.truncate(max_files);
+    }
+    if files.is_empty() {
+        return Err(usage_error(format!(
+            "corpus '{}' contains no PDF files",
+            args.corpus.display()
+        )));
+    }
+    if let Some(parent) = args.jsonl.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = args.summary.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let started = Instant::now();
+    let jsonl_file = std::fs::File::create(&args.jsonl)?;
+    let mut jsonl = BufWriter::new(jsonl_file);
+    let mut durations_ms = Vec::with_capacity(files.len());
+    let mut render_durations_ms = Vec::with_capacity(files.len());
+    let mut attempted_pages = 0usize;
+    let mut rendered_pages = 0usize;
+    let mut successful_files = 0usize;
+    let mut failed_files = 0usize;
+    let mut png_bytes_total = 0usize;
+
+    let options = RenderCorpusRunOptions {
+        pages: args.pages.clone(),
+        dpi,
+        render_mode,
+        pipeline: args.pipeline.clone(),
+        evidence: args.evidence.clone(),
+        password: args.password.clone(),
+        timeout_ms: args.timeout_ms,
+    };
+    let worker_count = args.workers.clamp(1, 64).min(files.len().max(1));
+    let records: Vec<_> = if worker_count == 1 {
+        files
+            .iter()
+            .enumerate()
+            .map(|(index, pdf)| render_corpus_file_record(index, pdf, &options))
+            .collect()
+    } else {
+        use rayon::prelude::*;
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(worker_count)
+            .thread_name(|index| format!("wellfriend-render-corpus-{index}"))
+            .build()?;
+        pool.install(|| {
+            files
+                .par_iter()
+                .enumerate()
+                .map(|(index, pdf)| render_corpus_file_record(index, pdf, &options))
+                .collect()
+        })
+    };
+
+    for record in records {
+        durations_ms.push(record.duration_ms);
+        render_durations_ms.push(record.render_duration_ms);
+        attempted_pages += record.pages_attempted;
+        rendered_pages += record.pages_rendered;
+        png_bytes_total += record.png_bytes;
+        if record.ok {
+            successful_files += 1;
+        } else {
+            failed_files += 1;
+        }
+        writeln!(jsonl, "{}", serde_json::to_string(&record.json)?)?;
+    }
+    jsonl.flush()?;
+
+    let elapsed_sec = started.elapsed().as_secs_f64();
+    let mut sorted = durations_ms.clone();
+    sorted.sort_by(|a, b| a.total_cmp(b));
+    let mut sorted_render = render_durations_ms.clone();
+    sorted_render.sort_by(|a, b| a.total_cmp(b));
+    let summary = serde_json::json!({
+        "schema_version": "wellfriend.render_corpus.v1",
+        "corpus": args.corpus.display().to_string(),
+        "files": files.len(),
+        "successful_files": successful_files,
+        "failed_files": failed_files,
+        "pages_mode": args.pages,
+        "pages_attempted": attempted_pages,
+        "pages_rendered": rendered_pages,
+        "dpi": dpi,
+    "render_quality": render_mode.as_str(),
+    "pipeline": args.pipeline,
+    "evidence": args.evidence,
+    "workers": worker_count,
+        "timeout_ms": args.timeout_ms,
+        "median_ms": percentile_sorted(&sorted, 0.50),
+        "p95_ms": percentile_sorted(&sorted, 0.95),
+        "p99_ms": percentile_sorted(&sorted, 0.99),
+        "median_render_ms": percentile_sorted(&sorted_render, 0.50),
+        "p95_render_ms": percentile_sorted(&sorted_render, 0.95),
+        "p99_render_ms": percentile_sorted(&sorted_render, 0.99),
+        "max_ms": sorted.last().copied().unwrap_or(0.0),
+        "total_sec": elapsed_sec,
+        "png_bytes_total": png_bytes_total,
+        "jsonl": args.jsonl.display().to_string(),
+    });
+    std::fs::write(&args.summary, serde_json::to_string_pretty(&summary)?)?;
+    println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+#[derive(Clone)]
+struct RenderCorpusRunOptions {
+    pages: String,
+    dpi: u32,
+    render_mode: wellfriendpdf_engine::RenderMode,
+    pipeline: String,
+    evidence: String,
+    password: Option<String>,
+    timeout_ms: u64,
+}
+
+struct RenderCorpusFileRecord {
+    json: serde_json::Value,
+    duration_ms: f64,
+    render_duration_ms: f64,
+    pages_attempted: usize,
+    pages_rendered: usize,
+    png_bytes: usize,
+    ok: bool,
+}
+
+fn render_corpus_file_record(
+    index: usize,
+    pdf: &Path,
+    options: &RenderCorpusRunOptions,
+) -> RenderCorpusFileRecord {
+    use std::time::Instant;
+    use wellfriendpdf_engine::ImageEncoder;
+
+    let file_started = Instant::now();
+    let mut open_ms = 0.0f64;
+    let mut render_ms = 0.0f64;
+    let mut page_count = 0usize;
+    let mut file_pages_attempted = 0usize;
+    let mut file_pages_rendered = 0usize;
+    let mut file_png_bytes = 0usize;
+    let mut file_hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut error = None::<String>;
+
+    let open_started = Instant::now();
+    match open_engine(pdf, &options.password) {
+        Ok(engine) => {
+            open_ms = open_started.elapsed().as_secs_f64() * 1000.0;
+            match engine.page_count() {
+                Ok(total) => {
+                    page_count = total;
+                    let pages: Box<dyn Iterator<Item = usize>> = if options.pages == "all" {
+                        Box::new(1..=total)
+                    } else if total > 0 {
+                        Box::new(std::iter::once(1))
+                    } else {
+                        Box::new(std::iter::empty())
+                    };
+                    for page in pages {
+                        file_pages_attempted += 1;
+                        let render_started = Instant::now();
+                        let rendered = render_corpus_page(&engine, page, options);
+                        render_ms += render_started.elapsed().as_secs_f64() * 1000.0;
+                        match rendered {
+                            Ok(buffer) => {
+                                if options.evidence == "raw" || options.evidence == "both" {
+                                    file_hash = fnv1a_update(file_hash, buffer.rgba_bytes());
+                                }
+                                if options.evidence == "png" || options.evidence == "both" {
+                                    match ImageEncoder::encode_png_fast(&buffer.to_raw_image()) {
+                                        Ok(png) => file_png_bytes += png.len(),
+                                        Err(err) => {
+                                            error = Some(format!("page {page} png_encode: {err}"));
+                                            break;
+                                        }
+                                    }
+                                }
+                                file_pages_rendered += 1;
+                            }
+                            Err(err) => {
+                                error = Some(format!("page {}: {}", page, err));
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(err) => error = Some(format!("page_count: {err}")),
+            }
+        }
+        Err(err) => error = Some(format!("open: {err}")),
+    }
+
+    let duration_ms = file_started.elapsed().as_secs_f64() * 1000.0;
+    let ok = error.is_none() && file_pages_rendered == file_pages_attempted;
+    let json = serde_json::json!({
+        "index": index,
+        "path": pdf.display().to_string(),
+        "bytes": std::fs::metadata(pdf).map(|m| m.len()).unwrap_or(0),
+        "page_count": page_count,
+        "pages_attempted": file_pages_attempted,
+        "pages_rendered": file_pages_rendered,
+        "duration_ms": duration_ms,
+        "open_ms": open_ms,
+        "render_ms": render_ms,
+        "raw_fnv1a64": format!("{file_hash:016x}"),
+        "png_bytes": file_png_bytes,
+        "ok": ok,
+        "error": error,
+    });
+
+    RenderCorpusFileRecord {
+        json,
+        duration_ms,
+        render_duration_ms: render_ms,
+        pages_attempted: file_pages_attempted,
+        pages_rendered: file_pages_rendered,
+        png_bytes: file_png_bytes,
+        ok,
+    }
+}
+
+fn render_corpus_page(
+    engine: &wellfriendpdf_engine::ContentEngine,
+    page: usize,
+    options: &RenderCorpusRunOptions,
+) -> wellfriendpdf_engine::Result<wellfriendpdf_engine::PixelBuffer> {
+    if options.timeout_ms == 0 {
+        return render_corpus_page_with_cancel(
+            engine,
+            page,
+            options,
+            &wellfriendpdf_engine::CancelToken::none(),
+        );
+    }
+
+    use std::sync::{Arc, Condvar, Mutex};
+    use std::time::Duration;
+
+    let cancel = wellfriendpdf_engine::CancelToken::new();
+    let done = Arc::new((Mutex::new(false), Condvar::new()));
+    let done_for_timer = Arc::clone(&done);
+    let cancel_for_timer = cancel.clone();
+    let timeout = Duration::from_millis(options.timeout_ms);
+    let timer = std::thread::spawn(move || {
+        let (lock, cvar) = &*done_for_timer;
+        let guard = lock.lock().expect("render timeout mutex poisoned");
+        let (guard, _) = cvar
+            .wait_timeout_while(guard, timeout, |finished| !*finished)
+            .expect("render timeout condvar poisoned");
+        if !*guard {
+            cancel_for_timer.cancel();
+        }
+    });
+
+    let result = render_corpus_page_with_cancel(engine, page, options, &cancel);
+    let (lock, cvar) = &*done;
+    if let Ok(mut finished) = lock.lock() {
+        *finished = true;
+        cvar.notify_one();
+    }
+    let _ = timer.join();
+    result
+}
+
+fn render_corpus_page_with_cancel(
+    engine: &wellfriendpdf_engine::ContentEngine,
+    page: usize,
+    options: &RenderCorpusRunOptions,
+    cancel: &wellfriendpdf_engine::CancelToken,
+) -> wellfriendpdf_engine::Result<wellfriendpdf_engine::PixelBuffer> {
+    if options.pipeline == "display-list" {
+        match engine.render_page_display_list_cancellable_with_mode(
+            page,
+            options.dpi,
+            cancel,
+            options.render_mode,
+        ) {
+            Ok(Some(buf)) => Ok(buf),
+            Ok(None) => engine.render_page_cancellable_with_mode(
+                page,
+                options.dpi,
+                cancel,
+                options.render_mode,
+            ),
+            Err(err) => Err(err),
+        }
+    } else {
+        engine.render_page_cancellable_with_mode(page, options.dpi, cancel, options.render_mode)
+    }
+}
+
+fn collect_pdf_paths(root: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    fn visit(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                visit(&path, out)?;
+            } else if file_type.is_file()
+                && path
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .map(|ext| ext.eq_ignore_ascii_case("pdf"))
+                    .unwrap_or(false)
+            {
+                out.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut files = Vec::new();
+    visit(root, &mut files)?;
+    files.sort();
+    Ok(files)
+}
+
+fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    for &byte in bytes {
+        hash ^= byte as u64;
+        hash = hash.wrapping_mul(PRIME);
+    }
+    hash
+}
+
+fn percentile_sorted(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let q = q.clamp(0.0, 1.0);
+    let idx = ((sorted.len() - 1) as f64 * q).ceil() as usize;
+    sorted[idx.min(sorted.len() - 1)]
 }
 
 fn run_pdf_to_jpg(args: PdfToJpgArgs) -> Result<(), Box<dyn Error>> {

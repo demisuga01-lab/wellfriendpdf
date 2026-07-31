@@ -1,3 +1,4 @@
+use crate::cancel::CancelToken;
 use crate::content::state::{LineCap, LineJoin};
 use crate::render::buffer::{PixelBuffer, PixelColor};
 use crate::render::line::DashState;
@@ -315,6 +316,72 @@ impl PathPainter {
     }
 
     #[allow(clippy::too_many_arguments)]
+    pub fn stroke_with_style_cancellable(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        stroke_width: f64,
+        dash: &DashState,
+        cap: &LineCap,
+        join: &LineJoin,
+        miter_limit: f64,
+        cancel: &CancelToken,
+    ) -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let flat = flatten_path(path, ctm, viewport, 0.2);
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
+        let outline = stroke_flat_path(
+            &flat,
+            width_px,
+            dash,
+            cap.clone(),
+            join.clone(),
+            miter_limit,
+        );
+        fill_flat_aa_cancellable(buf, &outline, color, FillRule::NonZero, cancel)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn stroke_with_style_fast_cancellable(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        stroke_width: f64,
+        dash: &DashState,
+        cap: &LineCap,
+        join: &LineJoin,
+        miter_limit: f64,
+        cancel: &CancelToken,
+    ) -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let flat = flatten_path(path, ctm, viewport, 0.5);
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let width_px = (stroke_width * ctm.scale_factor() * viewport.scale).max(1.0);
+        let outline = stroke_flat_path(
+            &flat,
+            width_px,
+            dash,
+            cap.clone(),
+            join.clone(),
+            miter_limit,
+        );
+        fill_flat_scanline_fast(buf, &outline, color, FillRule::NonZero, cancel)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn stroke_internal(
         buf: &mut PixelBuffer,
         path: &Path,
@@ -362,6 +429,38 @@ impl PathPainter {
         }
         let flat = flatten_path(path, ctm, viewport, 0.3);
         fill_flat_aa(buf, &flat, color, rule);
+    }
+
+    pub fn fill_cancellable(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        rule: FillRule,
+        cancel: &CancelToken,
+    ) -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let flat = flatten_path(path, ctm, viewport, 0.3);
+        fill_flat_aa_cancellable(buf, &flat, color, rule, cancel)
+    }
+
+    pub fn fill_fast_cancellable(
+        buf: &mut PixelBuffer,
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        color: PixelColor,
+        rule: FillRule,
+        cancel: &CancelToken,
+    ) -> bool {
+        if cancel.is_cancelled() {
+            return false;
+        }
+        let flat = flatten_path(path, ctm, viewport, 0.5);
+        fill_flat_scanline_fast(buf, &flat, color, rule, cancel)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -526,9 +625,22 @@ impl PathPainter {
 /// both axes. The accumulated winding number is mapped to an opacity in [0,1]
 /// per the fill rule (nonzero or even-odd) and composited with `blend_pixel`.
 fn fill_flat_aa(buf: &mut PixelBuffer, flat: &FlatPath, color: PixelColor, rule: FillRule) {
-    fill_flat_with_compositor(buf, flat, rule, |buf, x, y, coverage| {
+    let _ = fill_flat_with_compositor(buf, flat, rule, None, |buf, x, y, coverage| {
         buf.blend_pixel(x, y, color, coverage);
     });
+}
+
+#[allow(clippy::collapsible_if)]
+fn fill_flat_aa_cancellable(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    color: PixelColor,
+    rule: FillRule,
+    cancel: &CancelToken,
+) -> bool {
+    fill_flat_with_compositor(buf, flat, rule, Some(cancel), |buf, x, y, coverage| {
+        buf.blend_pixel(x, y, color, coverage);
+    })
 }
 
 fn fill_flat_cmyk_overprint_preview(
@@ -539,17 +651,151 @@ fn fill_flat_cmyk_overprint_preview(
     overprint_mode: i32,
     rule: FillRule,
 ) {
-    fill_flat_with_compositor(buf, flat, rule, |buf, x, y, coverage| {
+    let _ = fill_flat_with_compositor(buf, flat, rule, None, |buf, x, y, coverage| {
         buf.blend_device_cmyk_overprint_preview(x, y, cmyk, alpha, coverage, overprint_mode);
     });
+}
+
+fn fill_flat_scanline_fast(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    color: PixelColor,
+    rule: FillRule,
+    cancel: &CancelToken,
+) -> bool {
+    let bw = buf.width as i32;
+    let bh = buf.height as i32;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for (sp_index, sp) in flat.subpaths.iter().enumerate() {
+        if sp_index % 64 == 0 && cancel.is_cancelled() {
+            return false;
+        }
+        for &(_, y) in sp {
+            if y.is_finite() {
+                min_y = min_y.min(y);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+    if !min_y.is_finite() || !max_y.is_finite() {
+        return true;
+    }
+    let y0 = safe_floor_i32(min_y).max(0);
+    let y1 = safe_ceil_i32(max_y).saturating_add(1).min(bh);
+    if y1 <= y0 {
+        return true;
+    }
+
+    let mut crossings: Vec<(f64, i32)> = Vec::new();
+    for y in y0..y1 {
+        if (y - y0) % 16 == 0 && cancel.is_cancelled() {
+            return false;
+        }
+        let scan_y = y as f64 + 0.5;
+        crossings.clear();
+        for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
+            collect_scanline_crossings(sp, closed, scan_y, &mut crossings);
+        }
+        if crossings.len() < 2 {
+            continue;
+        }
+        crossings.sort_by(|a, b| a.0.total_cmp(&b.0));
+        match rule {
+            FillRule::EvenOdd => {
+                let mut i = 0usize;
+                while i + 1 < crossings.len() {
+                    fill_scanline_span(buf, y, crossings[i].0, crossings[i + 1].0, bw, color);
+                    i += 2;
+                }
+            }
+            FillRule::NonZero => {
+                let mut winding = 0i32;
+                let mut start_x: Option<f64> = None;
+                for (x, dir) in crossings.iter().copied() {
+                    if winding != 0 {
+                        if let Some(sx) = start_x.take() {
+                            fill_scanline_span(buf, y, sx, x, bw, color);
+                        }
+                    }
+                    winding += dir;
+                    if winding != 0 {
+                        start_x = Some(x);
+                    }
+                }
+            }
+        }
+    }
+    true
+}
+
+fn collect_scanline_crossings(
+    sp: &[(f64, f64)],
+    closed: bool,
+    scan_y: f64,
+    crossings: &mut Vec<(f64, i32)>,
+) {
+    if sp.len() < 2 {
+        return;
+    }
+    for win in sp.windows(2) {
+        push_scanline_crossing(win[0], win[1], scan_y, crossings);
+    }
+    if !closed {
+        if let (Some(&first), Some(&last)) = (sp.first(), sp.last()) {
+            if first != last {
+                push_scanline_crossing(last, first, scan_y, crossings);
+            }
+        }
+    }
+}
+
+fn push_scanline_crossing(
+    p0: (f64, f64),
+    p1: (f64, f64),
+    scan_y: f64,
+    crossings: &mut Vec<(f64, i32)>,
+) {
+    let (x0, y0) = p0;
+    let (x1, y1) = p1;
+    if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
+        return;
+    }
+    if (y0 - y1).abs() < 1e-12 {
+        return;
+    }
+    let ymin = y0.min(y1);
+    let ymax = y0.max(y1);
+    if scan_y < ymin || scan_y >= ymax {
+        return;
+    }
+    let t = (scan_y - y0) / (y1 - y0);
+    let x = x0 + t * (x1 - x0);
+    let dir = if y0 < y1 { 1 } else { -1 };
+    crossings.push((x, dir));
+}
+
+fn fill_scanline_span(buf: &mut PixelBuffer, y: i32, x0: f64, x1: f64, bw: i32, color: PixelColor) {
+    if x1 <= x0 {
+        return;
+    }
+    let start = safe_ceil_i32(x0).max(0);
+    let end = safe_floor_i32(x1).min(bw - 1);
+    if end < start {
+        return;
+    }
+    for x in start..=end {
+        buf.blend_pixel(x, y, color, 1.0);
+    }
 }
 
 fn fill_flat_with_compositor(
     buf: &mut PixelBuffer,
     flat: &FlatPath,
     rule: FillRule,
+    cancel: Option<&CancelToken>,
     mut composite_pixel: impl FnMut(&mut PixelBuffer, i32, i32, f32),
-) {
+) -> bool {
     let bw = buf.width as i32;
     let bh = buf.height as i32;
 
@@ -558,7 +804,10 @@ fn fill_flat_with_compositor(
     let mut min_y = f64::INFINITY;
     let mut max_x = f64::NEG_INFINITY;
     let mut max_y = f64::NEG_INFINITY;
-    for sp in &flat.subpaths {
+    for (sp_index, sp) in flat.subpaths.iter().enumerate() {
+        if sp_index % 64 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+            return false;
+        }
         for &(x, y) in sp {
             if !x.is_finite() || !y.is_finite() {
                 continue;
@@ -570,7 +819,7 @@ fn fill_flat_with_compositor(
         }
     }
     if !min_x.is_finite() || !max_x.is_finite() {
-        return;
+        return true;
     }
 
     let x0 = safe_floor_i32(min_x).max(0);
@@ -578,34 +827,42 @@ fn fill_flat_with_compositor(
     let x1 = safe_ceil_i32(max_x).saturating_add(1).min(bw);
     let y1 = safe_ceil_i32(max_y).saturating_add(1).min(bh);
     if x1 <= x0 || y1 <= y0 {
-        return;
+        return true;
     }
     let w = (x1 - x0) as usize;
     let h = (y1 - y0) as usize;
     // Guard against pathological allocation on degenerate huge geometry.
     if w == 0 || h == 0 || w.saturating_mul(h) > 64 * 1024 * 1024 {
-        return;
+        return true;
     }
 
     let mut acc = Accumulator::new(w, h, x0, y0);
-    for (sp, &closed) in flat.subpaths.iter().zip(flat.closed.iter()) {
+    for (sp_index, (sp, &closed)) in flat.subpaths.iter().zip(flat.closed.iter()).enumerate() {
+        if sp_index % 32 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+            return false;
+        }
         if sp.len() < 2 {
             continue;
         }
-        for win in sp.windows(2) {
-            acc.add_edge(win[0], win[1]);
+        for (edge_index, win) in sp.windows(2).enumerate() {
+            if edge_index % 2048 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+                return false;
+            }
+            if !acc.add_edge(win[0], win[1], cancel) {
+                return false;
+            }
         }
         // Implicitly close every subpath for filling (PDF fills as if closed).
         if !closed {
             if let (Some(&first), Some(&last)) = (sp.first(), sp.last()) {
-                if first != last {
-                    acc.add_edge(last, first);
+                if first != last && !acc.add_edge(last, first, cancel) {
+                    return false;
                 }
             }
         }
     }
 
-    acc.composite(buf, rule, &mut composite_pixel);
+    acc.composite(buf, rule, cancel, &mut composite_pixel)
 }
 
 fn light_grid_fit_flat_glyph(flat: &mut FlatPath, device_t: &Transform2D) {
@@ -1100,14 +1357,14 @@ impl Accumulator {
     }
 
     /// Deposit one edge from p0 to p1 (device-space, buffer-global coords).
-    fn add_edge(&mut self, p0: (f64, f64), p1: (f64, f64)) {
+    fn add_edge(&mut self, p0: (f64, f64), p1: (f64, f64), cancel: Option<&CancelToken>) -> bool {
         let (mut x0, mut y0) = (p0.0 - self.origin_x as f64, p0.1 - self.origin_y as f64);
         let (mut x1, mut y1) = (p1.0 - self.origin_x as f64, p1.1 - self.origin_y as f64);
         if !x0.is_finite() || !y0.is_finite() || !x1.is_finite() || !y1.is_finite() {
-            return;
+            return true;
         }
         if (y0 - y1).abs() < 1e-12 {
-            return; // Horizontal edges contribute no coverage.
+            return true; // Horizontal edges contribute no coverage.
         }
 
         // Winding sign: +1 for downward edges, -1 for upward; normalise so we
@@ -1131,12 +1388,16 @@ impl Accumulator {
             y1 = h;
         }
         if y1 <= y0 {
-            return;
+            return true;
         }
 
         // Walk each pixel row the edge crosses.
         let mut y = y0;
+        let mut row_count = 0usize;
         while y < y1 {
+            if row_count.is_multiple_of(64) && cancel.is_some_and(CancelToken::is_cancelled) {
+                return false;
+            }
             let row = y.floor();
             let row_idx = row as i32;
             let row_top = row;
@@ -1155,16 +1416,30 @@ impl Accumulator {
             let xa = x0 + dxdy * (seg_y0 - y0);
             let xb = x0 + dxdy * (seg_y1 - y0);
             let dy = (seg_y1 - seg_y0) as f32 * dir as f32;
-            self.add_span(row_idx as usize, xa, xb, dy);
+            if !self.add_span(row_idx as usize, xa, xb, dy, cancel) {
+                return false;
+            }
 
             y = row_bot;
+            row_count += 1;
         }
+        true
     }
 
     /// Add a single edge segment confined to one pixel row. `xa`/`xb` are the
     /// x-coordinates where the edge enters/leaves this row; `dy` is the signed
     /// covered height (already sign-adjusted for winding direction).
-    fn add_span(&mut self, row: usize, xa: f64, xb: f64, dy: f32) {
+    fn add_span(
+        &mut self,
+        row: usize,
+        xa: f64,
+        xb: f64,
+        dy: f32,
+        cancel: Option<&CancelToken>,
+    ) -> bool {
+        if row >= self.h || dy.abs() < 1e-8 {
+            return true;
+        }
         // Order so xl <= xr.
         let (xl, xr) = if xa <= xb { (xa, xb) } else { (xb, xa) };
         let base = row * self.w;
@@ -1188,7 +1463,7 @@ impl Accumulator {
             // by the covered height.
             self.area[base + cl] += (1.0 - mid as f32) * cell_cover;
             self.cover[base + cl] += cell_cover;
-            return;
+            return true;
         }
 
         // Edge crosses multiple cells in x. Distribute coverage proportionally
@@ -1202,7 +1477,10 @@ impl Accumulator {
         self.cover[base + cl] += dy * frac_first;
 
         // Middle full cells.
-        for cell in (cl + 1)..cr {
+        for (offset, cell) in ((cl + 1)..cr).enumerate() {
+            if offset % 2048 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+                return false;
+            }
             let cell_left = cell as f64;
             let cell_right = (cell + 1) as f64;
             let frac = ((cell_right - cell_left) * inv_dx) as f32;
@@ -1217,6 +1495,7 @@ impl Accumulator {
         let mid_last = (last_left + xr) * 0.5 - cr as f64;
         self.area[base + cr] += (1.0 - mid_last as f32) * (dy * frac_last);
         self.cover[base + cr] += dy * frac_last;
+        true
     }
 
     /// Resolve accumulated winding into coverage and composite onto `buf`.
@@ -1224,9 +1503,13 @@ impl Accumulator {
         &self,
         buf: &mut PixelBuffer,
         rule: FillRule,
+        cancel: Option<&CancelToken>,
         composite_pixel: &mut impl FnMut(&mut PixelBuffer, i32, i32, f32),
-    ) {
+    ) -> bool {
         for ry in 0..self.h {
+            if ry % 32 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+                return false;
+            }
             let base = ry * self.w;
             let mut running = 0.0f32; // prefix sum of cover (winding to the left)
             for rx in 0..self.w {
@@ -1241,6 +1524,7 @@ impl Accumulator {
                 composite_pixel(buf, px, py, coverage);
             }
         }
+        true
     }
 }
 

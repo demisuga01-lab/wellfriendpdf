@@ -1,0 +1,101 @@
+{
+  "schema_version": "wellfriend.renderer_capability.workflow.v1",
+  "phases": [
+    {
+      "id": 1,
+      "name": "repository_truth",
+      "status": "complete_initial",
+      "evidence": [
+        "git state captured at 37c7309185fd0d51b5cb6979f6a765b13d9d8fac",
+        "attached prompt hashes captured",
+        "existing real-5000 aggregate inspected"
+      ]
+    },
+    {
+      "id": 2,
+      "name": "correctness_specification",
+      "status": "implemented_in_docs",
+      "outputs": [
+        "docs/architecture/rendering-contract.md",
+        "docs/architecture/rendering-pipeline.md"
+      ]
+    },
+    {
+      "id": 3,
+      "name": "instrumentation",
+      "status": "implemented_in_this_task",
+      "outputs": [
+        "wellfriendpdf render-corpus",
+        "scripts/renderer_capability_benchmark.py"
+      ]
+    },
+    {
+      "id": 4,
+      "name": "failure_closure",
+      "status": "complete",
+      "criteria": [
+        "all current renderer failures are resolved or typed",
+        "zero crashes",
+        "no hidden removed rows"
+      ],
+      "evidence": [
+        "remaining 26-file failure subset rendered with zero failures after pattern/Type3/image bounded-path fixes"
+      ]
+    },
+    {
+      "id": 5,
+      "name": "canonical_display_list_and_tile_execution",
+      "status": "implemented_in_this_task",
+      "criteria": [
+        "tile rendering executes page program in a tile-local viewport",
+        "progressive rendering passes cancellation into tile execution",
+        "full-page and stitched-tile results are tested"
+      ]
+    },
+    {
+      "id": 6,
+      "name": "vps_workspace_validation",
+      "status": "complete",
+      "criteria": [
+        "cargo fmt --all --check",
+        "git diff --check",
+        "cargo check --workspace --all-targets --jobs 1",
+        "cargo clippy --workspace --all-targets --jobs 1 -- -D warnings",
+        "cargo test --workspace --all-targets --jobs 1"
+      ],
+      "evidence": [
+        "final-vps-fmt-current exit 0",
+        "final-vps-diff-check-current exit 0",
+        "final-vps-cargo-check-current exit 0",
+        "final-vps-clippy-current exit 0",
+        "final-vps-cargo-test-current exit 0"
+      ]
+    },
+    {
+      "id": 7,
+      "name": "real_5000_rendering_and_comparators",
+      "status": "complete",
+      "criteria": [
+        "Wellfriend renders all 5,044 PDFs under the selected evidence modes",
+        "Poppler, MuPDF, PDFium wrapper, PDFBox, and other installed tools are run or exactly classified",
+        "first-page 72-DPI gate records median, p95, p99, failures, crashes, and memory",
+        "full-document rendering run is executed or reports exact bounded refusal/timeouts"
+      ],
+      "evidence": [
+        "Wellfriend final all-pages run: 5,044 files, 116,975 pages rendered, zero failures",
+        "Comparator all-pages runs completed for pypdfium2/PDFium wrapper, PyMuPDF, mutool, Poppler, PDFBox, and PDF.js"
+      ]
+    },
+    {
+      "id": 8,
+      "name": "documentation_and_evidence_commit",
+      "status": "terminal_git_actions_external_to_this_file",
+      "criteria": [
+        "aggregate evidence committed",
+        "raw corpora and raw logs excluded",
+        "single closure commit pushed and synchronized",
+        "no deployment, release, tag, or package publication"
+      ]
+    }
+  ]
+}

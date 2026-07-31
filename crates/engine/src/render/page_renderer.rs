@@ -7,6 +7,7 @@ use crate::error::{Result, WellfriendError};
 use crate::filters::DecodeLimits;
 use crate::fonts::resolver::{detect_font_subtype, get_descendant_font, FontSubtype};
 use crate::fonts::variations::VariationRequest;
+use crate::fonts::FontResolver;
 use crate::images::decoder::{ImageDecoder, RawImage};
 use crate::images::locator::ImageReference;
 use crate::images::SmaskLoader;
@@ -28,8 +29,9 @@ use crate::render::path::{
     flatten_path, stroke_flat_path, FillRule, FlatPath, GlyphHinting, Path, PathPainter,
 };
 use crate::render::shading::ShadingRenderer;
-use crate::render::text_decode::{decode_text_bytes as decode_font_text_bytes, DecodedGlyph};
+use crate::render::text_decode::{decode_text_bytes_with_resolver, DecodedGlyph};
 use crate::render::transform::{Transform2D, Viewport};
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 
@@ -184,9 +186,11 @@ impl PageRenderer {
         Ok(buf)
     }
 
-    /// Render one page tile. The current implementation is compatibility-safe:
-    /// it renders the page through the display-list path and crops the requested
-    /// rectangle, with optional byte-budgeted tile caching.
+    /// Render one page tile. The implementation is compatibility-safe: it
+    /// executes the canonical page program into a tile-local viewport, with
+    /// optional byte-budgeted tile caching. This preserves immediate-renderer
+    /// semantics while avoiding full-page pixel allocation for progressive,
+    /// viewport, and low-memory rendering.
     pub fn render_page_tile_with_mode(
         engine: &ContentEngine,
         page_number: usize,
@@ -215,23 +219,110 @@ impl PageRenderer {
             if let Some(hit) = cache.get(&key) {
                 return Ok(hit);
             }
-            let full = Self::render_page_display_list_or_immediate_with_mode(
+            let cropped = Self::render_page_tile_cancellable_with_mode(
                 engine,
                 page_number,
                 dpi,
+                tile,
+                &CancelToken::none(),
                 render_mode,
             )?;
-            let cropped = crop_buffer(&full, tile)?;
             cache.insert(key, cropped.clone());
             Ok(cropped)
         } else {
-            let full = Self::render_page_display_list_or_immediate_with_mode(
+            Self::render_page_tile_cancellable_with_mode(
                 engine,
                 page_number,
                 dpi,
+                tile,
+                &CancelToken::none(),
                 render_mode,
-            )?;
-            crop_buffer(&full, tile)
+            )
+        }
+    }
+
+    pub(crate) fn render_page_tile_cancellable_with_mode(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        tile: RenderTile,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+    ) -> Result<PixelBuffer> {
+        let ops = engine.get_page_content(page_number)?;
+        let full_viewport = engine.page_viewport(page_number, dpi)?;
+        if tile.width == 0 || tile.height == 0 {
+            return Err(WellfriendError::invalid_input(
+                "render tile must have non-zero width and height",
+            ));
+        }
+        if tile.x >= full_viewport.width_px || tile.y >= full_viewport.height_px {
+            return Err(WellfriendError::invalid_input(format!(
+                "render tile origin ({},{}) is outside page bounds {}x{}",
+                tile.x, tile.y, full_viewport.width_px, full_viewport.height_px
+            )));
+        }
+        let end_x = tile.x.checked_add(tile.width).ok_or_else(|| {
+            WellfriendError::invalid_input("render tile x range overflows".to_string())
+        })?;
+        let end_y = tile.y.checked_add(tile.height).ok_or_else(|| {
+            WellfriendError::invalid_input("render tile y range overflows".to_string())
+        })?;
+        if end_x > full_viewport.width_px || end_y > full_viewport.height_px {
+            return Err(WellfriendError::invalid_input(format!(
+                "render tile {}x{} at {},{} exceeds page bounds {}x{}",
+                tile.width,
+                tile.height,
+                tile.x,
+                tile.y,
+                full_viewport.width_px,
+                full_viewport.height_px
+            )));
+        }
+        const TILE_OVERDRAW_PX: u32 = 2;
+        let expanded_tile = expand_render_tile(
+            tile,
+            full_viewport.width_px,
+            full_viewport.height_px,
+            TILE_OVERDRAW_PX,
+        );
+        let viewport = full_viewport.pixel_window(
+            expanded_tile.x,
+            expanded_tile.y,
+            expanded_tile.width,
+            expanded_tile.height,
+        );
+        if viewport.width_px == 0 || viewport.height_px == 0 {
+            return Err(WellfriendError::invalid_input(
+                "render tile is empty after clipping to page bounds",
+            ));
+        }
+        let resources = engine.get_page_resources(page_number)?;
+        let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
+        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
+
+        let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
+        state.cancel = cancel.clone();
+        state.dispatch_all(&ops);
+        cancel.check("page tile render")?;
+        state.render_page_annotations();
+        cancel.check("page tile annotation render")?;
+        let mut buf = state.into_buffer();
+        if transparent_page_group {
+            buf.flatten_onto_background(WHITE);
+        }
+        if expanded_tile == tile {
+            Ok(buf)
+        } else {
+            crop_buffer(
+                &buf,
+                RenderTile {
+                    x: tile.x - expanded_tile.x,
+                    y: tile.y - expanded_tile.y,
+                    width: tile.width,
+                    height: tile.height,
+                },
+            )
         }
     }
 
@@ -287,18 +378,6 @@ impl PageRenderer {
         Ok(state.into_separation_framebuffer().report())
     }
 
-    fn render_page_display_list_or_immediate_with_mode(
-        engine: &ContentEngine,
-        page_number: usize,
-        dpi: u32,
-        render_mode: RenderMode,
-    ) -> Result<PixelBuffer> {
-        match Self::render_page_display_list_with_mode(engine, page_number, dpi, render_mode)? {
-            Some(buf) => Ok(buf),
-            None => Self::render_page_with_mode(engine, page_number, dpi, render_mode),
-        }
-    }
-
     fn initial_page_buffer(
         viewport: &Viewport,
         transparent_page_group: bool,
@@ -348,6 +427,9 @@ struct RenderState<'a> {
     pending_clip: Option<FillRule>,
     pending_text_clip: Option<ClipMask>,
     glyph_cache: GlyphCache,
+    font_bytes_cache: HashMap<String, Option<Arc<Vec<u8>>>>,
+    font_resolver_cache: HashMap<String, Arc<FontResolver>>,
+    type3_geometry_cache: HashMap<String, Option<Arc<Type3GlyphGeometry>>>,
     /// Current Form XObject nesting depth, used to bound recursion.
     form_depth: usize,
     /// Parameters from the most recent `ID` operator, awaiting the following
@@ -520,6 +602,9 @@ impl<'a> RenderState<'a> {
             pending_clip: None,
             pending_text_clip: None,
             glyph_cache: GlyphCache::with_default_capacity(),
+            font_bytes_cache: HashMap::new(),
+            font_resolver_cache: HashMap::new(),
+            type3_geometry_cache: HashMap::new(),
             form_depth: 0,
             pending_inline: None,
             base_ctm: Transform2D::identity(),
@@ -1567,6 +1652,9 @@ impl<'a> RenderState<'a> {
             pending_clip: None,
             pending_text_clip: None,
             glyph_cache: GlyphCache::with_default_capacity(),
+            font_bytes_cache: self.font_bytes_cache.clone(),
+            font_resolver_cache: self.font_resolver_cache.clone(),
+            type3_geometry_cache: self.type3_geometry_cache.clone(),
             form_depth: self.form_depth + 1,
             pending_inline: None,
             base_ctm: mask_base_ctm,
@@ -2088,6 +2176,9 @@ impl<'a> RenderState<'a> {
             pending_clip: None,
             pending_text_clip: None,
             glyph_cache: GlyphCache::with_default_capacity(),
+            font_bytes_cache: self.font_bytes_cache.clone(),
+            font_resolver_cache: self.font_resolver_cache.clone(),
+            type3_geometry_cache: self.type3_geometry_cache.clone(),
             form_depth: self.form_depth + 1,
             pending_inline: None,
             base_ctm: group_base_ctm,
@@ -2504,6 +2595,10 @@ impl<'a> RenderState<'a> {
         if let Some(existing) = self.buf.clip_mask() {
             path_clip.intersect(existing);
         }
+        if !self.buf.render_mode().is_high_quality() && self.form_depth > 0 {
+            self.paint_tiling_pattern_solid_fallback(path_clip, rule, paint_type);
+            return;
+        }
 
         // Determine the device-space bounding box of the filled path to bound
         // how many tiles we need; then map that back into pattern space.
@@ -2541,12 +2636,19 @@ impl<'a> RenderState<'a> {
         let j1 = ((pmaxy - bbox[1]) / y_step).ceil() as i64;
 
         let tile_count = (i1 - i0 + 1).max(0) as i128 * (j1 - j0 + 1).max(0) as i128;
-        const TILE_CAP: i128 = 20_000;
-        if tile_count > TILE_CAP {
+        const COMPAT_TILE_CAP: i128 = 512;
+        const HIGH_QUALITY_TILE_CAP: i128 = 20_000;
+        let tile_cap = if self.buf.render_mode().is_high_quality() {
+            HIGH_QUALITY_TILE_CAP
+        } else {
+            COMPAT_TILE_CAP
+        };
+        if tile_count > tile_cap {
             log::warn!(
-                "tiling pattern: {tile_count} tiles exceeds cap {TILE_CAP}; skipping (tile step \
-                 too small for fill area)"
+                "tiling pattern: {tile_count} tiles exceeds cap {tile_cap}; using bounded solid \
+                 fallback"
             );
+            self.paint_tiling_pattern_solid_fallback(path_clip, rule, paint_type);
             return;
         }
         if tile_count == 0 {
@@ -2624,6 +2726,33 @@ impl<'a> RenderState<'a> {
             }
         }
 
+        self.buf.restore_clip(saved_clip);
+    }
+
+    fn paint_tiling_pattern_solid_fallback(
+        &mut self,
+        path_clip: ClipMask,
+        rule: FillRule,
+        paint_type: i64,
+    ) {
+        let saved_clip = self.buf.clip_mask().cloned();
+        self.buf.set_clip(path_clip);
+        let color = if paint_type == 2 {
+            let (_space, color) = uncolored_pattern_color(&self.gs.fill_color);
+            ColorSpaceHandler::to_render_color(&color, self.gs.fill_alpha as f32).to_pixel_color()
+        } else {
+            self.fill_pixel_color()
+        };
+        let ctm = self.ctm();
+        let _ = PathPainter::fill_fast_cancellable(
+            &mut self.buf,
+            &self.path,
+            &ctm,
+            &self.viewport,
+            color,
+            rule,
+            &self.cancel,
+        );
         self.buf.restore_clip(saved_clip);
     }
 
@@ -2752,13 +2881,23 @@ impl<'a> RenderState<'a> {
         if font_size <= 0.0 {
             return;
         }
-        let decoded = decode_font_text_bytes(
-            bytes,
-            &font_name,
-            &self.resources,
-            self.engine.document().reader(),
-        );
         let font_dict = self.resources.fonts.get(&font_name).cloned();
+        let decoded = if let Some(font_dict) = font_dict.as_ref() {
+            let resolver = self.get_font_resolver(&font_name, font_dict);
+            decode_text_bytes_with_resolver(
+                bytes,
+                font_dict,
+                &resolver,
+                self.engine.document().reader(),
+            )
+        } else {
+            crate::render::text_decode::decode_text_bytes(
+                bytes,
+                &font_name,
+                &self.resources,
+                self.engine.document().reader(),
+            )
+        };
         let font_subtype = font_dict
             .as_ref()
             .map(detect_font_subtype)
@@ -2769,23 +2908,79 @@ impl<'a> RenderState<'a> {
         let font_hash = font_bytes
             .as_ref()
             .filter(|bytes| !bytes.is_empty())
-            .map(|bytes| GlyphCache::hash_font_bytes(bytes));
+            .map(|bytes| GlyphCache::hash_font_bytes(bytes.as_slice()));
         let upem = font_bytes
             .as_ref()
-            .and_then(|bytes| Self::get_upem(bytes))
+            .and_then(|bytes| Self::get_upem(bytes.as_slice()))
             .map(f64::from)
             .filter(|value| *value > 0.0)
             .unwrap_or(1000.0);
+        let light_hinting_supported = font_bytes
+            .as_ref()
+            .map(|bytes| ttf_parser::Face::parse(bytes.as_slice(), 0).is_ok())
+            .unwrap_or(false);
 
-        for glyph in decoded {
+        for (glyph_index, glyph) in decoded.into_iter().enumerate() {
+            if glyph_index % 32 == 0 && self.cancel.is_cancelled() {
+                return;
+            }
             let mut ttf_advance = None;
             let text_mode = self.gs.text.rendering_mode;
             if should_paint_decoded_glyph(&glyph)
                 && (text_rendering_mode_paints(text_mode) || text_rendering_mode_clips(text_mode))
             {
                 if is_type3 {
-                    if let Some(font_dict) = font_dict.as_ref() {
-                        ttf_advance = self.render_type3_glyph(font_dict, &glyph);
+                    if !text_rendering_mode_clips(text_mode) {
+                        let allow_compat_fallback = !self.buf.render_mode().is_high_quality();
+                        let render_font_bytes = font_bytes.clone().or_else(|| {
+                            if !allow_compat_fallback {
+                                None
+                            } else {
+                                font_dict.as_ref().and_then(|font_dict| {
+                                    self.get_type3_compat_font_bytes(&font_name, font_dict)
+                                })
+                            }
+                        });
+                        if let Some(font_bytes) = render_font_bytes.as_ref() {
+                            if !font_bytes.is_empty() {
+                                let font_hash = GlyphCache::hash_font_bytes(font_bytes.as_slice());
+                                let upem = Self::get_upem(font_bytes.as_slice())
+                                    .map(f64::from)
+                                    .filter(|value| *value > 0.0)
+                                    .unwrap_or(upem);
+                                let light_hinting_supported =
+                                    ttf_parser::Face::parse(font_bytes.as_slice(), 0).is_ok();
+                                ttf_advance = self.render_glyph_with_cache(GlyphRenderRequest {
+                                    font_name: &font_name,
+                                    font_subtype: FontSubtype::TrueType,
+                                    code: glyph.code,
+                                    ch: glyph.unicode,
+                                    glyph_name: glyph.glyph_name.as_deref(),
+                                    is_gid: false,
+                                    font_bytes: font_bytes.as_slice(),
+                                    font_hash,
+                                    variation: &variation,
+                                    upem,
+                                    light_hinting_supported,
+                                    offset_x: glyph
+                                        .vertical_origin
+                                        .map(|(vx, _)| -vx)
+                                        .unwrap_or(0.0),
+                                    offset_y: glyph
+                                        .vertical_origin
+                                        .map(|(_, vy)| vy)
+                                        .unwrap_or(0.0),
+                                });
+                            }
+                        }
+                        if allow_compat_fallback && render_font_bytes.is_some() {
+                            ttf_advance = ttf_advance.or(glyph.width).or(Some(500.0));
+                        }
+                    }
+                    if ttf_advance.is_none() {
+                        if let Some(font_dict) = font_dict.as_ref() {
+                            ttf_advance = self.render_type3_glyph(&font_name, font_dict, &glyph);
+                        }
                     }
                 } else if let (Some(font_bytes), Some(font_hash)) = (font_bytes.as_ref(), font_hash)
                 {
@@ -2797,10 +2992,11 @@ impl<'a> RenderState<'a> {
                             ch: glyph.unicode,
                             glyph_name: glyph.glyph_name.as_deref(),
                             is_gid: glyph.is_gid,
-                            font_bytes,
+                            font_bytes: font_bytes.as_slice(),
                             font_hash,
                             variation: &variation,
                             upem,
+                            light_hinting_supported,
                             offset_x: glyph.vertical_origin.map(|(vx, _)| -vx).unwrap_or(0.0),
                             offset_y: glyph.vertical_origin.map(|(_, vy)| vy).unwrap_or(0.0),
                         });
@@ -2890,7 +3086,7 @@ impl<'a> RenderState<'a> {
         // preserve the TeX/Tracemonkey golden.
         let glyph_pixel_size =
             self.gs.text.font_size * self.ctm().scale_factor() * self.viewport.scale;
-        let glyph_hinting = if ttf_parser::Face::parse(request.font_bytes, 0).is_ok() {
+        let glyph_hinting = if request.light_hinting_supported {
             GlyphHinting::light(glyph_pixel_size)
         } else {
             GlyphHinting::disabled()
@@ -3411,6 +3607,7 @@ impl<'a> RenderState<'a> {
 
     fn render_type3_glyph(
         &mut self,
+        font_name: &str,
         font_dict: &PdfDictionary,
         glyph: &DecodedGlyph,
     ) -> Option<f64> {
@@ -3421,7 +3618,7 @@ impl<'a> RenderState<'a> {
             fallback_name = type3_fallback_charproc_name(glyph.unicode)?;
             fallback_name.as_str()
         };
-        let geometry = match self.collect_type3_glyph_geometry(font_dict, glyph_name) {
+        let geometry = match self.cached_type3_glyph_geometry(font_name, font_dict, glyph_name) {
             Some(geometry) => geometry,
             None => {
                 if text_rendering_mode_clips(self.gs.text.rendering_mode) {
@@ -3436,12 +3633,30 @@ impl<'a> RenderState<'a> {
         };
         let glyph_ctm = self.type3_glyph_ctm(font_dict);
         if text_rendering_mode_clips(self.gs.text.rendering_mode) {
-            self.accumulate_type3_text_clip(&geometry, &glyph_ctm);
+            self.accumulate_type3_text_clip(geometry.as_ref(), &glyph_ctm);
         }
         if text_rendering_mode_paints(self.gs.text.rendering_mode) {
-            self.paint_type3_geometry(&geometry, &glyph_ctm);
+            self.paint_type3_geometry(geometry.as_ref(), &glyph_ctm);
         }
         geometry.advance_width
+    }
+
+    fn cached_type3_glyph_geometry(
+        &mut self,
+        font_name: &str,
+        font_dict: &PdfDictionary,
+        glyph_name: &str,
+    ) -> Option<Arc<Type3GlyphGeometry>> {
+        let cache_key = format!("{font_name}\0{glyph_name}");
+        if let Some(cached) = self.type3_geometry_cache.get(&cache_key) {
+            return cached.clone();
+        }
+        let geometry = self
+            .collect_type3_glyph_geometry(font_dict, glyph_name)
+            .map(Arc::new);
+        self.type3_geometry_cache
+            .insert(cache_key, geometry.clone());
+        geometry
     }
 
     fn collect_type3_glyph_geometry(
@@ -3558,19 +3773,22 @@ impl<'a> RenderState<'a> {
         match self.gs.text.rendering_mode {
             0 | 4 => {
                 for fill in &geometry.fills {
-                    PathPainter::fill(
+                    if !PathPainter::fill_fast_cancellable(
                         &mut self.buf,
                         &fill.path,
                         glyph_ctm,
                         &self.viewport,
                         fill_color,
                         fill.rule,
-                    );
+                        &self.cancel,
+                    ) {
+                        return;
+                    }
                 }
             }
             1 | 5 => {
                 for fill in &geometry.fills {
-                    PathPainter::stroke_with_style(
+                    if !PathPainter::stroke_with_style_fast_cancellable(
                         &mut self.buf,
                         &fill.path,
                         glyph_ctm,
@@ -3581,21 +3799,27 @@ impl<'a> RenderState<'a> {
                         &self.gs.line_cap,
                         &self.gs.line_join,
                         self.gs.miter_limit,
-                    );
+                        &self.cancel,
+                    ) {
+                        return;
+                    }
                 }
                 self.paint_type3_strokes(geometry, glyph_ctm, stroke_color);
             }
             2 | 6 => {
                 for fill in &geometry.fills {
-                    PathPainter::fill(
+                    if !PathPainter::fill_fast_cancellable(
                         &mut self.buf,
                         &fill.path,
                         glyph_ctm,
                         &self.viewport,
                         fill_color,
                         fill.rule,
-                    );
-                    PathPainter::stroke_with_style(
+                        &self.cancel,
+                    ) {
+                        return;
+                    }
+                    if !PathPainter::stroke_with_style_fast_cancellable(
                         &mut self.buf,
                         &fill.path,
                         glyph_ctm,
@@ -3606,7 +3830,10 @@ impl<'a> RenderState<'a> {
                         &self.gs.line_cap,
                         &self.gs.line_join,
                         self.gs.miter_limit,
-                    );
+                        &self.cancel,
+                    ) {
+                        return;
+                    }
                 }
                 self.paint_type3_strokes(geometry, glyph_ctm, stroke_color);
             }
@@ -3622,7 +3849,7 @@ impl<'a> RenderState<'a> {
         stroke_color: PixelColor,
     ) {
         for stroke in &geometry.strokes {
-            PathPainter::stroke_with_style(
+            if !PathPainter::stroke_with_style_fast_cancellable(
                 &mut self.buf,
                 &stroke.path,
                 glyph_ctm,
@@ -3633,7 +3860,10 @@ impl<'a> RenderState<'a> {
                 &stroke.cap,
                 &stroke.join,
                 stroke.miter_limit,
-            );
+                &self.cancel,
+            ) {
+                return;
+            }
         }
     }
 
@@ -3685,7 +3915,53 @@ impl<'a> RenderState<'a> {
         VariationRequest::from_descriptor(weight, stretch)
     }
 
-    fn get_font_bytes(&self, font_name: &str) -> Option<Vec<u8>> {
+    fn get_font_bytes(&mut self, font_name: &str) -> Option<Arc<Vec<u8>>> {
+        if let Some(cached) = self.font_bytes_cache.get(font_name) {
+            return cached.clone();
+        }
+        let resolved = self.resolve_font_bytes(font_name).map(Arc::new);
+        self.font_bytes_cache
+            .insert(font_name.to_string(), resolved.clone());
+        resolved
+    }
+
+    fn get_type3_compat_font_bytes(
+        &mut self,
+        font_name: &str,
+        font_dict: &PdfDictionary,
+    ) -> Option<Arc<Vec<u8>>> {
+        let cache_key = format!("__type3_compat__{font_name}");
+        if let Some(cached) = self.font_bytes_cache.get(&cache_key) {
+            return cached.clone();
+        }
+        let resolved = font_dict
+            .get("BaseFont")
+            .and_then(PdfObject::as_name)
+            .and_then(get_fallback_font)
+            .or_else(|| get_fallback_font("Helvetica"))
+            .map(|bytes| Arc::new(bytes.to_vec()));
+        self.font_bytes_cache.insert(cache_key, resolved.clone());
+        resolved
+    }
+
+    fn get_font_resolver(
+        &mut self,
+        font_name: &str,
+        font_dict: &PdfDictionary,
+    ) -> Arc<FontResolver> {
+        if let Some(cached) = self.font_resolver_cache.get(font_name) {
+            return Arc::clone(cached);
+        }
+        let resolver = Arc::new(FontResolver::new(
+            font_dict,
+            self.engine.document().reader(),
+        ));
+        self.font_resolver_cache
+            .insert(font_name.to_string(), Arc::clone(&resolver));
+        resolver
+    }
+
+    fn resolve_font_bytes(&self, font_name: &str) -> Option<Vec<u8>> {
         let reader = self.engine.document().reader();
         if let Some(font_dict) = self.resources.fonts.get(font_name) {
             if let Some(bytes) = FontRasterizer::extract_font_bytes(font_dict, reader) {
@@ -3770,6 +4046,7 @@ struct GlyphRenderRequest<'a> {
     /// The variable-font instance to render (empty for static / default).
     variation: &'a VariationRequest,
     upem: f64,
+    light_hinting_supported: bool,
     offset_x: f64,
     offset_y: f64,
 }
@@ -4662,33 +4939,47 @@ fn estimate_rgba_surface_bytes(width: u32, height: u32) -> u64 {
         .max(1)
 }
 
-fn estimated_image_channels(color_space: &str, is_mask: bool) -> u64 {
-    if is_mask {
-        1
-    } else if color_space.contains("CMYK") {
-        4
-    } else if color_space.contains("RGB") {
-        3
-    } else {
-        1
+fn expand_render_tile(
+    tile: RenderTile,
+    page_width: u32,
+    page_height: u32,
+    overdraw: u32,
+) -> RenderTile {
+    let x = tile.x.saturating_sub(overdraw);
+    let y = tile.y.saturating_sub(overdraw);
+    let end_x = tile
+        .x
+        .saturating_add(tile.width)
+        .saturating_add(overdraw)
+        .min(page_width);
+    let end_y = tile
+        .y
+        .saturating_add(tile.height)
+        .saturating_add(overdraw)
+        .min(page_height);
+    RenderTile {
+        x,
+        y,
+        width: end_x.saturating_sub(x),
+        height: end_y.saturating_sub(y),
     }
 }
 
 fn crop_buffer(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
     if tile.width == 0 || tile.height == 0 {
-        return Err(WellfriendError::ResourceLimit(
-            "render tile must have non-zero width and height".to_string(),
+        return Err(WellfriendError::invalid_input(
+            "render crop must have non-zero width and height",
         ));
     }
     let end_x = tile.x.checked_add(tile.width).ok_or_else(|| {
-        WellfriendError::ResourceLimit("render tile x range overflows".to_string())
+        WellfriendError::invalid_input("render crop x range overflows".to_string())
     })?;
     let end_y = tile.y.checked_add(tile.height).ok_or_else(|| {
-        WellfriendError::ResourceLimit("render tile y range overflows".to_string())
+        WellfriendError::invalid_input("render crop y range overflows".to_string())
     })?;
     if end_x > buf.width || end_y > buf.height {
-        return Err(WellfriendError::ResourceLimit(format!(
-            "render tile {}x{} at {},{} exceeds page buffer {}x{}",
+        return Err(WellfriendError::invalid_input(format!(
+            "render crop {}x{} at {},{} exceeds buffer {}x{}",
             tile.width, tile.height, tile.x, tile.y, buf.width, buf.height
         )));
     }
@@ -4702,6 +4993,18 @@ fn crop_buffer(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
         }
     }
     Ok(out)
+}
+
+fn estimated_image_channels(color_space: &str, is_mask: bool) -> u64 {
+    if is_mask {
+        1
+    } else if color_space.contains("CMYK") {
+        4
+    } else if color_space.contains("RGB") {
+        3
+    } else {
+        1
+    }
 }
 
 #[cfg(test)]

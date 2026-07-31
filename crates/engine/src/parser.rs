@@ -393,8 +393,7 @@ impl<'a> PdfParser<'a> {
             }
         }
 
-        String::from_utf8(out)
-            .map_err(|err| WellfriendError::ParseError(format!("name is not UTF-8: {err}")))
+        Ok(String::from_utf8_lossy(&out).into_owned())
     }
 
     fn parse_number_or_reference(&mut self) -> Result<PdfObject> {
@@ -732,6 +731,15 @@ mod tests {
         assert_eq!(
             parser.parse_object().unwrap(),
             PdfObject::Name("A Name".to_string())
+        );
+    }
+
+    #[test]
+    fn parses_non_utf8_names_lossily_instead_of_failing() {
+        let mut parser = PdfParser::new(b"/A\xffName", 0).unwrap();
+        assert_eq!(
+            parser.parse_object().unwrap(),
+            PdfObject::Name("A\u{fffd}Name".to_string())
         );
     }
 

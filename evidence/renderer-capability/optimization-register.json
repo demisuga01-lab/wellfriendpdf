@@ -1,0 +1,46 @@
+{
+  "items": [
+    {
+      "evidence": "render_page_tile_with_mode renders directly into tile-local buffers; progressive rendering uses cancellable tile execution.",
+      "id": "tile_local_viewport",
+      "status": "implemented_and_validated"
+    },
+    {
+      "evidence": "wellfriend-render-all-pages-72-resolvercache reduced corpus failures before final slow-path fixes.",
+      "id": "font_resolver_cache",
+      "status": "implemented_and_validated"
+    },
+    {
+      "evidence": "VPS cargo check/build stages type3cache/cancelcache/pathcancel/type3fast/type3compat passed.",
+      "id": "type3_geometry_cache",
+      "status": "implemented_and_validated"
+    },
+    {
+      "evidence": "Compat rendering uses fallback fonts for non-clipping Type3 text when exact Type3 glyph rendering is unavailable or too costly; high-quality mode keeps the exact path.",
+      "id": "type3_compat_fallback",
+      "status": "implemented_with_limit"
+    },
+    {
+      "evidence": "ClipMask tracks all-visible/all-clipped masks to avoid avoidable full-mask intersections.",
+      "id": "clip_mask_solid_state",
+      "status": "implemented_and_validated"
+    },
+    {
+      "evidence": "Compat mode uses bounded bilinear minification; high-quality mode retains area averaging.",
+      "id": "compat_image_minification_fast_path",
+      "status": "implemented_with_limit"
+    },
+    {
+      "evidence": "Compat Form XObject tiling-pattern replay uses a bounded solid fallback for pathological nested patterns; high-quality mode and top-level compat patterns retain the exact tiling path.",
+      "id": "compat_tiling_pattern_solid_fallback",
+      "status": "implemented_with_limit"
+    },
+    {
+      "evidence": "wellfriend-render-all-pages-final-current-2 rendered 5,044/5,044 files and 116,975/116,975 attempted pages with zero failures.",
+      "id": "real_5000_final_run",
+      "status": "retained_default"
+    }
+  ],
+  "result_dir": "/mnt/wellpdf-block/results/renderer-capability-20260730T172700Z",
+  "schema_version": "wellfriend.renderer_capability.optimization_register.v1"
+}

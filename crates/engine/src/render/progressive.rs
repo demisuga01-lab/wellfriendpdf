@@ -168,13 +168,13 @@ impl<'a> ProgressiveRenderJob<'a> {
             }
             let index = self.next_tile_index;
             let tile = self.tiles[index];
-            let buffer = PageRenderer::render_page_tile_with_mode(
+            let buffer = PageRenderer::render_page_tile_cancellable_with_mode(
                 self.engine,
                 self.page_number,
                 self.dpi,
                 tile,
+                cancel,
                 self.render_mode,
-                None,
             )?;
             self.completed[index] = Some(buffer);
             self.next_tile_index += 1;
