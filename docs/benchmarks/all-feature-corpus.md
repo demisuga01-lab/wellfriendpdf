@@ -9,24 +9,24 @@ This file is generated from compact VPS stage summaries. Raw PDFs and raw logs s
 
 | Stage | Files | Successes | Failures | Median ms | P95 ms | Artifact SHA256 |
 |---|---:|---:|---:|---:|---:|---|
-| info | 5044 | 5044 | 0 | 86.234 | 368.973 | `880a5e1b914ec6514370f4002acccb3901529529fb0b4563f120d6790027635a` |
-| parser_report | 5044 | 5044 | 0 | 57.501 | 499.277 | `e0ca0716494adab063619c09e893dd2b6524183845c50782ee5f96955fbbe50b` |
-| security_report | 5044 | 5044 | 0 | 25.046 | 72.022 | `a309d7a642f73365f30da42f39ca1fb71dac8313c51bf3eb63ff0ab76b3b4a18` |
-| validate | 5044 | 5044 | 0 | 36.836 | 103.356 | `08fd9a33c236b3a7fd738f90a39749ceeee2b1596814c2c3b7100a346de9e7ae` |
-| fonts | 5044 | 5044 | 0 | 24.337 | 55.416 | `c2514bf38b30eb62d159f297c45469f4ed611a8c7b5c558e2a5b386e48fcd446` |
-| extract_text_structured | 5044 | 5044 | 0 | 67.512 | 175.205 | `2ff129584c12324484158b720454376deb8f7476257a5d296f431d519d2ee073` |
-| parse_json | 5044 | 5044 | 0 | 151.544 | 507.433 | `6d99ec992bfa4ed01a1ce2165abcb75753e6938ac5132863908d5c25304aa83f` |
-| extract_tables | 5044 | 5044 | 0 | 100.313 | 315.007 | `4c8047d5588f3b3102fd765a640ed3dacb8db8740c25dd8ed0435a30a6d6f47f` |
-| forms_report | 5044 | 5044 | 0 | 18.607 | 37.391 | `5ec79869861a583bdd5879e8b25f076c7fd0bb1fe57646b1f76d3acb38fa78ef` |
-| annotations_report | 5044 | 5044 | 0 | 19.533 | 45.504 | `b8d700d2f9509523dfe4d59e2db58e8805a2eed8a45e832f02bace75ffac96e6` |
-| document_subsystems_report | 5044 | 5044 | 0 | 14.039 | 42.562 | `36e801f1d86b4c087bce0c36e3b438b76c3f2d1945679222d7584440f79707cf` |
-| document_security_report | 5044 | 5044 | 0 | 13.641 | 42.179 | `1ac6d59d7e783a48e6bee463ef304adf84d61bd52979748a162727aedb84b4c6` |
-| layout_analyze_page1 | 5044 | 5044 | 0 | 389.791 | 991.115 | `2bf5e3f5658e8a52a56b03eb6c9712bdc9ff4308225751d03c46af2f1d52fa7d` |
-| reading_order_report | 5044 | 5044 | 0 | 972.761 | 5357.27 | `f16c79219f0b65a0df284d1bd1f3880bbba35b089341411f2ccd7d3e9b7fe98e` |
-| flow_graph_report | 5044 | 5044 | 0 | 995.009 | 5388.723 | `7f3694391a77963ea56ba06e096feadd1d3e38841943f9d591f646daab563ac2` |
-| document_subsystems_analyze | 5044 | 5044 | 0 | 1194.613 | 5464.166 | `252dbe4b19c8d140238d1d1e5d129605a3c785b2801acda5d0bbad5b0935cbaa` |
-| document_security_analyze | 5044 | 5044 | 0 | 1305.186 | 5557.55 | `5d01dd049530f616cfa40ca01d250abf08156c434c3256ba84110c93a3ae7ecc` |
-| render_compare_page1 | 5044 | 5044 | 0 | 100.243 | 341.289 | `537237d33581cd5154d7a73586856f073b58d8183bab57d4bb4c5177ec755751` |
+| info | 5044 | 5044 | 0 | 205.769 | 591.462 | `ea5ebc54f357be46d01c30daa322dab23199b26816fb9480a9840d617e455442` |
+| parser_report | 5044 | 5044 | 0 | 156.225 | 844.899 | `ac3bce980c9eea88989203964c5aabd78461c8fc32ad6c4b0f6dcac5d2ea0aca` |
+| security_report | 5044 | 5044 | 0 | 186.717 | 651.857 | `7b6fb6b97c181ccb1bee938baba73aaac058e5f8ed1009ce75f913f4b24e28f2` |
+| validate | 5044 | 5044 | 0 | 34.639 | 157.136 | `c01d3d635031f023abeff565869492f2b217b6d81dcd356fff8343a6a6371f17` |
+| fonts | 5044 | 5044 | 0 | 16.277 | 42.614 | `35becff19a70cd7f26c90a41b1803bbd1d539185972029b0062fa8cfcdf47f4e` |
+| extract_text_structured | 5044 | 5044 | 0 | 68.878 | 187.937 | `0032c344634051e0120529c27473d2586929e6a2858db5863d1825d2ca039e31` |
+| parse_json | 5044 | 5044 | 0 | 157.736 | 525.566 | `6c6a534ddb33970bb1b92b7a4505ed7beb76720f26703f9a7fa6bf0210fdb3b5` |
+| extract_tables | 5044 | 5044 | 0 | 107.421 | 334.1 | `3626fa70b6027b8a28eb98d2d5b5a150d5d85fa5ddffcd3a74c9eab06f9db245` |
+| forms_report | 5044 | 5044 | 0 | 10.777 | 24.188 | `e4fa8e22b6a5104884f48bef4b689ee0a198f5c714614279a1085afca1f24e9e` |
+| annotations_report | 5044 | 5044 | 0 | 11.105 | 25.131 | `f03686d7a8408cd59800a73cf8b710292ba418426186191444c947c8d015c630` |
+| document_subsystems_report | 5044 | 5044 | 0 | 9.146 | 29.686 | `60df2185728e0aec848cd7351b88c3bed1e0efa140ebab0611b92274b71c29ee` |
+| document_security_report | 5044 | 5044 | 0 | 9.342 | 31.253 | `70b339448b5807959b0d9acbd3721898b70164f71d99fda3f38910e75f28f9c4` |
+| layout_analyze_page1 | 5044 | 5044 | 0 | 413.538 | 1053.217 | `c16f54fae3f8ef2cdda262a4d5780b87d225b8c133037b340a513017785a894c` |
+| reading_order_report | 5044 | 5044 | 0 | 154.243 | 578.285 | `056600fc0a6ef957ac80ed78f42642eaa4bcd9d1fc41cd7a17c8bd85afd7f8d0` |
+| flow_graph_report | 5044 | 5044 | 0 | 167.808 | 587.753 | `f3c5e71f24db56cc7b1467e0a436a91373f0e3fc4601586b543e9231ece3af23` |
+| document_subsystems_analyze | 5044 | 5044 | 0 | 284.71 | 947.766 | `6788b2e322be3ccf96fbddf0b62c541fe3ebc83052a2c49631f06b1e37876e60` |
+| document_security_analyze | 5044 | 5044 | 0 | 395.073 | 1228.329 | `7de0b11a0d21b2f76ecefb9b30e941b5e1bd98d9f47409a3b7b0c60dee9181f8` |
+| render_compare_page1 | 5044 | 5044 | 0 | 69.913 | 200.334 | `e89638295e33af1c68e6fe0287ccb0d854112a8f8f8ce22ead3dcbe39c491770` |
 | editing_smoke | 5044 | 5044 | 0 | see nested | see nested | `fc97226ccb0062860d509afb5652b4fb64e95be7794ddefaf5df855fba8b8ff1` |
 | source_operator_apply | 5044 | 5044 | 0 | 308.56 | 687.43 | `6c0f365c3448862b7a5464772d5c295862a59fa7c8a4a91d5144d920638e5351` |
 

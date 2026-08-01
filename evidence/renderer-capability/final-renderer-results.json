@@ -35,6 +35,15 @@
       "focused_test_status": "passed",
       "compare_artifact": "/mnt/wellpdf-block/results/all-feature-corpus-current/render-probe-renderer-patch-compare.json",
       "compare_sha256": "0bb707b6e2c03342cff70a52316d405c05c510e3394f789bfea8b610253ddfb0"
+    },
+    {
+      "candidate": "document_scoped_render_cache",
+      "classification": "retained_adaptive",
+      "reason": "100-file same-binary VPS probe showed 0 raw render hash mismatches and a 1.68x total-time speedup for repeated all-page document rendering; full 5,044-PDF all-pages run passed with 0 failures",
+      "build_status": "passed",
+      "focused_test_status": "passed",
+      "compare_artifact": "/mnt/wellpdf-block/results/all-feature-corpus-current/render-probe-document-cache-keyed-compare.json",
+      "compare_sha256": "9f7a75b684af3a317b26ce536e5b37ea03fa15e955beea963e8ee691e0371d9d"
     }
   ],
   "wellfriend_final": {
@@ -60,6 +69,33 @@
     "summary_artifact": "wellfriend-render-all-pages-final-current-2-summary.json",
     "summary_sha256": "c77d1bc8325484be5025924db19e0a811ab8cd3417eda3394d0055e7b79a58b0",
     "timeout_ms": 300000,
+    "tool": "wellfriendpdf",
+    "workers": 8
+  },
+  "wellfriend_document_cache_current": {
+    "document_cache": "on",
+    "duration_sec": 720,
+    "evidence": "raw",
+    "failed_files": 0,
+    "files": 5044,
+    "max_ms": 84659.508433,
+    "median_ms": 572.805536,
+    "median_render_ms": 514.672059,
+    "p95_ms": 3224.513822,
+    "p95_render_ms": 3134.841767,
+    "p99_ms": 10503.946774,
+    "p99_render_ms": 10455.755438,
+    "pages_attempted": 116975,
+    "pages_rendered": 116975,
+    "peak_rss_kib": "4156972",
+    "pipeline": "immediate",
+    "render_quality": "compat",
+    "stage_artifact": "/mnt/wellpdf-block/results/all-feature-corpus-current/render-corpus-5044-document-cache-on-w8-final-current2-immediate.status",
+    "stage_sha256": "0075497fa10ba63d887a0bb99d85648307c74e916a1a01a8a23531cbf9c9d883",
+    "successful_files": 5044,
+    "summary_artifact": "wellfriend-render-all-pages-document-cache-w8-summary.json",
+    "summary_sha256": "0075497fa10ba63d887a0bb99d85648307c74e916a1a01a8a23531cbf9c9d883",
+    "timeout_ms": 0,
     "tool": "wellfriendpdf",
     "workers": 8
   },

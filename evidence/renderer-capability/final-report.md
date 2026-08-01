@@ -4,11 +4,13 @@ Result folder: `/mnt/wellpdf-block/results/renderer-capability-20260730T172700Z`
 
 Corpus: 5,044 real PDFs, 17,059,245,901 bytes, 116,975 external-renderer pages, duplicate SHA-256 values: 0.
 
-Final Wellfriend all-pages run: 5,044 files / 116,975 rendered pages / 0 failures. The run used 72 DPI, compat render quality, raw hash evidence, immediate pipeline, 8 workers, and a 300000 ms per-page timeout. It completed in 991 seconds with peak RSS 3624676 KiB. Median per-file wall time was 947.4 ms; P95 4170.3 ms; P99 11414.4 ms.
+Prior immediate-path Wellfriend all-pages run: 5,044 files / 116,975 rendered pages / 0 failures. The run used 72 DPI, compat render quality, raw hash evidence, immediate pipeline, 8 workers, and a 300000 ms per-page timeout. It completed in 991 seconds with peak RSS 3624676 KiB. Median per-file wall time was 947.4 ms; P95 4170.3 ms; P99 11414.4 ms.
 
 Follow-up display-list all-pages run: 5,044 files / 116,975 rendered pages / 0 failures. The run used the same 72 DPI, compat render quality, raw hash evidence, 8 workers, and 300000 ms per-page timeout, but selected the display-list pipeline. It completed in 1065 seconds with peak RSS 3241976 KiB. Median per-file wall time was 970.4 ms; P95 4269.2 ms; P99 11114.6 ms. This is evidence that the display-list path is functional at corpus scale, not evidence that it beats the immediate path on this corpus.
 
 One candidate renderer micro-optimization for direct initial page-buffer filling was tested on the VPS using the existing 80-file render probe. It compiled and passed focused pixel-buffer tests, but the measured probe did not improve the display-list path against the immediate path, so the code change was reverted and classified as a rejected candidate rather than retained production code. The retained source tree therefore stays tied to measured improvements only.
+
+Retained document-scoped render caching run: 5,044 files / 116,975 rendered pages / 0 failures. The run used 72 DPI, compat render quality, raw hash evidence, immediate pipeline, 8 workers, and document-cache mode. It completed in 720 seconds with peak RSS 4156972 KiB. Median per-file wall time was 572.8 ms; P95 3224.5 ms; P99 10503.9 ms. The preceding 100-file same-binary on/off probe had 0 raw render hash mismatches and a 1.68x total-time speedup, so this optimization is retained as an adaptive repeated-document rendering path.
 
 Before the final slow-path fixes, the prior full all-pages run had 30 failed files. The remaining failure subset rerun completed with 0 failures.
 

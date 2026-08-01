@@ -6,9 +6,9 @@
       },
       "failures": 0,
       "files": 5044,
-      "median_ms": 389.791,
-      "p95_ms": 991.115,
-      "p99_ms": 1637.301,
+      "median_ms": 413.538,
+      "p95_ms": 1053.217,
+      "p99_ms": 1731.375,
       "successes": 5044,
       "timeouts": 0
     }

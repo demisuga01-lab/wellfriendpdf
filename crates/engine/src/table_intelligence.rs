@@ -394,7 +394,7 @@ pub fn validate_table_proposal_set(set: &TableProposalSet) -> TableProposalValid
     validate_set_metadata(set, &mut diagnostics);
     if matches!(
         set.model.backend_type,
-        LayoutBackendKind::Cloud | LayoutBackendKind::MockCloud
+        LayoutBackendKind::Cloud | LayoutBackendKind::CloudContract
     ) && (!set.allow_cloud_upload || !set.user_acknowledged_privacy)
     {
         diagnostics.push(diag(
@@ -775,11 +775,11 @@ pub fn merge_table_proposals_deterministic(
 
 pub fn mock_tableformer_proposal_set(page: usize) -> TableProposalSet {
     let model = TableModelMetadata {
-        backend_id: "mock-tableformer-local".to_string(),
-        backend_type: LayoutBackendKind::MockLocal,
+        backend_id: "contract-tableformer-local".to_string(),
+        backend_type: LayoutBackendKind::HeuristicLocal,
         model_name: "tableformer-contract-fixture".to_string(),
         model_version: "semantic_closeout".to_string(),
-        model_hash: "sha256:mock-tableformer-no-weights".to_string(),
+        model_hash: "sha256:contract-tableformer-no-weights".to_string(),
         model_source: "generated contract fixture".to_string(),
         model_license: "CC0-1.0 synthetic fixture".to_string(),
         runtime: "deterministic_mock_no_ml_dependency".to_string(),
@@ -1413,7 +1413,7 @@ mod tests {
     #[test]
     fn cloud_table_proposal_requires_explicit_privacy_ack() {
         let mut set = mock_tableformer_proposal_set(1);
-        set.model.backend_type = LayoutBackendKind::MockCloud;
+        set.model.backend_type = LayoutBackendKind::CloudContract;
         let validation = validate_table_proposal_set(&set);
         assert!(!validation.valid);
         assert!(validation

@@ -96,19 +96,19 @@ This is a command/runtime coverage campaign over the real public corpus. It is s
 
 | Surface | Files | Successes | Failures | Median | P95 |
 |---|---:|---:|---:|---:|---:|
-| Info / document open | 5,044 | 5,044 | 0 | 86.234 ms | 368.973 ms |
-| Parser report | 5,044 | 5,044 | 0 | 57.501 ms | 499.277 ms |
-| Validation report | 5,044 | 5,044 | 0 | 36.836 ms | 103.356 ms |
-| Structured text extraction | 5,044 | 5,044 | 0 | 67.512 ms | 175.205 ms |
-| Table extraction | 5,044 | 5,044 | 0 | 100.313 ms | 315.007 ms |
-| Forms report | 5,044 | 5,044 | 0 | 18.607 ms | 37.391 ms |
-| Annotations report | 5,044 | 5,044 | 0 | 19.533 ms | 45.504 ms |
-| Layout analysis, page 1 | 5,044 | 5,044 | 0 | 389.791 ms | 991.115 ms |
-| Reading order report | 5,044 | 5,044 | 0 | 972.761 ms | 5,357.270 ms |
-| Flow graph report | 5,044 | 5,044 | 0 | 995.009 ms | 5,388.723 ms |
-| Document subsystem analysis | 5,044 | 5,044 | 0 | 1,194.613 ms | 5,464.166 ms |
-| Document security analysis | 5,044 | 5,044 | 0 | 1,305.186 ms | 5,557.550 ms |
-| Page-1 render-compare smoke | 5,044 | 5,044 | 0 | 100.243 ms | 341.289 ms |
+| Info / document open | 5,044 | 5,044 | 0 | 205.769 ms | 591.462 ms |
+| Parser report | 5,044 | 5,044 | 0 | 156.225 ms | 844.899 ms |
+| Validation report | 5,044 | 5,044 | 0 | 34.639 ms | 157.136 ms |
+| Structured text extraction | 5,044 | 5,044 | 0 | 68.878 ms | 187.937 ms |
+| Table extraction | 5,044 | 5,044 | 0 | 107.421 ms | 334.100 ms |
+| Forms report | 5,044 | 5,044 | 0 | 10.777 ms | 24.188 ms |
+| Annotations report | 5,044 | 5,044 | 0 | 11.105 ms | 25.131 ms |
+| Layout analysis, page 1 | 5,044 | 5,044 | 0 | 413.538 ms | 1,053.217 ms |
+| Reading order report | 5,044 | 5,044 | 0 | 154.243 ms | 578.285 ms |
+| Flow graph report | 5,044 | 5,044 | 0 | 167.808 ms | 587.753 ms |
+| Document subsystem analysis | 5,044 | 5,044 | 0 | 284.710 ms | 947.766 ms |
+| Document security analysis | 5,044 | 5,044 | 0 | 395.073 ms | 1,228.329 ms |
+| Page-1 render-compare smoke | 5,044 | 5,044 | 0 | 69.913 ms | 200.334 ms |
 | Editing/reflow planning smoke | 5,044 | 5,044 | 0 | nested by stage | nested by stage |
 | Operator-preserving apply smoke | 5,044 | 5,044 | 0 | 308.560 ms | 687.430 ms |
 
@@ -118,7 +118,7 @@ The operator-preserving apply smoke produced temporary edited PDFs for 486 files
 
 | Renderer | Real-corpus operation | Successes | Pages rendered | Median | P95 | P99 | Command failures |
 |---|---|---:|---:|---:|---:|---:|---:|
-| Wellfriend Standard | all pages, raw 72-DPI render evidence | 5,044 / 5,044 | 116,975 | 947.4 ms | 4,170.3 ms | 11,414.4 ms | 0 |
+| Wellfriend Standard, document-scoped cache | all pages, raw 72-DPI render evidence | 5,044 / 5,044 | 116,975 | 572.8 ms | 3,224.5 ms | 10,503.9 ms | 0 |
 | Wellfriend display-list path | all pages, raw 72-DPI render evidence | 5,044 / 5,044 | 116,975 | 970.4 ms | 4,269.2 ms | 11,114.6 ms | 0 |
 | pypdfium2 / PDFium wrapper | all pages, 72-DPI wrapper render | 5,044 / 5,044 | 116,975 | 127.5 ms | 792.2 ms | 1,621.4 ms | 0 |
 | MuPDF `mutool` | all pages, 72-DPI render | 5,041 / 5,044 | 116,975 | 413.1 ms | 1,314.2 ms | 2,604.3 ms | 3 |
@@ -127,7 +127,7 @@ The operator-preserving apply smoke produced temporary edited PDFs for 486 files
 | Apache PDFBox | all pages, 72-DPI render | 5,044 / 5,044 | 116,975 | 4,186.3 ms | 10,581.1 ms | 16,796.8 ms | 0 |
 | PDF.js / Node canvas | all pages, 72-DPI render | 5,039 / 5,044 | 116,866 | 1,857.5 ms | 14,541.5 ms | 64,698.3 ms | 5 |
 
-The display-list path is retained for renderer architecture and replay diagnostics, but this all-pages run did not beat the immediate Wellfriend path and does not yet match the faster PDFium-wrapper raster speed. The older first-page table below is retained as a separate benchmark tier. Do not compare it directly with the all-pages renderer campaign above.
+The document-scoped cache result is the current retained Wellfriend all-pages path. A same-binary 100-file on/off VPS probe produced identical raw render hashes and measured a 1.68x total-time speedup before the full 5,044-PDF run. The display-list path is retained for renderer architecture and replay diagnostics, but this all-pages run did not beat the immediate cached Wellfriend path and does not yet match the faster PDFium-wrapper raster speed. The older first-page table below is retained as a separate benchmark tier. Do not compare it directly with the all-pages renderer campaign above.
 
 | Renderer | Real-corpus operation | Median | P95 | Command failures |
 |---|---:|---:|---:|---:|

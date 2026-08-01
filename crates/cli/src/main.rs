@@ -2810,6 +2810,9 @@ struct RenderCorpusArgs {
     /// Rendering pipeline: immediate or display-list
     #[arg(long, default_value = "display-list", value_parser = ["immediate", "display-list"])]
     pipeline: String,
+    /// Reuse per-document render caches across sequential page renders
+    #[arg(long = "document-cache", default_value = "on", value_parser = ["on", "off"])]
+    document_cache: String,
     /// Evidence mode: raw hashes only, PNG encode only, or both
     #[arg(long, default_value = "raw", value_parser = ["raw", "png", "both"])]
     evidence: String,
@@ -7619,6 +7622,7 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
         dpi,
         render_mode,
         pipeline: args.pipeline.clone(),
+        document_cache_enabled: args.document_cache == "on",
         evidence: args.evidence.clone(),
         password: args.password.clone(),
         timeout_ms: args.timeout_ms,
@@ -7677,6 +7681,7 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
         "dpi": dpi,
     "render_quality": render_mode.as_str(),
     "pipeline": args.pipeline,
+    "document_cache": args.document_cache,
     "evidence": args.evidence,
     "workers": worker_count,
         "timeout_ms": args.timeout_ms,
@@ -7702,6 +7707,7 @@ struct RenderCorpusRunOptions {
     dpi: u32,
     render_mode: wellfriendpdf_engine::RenderMode,
     pipeline: String,
+    document_cache_enabled: bool,
     evidence: String,
     password: Option<String>,
     timeout_ms: u64,
@@ -7742,6 +7748,8 @@ fn render_corpus_file_record(
             match engine.page_count() {
                 Ok(total) => {
                     page_count = total;
+                    let mut document_render_cache =
+                        wellfriendpdf_engine::RenderDocumentCache::new();
                     let pages: Box<dyn Iterator<Item = usize>> = if options.pages == "all" {
                         Box::new(1..=total)
                     } else if total > 0 {
@@ -7752,7 +7760,8 @@ fn render_corpus_file_record(
                     for page in pages {
                         file_pages_attempted += 1;
                         let render_started = Instant::now();
-                        let rendered = render_corpus_page(&engine, page, options);
+                        let rendered =
+                            render_corpus_page(&engine, page, options, &mut document_render_cache);
                         render_ms += render_started.elapsed().as_secs_f64() * 1000.0;
                         match rendered {
                             Ok(buffer) => {
@@ -7816,6 +7825,7 @@ fn render_corpus_page(
     engine: &wellfriendpdf_engine::ContentEngine,
     page: usize,
     options: &RenderCorpusRunOptions,
+    document_render_cache: &mut wellfriendpdf_engine::RenderDocumentCache,
 ) -> wellfriendpdf_engine::Result<wellfriendpdf_engine::PixelBuffer> {
     if options.timeout_ms == 0 {
         return render_corpus_page_with_cancel(
@@ -7823,6 +7833,7 @@ fn render_corpus_page(
             page,
             options,
             &wellfriendpdf_engine::CancelToken::none(),
+            document_render_cache,
         );
     }
 
@@ -7845,7 +7856,8 @@ fn render_corpus_page(
         }
     });
 
-    let result = render_corpus_page_with_cancel(engine, page, options, &cancel);
+    let result =
+        render_corpus_page_with_cancel(engine, page, options, &cancel, document_render_cache);
     let (lock, cvar) = &*done;
     if let Ok(mut finished) = lock.lock() {
         *finished = true;
@@ -7860,23 +7872,52 @@ fn render_corpus_page_with_cancel(
     page: usize,
     options: &RenderCorpusRunOptions,
     cancel: &wellfriendpdf_engine::CancelToken,
+    document_render_cache: &mut wellfriendpdf_engine::RenderDocumentCache,
 ) -> wellfriendpdf_engine::Result<wellfriendpdf_engine::PixelBuffer> {
     if options.pipeline == "display-list" {
-        match engine.render_page_display_list_cancellable_with_mode(
-            page,
-            options.dpi,
-            cancel,
-            options.render_mode,
-        ) {
-            Ok(Some(buf)) => Ok(buf),
-            Ok(None) => engine.render_page_cancellable_with_mode(
+        if options.document_cache_enabled {
+            match engine.render_page_display_list_cancellable_with_mode_and_cache(
                 page,
                 options.dpi,
                 cancel,
                 options.render_mode,
-            ),
-            Err(err) => Err(err),
+                document_render_cache,
+            ) {
+                Ok(Some(buf)) => Ok(buf),
+                Ok(None) => engine.render_page_cancellable_with_mode_and_cache(
+                    page,
+                    options.dpi,
+                    cancel,
+                    options.render_mode,
+                    document_render_cache,
+                ),
+                Err(err) => Err(err),
+            }
+        } else {
+            match engine.render_page_display_list_cancellable_with_mode(
+                page,
+                options.dpi,
+                cancel,
+                options.render_mode,
+            ) {
+                Ok(Some(buf)) => Ok(buf),
+                Ok(None) => engine.render_page_cancellable_with_mode(
+                    page,
+                    options.dpi,
+                    cancel,
+                    options.render_mode,
+                ),
+                Err(err) => Err(err),
+            }
         }
+    } else if options.document_cache_enabled {
+        engine.render_page_cancellable_with_mode_and_cache(
+            page,
+            options.dpi,
+            cancel,
+            options.render_mode,
+            document_render_cache,
+        )
     } else {
         engine.render_page_cancellable_with_mode(page, options.dpi, cancel, options.render_mode)
     }

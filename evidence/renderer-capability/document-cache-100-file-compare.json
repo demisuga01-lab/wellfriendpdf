@@ -1,0 +1,21 @@
+{
+  "accepted": true,
+  "created_utc": "2026-08-01T01:02:49Z",
+  "decision": "retained_adaptive",
+  "failure_samples": [],
+  "faster_percent": 40.532143521365306,
+  "off_jsonl": "/mnt/wellpdf-block/results/all-feature-corpus-current/render-probe-document-cache-off-keyed-v2.jsonl",
+  "off_summary": "/mnt/wellpdf-block/results/all-feature-corpus-current/render-probe-document-cache-off-keyed-v2-summary.json",
+  "off_total_sec": 176.72860389,
+  "on_jsonl": "/mnt/wellpdf-block/results/all-feature-corpus-current/render-probe-document-cache-on-keyed.jsonl",
+  "on_summary": "/mnt/wellpdf-block/results/all-feature-corpus-current/render-probe-document-cache-on-keyed-summary.json",
+  "on_total_sec": 105.096712518,
+  "page_mismatches": 0,
+  "path_mismatches": 0,
+  "raw_hash_mismatches": 0,
+  "rows_off": 100,
+  "rows_on": 100,
+  "speedup_ratio": 1.6815807046270028,
+  "stage": "render_probe_document_cache_keyed_compare",
+  "summary_failures": 0
+}

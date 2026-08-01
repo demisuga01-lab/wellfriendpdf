@@ -295,7 +295,7 @@ pub struct GlyphGenerationHookReport {
     pub privacy_policy: String,
     pub license_policy: String,
     pub deterministic_seed_policy: String,
-    pub mock_backend_status: String,
+    pub provider_contract_status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1027,8 +1027,8 @@ pub fn font_reconstruction_report(engine: &ContentEngine) -> Result<FontReconstr
             deterministic_seed_policy:
                 "backend must declare seed/settings; absent seed marks output non-deterministic"
                     .to_string(),
-            mock_backend_status:
-                "schema-only mock is used for validation; no generative weights are bundled"
+            provider_contract_status:
+                "schema-only provider contract is used for validation; no generative weights are bundled"
                     .to_string(),
         },
         license_policy:

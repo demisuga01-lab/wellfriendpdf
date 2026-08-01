@@ -37,6 +37,58 @@ use std::sync::{Arc, Mutex};
 
 pub struct PageRenderer;
 
+/// Per-document renderer scratch reused across sequential page renders.
+///
+/// The normal `render_page*` entry points keep the historical per-page cache
+/// behavior. Callers that render many pages from one already-open document can
+/// pass this cache to the `*_with_document_cache` variants to reuse font bytes,
+/// font resolvers, glyph outlines, and Type3 glyph geometry without changing
+/// rendering semantics. The cache is intentionally `&mut` rather than shared
+/// behind locks: a caller may keep one cache per document worker, while parallel
+/// rendering uses separate caches and remains deterministic.
+pub struct RenderDocumentCache {
+    glyph_cache: GlyphCache,
+    font_bytes_cache: HashMap<String, Option<Arc<Vec<u8>>>>,
+    font_resolver_cache: HashMap<String, Arc<FontResolver>>,
+    type3_geometry_cache: HashMap<String, Option<Arc<Type3GlyphGeometry>>>,
+}
+
+impl RenderDocumentCache {
+    pub fn new() -> Self {
+        Self {
+            glyph_cache: GlyphCache::with_default_capacity(),
+            font_bytes_cache: HashMap::new(),
+            font_resolver_cache: HashMap::new(),
+            type3_geometry_cache: HashMap::new(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.glyph_cache.clear();
+        self.font_bytes_cache.clear();
+        self.font_resolver_cache.clear();
+        self.type3_geometry_cache.clear();
+    }
+
+    pub fn glyph_entries(&self) -> usize {
+        self.glyph_cache.len()
+    }
+
+    pub fn font_byte_entries(&self) -> usize {
+        self.font_bytes_cache.len()
+    }
+
+    pub fn font_resolver_entries(&self) -> usize {
+        self.font_resolver_cache.len()
+    }
+}
+
+impl Default for RenderDocumentCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PageRenderer {
     /// Render a single PDF page to a PixelBuffer at the given DPI.
     pub fn render_page(
@@ -104,6 +156,47 @@ impl PageRenderer {
         state.render_page_annotations();
         cancel.check("page annotation render")?;
         let mut buf = state.into_buffer();
+        if transparent_page_group {
+            buf.flatten_onto_background(WHITE);
+        }
+        Ok(buf)
+    }
+
+    /// Render a page with reusable per-document caches.
+    pub fn render_page_cancellable_with_mode_and_cache(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<PixelBuffer> {
+        let ops = engine.get_page_content(page_number)?;
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let resources = engine.get_page_resources(page_number)?;
+        let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
+        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
+
+        let mut state = RenderState::new_with_document_cache(
+            buf,
+            viewport,
+            resources,
+            engine,
+            page_number,
+            cache,
+        );
+        state.cancel = cancel.clone();
+        state.dispatch_all(&ops);
+        if let Err(err) = cancel.check("page render") {
+            state.return_document_cache(cache);
+            return Err(err);
+        }
+        state.render_page_annotations();
+        if let Err(err) = cancel.check("page annotation render") {
+            state.return_document_cache(cache);
+            return Err(err);
+        }
+        let mut buf = state.into_buffer_and_document_cache(cache);
         if transparent_page_group {
             buf.flatten_onto_background(WHITE);
         }
@@ -180,6 +273,48 @@ impl PageRenderer {
         state.render_page_annotations();
         cancel.check("display-list annotation render")?;
         let mut buf = state.into_buffer();
+        if transparent_page_group {
+            buf.flatten_onto_background(WHITE);
+        }
+        Ok(buf)
+    }
+
+    /// Replay a display list with reusable per-document caches.
+    pub fn render_display_list_cancellable_with_mode_and_cache(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        list: &DisplayList,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<PixelBuffer> {
+        cancel.check("display-list render start")?;
+        let ops = engine.get_page_content(page_number)?;
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let resources = engine.get_page_resources(page_number)?;
+        let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
+        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
+        let mut state = RenderState::new_with_document_cache(
+            buf,
+            viewport,
+            resources,
+            engine,
+            page_number,
+            cache,
+        );
+        state.cancel = cancel.clone();
+        state.replay_display_list(list);
+        if let Err(err) = cancel.check("display-list replay") {
+            state.return_document_cache(cache);
+            return Err(err);
+        }
+        state.render_page_annotations();
+        if let Err(err) = cancel.check("display-list annotation render") {
+            state.return_document_cache(cache);
+            return Err(err);
+        }
+        let mut buf = state.into_buffer_and_document_cache(cache);
         if transparent_page_group {
             buf.flatten_onto_background(WHITE);
         }
@@ -587,8 +722,21 @@ impl<'a> RenderState<'a> {
         engine: &'a ContentEngine,
         page_number: usize,
     ) -> Self {
+        let mut cache = RenderDocumentCache::new();
+        Self::new_with_document_cache(buf, viewport, resources, engine, page_number, &mut cache)
+    }
+
+    fn new_with_document_cache(
+        buf: PixelBuffer,
+        viewport: Viewport,
+        resources: PageResources,
+        engine: &'a ContentEngine,
+        page_number: usize,
+        cache: &mut RenderDocumentCache,
+    ) -> Self {
         let viewport_width = viewport.width_px;
         let viewport_height = viewport.height_px;
+        let owned_cache = std::mem::take(cache);
         Self {
             engine,
             page_number,
@@ -601,10 +749,10 @@ impl<'a> RenderState<'a> {
             path: Path::new(),
             pending_clip: None,
             pending_text_clip: None,
-            glyph_cache: GlyphCache::with_default_capacity(),
-            font_bytes_cache: HashMap::new(),
-            font_resolver_cache: HashMap::new(),
-            type3_geometry_cache: HashMap::new(),
+            glyph_cache: owned_cache.glyph_cache,
+            font_bytes_cache: owned_cache.font_bytes_cache,
+            font_resolver_cache: owned_cache.font_resolver_cache,
+            type3_geometry_cache: owned_cache.type3_geometry_cache,
             form_depth: 0,
             pending_inline: None,
             base_ctm: Transform2D::identity(),
@@ -623,6 +771,33 @@ impl<'a> RenderState<'a> {
 
     fn into_buffer(self) -> PixelBuffer {
         self.buf
+    }
+
+    fn return_document_cache(self, cache: &mut RenderDocumentCache) {
+        *cache = RenderDocumentCache {
+            glyph_cache: self.glyph_cache,
+            font_bytes_cache: self.font_bytes_cache,
+            font_resolver_cache: self.font_resolver_cache,
+            type3_geometry_cache: self.type3_geometry_cache,
+        };
+    }
+
+    fn into_buffer_and_document_cache(self, cache: &mut RenderDocumentCache) -> PixelBuffer {
+        let RenderState {
+            buf,
+            glyph_cache,
+            font_bytes_cache,
+            font_resolver_cache,
+            type3_geometry_cache,
+            ..
+        } = self;
+        *cache = RenderDocumentCache {
+            glyph_cache,
+            font_bytes_cache,
+            font_resolver_cache,
+            type3_geometry_cache,
+        };
+        buf
     }
 
     fn into_separation_framebuffer(self) -> SeparationFramebuffer {
@@ -2882,8 +3057,12 @@ impl<'a> RenderState<'a> {
             return;
         }
         let font_dict = self.resources.fonts.get(&font_name).cloned();
+        let font_cache_key = font_dict
+            .as_ref()
+            .map(|font_dict| font_resource_cache_key(&font_name, font_dict))
+            .unwrap_or_else(|| format!("{font_name}:missing"));
         let decoded = if let Some(font_dict) = font_dict.as_ref() {
-            let resolver = self.get_font_resolver(&font_name, font_dict);
+            let resolver = self.get_font_resolver(&font_cache_key, font_dict);
             decode_text_bytes_with_resolver(
                 bytes,
                 font_dict,
@@ -2903,12 +3082,15 @@ impl<'a> RenderState<'a> {
             .map(detect_font_subtype)
             .unwrap_or(FontSubtype::Unknown);
         let is_type3 = font_subtype == FontSubtype::Type3;
-        let font_bytes = self.get_font_bytes(&font_name);
-        let variation = self.font_variation_request(&font_name);
+        let font_bytes = self.get_font_bytes(&font_name, &font_cache_key);
+        let variation = font_dict
+            .as_ref()
+            .map(|font_dict| self.font_variation_request_from_dict(font_dict))
+            .unwrap_or_else(VariationRequest::none);
         let font_hash = font_bytes
             .as_ref()
             .filter(|bytes| !bytes.is_empty())
-            .map(|bytes| GlyphCache::hash_font_bytes(bytes.as_slice()));
+            .map(|bytes| font_resource_glyph_cache_hash(bytes.as_slice(), &font_cache_key));
         let upem = font_bytes
             .as_ref()
             .and_then(|bytes| Self::get_upem(bytes.as_slice()))
@@ -2937,13 +3119,16 @@ impl<'a> RenderState<'a> {
                                 None
                             } else {
                                 font_dict.as_ref().and_then(|font_dict| {
-                                    self.get_type3_compat_font_bytes(&font_name, font_dict)
+                                    self.get_type3_compat_font_bytes(&font_cache_key, font_dict)
                                 })
                             }
                         });
                         if let Some(font_bytes) = render_font_bytes.as_ref() {
                             if !font_bytes.is_empty() {
-                                let font_hash = GlyphCache::hash_font_bytes(font_bytes.as_slice());
+                                let font_hash = font_resource_glyph_cache_hash(
+                                    font_bytes.as_slice(),
+                                    &font_cache_key,
+                                );
                                 let upem = Self::get_upem(font_bytes.as_slice())
                                     .map(f64::from)
                                     .filter(|value| *value > 0.0)
@@ -3896,11 +4081,8 @@ impl<'a> RenderState<'a> {
     /// the empty request (default instance) when there is no descriptor or no
     /// non-normal weight/stretch — so static fonts and default-instance variable
     /// fonts keep the byte-identical pre-variation cache key and outline.
-    fn font_variation_request(&self, font_name: &str) -> VariationRequest {
+    fn font_variation_request_from_dict(&self, font_dict: &PdfDictionary) -> VariationRequest {
         let reader = self.engine.document().reader();
-        let Some(font_dict) = self.resources.fonts.get(font_name) else {
-            return VariationRequest::none();
-        };
         // For Type0 fonts the descriptor lives on the descendant CIDFont.
         let descriptor = if detect_font_subtype(font_dict) == FontSubtype::Type0 {
             get_descendant_font(font_dict, reader).and_then(|d| resolve_descriptor(&d, reader))
@@ -3915,22 +4097,22 @@ impl<'a> RenderState<'a> {
         VariationRequest::from_descriptor(weight, stretch)
     }
 
-    fn get_font_bytes(&mut self, font_name: &str) -> Option<Arc<Vec<u8>>> {
-        if let Some(cached) = self.font_bytes_cache.get(font_name) {
+    fn get_font_bytes(&mut self, font_name: &str, cache_key: &str) -> Option<Arc<Vec<u8>>> {
+        if let Some(cached) = self.font_bytes_cache.get(cache_key) {
             return cached.clone();
         }
         let resolved = self.resolve_font_bytes(font_name).map(Arc::new);
         self.font_bytes_cache
-            .insert(font_name.to_string(), resolved.clone());
+            .insert(cache_key.to_string(), resolved.clone());
         resolved
     }
 
     fn get_type3_compat_font_bytes(
         &mut self,
-        font_name: &str,
+        font_cache_key: &str,
         font_dict: &PdfDictionary,
     ) -> Option<Arc<Vec<u8>>> {
-        let cache_key = format!("__type3_compat__{font_name}");
+        let cache_key = format!("__type3_compat__{font_cache_key}");
         if let Some(cached) = self.font_bytes_cache.get(&cache_key) {
             return cached.clone();
         }
@@ -3946,10 +4128,10 @@ impl<'a> RenderState<'a> {
 
     fn get_font_resolver(
         &mut self,
-        font_name: &str,
+        cache_key: &str,
         font_dict: &PdfDictionary,
     ) -> Arc<FontResolver> {
-        if let Some(cached) = self.font_resolver_cache.get(font_name) {
+        if let Some(cached) = self.font_resolver_cache.get(cache_key) {
             return Arc::clone(cached);
         }
         let resolver = Arc::new(FontResolver::new(
@@ -3957,7 +4139,7 @@ impl<'a> RenderState<'a> {
             self.engine.document().reader(),
         ));
         self.font_resolver_cache
-            .insert(font_name.to_string(), Arc::clone(&resolver));
+            .insert(cache_key.to_string(), Arc::clone(&resolver));
         resolver
     }
 
@@ -4435,6 +4617,81 @@ fn resolve_descriptor(
     {
         PdfObject::Dictionary(dict) => Some(dict),
         _ => None,
+    }
+}
+
+fn font_resource_cache_key(font_name: &str, font_dict: &PdfDictionary) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    fnv1a_update(&mut hash, font_name.as_bytes());
+    hash_pdf_dictionary(&mut hash, font_dict, 0);
+    format!("{font_name}:{hash:016x}")
+}
+
+fn font_resource_glyph_cache_hash(font_bytes: &[u8], font_cache_key: &str) -> u64 {
+    let mut hash = GlyphCache::hash_font_bytes(font_bytes);
+    fnv1a_update(&mut hash, font_cache_key.as_bytes());
+    hash
+}
+
+fn hash_pdf_dictionary(hash: &mut u64, dict: &PdfDictionary, depth: usize) {
+    fnv1a_update(hash, b"<<");
+    for (key, value) in dict.entries() {
+        fnv1a_update(hash, key.as_bytes());
+        hash_pdf_object(hash, value, depth.saturating_add(1));
+    }
+    fnv1a_update(hash, b">>");
+}
+
+fn hash_pdf_object(hash: &mut u64, object: &PdfObject, depth: usize) {
+    if depth > 8 {
+        fnv1a_update(hash, b"depth-cap");
+        return;
+    }
+    match object {
+        PdfObject::Boolean(value) => fnv1a_update(hash, if *value { b"true" } else { b"false" }),
+        PdfObject::Integer(value) => {
+            fnv1a_update(hash, b"int");
+            fnv1a_update(hash, &value.to_le_bytes());
+        }
+        PdfObject::Real(value) => {
+            fnv1a_update(hash, b"real");
+            fnv1a_update(hash, &value.to_bits().to_le_bytes());
+        }
+        PdfObject::String(value) => {
+            fnv1a_update(hash, b"str");
+            fnv1a_update(hash, value);
+        }
+        PdfObject::Name(value) => {
+            fnv1a_update(hash, b"name");
+            fnv1a_update(hash, value.as_bytes());
+        }
+        PdfObject::Array(items) => {
+            fnv1a_update(hash, b"[");
+            for item in items {
+                hash_pdf_object(hash, item, depth.saturating_add(1));
+            }
+            fnv1a_update(hash, b"]");
+        }
+        PdfObject::Dictionary(dict) => hash_pdf_dictionary(hash, dict, depth.saturating_add(1)),
+        PdfObject::Stream { dict, raw } => {
+            fnv1a_update(hash, b"stream");
+            hash_pdf_dictionary(hash, dict, depth.saturating_add(1));
+            fnv1a_update(hash, &(raw.len() as u64).to_le_bytes());
+        }
+        PdfObject::Null => fnv1a_update(hash, b"null"),
+        PdfObject::Reference { number, generation } => {
+            fnv1a_update(hash, b"ref");
+            fnv1a_update(hash, &number.to_le_bytes());
+            fnv1a_update(hash, &generation.to_le_bytes());
+        }
+    }
+}
+
+fn fnv1a_update(hash: &mut u64, bytes: &[u8]) {
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
+    for &byte in bytes {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(FNV_PRIME);
     }
 }
 
@@ -7681,6 +7938,33 @@ mod tests {
         dict.insert("Group", PdfObject::Dictionary(group));
         assert!(is_transparency_group(&dict));
         assert!(!is_transparency_group(&PdfDictionary::empty()));
+    }
+
+    #[test]
+    fn document_font_cache_key_includes_resource_dictionary() {
+        let mut winansi = PdfDictionary::empty();
+        winansi.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        winansi.insert("BaseFont", PdfObject::Name("Helvetica".to_string()));
+        winansi.insert("Encoding", PdfObject::Name("WinAnsiEncoding".to_string()));
+
+        let mut macroman = PdfDictionary::empty();
+        macroman.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        macroman.insert("BaseFont", PdfObject::Name("Helvetica".to_string()));
+        macroman.insert("Encoding", PdfObject::Name("MacRomanEncoding".to_string()));
+
+        assert_ne!(
+            font_resource_cache_key("F1", &winansi),
+            font_resource_cache_key("F1", &macroman)
+        );
+    }
+
+    #[test]
+    fn document_glyph_cache_hash_includes_resource_identity() {
+        let font_bytes = b"same embedded font bytes";
+        let base = font_resource_glyph_cache_hash(font_bytes, "F1:aaaaaaaaaaaaaaaa");
+        let remapped = font_resource_glyph_cache_hash(font_bytes, "F1:bbbbbbbbbbbbbbbb");
+
+        assert_ne!(base, remapped);
     }
 
     #[test]

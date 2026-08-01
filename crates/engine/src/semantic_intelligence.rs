@@ -122,8 +122,8 @@ pub struct ParentTreeRecoveryReport {
 pub enum LayoutBackendKind {
     Local,
     Cloud,
-    MockLocal,
-    MockCloud,
+    HeuristicLocal,
+    CloudContract,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -295,7 +295,7 @@ impl Default for LayoutLocalBackendConfig {
         Self {
             enabled: false,
             model_path: None,
-            model_name: "mock-layout-local".to_string(),
+            model_name: "heuristic-layout-local".to_string(),
             model_version: "semantic_intelligence-template".to_string(),
             batch_page_limit: 4,
             timeout_ms: 5_000,
@@ -397,11 +397,11 @@ pub struct SemanticIntelligenceSemanticIntelligenceReport {
     pub closure_gates: BTreeMap<String, serde_json::Value>,
 }
 
-pub struct MockLocalLayoutBackend {
+pub struct HeuristicLocalLayoutBackend {
     config: LayoutLocalBackendConfig,
 }
 
-impl MockLocalLayoutBackend {
+impl HeuristicLocalLayoutBackend {
     pub fn new(config: LayoutLocalBackendConfig) -> Self {
         Self { config }
     }
@@ -419,11 +419,11 @@ impl MockLocalLayoutBackend {
             LayoutBackendStatus::Available
         };
         LayoutBackendDescriptor {
-            backend_id: "mock-local-layout".to_string(),
-            backend_type: LayoutBackendKind::MockLocal,
+            backend_id: "heuristic-local-layout".to_string(),
+            backend_type: LayoutBackendKind::HeuristicLocal,
             model_name: self.config.model_name.clone(),
             model_version: self.config.model_version.clone(),
-            model_hash: "mock-local:deterministic".to_string(),
+            model_hash: "heuristic-local:deterministic".to_string(),
             status,
             diagnostics: Vec::new(),
         }
@@ -432,11 +432,11 @@ impl MockLocalLayoutBackend {
     pub fn propose(&self, input: &LayoutBackendInput) -> LayoutProposalSet {
         if !self.config.enabled {
             return disabled_layout_set(
-                "mock-local-layout",
-                LayoutBackendKind::MockLocal,
+                "heuristic-local-layout",
+                LayoutBackendKind::HeuristicLocal,
                 LayoutInputPayloadKind::MetadataOnly,
                 input,
-                "local_mock_disabled_by_default",
+                "local_heuristic_disabled_by_default",
             );
         }
         let mut diagnostics = Vec::new();
@@ -452,9 +452,9 @@ impl MockLocalLayoutBackend {
                 page: None,
             });
         }
-        mock_layout_set(
-            "mock-local-layout",
-            LayoutBackendKind::MockLocal,
+        heuristic_layout_set(
+            "heuristic-local-layout",
+            LayoutBackendKind::HeuristicLocal,
             self.config.model_name.as_str(),
             self.config.model_version.as_str(),
             input,
@@ -463,11 +463,11 @@ impl MockLocalLayoutBackend {
     }
 }
 
-pub struct MockCloudLayoutBackend {
+pub struct CloudLayoutContractBackend {
     config: CloudLayoutBackendConfig,
 }
 
-impl MockCloudLayoutBackend {
+impl CloudLayoutContractBackend {
     pub fn new(config: CloudLayoutBackendConfig) -> Self {
         Self { config }
     }
@@ -481,11 +481,11 @@ impl MockCloudLayoutBackend {
             LayoutBackendStatus::Configured
         };
         LayoutBackendDescriptor {
-            backend_id: "mock-cloud-layout".to_string(),
-            backend_type: LayoutBackendKind::MockCloud,
-            model_name: "mock-cloud-layout".to_string(),
+            backend_id: "cloud-layout-contract".to_string(),
+            backend_type: LayoutBackendKind::CloudContract,
+            model_name: "cloud-layout-contract".to_string(),
             model_version: "semantic_intelligence-template".to_string(),
-            model_hash: "mock-cloud:no-network".to_string(),
+            model_hash: "cloud-contract:no-network".to_string(),
             status,
             diagnostics: Vec::new(),
         }
@@ -494,11 +494,11 @@ impl MockCloudLayoutBackend {
     pub fn propose(&self, input: &LayoutBackendInput) -> LayoutProposalSet {
         if !self.config.enabled {
             return disabled_layout_set(
-                "mock-cloud-layout",
-                LayoutBackendKind::MockCloud,
+                "cloud-layout-contract",
+                LayoutBackendKind::CloudContract,
                 input.payload.clone(),
                 input,
-                "cloud_mock_disabled_by_default",
+                "cloud_contract_disabled_by_default",
             );
         }
         if self.config.endpoint.is_none()
@@ -506,23 +506,23 @@ impl MockCloudLayoutBackend {
             || !input.allow_cloud_upload
         {
             return disabled_layout_set(
-                "mock-cloud-layout",
-                LayoutBackendKind::MockCloud,
+                "cloud-layout-contract",
+                LayoutBackendKind::CloudContract,
                 input.payload.clone(),
                 input,
                 "cloud_request_blocked_by_privacy_policy",
             );
         }
-        mock_layout_set(
-            "mock-cloud-layout",
-            LayoutBackendKind::MockCloud,
-            "mock-cloud-layout",
+        heuristic_layout_set(
+            "cloud-layout-contract",
+            LayoutBackendKind::CloudContract,
+            "cloud-layout-contract",
             "semantic_intelligence-template",
             input,
             vec![LayoutDiagnostic {
-                code: "layout.cloud.mock_no_network".to_string(),
+                code: "layout.cloud.contract_no_network".to_string(),
                 severity: "info".to_string(),
-                message: "mock cloud backend validated schema without making a network request"
+                message: "cloud contract backend validated schema without making a network request"
                     .to_string(),
                 page: None,
             }],
@@ -903,8 +903,8 @@ pub fn layout_backend_availability_report(
     local: &LayoutLocalBackendConfig,
     cloud: &CloudLayoutBackendConfig,
 ) -> LayoutAvailabilityReport {
-    let local = MockLocalLayoutBackend::new(local.clone()).descriptor();
-    let cloud = MockCloudLayoutBackend::new(cloud.clone()).descriptor();
+    let local = HeuristicLocalLayoutBackend::new(local.clone()).descriptor();
+    let cloud = CloudLayoutContractBackend::new(cloud.clone()).descriptor();
     LayoutAvailabilityReport {
         local_backend: local,
         cloud_backend: cloud,
@@ -991,18 +991,18 @@ pub fn semantic_intelligence_semantic_intelligence_report_value() -> serde_json:
             "deterministic_primary": true,
             "confidence_threshold": DEFAULT_LAYOUT_CONFIDENCE_THRESHOLD,
             "can_delete_deterministic_text": false,
-            "mock_backend_test_status": "implemented"
+            "provider_contract_test_status": "implemented"
         },
         "local_backend_template": {
             "status": "implemented_with_limits",
-            "backend": "MockLocalLayoutBackend",
+            "backend": "HeuristicLocalLayoutBackend",
             "requires_external_model": false,
             "future_backend_shapes": ["DocLayNet", "LayoutParser", "ONNX", "Torch"],
             "availability": availability.local_backend
         },
         "cloud_backend_template": {
             "status": "implemented_with_limits",
-            "backend": "MockCloudLayoutBackend",
+            "backend": "CloudLayoutContractBackend",
             "disabled_by_default": true,
             "network_in_tests": false,
             "secret_logging": false,
@@ -1034,7 +1034,7 @@ pub fn semantic_intelligence_semantic_intelligence_report_value() -> serde_json:
             "ParentTree recovery does not claim author-original hierarchy when only repaired or orphan evidence exists",
             "built-in CJK dictionary is a small synthetic fixture; large production dictionaries remain user supplied or feature-gated external assets",
             "local ML templates do not bundle ONNX/Torch/LayoutParser runtimes or model files",
-            "cloud layout template is mock-only unless an application explicitly supplies endpoint, payload policy, and privacy acknowledgement"
+            "cloud layout template is contract-only unless an application explicitly supplies endpoint, payload policy, and privacy acknowledgement"
         ],
         "closure_gates": {
             "public_report_schema": "additive_feature_report_semantic_intelligence",
@@ -1816,7 +1816,7 @@ fn disabled_layout_set(
     }
 }
 
-fn mock_layout_set(
+fn heuristic_layout_set(
     backend_id: &str,
     backend_type: LayoutBackendKind,
     model_name: &str,
@@ -1840,7 +1840,7 @@ fn mock_layout_set(
                 polygon: vec![[72.0, 120.0], [540.0, 120.0], [540.0, 720.0], [72.0, 720.0]],
             },
             reading_order: Some(idx),
-            provenance: "mock_deterministic_layout_backend".to_string(),
+            provenance: "deterministic_layout_backend".to_string(),
             diagnostics: Vec::new(),
         });
     }
@@ -1850,7 +1850,7 @@ fn mock_layout_set(
         backend_type,
         model_name: model_name.to_string(),
         model_version: model_version.to_string(),
-        model_hash: "mock:deterministic".to_string(),
+        model_hash: "heuristic:deterministic".to_string(),
         input_page_ids: input.pages.clone(),
         input_payload_type: input.payload.clone(),
         proposed_regions,

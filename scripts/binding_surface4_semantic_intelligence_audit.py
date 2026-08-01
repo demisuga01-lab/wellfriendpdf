@@ -287,7 +287,7 @@ def main() -> int:
         "local-layout-backend-template-semantic_intelligence.json",
         {
             "schema_version": "semantic_intelligence.local_backend.template.v1",
-            "backend_registration": "MockLocalLayoutBackend",
+            "backend_registration": "HeuristicLocalLayoutBackend",
             "model_path_config": True,
             "runtime_dependency_required_for_mock": False,
             "batch_page_limit": 4,
@@ -301,7 +301,7 @@ def main() -> int:
         "cloud-layout-backend-template-semantic_intelligence.json",
         {
             "schema_version": "semantic_intelligence.cloud_backend.template.v1",
-            "backend_registration": "MockCloudLayoutBackend",
+            "backend_registration": "CloudLayoutContractBackend",
             "disabled_by_default": True,
             "endpoint_required": True,
             "api_key_env_only": True,

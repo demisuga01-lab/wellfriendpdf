@@ -424,9 +424,9 @@ pub use render::{
     DisplayRunKind, DrawState, FillRule, FlatPath, FontRasterizer, GlyphCache, GlyphCacheKey,
     ImagePainter, LinePainter, PageRenderer, Path, PathPainter, PathSegment, PixelBuffer,
     PixelColor, ProgressiveRenderJob, ProgressiveRenderStepReport, ProgressiveRenderToken,
-    RenderCache, RenderCacheKey, RenderCacheMetrics, RenderColor, RenderDevice, RenderMode,
-    RenderQuality, RenderTile, SvgPage, Transform2D, UnsupportedRenderOp, Viewport, WuLineRenderer,
-    BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
+    RenderCache, RenderCacheKey, RenderCacheMetrics, RenderColor, RenderDevice,
+    RenderDocumentCache, RenderMode, RenderQuality, RenderTile, SvgPage, Transform2D,
+    UnsupportedRenderOp, Viewport, WuLineRenderer, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
 };
 pub use render::{render_page_svg, svg, text_decode};
 pub use runtime::*;
@@ -463,12 +463,12 @@ pub use semantic_binding::{
 pub use semantic_intelligence::{
     merge_layout_proposals_deterministic, recover_parenttree_semantics,
     semantic_elements_from_parenttree_recovery, validate_layout_proposal_set,
-    CloudLayoutBackendConfig, LayoutAvailabilityReport, LayoutBackendDescriptor,
-    LayoutBackendInput, LayoutBackendKind, LayoutBackendStatus, LayoutCloudPayloadPolicy,
-    LayoutDiagnostic, LayoutInputPayloadKind, LayoutLocalBackendConfig, LayoutMergeOutcome,
-    LayoutMergePolicy, LayoutMergeReport, LayoutPrivacyMode, LayoutProposalRegion,
-    LayoutProposalSet, LayoutRegionGeometry, LayoutRegionLabel, MockCloudLayoutBackend,
-    MockLocalLayoutBackend, ParentTreeDiagnostic, ParentTreePageSummary, ParentTreeRecoveredNode,
+    CloudLayoutBackendConfig, CloudLayoutContractBackend, HeuristicLocalLayoutBackend,
+    LayoutAvailabilityReport, LayoutBackendDescriptor, LayoutBackendInput, LayoutBackendKind,
+    LayoutBackendStatus, LayoutCloudPayloadPolicy, LayoutDiagnostic, LayoutInputPayloadKind,
+    LayoutLocalBackendConfig, LayoutMergeOutcome, LayoutMergePolicy, LayoutMergeReport,
+    LayoutPrivacyMode, LayoutProposalRegion, LayoutProposalSet, LayoutRegionGeometry,
+    LayoutRegionLabel, ParentTreeDiagnostic, ParentTreePageSummary, ParentTreeRecoveredNode,
     ParentTreeRecoveryReport, ParentTreeRecoveryStatus, SemanticEvidenceKind,
     SemanticIntelligenceSemanticIntelligenceReport,
 };

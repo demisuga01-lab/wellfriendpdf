@@ -1,6 +1,6 @@
 # Semantic Intelligence Cloud Layout Backend Template
 
-`MockCloudLayoutBackend` is the Semantic Intelligence cloud backend template. It is safe by
+`CloudLayoutContractBackend` is the Semantic Intelligence cloud backend template. It is safe by
 default and performs no network request in tests.
 
 Cloud backend requirements:

@@ -3,9 +3,9 @@ use wellfriendpdf_engine::{
     cjk_dictionary_entries_sha256, cjk_dictionary_rag_token_chunks, cjk_dictionary_token_search,
     merge_layout_proposals_deterministic, segment_cjk_dictionary_text_with_provider,
     CjkDictionaryPackManifest, CjkDictionaryProvider, CjkDictionaryProviderLimits,
-    CloudLayoutBackendConfig, ContentEngine, LayoutBackendInput, LayoutCloudPayloadPolicy,
-    LayoutLocalBackendConfig, LayoutMergePolicy, LayoutProposalSet, MockCloudLayoutBackend,
-    MockLocalLayoutBackend, ParentTreeRecoveryStatus,
+    CloudLayoutBackendConfig, CloudLayoutContractBackend, ContentEngine,
+    HeuristicLocalLayoutBackend, LayoutBackendInput, LayoutCloudPayloadPolicy,
+    LayoutLocalBackendConfig, LayoutMergePolicy, LayoutProposalSet, ParentTreeRecoveryStatus,
 };
 
 struct PdfBuilder {
@@ -109,9 +109,9 @@ fn parenttree_recovery_builds_provenance_graph_from_broken_tags() {
 }
 
 #[test]
-fn layout_mock_backends_merge_deterministically_and_cloud_fails_closed() {
+fn layout_contract_backends_merge_deterministically_and_cloud_fails_closed() {
     let input = LayoutBackendInput::metadata_only(vec![1]);
-    let local = MockLocalLayoutBackend::new(LayoutLocalBackendConfig {
+    let local = HeuristicLocalLayoutBackend::new(LayoutLocalBackendConfig {
         enabled: true,
         ..Default::default()
     });
@@ -122,13 +122,13 @@ fn layout_mock_backends_merge_deterministically_and_cloud_fails_closed() {
     assert_eq!(merge.accepted_count, 1);
     assert_eq!(merge.rejected_count, 0);
 
-    let cloud = MockCloudLayoutBackend::new(CloudLayoutBackendConfig::default());
+    let cloud = CloudLayoutContractBackend::new(CloudLayoutBackendConfig::default());
     let blocked = cloud.propose(&input);
     assert!(blocked.proposed_regions.is_empty());
     assert!(blocked
         .diagnostics
         .iter()
-        .any(|diag| diag.code == "cloud_mock_disabled_by_default"));
+        .any(|diag| diag.code == "cloud_contract_disabled_by_default"));
 
     let allowed_input = LayoutBackendInput {
         allow_cloud_upload: true,
@@ -137,9 +137,9 @@ fn layout_mock_backends_merge_deterministically_and_cloud_fails_closed() {
         text_available: true,
         ..LayoutBackendInput::metadata_only(vec![1])
     };
-    let cloud = MockCloudLayoutBackend::new(CloudLayoutBackendConfig {
+    let cloud = CloudLayoutContractBackend::new(CloudLayoutBackendConfig {
         enabled: true,
-        endpoint: Some("https://layout.invalid/mock".to_string()),
+        endpoint: Some("https://layout.invalid/contract".to_string()),
         api_key_env: Some("WELLFRIENDPDF_LAYOUT_API_KEY".to_string()),
         payload_policy: LayoutCloudPayloadPolicy::TextOnly,
         user_acknowledged_privacy: true,
@@ -155,7 +155,7 @@ fn layout_mock_backends_merge_deterministically_and_cloud_fails_closed() {
 
 #[test]
 fn malformed_layout_proposal_schema_is_rejected() {
-    let mut set = MockLocalLayoutBackend::new(LayoutLocalBackendConfig {
+    let mut set = HeuristicLocalLayoutBackend::new(LayoutLocalBackendConfig {
         enabled: true,
         ..Default::default()
     })

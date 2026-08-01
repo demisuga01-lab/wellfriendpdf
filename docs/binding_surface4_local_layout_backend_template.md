@@ -1,6 +1,6 @@
 # Semantic Intelligence Local Layout Backend Template
 
-`MockLocalLayoutBackend` is the Semantic Intelligence local backend template. It exercises
+`HeuristicLocalLayoutBackend` is the Semantic Intelligence local backend template. It exercises
 the registration, availability, proposal schema, merge, timeout, batch, and
 memory-limit path without downloading or loading a real model.
 
@@ -15,14 +15,14 @@ Template fields:
 - output schema conversion
 - unavailable dependency diagnostics
 
-The local mock backend can emit deterministic region proposals from metadata-only
+The local heuristic backend can emit deterministic region proposals from metadata-only
 input. Future DocLayNet, LayoutParser, ONNX, or Torch backends can implement the
 same schema without changing the core semantic model.
 
 Default posture:
 
 - disabled unless explicitly enabled in configuration
-- no external model required for mock tests
+- no external model required for provider-contract tests
 - no network use
 - no secret handling
 - malformed output is rejected by schema validation

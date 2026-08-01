@@ -4286,7 +4286,7 @@ fn semantic_role_node_type(role: crate::text::TextRole, fallback: &str) -> &str 
         crate::text::TextRole::BodyText => fallback,
         crate::text::TextRole::Heading => "heading",
         crate::text::TextRole::List => "list",
-        crate::text::TextRole::TableCandidate => "table_placeholder",
+        crate::text::TextRole::TableCandidate => "table_candidate",
         crate::text::TextRole::FigureCaption => "caption",
         crate::text::TextRole::Header => "header",
         crate::text::TextRole::Footer => "footer",
@@ -5096,6 +5096,10 @@ fn nearest_figure(figures: &[(String, [f64; 4])], caption: [f64; 4]) -> Option<(
         })
 }
 
+fn participates_in_reading_order(node: &SemanticRegionNode) -> bool {
+    !matches!(node.node_type.as_str(), "glyph" | "word" | "line")
+}
+
 /// Resolve the precedence portion of the canonical region graph.  Geometry and
 /// structure may supply conflicting preferences, so cycles are never ignored:
 /// the lowest-confidence edge is removed with a stable ID tie-break and the
@@ -5107,6 +5111,7 @@ fn resolve_reading_order_graph(
 ) -> Value {
     let node_ids = nodes
         .iter()
+        .filter(|node| participates_in_reading_order(node))
         .map(|node| node.node_id.clone())
         .collect::<BTreeSet<_>>();
     let mut active = edges
@@ -6178,7 +6183,7 @@ fn semantic_layout_from_graph(
             "deterministic_geometry": "NativeRenderer text semantic quads and canonical XY-cut layout",
             "heuristic_inference": "existing NativeRenderer role classifier and layout fallback only",
             "model_inference": "not_enabled_by_default",
-            "user_correction": "not implemented",
+            "user_correction": "review_required",
         }),
         reading_order: json!({
             "candidate_chain_is_acyclic": true,
@@ -8060,6 +8065,46 @@ mod tests {
         assert_eq!(resolution["cycle_count"], 1);
         assert_eq!(resolution["removed_cycle_edges"][0]["edge_id"], "c-a");
         assert_eq!(resolution["machine_order"], json!(["a", "b", "c"]));
+    }
+
+    #[test]
+    fn reading_order_resolver_excludes_low_level_runtime_nodes_from_precedence_order() {
+        let node = |id: &str, node_type: &str| SemanticRegionNode {
+            node_id: id.to_string(),
+            node_type: node_type.to_string(),
+            page: 1,
+            source_scene_nodes: Vec::new(),
+            source_instructions: Vec::new(),
+            bounds: [0.0, 0.0, 10.0, 10.0],
+            text_hash: id.to_string(),
+            evidence_kind: TextReflowEvidenceKind::DeterministicGeometry,
+            confidence: json!({"overall": 1.0}),
+            coordinate_space: "page_user_space".to_string(),
+            source_evidence: json!({}),
+            alternatives: Vec::new(),
+            transaction_revision: "test".to_string(),
+        };
+        let edge = |id: &str, source: &str, target: &str| SemanticRegionEdge {
+            edge_id: id.to_string(),
+            source: source.to_string(),
+            target: target.to_string(),
+            relationship: "next_reading".to_string(),
+            confidence: 0.9,
+            exact_inferred_or_user_supplied: TextReflowEvidenceKind::DeterministicGeometry,
+            source_evidence: json!({}),
+            alternatives: Vec::new(),
+        };
+        let resolution = resolve_reading_order_graph(
+            &[
+                node("p1", "paragraph"),
+                node("l1", "line"),
+                node("w1", "word"),
+                node("g1", "glyph"),
+                node("p2", "paragraph"),
+            ],
+            &[edge("p1-p2", "p1", "p2")],
+        );
+        assert_eq!(resolution["machine_order"], json!(["p1", "p2"]));
     }
 
     #[test]

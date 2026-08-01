@@ -218,7 +218,7 @@ def main() -> int:
         OUT / "local-layout-backend-status-cjk_dictionary_layout.json",
         {
             "status": "unsupported_reported_no_runtime",
-            "template": "MockLocalLayoutBackend",
+            "template": "HeuristicLocalLayoutBackend",
             "network": False,
             "model_weights_bundled": False,
             "future_adapter_shape": ["ONNX Runtime feature flag", "user model path", "schema conversion", "timeout/memory caps"],
@@ -228,7 +228,7 @@ def main() -> int:
         OUT / "cloud-layout-backend-status-cjk_dictionary_layout.json",
         {
             "status": "disabled_by_default",
-            "template": "MockCloudLayoutBackend",
+            "template": "CloudLayoutContractBackend",
             "requires_explicit_endpoint": True,
             "requires_privacy_ack": True,
             "secret_logging": False,

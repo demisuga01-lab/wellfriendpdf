@@ -39,6 +39,11 @@
       "evidence": "wellfriend-render-all-pages-final-current-2 rendered 5,044/5,044 files and 116,975/116,975 attempted pages with zero failures.",
       "id": "real_5000_final_run",
       "status": "retained_default"
+    },
+    {
+      "evidence": "document-cache 100-file same-binary probe had 0 raw hash mismatches and 1.68x total-time speedup; document-cache 8-worker all-pages run rendered 5,044/5,044 files and 116,975/116,975 attempted pages with zero failures.",
+      "id": "document_scoped_render_cache",
+      "status": "retained_adaptive"
     }
   ],
   "result_dir": "/mnt/wellpdf-block/results/renderer-capability-20260730T172700Z",

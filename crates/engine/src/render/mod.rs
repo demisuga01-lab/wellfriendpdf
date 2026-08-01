@@ -34,7 +34,7 @@ pub use font_rasterizer::{get_fallback_font, FontRasterizer};
 pub use glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey};
 pub use image_painter::ImagePainter;
 pub use line::{DashState, LinePainter, WuLineRenderer};
-pub use page_renderer::PageRenderer;
+pub use page_renderer::{PageRenderer, RenderDocumentCache};
 pub use path::{flatten_cubic, flatten_path, FillRule, FlatPath, Path, PathPainter, PathSegment};
 pub use postscript::{assemble_eps_document, assemble_ps_document, render_page_ps, PsPage};
 pub use progressive::{ProgressiveRenderJob, ProgressiveRenderStepReport, ProgressiveRenderToken};

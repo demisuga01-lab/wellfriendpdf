@@ -13,8 +13,8 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::pubsec::PubSecKeyProvider;
 use crate::reader::PdfReader;
 use crate::render::{
-    DisplayList, PageRenderer, PixelBuffer, ProgressiveRenderJob, RenderCache, RenderMode,
-    RenderTile, Viewport, WHITE,
+    DisplayList, PageRenderer, PixelBuffer, ProgressiveRenderJob, RenderCache, RenderDocumentCache,
+    RenderMode, RenderTile, Viewport, WHITE,
 };
 use crate::text::{TextExtractOptions, TextExtractor, TextFormatOptions};
 use crate::{
@@ -1368,6 +1368,30 @@ impl ContentEngine {
         PageRenderer::render_page_cancellable_with_mode(self, page_number, dpi, cancel, render_mode)
     }
 
+    /// Render a page with cancellation and a caller-owned per-document cache.
+    ///
+    /// Use this when rendering multiple pages from one document sequentially.
+    /// It preserves the same output semantics as
+    /// [`render_page_cancellable_with_mode`](Self::render_page_cancellable_with_mode)
+    /// while avoiding repeated font/glyph resolver reconstruction.
+    pub fn render_page_cancellable_with_mode_and_cache(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        cancel: &crate::cancel::CancelToken,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<PixelBuffer> {
+        PageRenderer::render_page_cancellable_with_mode_and_cache(
+            self,
+            page_number,
+            dpi,
+            cancel,
+            render_mode,
+            cache,
+        )
+    }
+
     /// Build the conservative Release Packaging display list for a page.
     ///
     /// This is a replayable vector display list for pages whose drawing
@@ -1411,6 +1435,33 @@ impl ContentEngine {
                     &list,
                     cancel,
                     render_mode,
+                )?,
+            ))
+        }
+    }
+
+    /// Render a display-list page with cancellation and a reusable document cache.
+    pub fn render_page_display_list_cancellable_with_mode_and_cache(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        cancel: &crate::cancel::CancelToken,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<Option<PixelBuffer>> {
+        let list = PageRenderer::build_display_list(self, page_number, dpi)?;
+        if !list.is_fully_supported() {
+            Ok(None)
+        } else {
+            Ok(Some(
+                PageRenderer::render_display_list_cancellable_with_mode_and_cache(
+                    self,
+                    page_number,
+                    dpi,
+                    &list,
+                    cancel,
+                    render_mode,
+                    cache,
                 )?,
             ))
         }
