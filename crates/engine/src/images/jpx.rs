@@ -40,9 +40,9 @@ use crate::images::decoder::{ensure_decode_budget, ColorSpaceConverter, RawImage
 /// `data` is the raw stream bytes after all preceding (non-image) filters have
 /// been applied. It may be either a raw J2K codestream (the common PDF case) or
 /// a JP2-wrapped file; both are handled. The output is always 8-bit, with
-/// channels interleaved, in either grayscale (1) or RGB (3) form — CMYK is
-/// converted to RGB and any alpha channel is dropped (soft masks are handled
-/// separately by the SMask pipeline), mirroring how the DCTDecode path behaves.
+/// channels interleaved. Grayscale and RGB images retain native color channels,
+/// CMYK is converted to RGB, and JPX-internal alpha channels are preserved as
+/// RGBA. PDF image soft masks are still handled separately by the SMask pipeline.
 pub fn decode(data: &[u8]) -> Result<RawImage> {
     let image = Image::new(data, &DecodeSettings::default())
         .map_err(|err| WellfriendError::MalformedPdf(format!("JPXDecode parse failed: {err}")))?;
@@ -67,26 +67,49 @@ pub fn decode(data: &[u8]) -> Result<RawImage> {
     let color_channels = usize::from(color_channels);
     let stored_channels = usize::from(stored_channels);
 
-    // Drop the trailing alpha channel (if any) down to the pure color channels.
-    let color_only = if has_alpha {
-        strip_alpha(&decoded, stored_channels, color_channels)
+    let (color_only, alpha) = if has_alpha {
+        split_trailing_alpha(&decoded, stored_channels, color_channels)
     } else {
-        decoded
+        (decoded, None)
     };
 
     let (pixels, channels) = match color_space {
-        ColorSpace::Gray => (color_only, 1u8),
-        ColorSpace::RGB => (color_only, 3u8),
-        ColorSpace::CMYK => (ColorSpaceConverter::cmyk_to_rgb(&color_only), 3u8),
+        ColorSpace::Gray => match alpha {
+            Some(alpha) => (gray_alpha_to_rgba(&color_only, &alpha), 4u8),
+            None => (color_only, 1u8),
+        },
+        ColorSpace::RGB => match alpha {
+            Some(alpha) => (attach_alpha_to_rgb(&color_only, &alpha), 4u8),
+            None => (color_only, 3u8),
+        },
+        ColorSpace::CMYK => {
+            let rgb = ColorSpaceConverter::cmyk_to_rgb(&color_only);
+            match alpha {
+                Some(alpha) => (attach_alpha_to_rgb(&rgb, &alpha), 4u8),
+                None => (rgb, 3u8),
+            }
+        }
         // ICC-based and unknown color spaces are surfaced by their raw channel
         // count. 1 -> gray, 3 -> RGB, 4 -> treat as CMYK; anything else is left
         // as-is and reported by its channel count so the caller can still emit
         // pixels rather than failing outright.
         ColorSpace::Icc { num_channels, .. } | ColorSpace::Unknown { num_channels } => {
             match num_channels {
-                1 => (color_only, 1u8),
-                3 => (color_only, 3u8),
-                4 => (ColorSpaceConverter::cmyk_to_rgb(&color_only), 3u8),
+                1 => match alpha {
+                    Some(alpha) => (gray_alpha_to_rgba(&color_only, &alpha), 4u8),
+                    None => (color_only, 1u8),
+                },
+                3 => match alpha {
+                    Some(alpha) => (attach_alpha_to_rgb(&color_only, &alpha), 4u8),
+                    None => (color_only, 3u8),
+                },
+                4 => {
+                    let rgb = ColorSpaceConverter::cmyk_to_rgb(&color_only);
+                    match alpha {
+                        Some(alpha) => (attach_alpha_to_rgb(&rgb, &alpha), 4u8),
+                        None => (rgb, 3u8),
+                    }
+                }
                 other => {
                     log::warn!(
                         "JPXDecode {width}x{height}: {other}-channel ICC/unknown color space \
@@ -120,14 +143,36 @@ pub fn decode(data: &[u8]) -> Result<RawImage> {
     Ok(raw)
 }
 
-/// Drop the trailing alpha channel from interleaved pixel data, keeping the
-/// first `color_channels` of every `stored_channels`-wide pixel.
-fn strip_alpha(data: &[u8], stored_channels: usize, color_channels: usize) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len() / stored_channels * color_channels);
+/// Split a trailing alpha channel from interleaved JPX pixel data.
+fn split_trailing_alpha(
+    data: &[u8],
+    stored_channels: usize,
+    color_channels: usize,
+) -> (Vec<u8>, Option<Vec<u8>>) {
+    let mut color = Vec::with_capacity(data.len() / stored_channels * color_channels);
+    let mut alpha = Vec::with_capacity(data.len() / stored_channels);
     for pixel in data.chunks_exact(stored_channels) {
-        out.extend_from_slice(&pixel[..color_channels]);
+        color.extend_from_slice(&pixel[..color_channels]);
+        alpha.push(pixel.get(color_channels).copied().unwrap_or(255));
     }
-    out
+    (color, Some(alpha))
+}
+
+fn attach_alpha_to_rgb(rgb: &[u8], alpha: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity((rgb.len() / 3) * 4);
+    for (i, pixel) in rgb.chunks_exact(3).enumerate() {
+        rgba.extend_from_slice(pixel);
+        rgba.push(alpha.get(i).copied().unwrap_or(255));
+    }
+    rgba
+}
+
+fn gray_alpha_to_rgba(gray: &[u8], alpha: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(gray.len() * 4);
+    for (i, &sample) in gray.iter().enumerate() {
+        rgba.extend_from_slice(&[sample, sample, sample, alpha.get(i).copied().unwrap_or(255)]);
+    }
+    rgba
 }
 
 #[cfg(test)]
@@ -141,17 +186,28 @@ mod tests {
     }
 
     #[test]
-    fn strip_alpha_drops_last_channel() {
-        // Two RGBA pixels -> two RGB pixels.
+    fn split_trailing_alpha_preserves_rgb_and_alpha() {
         let rgba = vec![10, 20, 30, 255, 40, 50, 60, 128];
-        let rgb = strip_alpha(&rgba, 4, 3);
+        let (rgb, alpha) = split_trailing_alpha(&rgba, 4, 3);
         assert_eq!(rgb, vec![10, 20, 30, 40, 50, 60]);
+        assert_eq!(alpha.unwrap(), vec![255, 128]);
     }
 
     #[test]
-    fn strip_alpha_gray_alpha_to_gray() {
+    fn gray_alpha_expands_to_rgba() {
         let gray_alpha = vec![100, 255, 200, 0];
-        let gray = strip_alpha(&gray_alpha, 2, 1);
-        assert_eq!(gray, vec![100, 200]);
+        let (gray, alpha) = split_trailing_alpha(&gray_alpha, 2, 1);
+        let rgba = gray_alpha_to_rgba(&gray, &alpha.unwrap());
+        assert_eq!(rgba, vec![100, 100, 100, 255, 200, 200, 200, 0]);
+    }
+
+    #[test]
+    fn attach_alpha_to_rgb_keeps_alpha_channel() {
+        let rgb = vec![1, 2, 3, 4, 5, 6];
+        let alpha = vec![7, 8];
+        assert_eq!(
+            attach_alpha_to_rgb(&rgb, &alpha),
+            vec![1, 2, 3, 7, 4, 5, 6, 8]
+        );
     }
 }

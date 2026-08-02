@@ -65,7 +65,8 @@ pub fn decode_text_bytes_with_resolver(
         return decode_type0_text_with_resolver(bytes, font_dict, resolver, reader);
     }
 
-    let has_explicit_widths = font_dict.get_array("Widths").is_some();
+    let has_pdf_widths =
+        font_dict.get_array("Widths").is_some() || resolver.has_standard14_metrics();
     let mut glyphs = Vec::new();
     let code_size = resolver.code_size().max(1);
     let mut idx = 0usize;
@@ -83,7 +84,7 @@ pub fn decode_text_bytes_with_resolver(
         let text = resolver.decode_char(code);
         let ch = text.chars().next().unwrap_or('\u{FFFD}');
         let glyph_name = resolver.glyph_name(code).map(str::to_string);
-        let width = if has_explicit_widths {
+        let width = if has_pdf_widths {
             let width = resolver.glyph_width(code).max(0.0);
             (width > 0.0).then_some(width)
         } else {

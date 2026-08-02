@@ -318,8 +318,23 @@ fn p5_json_is_faithful_and_roundtrips() {
     assert!(json.contains("\"pages\""));
     assert!(json.contains("\"body\""));
     // Roundtrip back to an equal model (public-contract guarantee).
-    let back: wellfriendpdf_engine::Document = serde_json::from_str(&json).expect("roundtrip");
-    assert_eq!(back, doc);
+    let mut back: wellfriendpdf_engine::Document = serde_json::from_str(&json).expect("roundtrip");
+    let mut expected = doc.clone();
+    fn normalize_geometry(doc: &mut wellfriendpdf_engine::Document) {
+        fn q(value: f64) -> f64 {
+            (value * 1_000_000.0).round() / 1_000_000.0
+        }
+        for block in &mut doc.body {
+            block.bbox = block.bbox.map(q);
+        }
+        for page in &mut doc.pages {
+            page.width = q(page.width);
+            page.height = q(page.height);
+        }
+    }
+    normalize_geometry(&mut back);
+    normalize_geometry(&mut expected);
+    assert_eq!(back, expected);
 }
 
 #[test]

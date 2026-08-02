@@ -1,0 +1,3 @@
+evidence/renderer-pdfium-closure/final-renderer-closure.json 3254da6a79675ad0829a61c6ed70246d8d5657856317a5d9276178524386cbe0
+docs/renderer/pdfium-closure-gap-register.md 08687080f1c1fe5444f73dc5461660d8ee42ce7868b40fd4aeeaf8a1316aba02
+evidence/renderer-pdfium-closure/gap-register.json 350139abf4942d97d9cfa06b04b88b76a493541315e45ccf3f236997f0b9af5a

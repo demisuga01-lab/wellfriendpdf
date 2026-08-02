@@ -1305,10 +1305,11 @@ impl ContentEngine {
     pub fn page_viewport(&self, page_number: usize, dpi: u32) -> Result<Viewport> {
         self.validate_page(page_number)?;
         let page = self.get_page(page_number)?;
-        let viewport = Viewport::new_rotated(
+        let viewport = Viewport::new_rotated_with_user_unit(
             effective_page_box(&page),
             dpi,
             page_rotation_u32(page.rotate),
+            page.user_unit,
         );
         let pixels = viewport.width_px as u64 * viewport.height_px as u64;
         let cap = max_render_pixels();
@@ -1449,7 +1450,8 @@ impl ContentEngine {
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
     ) -> Result<Option<PixelBuffer>> {
-        let list = PageRenderer::build_display_list(self, page_number, dpi)?;
+        let (list, _) =
+            PageRenderer::get_or_build_display_list_with_cache(self, page_number, dpi, cache)?;
         if !list.is_fully_supported() {
             Ok(None)
         } else {
@@ -1458,13 +1460,35 @@ impl ContentEngine {
                     self,
                     page_number,
                     dpi,
-                    &list,
+                    list.as_ref(),
                     cancel,
                     render_mode,
                     cache,
                 )?,
             ))
         }
+    }
+
+    /// Render one pixel-space page tile through retained display-list replay
+    /// when the page is fully captured by the display-list model.
+    pub fn render_page_display_list_tile_cancellable_with_mode_and_cache(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        tile: RenderTile,
+        cancel: &crate::cancel::CancelToken,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<Option<PixelBuffer>> {
+        PageRenderer::render_page_display_list_tile_cancellable_with_mode_and_cache(
+            self,
+            page_number,
+            dpi,
+            tile,
+            cancel,
+            render_mode,
+            cache,
+        )
     }
 
     /// Render a pixel-space page tile through the display-list path where
@@ -1869,6 +1893,7 @@ mod tests {
             rotate: 0,
             resources: PdfDictionary::empty(),
             contents: Vec::new(),
+            user_unit: 1.0,
         }
     }
 

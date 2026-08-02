@@ -51,6 +51,14 @@ pub struct RenderDocumentCache {
     font_bytes_cache: HashMap<String, Option<Arc<Vec<u8>>>>,
     font_resolver_cache: HashMap<String, Arc<FontResolver>>,
     type3_geometry_cache: HashMap<String, Option<Arc<Type3GlyphGeometry>>>,
+    type3_charproc_cache: HashMap<String, Option<Arc<Type3CharProc>>>,
+    image_xobject_cache: HashMap<String, Arc<RawImage>>,
+    image_xobject_cache_bytes: usize,
+    smask_group_cache: HashMap<String, Arc<AlphaMask>>,
+    shading_mesh_cache: HashMap<String, Arc<Vec<u8>>>,
+    display_list_cache: HashMap<String, Arc<DisplayList>>,
+    display_list_raster_cache: RenderCache,
+    transparent_page_group_cache: HashMap<String, bool>,
 }
 
 impl RenderDocumentCache {
@@ -60,6 +68,14 @@ impl RenderDocumentCache {
             font_bytes_cache: HashMap::new(),
             font_resolver_cache: HashMap::new(),
             type3_geometry_cache: HashMap::new(),
+            type3_charproc_cache: HashMap::new(),
+            image_xobject_cache: HashMap::new(),
+            image_xobject_cache_bytes: 0,
+            smask_group_cache: HashMap::new(),
+            shading_mesh_cache: HashMap::new(),
+            display_list_cache: HashMap::new(),
+            display_list_raster_cache: RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
+            transparent_page_group_cache: HashMap::new(),
         }
     }
 
@@ -68,6 +84,14 @@ impl RenderDocumentCache {
         self.font_bytes_cache.clear();
         self.font_resolver_cache.clear();
         self.type3_geometry_cache.clear();
+        self.type3_charproc_cache.clear();
+        self.image_xobject_cache.clear();
+        self.image_xobject_cache_bytes = 0;
+        self.smask_group_cache.clear();
+        self.shading_mesh_cache.clear();
+        self.display_list_cache.clear();
+        self.display_list_raster_cache = RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024);
+        self.transparent_page_group_cache.clear();
     }
 
     pub fn glyph_entries(&self) -> usize {
@@ -81,6 +105,77 @@ impl RenderDocumentCache {
     pub fn font_resolver_entries(&self) -> usize {
         self.font_resolver_cache.len()
     }
+
+    pub fn display_list_entries(&self) -> usize {
+        self.display_list_cache.len()
+    }
+
+    pub fn image_xobject_entries(&self) -> usize {
+        self.image_xobject_cache.len()
+    }
+
+    pub fn image_xobject_bytes(&self) -> usize {
+        self.image_xobject_cache_bytes
+    }
+
+    pub fn smask_group_entries(&self) -> usize {
+        self.smask_group_cache.len()
+    }
+
+    pub fn shading_mesh_entries(&self) -> usize {
+        self.shading_mesh_cache.len()
+    }
+
+    pub fn transparent_page_group_entries(&self) -> usize {
+        self.transparent_page_group_cache.len()
+    }
+
+    pub fn display_list_raster_cache_metrics(
+        &self,
+    ) -> crate::render::display_list::RenderCacheMetrics {
+        self.display_list_raster_cache.metrics()
+    }
+
+    pub(crate) fn display_list_key(page_number: usize, dpi: u32) -> String {
+        format!("page:{page_number}:dpi:{dpi}")
+    }
+
+    pub(crate) fn transparent_page_group_key(page_number: usize) -> String {
+        format!("page:{page_number}")
+    }
+
+    pub(crate) fn cached_display_list(&self, key: &str) -> Option<Arc<DisplayList>> {
+        self.display_list_cache.get(key).cloned()
+    }
+
+    pub(crate) fn insert_display_list(
+        &mut self,
+        key: String,
+        list: DisplayList,
+    ) -> Arc<DisplayList> {
+        let list = Arc::new(list);
+        self.display_list_cache.insert(key, Arc::clone(&list));
+        list
+    }
+
+    pub(crate) fn cached_transparent_page_group(&self, key: &str) -> Option<bool> {
+        self.transparent_page_group_cache.get(key).copied()
+    }
+
+    pub(crate) fn insert_transparent_page_group(&mut self, key: String, value: bool) {
+        self.transparent_page_group_cache.insert(key, value);
+    }
+
+    pub(crate) fn cached_display_list_raster(
+        &mut self,
+        key: &RenderCacheKey,
+    ) -> Option<PixelBuffer> {
+        self.display_list_raster_cache.get(key)
+    }
+
+    pub(crate) fn insert_display_list_raster(&mut self, key: RenderCacheKey, buffer: PixelBuffer) {
+        self.display_list_raster_cache.insert(key, buffer);
+    }
 }
 
 impl Default for RenderDocumentCache {
@@ -90,6 +185,22 @@ impl Default for RenderDocumentCache {
 }
 
 impl PageRenderer {
+    /// Return a retained page display list from the caller's document cache, or
+    /// build and retain it exactly once for subsequent warm replay.
+    pub fn get_or_build_display_list_with_cache(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<(Arc<DisplayList>, bool)> {
+        let key = RenderDocumentCache::display_list_key(page_number, dpi);
+        if let Some(list) = cache.cached_display_list(&key) {
+            return Ok((list, true));
+        }
+        let list = Self::build_display_list(engine, page_number, dpi)?;
+        Ok((cache.insert_display_list(key, list), false))
+    }
+
     /// Render a single PDF page to a PixelBuffer at the given DPI.
     pub fn render_page(
         engine: &ContentEngine,
@@ -261,10 +372,17 @@ impl PageRenderer {
         render_mode: RenderMode,
     ) -> Result<PixelBuffer> {
         cancel.check("display-list render start")?;
-        let ops = engine.get_page_content(page_number)?;
+        if list.native_vector_only() {
+            let mut buf = render_display_list(list, render_mode);
+            cancel.check("display-list native vector replay")?;
+            Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
+            cancel.check("display-list annotation render")?;
+            return Ok(buf);
+        }
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
-        let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
+        let transparent_page_group =
+            display_list_needs_transparent_page_group(engine, page_number, &resources, list)?;
         let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
         let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
         state.cancel = cancel.clone();
@@ -290,10 +408,49 @@ impl PageRenderer {
         cache: &mut RenderDocumentCache,
     ) -> Result<PixelBuffer> {
         cancel.check("display-list render start")?;
-        let ops = engine.get_page_content(page_number)?;
-        let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
-        let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
+        let visibility_fingerprint = OptionalContentContext::from_document(engine.document())
+            .visibility_fingerprint()
+            .to_string();
+        let prepress_fingerprint = prepress::cache_fingerprint_for_prepress_resources(
+            resources.color_spaces.values(),
+            resources.ext_g_states.values(),
+        );
+        let raster_key = RenderCacheKey::new_with_visibility_and_prepress(
+            page_number,
+            dpi,
+            render_mode,
+            RenderTile::full(list.viewport.width_px, list.viewport.height_px),
+            visibility_fingerprint,
+            prepress_fingerprint,
+        );
+        if let Some(hit) = cache.cached_display_list_raster(&raster_key) {
+            return Ok(hit);
+        }
+
+        if list.native_vector_only() {
+            let mut buf = render_display_list(list, render_mode);
+            cancel.check("display-list native vector replay")?;
+            Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
+            cancel.check("display-list annotation render")?;
+            cache.insert_display_list_raster(raster_key, buf.clone());
+            return Ok(buf);
+        }
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let transparent_key = RenderDocumentCache::transparent_page_group_key(page_number);
+        let transparent_page_group = match cache.cached_transparent_page_group(&transparent_key) {
+            Some(value) => value,
+            None => {
+                let value = display_list_needs_transparent_page_group(
+                    engine,
+                    page_number,
+                    &resources,
+                    list,
+                )?;
+                cache.insert_transparent_page_group(transparent_key, value);
+                value
+            }
+        };
         let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
         let mut state = RenderState::new_with_document_cache(
             buf,
@@ -318,7 +475,158 @@ impl PageRenderer {
         if transparent_page_group {
             buf.flatten_onto_background(WHITE);
         }
+        cache.insert_display_list_raster(raster_key, buf.clone());
         Ok(buf)
+    }
+
+    /// Replay a cached full-page display list into one pixel-space tile.
+    ///
+    /// The display list is built against the full-page viewport, while replay
+    /// uses the tile-local viewport. Retained full-page bounds on vector ops let
+    /// replay skip non-intersecting paths before flattening/rasterization.
+    pub fn render_page_display_list_tile_cancellable_with_mode_and_cache(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        tile: RenderTile,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<Option<PixelBuffer>> {
+        cancel.check("display-list tile render start")?;
+        let key = RenderDocumentCache::display_list_key(page_number, dpi);
+        let list = match cache.cached_display_list(&key) {
+            Some(list) => list,
+            None => {
+                let list = Self::build_display_list(engine, page_number, dpi)?;
+                cache.insert_display_list(key, list)
+            }
+        };
+        if !list.is_fully_supported() {
+            return Ok(None);
+        }
+
+        let full_viewport = engine.page_viewport(page_number, dpi)?;
+        if tile.width == 0 || tile.height == 0 {
+            return Err(WellfriendError::invalid_input(
+                "render tile must have non-zero width and height",
+            ));
+        }
+        if tile.x >= full_viewport.width_px || tile.y >= full_viewport.height_px {
+            return Err(WellfriendError::invalid_input(format!(
+                "render tile origin ({},{}) is outside page bounds {}x{}",
+                tile.x, tile.y, full_viewport.width_px, full_viewport.height_px
+            )));
+        }
+        let end_x = tile.x.checked_add(tile.width).ok_or_else(|| {
+            WellfriendError::invalid_input("render tile x range overflows".to_string())
+        })?;
+        let end_y = tile.y.checked_add(tile.height).ok_or_else(|| {
+            WellfriendError::invalid_input("render tile y range overflows".to_string())
+        })?;
+        if end_x > full_viewport.width_px || end_y > full_viewport.height_px {
+            return Err(WellfriendError::invalid_input(format!(
+                "render tile {}x{} at {},{} exceeds page bounds {}x{}",
+                tile.width,
+                tile.height,
+                tile.x,
+                tile.y,
+                full_viewport.width_px,
+                full_viewport.height_px
+            )));
+        }
+
+        const TILE_OVERDRAW_PX: u32 = 2;
+        let expanded_tile = expand_render_tile(
+            tile,
+            full_viewport.width_px,
+            full_viewport.height_px,
+            TILE_OVERDRAW_PX,
+        );
+        let viewport = full_viewport.pixel_window(
+            expanded_tile.x,
+            expanded_tile.y,
+            expanded_tile.width,
+            expanded_tile.height,
+        );
+        if viewport.width_px == 0 || viewport.height_px == 0 {
+            return Err(WellfriendError::invalid_input(
+                "render tile is empty after clipping to page bounds",
+            ));
+        }
+
+        let resources = engine.get_page_resources(page_number)?;
+        let visibility_fingerprint = OptionalContentContext::from_document(engine.document())
+            .visibility_fingerprint()
+            .to_string();
+        let prepress_fingerprint = prepress::cache_fingerprint_for_prepress_resources(
+            resources.color_spaces.values(),
+            resources.ext_g_states.values(),
+        );
+        let raster_key = RenderCacheKey::new_with_visibility_and_prepress(
+            page_number,
+            dpi,
+            render_mode,
+            tile,
+            visibility_fingerprint,
+            prepress_fingerprint,
+        );
+        if let Some(hit) = cache.cached_display_list_raster(&raster_key) {
+            return Ok(Some(hit));
+        }
+        let transparent_key = RenderDocumentCache::transparent_page_group_key(page_number);
+        let transparent_page_group = match cache.cached_transparent_page_group(&transparent_key) {
+            Some(value) => value,
+            None => {
+                let value = display_list_needs_transparent_page_group(
+                    engine,
+                    page_number,
+                    &resources,
+                    &list,
+                )?;
+                cache.insert_transparent_page_group(transparent_key, value);
+                value
+            }
+        };
+        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
+        let mut state = RenderState::new_with_document_cache(
+            buf,
+            viewport,
+            resources,
+            engine,
+            page_number,
+            cache,
+        );
+        state.cancel = cancel.clone();
+        state.replay_display_list(&list);
+        if let Err(err) = cancel.check("display-list tile replay") {
+            state.return_document_cache(cache);
+            return Err(err);
+        }
+        state.render_page_annotations();
+        if let Err(err) = cancel.check("display-list tile annotation render") {
+            state.return_document_cache(cache);
+            return Err(err);
+        }
+        let mut buf = state.into_buffer_and_document_cache(cache);
+        if transparent_page_group {
+            buf.flatten_onto_background(WHITE);
+        }
+        let cropped = if expanded_tile == tile {
+            buf
+        } else {
+            crop_buffer(
+                &buf,
+                RenderTile {
+                    x: tile.x - expanded_tile.x,
+                    y: tile.y - expanded_tile.y,
+                    width: tile.width,
+                    height: tile.height,
+                },
+            )?
+        };
+        cache.insert_display_list_raster(raster_key, cropped.clone());
+        Ok(Some(cropped))
     }
 
     /// Render one page tile. The implementation is compatibility-safe: it
@@ -540,12 +848,35 @@ impl PageRenderer {
         dpi: u32,
         buf: &mut PixelBuffer,
     ) -> Result<()> {
+        if !Self::page_has_annotations(engine, page_number) {
+            return Ok(());
+        }
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
         let mut state = RenderState::new(buf.clone(), viewport, resources, engine, page_number);
         state.render_page_annotations();
         *buf = state.into_buffer();
         Ok(())
+    }
+
+    fn page_has_annotations(engine: &ContentEngine, page_number: usize) -> bool {
+        let reader = engine.document().reader();
+        let pages = match engine.document().get_pages() {
+            Ok(pages) => pages,
+            Err(_) => return false,
+        };
+        let Some(page) = pages.get(page_number.saturating_sub(1)) else {
+            return false;
+        };
+        let Ok(PdfObject::Dictionary(page_dict)) =
+            reader.get_and_resolve(page.object_number, page.generation_number)
+        else {
+            return false;
+        };
+        let Some(annots_obj) = page_dict.get("Annots").cloned() else {
+            return false;
+        };
+        matches!(reader.resolve(annots_obj), Ok(PdfObject::Array(items)) if !items.is_empty())
     }
 }
 
@@ -565,6 +896,16 @@ struct RenderState<'a> {
     font_bytes_cache: HashMap<String, Option<Arc<Vec<u8>>>>,
     font_resolver_cache: HashMap<String, Arc<FontResolver>>,
     type3_geometry_cache: HashMap<String, Option<Arc<Type3GlyphGeometry>>>,
+    type3_charproc_cache: HashMap<String, Option<Arc<Type3CharProc>>>,
+    image_xobject_cache: HashMap<String, Arc<RawImage>>,
+    image_xobject_cache_bytes: usize,
+    smask_group_cache: HashMap<String, Arc<AlphaMask>>,
+    shading_mesh_cache: HashMap<String, Arc<Vec<u8>>>,
+    /// Tiling-pattern stream keys currently being replayed. PDF pattern
+    /// resources can legally refer to other patterns, but real files sometimes
+    /// contain accidental self-recursive pattern fills. Bound those at the
+    /// source object instead of relying only on the coarse Form depth limit.
+    pattern_stack: Vec<String>,
     /// Current Form XObject nesting depth, used to bound recursion.
     form_depth: usize,
     /// Parameters from the most recent `ID` operator, awaiting the following
@@ -592,6 +933,8 @@ struct RenderState<'a> {
     /// preview compositing semantics.
     separation_framebuffer: SeparationFramebuffer,
 }
+
+const RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES: usize = 512 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 struct RenderDecodeScheduler {
@@ -736,7 +1079,8 @@ impl<'a> RenderState<'a> {
     ) -> Self {
         let viewport_width = viewport.width_px;
         let viewport_height = viewport.height_px;
-        let owned_cache = std::mem::take(cache);
+        let image_xobject_cache_bytes = cache.image_xobject_cache_bytes;
+        cache.image_xobject_cache_bytes = 0;
         Self {
             engine,
             page_number,
@@ -749,10 +1093,19 @@ impl<'a> RenderState<'a> {
             path: Path::new(),
             pending_clip: None,
             pending_text_clip: None,
-            glyph_cache: owned_cache.glyph_cache,
-            font_bytes_cache: owned_cache.font_bytes_cache,
-            font_resolver_cache: owned_cache.font_resolver_cache,
-            type3_geometry_cache: owned_cache.type3_geometry_cache,
+            glyph_cache: std::mem::replace(
+                &mut cache.glyph_cache,
+                GlyphCache::with_default_capacity(),
+            ),
+            font_bytes_cache: std::mem::take(&mut cache.font_bytes_cache),
+            font_resolver_cache: std::mem::take(&mut cache.font_resolver_cache),
+            type3_geometry_cache: std::mem::take(&mut cache.type3_geometry_cache),
+            type3_charproc_cache: std::mem::take(&mut cache.type3_charproc_cache),
+            image_xobject_cache: std::mem::take(&mut cache.image_xobject_cache),
+            image_xobject_cache_bytes,
+            smask_group_cache: std::mem::take(&mut cache.smask_group_cache),
+            shading_mesh_cache: std::mem::take(&mut cache.shading_mesh_cache),
+            pattern_stack: Vec::new(),
             form_depth: 0,
             pending_inline: None,
             base_ctm: Transform2D::identity(),
@@ -774,11 +1127,25 @@ impl<'a> RenderState<'a> {
     }
 
     fn return_document_cache(self, cache: &mut RenderDocumentCache) {
+        let display_list_cache = std::mem::take(&mut cache.display_list_cache);
+        let display_list_raster_cache = std::mem::replace(
+            &mut cache.display_list_raster_cache,
+            RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
+        );
+        let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
         *cache = RenderDocumentCache {
             glyph_cache: self.glyph_cache,
             font_bytes_cache: self.font_bytes_cache,
             font_resolver_cache: self.font_resolver_cache,
             type3_geometry_cache: self.type3_geometry_cache,
+            type3_charproc_cache: self.type3_charproc_cache,
+            image_xobject_cache: self.image_xobject_cache,
+            image_xobject_cache_bytes: self.image_xobject_cache_bytes,
+            smask_group_cache: self.smask_group_cache,
+            shading_mesh_cache: self.shading_mesh_cache,
+            display_list_cache,
+            display_list_raster_cache,
+            transparent_page_group_cache,
         };
     }
 
@@ -789,13 +1156,32 @@ impl<'a> RenderState<'a> {
             font_bytes_cache,
             font_resolver_cache,
             type3_geometry_cache,
+            type3_charproc_cache,
+            image_xobject_cache,
+            image_xobject_cache_bytes,
+            smask_group_cache,
+            shading_mesh_cache,
             ..
         } = self;
+        let display_list_cache = std::mem::take(&mut cache.display_list_cache);
+        let display_list_raster_cache = std::mem::replace(
+            &mut cache.display_list_raster_cache,
+            RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
+        );
+        let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
         *cache = RenderDocumentCache {
             glyph_cache,
             font_bytes_cache,
             font_resolver_cache,
             type3_geometry_cache,
+            type3_charproc_cache,
+            image_xobject_cache,
+            image_xobject_cache_bytes,
+            smask_group_cache,
+            shading_mesh_cache,
+            display_list_cache,
+            display_list_raster_cache,
+            transparent_page_group_cache,
         };
         buf
     }
@@ -836,15 +1222,51 @@ impl<'a> RenderState<'a> {
     }
 
     fn scheduled_decode_image(
-        &self,
+        &mut self,
         image_ref: &ImageReference,
         context: &str,
-    ) -> Result<RawImage> {
+    ) -> Result<Arc<RawImage>> {
+        self.scheduled_decode_image_with_color_space(image_ref, None, context)
+    }
+
+    fn scheduled_decode_image_with_color_space(
+        &mut self,
+        image_ref: &ImageReference,
+        color_space_override: Option<&(String, PdfObject)>,
+        context: &str,
+    ) -> Result<Arc<RawImage>> {
+        let cache_key = color_space_override
+            .map(|(name, obj)| image_xobject_cache_key_with_color_space(image_ref, name, obj))
+            .unwrap_or_else(|| image_xobject_cache_key(image_ref));
+        if let Some(cached) = self.image_xobject_cache.get(&cache_key) {
+            return Ok(Arc::clone(cached));
+        }
         let estimated = estimate_image_ref_decode_bytes(image_ref);
-        self.decode_scheduler
+        let reader = self.engine.document().reader();
+        let raw = self
+            .decode_scheduler
             .run(estimated, &self.cancel, context, || {
-                ImageDecoder::decode(image_ref, self.engine.document().reader())
-            })
+                if let Some((color_space_name, color_space_obj)) = color_space_override {
+                    ImageDecoder::decode_with_resolved_color_space(
+                        image_ref,
+                        reader,
+                        color_space_name,
+                        color_space_obj,
+                    )
+                } else {
+                    ImageDecoder::decode(image_ref, reader)
+                }
+            })?;
+        let raw = Arc::new(raw);
+        let raw_bytes = raw.byte_count();
+        if raw_bytes <= RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES
+            && self.image_xobject_cache_bytes.saturating_add(raw_bytes)
+                <= RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES
+        {
+            self.image_xobject_cache_bytes += raw_bytes;
+            self.image_xobject_cache.insert(cache_key, Arc::clone(&raw));
+        }
+        Ok(raw)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -896,6 +1318,77 @@ impl<'a> RenderState<'a> {
         )
     }
 
+    fn scheduled_load_explicit_image_mask(
+        &mut self,
+        image_ref: &ImageReference,
+        image_dict: &PdfDictionary,
+        raw: RawImage,
+    ) -> Result<Option<RawImage>> {
+        let Some(mask) = image_dict.get("Mask") else {
+            return Ok(None);
+        };
+        match mask {
+            PdfObject::Array(items) => Ok(apply_color_key_image_mask(
+                raw,
+                image_ref.bits_per_component,
+                &image_ref.color_space,
+                items,
+            )),
+            PdfObject::Reference { number, generation } => {
+                let reader = self.engine.document().reader();
+                let mask_obj = reader.get_object(*number, *generation)?;
+                let PdfObject::Stream {
+                    dict: mask_dict, ..
+                } = mask_obj
+                else {
+                    return Ok(None);
+                };
+                let mask_ref = ImageReference {
+                    page_number: image_ref.page_number,
+                    xobject_name: format!("{}_mask", image_ref.xobject_name),
+                    object_number: *number,
+                    generation_number: *generation,
+                    width: positive_u32(
+                        mask_dict
+                            .get_integer("Width")
+                            .or_else(|| mask_dict.get_integer("W")),
+                        image_ref.width,
+                    ),
+                    height: positive_u32(
+                        mask_dict
+                            .get_integer("Height")
+                            .or_else(|| mask_dict.get_integer("H")),
+                        image_ref.height,
+                    ),
+                    bits_per_component: mask_dict
+                        .get_integer("BitsPerComponent")
+                        .or_else(|| mask_dict.get_integer("BPC"))
+                        .unwrap_or(1)
+                        .clamp(0, 16) as u8,
+                    color_space: extract_color_space_name(&mask_dict),
+                    filter: extract_filter_names(&mask_dict),
+                    is_inline: false,
+                    is_mask: mask_dict
+                        .get_bool("ImageMask")
+                        .or_else(|| mask_dict.get_bool("IM"))
+                        .unwrap_or(false),
+                    is_smask: false,
+                    inline_data: None,
+                };
+                let mask_raw =
+                    self.scheduled_decode_image(&mask_ref, "renderer explicit image mask decode")?;
+                combine_explicit_image_mask(
+                    raw,
+                    mask_raw.as_ref(),
+                    mask_ref.is_mask,
+                    image_mask_paints_ones(&mask_dict),
+                )
+                .map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
     fn reserve_offscreen_surface(
         &self,
         width: u32,
@@ -910,19 +1403,31 @@ impl<'a> RenderState<'a> {
     }
 
     fn shading_mesh_data(
-        &self,
+        &mut self,
         shading_obj: &PdfObject,
         shading_dict: &PdfDictionary,
         reader: &crate::reader::PdfReader,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<Arc<Vec<u8>>> {
         let st = shading_dict.get_integer("ShadingType").unwrap_or(0);
         if !(4..=7).contains(&st) {
             return None;
         }
+        let cache_key = shading_mesh_cache_key(shading_obj, st);
+        if let Some(key) = cache_key.as_deref() {
+            if let Some(cached) = self.shading_mesh_cache.get(key) {
+                return Some(Arc::clone(cached));
+            }
+        }
         let (dict, raw) = resolve_to_stream(shading_obj, reader)?;
         let stream_obj = PdfObject::Stream { dict, raw };
-        self.scheduled_decode_stream(&stream_obj, reader, "renderer mesh shading stream decode")
-            .ok()
+        let bytes = self
+            .scheduled_decode_stream(&stream_obj, reader, "renderer mesh shading stream decode")
+            .ok()?;
+        let bytes = Arc::new(bytes);
+        if let Some(key) = cache_key {
+            self.shading_mesh_cache.insert(key, Arc::clone(&bytes));
+        }
+        Some(bytes)
     }
 
     fn replay_display_list(&mut self, list: &DisplayList) {
@@ -959,7 +1464,18 @@ impl<'a> RenderState<'a> {
                 let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, *rule);
                 self.buf.set_clip(clip);
             }
-            DisplayOp::FillPath { path, state, rule } => {
+            DisplayOp::FillPath {
+                path,
+                state,
+                rule,
+                bounds,
+            } => {
+                if bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.intersects_viewport(&self.viewport))
+                {
+                    return;
+                }
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
                 PathPainter::fill(
@@ -972,7 +1488,17 @@ impl<'a> RenderState<'a> {
                 );
                 self.buf.blend_mode = saved_blend;
             }
-            DisplayOp::StrokePath { path, state } => {
+            DisplayOp::StrokePath {
+                path,
+                state,
+                bounds,
+            } => {
+                if bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.intersects_viewport(&self.viewport))
+                {
+                    return;
+                }
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
                 PathPainter::stroke_with_style(
@@ -1488,6 +2014,15 @@ impl<'a> RenderState<'a> {
         let ctm = self.ctm();
         let stroke_color_state = self.gs.stroke_color.clone();
         self.record_plate_contribution(&stroke_color_state, self.gs.stroke_alpha as f32, "stroke");
+        if self.is_pattern_stroke() {
+            if let Some(pattern_name) = self.gs.stroke_pattern_name.clone() {
+                self.paint_pattern_stroke(&pattern_name);
+            } else {
+                log::debug!("PageRenderer: Pattern stroke color space without a pattern name");
+            }
+            self.path.clear();
+            return;
+        }
         let color = self.stroke_pixel_color();
         let width = self.gs.line_width;
         let dash = self.dash_state();
@@ -1594,6 +2129,15 @@ impl<'a> RenderState<'a> {
             }
         }
         self.record_plate_contribution(&stroke_color_state, self.gs.stroke_alpha as f32, "stroke");
+        if self.is_pattern_stroke() {
+            if let Some(pattern_name) = self.gs.stroke_pattern_name.clone() {
+                self.paint_pattern_stroke(&pattern_name);
+            } else {
+                log::debug!("PageRenderer: Pattern stroke color space without a pattern name");
+            }
+            self.path.clear();
+            return;
+        }
         let stroke = self.stroke_pixel_color();
         let width = self.gs.line_width;
         let dash = self.dash_state();
@@ -1637,7 +2181,15 @@ impl<'a> RenderState<'a> {
     /// `[/Pattern ...]` array (`/Cs cs` where `/Cs` is defined as a Pattern
     /// color space in the page resources).
     fn is_pattern_fill(&self) -> bool {
-        match &self.gs.fill_color.space {
+        match &self.gs.fill_color_space {
+            ColorSpace::Named(name) if name == "Pattern" => true,
+            ColorSpace::Named(name) => self.named_space_is_pattern(name),
+            _ => false,
+        }
+    }
+
+    fn is_pattern_stroke(&self) -> bool {
+        match &self.gs.stroke_color_space {
             ColorSpace::Named(name) if name == "Pattern" => true,
             ColorSpace::Named(name) => self.named_space_is_pattern(name),
             _ => false,
@@ -1675,11 +2227,17 @@ impl<'a> RenderState<'a> {
         };
         match smask_val {
             PdfObject::Name(name) if name == "None" => self.buf.clear_smask(),
-            PdfObject::Dictionary(smask_dict) => self.apply_smask(smask_dict.clone()),
+            PdfObject::Dictionary(smask_dict) => {
+                let seed = smask_inline_cache_seed(smask_dict);
+                self.apply_smask(smask_dict.clone(), seed);
+            }
             PdfObject::Reference { number, generation } => {
                 let reader = self.engine.document().reader();
                 match reader.get_and_resolve(*number, *generation) {
-                    Ok(PdfObject::Dictionary(smask_dict)) => self.apply_smask(smask_dict),
+                    Ok(PdfObject::Dictionary(smask_dict)) => {
+                        let seed = format!("smask:{number}:{generation}");
+                        self.apply_smask(smask_dict, Some(seed));
+                    }
                     Ok(other) => log::debug!(
                         "PageRenderer: SMask reference resolved to {}, expected Dictionary",
                         other.variant_name()
@@ -1691,7 +2249,7 @@ impl<'a> RenderState<'a> {
         }
     }
 
-    fn apply_smask(&mut self, smask_dict: PdfDictionary) {
+    fn apply_smask(&mut self, smask_dict: PdfDictionary, cache_seed: Option<String>) {
         // Subtype: /Luminosity (default) converts the rendered mask group's RGB
         // to a luminance value; /Alpha uses the group's own alpha channel.
         let subtype = smask_dict.get_name("S").unwrap_or("Luminosity");
@@ -1701,6 +2259,16 @@ impl<'a> RenderState<'a> {
                 "PageRenderer: SMask /S '{}' is not supported; using luminosity",
                 subtype
             );
+        }
+
+        let cache_key = cache_seed
+            .as_deref()
+            .map(|seed| self.smask_group_cache_key(seed, subtype));
+        if let Some(key) = cache_key.as_deref() {
+            if let Some(mask) = self.smask_group_cache.get(key) {
+                self.buf.set_smask(mask.as_ref().clone());
+                return;
+            }
         }
 
         let reader = self.engine.document().reader();
@@ -1830,6 +2398,12 @@ impl<'a> RenderState<'a> {
             font_bytes_cache: self.font_bytes_cache.clone(),
             font_resolver_cache: self.font_resolver_cache.clone(),
             type3_geometry_cache: self.type3_geometry_cache.clone(),
+            type3_charproc_cache: self.type3_charproc_cache.clone(),
+            image_xobject_cache: self.image_xobject_cache.clone(),
+            image_xobject_cache_bytes: self.image_xobject_cache_bytes,
+            smask_group_cache: self.smask_group_cache.clone(),
+            shading_mesh_cache: self.shading_mesh_cache.clone(),
+            pattern_stack: self.pattern_stack.clone(),
             form_depth: self.form_depth + 1,
             pending_inline: None,
             base_ctm: mask_base_ctm,
@@ -1874,7 +2448,22 @@ impl<'a> RenderState<'a> {
             mask.apply_transfer_lut(&lut);
         }
 
+        if let Some(key) = cache_key {
+            self.smask_group_cache.insert(key, Arc::new(mask.clone()));
+        }
         self.buf.set_smask(mask);
+    }
+
+    fn smask_group_cache_key(&self, seed: &str, subtype: &str) -> String {
+        format!(
+            "{seed}:page:{}:w:{}:h:{}:mode:{:?}:subtype:{}:ctm:{:?}",
+            self.page_number,
+            self.buf.width,
+            self.buf.height,
+            self.buf.render_mode(),
+            subtype,
+            self.gs.ctm
+        )
     }
 
     /// Build a 256-entry transfer LUT from an SMask `/TR` function, or `None`
@@ -2019,6 +2608,15 @@ impl<'a> RenderState<'a> {
     }
 
     fn handle_do_image(&mut self, name: &str, obj_num: u32, gen_num: u16, dict: &PdfDictionary) {
+        let image_is_mask = dict
+            .get_bool("ImageMask")
+            .or_else(|| dict.get_bool("IM"))
+            .unwrap_or(false);
+        let color_space_override = if image_is_mask {
+            None
+        } else {
+            self.resolved_image_color_space_override(dict)
+        };
         let image_ref = ImageReference {
             page_number: self.page_number,
             xobject_name: name.to_string(),
@@ -2037,13 +2635,13 @@ impl<'a> RenderState<'a> {
                 .or_else(|| dict.get_integer("BPC"))
                 .unwrap_or(8)
                 .clamp(0, 16) as u8,
-            color_space: extract_color_space_name(dict),
+            color_space: color_space_override
+                .as_ref()
+                .map(|(name, _)| name.clone())
+                .unwrap_or_else(|| extract_color_space_name(dict)),
             filter: extract_filter_names(dict),
             is_inline: false,
-            is_mask: dict
-                .get_bool("ImageMask")
-                .or_else(|| dict.get_bool("IM"))
-                .unwrap_or(false),
+            is_mask: image_is_mask,
             is_smask: false,
             inline_data: None,
         };
@@ -2054,23 +2652,53 @@ impl<'a> RenderState<'a> {
             "image_xobject",
         );
 
-        match self.scheduled_decode_image(&image_ref, "renderer image XObject decode") {
+        match self.scheduled_decode_image_with_color_space(
+            &image_ref,
+            color_space_override.as_ref(),
+            "renderer image XObject decode",
+        ) {
             Ok(raw) => {
-                let raw = if image_ref.is_mask {
+                let owned_raw;
+                let paint_raw = if image_ref.is_mask {
                     let color =
                         self.resolve_paint_color(&self.gs.fill_color, self.gs.fill_alpha as f32);
-                    image_mask_to_stencil_rgba(raw, color, image_mask_paints_ones(dict))
+                    owned_raw = Some(image_mask_to_stencil_rgba(
+                        (*raw).clone(),
+                        color,
+                        image_mask_paints_ones(dict),
+                    ));
+                    owned_raw.as_ref().expect("image mask owned raw")
                 } else if dict.contains_key("SMask") {
-                    match self.scheduled_load_smask(&image_ref, raw.clone()) {
-                        Ok(Some(masked)) => masked,
-                        Ok(None) => raw,
+                    match self.scheduled_load_smask(&image_ref, (*raw).clone()) {
+                        Ok(Some(masked)) => {
+                            owned_raw = Some(masked);
+                            owned_raw.as_ref().expect("soft mask owned raw")
+                        }
+                        Ok(None) => raw.as_ref(),
                         Err(err) => {
                             log::warn!("PageRenderer: image '{}' SMask failed: {}", name, err);
-                            raw
+                            raw.as_ref()
+                        }
+                    }
+                } else if dict.contains_key("Mask") {
+                    match self.scheduled_load_explicit_image_mask(&image_ref, dict, (*raw).clone())
+                    {
+                        Ok(Some(masked)) => {
+                            owned_raw = Some(masked);
+                            owned_raw.as_ref().expect("explicit mask owned raw")
+                        }
+                        Ok(None) => raw.as_ref(),
+                        Err(err) => {
+                            log::warn!(
+                                "PageRenderer: image '{}' explicit Mask failed: {}",
+                                name,
+                                err
+                            );
+                            raw.as_ref()
                         }
                     }
                 } else {
-                    raw
+                    raw.as_ref()
                 };
                 let ctm = self.ctm();
                 let smooth_jpx = image_ref.filter.iter().any(|filter| filter == "JPXDecode");
@@ -2082,7 +2710,7 @@ impl<'a> RenderState<'a> {
                 if image_interpolate(dict) {
                     ImagePainter::paint_image_with_options_and_alpha(
                         &mut self.buf,
-                        &raw,
+                        paint_raw,
                         &ctm,
                         &self.viewport,
                         true,
@@ -2091,7 +2719,7 @@ impl<'a> RenderState<'a> {
                 } else if smooth_jpx {
                     ImagePainter::paint_image_with_jpx_compat_and_alpha(
                         &mut self.buf,
-                        &raw,
+                        paint_raw,
                         &ctm,
                         &self.viewport,
                         paint_alpha,
@@ -2099,7 +2727,7 @@ impl<'a> RenderState<'a> {
                 } else {
                     ImagePainter::paint_image_with_alpha(
                         &mut self.buf,
-                        &raw,
+                        paint_raw,
                         &ctm,
                         &self.viewport,
                         paint_alpha,
@@ -2108,6 +2736,25 @@ impl<'a> RenderState<'a> {
             }
             Err(err) => log::warn!("PageRenderer: image '{}' decode failed: {}", name, err),
         }
+    }
+
+    fn resolved_image_color_space_override(
+        &self,
+        dict: &PdfDictionary,
+    ) -> Option<(String, PdfObject)> {
+        let PdfObject::Name(resource_name) = dict.get("ColorSpace").or_else(|| dict.get("CS"))?
+        else {
+            return None;
+        };
+        let resource_obj = self.resources.color_spaces.get(resource_name)?.clone();
+        let family = image_color_space_family_name(
+            &resource_obj,
+            &self.resources,
+            self.engine.document().reader(),
+            0,
+        )
+        .unwrap_or_else(|| canonical_image_color_space_name(resource_name));
+        Some((family, resource_obj))
     }
 
     fn handle_do_form(&mut self, name: &str, obj_num: u32, gen_num: u16) {
@@ -2354,6 +3001,12 @@ impl<'a> RenderState<'a> {
             font_bytes_cache: self.font_bytes_cache.clone(),
             font_resolver_cache: self.font_resolver_cache.clone(),
             type3_geometry_cache: self.type3_geometry_cache.clone(),
+            type3_charproc_cache: self.type3_charproc_cache.clone(),
+            image_xobject_cache: self.image_xobject_cache.clone(),
+            image_xobject_cache_bytes: self.image_xobject_cache_bytes,
+            smask_group_cache: self.smask_group_cache.clone(),
+            shading_mesh_cache: self.shading_mesh_cache.clone(),
+            pattern_stack: self.pattern_stack.clone(),
             form_depth: self.form_depth + 1,
             pending_inline: None,
             base_ctm: group_base_ctm,
@@ -2659,6 +3312,7 @@ impl<'a> RenderState<'a> {
             log::warn!("sh: shading '{}' did not resolve to a dictionary", name);
             return;
         };
+        let shading_dict = self.shading_dict_with_resolved_color_space(shading_dict);
         if !self
             .optional_content
             .is_object_visible(shading_dict.get("OC"), reader)
@@ -2678,7 +3332,7 @@ impl<'a> RenderState<'a> {
             &self.viewport,
             &mut self.buf,
             reader,
-            mesh_data.as_deref(),
+            mesh_data.as_deref().map(Vec::as_slice),
         );
     }
 
@@ -2714,6 +3368,43 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    /// Paint a pattern stroke by converting the stroked path into the same
+    /// device-space clip shape used by solid strokes, then replaying the
+    /// pattern through that clip. PDF pattern color spaces apply equally to
+    /// `SCN` strokes and `scn` fills; keeping the stroke path source-linked here
+    /// closes the prior renderer gap where patterned strokes degraded to a
+    /// single fallback paint color.
+    fn paint_pattern_stroke(&mut self, pattern_name: &str) {
+        let pattern_obj = match self.resources.patterns.get(pattern_name) {
+            Some(obj) => obj.clone(),
+            None => {
+                log::warn!("pattern stroke: pattern '{}' not found", pattern_name);
+                return;
+            }
+        };
+        let reader = self.engine.document().reader();
+        let Some(pattern_dict) = resolve_to_dict(&pattern_obj, reader) else {
+            log::warn!(
+                "pattern stroke: '{}' did not resolve to a dictionary",
+                pattern_name
+            );
+            return;
+        };
+        if !self
+            .optional_content
+            .is_object_visible(pattern_dict.get("OC"), reader)
+        {
+            return;
+        }
+        self.record_pattern_caller_plate_sample("pattern_stroke_caller_color");
+
+        match pattern_dict.get_integer("PatternType").unwrap_or(0) {
+            1 => self.paint_tiling_pattern_stroke(&pattern_obj),
+            2 => self.paint_shading_pattern_stroke(&pattern_dict),
+            other => log::debug!("pattern stroke: unknown PatternType {other}"),
+        }
+    }
+
     /// Paint a tiling pattern (PatternType 1) clipped to the current path.
     ///
     /// The tile content stream is rendered repeatedly across the path's
@@ -2721,6 +3412,29 @@ impl<'a> RenderState<'a> {
     /// positioned via the pattern `/Matrix` (relative to the base CTM of the
     /// pattern's parent content stream) and clipped to the filled path.
     fn paint_tiling_pattern_fill(&mut self, rule: FillRule, pattern_obj: &PdfObject) {
+        let path_ctm = self.ctm();
+        let flat = flatten_path(&self.path, &path_ctm, &self.viewport, 0.5);
+        let mut path_clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
+        if let Some(existing) = self.buf.clip_mask() {
+            path_clip.intersect(existing);
+        }
+        self.paint_tiling_pattern_with_device_clip(pattern_obj, path_clip, &flat, false);
+    }
+
+    fn paint_tiling_pattern_stroke(&mut self, pattern_obj: &PdfObject) {
+        let Some((path_clip, outline)) = self.stroke_device_clip() else {
+            return;
+        };
+        self.paint_tiling_pattern_with_device_clip(pattern_obj, path_clip, &outline, true);
+    }
+
+    fn paint_tiling_pattern_with_device_clip(
+        &mut self,
+        pattern_obj: &PdfObject,
+        path_clip: ClipMask,
+        flat: &FlatPath,
+        use_stroke_color: bool,
+    ) {
         if self.form_depth >= 8 {
             log::warn!("tiling pattern: nesting depth limit reached; skipping");
             return;
@@ -2733,7 +3447,6 @@ impl<'a> RenderState<'a> {
                 return;
             }
         };
-
         let bbox = match get_float_array_dict(&pat_dict, "BBox") {
             Some(b) if b.len() >= 4 => [b[0], b[1], b[2], b[3]],
             _ => {
@@ -2754,6 +3467,12 @@ impl<'a> RenderState<'a> {
             return;
         }
         let paint_type = pat_dict.get_integer("PaintType").unwrap_or(1);
+        let pattern_key = tiling_pattern_stack_key(pattern_obj, &pat_dict, raw_bytes.len());
+        if self.pattern_stack.iter().any(|key| key == &pattern_key) {
+            log::warn!("tiling pattern: recursive pattern reference detected; using fallback");
+            self.paint_tiling_pattern_solid_fallback(path_clip, paint_type, use_stroke_color);
+            return;
+        }
 
         // pattern space → device. The pattern /Matrix is relative to the base
         // CTM of the parent content stream (NOT the fill-time CTM).
@@ -2763,21 +3482,9 @@ impl<'a> RenderState<'a> {
         };
         let pattern_ctm = pat_matrix.concat(&self.base_ctm);
 
-        // Clip mask = the filled path, intersected with the existing clip.
-        let path_ctm = self.ctm();
-        let flat = flatten_path(&self.path, &path_ctm, &self.viewport, 0.5);
-        let mut path_clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
-        if let Some(existing) = self.buf.clip_mask() {
-            path_clip.intersect(existing);
-        }
-        if !self.buf.render_mode().is_high_quality() && self.form_depth > 0 {
-            self.paint_tiling_pattern_solid_fallback(path_clip, rule, paint_type);
-            return;
-        }
-
         // Determine the device-space bounding box of the filled path to bound
         // how many tiles we need; then map that back into pattern space.
-        let (dx0, dy0, dx1, dy1) = path_device_bounds(&flat, self.buf.width, self.buf.height);
+        let (dx0, dy0, dx1, dy1) = path_device_bounds(flat, self.buf.width, self.buf.height);
         if dx1 < dx0 || dy1 < dy0 {
             return; // empty path
         }
@@ -2811,7 +3518,7 @@ impl<'a> RenderState<'a> {
         let j1 = ((pmaxy - bbox[1]) / y_step).ceil() as i64;
 
         let tile_count = (i1 - i0 + 1).max(0) as i128 * (j1 - j0 + 1).max(0) as i128;
-        const COMPAT_TILE_CAP: i128 = 512;
+        const COMPAT_TILE_CAP: i128 = 4_096;
         const HIGH_QUALITY_TILE_CAP: i128 = 20_000;
         let tile_cap = if self.buf.render_mode().is_high_quality() {
             HIGH_QUALITY_TILE_CAP
@@ -2823,7 +3530,7 @@ impl<'a> RenderState<'a> {
                 "tiling pattern: {tile_count} tiles exceeds cap {tile_cap}; using bounded solid \
                  fallback"
             );
-            self.paint_tiling_pattern_solid_fallback(path_clip, rule, paint_type);
+            self.paint_tiling_pattern_solid_fallback(path_clip, paint_type, use_stroke_color);
             return;
         }
         if tile_count == 0 {
@@ -2868,7 +3575,12 @@ impl<'a> RenderState<'a> {
         // color from the numeric components recorded by `scn` (by component
         // count: 1 -> gray, 3 -> RGB, 4 -> CMYK).
         let forced_color = if paint_type == 2 {
-            Some(uncolored_pattern_color(&self.gs.fill_color))
+            let color = if use_stroke_color {
+                &self.gs.stroke_color
+            } else {
+                &self.gs.fill_color
+            };
+            Some(uncolored_pattern_color(color))
         } else {
             None
         };
@@ -2877,6 +3589,7 @@ impl<'a> RenderState<'a> {
         // to its own BBox). The path clip bounds the whole fill to the shape.
         let saved_clip = self.buf.clip_mask().cloned();
         self.buf.set_clip(path_clip);
+        self.pattern_stack.push(pattern_key);
 
         for j in j0..=j1 {
             for i in i0..=i1 {
@@ -2885,6 +3598,7 @@ impl<'a> RenderState<'a> {
                 // cancellation flag once per tile (cheap relative to a tile
                 // render) so a pathological pattern stops promptly on timeout.
                 if self.cancel.is_cancelled() {
+                    self.pattern_stack.pop();
                     self.buf.restore_clip(saved_clip);
                     return;
                 }
@@ -2901,33 +3615,39 @@ impl<'a> RenderState<'a> {
             }
         }
 
+        self.pattern_stack.pop();
         self.buf.restore_clip(saved_clip);
     }
 
     fn paint_tiling_pattern_solid_fallback(
         &mut self,
         path_clip: ClipMask,
-        rule: FillRule,
         paint_type: i64,
+        use_stroke_color: bool,
     ) {
         let saved_clip = self.buf.clip_mask().cloned();
         self.buf.set_clip(path_clip);
         let color = if paint_type == 2 {
-            let (_space, color) = uncolored_pattern_color(&self.gs.fill_color);
-            ColorSpaceHandler::to_render_color(&color, self.gs.fill_alpha as f32).to_pixel_color()
+            let source = if use_stroke_color {
+                &self.gs.stroke_color
+            } else {
+                &self.gs.fill_color
+            };
+            let alpha = if use_stroke_color {
+                self.gs.stroke_alpha
+            } else {
+                self.gs.fill_alpha
+            };
+            let (_space, color) = uncolored_pattern_color(source);
+            ColorSpaceHandler::to_render_color(&color, alpha as f32).to_pixel_color()
+        } else if use_stroke_color {
+            self.stroke_pixel_color()
         } else {
             self.fill_pixel_color()
         };
-        let ctm = self.ctm();
-        let _ = PathPainter::fill_fast_cancellable(
-            &mut self.buf,
-            &self.path,
-            &ctm,
-            &self.viewport,
-            color,
-            rule,
-            &self.cancel,
-        );
+        let width = self.buf.width as i32;
+        let height = self.buf.height as i32;
+        self.buf.fill_rect(0, 0, width, height, color);
         self.buf.restore_clip(saved_clip);
     }
 
@@ -2984,6 +3704,24 @@ impl<'a> RenderState<'a> {
 
     /// Paint a shading pattern (PatternType 2) clipped to the current path.
     fn paint_shading_pattern_fill(&mut self, rule: FillRule, pattern_dict: &PdfDictionary) {
+        let path_ctm = self.ctm();
+        let flat = flatten_path(&self.path, &path_ctm, &self.viewport, 0.5);
+        let path_clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
+        self.paint_shading_pattern_with_device_clip(pattern_dict, path_clip);
+    }
+
+    fn paint_shading_pattern_stroke(&mut self, pattern_dict: &PdfDictionary) {
+        let Some((path_clip, _outline)) = self.stroke_device_clip() else {
+            return;
+        };
+        self.paint_shading_pattern_with_device_clip(pattern_dict, path_clip);
+    }
+
+    fn paint_shading_pattern_with_device_clip(
+        &mut self,
+        pattern_dict: &PdfDictionary,
+        path_clip: ClipMask,
+    ) {
         let reader = self.engine.document().reader();
         let shading_obj = match pattern_dict.get("Shading") {
             Some(obj) => obj.clone(),
@@ -2996,6 +3734,7 @@ impl<'a> RenderState<'a> {
             log::warn!("shading pattern: /Shading did not resolve to a dictionary");
             return;
         };
+        let shading_dict = self.shading_dict_with_resolved_color_space(shading_dict);
         self.record_shading_plate_sample(
             &shading_dict,
             format!("page {} shading pattern", self.page_number),
@@ -3015,10 +3754,6 @@ impl<'a> RenderState<'a> {
             _ => self.base_ctm,
         };
 
-        // Clip to the path being filled, intersected with the existing clip.
-        let path_ctm = self.ctm();
-        let flat = flatten_path(&self.path, &path_ctm, &self.viewport, 0.5);
-        let path_clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
         let saved_clip = self.buf.clip_mask().cloned();
         self.buf.set_clip(path_clip); // intersects with any existing clip
 
@@ -3029,11 +3764,86 @@ impl<'a> RenderState<'a> {
             &self.viewport,
             &mut self.buf,
             reader,
-            mesh_data.as_deref(),
+            mesh_data.as_deref().map(Vec::as_slice),
         );
 
         // Restore the exact previous clip (restore_clip sets directly).
         self.buf.restore_clip(saved_clip);
+    }
+
+    fn shading_dict_with_resolved_color_space(
+        &self,
+        mut shading_dict: PdfDictionary,
+    ) -> PdfDictionary {
+        let Some(PdfObject::Name(resource_name)) = shading_dict
+            .get("ColorSpace")
+            .or_else(|| shading_dict.get("CS"))
+        else {
+            return shading_dict;
+        };
+        let Some(resource_obj) = self.resources.color_spaces.get(resource_name).cloned() else {
+            return shading_dict;
+        };
+        shading_dict.insert("ColorSpace", resource_obj);
+        shading_dict
+    }
+
+    fn stroke_device_clip(&self) -> Option<(ClipMask, FlatPath)> {
+        if self.path.is_empty() || self.buf.width == 0 || self.buf.height == 0 {
+            return None;
+        }
+        let ctm = self.ctm();
+        let flat = flatten_path(&self.path, &ctm, &self.viewport, 0.2);
+        let width_px = (self.gs.line_width * ctm.scale_factor() * self.viewport.scale).max(1.0);
+        let outline = stroke_flat_path(
+            &flat,
+            width_px,
+            &self.dash_state(),
+            self.gs.line_cap.clone(),
+            self.gs.line_join.clone(),
+            self.gs.miter_limit,
+        );
+        if outline.subpaths.is_empty() {
+            return None;
+        }
+        // Pattern strokes need a device-space clip for the stroked outline.
+        // The general ClipMask path rasterizer is intentionally hard-edged and
+        // optimized for filled PDF paths; for open stroked paths it can miss
+        // thin/axis-aligned outlines that the antialiased stroke rasterizer
+        // paints correctly. Build the stroke clip from the same stroke painter
+        // used by solid strokes, then threshold its alpha channel. This keeps
+        // patterned strokes visually aligned with ordinary strokes and still
+        // allows the pattern tile renderer to reuse its existing clipped fill
+        // path.
+        let mut stroke_alpha = PixelBuffer::new_transparent_with_mode(
+            self.buf.width,
+            self.buf.height,
+            self.buf.render_mode(),
+        );
+        PathPainter::stroke_with_style(
+            &mut stroke_alpha,
+            &self.path,
+            &ctm,
+            &self.viewport,
+            WHITE,
+            self.gs.line_width,
+            &self.dash_state(),
+            &self.gs.line_cap,
+            &self.gs.line_join,
+            self.gs.miter_limit,
+        );
+        let mut path_clip = ClipMask::empty(self.buf.width, self.buf.height);
+        for y in 0..self.buf.height as i32 {
+            for x in 0..self.buf.width as i32 {
+                if stroke_alpha.get_pixel(x, y)[3] > 0 {
+                    path_clip.set(x, y, true);
+                }
+            }
+        }
+        if let Some(existing) = self.buf.clip_mask() {
+            path_clip.intersect(existing);
+        }
+        Some((path_clip, outline))
     }
 
     fn render_text_array(&mut self, op: &ContentOperation) {
@@ -3099,7 +3909,10 @@ impl<'a> RenderState<'a> {
             .unwrap_or(1000.0);
         let light_hinting_supported = font_bytes
             .as_ref()
-            .map(|bytes| ttf_parser::Face::parse(bytes.as_slice(), 0).is_ok())
+            .map(|bytes| {
+                ttf_parser::Face::parse(bytes.as_slice(), 0).is_ok()
+                    || crate::fonts::type1::Type1Font::is_type1(bytes.as_slice())
+            })
             .unwrap_or(false);
 
         for (glyph_index, glyph) in decoded.into_iter().enumerate() {
@@ -3112,7 +3925,10 @@ impl<'a> RenderState<'a> {
                 && (text_rendering_mode_paints(text_mode) || text_rendering_mode_clips(text_mode))
             {
                 if is_type3 {
-                    if !text_rendering_mode_clips(text_mode) {
+                    if let Some(font_dict) = font_dict.as_ref() {
+                        ttf_advance = self.render_type3_glyph(&font_name, font_dict, &glyph);
+                    }
+                    if ttf_advance.is_none() && !text_rendering_mode_clips(text_mode) {
                         let allow_compat_fallback = !self.buf.render_mode().is_high_quality();
                         let render_font_bytes = font_bytes.clone().or_else(|| {
                             if !allow_compat_fallback {
@@ -3134,7 +3950,10 @@ impl<'a> RenderState<'a> {
                                     .filter(|value| *value > 0.0)
                                     .unwrap_or(upem);
                                 let light_hinting_supported =
-                                    ttf_parser::Face::parse(font_bytes.as_slice(), 0).is_ok();
+                                    ttf_parser::Face::parse(font_bytes.as_slice(), 0).is_ok()
+                                        || crate::fonts::type1::Type1Font::is_type1(
+                                            font_bytes.as_slice(),
+                                        );
                                 ttf_advance = self.render_glyph_with_cache(GlyphRenderRequest {
                                     font_name: &font_name,
                                     font_subtype: FontSubtype::TrueType,
@@ -3160,11 +3979,6 @@ impl<'a> RenderState<'a> {
                         }
                         if allow_compat_fallback && render_font_bytes.is_some() {
                             ttf_advance = ttf_advance.or(glyph.width).or(Some(500.0));
-                        }
-                    }
-                    if ttf_advance.is_none() {
-                        if let Some(font_dict) = font_dict.as_ref() {
-                            ttf_advance = self.render_type3_glyph(&font_name, font_dict, &glyph);
                         }
                     }
                 } else if let (Some(font_bytes), Some(font_hash)) = (font_bytes.as_ref(), font_hash)
@@ -3232,10 +4046,7 @@ impl<'a> RenderState<'a> {
                         request.variation,
                     )
                 };
-                let cached = CachedGlyph {
-                    path,
-                    advance_width,
-                };
+                let cached = CachedGlyph::from_path(path, advance_width);
                 self.glyph_cache.insert(cache_key, cached.clone());
                 cached
             }
@@ -3265,10 +4076,9 @@ impl<'a> RenderState<'a> {
             .concat(&ctm);
 
         // Light baseline grid-fitting is bounded to normal body-text sizes in
-        // `GlyphHinting::light`, and is only enabled for TrueType-backed
-        // outlines. The Phase 7 renderer slice showed this trims IRS CID-TT
-        // text edge deltas; Type1/CFF outlines stay on the analytic path to
-        // preserve the TeX/Tracemonkey golden.
+        // `GlyphHinting::light`, and is enabled only for outline formats whose
+        // charstring/outline reconstruction has passed focused parity fixtures
+        // (TrueType and the Type1 body-text path).
         let glyph_pixel_size =
             self.gs.text.font_size * self.ctm().scale_factor() * self.viewport.scale;
         let glyph_hinting = if request.light_hinting_supported {
@@ -3279,7 +4089,7 @@ impl<'a> RenderState<'a> {
 
         let glyph_path = cached.path;
         if text_rendering_mode_clips(self.gs.text.rendering_mode) {
-            if let Some(path) = glyph_path.as_ref() {
+            if let Some(path) = glyph_path.as_deref() {
                 self.accumulate_text_clip(path, &glyph_ctm);
             } else {
                 log::debug!(
@@ -3336,7 +4146,7 @@ impl<'a> RenderState<'a> {
             false
         };
 
-        let Some(glyph_path) = glyph_path.as_ref() else {
+        let Some(glyph_path) = glyph_path.as_deref() else {
             return Some(advance_width);
         };
 
@@ -3803,10 +4613,40 @@ impl<'a> RenderState<'a> {
             fallback_name = type3_fallback_charproc_name(glyph.unicode)?;
             fallback_name.as_str()
         };
+        let text_mode = self.gs.text.rendering_mode;
+        let needs_clip = text_rendering_mode_clips(text_mode);
+        let paints = text_rendering_mode_paints(text_mode);
+        let mut geometry = None;
+        if needs_clip {
+            geometry = self.cached_type3_glyph_geometry(font_name, font_dict, glyph_name);
+            if geometry.is_none() {
+                log::debug!(
+                    "PageRenderer: Type3 text clipping requested but charproc '{}' did not yield supported path geometry",
+                    glyph_name
+                );
+                self.fail_closed_text_clip();
+                return None;
+            }
+        }
+
+        if paints {
+            if let Some(charproc) = self.cached_type3_charproc(font_name, font_dict, glyph_name) {
+                if self.render_type3_charproc_full(font_dict, charproc.as_ref()) {
+                    if let Some(geometry) = geometry.as_ref() {
+                        self.accumulate_type3_text_clip(
+                            geometry.as_ref(),
+                            &self.type3_glyph_ctm(font_dict),
+                        );
+                    }
+                    return charproc.advance_width.or(glyph.width);
+                }
+            }
+        }
+
         let geometry = match self.cached_type3_glyph_geometry(font_name, font_dict, glyph_name) {
             Some(geometry) => geometry,
             None => {
-                if text_rendering_mode_clips(self.gs.text.rendering_mode) {
+                if needs_clip {
                     log::debug!(
                         "PageRenderer: Type3 text clipping requested but charproc '{}' did not yield supported path geometry",
                         glyph_name
@@ -3817,13 +4657,145 @@ impl<'a> RenderState<'a> {
             }
         };
         let glyph_ctm = self.type3_glyph_ctm(font_dict);
-        if text_rendering_mode_clips(self.gs.text.rendering_mode) {
+        if needs_clip {
             self.accumulate_type3_text_clip(geometry.as_ref(), &glyph_ctm);
         }
-        if text_rendering_mode_paints(self.gs.text.rendering_mode) {
+        if paints {
             self.paint_type3_geometry(geometry.as_ref(), &glyph_ctm);
         }
         geometry.advance_width
+    }
+
+    fn cached_type3_charproc(
+        &mut self,
+        font_name: &str,
+        font_dict: &PdfDictionary,
+        glyph_name: &str,
+    ) -> Option<Arc<Type3CharProc>> {
+        let cache_key = type3_charproc_cache_key(font_name, font_dict, glyph_name);
+        if let Some(cached) = self.type3_charproc_cache.get(&cache_key) {
+            return cached.clone();
+        }
+        let charproc = self
+            .collect_type3_charproc(font_dict, glyph_name)
+            .map(Arc::new);
+        self.type3_charproc_cache
+            .insert(cache_key, charproc.clone());
+        charproc
+    }
+
+    fn collect_type3_charproc(
+        &self,
+        font_dict: &PdfDictionary,
+        glyph_name: &str,
+    ) -> Option<Type3CharProc> {
+        let reader = self.engine.document().reader();
+        let stream_obj = resolve_type3_charproc_object(font_dict, glyph_name, reader)?;
+        let content = match self.scheduled_decode_stream(
+            &stream_obj,
+            reader,
+            "renderer Type3 charproc recursive render",
+        ) {
+            Ok(content) => content,
+            Err(err) => {
+                log::debug!(
+                    "PageRenderer: Type3 charproc '{}' decode failed for recursive render: {}",
+                    glyph_name,
+                    err
+                );
+                return None;
+            }
+        };
+        if content.len() > TYPE3_MAX_CHARPROC_BYTES {
+            log::debug!(
+                "PageRenderer: Type3 charproc '{}' exceeded byte cap {} for recursive render",
+                glyph_name,
+                TYPE3_MAX_CHARPROC_BYTES
+            );
+            return None;
+        }
+        let ops = match crate::content::ContentParser::parse(&content) {
+            Ok(ops) => ops,
+            Err(err) => {
+                log::debug!(
+                    "PageRenderer: Type3 charproc '{}' parse failed for recursive render: {}",
+                    glyph_name,
+                    err
+                );
+                return None;
+            }
+        };
+        if ops.len() > TYPE3_MAX_CHARPROC_OPS {
+            log::debug!(
+                "PageRenderer: Type3 charproc '{}' exceeded op cap {} for recursive render",
+                glyph_name,
+                TYPE3_MAX_CHARPROC_OPS
+            );
+            return None;
+        }
+        Some(Type3CharProc {
+            advance_width: type3_advance_width_from_ops(&ops),
+            ops,
+        })
+    }
+
+    fn render_type3_charproc_full(
+        &mut self,
+        font_dict: &PdfDictionary,
+        charproc: &Type3CharProc,
+    ) -> bool {
+        if self.form_depth >= 8 {
+            log::warn!("PageRenderer: Type3 charproc nesting depth limit reached; skipping");
+            return false;
+        }
+
+        let reader = self.engine.document().reader();
+        let type3_resources = font_dict
+            .get("Resources")
+            .map(|res_obj| {
+                let font_res = crate::engine::parse_resources_from_obj(res_obj, reader);
+                merge_resources(font_res, &self.resources)
+            })
+            .unwrap_or_else(|| self.resources.clone());
+        let glyph_ctm = self.type3_glyph_ctm(font_dict);
+
+        let saved_gs = self.gs.clone();
+        let saved_resources = self.resources.clone();
+        let saved_base_ctm = self.base_ctm;
+        let saved_path = std::mem::replace(&mut self.path, Path::new());
+        let saved_pending_clip = self.pending_clip.take();
+        let saved_pending_text_clip = self.pending_text_clip.take();
+        let saved_pending_inline = self.pending_inline.take();
+        let saved_clip = self.buf.clip_mask().cloned();
+        let saved_smask = self.buf.smask_mask().cloned();
+        let saved_clip_stack = self.clip_stack.clone();
+        let saved_smask_stack = self.smask_stack.clone();
+        let saved_oc_stack = self.oc_visibility_stack.clone();
+        let saved_oc_current = self.oc_current_visible;
+
+        self.form_depth += 1;
+        self.resources = type3_resources;
+        self.gs.ctm = glyph_ctm.to_array();
+        self.base_ctm = glyph_ctm;
+        self.sync_blend_mode();
+        self.dispatch_all(&charproc.ops);
+
+        self.form_depth = self.form_depth.saturating_sub(1);
+        self.gs = saved_gs;
+        self.resources = saved_resources;
+        self.base_ctm = saved_base_ctm;
+        self.path = saved_path;
+        self.pending_clip = saved_pending_clip;
+        self.pending_text_clip = saved_pending_text_clip;
+        self.pending_inline = saved_pending_inline;
+        self.clip_stack = saved_clip_stack;
+        self.smask_stack = saved_smask_stack;
+        self.oc_visibility_stack = saved_oc_stack;
+        self.oc_current_visible = saved_oc_current;
+        self.buf.restore_clip(saved_clip);
+        self.buf.restore_smask(saved_smask);
+        self.sync_blend_mode();
+        !self.cancel.is_cancelled()
     }
 
     fn cached_type3_glyph_geometry(
@@ -4162,6 +5134,10 @@ impl<'a> RenderState<'a> {
                     }
                 }
             }
+            let fallback_name = fallback_font_lookup_name(font_name, font_dict, reader);
+            if let Some(bytes) = get_fallback_font(&fallback_name) {
+                return Some(bytes.to_vec());
+            }
         }
         get_fallback_font(font_name).map(|bytes| bytes.to_vec())
     }
@@ -4257,6 +5233,11 @@ struct Type3Stroke {
 struct Type3GlyphGeometry {
     fills: Vec<Type3Fill>,
     strokes: Vec<Type3Stroke>,
+    advance_width: Option<f64>,
+}
+
+struct Type3CharProc {
+    ops: Vec<ContentOperation>,
     advance_width: Option<f64>,
 }
 
@@ -4600,6 +5581,27 @@ fn type3_font_matrix(font_dict: &PdfDictionary) -> Transform2D {
     ])
 }
 
+fn type3_charproc_cache_key(
+    font_name: &str,
+    font_dict: &PdfDictionary,
+    glyph_name: &str,
+) -> String {
+    format!(
+        "{}\0{}",
+        font_resource_cache_key(font_name, font_dict),
+        glyph_name
+    )
+}
+
+fn type3_advance_width_from_ops(ops: &[ContentOperation]) -> Option<f64> {
+    ops.iter().find_map(|op| match op.operator.as_str() {
+        "d0" | "d1" => op
+            .number(0)
+            .filter(|value| value.is_finite() && *value > 0.0),
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 fn glyph_cache_code(ch: char) -> u16 {
     u16::try_from(ch as u32).unwrap_or(0xFFFD)
@@ -4618,6 +5620,37 @@ fn resolve_descriptor(
         PdfObject::Dictionary(dict) => Some(dict),
         _ => None,
     }
+}
+
+fn fallback_font_lookup_name(
+    font_name: &str,
+    font_dict: &PdfDictionary,
+    reader: &crate::reader::PdfReader,
+) -> String {
+    if let Some(name) = font_dict.get_name("BaseFont") {
+        return name.to_string();
+    }
+
+    if detect_font_subtype(font_dict) == FontSubtype::Type0 {
+        if let Some(descendant_font) = get_descendant_font(font_dict, reader) {
+            if let Some(name) = descendant_font.get_name("BaseFont") {
+                return name.to_string();
+            }
+            if let Some(name) = resolve_descriptor(&descendant_font, reader)
+                .and_then(|descriptor| descriptor.get_name("FontName").map(|name| name.to_string()))
+            {
+                return name;
+            }
+        }
+    }
+
+    if let Some(name) = resolve_descriptor(font_dict, reader)
+        .and_then(|descriptor| descriptor.get_name("FontName").map(|name| name.to_string()))
+    {
+        return name;
+    }
+
+    font_name.to_string()
 }
 
 fn font_resource_cache_key(font_name: &str, font_dict: &PdfDictionary) -> String {
@@ -4741,6 +5774,49 @@ fn extract_color_space_name(dict: &PdfDictionary) -> String {
     }
 }
 
+fn canonical_image_color_space_name(name: &str) -> String {
+    match name {
+        "G" => "DeviceGray".to_string(),
+        "RGB" => "DeviceRGB".to_string(),
+        "CMYK" => "DeviceCMYK".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn image_color_space_family_name(
+    obj: &PdfObject,
+    resources: &PageResources,
+    reader: &crate::reader::PdfReader,
+    depth: usize,
+) -> Option<String> {
+    if depth > 8 {
+        return None;
+    }
+    let resolved = match obj {
+        PdfObject::Reference { .. } => reader.resolve(obj.clone()).ok()?,
+        other => other.clone(),
+    };
+    match resolved {
+        PdfObject::Name(name) => {
+            if let Some(resource_obj) = resources.color_spaces.get(&name) {
+                image_color_space_family_name(
+                    resource_obj,
+                    resources,
+                    reader,
+                    depth.saturating_add(1),
+                )
+            } else {
+                Some(canonical_image_color_space_name(&name))
+            }
+        }
+        PdfObject::Array(items) => items
+            .first()
+            .and_then(PdfObject::as_name)
+            .map(canonical_image_color_space_name),
+        _ => None,
+    }
+}
+
 fn extract_filter_names(dict: &PdfDictionary) -> Vec<String> {
     match dict.get("Filter").or_else(|| dict.get("F")) {
         Some(PdfObject::Name(name)) => vec![name.clone()],
@@ -4765,6 +5841,23 @@ fn font_size_scale(font_size: f64, upem: f64) -> f64 {
     } else {
         font_size / upem
     }
+}
+
+fn display_list_needs_transparent_page_group(
+    engine: &ContentEngine,
+    page_number: usize,
+    resources: &PageResources,
+    list: &DisplayList,
+) -> Result<bool> {
+    if list.stats.transparency_ops == 0
+        && list.stats.image_xobjects == 0
+        && list.stats.inline_images == 0
+        && list.stats.form_xobjects == 0
+    {
+        return Ok(false);
+    }
+    let ops = engine.get_page_content(page_number)?;
+    Ok(uses_top_level_transparency(&ops, resources, engine))
 }
 
 fn uses_top_level_transparency(
@@ -4997,6 +6090,150 @@ fn image_mask_to_stencil_rgba(
     }
 }
 
+fn combine_explicit_image_mask(
+    main: crate::images::decoder::RawImage,
+    mask: &crate::images::decoder::RawImage,
+    mask_is_stencil: bool,
+    paint_ones: bool,
+) -> Result<crate::images::decoder::RawImage> {
+    if main.width != mask.width || main.height != mask.height {
+        log::warn!(
+            "Explicit image /Mask dimensions {}x{} do not match image {}x{}; ignoring Mask",
+            mask.width,
+            mask.height,
+            main.width,
+            main.height
+        );
+        return Ok(main);
+    }
+    let pixel_count = main.width as usize * main.height as usize;
+    let channels = main.channels.max(1) as usize;
+    let mask_channels = mask.channels.max(1) as usize;
+    let mut pixels = Vec::with_capacity(pixel_count * 4);
+    for i in 0..pixel_count {
+        let base = i * channels;
+        let r = main.pixels.get(base).copied().unwrap_or(0);
+        let g = if channels >= 3 {
+            main.pixels.get(base + 1).copied().unwrap_or(r)
+        } else {
+            r
+        };
+        let b = if channels >= 3 {
+            main.pixels.get(base + 2).copied().unwrap_or(r)
+        } else {
+            r
+        };
+        let existing_alpha = if channels >= 4 {
+            main.pixels.get(base + 3).copied().unwrap_or(255)
+        } else {
+            255
+        };
+        let mbase = i * mask_channels;
+        let mask_sample = if mask_channels >= 3 {
+            let mr = mask.pixels.get(mbase).copied().unwrap_or(0) as u16;
+            let mg = mask.pixels.get(mbase + 1).copied().unwrap_or(0) as u16;
+            let mb = mask.pixels.get(mbase + 2).copied().unwrap_or(0) as u16;
+            ((u32::from(mr) * 77 + u32::from(mg) * 150 + u32::from(mb) * 29 + 128) >> 8) as u8
+        } else {
+            mask.pixels.get(mbase).copied().unwrap_or(0)
+        };
+        let mask_alpha = if mask_is_stencil {
+            let visible = if paint_ones {
+                mask_sample >= 128
+            } else {
+                mask_sample < 128
+            };
+            if visible {
+                255
+            } else {
+                0
+            }
+        } else {
+            mask_sample
+        };
+        let alpha = ((u16::from(existing_alpha) * u16::from(mask_alpha) + 127) / 255) as u8;
+        pixels.extend_from_slice(&[r, g, b, alpha]);
+    }
+    Ok(crate::images::decoder::RawImage {
+        width: main.width,
+        height: main.height,
+        channels: 4,
+        bits_per_sample: 8,
+        pixels,
+    })
+}
+
+fn apply_color_key_image_mask(
+    main: crate::images::decoder::RawImage,
+    bpc: u8,
+    color_space: &str,
+    items: &[PdfObject],
+) -> Option<crate::images::decoder::RawImage> {
+    let channels = match color_space {
+        "DeviceGray" | "G" => 1usize,
+        "DeviceRGB" | "RGB" | "sRGB" => 3usize,
+        _ => return None,
+    };
+    if main.channels as usize != channels || items.len() < channels * 2 {
+        return None;
+    }
+    let values = items
+        .iter()
+        .filter_map(PdfObject::as_number)
+        .collect::<Vec<_>>();
+    if values.len() < channels * 2 {
+        return None;
+    }
+    let max_component = if bpc == 0 {
+        255.0
+    } else if bpc >= 8 {
+        ((1u32 << bpc.min(16)) - 1) as f64
+    } else {
+        ((1u16 << bpc) - 1) as f64
+    };
+    let scale = 255.0 / max_component.max(1.0);
+    let ranges = (0..channels)
+        .map(|idx| {
+            let lo = (values[idx * 2] * scale).round().clamp(0.0, 255.0) as u8;
+            let hi = (values[idx * 2 + 1] * scale).round().clamp(0.0, 255.0) as u8;
+            if lo <= hi {
+                (lo, hi)
+            } else {
+                (hi, lo)
+            }
+        })
+        .collect::<Vec<_>>();
+    let pixel_count = main.width as usize * main.height as usize;
+    let mut pixels = Vec::with_capacity(pixel_count * 4);
+    for i in 0..pixel_count {
+        let base = i * channels;
+        let r = main.pixels.get(base).copied().unwrap_or(0);
+        let g = if channels >= 3 {
+            main.pixels.get(base + 1).copied().unwrap_or(r)
+        } else {
+            r
+        };
+        let b = if channels >= 3 {
+            main.pixels.get(base + 2).copied().unwrap_or(r)
+        } else {
+            r
+        };
+        let masked = (0..channels).all(|ch| {
+            let sample = main.pixels.get(base + ch).copied().unwrap_or(0);
+            let (lo, hi) = ranges[ch];
+            sample >= lo && sample <= hi
+        });
+        pixels.extend_from_slice(&[r, g, b, if masked { 0 } else { 255 }]);
+    }
+    Some(crate::images::decoder::RawImage {
+        width: main.width,
+        height: main.height,
+        channels: 4,
+        bits_per_sample: 8,
+        pixels,
+    })
+}
+
 fn image_mask_paints_ones(dict: &PdfDictionary) -> bool {
     dict.get("Decode")
         .and_then(PdfObject::as_array)
@@ -5078,6 +6315,24 @@ fn alpha_smask_uses_opaque_bc_backdrop(
     out.first().copied().unwrap_or(0.0) <= 0.01
 }
 
+fn smask_inline_cache_seed(smask_dict: &PdfDictionary) -> Option<String> {
+    match smask_dict.get("G") {
+        Some(PdfObject::Reference { number, generation }) => Some(format!(
+            "smask:inline:g:{number}:{generation}:dict:{smask_dict:?}"
+        )),
+        _ => None,
+    }
+}
+
+fn shading_mesh_cache_key(shading_obj: &PdfObject, shading_type: i64) -> Option<String> {
+    match shading_obj {
+        PdfObject::Reference { number, generation } => Some(format!(
+            "shading-mesh:{number}:{generation}:type:{shading_type}"
+        )),
+        _ => None,
+    }
+}
+
 /// The `/Group` sub-dictionary of a Form XObject, if it is a transparency
 /// group. Returns `None` for non-group Forms.
 fn transparency_group_dict(form_dict: &PdfDictionary) -> Option<&PdfDictionary> {
@@ -5157,6 +6412,26 @@ fn uncolored_pattern_color(
     (space, color)
 }
 
+fn tiling_pattern_stack_key(
+    pattern_obj: &PdfObject,
+    pat_dict: &PdfDictionary,
+    raw_len: usize,
+) -> String {
+    if let PdfObject::Reference { number, generation } = pattern_obj {
+        return format!("ref:{number}:{generation}");
+    }
+    let bbox = get_float_array_dict(pat_dict, "BBox").unwrap_or_default();
+    let x_step = pat_dict
+        .get("XStep")
+        .and_then(PdfObject::as_number)
+        .unwrap_or(0.0);
+    let y_step = pat_dict
+        .get("YStep")
+        .and_then(PdfObject::as_number)
+        .unwrap_or(0.0);
+    format!("inline:{raw_len}:{x_step:.6}:{y_step:.6}:{bbox:?}")
+}
+
 /// For a mesh shading (ShadingType 4–7), decode and return the shading stream's
 /// data (the packed vertex/patch records). Returns `None` for dictionary-only
 /// shadings (Types 1–3) or if the object is not a stream.
@@ -5179,6 +6454,41 @@ fn estimate_image_ref_decode_bytes(image: &ImageReference) -> u64 {
         .saturating_mul(u64::from(image.bits_per_component.max(1)).div_ceil(8))
         .saturating_mul(estimated_image_channels(&image.color_space, image.is_mask))
         .max(1)
+}
+
+fn image_xobject_cache_key(image: &ImageReference) -> String {
+    if image.is_inline {
+        return format!(
+            "inline:{}:{}:{}:{}",
+            image.page_number,
+            image.width,
+            image.height,
+            image
+                .inline_data
+                .as_ref()
+                .map_or(0, |data| data.bytes.len())
+        );
+    }
+    format!(
+        "xobject:{}:{}:{}:{}:{}:{}",
+        image.object_number,
+        image.generation_number,
+        image.width,
+        image.height,
+        image.bits_per_component,
+        image.filter.join("+")
+    )
+}
+
+fn image_xobject_cache_key_with_color_space(
+    image: &ImageReference,
+    color_space_name: &str,
+    color_space_obj: &PdfObject,
+) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    fnv1a_update(&mut hash, color_space_name.as_bytes());
+    hash_pdf_object(&mut hash, color_space_obj, 0);
+    format!("{}:cs:{hash:016x}", image_xobject_cache_key(image))
 }
 
 fn estimate_inline_image_decode_bytes(raw_len: usize, width: u32, height: u32, bpc: u8) -> u64 {
@@ -5241,15 +6551,8 @@ fn crop_buffer(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
         )));
     }
 
-    let mut out =
-        PixelBuffer::new_transparent_with_mode(tile.width, tile.height, buf.render_mode());
-    for y in 0..tile.height as i32 {
-        for x in 0..tile.width as i32 {
-            let color = buf.get_pixel(tile.x as i32 + x, tile.y as i32 + y);
-            out.set_pixel(x, y, color);
-        }
-    }
-    Ok(out)
+    buf.copy_rect_to_new_buffer(tile.x, tile.y, tile.width, tile.height)
+        .ok_or_else(|| WellfriendError::invalid_input("render tile crop failed".to_string()))
 }
 
 fn estimated_image_channels(color_space: &str, is_mask: bool) -> u64 {
@@ -5772,6 +7075,14 @@ fn synthesize_annotation_appearance(
         return None;
     }
 
+    if annot.get_name("Subtype") != Some("Widget") {
+        if let Some(appearance) =
+            synthesize_markup_annotation_appearance(annot, rect, width, height)
+        {
+            return Some(appearance);
+        }
+    }
+
     let field_chain = collect_field_chain(annot, reader);
     let field_type_obj = inherited_field_object(&field_chain, "FT")?;
     let field_type = field_type_obj.as_name()?.to_string();
@@ -5920,6 +7231,318 @@ fn synthesize_annotation_appearance(
     let mut form = synthesized_appearance_form_dict(width, height);
     form.insert("Length", PdfObject::Integer(content.len() as i64));
     Some((form, content.into_bytes()))
+}
+
+fn synthesize_markup_annotation_appearance(
+    annot: &PdfDictionary,
+    rect: [f64; 4],
+    width: f64,
+    height: f64,
+) -> Option<(PdfDictionary, Vec<u8>)> {
+    let subtype = annot.get_name("Subtype")?;
+    let color = annotation_rgb(annot).unwrap_or(match subtype {
+        "Highlight" => (1.0, 1.0, 0.0),
+        _ => (0.0, 0.0, 0.0),
+    });
+    let opacity = annotation_opacity(annot, if subtype == "Highlight" { 0.35 } else { 1.0 });
+    let mut content = String::new();
+
+    match subtype {
+        "Highlight" => {
+            for bounds in annotation_local_quad_bounds(annot, rect, width, height) {
+                append_annotation_rect_fill(&mut content, bounds, color);
+            }
+        }
+        "Underline" | "StrikeOut" | "Squiggly" => {
+            for bounds in annotation_local_quad_bounds(annot, rect, width, height) {
+                append_text_markup_line(&mut content, subtype, bounds, color);
+            }
+        }
+        "Square" => {
+            let _ = writeln!(
+                content,
+                "q /GS1 gs {} {} {} RG 1 w 0.5 0.5 {} {} re S Q",
+                pdf_num(color.0),
+                pdf_num(color.1),
+                pdf_num(color.2),
+                pdf_num((width - 1.0).max(0.0)),
+                pdf_num((height - 1.0).max(0.0))
+            );
+        }
+        "Circle" => {
+            append_circle(
+                &mut content,
+                width * 0.5,
+                height * 0.5,
+                ((width.min(height) - 1.0) * 0.5).max(0.0),
+                color,
+                false,
+            );
+        }
+        "Line" => {
+            let line = annot.get_array("L")?;
+            if line.len() < 4 {
+                return None;
+            }
+            let x0 = line[0].as_number()? - rect[0].min(rect[2]);
+            let y0 = line[1].as_number()? - rect[1].min(rect[3]);
+            let x1 = line[2].as_number()? - rect[0].min(rect[2]);
+            let y1 = line[3].as_number()? - rect[1].min(rect[3]);
+            let _ = writeln!(
+                content,
+                "q /GS1 gs {} {} {} RG 1.5 w {} {} m {} {} l S Q",
+                pdf_num(color.0),
+                pdf_num(color.1),
+                pdf_num(color.2),
+                pdf_num(x0),
+                pdf_num(y0),
+                pdf_num(x1),
+                pdf_num(y1)
+            );
+        }
+        "Ink" => append_ink_annotation_paths(&mut content, annot, rect, color)?,
+        "FreeText" => {
+            let (text, text_bytes) = annot.get("Contents").and_then(display_text_from_object)?;
+            append_text_field_appearance(
+                &mut content,
+                WidgetAppearanceBox::new(width, height, None),
+                &text,
+                &text_bytes,
+                TextFieldAppearance {
+                    default_appearance: DefaultAppearance {
+                        font_size: 10.0,
+                        color,
+                    },
+                    alignment: annot.get_integer("Q").unwrap_or(0),
+                    multiline: true,
+                },
+            );
+        }
+        _ => return None,
+    }
+
+    if content.is_empty() {
+        return None;
+    }
+    let mut form = synthesized_appearance_form_dict(width, height);
+    add_synthesized_ext_g_state(
+        &mut form,
+        opacity,
+        if subtype == "Highlight" {
+            Some("Multiply")
+        } else {
+            None
+        },
+    );
+    form.insert("Length", PdfObject::Integer(content.len() as i64));
+    Some((form, content.into_bytes()))
+}
+
+fn add_synthesized_ext_g_state(form: &mut PdfDictionary, alpha: f64, blend_mode: Option<&str>) {
+    let mut gs = PdfDictionary::empty();
+    gs.insert("Type", PdfObject::Name("ExtGState".to_string()));
+    gs.insert("ca", PdfObject::Real(alpha.clamp(0.0, 1.0)));
+    gs.insert("CA", PdfObject::Real(alpha.clamp(0.0, 1.0)));
+    if let Some(mode) = blend_mode {
+        gs.insert("BM", PdfObject::Name(mode.to_string()));
+    }
+    let mut ext = PdfDictionary::empty();
+    ext.insert("GS1", PdfObject::Dictionary(gs));
+    if let Some(PdfObject::Dictionary(resources)) = form.get_mut("Resources") {
+        resources.insert("ExtGState", PdfObject::Dictionary(ext));
+    }
+}
+
+fn annotation_rgb(annot: &PdfDictionary) -> Option<(f64, f64, f64)> {
+    let arr = annot.get_array("C")?;
+    match arr.len() {
+        1 => {
+            let gray = clamp_unit(arr[0].as_number()?);
+            Some((gray, gray, gray))
+        }
+        3 => Some((
+            clamp_unit(arr[0].as_number()?),
+            clamp_unit(arr[1].as_number()?),
+            clamp_unit(arr[2].as_number()?),
+        )),
+        4 => Some(cmyk_to_rgb(
+            arr[0].as_number()?,
+            arr[1].as_number()?,
+            arr[2].as_number()?,
+            arr[3].as_number()?,
+        )),
+        _ => None,
+    }
+}
+
+fn annotation_opacity(annot: &PdfDictionary, default_alpha: f64) -> f64 {
+    annot
+        .get("CA")
+        .and_then(PdfObject::as_number)
+        .unwrap_or(default_alpha)
+        .clamp(0.0, 1.0)
+}
+
+fn annotation_local_quad_bounds(
+    annot: &PdfDictionary,
+    rect: [f64; 4],
+    width: f64,
+    height: f64,
+) -> Vec<[f64; 4]> {
+    let rect_x0 = rect[0].min(rect[2]);
+    let rect_y0 = rect[1].min(rect[3]);
+    let Some(quads) = annot.get_array("QuadPoints") else {
+        return vec![[0.0, 0.0, width, height]];
+    };
+    let mut bounds = Vec::new();
+    for quad in quads.chunks(8) {
+        if quad.len() < 8 {
+            continue;
+        }
+        let coords: Vec<f64> = quad.iter().filter_map(PdfObject::as_number).collect();
+        if coords.len() < 8 {
+            continue;
+        }
+        let xs = [coords[0], coords[2], coords[4], coords[6]];
+        let ys = [coords[1], coords[3], coords[5], coords[7]];
+        let x0 = xs.iter().copied().fold(f64::INFINITY, f64::min) - rect_x0;
+        let x1 = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max) - rect_x0;
+        let y0 = ys.iter().copied().fold(f64::INFINITY, f64::min) - rect_y0;
+        let y1 = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max) - rect_y0;
+        if x1 > x0 && y1 > y0 {
+            bounds.push([
+                x0.clamp(0.0, width),
+                y0.clamp(0.0, height),
+                x1.clamp(0.0, width),
+                y1.clamp(0.0, height),
+            ]);
+        }
+    }
+    if bounds.is_empty() {
+        vec![[0.0, 0.0, width, height]]
+    } else {
+        bounds
+    }
+}
+
+fn append_annotation_rect_fill(content: &mut String, bounds: [f64; 4], color: (f64, f64, f64)) {
+    let x = bounds[0].min(bounds[2]);
+    let y = bounds[1].min(bounds[3]);
+    let w = (bounds[2] - bounds[0]).abs();
+    let h = (bounds[3] - bounds[1]).abs();
+    let _ = writeln!(
+        content,
+        "q /GS1 gs {} {} {} rg {} {} {} {} re f Q",
+        pdf_num(color.0),
+        pdf_num(color.1),
+        pdf_num(color.2),
+        pdf_num(x),
+        pdf_num(y),
+        pdf_num(w),
+        pdf_num(h)
+    );
+}
+
+fn append_text_markup_line(
+    content: &mut String,
+    subtype: &str,
+    bounds: [f64; 4],
+    color: (f64, f64, f64),
+) {
+    let x0 = bounds[0].min(bounds[2]);
+    let x1 = bounds[0].max(bounds[2]);
+    let y0 = bounds[1].min(bounds[3]);
+    let y1 = bounds[1].max(bounds[3]);
+    let base_y = if subtype == "StrikeOut" {
+        y0 + (y1 - y0) * 0.5
+    } else {
+        y0 + (y1 - y0) * 0.12
+    };
+    if subtype == "Squiggly" {
+        let step = 4.0_f64.max((y1 - y0) * 0.2);
+        let amp = ((y1 - y0) * 0.08).clamp(0.75, 2.0);
+        let _ = write!(
+            content,
+            "q /GS1 gs {} {} {} RG 1 w {} {} m",
+            pdf_num(color.0),
+            pdf_num(color.1),
+            pdf_num(color.2),
+            pdf_num(x0),
+            pdf_num(base_y)
+        );
+        let mut x = x0 + step;
+        let mut up = true;
+        while x <= x1 {
+            let y = if up { base_y + amp } else { base_y - amp };
+            let _ = write!(content, " {} {} l", pdf_num(x), pdf_num(y));
+            x += step;
+            up = !up;
+        }
+        let _ = writeln!(content, " S Q");
+    } else {
+        let _ = writeln!(
+            content,
+            "q /GS1 gs {} {} {} RG 1 w {} {} m {} {} l S Q",
+            pdf_num(color.0),
+            pdf_num(color.1),
+            pdf_num(color.2),
+            pdf_num(x0),
+            pdf_num(base_y),
+            pdf_num(x1),
+            pdf_num(base_y)
+        );
+    }
+}
+
+fn append_ink_annotation_paths(
+    content: &mut String,
+    annot: &PdfDictionary,
+    rect: [f64; 4],
+    color: (f64, f64, f64),
+) -> Option<()> {
+    let rect_x0 = rect[0].min(rect[2]);
+    let rect_y0 = rect[1].min(rect[3]);
+    let lists = annot.get_array("InkList")?;
+    let _ = write!(
+        content,
+        "q /GS1 gs {} {} {} RG 1.5 w",
+        pdf_num(color.0),
+        pdf_num(color.1),
+        pdf_num(color.2)
+    );
+    let mut wrote = false;
+    for list in lists {
+        let Some(points) = list.as_array() else {
+            continue;
+        };
+        let coords: Vec<f64> = points.iter().filter_map(PdfObject::as_number).collect();
+        if coords.len() < 4 {
+            continue;
+        }
+        let _ = write!(
+            content,
+            " {} {} m",
+            pdf_num(coords[0] - rect_x0),
+            pdf_num(coords[1] - rect_y0)
+        );
+        for pair in coords[2..].chunks(2) {
+            if pair.len() == 2 {
+                let _ = write!(
+                    content,
+                    " {} {} l",
+                    pdf_num(pair[0] - rect_x0),
+                    pdf_num(pair[1] - rect_y0)
+                );
+            }
+        }
+        wrote = true;
+    }
+    if wrote {
+        let _ = writeln!(content, " S Q");
+        Some(())
+    } else {
+        None
+    }
 }
 
 fn collect_field_chain(
@@ -6814,6 +8437,51 @@ mod tests {
     }
 
     #[test]
+    fn nonembedded_font_resource_alias_uses_basefont_for_fallback() {
+        let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
+        let reader = engine.document().reader();
+        let mut font = PdfDictionary::new(std::collections::BTreeMap::new());
+        font.insert("Type", PdfObject::Name("Font".to_string()));
+        font.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        font.insert("BaseFont", PdfObject::Name("Times-Roman".to_string()));
+
+        let lookup_name = fallback_font_lookup_name("F1", &font, reader);
+        assert_eq!(lookup_name, "Times-Roman");
+        assert!(std::ptr::eq(
+            get_fallback_font(&lookup_name).expect("base font fallback"),
+            get_fallback_font("Times-Roman").expect("Times fallback")
+        ));
+        assert!(!std::ptr::eq(
+            get_fallback_font(&lookup_name).expect("base font fallback"),
+            get_fallback_font("F1").expect("resource alias fallback")
+        ));
+    }
+
+    #[test]
+    fn type0_font_resource_alias_uses_descendant_basefont_for_fallback() {
+        let engine = ContentEngine::open_path(fixture("image_only.pdf")).expect("open fixture");
+        let reader = engine.document().reader();
+        let mut descendant = PdfDictionary::new(std::collections::BTreeMap::new());
+        descendant.insert("Type", PdfObject::Name("Font".to_string()));
+        descendant.insert("Subtype", PdfObject::Name("CIDFontType2".to_string()));
+        descendant.insert("BaseFont", PdfObject::Name("Courier-Bold".to_string()));
+        let mut font = PdfDictionary::new(std::collections::BTreeMap::new());
+        font.insert("Type", PdfObject::Name("Font".to_string()));
+        font.insert("Subtype", PdfObject::Name("Type0".to_string()));
+        font.insert(
+            "DescendantFonts",
+            PdfObject::Array(vec![PdfObject::Dictionary(descendant)]),
+        );
+
+        let lookup_name = fallback_font_lookup_name("F2", &font, reader);
+        assert_eq!(lookup_name, "Courier-Bold");
+        assert!(std::ptr::eq(
+            get_fallback_font(&lookup_name).expect("descendant fallback"),
+            get_fallback_font("Courier-Bold").expect("Courier fallback")
+        ));
+    }
+
+    #[test]
     fn skips_non_cid_replacement_and_control_glyph_painting() {
         assert!(!should_paint_decoded_glyph(&decoded_glyph(
             '\u{FFFD}', false, None
@@ -7271,6 +8939,7 @@ mod tests {
             .expect("display-list render")
             .expect("vector page should replay");
         let mut stitched = PixelBuffer::new_transparent_with_mode(100, 100, RenderMode::Compat);
+        let mut document_cache = RenderDocumentCache::new();
         for tile in [
             RenderTile {
                 x: 0,
@@ -7298,15 +8967,208 @@ mod tests {
             },
         ] {
             let piece = engine
-                .render_page_tile_with_mode(1, 72, tile, RenderMode::Compat, None)
-                .expect("render tile");
+                .render_page_display_list_tile_cancellable_with_mode_and_cache(
+                    1,
+                    72,
+                    tile,
+                    &CancelToken::none(),
+                    RenderMode::Compat,
+                    &mut document_cache,
+                )
+                .expect("render display-list tile")
+                .expect("vector page should replay as a display-list tile");
             for y in 0..piece.height as i32 {
                 for x in 0..piece.width as i32 {
                     stitched.set_pixel(tile.x as i32 + x, tile.y as i32 + y, piece.get_pixel(x, y));
                 }
             }
         }
+        assert_eq!(document_cache.display_list_entries(), 1);
+        assert_eq!(document_cache.transparent_page_group_entries(), 1);
         assert_same_pixels(&full, &stitched);
+    }
+
+    #[test]
+    fn display_list_tile_replay_uses_raster_cache_on_repeat_viewport() {
+        let pdf = simple_vector_pdf("1 0 0 rg 0 0 100 100 re f\n0 0 1 rg 25 25 50 50 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let tile = RenderTile {
+            x: 20,
+            y: 20,
+            width: 40,
+            height: 40,
+        };
+        let mut document_cache = RenderDocumentCache::new();
+        let first = engine
+            .render_page_display_list_tile_cancellable_with_mode_and_cache(
+                1,
+                72,
+                tile,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut document_cache,
+            )
+            .expect("first display-list tile render")
+            .expect("vector page should replay");
+        let after_first = document_cache.display_list_raster_cache_metrics();
+        assert_eq!(after_first.inserts, 1);
+        assert_eq!(after_first.hits, 0);
+
+        let second = engine
+            .render_page_display_list_tile_cancellable_with_mode_and_cache(
+                1,
+                72,
+                tile,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut document_cache,
+            )
+            .expect("second display-list tile render")
+            .expect("vector page should replay from tile cache");
+        let after_second = document_cache.display_list_raster_cache_metrics();
+        assert_eq!(after_second.inserts, 1);
+        assert_eq!(after_second.hits, 1);
+        assert_same_pixels(&first, &second);
+    }
+
+    #[test]
+    fn render_document_cache_retains_display_lists_by_page_and_dpi() {
+        let mut cache = RenderDocumentCache::new();
+        let key = RenderDocumentCache::display_list_key(2, 144);
+        let list = DisplayList {
+            viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 144),
+            ops: Vec::new(),
+            stats: Default::default(),
+            supported: true,
+            unsupported: Vec::new(),
+        };
+
+        let inserted = cache.insert_display_list(key.clone(), list);
+        let cached = cache
+            .cached_display_list(&key)
+            .expect("display list should be retained");
+        assert!(std::sync::Arc::ptr_eq(&inserted, &cached));
+        assert_eq!(cache.display_list_entries(), 1);
+
+        cache.clear();
+        assert_eq!(cache.display_list_entries(), 0);
+    }
+
+    #[test]
+    fn display_list_native_vector_fast_path_retains_display_list_cache() {
+        let pdf = simple_vector_pdf("1 0 0 rg 0 0 100 100 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let mut cache = RenderDocumentCache::new();
+
+        let first = engine
+            .render_page_display_list_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("display-list render")
+            .expect("vector page should replay");
+        assert_eq!(cache.display_list_entries(), 1);
+        assert_eq!(cache.transparent_page_group_entries(), 0);
+        let metrics_after_first = cache.display_list_raster_cache_metrics();
+        assert_eq!(metrics_after_first.inserts, 1);
+        assert_eq!(metrics_after_first.hits, 0);
+
+        let second = engine
+            .render_page_display_list_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("display-list render from cache")
+            .expect("vector page should replay from cache");
+        assert_eq!(cache.display_list_entries(), 1);
+        assert_eq!(cache.transparent_page_group_entries(), 0);
+        let metrics_after_second = cache.display_list_raster_cache_metrics();
+        assert_eq!(metrics_after_second.inserts, 1);
+        assert_eq!(metrics_after_second.hits, 1);
+        assert_same_pixels(&first, &second);
+    }
+
+    #[test]
+    fn display_list_high_level_replay_caches_transparency_decision() {
+        let engine = ContentEngine::open_path(fixture("flate.pdf")).expect("open text fixture");
+        let mut cache = RenderDocumentCache::new();
+
+        let first = engine
+            .render_page_display_list_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("display-list render")
+            .expect("text page should replay");
+        assert_eq!(cache.display_list_entries(), 1);
+        assert_eq!(cache.transparent_page_group_entries(), 1);
+        let metrics_after_first = cache.display_list_raster_cache_metrics();
+        assert_eq!(metrics_after_first.inserts, 1);
+        assert_eq!(metrics_after_first.hits, 0);
+
+        let second = engine
+            .render_page_display_list_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("display-list render from cache")
+            .expect("text page should replay from cache");
+        assert_eq!(cache.display_list_entries(), 1);
+        assert_eq!(cache.transparent_page_group_entries(), 1);
+        let metrics_after_second = cache.display_list_raster_cache_metrics();
+        assert_eq!(metrics_after_second.inserts, 1);
+        assert_eq!(metrics_after_second.hits, 1);
+        assert_same_pixels(&first, &second);
+    }
+
+    #[test]
+    fn render_document_cache_retains_decoded_image_xobjects() {
+        let engine =
+            ContentEngine::open_path(fixture("image_only.pdf")).expect("open image fixture");
+        let mut cache = RenderDocumentCache::new();
+
+        let first = engine
+            .render_page_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("first cached render");
+        let cached_images = cache.image_xobject_entries();
+        assert!(
+            cached_images > 0,
+            "image XObject render should retain decoded image data"
+        );
+        assert!(cache.image_xobject_bytes() > 0);
+
+        let second = engine
+            .render_page_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("second cached render");
+        assert_eq!(cache.image_xobject_entries(), cached_images);
+        assert_same_pixels(&first, &second);
+
+        cache.clear();
+        assert_eq!(cache.image_xobject_entries(), 0);
     }
 
     #[test]
@@ -7496,6 +9358,495 @@ mod tests {
         );
     }
 
+    #[test]
+    fn document_cache_reuses_soft_mask_groups() {
+        let content = "q\n0.95 0.95 0.95 rg\n0 0 220 160 re\nf\nQ\n\
+                       q\n/GS1 gs\n0.2 0.6 0.9 rg\n10 10 200 140 re\nf\nQ\n";
+        let mask_content = "1 g\n40 30 60 60 re\nf\n";
+        let pdf = pdf_with_alpha_smask(content, mask_content, "1", None);
+        let engine = ContentEngine::open_bytes(pdf).expect("open cached SMask PDF");
+        let mut cache = RenderDocumentCache::new();
+
+        let first = engine
+            .render_page_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("first cached SMask render");
+        assert_eq!(cache.smask_group_entries(), 1);
+
+        let second = engine
+            .render_page_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("second cached SMask render");
+        assert_eq!(cache.smask_group_entries(), 1);
+        assert_eq!(
+            first.to_raw_image_rgba().pixels,
+            second.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn colored_tiling_pattern_paints_stroked_paths() {
+        let pdf = pdf_with_colored_tiling_pattern_stroke();
+        let engine = ContentEngine::open_bytes(pdf).expect("open pattern stroke PDF");
+        let buf = engine
+            .render_page(1, 72)
+            .expect("render pattern stroke PDF");
+
+        let red_band = first_pixel_in_region(&buf, 10..18, 44..57, |px| px[0] > 180 && px[2] < 120);
+        assert!(
+            red_band.is_some(),
+            "left pattern stripe should paint the stroke red, got {:?}",
+            red_band
+        );
+        let blue_band =
+            first_pixel_in_region(&buf, 15..24, 44..57, |px| px[2] > 180 && px[0] < 120);
+        assert!(
+            blue_band.is_some(),
+            "right pattern stripe should paint the stroke blue, got {:?}",
+            blue_band
+        );
+    }
+
+    #[test]
+    fn tiling_pattern_inside_form_renders_tile_content() {
+        let pdf = pdf_with_form_tiling_pattern_fill();
+        let engine = ContentEngine::open_bytes(pdf).expect("open Form pattern PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("render Form pattern PDF");
+
+        assert!(
+            count_red_pixels(&buf) > 300,
+            "pattern inside Form should retain red tile stripes"
+        );
+        assert!(
+            count_blue_pixels(&buf) > 300,
+            "pattern inside Form should retain blue tile stripes"
+        );
+    }
+
+    #[test]
+    fn recursive_tiling_pattern_uses_bounded_fallback() {
+        let pdf = pdf_with_recursive_tiling_pattern();
+        let engine = ContentEngine::open_bytes(pdf).expect("open recursive pattern PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("recursive pattern should render through fallback");
+
+        assert_eq!(buf.width, 100);
+        assert_eq!(buf.height, 100);
+    }
+
+    #[test]
+    fn shading_resource_color_space_uses_page_color_space_map() {
+        let pdf = pdf_with_resource_separation_axial_shading();
+        let engine = ContentEngine::open_bytes(pdf).expect("open resource shading PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("render resource shading PDF");
+
+        assert!(
+            count_red_pixels(&buf) > 500,
+            "named shading ColorSpace should resolve through page resources"
+        );
+    }
+
+    #[test]
+    fn type3_charproc_renders_resource_xobject_image() {
+        let pdf = pdf_with_type3_image_charproc();
+        let engine = ContentEngine::open_bytes(pdf).expect("open Type3 image charproc PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::HighQuality)
+            .expect("render Type3 image charproc PDF");
+
+        let red_pixels = count_red_pixels(&buf);
+        assert!(
+            red_pixels > 100,
+            "resource-backed Type3 charproc should paint its image, red_pixels={red_pixels}"
+        );
+    }
+
+    #[test]
+    fn resource_indexed_image_color_space_drives_xobject_decode() {
+        let pdf = pdf_with_resource_indexed_image_colorspace();
+        let engine = ContentEngine::open_bytes(pdf).expect("open resource Indexed image PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("render resource Indexed image PDF");
+
+        assert!(
+            count_red_pixels(&buf) > 500,
+            "first lookup-table entry should render as red"
+        );
+        assert!(
+            count_blue_pixels(&buf) > 500,
+            "second lookup-table entry should render as blue"
+        );
+    }
+
+    #[test]
+    fn resource_separation_image_color_space_uses_tint_transform() {
+        let pdf = pdf_with_resource_separation_image_colorspace();
+        let engine = ContentEngine::open_bytes(pdf).expect("open resource Separation image PDF");
+        let buf = engine
+            .render_page_with_mode(1, 72, RenderMode::Compat)
+            .expect("render resource Separation image PDF");
+
+        assert!(
+            count_red_pixels(&buf) > 500,
+            "Separation image tint transform should render high-tint samples as red"
+        );
+    }
+
+    fn first_pixel_in_region(
+        buf: &PixelBuffer,
+        xs: std::ops::Range<i32>,
+        ys: std::ops::Range<i32>,
+        predicate: impl Fn(PixelColor) -> bool,
+    ) -> Option<PixelColor> {
+        for y in ys {
+            for x in xs.clone() {
+                let px = buf.get_pixel(x, y);
+                if predicate(px) {
+                    return Some(px);
+                }
+            }
+        }
+        None
+    }
+
+    fn pdf_with_resource_indexed_image_colorspace() -> Vec<u8> {
+        let content = "q\n80 0 0 40 10 30 cm\n/Im1 Do\nQ\n";
+        let image_bytes = [0u8, 1u8];
+        let mut image_stream =
+            b"<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /CS1 /BitsPerComponent 8 /Length 2 >>\nstream\n".to_vec();
+        image_stream.extend_from_slice(&image_bytes);
+        image_stream.extend_from_slice(b"\nendstream");
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /ColorSpace << /CS1 [/Indexed /DeviceRGB 1 <FF00000000FF>] >> /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+            image_stream,
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    fn pdf_with_resource_separation_image_colorspace() -> Vec<u8> {
+        let content = "q\n80 0 0 40 10 30 cm\n/Im1 Do\nQ\n";
+        let image_bytes = [0u8, 255u8];
+        let mut image_stream =
+            b"<< /Type /XObject /Subtype /Image /Width 2 /Height 1 /ColorSpace /CS1 /BitsPerComponent 8 /Length 2 >>\nstream\n".to_vec();
+        image_stream.extend_from_slice(&image_bytes);
+        image_stream.extend_from_slice(b"\nendstream");
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /ColorSpace << /CS1 [/Separation /SpotRed /DeviceRGB << /FunctionType 2 /Domain [0 1] /Range [0 1 0 1 0 1] /C0 [1 1 1] /C1 [1 0 0] /N 1 >>] >> /XObject << /Im1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!("<< /Length {} >>\nstream\n{}\nendstream", content.len(), content)
+                .into_bytes(),
+            image_stream,
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    fn pdf_with_colored_tiling_pattern_stroke() -> Vec<u8> {
+        let content = "/Pattern CS /P1 SCN\n8 w\n10 50 m 90 50 l\nS\n";
+        let pattern = "1 0 0 rg\n0 0 5 10 re f\n0 0 1 rg\n5 0 5 10 re f\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+              /Resources << /Pattern << /P1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            )
+            .into_bytes(),
+            format!(
+                "<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 \
+                 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Resources << >> /Length {} >>\n\
+                 stream\n{}\nendstream",
+                pattern.len(),
+                pattern
+            )
+            .into_bytes(),
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    fn pdf_with_recursive_tiling_pattern() -> Vec<u8> {
+        let content = "/Pattern cs /P1 scn\n0 0 100 100 re f\n";
+        let pattern = "/Pattern cs /P1 scn\n0 0 10 10 re f\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+              /Resources << /Pattern << /P1 5 0 R >> >> /Contents 4 0 R >>"
+                .to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            )
+            .into_bytes(),
+            format!(
+                "<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 \
+                 /BBox [0 0 10 10] /XStep 10 /YStep 10 \
+                 /Resources << /Pattern << /P1 5 0 R >> >> /Length {} >>\n\
+                 stream\n{}\nendstream",
+                pattern.len(),
+                pattern
+            )
+            .into_bytes(),
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    fn pdf_with_form_tiling_pattern_fill() -> Vec<u8> {
+        let page_content = "q\n1 0 0 1 0 0 cm\n/Fm1 Do\nQ\n";
+        let form_content = "/Pattern cs /P1 scn\n10 10 80 80 re f\n";
+        let pattern = "1 0 0 rg\n0 0 5 10 re f\n0 0 1 rg\n5 0 5 10 re f\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /XObject << /Fm1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                page_content.len(),
+                page_content
+            )
+            .into_bytes(),
+            format!(
+                "<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 100 100] /Resources << /Pattern << /P1 6 0 R >> >> /Length {} >>\nstream\n{}\nendstream",
+                form_content.len(),
+                form_content
+            )
+            .into_bytes(),
+            format!(
+                "<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Resources << >> /Length {} >>\nstream\n{}\nendstream",
+                pattern.len(),
+                pattern
+            )
+            .into_bytes(),
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    fn pdf_with_resource_separation_axial_shading() -> Vec<u8> {
+        let content = "q\n10 10 80 80 re W n\n/Sh1 sh\nQ\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /ColorSpace << /CS1 [/Separation /SpotRed /DeviceRGB << /FunctionType 2 /Domain [0 1] /Range [0 1 0 1 0 1] /C0 [1 1 1] /C1 [1 0 0] /N 1 >>] >> /Shading << /Sh1 << /ShadingType 2 /ColorSpace /CS1 /Coords [10 50 90 50] /Domain [0 1] /Extend [true true] /Function << /FunctionType 2 /Domain [0 1] /Range [0 1] /C0 [0] /C1 [1] /N 1 >> >> >> >> /Contents 4 0 R >>".to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            )
+            .into_bytes(),
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    fn pdf_with_type3_image_charproc() -> Vec<u8> {
+        let content = "BT /F1 60 Tf 20 20 Td (A) Tj ET";
+        let charproc = "600 0 d0 q 1000 0 0 1000 0 0 cm /Im1 Do Q";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] \
+              /Resources << /Font << /F1 4 0 R >> >> /Contents 7 0 R >>"
+                .to_vec(),
+            b"<< /Type /Font /Subtype /Type3 /Name /F1 /FontBBox [0 0 1000 1000] \
+              /FontMatrix [0.001 0 0 0.001 0 0] /FirstChar 65 /LastChar 65 /Widths [600] \
+              /Encoding << /Type /Encoding /Differences [65 /A] >> \
+              /CharProcs << /A 5 0 R >> /Resources << /XObject << /Im1 6 0 R >> >> >>"
+                .to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                charproc.len(),
+                charproc
+            )
+            .into_bytes(),
+            b"<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length 3 >>\nstream\n\xff\x00\x00\nendstream".to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                content.len(),
+                content
+            )
+            .into_bytes(),
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
     fn pdf_with_alpha_smask(
         content: &str,
         mask_content: &str,
@@ -7596,6 +9947,23 @@ mod tests {
         assert!(
             count_red_pixels(&buf) > 100,
             "a usable author-provided /AP stream should still take precedence"
+        );
+    }
+
+    #[test]
+    fn highlight_without_appearance_synthesizes_markup() {
+        let annot = b"<< /Type /Annot /Subtype /Highlight /Rect [20 30 80 50] \
+                       /QuadPoints [20 50 80 50 20 30 80 30] /C [1 1 0] /CA 0.5 >>";
+        let pdf = pdf_with_form_objects(vec![annot.to_vec()], "5 0 R", "", "");
+        let engine = ContentEngine::open_bytes(pdf).expect("open missing-AP highlight PDF");
+        let buf = PageRenderer::render_page(&engine, 1, 72).expect("render highlight PDF");
+
+        let yellow_pixels = count_pixels_matching(&buf, |pixel| {
+            pixel[0] > 180 && pixel[1] > 180 && pixel[2] < 160
+        });
+        assert!(
+            yellow_pixels > 100,
+            "missing-AP highlight annotation should synthesize a visible markup appearance"
         );
     }
 
@@ -7965,6 +10333,51 @@ mod tests {
         let remapped = font_resource_glyph_cache_hash(font_bytes, "F1:bbbbbbbbbbbbbbbb");
 
         assert_ne!(base, remapped);
+    }
+
+    #[test]
+    fn explicit_color_key_mask_makes_matching_rgb_pixels_transparent() {
+        let main = crate::images::decoder::RawImage {
+            width: 2,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![10, 20, 30, 200, 210, 220],
+        };
+        let mask = vec![
+            PdfObject::Integer(10),
+            PdfObject::Integer(10),
+            PdfObject::Integer(20),
+            PdfObject::Integer(20),
+            PdfObject::Integer(30),
+            PdfObject::Integer(30),
+        ];
+        let out = apply_color_key_image_mask(main, 8, "DeviceRGB", &mask).expect("color key mask");
+        assert_eq!(out.channels, 4);
+        assert_eq!(&out.pixels[0..4], &[10, 20, 30, 0]);
+        assert_eq!(&out.pixels[4..8], &[200, 210, 220, 255]);
+    }
+
+    #[test]
+    fn explicit_stencil_mask_combines_as_alpha() {
+        let main = crate::images::decoder::RawImage {
+            width: 2,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![50, 60, 70, 80, 90, 100],
+        };
+        let mask = crate::images::decoder::RawImage {
+            width: 2,
+            height: 1,
+            channels: 1,
+            bits_per_sample: 8,
+            pixels: vec![255, 0],
+        };
+        let out = combine_explicit_image_mask(main, &mask, true, true).expect("stencil mask");
+        assert_eq!(out.channels, 4);
+        assert_eq!(&out.pixels[0..4], &[50, 60, 70, 255]);
+        assert_eq!(&out.pixels[4..8], &[80, 90, 100, 0]);
     }
 
     #[test]

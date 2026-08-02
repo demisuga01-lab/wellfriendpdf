@@ -134,24 +134,28 @@ pub enum BlendMode {
 
 impl BlendMode {
     pub fn from_name(s: &str) -> Self {
+        Self::from_supported_name(s).unwrap_or(BlendMode::Normal)
+    }
+
+    pub fn from_supported_name(s: &str) -> Option<Self> {
         match s {
-            "Normal" | "Compatible" => BlendMode::Normal,
-            "Multiply" => BlendMode::Multiply,
-            "Screen" => BlendMode::Screen,
-            "Overlay" => BlendMode::Overlay,
-            "Darken" => BlendMode::Darken,
-            "Lighten" => BlendMode::Lighten,
-            "ColorDodge" => BlendMode::ColorDodge,
-            "ColorBurn" => BlendMode::ColorBurn,
-            "HardLight" => BlendMode::HardLight,
-            "SoftLight" => BlendMode::SoftLight,
-            "Difference" => BlendMode::Difference,
-            "Exclusion" => BlendMode::Exclusion,
-            "Hue" => BlendMode::Hue,
-            "Saturation" => BlendMode::Saturation,
-            "Color" => BlendMode::Color,
-            "Luminosity" => BlendMode::Luminosity,
-            _ => BlendMode::Normal,
+            "Normal" | "Compatible" => Some(BlendMode::Normal),
+            "Multiply" => Some(BlendMode::Multiply),
+            "Screen" => Some(BlendMode::Screen),
+            "Overlay" => Some(BlendMode::Overlay),
+            "Darken" => Some(BlendMode::Darken),
+            "Lighten" => Some(BlendMode::Lighten),
+            "ColorDodge" => Some(BlendMode::ColorDodge),
+            "ColorBurn" => Some(BlendMode::ColorBurn),
+            "HardLight" => Some(BlendMode::HardLight),
+            "SoftLight" => Some(BlendMode::SoftLight),
+            "Difference" => Some(BlendMode::Difference),
+            "Exclusion" => Some(BlendMode::Exclusion),
+            "Hue" => Some(BlendMode::Hue),
+            "Saturation" => Some(BlendMode::Saturation),
+            "Color" => Some(BlendMode::Color),
+            "Luminosity" => Some(BlendMode::Luminosity),
+            _ => None,
         }
     }
 
@@ -624,11 +628,12 @@ impl GraphicsState {
         }
         if let Some(bm_name) = dict.get_name("BM") {
             self.blend_mode = BlendMode::from_name(bm_name);
-        } else if let Some(first_name) = dict
-            .get_array("BM")
-            .and_then(|arr| arr.iter().find_map(PdfObject::as_name))
-        {
-            self.blend_mode = BlendMode::from_name(first_name);
+        } else if let Some(first_supported) = dict.get_array("BM").and_then(|arr| {
+            arr.iter()
+                .filter_map(PdfObject::as_name)
+                .find_map(BlendMode::from_supported_name)
+        }) {
+            self.blend_mode = first_supported;
         }
         if let Some(intent) = dict.get_name("RI") {
             self.rendering_intent = intent.to_string();
@@ -1249,6 +1254,23 @@ mod tests {
         assert_eq!(BlendMode::from_name("Saturation"), BlendMode::Saturation);
         assert_eq!(BlendMode::from_name("Color"), BlendMode::Color);
         assert_eq!(BlendMode::from_name("Luminosity"), BlendMode::Luminosity);
+    }
+
+    #[test]
+    fn blend_mode_array_uses_first_supported_mode() {
+        let mut gs = GraphicsState::new();
+        let mut ext = PdfDictionary::empty();
+        ext.insert(
+            "BM",
+            PdfObject::Array(vec![
+                PdfObject::Name("VendorUnsupported".to_string()),
+                PdfObject::Name("Multiply".to_string()),
+            ]),
+        );
+
+        gs.apply_ext_g_state(&ext);
+
+        assert_eq!(gs.blend_mode, BlendMode::Multiply);
     }
 
     #[test]

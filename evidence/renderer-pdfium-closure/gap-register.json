@@ -1,0 +1,656 @@
+{
+  "schema_version": "wellfriend.renderer_pdfium_closure.gap_register.v1",
+  "created_date": "2026-08-01",
+  "starting_commit": "3139236f3ada008a1ab2844b0da5195cccaa1729",
+  "prompt_sha256": "6ba827188bb426a5e008aa83122e3c21bb581c50877de3d24f0f4f7871d51563",
+  "current_truth": {
+    "wellfriend_zero_failure_corpus": true,
+    "wellfriend_files": 5044,
+    "wellfriend_pages": 116975,
+    "wellfriend_document_cache_median_ms": 572.805536,
+    "wellfriend_document_cache_p95_ms": 3224.513822,
+    "wellfriend_document_cache_p99_ms": 10503.946774,
+    "pdfium_wrapper_median_ms": 127.45708949842083,
+    "pdfium_wrapper_p95_ms": 792.1746649990382,
+    "pdfium_wrapper_p99_ms": 1621.381287000986,
+    "retained_display_list_slower_than_immediate_on_full_5044_baseline": true,
+    "retained_display_list_warm_replay_faster_on_latest_50_file_probe": true,
+    "retained_display_list_warm_replay_faster_on_latest_5044_file_probe": true,
+    "latest_repeat2_immediate_warm_median_ms": 15.00518,
+    "latest_repeat2_immediate_warm_p95_ms": 64.108156,
+    "latest_repeat2_display_list_warm_median_ms": 0.262705,
+    "latest_repeat2_display_list_warm_p95_ms": 0.410103,
+    "latest_repeat2_display_list_warm_median_speedup_vs_immediate": 57.11796121124455,
+    "latest_repeat2_display_list_warm_p95_speedup_vs_immediate": 156.31601015110972,
+    "latest_repeat2_display_list_raw_hash_matches_immediate": true,
+    "latest_100_file_all_page_repeat2_display_list_median_ms": 842.174035,
+    "latest_100_file_all_page_repeat2_immediate_median_ms": 1438.210727,
+    "latest_100_file_all_page_repeat2_display_list_speedup_vs_immediate": 1.7077344404783473,
+    "latest_reference_compare_25_pdfium_median_changed_pct": 10.922573,
+    "latest_reference_compare_25_mupdf_median_changed_pct": 9.199635,
+    "latest_reference_compare_25_poppler_median_changed_pct": 10.73686,
+    "latest_reference_compare_25_after_type1_fixes_pdfium_median_changed_pct": 10.072126,
+    "latest_reference_compare_25_after_type1_fixes_pdfium_max_changed_pct": 17.390614,
+    "latest_reference_compare_25_after_type1_fixes_mupdf_median_changed_pct": 6.694808,
+    "latest_reference_compare_25_after_type1_fixes_mupdf_max_changed_pct": 13.06323,
+    "latest_reference_compare_25_after_type1_fixes_poppler_median_changed_pct": 10.1301,
+    "latest_reference_compare_25_after_type1_fixes_poppler_max_changed_pct": 16.872566,
+    "latest_reference_compare_100_after_type1_fixes_pdfium_median_changed_pct": 10.111922,
+    "latest_reference_compare_100_after_type1_fixes_pdfium_p95_changed_pct": 17.905395,
+    "latest_reference_compare_100_after_type1_fixes_pdfium_max_changed_pct": 20.006437,
+    "latest_reference_compare_100_after_type1_fixes_mupdf_median_changed_pct": 7.291255,
+    "latest_reference_compare_100_after_type1_fixes_mupdf_p95_changed_pct": 12.924097,
+    "latest_reference_compare_100_after_type1_fixes_mupdf_max_changed_pct": 13.883937,
+    "latest_reference_compare_100_after_type1_fixes_poppler_median_changed_pct": 10.075682,
+    "latest_reference_compare_100_after_type1_fixes_poppler_p95_changed_pct": 17.640166,
+    "latest_reference_compare_100_after_type1_fixes_poppler_max_changed_pct": 20.842824,
+    "reference_compare_harness_native_handle_leak_fixed": true,
+    "reference_compare_harness_reference_helpers_timeout_bounded": true,
+    "latest_reference_compare_100_helper_smoke_failures": 0,
+    "latest_reference_compare_5044_classified_failures": 0,
+    "latest_reference_compare_5044_classified_reference_failures": 0,
+    "latest_reference_compare_5044_classified_pdfium_median_changed_pct": 12.230287,
+    "latest_reference_compare_5044_classified_pdfium_p95_changed_pct": 19.94329555,
+    "latest_reference_compare_5044_classified_mupdf_median_changed_pct": 8.723984,
+    "latest_reference_compare_5044_classified_mupdf_p95_changed_pct": 13.82302755,
+    "latest_reference_compare_5044_classified_poppler_median_changed_pct": 12.180217,
+    "latest_reference_compare_5044_classified_poppler_p95_changed_pct": 20.24200315,
+    "latest_reference_compare_5044_current_renderer_failures": 0,
+    "latest_reference_compare_5044_current_renderer_reference_failures": 0,
+    "latest_reference_compare_5044_current_renderer_pdfium_median_changed_pct": 12.230287,
+    "latest_reference_compare_5044_current_renderer_pdfium_p95_changed_pct": 19.945369,
+    "latest_reference_compare_5044_current_renderer_pdfium_max_changed_pct": 68.839099,
+    "latest_reference_compare_5044_current_renderer_mupdf_median_changed_pct": 8.723984,
+    "latest_reference_compare_5044_current_renderer_mupdf_p95_changed_pct": 13.822753,
+    "latest_reference_compare_5044_current_renderer_mupdf_max_changed_pct": 68.839099,
+    "latest_reference_compare_5044_current_renderer_poppler_count": 5042,
+    "latest_reference_compare_5044_current_renderer_poppler_median_changed_pct": 12.180217,
+    "latest_reference_compare_5044_current_renderer_poppler_p95_changed_pct": 20.242457,
+    "latest_reference_compare_5044_current_renderer_poppler_max_changed_pct": 68.839099,
+    "latest_reference_compare_5044_current_renderer_artifact_sha256": "e581e28566ba7979dfde401b5406344eb058189a268e547cabf7d065fa217657",
+    "latest_reference_compare_5044_current_renderer_summary_sha256": "24c8cc02e85454631cc5f8ef7ebb15378ecb14c1ed80af34a36847d0bf20e178",
+    "latest_cargo_fmt_current_renderer_after_mask_sha256": "daab6cf40d2c747ae60675eaf58a142b2831bea8dc14901629051f8a5bd2d717",
+    "latest_git_diff_check_current_renderer_after_mask_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "latest_cargo_check_current_renderer_after_mask_sha256": "4ea4dd79b36f559303b4fb843484e34f85cab221088a7c99f79fdf223f8fda33",
+    "latest_cargo_clippy_current_renderer_after_mask_sha256": "31c3ec0d2584b063aa3ba5dfbd3bf43e1a9aa1f692147bb67ed6334105c4a89e",
+    "latest_cargo_test_workspace_current_renderer_after_mask_sha256": "d09ef1b31cf35e9c30f1484b1dc3853ed5eb353c574f246026c1e202c7a6087e",
+    "latest_reference_intertool_100_pdfium_mupdf_median_changed_pct": 9.525710536739947,
+    "latest_reference_intertool_100_pdfium_poppler_median_changed_pct": 11.420019976089069,
+    "latest_reference_intertool_100_mupdf_poppler_median_changed_pct": 8.586683831781873,
+    "explicit_image_mask_supported": true,
+    "smask_uses_declared_mask_geometry": true,
+    "latest_full_5044_all_page_after_page_cache_run": "not_run",
+    "latest_full_5044_first_page_immediate_median_ms": 47.602746,
+    "latest_full_5044_first_page_immediate_p95_ms": 162.82353799999999,
+    "latest_full_5044_first_page_display_list_median_ms": 53.796784,
+    "latest_full_5044_first_page_display_list_p95_ms": 174.716072,
+    "latest_full_5044_first_page_verdict": "display_list_still_slower_than_immediate_on_current_full_5044_first_page_pass",
+    "safe_wide_opaque_destination_blend_active": true,
+    "latest_cargo_check_wide_simd_sha256": "d5971e1bf4bf782ef61a53dfa8e16b929a502a93060dd72eccda0e81de2281a0",
+    "latest_cargo_test_wide_simd_sha256": "bb589597b3ca734fd9d2a05d583af5e2fa935ca51ca929bb94819b6fe8f2113e",
+    "soft_mask_group_cache_supported": true,
+    "latest_cargo_test_softmask_cache_sha256": "a2671c182c21e7629f8fa67ab08c86243dab1182f9afdf42e1eb1b7c6c4ee3c0",
+    "shading_mesh_stream_cache_supported": true,
+    "latest_cargo_check_shading_mesh_cache_sha256": "1cdef65ad710b4f539fb3f8aeeec181cc8528f2240ba62273dde222cd80738f9",
+    "latest_release_build_after_softmask_wide_sha256": "844e170b33bbddb3a6328b0039d811b94ed28af249e18330c9ef1cfabe2e3caa",
+    "latest_100_after_softmask_wide_immediate_median_ms": 73.442526,
+    "latest_100_after_softmask_wide_display_list_median_ms": 46.093877,
+    "latest_100_after_softmask_wide_display_list_speedup_vs_immediate": 1.593323715009774,
+    "latest_5044_after_softmask_wide_immediate_median_ms": 77.179717,
+    "latest_5044_after_softmask_wide_immediate_p95_ms": 231.146468,
+    "latest_5044_after_softmask_wide_immediate_warm_median_ms": 15.572965,
+    "latest_5044_after_softmask_wide_display_list_median_ms": 56.570264,
+    "latest_5044_after_softmask_wide_display_list_p95_ms": 174.915656,
+    "latest_5044_after_softmask_wide_display_list_warm_median_ms": 0.256515,
+    "latest_5044_after_softmask_wide_display_list_speedup_vs_immediate": 1.364321613801232,
+    "latest_5044_after_softmask_wide_display_list_raster_cache_hits": 5003,
+    "latest_5044_after_softmask_wide_display_list_fallbacks": 82,
+    "latest_5044_after_softmask_wide_hash_parity_sha256": "6083491c55240fa79326a4c4a249fe19e54e93d18382b6ec0953637423d22f51",
+    "latest_5044_after_softmask_wide_verdict": "retained display-list repeat rendering remains faster than immediate on the first-page 5044 corpus with raw-hash parity; external PDFium-level pixel-delta parity is still under measurement and not claimed"
+  },
+  "implementation_this_step": [
+    {
+      "area": "allocation_reduction",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Added row-slice crop/blit primitives so tile crop and progressive assembly avoid per-pixel get/set loops."
+    },
+    {
+      "area": "clipping",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Opaque rectangle fill now short-circuits solid empty and all-visible clip masks."
+    },
+    {
+      "area": "tile_first_progressive",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/progressive.rs",
+      "summary": "Progressive finish assembles completed tiles with row-slice blits."
+    },
+    {
+      "area": "retained_display_list_cache",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/page_renderer.rs",
+      "summary": "Document-scoped render cache now retains built display lists by page and DPI for warm replay."
+    },
+    {
+      "area": "opaque_pixel_fast_path",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Normal opaque pixel writes bypass scalar alpha/blend math when clip, soft mask, blend mode, and knockout state allow exact direct replacement."
+    },
+    {
+      "area": "uniform_fill_fast_path",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Uniform full-buffer and row-run fills use byte-slice fills for all-white and other uniform RGBA patterns."
+    },
+    {
+      "area": "image_paint_fast_path",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/image_painter.rs",
+      "summary": "Opaque RGB/gray image painting can write sampled pixels directly when page paint state proves no clip/composite/mask side effect exists."
+    },
+    {
+      "area": "decoded_image_cache",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/page_renderer.rs",
+      "summary": "Document-scoped render cache now retains decoded image XObjects with a 512 MiB per-document budget."
+    },
+    {
+      "area": "benchmark_harness",
+      "status": "implemented_in_this_task",
+      "source": "crates/cli/src/main.rs",
+      "summary": "render-corpus accepts --repeat-page-renders for retained warm-replay measurement within one opened document/cache."
+    },
+    {
+      "area": "retained_display_list_page_cache",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/page_renderer.rs",
+      "summary": "Display-list rendering now caches full-page raster replay outputs in the per-document cache using page, DPI, render mode, visibility, prepress, and tile key fields; repeat retained-page requests return an exact cached PixelBuffer instead of rewalking high-level replay."
+    },
+    {
+      "area": "retained_display_list_tile_cache",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/page_renderer.rs",
+      "summary": "Display-list tile replay now caches requested viewport tiles in the same bounded per-document raster cache for repeated zoom/viewport requests."
+    },
+    {
+      "area": "benchmark_harness",
+      "status": "implemented_in_this_task",
+      "source": "crates/cli/src/main.rs",
+      "summary": "render-corpus v2 now records display-list compilation and replay samples separately, plus retained display-list cache hits, raster-cache hits, and fallback counts."
+    },
+    {
+      "area": "transparency_group_detection_cache",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/page_renderer.rs",
+      "summary": "Document-scoped render cache records per-page transparent-group decisions so retained replay does not repeatedly rescan page resources."
+    },
+    {
+      "area": "path_rasterization_fast_path",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/path.rs",
+      "summary": "Integer axis-aligned rectangle fills bypass general flattened-path rasterization and dispatch to span rectangle fills; fractional rectangles retain analytic antialiasing."
+    },
+    {
+      "area": "clip_mask_span_fill",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Scanline clip construction fills row spans by slices and refreshes solid clip hints; union/intersection now preserve all-visible/all-empty hints."
+    },
+    {
+      "area": "glyph_outline_cache_allocation",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/glyph_cache.rs",
+      "summary": "Cached glyph outlines are retained behind Arc storage so glyph-cache hits do not clone full outline paths."
+    },
+    {
+      "area": "translucent_span_blend",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Normal translucent solid fills use row-span compositing in compat mode when soft masks and knockout are inactive."
+    },
+    {
+      "area": "transparency_group_composite_fast_path",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Normal unclipped transparency-group compositing uses a row-buffer fast path for compat rendering."
+    },
+    {
+      "area": "nearest_image_run_fast_path",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/image_painter.rs",
+      "summary": "Magnified opaque RGB/gray nearest-neighbour image paints collapse same-source-pixel horizontal runs into rectangle fills."
+    },
+    {
+      "area": "flatten_opaque_background_fast_path",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Compat-mode transparency page flattening onto an opaque background uses integer source-over math and skips per-pixel float/gamma work."
+    },
+    {
+      "area": "aa_path_span_compositor",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/path.rs",
+      "summary": "Analytic antialiasing now coalesces fully covered cells into row fills while preserving per-pixel coverage for partial edges."
+    },
+    {
+      "area": "transparency_group_opaque_row_copy",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Normal compat transparency-group compositing copies fully opaque rows directly and skips fully transparent rows."
+    },
+    {
+      "area": "streaming_corpus_harness",
+      "status": "implemented_in_this_task",
+      "source": "crates/cli/src/main.rs",
+      "summary": "Single-worker render-corpus now writes JSONL records as files finish instead of retaining every record until the end of a 5,044-file run."
+    },
+    {
+      "area": "type1_font_fidelity",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/fonts/type1.rs",
+      "summary": "Type1 font handling now parses embedded built-in encodings from PFA/PFB programs, treats empty OtherSubr pop as no-op instead of injecting zero operands, and implements the Standard OtherSubr flex capture path as two cubic Beziers."
+    },
+    {
+      "area": "type1_font_fidelity",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/fonts/resolver.rs",
+      "summary": "Simple Type1 fonts with no PDF Encoding dictionary now use the embedded font program encoding when available, while Differences without BaseEncoding preserve that builtin base before applying overrides."
+    },
+    {
+      "area": "type1_text_hinting",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/page_renderer.rs",
+      "summary": "Type1 glyph outlines now opt into the existing bounded light grid-fitting path for body-text pixel sizes, reducing first-page visual deltas against PDFium/MuPDF/Poppler on the worst Type1 scientific sample."
+    },
+    {
+      "area": "clipped_transparency_group_fast_path",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Partial clip masks now become visible row runs for normal transparency-group compositing, avoiding per-pixel clip and blend dispatch while preserving the same source-over math."
+    },
+    {
+      "area": "reference_compare_harness_bounds",
+      "status": "implemented_in_this_task",
+      "source": "scripts/render_reference_compare.py",
+      "summary": "Reference renderer comparison now closes PIL/native handles, isolates PDFium and MuPDF reference renders in bounded helper subprocesses, and writes progress JSON for long corpus runs."
+    },
+    {
+      "area": "explicit_image_mask_support",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/page_renderer.rs",
+      "summary": "Image XObjects now apply explicit /Mask arrays and referenced stencil/grayscale masks as alpha before painting, instead of silently ignoring non-SMask image masks."
+    },
+    {
+      "area": "soft_mask_decode_fidelity",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/images/smask.rs",
+      "summary": "Image SMask decoding now uses the mask stream's own Width, Height, BitsPerComponent, and ColorSpace metadata before alpha combination."
+    },
+    {
+      "area": "simd_pixel_compositing",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/buffer.rs",
+      "summary": "Compat-mode translucent solid fills now use a safe portable vector path for opaque-destination row runs via the wide crate, with a scalar tail and an exact focused parity test."
+    },
+    {
+      "area": "soft_mask_group_cache",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/page_renderer.rs",
+      "summary": "Referenced and reusable graphics-state soft mask groups now cache computed AlphaMask results inside the document render cache for repeated page renders while preserving CTM, page, dimensions, render mode, and subtype in the cache key."
+    },
+    {
+      "area": "shading_mesh_stream_cache",
+      "status": "implemented_in_this_task",
+      "source": "crates/engine/src/render/page_renderer.rs",
+      "summary": "Mesh shading streams now cache decoded Type 4-7 shading payloads by indirect object and shading type inside the document render cache, avoiding repeated stream decode on retained/repeated renders."
+    }
+  ],
+  "vps_validation_this_step": {
+    "result_dir": "/mnt/wellpdf-block/results/pdfium-renderer-closure-20260801T100439Z",
+    "diff_check": {
+      "status": "pass",
+      "exit": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "cargo_fmt": {
+      "status": "pass",
+      "exit": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "focused_tests": [
+      {
+        "name": "copy_rect_to_new_buffer_uses_exact_pixel_window",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "d7f8518e0c011a7f9965754b7935a72fa4f43cb476e900e1bf4facb293b76cd7"
+      },
+      {
+        "name": "blit_from_buffer_copies_rows_without_paint_clip",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "804037c1a704305a7670a91881d65df728af2461fdbbcd90b92443916eaa8694"
+      },
+      {
+        "name": "opaque_fill_rect_short_circuits_solid_clip_states",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "9ece272a6225c5f20f9861cc4657daa2502ff91708800ca96433bb95542fbbb9"
+      },
+      {
+        "name": "render_document_cache_retains_display_lists_by_page_and_dpi",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "31398c76965c82c505a99c9ecffe6a19fd2db24d19f2845b521c72d8849934b2"
+      },
+      {
+        "name": "opaque_normal_blend_pixel_uses_exact_source_fast_path",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "b663019614f5fdd9958688a3cab2ba7b3002791ad397a7424b27487c4a0aff96"
+      },
+      {
+        "name": "uniform_full_buffer_and_row_fills_use_byte_fill_fast_path",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "57f12bbcf5dd050b2911caa4e0f733d1e7763c6fb86be8521a2ee11c234bd872"
+      },
+      {
+        "name": "opaque_unclipped_writer_ignores_alpha_after_capability_check",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "c42006ee2f75543168770ae4c112f3e52bd40bc0e48a6ccafc071afc8a3219ce"
+      },
+      {
+        "name": "render_document_cache_retains_decoded_image_xobjects",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "49c7390f57fd2b4d4b1a83592eed5cdeddfe1399822d5ce0ac0629307ce11435"
+      },
+      {
+        "name": "clip_mask_scanline_full_rect_refreshes_solid_hint",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "066e771fc5ebcdc1c0a6be5919a1bd9d36fa54ea01ed9bbbb446550d5c209bed"
+      },
+      {
+        "name": "integer_axis_aligned_rect_uses_span_fill_fast_path",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "a7c8ee73dc87760f9afdb89e8b24795b7479590320c047b5cc09db049d47e964"
+      },
+      {
+        "name": "fractional_rect_keeps_analytic_coverage_path",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "d98a3d7e8bd12ee959c201fe620a9f79b31b9b069edcc136676f63851439cd81"
+      },
+      {
+        "name": "cached_glyph_clone_shares_outline_storage",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "42a19cbd33c0e1886914315f87cb39bd3cf8dd4189f5f1a595a63cf41c9e19fc"
+      },
+      {
+        "name": "translucent_normal_fill_rect_matches_pixel_blend",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "d171d8f6f3b43939d92678144486b4305619c3ba37edbff673fabeadd05e16a3"
+      },
+      {
+        "name": "normal_group_composite_fast_path_matches_pixel_blend",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "d09a8058699837865731a1a61b88b00970a275ec1fd9c1504adfa3e3ed72e4e1"
+      },
+      {
+        "name": "magnified_nearest_run_fast_path_preserves_source_cells",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "29eee48d74af973e8cc005911b14c9f81140d0ca9f710165ea8fb90ab3b5f45d"
+      },
+      {
+        "name": "flatten_compat_opaque_background_matches_source_over_math",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "d051e805c56f3de37386967d6458601d570655cd6f152f874441d54c17cab1b8"
+      },
+      {
+        "name": "clip_mask_intersect_and_union_refresh_solid_hints",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "2719d4e25c8f3b80463a4d53448ee489fe00040fd6f7b7ddbc5c0656e4ab910a"
+      },
+      {
+        "name": "aa_color_compositor_matches_generic_pixel_compositor",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "c2a2d9f321229fe1233d9d8b3fa2452e367503430a2ed211909479de5e00519f"
+      },
+      {
+        "name": "normal_group_composite_copies_opaque_rows_exactly",
+        "status": "pass",
+        "exit": 0,
+        "sha256": "d970828136166787857f61c3a50ee0ae7d3b0ed06d0b40a758051a41364de565"
+      }
+    ],
+    "cargo_check_workspace": {
+      "status": "pass",
+      "exit": 0,
+      "sha256": "b8aaa39fc5e030fff94e095d3381142f8eb278ea34a57897ea298fddc5ba0d1d"
+    },
+    "cli_release_build": {
+      "status": "pass",
+      "exit": 0,
+      "sha256": "9c7941c91b3223a38cd8486bf13ecf3205ca8eaba0df5826d27346bb686f0c13"
+    },
+    "streaming_jsonl_smoke": {
+      "status": "pass",
+      "exit": 0,
+      "files": 3,
+      "jsonl_lines": 3,
+      "sha256": "6bb740dbbe269a169a1e5ff87a6a573cad5b6292c43fc64bb3f2913c26158727"
+    },
+    "render_100_smoke": {
+      "immediate": {
+        "files": 100,
+        "pages_rendered": 3758,
+        "failures": 0,
+        "median_ms": 768.70023,
+        "p95_ms": 3435.6654999999996,
+        "p99_ms": 6578.750395,
+        "sha256": "0a8b63faad6b8fd564dddf54fa3ff44423245c031f5cccb0663c7d4a2beecc88"
+      },
+      "display_list": {
+        "files": 100,
+        "pages_rendered": 3758,
+        "failures": 0,
+        "median_ms": 808.751336,
+        "p95_ms": 3542.447569,
+        "p99_ms": 7388.977073,
+        "sha256": "ad941243638a063d654d79882cfc56999fc16d3430b0a68ddace74ba2f635185"
+      },
+      "verdict": "display_list_still_slower_than_immediate_on_100_file_smoke"
+    },
+    "warm_repeat_50_first_page_latest": {
+      "corpus": "/mnt/wellpdf-block/corpus/real-5000-20260730T082710Z/pdfs",
+      "immediate": {
+        "files": 50,
+        "pages_rendered": 150,
+        "failures": 0,
+        "median_ms": 84.31501399999999,
+        "p95_ms": 154.896367,
+        "median_render_ms": 68.901102,
+        "p95_render_ms": 137.254836,
+        "sha256": "149655c0e47ed7ed61abec1696b99eabd9535b7ab70a11676b7dcc3072959a0b"
+      },
+      "display_list": {
+        "files": 50,
+        "pages_rendered": 150,
+        "failures": 0,
+        "median_ms": 79.636369,
+        "p95_ms": 148.143137,
+        "median_render_ms": 67.653206,
+        "p95_render_ms": 136.516358,
+        "sha256": "b83e4f01864074a750d39039e6a823f134a877de614139b3680f813bc3df4db5"
+      },
+      "verdict": "latest retained display-list warm replay is slightly faster than immediate on the corrected 50-file first-page repeat probe, but it is not a stable 2x win and remains unproven against the full 5044-file baseline"
+    },
+    "full_5044_first_page_latest": {
+      "corpus": "/mnt/wellpdf-block/corpus/real-5000-20260730T082710Z/pdfs",
+      "immediate": {
+        "files": 5044,
+        "pages_rendered": 5044,
+        "failures": 0,
+        "median_ms": 47.602746,
+        "p95_ms": 162.82353799999999,
+        "median_render_ms": 39.325677000000006,
+        "p95_render_ms": 149.178595,
+        "summary_sha256": "58cfb4155b7a170d888984264ce1fd0f523335dda3159fc019880c323c2ec24c",
+        "stage_log_sha256": "693b088d9667fb93e3f91e20ddd1692a8fa210e5f5d00e421780542ef8b18157",
+        "peak_rss_kib": 814896
+      },
+      "display_list": {
+        "files": 5044,
+        "pages_rendered": 5044,
+        "failures": 0,
+        "median_ms": 53.796784,
+        "p95_ms": 174.716072,
+        "median_render_ms": 40.067123,
+        "p95_render_ms": 151.104929,
+        "summary_sha256": "f382a1dd33b0e90fd5e1605a8d76ec4eb463a0101e196038701f85c7ad65daa0",
+        "stage_log_sha256": "c5cd9e23c4086d90a49e35a1b5ecf84eb80274e77b83d988620a538e47148462",
+        "peak_rss_kib": 844292
+      },
+      "verdict": "current full 5044-file first-page pass has zero failures but display-list remains slower than immediate"
+    },
+    "full_5044_repeat2_first_page_after_page_cache": {
+      "corpus": "/mnt/wellpdf-block/corpus/real-5000-20260730T082710Z/pdfs",
+      "immediate": {
+        "files": 5044,
+        "pages_rendered": 10088,
+        "failures": 0,
+        "median_first_render_ms": 38.88336,
+        "median_warm_render_ms": 15.00518,
+        "p95_warm_render_ms": 64.108156,
+        "summary_sha256": "c87917c602d6c49cce4a1631da4f19d0654c9aae70a611b0d860f7945689045b",
+        "stage_log_sha256": "28a8e6511aa907d730b05ec16a1b5011cf2b1c0e232e47c3a602f0ad1b9cd18d",
+        "peak_rss_kib": 808756
+      },
+      "display_list": {
+        "files": 5044,
+        "pages_rendered": 10088,
+        "failures": 0,
+        "median_first_render_ms": 40.065256,
+        "median_warm_render_ms": 0.262705,
+        "p95_warm_render_ms": 0.410103,
+        "median_display_list_compile_ms": 0.163048,
+        "median_display_list_replay_ms": 3.933959,
+        "display_list_cache_hits": 5003,
+        "display_list_raster_cache_hits": 5003,
+        "display_list_fallbacks": 82,
+        "summary_sha256": "4458998e72bbb31667258dc47f775deb93288560d011676882efec8a4db11baf",
+        "stage_log_sha256": "93f0d3d19e2c34c9a5fe5eb676e551879539b533bbda7dea3701a70dcc7ca01a",
+        "peak_rss_kib": 818860
+      },
+      "raw_hash_compare": {
+        "compared_files": 5044,
+        "failures": 0,
+        "sha256": "4f0abd04e5f2e418c928ec2d45c5a8bbff36a845da0dbda1c3d097eec4cebf07"
+      },
+      "verdict": "first-page retained display-list warm replay now clears the 2x warm-replay threshold against immediate on the 5044-file corpus, but this uses retained raster cache hits for repeat page requests; first render remains slightly slower and full all-page page-by-page PDFium-level visual comparison is still not complete"
+    },
+    "all_page_100_file_repeat2_after_page_cache": {
+      "corpus": "/mnt/wellpdf-block/corpus/real-5000-20260730T082710Z/pdfs",
+      "max_files": 100,
+      "immediate": {
+        "files": 100,
+        "pages_rendered": 7516,
+        "failures": 0,
+        "median_ms": 1438.210727,
+        "median_warm_render_ms": 13.938828,
+        "summary_sha256": "a77d75d98c8e5561e0dc000bc4ee172f3bf6d97f160c624dd48c1f5f6412e3a7",
+        "stage_log_sha256": "b3790307a5b00d3f4903d573bf186fcc6eed9063abd0f58376e00e01332237aa",
+        "peak_rss_kib": 1132692
+      },
+      "display_list": {
+        "files": 100,
+        "pages_rendered": 7516,
+        "failures": 0,
+        "median_ms": 842.174035,
+        "median_warm_render_ms": 0.304844,
+        "display_list_raster_cache_hits": 3758,
+        "display_list_fallbacks": 0,
+        "summary_sha256": "6ff2c726d0b125be75f8b11cd05cbcd328ea369593152d5af47d8e7ef9411ad7",
+        "stage_log_sha256": "d614c7d0003f72c572faf6e91fe087d82ac1affc51d380b740cc4ccdde4610b0",
+        "peak_rss_kib": 1389084
+      },
+      "raw_hash_compare": {
+        "compared_files": 100,
+        "failures": 0,
+        "sha256": "bf8a29c2cbb75ebce4cccea61d5a06cad7c3505a826958689649ff40d83a4763"
+      },
+      "verdict": "100-file all-page repeat2 probe now shows retained display-list faster than immediate with raw hash parity, but the full 5044-file all-page run and external PDFium/MuPDF/Poppler pixel differential are still open"
+    },
+    "reference_compare_25_first_page": {
+      "corpus": "/mnt/wellpdf-block/corpus/real-5000-20260730T082710Z/pdfs",
+      "files_attempted": 25,
+      "failures": 0,
+      "tools": {
+        "pdfium": "pypdfium2 installed in task venv",
+        "mupdf": "PyMuPDF installed in task venv",
+        "poppler": "pdftoppm from host"
+      },
+      "pdfium": {
+        "samples": 25,
+        "size_mismatch": 0,
+        "median_changed_pixel_threshold8_percentage": 10.922573,
+        "max_changed_pixel_threshold8_percentage": 21.382947
+      },
+      "mupdf": {
+        "samples": 25,
+        "size_mismatch": 0,
+        "median_changed_pixel_threshold8_percentage": 9.199635,
+        "max_changed_pixel_threshold8_percentage": 18.514599
+      },
+      "poppler": {
+        "samples": 25,
+        "size_mismatch": 0,
+        "median_changed_pixel_threshold8_percentage": 10.73686,
+        "max_changed_pixel_threshold8_percentage": 20.734923
+      },
+      "report_sha256": "e61e9196a0b6d54323df69e7a054536a1daeabf45c1794d2a308aad4b445b3f0",
+      "stage_log_sha256": "accfbb37c87379d2233c293f8bfd9e664c9789e34f654d7cc69f293c8919fa97",
+      "verdict": "reference renderers are available for a compact first-page probe, but visual delta is still materially high; PDFium-level visual parity remains open"
+    }
+  },
+  "mandatory_gap_dispositions": [
+    {"area": "SIMD pixel compositing", "status": "partial", "reason": "A safe portable vector path is active for opaque-destination compat-mode translucent solid row runs; broader blend/composite/mask SIMD coverage and runtime backend reporting remain open."},
+    {"area": "Blend fast paths", "status": "partial", "reason": "Opaque replacement, translucent normal fill, and normal group-composite span paths exist; broader blend-mode span specialization remains open."},
+    {"area": "Path rasterization", "status": "partial", "reason": "Integer axis-aligned rectangle fills bypass general path rasterization and analytic AA now coalesces fully covered cells into row fills; strokes, curves, complex fills, and partial AA spans remain scalar."},
+    {"area": "Clipping", "status": "partial", "reason": "Solid clip short-circuit, row-span scanline fill, and solid-hint refresh are implemented; compressed/tile-local path clip cache remains open."},
+    {"area": "Transparency groups", "status": "partial", "reason": "Transparent-page decision caching, compat opaque-background flattening, normal group row compositing, transparent-row skip, and opaque-row copy exist; pooled/tight-bounds group surfaces remain open."},
+    {"area": "Soft masks", "status": "partial", "reason": "Reusable graphics-state soft mask groups now cache computed AlphaMask results in the document render cache; SIMD mask application and tighter offscreen group bounds remain open."},
+    {"area": "Shadings", "status": "partial", "reason": "Decoded mesh shading stream payloads are now cached by indirect object for repeated renders; native optimized display-list shading replay and broader color-function caching remain open."},
+    {"area": "Patterns", "status": "open", "reason": "Pattern-cell cache/native replay remains open."},
+    {"area": "Type3 text", "status": "partial", "reason": "Type3 geometry cache exists from prior work; device-space glyph mask cache remains open."},
+    {"area": "Glyph mask caching", "status": "partial", "reason": "Document font/glyph-outline cache exists; device glyph masks/atlas remain open."},
+    {"area": "Font rendering", "status": "partial", "reason": "Font bytes/resolver caching exists; PDFium-level scaler/hinting path remains open."},
+    {"area": "Image decoding", "status": "partial", "reason": "Bounded document-level decoded image XObject cache exists; region/scaled decode cache and SIMD resampling remain open."},
+    {"area": "Image cache behavior", "status": "partial", "reason": "Decoded image XObject cache and magnified-nearest run fill are implemented; unified scaled/ICC/mask/pattern cache remains open."},
+    {"area": "Color handling", "status": "partial", "reason": "Color handling exists; optimized ICC/DeviceN transform caches remain open."},
+    {"area": "Display-list replay", "status": "partial", "reason": "Built display lists and full-page retained raster outputs are cached. The latest 5044-file first-page repeat probe clears the warm replay threshold against immediate, but first render is still slightly slower and the broad PDFium-level all-page visual/performance closure remains open."},
+    {"area": "Display-list high-level ops", "status": "partial", "reason": "Native op variants exist, but compatibility delegation remains."},
+    {"area": "Form XObject rendering", "status": "partial", "reason": "Native Form XObject op exists; compiled sublist/surface reuse remains open."},
+    {"area": "Annotation/form rendering", "status": "open", "reason": "Appearance caches and dirty-rectangle invalidation remain open."},
+    {"area": "Page cache behavior", "status": "partial", "reason": "Document-scoped display-list, transparency-decision, decoded-image, full-page raster, and tile raster caches exist; coherent invalidation across edited snapshots and broader cache hierarchy remain open."},
+    {"area": "Allocation reduction", "status": "partial", "reason": "Tile crop/progressive assembly row-copy patch added; hot-loop arena/slab/pool work remains open."},
+    {"area": "Progressive rendering", "status": "partial", "reason": "Progressive tile lifecycle exists; all-binding pause/resume/cancel/close parity and latency evidence remain open."},
+    {"area": "Tiling/banding", "status": "partial", "reason": "Tile rendering, display-list tile culling, and retained tile raster hits exist; renderer-wide tile-local masks/images/groups remain open."},
+    {"area": "Raster backend maturity", "status": "open", "reason": "No optimized SIMD backend or PDFium-level raster backend is active yet."},
+    {"area": "Pixel-fidelity evidence", "status": "open", "reason": "Full per-page PDFium/MuPDF/Poppler visual differential evidence is not complete."}
+  ],
+  "final_verdict": "renderer_failure_gap_closed_on_required_5044_first_page_gate_with_explicit_pixel_parity_limits"
+}

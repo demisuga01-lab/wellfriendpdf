@@ -180,10 +180,53 @@ impl ImagePainter {
             return;
         }
 
+        if image.channels != 4
+            && paint_alpha >= 1.0
+            && matches!(smooth, SmoothMode::None)
+            && footprint_x <= 1.0
+            && footprint_y <= 1.0
+            && (dst_w > image.width as f64 || dst_h > image.height as f64)
+            && Self::paint_axis_aligned_nearest_runs(
+                buf, image, px_min, py_min, dst_w, dst_h, x0, x1, y0, y1,
+            )
+        {
+            return;
+        }
+
+        if image.channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped() {
+            for py in y0..=y1 {
+                for px in x0..=x1 {
+                    let u = (px as f64 + 0.5 - px_min) / dst_w;
+                    let v = (py as f64 + 0.5 - py_min) / dst_h;
+                    if !inside_unit_image_sample(u) || !inside_unit_image_sample(v) {
+                        continue;
+                    }
+                    let sample = Self::sample(
+                        image,
+                        u,
+                        v,
+                        footprint_x,
+                        footprint_y,
+                        smooth,
+                        use_area_average,
+                    );
+                    buf.write_opaque_pixel_unclipped(
+                        px,
+                        py,
+                        [sample[0], sample[1], sample[2], 255],
+                    );
+                }
+            }
+            return;
+        }
+
         for py in y0..=y1 {
             for px in x0..=x1 {
                 let u = (px as f64 + 0.5 - px_min) / dst_w;
                 let v = (py as f64 + 0.5 - py_min) / dst_h;
+                if !inside_unit_image_sample(u) || !inside_unit_image_sample(v) {
+                    continue;
+                }
                 let sample = Self::sample(
                     image,
                     u,
@@ -201,6 +244,58 @@ impl ImagePainter {
                 buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_axis_aligned_nearest_runs(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        px_min: f64,
+        py_min: f64,
+        dst_w: f64,
+        dst_h: f64,
+        x0: i32,
+        x1: i32,
+        y0: i32,
+        y1: i32,
+    ) -> bool {
+        if dst_w <= 0.0 || dst_h <= 0.0 || image.width == 0 || image.height == 0 {
+            return false;
+        }
+        let source_w = image.width as f64;
+        let source_h = image.height as f64;
+        for py in y0..=y1 {
+            let v = (py as f64 + 0.5 - py_min) / dst_h;
+            if !inside_unit_image_sample(v) {
+                continue;
+            }
+            let sy = (v * source_h).floor().clamp(0.0, source_h - 1.0) as usize;
+            let mut px = x0;
+            while px <= x1 {
+                let u = (px as f64 + 0.5 - px_min) / dst_w;
+                if !inside_unit_image_sample(u) {
+                    px += 1;
+                    continue;
+                }
+                let sx = (u * source_w).floor().clamp(0.0, source_w - 1.0) as usize;
+                let mut end = px + 1;
+                while end <= x1 {
+                    let end_u = (end as f64 + 0.5 - px_min) / dst_w;
+                    if !inside_unit_image_sample(end_u) {
+                        break;
+                    }
+                    let end_sx = (end_u * source_w).floor().clamp(0.0, source_w - 1.0) as usize;
+                    if end_sx != sx {
+                        break;
+                    }
+                    end += 1;
+                }
+                let sample = Self::get_pixel_channels(image, sx, sy);
+                buf.fill_rect(px, py, end - px, 1, [sample[0], sample[1], sample[2], 255]);
+                px = end;
+            }
+        }
+        true
     }
 
     fn paint_affine(
@@ -246,10 +341,37 @@ impl ImagePainter {
             return;
         }
 
+        if image.channels != 4 && paint_alpha >= 1.0 && buf.can_write_opaque_unclipped() {
+            for py in y0..=y1 {
+                for px in x0..=x1 {
+                    let (u, v) = inv.transform_point(px as f64 + 0.5, py as f64 + 0.5);
+                    if !inside_unit_image_sample(u) || !inside_unit_image_sample(v) {
+                        continue;
+                    }
+
+                    let sample = Self::sample(
+                        image,
+                        u,
+                        v,
+                        footprint_x,
+                        footprint_y,
+                        smooth,
+                        use_area_average,
+                    );
+                    buf.write_opaque_pixel_unclipped(
+                        px,
+                        py,
+                        [sample[0], sample[1], sample[2], 255],
+                    );
+                }
+            }
+            return;
+        }
+
         for py in y0..=y1 {
             for px in x0..=x1 {
                 let (u, v) = inv.transform_point(px as f64 + 0.5, py as f64 + 0.5);
-                if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+                if !inside_unit_image_sample(u) || !inside_unit_image_sample(v) {
                     continue;
                 }
 
@@ -509,6 +631,11 @@ fn clipped_bounds(
     (x0, x1, y0, y1)
 }
 
+#[inline]
+fn inside_unit_image_sample(value: f64) -> bool {
+    value.is_finite() && (0.0..1.0).contains(&value)
+}
+
 fn floor_i32(value: f64) -> i32 {
     if !value.is_finite() {
         0
@@ -730,6 +857,26 @@ mod tests {
     }
 
     #[test]
+    fn axis_aligned_image_does_not_extend_past_unit_square() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
+        let image = RawImage {
+            width: 1,
+            height: 1,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![255, 0, 0],
+        };
+        let ctm = Transform2D::new(50.0, 0.0, 0.0, 50.0, 25.0, 25.0);
+
+        ImagePainter::paint_image(&mut buf, &image, &ctm, &vp);
+
+        assert!(buf.get_pixel(74, 50)[0] > 200);
+        assert_eq!(buf.get_pixel(75, 50), WHITE);
+        assert_eq!(buf.get_pixel(50, 75), WHITE);
+    }
+
+    #[test]
     fn paint_image_with_zero_size_image_does_not_panic() {
         let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
         let ctm = Transform2D::identity();
@@ -865,6 +1012,31 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn magnified_nearest_run_fast_path_preserves_source_cells() {
+        let mut buf = PixelBuffer::new_filled(18, 12, WHITE);
+        let image = RawImage {
+            width: 3,
+            height: 2,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![
+                255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0, 0, 255, 255, 255, 0, 255,
+            ],
+        };
+
+        assert!(ImagePainter::paint_axis_aligned_nearest_runs(
+            &mut buf, &image, 0.0, 0.0, 18.0, 12.0, 0, 17, 0, 11,
+        ));
+
+        assert_eq!(&buf.get_pixel(0, 0)[..3], &[255, 0, 0]);
+        assert_eq!(&buf.get_pixel(6, 0)[..3], &[0, 255, 0]);
+        assert_eq!(&buf.get_pixel(12, 0)[..3], &[0, 0, 255]);
+        assert_eq!(&buf.get_pixel(0, 6)[..3], &[255, 255, 0]);
+        assert_eq!(&buf.get_pixel(6, 6)[..3], &[0, 255, 255]);
+        assert_eq!(&buf.get_pixel(12, 6)[..3], &[255, 0, 255]);
     }
 
     #[test]

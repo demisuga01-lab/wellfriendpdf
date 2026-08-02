@@ -427,6 +427,10 @@ impl PathPainter {
         if path.is_empty() || buf.width == 0 || buf.height == 0 {
             return;
         }
+        if let Some((x, y, w, h)) = axis_aligned_integer_rect(path, ctm, viewport) {
+            buf.fill_rect(x, y, w, h, color);
+            return;
+        }
         let flat = flatten_path(path, ctm, viewport, 0.3);
         fill_flat_aa(buf, &flat, color, rule);
     }
@@ -443,6 +447,10 @@ impl PathPainter {
         if cancel.is_cancelled() {
             return false;
         }
+        if let Some((x, y, w, h)) = axis_aligned_integer_rect(path, ctm, viewport) {
+            buf.fill_rect(x, y, w, h, color);
+            return true;
+        }
         let flat = flatten_path(path, ctm, viewport, 0.3);
         fill_flat_aa_cancellable(buf, &flat, color, rule, cancel)
     }
@@ -458,6 +466,10 @@ impl PathPainter {
     ) -> bool {
         if cancel.is_cancelled() {
             return false;
+        }
+        if let Some((x, y, w, h)) = axis_aligned_integer_rect(path, ctm, viewport) {
+            buf.fill_rect(x, y, w, h, color);
+            return true;
         }
         let flat = flatten_path(path, ctm, viewport, 0.5);
         fill_flat_scanline_fast(buf, &flat, color, rule, cancel)
@@ -625,9 +637,7 @@ impl PathPainter {
 /// both axes. The accumulated winding number is mapped to an opacity in [0,1]
 /// per the fill rule (nonzero or even-odd) and composited with `blend_pixel`.
 fn fill_flat_aa(buf: &mut PixelBuffer, flat: &FlatPath, color: PixelColor, rule: FillRule) {
-    let _ = fill_flat_with_compositor(buf, flat, rule, None, |buf, x, y, coverage| {
-        buf.blend_pixel(x, y, color, coverage);
-    });
+    let _ = fill_flat_color(buf, flat, color, rule, None);
 }
 
 #[allow(clippy::collapsible_if)]
@@ -638,9 +648,7 @@ fn fill_flat_aa_cancellable(
     rule: FillRule,
     cancel: &CancelToken,
 ) -> bool {
-    fill_flat_with_compositor(buf, flat, rule, Some(cancel), |buf, x, y, coverage| {
-        buf.blend_pixel(x, y, color, coverage);
-    })
+    fill_flat_color(buf, flat, color, rule, Some(cancel))
 }
 
 fn fill_flat_cmyk_overprint_preview(
@@ -654,6 +662,16 @@ fn fill_flat_cmyk_overprint_preview(
     let _ = fill_flat_with_compositor(buf, flat, rule, None, |buf, x, y, coverage| {
         buf.blend_device_cmyk_overprint_preview(x, y, cmyk, alpha, coverage, overprint_mode);
     });
+}
+
+fn fill_flat_color(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    color: PixelColor,
+    rule: FillRule,
+    cancel: Option<&CancelToken>,
+) -> bool {
+    fill_flat_with_color_compositor(buf, flat, color, rule, cancel)
 }
 
 fn fill_flat_scanline_fast(
@@ -729,6 +747,78 @@ fn fill_flat_scanline_fast(
     true
 }
 
+fn axis_aligned_integer_rect(
+    path: &Path,
+    ctm: &Transform2D,
+    viewport: &Viewport,
+) -> Option<(i32, i32, i32, i32)> {
+    if !ctm.is_axis_aligned() || path.segments.len() != 5 {
+        return None;
+    }
+    let mut points = Vec::with_capacity(4);
+    match path.segments.as_slice() {
+        [PathSegment::MoveTo(x0, y0), PathSegment::LineTo(x1, y1), PathSegment::LineTo(x2, y2), PathSegment::LineTo(x3, y3), PathSegment::ClosePath] =>
+        {
+            points.push((*x0, *y0));
+            points.push((*x1, *y1));
+            points.push((*x2, *y2));
+            points.push((*x3, *y3));
+        }
+        _ => return None,
+    }
+
+    let mut px_points = Vec::with_capacity(4);
+    for (x, y) in points {
+        let (ux, uy) = ctm.transform_point(x, y);
+        let (px, py) = viewport.page_to_pixel_f64(ux, uy);
+        if !px.is_finite() || !py.is_finite() {
+            return None;
+        }
+        px_points.push((px, py));
+    }
+
+    let min_x = px_points
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = px_points
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = px_points
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = px_points
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    if max_x <= min_x || max_y <= min_y {
+        return None;
+    }
+    let eps = 1e-7;
+    if px_points.iter().any(|(x, y)| {
+        ((*x - min_x).abs() > eps && (*x - max_x).abs() > eps)
+            || ((*y - min_y).abs() > eps && (*y - max_y).abs() > eps)
+    }) {
+        return None;
+    }
+    if [min_x, max_x, min_y, max_y]
+        .iter()
+        .any(|v| (v - v.round()).abs() > eps)
+    {
+        return None;
+    }
+    let x0 = min_x.round() as i32;
+    let y0 = min_y.round() as i32;
+    let x1 = max_x.round() as i32;
+    let y1 = max_y.round() as i32;
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some((x0, y0, x1 - x0, y1 - y0))
+}
+
 fn collect_scanline_crossings(
     sp: &[(f64, f64)],
     closed: bool,
@@ -784,9 +874,7 @@ fn fill_scanline_span(buf: &mut PixelBuffer, y: i32, x0: f64, x1: f64, bw: i32, 
     if end < start {
         return;
     }
-    for x in start..=end {
-        buf.blend_pixel(x, y, color, 1.0);
-    }
+    buf.fill_rect(start, y, end - start + 1, 1, color);
 }
 
 fn fill_flat_with_compositor(
@@ -865,18 +953,93 @@ fn fill_flat_with_compositor(
     acc.composite(buf, rule, cancel, &mut composite_pixel)
 }
 
+fn fill_flat_with_color_compositor(
+    buf: &mut PixelBuffer,
+    flat: &FlatPath,
+    color: PixelColor,
+    rule: FillRule,
+    cancel: Option<&CancelToken>,
+) -> bool {
+    let bw = buf.width as i32;
+    let bh = buf.height as i32;
+
+    let mut min_x = f64::INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    for (sp_index, sp) in flat.subpaths.iter().enumerate() {
+        if sp_index % 64 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+            return false;
+        }
+        for &(x, y) in sp {
+            if !x.is_finite() || !y.is_finite() {
+                continue;
+            }
+            min_x = min_x.min(x);
+            min_y = min_y.min(y);
+            max_x = max_x.max(x);
+            max_y = max_y.max(y);
+        }
+    }
+    if !min_x.is_finite() || !max_x.is_finite() {
+        return true;
+    }
+
+    let x0 = safe_floor_i32(min_x).max(0);
+    let y0 = safe_floor_i32(min_y).max(0);
+    let x1 = safe_ceil_i32(max_x).saturating_add(1).min(bw);
+    let y1 = safe_ceil_i32(max_y).saturating_add(1).min(bh);
+    if x1 <= x0 || y1 <= y0 {
+        return true;
+    }
+    let w = (x1 - x0) as usize;
+    let h = (y1 - y0) as usize;
+    if w == 0 || h == 0 || w.saturating_mul(h) > 64 * 1024 * 1024 {
+        return true;
+    }
+
+    let mut acc = Accumulator::new(w, h, x0, y0);
+    for (sp_index, (sp, &closed)) in flat.subpaths.iter().zip(flat.closed.iter()).enumerate() {
+        if sp_index % 32 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+            return false;
+        }
+        if sp.len() < 2 {
+            continue;
+        }
+        for (edge_index, win) in sp.windows(2).enumerate() {
+            if edge_index % 2048 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+                return false;
+            }
+            if !acc.add_edge(win[0], win[1], cancel) {
+                return false;
+            }
+        }
+        if !closed {
+            if let (Some(&first), Some(&last)) = (sp.first(), sp.last()) {
+                if first != last && !acc.add_edge(last, first, cancel) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    acc.composite_color(buf, rule, color, cancel)
+}
+
 fn light_grid_fit_flat_glyph(flat: &mut FlatPath, device_t: &Transform2D) {
     if !device_t.is_axis_aligned() {
         return;
     }
 
     const MAX_BASELINE_SHIFT: f64 = 0.35;
+    const MAX_STEM_EDGE_SHIFT: f64 = 0.18;
 
     let (_, baseline_y) = device_t.transform_point(0.0, 0.0);
     let baseline_shift = baseline_y.round() - baseline_y;
     if baseline_shift.abs() <= MAX_BASELINE_SHIFT {
         translate_flat(flat, 0.0, baseline_shift);
     }
+    snap_near_pixel_edges(flat, MAX_STEM_EDGE_SHIFT);
 }
 
 fn translate_flat(flat: &mut FlatPath, dx: f64, dy: f64) {
@@ -888,6 +1051,30 @@ fn translate_flat(flat: &mut FlatPath, dx: f64, dy: f64) {
             point.0 += dx;
             point.1 += dy;
         }
+    }
+}
+
+fn snap_near_pixel_edges(flat: &mut FlatPath, max_shift: f64) {
+    if max_shift <= 0.0 || !max_shift.is_finite() {
+        return;
+    }
+    for subpath in &mut flat.subpaths {
+        for point in subpath {
+            point.0 = snap_near_integer(point.0, max_shift);
+            point.1 = snap_near_integer(point.1, max_shift);
+        }
+    }
+}
+
+fn snap_near_integer(value: f64, max_shift: f64) -> f64 {
+    if !value.is_finite() {
+        return value;
+    }
+    let snapped = value.round();
+    if (snapped - value).abs() <= max_shift {
+        snapped
+    } else {
+        value
     }
 }
 
@@ -1526,6 +1713,48 @@ impl Accumulator {
         }
         true
     }
+
+    fn composite_color(
+        &self,
+        buf: &mut PixelBuffer,
+        rule: FillRule,
+        color: PixelColor,
+        cancel: Option<&CancelToken>,
+    ) -> bool {
+        const SOLID_COVERAGE: f32 = 0.999;
+        for ry in 0..self.h {
+            if ry % 32 == 0 && cancel.is_some_and(CancelToken::is_cancelled) {
+                return false;
+            }
+            let base = ry * self.w;
+            let mut running = 0.0f32;
+            let py = self.origin_y + ry as i32;
+            let mut solid_run_start: Option<i32> = None;
+            for rx in 0..self.w {
+                let cell_winding = running + self.area[base + rx];
+                running += self.cover[base + rx];
+                let coverage = coverage_from_winding(cell_winding, rule);
+                let px = self.origin_x + rx as i32;
+                if coverage >= SOLID_COVERAGE {
+                    if solid_run_start.is_none() {
+                        solid_run_start = Some(px);
+                    }
+                    continue;
+                }
+                if let Some(start) = solid_run_start.take() {
+                    buf.fill_rect(start, py, px - start, 1, color);
+                }
+                if coverage > 0.001 {
+                    buf.blend_pixel(px, py, color, coverage);
+                }
+            }
+            if let Some(start) = solid_run_start {
+                let end = self.origin_x + self.w as i32;
+                buf.fill_rect(start, py, end - start, 1, color);
+            }
+        }
+        true
+    }
 }
 
 /// Map a signed winding/coverage accumulator value to an opacity in [0, 1]
@@ -1698,6 +1927,62 @@ mod tests {
         println!("nonzero fill center: {:?}", center);
         assert_eq!(center, RED);
         assert_eq!(buf.get_pixel(5, 5), WHITE);
+    }
+
+    #[test]
+    fn integer_axis_aligned_rect_uses_span_fill_fast_path() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut buf = PixelBuffer::new_filled(100, 100, WHITE);
+        let mut path = Path::new();
+        path.rect(10.0, 10.0, 20.0, 15.0);
+
+        let rect = axis_aligned_integer_rect(&path, &ctm, &vp).expect("integer device rect");
+        assert_eq!(rect, (10, 75, 20, 15));
+
+        PathPainter::fill(&mut buf, &path, &ctm, &vp, BLUE, FillRule::EvenOdd);
+        assert_eq!(buf.get_pixel(10, 75), BLUE);
+        assert_eq!(buf.get_pixel(29, 89), BLUE);
+        assert_eq!(buf.get_pixel(30, 89), WHITE);
+    }
+
+    #[test]
+    fn fractional_rect_keeps_analytic_coverage_path() {
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::identity();
+        let mut path = Path::new();
+        path.rect(10.25, 10.0, 20.0, 15.0);
+        assert!(axis_aligned_integer_rect(&path, &ctm, &vp).is_none());
+    }
+
+    #[test]
+    fn aa_color_compositor_matches_generic_pixel_compositor() {
+        let mut flat = FlatPath::default();
+        flat.subpaths
+            .push(vec![(2.25, 2.0), (14.75, 4.25), (8.5, 13.75), (2.25, 2.0)]);
+        flat.closed.push(true);
+        let color = [15, 120, 240, 180];
+        let mut fast = PixelBuffer::new_filled(20, 20, WHITE);
+        let mut reference = PixelBuffer::new_filled(20, 20, WHITE);
+
+        assert!(fill_flat_color(
+            &mut fast,
+            &flat,
+            color,
+            FillRule::NonZero,
+            None,
+        ));
+        assert!(fill_flat_with_compositor(
+            &mut reference,
+            &flat,
+            FillRule::NonZero,
+            None,
+            |buf, x, y, coverage| {
+                buf.blend_pixel(x, y, color, coverage);
+            },
+        ));
+
+        assert_eq!(fast.rgba_bytes(), reference.rgba_bytes());
     }
 
     #[test]
@@ -2121,9 +2406,25 @@ mod tests {
 
         let sp = &flat.subpaths[0];
         assert!((sp[0].0 - 10.28).abs() < 1e-10);
-        assert!((sp[0].1 - 4.84).abs() < 1e-10);
+        assert!((sp[0].1 - 5.0).abs() < 1e-10);
         assert!((sp[2].0 - 12.74).abs() < 1e-10);
-        assert!((sp[2].1 - 19.84).abs() < 1e-10);
+        assert!((sp[2].1 - 20.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn light_grid_fit_snaps_near_pixel_stem_edges() {
+        let mut flat = FlatPath {
+            subpaths: vec![vec![(10.12, 9.9), (20.27, 10.22)]],
+            closed: vec![false],
+        };
+
+        light_grid_fit_flat_glyph(&mut flat, &Transform2D::identity());
+
+        assert!((flat.subpaths[0][0].0 - 10.0).abs() < 1e-10);
+        assert!(
+            (flat.subpaths[0][1].0 - 20.27).abs() < 1e-10,
+            "points outside the bounded stem snap threshold must remain unchanged"
+        );
     }
 
     #[test]

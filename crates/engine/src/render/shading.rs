@@ -173,6 +173,22 @@ pub(crate) fn components_to_render_color(components: &[f64], color_space: &str) 
     ColorSpaceHandler::from_components(color_space, components, 1.0)
 }
 
+fn components_to_render_color_with_space(
+    components: &[f64],
+    color_space: &str,
+    color_space_obj: Option<&PdfObject>,
+    reader: &PdfReader,
+) -> RenderColor {
+    if let Some(space_obj) = color_space_obj {
+        match crate::render::colorspace::resolve_named_color(space_obj, components, 1.0, reader) {
+            crate::render::colorspace::NamedColor::Color(color) => return color,
+            crate::render::colorspace::NamedColor::NoPaint => return RenderColor::transparent(),
+            crate::render::colorspace::NamedColor::Unhandled => {}
+        }
+    }
+    components_to_render_color(components, color_space)
+}
+
 /// Read the shading's colour-space name. Handles both a bare name and an array
 /// whose first element names the family (e.g. `[/ICCBased N 0 R]`).
 fn shading_color_space_name(dict: &PdfDictionary) -> String {
@@ -185,6 +201,10 @@ fn shading_color_space_name(dict: &PdfDictionary) -> String {
             .to_string(),
         _ => "DeviceRGB".to_string(),
     }
+}
+
+fn shading_color_space_object(dict: &PdfDictionary) -> Option<&PdfObject> {
+    dict.get("ColorSpace").or_else(|| dict.get("CS"))
 }
 
 // ---------------------------------------------------------------------------
@@ -323,6 +343,7 @@ impl ShadingRenderer {
             _ => Transform2D::identity(),
         };
         let color_space = shading_color_space_name(dict);
+        let color_space_obj = shading_color_space_object(dict);
         let dither = buf.render_mode().is_high_quality();
 
         // device pixel → user space → domain space.
@@ -348,7 +369,12 @@ impl ShadingRenderer {
                 if comps.is_empty() {
                     continue;
                 }
-                let color = components_to_render_color(&comps, &color_space);
+                let color = components_to_render_color_with_space(
+                    &comps,
+                    &color_space,
+                    color_space_obj,
+                    reader,
+                );
                 let pixel = quantize_shading_color(color, px, py, dither);
                 buf.blend_pixel(px, py, pixel, 1.0);
             }
@@ -397,6 +423,7 @@ impl ShadingRenderer {
             }
         };
         let color_space = shading_color_space_name(dict);
+        let color_space_obj = shading_color_space_object(dict);
 
         let dx = x1 - x0;
         let dy = y1 - y0;
@@ -435,6 +462,7 @@ impl ShadingRenderer {
                     t1,
                     &func_obj,
                     &color_space,
+                    color_space_obj,
                     reader,
                     &mut cache,
                 );
@@ -476,6 +504,7 @@ impl ShadingRenderer {
             }
         };
         let color_space = shading_color_space_name(dict);
+        let color_space_obj = shading_color_space_object(dict);
 
         let ax = x1 - x0;
         let ay = y1 - y0;
@@ -527,7 +556,16 @@ impl ShadingRenderer {
                     Some(s) => s.clamp(0.0, 1.0),
                     None => continue,
                 };
-                let color = Self::color_for(s, t0, t1, &func_obj, &color_space, reader, &mut cache);
+                let color = Self::color_for(
+                    s,
+                    t0,
+                    t1,
+                    &func_obj,
+                    &color_space,
+                    color_space_obj,
+                    reader,
+                    &mut cache,
+                );
                 if let Some(color) = color {
                     let pixel = quantize_shading_color(color, px, py, dither);
                     buf.blend_pixel(px, py, pixel, 1.0);
@@ -544,6 +582,7 @@ impl ShadingRenderer {
         t1: f64,
         func_obj: &PdfObject,
         color_space: &str,
+        color_space_obj: Option<&PdfObject>,
         reader: &PdfReader,
         cache: &mut ShadingColorCache,
     ) -> Option<RenderColor> {
@@ -555,7 +594,12 @@ impl ShadingRenderer {
         if components.is_empty() {
             return None;
         }
-        let color = components_to_render_color(&components, color_space);
+        let color = components_to_render_color_with_space(
+            &components,
+            color_space,
+            color_space_obj,
+            reader,
+        );
         cache.set(s, color);
         Some(color)
     }
@@ -588,7 +632,11 @@ struct MeshDecode {
 }
 
 impl MeshDecode {
-    fn from_dict(dict: &PdfDictionary, color_space: &str) -> Option<Self> {
+    fn from_dict(
+        dict: &PdfDictionary,
+        color_space: &str,
+        color_space_obj: Option<&PdfObject>,
+    ) -> Option<Self> {
         let bits_per_coord = dict.get_integer("BitsPerCoordinate")? as usize;
         let bits_per_comp = dict.get_integer("BitsPerComponent")? as usize;
         let bits_per_flag = dict.get_integer("BitsPerFlag").unwrap_or(8) as usize;
@@ -597,7 +645,7 @@ impl MeshDecode {
         let n_color = if has_function {
             1
         } else {
-            color_space_component_count(color_space)
+            color_space_component_count(color_space, color_space_obj)
         };
         Some(Self {
             bits_per_coord,
@@ -617,6 +665,7 @@ impl MeshDecode {
         to_device: &Transform2D,
         func_obj: Option<&PdfObject>,
         color_space: &str,
+        color_space_obj: Option<&PdfObject>,
         reader: &PdfReader,
     ) -> Option<MeshVertex> {
         let xr = br.read(self.bits_per_coord)? as f64;
@@ -644,7 +693,14 @@ impl MeshDecode {
             let dhi = self.decode.get(5 + 2 * k).copied().unwrap_or(1.0);
             comps.push(decode_value(raw, cmax_raw, dlo, dhi));
         }
-        let color = resolve_vertex_color(&comps, self.has_function, func_obj, color_space, reader);
+        let color = resolve_vertex_color(
+            &comps,
+            self.has_function,
+            func_obj,
+            color_space,
+            color_space_obj,
+            reader,
+        );
         Some(MeshVertex { dx, dy, color })
     }
 }
@@ -658,9 +714,18 @@ fn decode_value(raw: f64, max: f64, lo: f64, hi: f64) -> f64 {
     }
 }
 
-fn color_space_component_count(name: &str) -> usize {
+fn color_space_component_count(name: &str, color_space_obj: Option<&PdfObject>) -> usize {
+    if name == "DeviceN" {
+        if let Some(PdfObject::Array(items)) = color_space_obj {
+            if let Some(names) = items.get(1).and_then(PdfObject::as_array) {
+                return names
+                    .len()
+                    .clamp(1, crate::render::colorspace::MAX_DEVICEN_COMPONENTS);
+            }
+        }
+    }
     match name {
-        "DeviceGray" | "CalGray" | "G" => 1,
+        "DeviceGray" | "CalGray" | "G" | "Separation" => 1,
         "DeviceCMYK" | "CMYK" => 4,
         _ => 3,
     }
@@ -673,6 +738,7 @@ fn resolve_vertex_color(
     has_function: bool,
     func_obj: Option<&PdfObject>,
     color_space: &str,
+    color_space_obj: Option<&PdfObject>,
     reader: &PdfReader,
 ) -> RenderColor {
     let resolved = if has_function {
@@ -686,7 +752,7 @@ fn resolve_vertex_color(
     } else {
         comps.to_vec()
     };
-    components_to_render_color(&resolved, color_space)
+    components_to_render_color_with_space(&resolved, color_space, color_space_obj, reader)
 }
 
 impl ShadingRenderer {
@@ -701,7 +767,8 @@ impl ShadingRenderer {
     ) {
         let shading_type = dict.get_integer("ShadingType").unwrap_or(4);
         let color_space = shading_color_space_name(dict);
-        let Some(dec) = MeshDecode::from_dict(dict, &color_space) else {
+        let color_space_obj = shading_color_space_object(dict);
+        let Some(dec) = MeshDecode::from_dict(dict, &color_space, color_space_obj) else {
             log::warn!("mesh shading: missing BitsPerCoordinate/BitsPerComponent/Decode");
             return;
         };
@@ -735,6 +802,7 @@ impl ShadingRenderer {
                         &to_device,
                         func_obj.as_ref(),
                         &color_space,
+                        color_space_obj,
                         reader,
                     ) {
                         Some(v) => row.push(v),
@@ -770,12 +838,17 @@ impl ShadingRenderer {
                 Some(f) => f,
                 None => break,
             };
-            let v =
-                match dec.read_vertex(&mut br, &to_device, func_obj.as_ref(), &color_space, reader)
-                {
-                    Some(v) => v,
-                    None => break,
-                };
+            let v = match dec.read_vertex(
+                &mut br,
+                &to_device,
+                func_obj.as_ref(),
+                &color_space,
+                color_space_obj,
+                reader,
+            ) {
+                Some(v) => v,
+                None => break,
+            };
             br.align_to_byte();
             match flag {
                 0 => {
@@ -828,7 +901,8 @@ impl ShadingRenderer {
         let shading_type = dict.get_integer("ShadingType").unwrap_or(6);
         let n_points_new = if shading_type == 7 { 16 } else { 12 };
         let color_space = shading_color_space_name(dict);
-        let Some(dec) = MeshDecode::from_dict(dict, &color_space) else {
+        let color_space_obj = shading_color_space_object(dict);
+        let Some(dec) = MeshDecode::from_dict(dict, &color_space, color_space_obj) else {
             log::warn!("patch mesh: missing BitsPerCoordinate/BitsPerComponent/Decode");
             return;
         };
@@ -919,6 +993,7 @@ impl ShadingRenderer {
                     dec.has_function,
                     func_obj.as_ref(),
                     &color_space,
+                    color_space_obj,
                     reader,
                 ));
             }
@@ -1471,12 +1546,28 @@ mod tests {
         let reader = crate::reader::PdfReader::from_bytes(super::tests_minimal_pdf()).unwrap();
         let mut cache = ShadingColorCache::new();
 
-        let c0 =
-            ShadingRenderer::color_for(0.1000, 0.0, 1.0, &func, "DeviceGray", &reader, &mut cache)
-                .expect("color at first sample");
-        let c1 =
-            ShadingRenderer::color_for(0.1010, 0.0, 1.0, &func, "DeviceGray", &reader, &mut cache)
-                .expect("color at nearby sample");
+        let c0 = ShadingRenderer::color_for(
+            0.1000,
+            0.0,
+            1.0,
+            &func,
+            "DeviceGray",
+            None,
+            &reader,
+            &mut cache,
+        )
+        .expect("color at first sample");
+        let c1 = ShadingRenderer::color_for(
+            0.1010,
+            0.0,
+            1.0,
+            &func,
+            "DeviceGray",
+            None,
+            &reader,
+            &mut cache,
+        )
+        .expect("color at nearby sample");
 
         assert!(
             c1.r > c0.r && (c1.r - c0.r) > 0.0005,

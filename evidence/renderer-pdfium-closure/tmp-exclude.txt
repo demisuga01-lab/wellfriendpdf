@@ -1,0 +1,1 @@
+excluded_generated_scratch=/tmp/

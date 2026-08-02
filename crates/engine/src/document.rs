@@ -23,6 +23,7 @@ pub struct PdfPage {
     pub media_box: [f64; 4],
     pub crop_box: [f64; 4],
     pub rotate: i32,
+    pub user_unit: f64,
     pub resources: PdfDictionary,
     pub contents: Vec<(u32, u16)>,
 }
@@ -365,6 +366,7 @@ fn build_page_from_dict(
     };
     let crop_box = inherited.crop_box.unwrap_or(media_box);
     let rotate = normalize_rotate(inherited.rotate.unwrap_or(0));
+    let user_unit = parse_user_unit(dict, reader)?;
     let resources = match inherited.resources {
         Some(resources) => resources,
         None => {
@@ -385,9 +387,28 @@ fn build_page_from_dict(
         media_box,
         crop_box,
         rotate,
+        user_unit,
         resources,
         contents,
     })
+}
+
+fn parse_user_unit(dict: &PdfDictionary, reader: Option<&PdfReader>) -> Result<f64> {
+    let Some(object) = dict.get("UserUnit") else {
+        return Ok(1.0);
+    };
+    let object = resolve_if_possible(object, reader)?;
+    let Some(value) = object.as_number() else {
+        return Err(WellfriendError::MalformedPdf(
+            "/UserUnit must be a positive number".to_string(),
+        ));
+    };
+    if !value.is_finite() || value <= 0.0 {
+        return Err(WellfriendError::MalformedPdf(
+            "/UserUnit must be a positive finite number".to_string(),
+        ));
+    }
+    Ok(value.min(75_000.0))
 }
 
 fn parse_box(object: &PdfObject, reader: Option<&PdfReader>, key: &str) -> Result<[f64; 4]> {
@@ -523,5 +544,28 @@ mod tests {
         assert_eq!(overridden_page.media_box, [10.0, 20.0, 500.0, 600.0]);
         assert_eq!(overridden_page.rotate, 0);
         assert_eq!(overridden_page.resources, page_resources);
+    }
+
+    #[test]
+    fn page_user_unit_is_parsed_from_page_dictionary() {
+        let parent_resources = dict(&[("Font", PdfObject::Dictionary(PdfDictionary::empty()))]);
+        let parent = dict(&[
+            ("MediaBox", box_obj([0, 0, 300, 400])),
+            ("Resources", PdfObject::Dictionary(parent_resources)),
+        ]);
+        let parent_attrs = apply_inherited_attrs(&parent, InheritedAttrs::default(), None).unwrap();
+        let page = dict(&[("UserUnit", PdfObject::Real(2.5))]);
+
+        let parsed = build_page_from_dict(12, 0, 1, &page, parent_attrs, None).unwrap();
+
+        assert_eq!(parsed.user_unit, 2.5);
+        assert_eq!(parsed.media_box, [0.0, 0.0, 300.0, 400.0]);
+    }
+
+    #[test]
+    fn invalid_page_user_unit_is_refused() {
+        let page = dict(&[("UserUnit", PdfObject::Real(0.0))]);
+        let err = parse_user_unit(&page, None).unwrap_err();
+        assert!(matches!(err, WellfriendError::MalformedPdf(_)));
     }
 }

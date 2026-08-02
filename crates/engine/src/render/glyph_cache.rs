@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::mem;
+use std::sync::Arc;
 
 use crate::render::path::{Path, PathSegment};
 
@@ -25,9 +26,18 @@ pub struct GlyphCacheKey {
 #[derive(Debug, Clone)]
 pub struct CachedGlyph {
     /// Glyph outline in font units. None for spaces and glyphs with no outline.
-    pub path: Option<Path>,
+    pub path: Option<Arc<Path>>,
     /// Advance width in 1/1000 text units.
     pub advance_width: f64,
+}
+
+impl CachedGlyph {
+    pub fn from_path(path: Option<Path>, advance_width: f64) -> Self {
+        Self {
+            path: path.map(Arc::new),
+            advance_width,
+        }
+    }
 }
 
 /// Runtime glyph-cache counters.
@@ -368,7 +378,7 @@ mod tests {
         cache.insert(
             key.clone(),
             CachedGlyph {
-                path: Some(path.clone()),
+                path: Some(Arc::new(path.clone())),
                 advance_width: 600.0,
             },
         );
@@ -383,6 +393,26 @@ mod tests {
                 .map(|cached_path| cached_path.segments.len()),
             Some(path.segments.len())
         );
+    }
+
+    #[test]
+    fn cached_glyph_clone_shares_outline_storage() {
+        let mut cache = GlyphCache::new(100);
+        let mut path = Path::new();
+        path.move_to(0.0, 0.0);
+        path.line_to(100.0, 0.0);
+        path.close();
+        let key = key(42);
+
+        cache.insert(key.clone(), CachedGlyph::from_path(Some(path), 500.0));
+        let cloned = cache
+            .get(&key)
+            .cloned()
+            .expect("cached glyph should clone cheaply");
+        let outline = cloned.path.expect("outline should exist");
+
+        assert_eq!(Arc::strong_count(&outline), 2);
+        assert_eq!(outline.segments.len(), 3);
     }
 
     #[test]
@@ -644,7 +674,7 @@ mod tests {
         cache.insert(
             key(9),
             CachedGlyph {
-                path: Some(path),
+                path: Some(Arc::new(path)),
                 advance_width: 100.0,
             },
         );

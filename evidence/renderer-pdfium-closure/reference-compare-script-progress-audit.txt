@@ -1,0 +1,28 @@
+﻿2:"""Compare Wellfriend raster output with local reference renderers.
+33:def collect_pdfs(root: Path, limit: int | None) -> list[Path]:
+34:    files = sorted(path for path in root.rglob("*.pdf") if path.is_file())
+35:    return files[:limit] if limit else files
+51:            "--output",
+76:def render_pdfium_png_to_path(pdf: Path, dpi: int, output: Path) -> None:
+87:                    image.save(output)
+104:def render_mupdf_png_to_path(pdf: Path, dpi: int, output: Path) -> None:
+112:            image.save(output)
+129:            "--png-output",
+184:    parser.add_argument("--png-output", type=Path)
+187:    parser.add_argument("--output", type=Path)
+188:    parser.add_argument("--limit", type=int, default=25)
+194:        if args.pdf is None or args.png_output is None:
+197:            render_pdfium_png_to_path(args.pdf, args.dpi, args.png_output)
+199:            render_mupdf_png_to_path(args.pdf, args.dpi, args.png_output)
+202:    if args.corpus is None or args.wellfriend_bin is None or args.output is None:
+214:    pdfs = collect_pdfs(args.corpus, args.limit)
+215:    progress_path = args.output.with_suffix(args.output.suffix + ".progress.json")
+216:    for index, pdf in enumerate(pdfs, start=1):
+230:                for ref_name in ("pdfium", "mupdf"):
+267:                progress_path.write_text(
+268:                    json.dumps(
+270:                            "schema_version": "wellfriend.reference_render_compare.progress.v1",
+285:        "limit": args.limit,
+287:        "files_attempted": len(pages),
+294:    args.output.parent.mkdir(parents=True, exist_ok=True)
+295:    args.output.write_text(json.dumps(report, indent=2), encoding="utf-8")

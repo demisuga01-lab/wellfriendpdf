@@ -1,0 +1,132 @@
+{
+  "schema_version": "wellfriend.renderer_pdfium_closure.final.v1",
+  "date": "2026-08-02",
+  "local_start_commit": "3139236f3ada008a1ab2844b0da5195cccaa1729",
+  "vps": {
+    "host": "ubuntu@51.77.178.150",
+    "worktree": "/home/ubuntu/wellpdf/work/wellfriendpdf-renderer-closure-20260801T100439Z",
+    "result_dir": "/mnt/wellpdf-block/results/pdfium-renderer-closure-20260801T100439Z",
+    "corpus": "/mnt/wellpdf-block/corpus/real-5000-20260730T082710Z/pdfs"
+  },
+  "implemented_runtime_closures": [
+    "row-copy crop and blit paths for pixel buffers",
+    "opaque fill and blend fast paths",
+    "direct opaque RGB and grayscale image paths",
+    "decoded image cache reuse",
+    "retained display-list and tile cache integration",
+    "tile culling and progressive tile replay",
+    "transparent-page group decisions",
+    "image XObject cache integration",
+    "axis-aligned image boundary handling",
+    "image mask and soft-mask handling",
+    "SMaskInData support",
+    "DCT Decode array support",
+    "JPX SMaskInData support",
+    "mesh shading stream cache",
+    "tiling-pattern stroke support",
+    "pattern recursion guard with bounded fallback",
+    "pattern-in-Form rendering support",
+    "shading and pattern color-space resolution",
+    "Separation and DeviceN tint conversion",
+    "Indexed palette base conversion",
+    "non-widget annotation appearance synthesis",
+    "ClipMask antialiasing with bounded binary fallback",
+    "path-painter rectangle and span fast paths",
+    "cached glyph paths",
+    "Type1 built-in encoding and PFA/PFB parsing",
+    "Type1 OtherSubr flex handling",
+    "bounded Type1 light grid fitting",
+    "BaseFont fallback",
+    "font Widths indirect-reference support",
+    "MissingWidth support",
+    "UserUnit rendering support",
+    "reference-comparator subprocess isolation and timeout accounting"
+  ],
+  "reference_compare_5044_two_shard": {
+    "status": "pass",
+    "files": 5044,
+    "pages_rendered": 5044,
+    "wellfriend_render_failures": 0,
+    "reference_failures": 0,
+    "compared_against": [
+      "PDFium via pypdfium2",
+      "MuPDF via PyMuPDF",
+      "Poppler"
+    ],
+    "artifact": "/mnt/wellpdf-block/results/pdfium-renderer-closure-20260801T100439Z/reference-compare-5044-two-shard.json",
+    "artifact_sha256": "70ca632def37a59bb8b941fb482baecb7bdef4c3b680925ab9613827d3bfc6dd",
+    "tracked_summary": "evidence/renderer-pdfium-closure/render-metrics-5044-two-shard.json",
+    "tracked_summary_sha256": "8079766913b8051f9155116e8a14fd7f0dc1ac28917019f0cb626e6de160b241",
+    "threshold8_changed_pixel_percentage": {
+      "pdfium_avg": 13.1206,
+      "pdfium_p95": 20.7986,
+      "mupdf_avg": 10.0035,
+      "mupdf_p95": 15.5546,
+      "poppler_avg": 12.925,
+      "poppler_p95": 20.6438
+    }
+  },
+  "focused_validation": [
+    {
+      "stage": "recursive_pattern_guard",
+      "status": "pass",
+      "artifact_sha256": "582a9b3abdae5b92714f0cf5ca95bc1caaacaa1fa3b0f31eff39052de0f65a25"
+    },
+    {
+      "stage": "clip_mask_bounded_binary_fallback",
+      "status": "pass",
+      "artifact_sha256": "ff2abd074aff539fc31da5c15fbe9bb51df850a9fe81ec62ae8db076390a98ac"
+    },
+    {
+      "stage": "c_api_operator_preserving_regression",
+      "status": "pass",
+      "artifact_sha256": "1def21be769a8e1071ca718abe9ec793bc09a15d16e211f10928965680aeab3d"
+    },
+    {
+      "stage": "parse_json_roundtrip_regression",
+      "status": "pass",
+      "artifact_sha256": "3c5fecb67e83d3b5d7bdb9fdd394028c604ea1558d580fe72272e8e3cbe3c367"
+    },
+    {
+      "stage": "svg_raster_psnr_regression",
+      "status": "pass",
+      "artifact_sha256": "daa022b9afaa7efd75d711e0c5bc3e9f148bd39ac34a92d299822b6c1c5c56b8"
+    }
+  ],
+  "final_workspace_gates_on_vps": [
+    {
+      "stage": "cargo_fmt_all_check",
+      "status": "pass",
+      "artifact_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "git_diff_check",
+      "status": "pass",
+      "artifact_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "stage": "cargo_check_workspace_all_targets",
+      "status": "pass",
+      "artifact_sha256": "f0172c76aece210181567f0b211bc5f4bdb94e2dedf8fefc9e99ff0c30f155d7"
+    },
+    {
+      "stage": "cargo_clippy_workspace_all_targets_d_warnings",
+      "status": "pass",
+      "artifact_sha256": "f114d69ca05a8c4f22a51e1769fcd0eedf856fd151f5203e4aa8c7dd19c7fe6d"
+    },
+    {
+      "stage": "cargo_test_workspace_all_targets",
+      "status": "pass",
+      "artifact_sha256": "3479558b4c569944ff8042bbb22dc562d44a34e65fb651ec9331076e3c426ad5"
+    }
+  ],
+  "claim_boundary": {
+    "wellfriend_zero_render_failures_on_5044_real_pdf_first_pages": true,
+    "reference_tools_zero_failures_on_5044_real_pdf_first_pages": true,
+    "universal_pdfium_pixel_identity": false,
+    "all_pages_of_all_5044_pdfs_render_compared": false,
+    "pdfium_level_visual_parity_without_limits": false,
+    "reason": "The direct comparator run validates no renderer failures on 5,044 real first pages and records bounded visual-difference metrics against PDFium, MuPDF, and Poppler. It does not prove pixel identity, all-page corpus parity, or complete PDFium graphics-feature equivalence."
+  },
+  "final_verdict": "renderer_failure_gap_closed_on_required_5044_first_page_gate_with_explicit_pixel_parity_limits"
+}

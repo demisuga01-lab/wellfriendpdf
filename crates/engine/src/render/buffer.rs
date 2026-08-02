@@ -193,20 +193,35 @@ impl ClipMask {
     /// Query whether pixel (x, y) is inside the clip.
     #[inline]
     pub fn is_visible(&self, x: i32, y: i32) -> bool {
+        self.opacity_byte(x, y) > 0
+    }
+
+    #[inline]
+    pub(crate) fn opacity_byte(&self, x: i32, y: i32) -> u8 {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
-            return true;
+            return 255;
         }
         if let Some(solid) = self.solid {
-            return solid;
+            return if solid { 255 } else { 0 };
         }
         let idx = match (y as usize)
             .checked_mul(self.width as usize)
             .and_then(|row| row.checked_add(x as usize))
         {
             Some(idx) => idx,
-            None => return true,
+            None => return 255,
         };
-        self.mask.get(idx).copied().unwrap_or(255) > 0
+        self.mask.get(idx).copied().unwrap_or(255)
+    }
+
+    #[inline]
+    pub(crate) fn opacity(&self, x: i32, y: i32) -> f32 {
+        f32::from(self.opacity_byte(x, y)) / 255.0
+    }
+
+    #[inline]
+    pub(crate) fn has_partial_coverage(&self) -> bool {
+        self.solid.is_none() && self.mask.iter().any(|value| *value != 0 && *value != 255)
     }
 
     /// Set pixel (x, y) to visible or clipped.
@@ -252,10 +267,20 @@ impl ClipMask {
             self.solid = Some(false);
             return;
         }
+        let mut all_visible = true;
+        let mut all_empty = true;
         for (a, b) in self.mask.iter_mut().zip(other.mask.iter()) {
             *a = (*a).min(*b);
+            all_visible &= *a == 255;
+            all_empty &= *a == 0;
         }
-        self.solid = None;
+        self.solid = if all_visible {
+            Some(true)
+        } else if all_empty {
+            Some(false)
+        } else {
+            None
+        };
     }
 
     /// Union this mask with another mask.
@@ -282,10 +307,20 @@ impl ClipMask {
             self.solid = Some(true);
             return;
         }
+        let mut all_visible = true;
+        let mut all_empty = true;
         for (a, b) in self.mask.iter_mut().zip(other.mask.iter()) {
             *a = (*a).max(*b);
+            all_visible &= *a == 255;
+            all_empty &= *a == 0;
         }
-        self.solid = None;
+        self.solid = if all_visible {
+            Some(true)
+        } else if all_empty {
+            Some(false)
+        } else {
+            None
+        };
     }
 
     /// Fill a rectangular mask region with visible or clipped.
@@ -322,10 +357,38 @@ impl ClipMask {
 
     /// Build a ClipMask from a flattened path using scanline fill.
     pub fn from_path(flat: &FlatPath, width: u32, height: u32, fill_rule: FillRule) -> Self {
-        Self::scanline_fill(flat, width, height, fill_rule)
+        Self::scanline_fill_antialiased(flat, width, height, fill_rule)
     }
 
-    fn scanline_fill(flat: &FlatPath, width: u32, height: u32, rule: FillRule) -> Self {
+    fn fill_row_span(&mut self, y: i32, x0: i32, x1_exclusive: i32, visible: bool) {
+        if y < 0 || y >= self.height as i32 || x1_exclusive <= x0 {
+            return;
+        }
+        let start_x = x0.max(0).min(self.width as i32);
+        let end_x = x1_exclusive.max(0).min(self.width as i32);
+        if end_x <= start_x {
+            return;
+        }
+        let row_start = y as usize * self.width as usize;
+        let start = row_start + start_x as usize;
+        let end = row_start + end_x as usize;
+        if let Some(slice) = self.mask.get_mut(start..end) {
+            slice.fill(if visible { 255 } else { 0 });
+            self.solid = None;
+        }
+    }
+
+    fn refresh_solid_hint(&mut self) {
+        if self.mask.iter().all(|value| *value == 255) {
+            self.solid = Some(true);
+        } else if self.mask.iter().all(|value| *value == 0) {
+            self.solid = Some(false);
+        } else {
+            self.solid = None;
+        }
+    }
+
+    fn scanline_fill_antialiased(flat: &FlatPath, width: u32, height: u32, rule: FillRule) -> Self {
         let mut clip = Self::empty(width, height);
 
         let mut edges = Vec::new();
@@ -368,13 +431,125 @@ impl ClipMask {
             .max()
             .unwrap_or(0)
             .min(height as i32 - 1);
+        if y_max < y_min {
+            return clip;
+        }
+
+        // Anti-aliased clipping is important for ordinary vector clips, but a
+        // few real-world files contain extremely complex clipping paths that
+        // are used only as broad containment masks. The 4x4 supersampled path
+        // would re-sort and walk those edge sets for every sub-scanline, which
+        // can turn a single page render into a multi-minute CPU sink. Keep the
+        // exact same fill rule but fall back to a binary scanline mask once the
+        // edge/scanline work estimate exceeds the bounded interactive path.
+        const ANTIALIAS_WORK_LIMIT: usize = 2_000_000;
+        let scanlines = (y_max - y_min + 1).max(0) as usize;
+        if edges.len().saturating_mul(scanlines) > ANTIALIAS_WORK_LIMIT {
+            return Self::scanline_fill_binary_edges(&edges, width, height, rule, y_min, y_max);
+        }
+
+        const SAMPLES: i32 = 4;
+        const SAMPLE_COUNT: u16 = (SAMPLES * SAMPLES) as u16;
+        let Some(total_pixels) = (width as usize).checked_mul(height as usize) else {
+            return clip;
+        };
+        let mut coverage = vec![0u16; total_pixels];
 
         for y in y_min..=y_max {
+            for sub_y in 0..SAMPLES {
+                let y_f = y as f64 + (sub_y as f64 + 0.5) / f64::from(SAMPLES);
+                let mut intersections: Vec<(f64, i32)> = edges
+                    .iter()
+                    .filter(|edge| edge.y_min <= y_f && y_f < edge.y_max)
+                    .map(|edge| {
+                        (
+                            edge.x_at_ymin + edge.slope * (y_f - edge.y_min),
+                            edge.winding,
+                        )
+                    })
+                    .collect();
+                intersections
+                    .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+                for (x0, x1) in fill_spans(&intersections, rule) {
+                    if x1 <= x0 {
+                        continue;
+                    }
+                    let k0 = ceil_i32(x0 * f64::from(SAMPLES) - 0.5).max(0);
+                    let k1 = ceil_i32(x1 * f64::from(SAMPLES) - 0.5).min(width as i32 * SAMPLES);
+                    for sample_x in k0..k1 {
+                        let px = sample_x / SAMPLES;
+                        if px < 0 || px >= width as i32 {
+                            continue;
+                        }
+                        let Some(idx) = (y as usize)
+                            .checked_mul(width as usize)
+                            .and_then(|row| row.checked_add(px as usize))
+                        else {
+                            continue;
+                        };
+                        coverage[idx] = coverage[idx].saturating_add(1).min(SAMPLE_COUNT);
+                    }
+                }
+            }
+        }
+
+        let mut all_visible = true;
+        let mut all_empty = true;
+        for (dst, samples) in clip.mask.iter_mut().zip(coverage) {
+            let value = ((u32::from(samples) * 255 + u32::from(SAMPLE_COUNT / 2))
+                / u32::from(SAMPLE_COUNT))
+            .min(255) as u8;
+            *dst = value;
+            all_visible &= value == 255;
+            all_empty &= value == 0;
+        }
+        clip.solid = if all_visible {
+            Some(true)
+        } else if all_empty {
+            Some(false)
+        } else {
+            None
+        };
+
+        clip.refresh_solid_hint();
+        clip
+    }
+
+    fn scanline_fill_binary_edges(
+        edges: &[ClipEdge],
+        width: u32,
+        height: u32,
+        rule: FillRule,
+        y_min: i32,
+        y_max: i32,
+    ) -> Self {
+        let mut clip = Self::empty(width, height);
+        if edges.is_empty() || width == 0 || height == 0 || y_max < y_min {
+            return clip;
+        }
+        let row_count = (y_max - y_min + 1) as usize;
+        let mut starts = vec![Vec::<usize>::new(); row_count];
+        for (idx, edge) in edges.iter().enumerate() {
+            let start = floor_i32(edge.y_min).max(y_min);
+            let end = ceil_i32(edge.y_max).min(y_max);
+            if end < y_min || start > y_max {
+                continue;
+            }
+            starts[(start - y_min) as usize].push(idx);
+        }
+        let mut active: Vec<usize> = Vec::new();
+        for y in y_min..=y_max {
             let y_f = y as f64 + 0.5;
-            let mut intersections: Vec<(f64, i32)> = edges
+            active.extend(starts[(y - y_min) as usize].iter().copied());
+            active.retain(|idx| {
+                let edge = &edges[*idx];
+                edge.y_min <= y_f && y_f < edge.y_max
+            });
+            let mut intersections: Vec<(f64, i32)> = active
                 .iter()
-                .filter(|edge| edge.y_min <= y_f && y_f < edge.y_max)
-                .map(|edge| {
+                .map(|idx| {
+                    let edge = &edges[*idx];
                     (
                         edge.x_at_ymin + edge.slope * (y_f - edge.y_min),
                         edge.winding,
@@ -383,16 +558,14 @@ impl ClipMask {
                 .collect();
             intersections
                 .sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
-
             for (x0, x1) in fill_spans(&intersections, rule) {
-                let px0 = ceil_i32(x0).max(0);
-                let px1 = floor_i32(x1).min(width as i32 - 1);
-                for px in px0..=px1 {
-                    clip.set(px, y, true);
+                if x1 <= x0 {
+                    continue;
                 }
+                clip.fill_row_span(y, ceil_i32(x0), ceil_i32(x1), true);
             }
         }
-
+        clip.refresh_solid_hint();
         clip
     }
 }
@@ -677,6 +850,80 @@ impl PixelBuffer {
         self.render_mode
     }
 
+    /// Copy a rectangle from this buffer into a new buffer using row slices.
+    ///
+    /// This is intentionally clip-independent: it is used by tile/progressive
+    /// assembly after painting has already applied clipping. It avoids the
+    /// previous `get_pixel`/`set_pixel` loop, which rechecked bounds and clip
+    /// state for every pixel in already-rasterized rows.
+    pub(crate) fn copy_rect_to_new_buffer(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+    ) -> Option<Self> {
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let end_x = x.checked_add(width)?;
+        let end_y = y.checked_add(height)?;
+        if end_x > self.width || end_y > self.height {
+            return None;
+        }
+        let mut out = PixelBuffer::new_transparent_with_mode(width, height, self.render_mode);
+        let bytes_per_pixel = 4usize;
+        let src_stride = self.width as usize * bytes_per_pixel;
+        let dst_stride = width as usize * bytes_per_pixel;
+        let src_x = x as usize * bytes_per_pixel;
+        for row in 0..height as usize {
+            let src_start = (y as usize + row)
+                .checked_mul(src_stride)?
+                .checked_add(src_x)?;
+            let src_end = src_start.checked_add(dst_stride)?;
+            let dst_start = row.checked_mul(dst_stride)?;
+            let dst_end = dst_start.checked_add(dst_stride)?;
+            out.data
+                .get_mut(dst_start..dst_end)?
+                .copy_from_slice(self.data.get(src_start..src_end)?);
+        }
+        Some(out)
+    }
+
+    /// Copy an already-rasterized source buffer into this buffer at a pixel
+    /// destination using row slices. The destination clip is deliberately not
+    /// applied; callers use this for assembling completed render tiles into an
+    /// output surface, not for painting page content.
+    pub(crate) fn blit_from_buffer(&mut self, src: &PixelBuffer, dst_x: u32, dst_y: u32) -> bool {
+        let Some(end_x) = dst_x.checked_add(src.width) else {
+            return false;
+        };
+        let Some(end_y) = dst_y.checked_add(src.height) else {
+            return false;
+        };
+        if end_x > self.width || end_y > self.height {
+            return false;
+        }
+        let bytes_per_pixel = 4usize;
+        let dst_stride = self.width as usize * bytes_per_pixel;
+        let src_stride = src.width as usize * bytes_per_pixel;
+        let dst_x_bytes = dst_x as usize * bytes_per_pixel;
+        for row in 0..src.height as usize {
+            let src_start = row * src_stride;
+            let src_end = src_start + src_stride;
+            let dst_start = (dst_y as usize + row) * dst_stride + dst_x_bytes;
+            let dst_end = dst_start + src_stride;
+            let Some(dst_slice) = self.data.get_mut(dst_start..dst_end) else {
+                return false;
+            };
+            let Some(src_slice) = src.data.get(src_start..src_end) else {
+                return false;
+            };
+            dst_slice.copy_from_slice(src_slice);
+        }
+        true
+    }
+
     fn pixel_index(&self, x: i32, y: i32) -> Option<usize> {
         if x < 0 || y < 0 || x >= self.width as i32 || y >= self.height as i32 {
             return None;
@@ -720,23 +967,66 @@ impl PixelBuffer {
         }
     }
 
+    /// True when an already-computed opaque source pixel can be copied straight
+    /// into the device buffer without invoking compositing, clipping, soft-mask,
+    /// or knockout state. Image and glyph hot paths use this after they have
+    /// already chosen a final sample color.
+    #[inline]
+    pub(crate) fn can_write_opaque_unclipped(&self) -> bool {
+        self.blend_mode == BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && self.clip.as_ref().is_none_or(ClipMask::is_all_visible)
+    }
+
+    /// Write an opaque pixel without consulting paint-time clip/composite state.
+    ///
+    /// Call only after [`Self::can_write_opaque_unclipped`] has been checked.
+    #[inline]
+    pub(crate) fn write_opaque_pixel_unclipped(&mut self, x: i32, y: i32, color: PixelColor) {
+        if let Some(idx) = self.pixel_index(x, y) {
+            self.data[idx] = color[0];
+            self.data[idx + 1] = color[1];
+            self.data[idx + 2] = color[2];
+            self.data[idx + 3] = 255;
+        }
+    }
+
     /// Alpha-composite a color with coverage [0.0, 1.0] over the existing pixel.
     pub fn blend_pixel(&mut self, x: i32, y: i32, color: PixelColor, coverage: f32) {
         if coverage <= 0.0 {
             return;
         }
-        if let Some(clip) = &self.clip {
-            if !clip.is_visible(x, y) {
+        let clip_alpha = if let Some(clip) = &self.clip {
+            let clip_alpha = clip.opacity(x, y);
+            if clip_alpha <= 0.0 {
                 return;
             }
-        }
+            clip_alpha
+        } else {
+            1.0
+        };
         let idx = match self.pixel_index(x, y) {
             Some(idx) => idx,
             None => return,
         };
 
+        if color[3] == 255
+            && coverage >= 1.0
+            && clip_alpha >= 1.0
+            && self.blend_mode == BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+        {
+            self.data[idx] = color[0];
+            self.data[idx + 1] = color[1];
+            self.data[idx + 2] = color[2];
+            self.data[idx + 3] = 255;
+            return;
+        }
+
         let smask_alpha = self.smask.as_ref().map_or(1.0, |mask| mask.get(x, y));
-        let eff_a = (color[3] as f32 / 255.0 * coverage * smask_alpha).clamp(0.0, 1.0);
+        let eff_a = (color[3] as f32 / 255.0 * coverage * smask_alpha * clip_alpha).clamp(0.0, 1.0);
         if eff_a <= 0.0 {
             return;
         }
@@ -822,18 +1112,22 @@ impl PixelBuffer {
         if coverage <= 0.0 {
             return;
         }
-        if let Some(clip) = &self.clip {
-            if !clip.is_visible(x, y) {
+        let clip_alpha = if let Some(clip) = &self.clip {
+            let clip_alpha = clip.opacity(x, y);
+            if clip_alpha <= 0.0 {
                 return;
             }
-        }
+            clip_alpha
+        } else {
+            1.0
+        };
         let idx = match self.pixel_index(x, y) {
             Some(idx) => idx,
             None => return,
         };
 
         let smask_alpha = self.smask.as_ref().map_or(1.0, |mask| mask.get(x, y));
-        let eff_a = (alpha * coverage * smask_alpha).clamp(0.0, 1.0);
+        let eff_a = (alpha * coverage * smask_alpha * clip_alpha).clamp(0.0, 1.0);
         if eff_a <= 0.0 {
             return;
         }
@@ -889,6 +1183,10 @@ impl PixelBuffer {
 
     /// Fill the entire buffer with a solid color.
     pub fn fill(&mut self, color: PixelColor) {
+        if color.iter().all(|component| *component == color[0]) {
+            self.data.fill(color[0]);
+            return;
+        }
         for chunk in self.data.chunks_exact_mut(4) {
             chunk[0] = color[0];
             chunk[1] = color[1];
@@ -913,6 +1211,53 @@ impl PixelBuffer {
             return;
         }
 
+        if color[3] < 255
+            && self.blend_mode == BlendMode::Normal
+            && self.smask.is_none()
+            && self.knockout_backdrop.is_none()
+            && !self.render_mode.is_high_quality()
+        {
+            let Some(clip) = self.clip.as_ref() else {
+                for row in y0..y1 {
+                    blend_normal_compat_run(&mut self.data, self.width, row, x0, x1, color);
+                }
+                return;
+            };
+            if clip.is_empty() {
+                return;
+            }
+            if clip.is_all_visible() {
+                for row in y0..y1 {
+                    blend_normal_compat_run(&mut self.data, self.width, row, x0, x1, color);
+                }
+                return;
+            }
+            if clip.has_partial_coverage() {
+                for row in y0..y1 {
+                    for col in x0..x1 {
+                        self.blend_pixel(col, row, color, 1.0);
+                    }
+                }
+                return;
+            }
+            for row in y0..y1 {
+                let mut run_start: Option<i32> = None;
+                for col in x0..x1 {
+                    if clip.is_visible(col, row) {
+                        if run_start.is_none() {
+                            run_start = Some(col);
+                        }
+                    } else if let Some(start) = run_start.take() {
+                        blend_normal_compat_run(&mut self.data, self.width, row, start, col, color);
+                    }
+                }
+                if let Some(start) = run_start {
+                    blend_normal_compat_run(&mut self.data, self.width, row, start, x1, color);
+                }
+            }
+            return;
+        }
+
         let should_blend = color[3] < 255
             || self.blend_mode != BlendMode::Normal
             || self.smask.is_some()
@@ -932,6 +1277,23 @@ impl PixelBuffer {
             }
             return;
         };
+        if clip.is_empty() {
+            return;
+        }
+        if clip.is_all_visible() {
+            for row in y0..y1 {
+                fill_opaque_run(&mut self.data, self.width, row, x0, x1, color);
+            }
+            return;
+        }
+        if clip.has_partial_coverage() {
+            for row in y0..y1 {
+                for col in x0..x1 {
+                    self.blend_pixel(col, row, color, 1.0);
+                }
+            }
+            return;
+        }
 
         for row in y0..y1 {
             let mut run_start: Option<i32> = None;
@@ -1037,6 +1399,11 @@ impl PixelBuffer {
     /// outputs use white paper as that medium, but blend modes must not see that
     /// white as their initial backdrop while the page content is still painting.
     pub fn flatten_onto_background(&mut self, background: PixelColor) {
+        if background[3] == 255 && !self.render_mode.is_high_quality() {
+            flatten_compat_onto_opaque_background(&mut self.data, background);
+            return;
+        }
+
         let bg_a = background[3] as f32 / 255.0;
         for chunk in self.data.chunks_exact_mut(4) {
             let src_a = chunk[3] as f32 / 255.0;
@@ -1127,6 +1494,62 @@ impl PixelBuffer {
         let alpha = group_alpha.clamp(0.0, 1.0);
         if alpha <= 0.0 {
             return;
+        }
+        if blend_mode == BlendMode::Normal
+            && soft_mask.is_none()
+            && self.knockout_backdrop.is_none()
+            && !self.render_mode.is_high_quality()
+        {
+            match self.clip.as_ref() {
+                Some(clip) if clip.is_empty() => return,
+                Some(clip) if clip.has_partial_coverage() => {}
+                Some(clip) if !clip.is_all_visible() => {
+                    let w = self.width.min(src.width) as i32;
+                    let h = self.height.min(src.height) as i32;
+                    for row in 0..h {
+                        let mut run_start: Option<i32> = None;
+                        for col in 0..w {
+                            if clip.is_visible(col, row) {
+                                if run_start.is_none() {
+                                    run_start = Some(col);
+                                }
+                            } else if let Some(start) = run_start.take() {
+                                composite_normal_compat_row_run(
+                                    &mut self.data,
+                                    self.width,
+                                    row,
+                                    start,
+                                    col,
+                                    src,
+                                    alpha,
+                                );
+                            }
+                        }
+                        if let Some(start) = run_start {
+                            composite_normal_compat_row_run(
+                                &mut self.data,
+                                self.width,
+                                row,
+                                start,
+                                w,
+                                src,
+                                alpha,
+                            );
+                        }
+                    }
+                    return;
+                }
+                _ => {
+                    composite_normal_compat_buffer_unclipped(
+                        &mut self.data,
+                        self.width,
+                        self.height,
+                        src,
+                        alpha,
+                    );
+                    return;
+                }
+            }
         }
         let saved_blend = self.blend_mode;
         self.blend_mode = blend_mode;
@@ -1221,17 +1644,21 @@ impl PixelBuffer {
         let alpha = group_alpha.clamp(0.0, 1.0);
         for y in 0..self.height.min(src.height) as i32 {
             for x in 0..self.width.min(src.width) as i32 {
-                if let Some(clip) = &self.clip {
-                    if !clip.is_visible(x, y) {
+                let clip_alpha = if let Some(clip) = &self.clip {
+                    let clip_alpha = clip.opacity(x, y);
+                    if clip_alpha <= 0.0 {
                         continue;
                     }
-                }
+                    clip_alpha
+                } else {
+                    1.0
+                };
                 let sp = src.get_pixel(x, y);
                 if sp[3] == 0 {
                     continue;
                 }
                 let mask = soft_mask.map_or(1.0, |m| m.get(x, y));
-                let eff = (sp[3] as f32 / 255.0 * alpha * mask).clamp(0.0, 1.0);
+                let eff = (sp[3] as f32 / 255.0 * alpha * mask * clip_alpha).clamp(0.0, 1.0);
                 if let Some(idx) = self.pixel_index(x, y) {
                     self.data[idx] = sp[0];
                     self.data[idx + 1] = sp[1];
@@ -1241,6 +1668,70 @@ impl PixelBuffer {
             }
         }
     }
+}
+
+fn flatten_compat_onto_opaque_background(data: &mut [u8], background: PixelColor) {
+    for chunk in data.chunks_exact_mut(4) {
+        let src_a = chunk[3];
+        if src_a == 255 {
+            continue;
+        }
+        if src_a == 0 {
+            chunk.copy_from_slice(&background);
+            continue;
+        }
+        let alpha = src_a as u16;
+        let inv_alpha = 255_u16.saturating_sub(alpha);
+        for channel in 0..3 {
+            let src = chunk[channel] as u16;
+            let bg = background[channel] as u16;
+            chunk[channel] = ((src * alpha + bg * inv_alpha + 127) / 255) as u8;
+        }
+        chunk[3] = 255;
+    }
+}
+
+fn composite_normal_compat_row_run(
+    dst: &mut [u8],
+    dst_width: u32,
+    row: i32,
+    x_start: i32,
+    x_end_exclusive: i32,
+    src: &PixelBuffer,
+    group_alpha: f32,
+) {
+    if row < 0 || x_start < 0 || x_end_exclusive <= x_start {
+        return;
+    }
+    if row >= src.height as i32 || x_start >= src.width as i32 {
+        return;
+    }
+    let x_end_exclusive = x_end_exclusive.min(src.width as i32);
+    if x_end_exclusive <= x_start {
+        return;
+    }
+    let Some(dst_start) = (row as usize)
+        .checked_mul(dst_width as usize)
+        .and_then(|row_base| row_base.checked_add(x_start as usize))
+        .and_then(|pixel| pixel.checked_mul(4))
+    else {
+        return;
+    };
+    let Some(src_start) = (row as usize)
+        .checked_mul(src.width as usize)
+        .and_then(|row_base| row_base.checked_add(x_start as usize))
+        .and_then(|pixel| pixel.checked_mul(4))
+    else {
+        return;
+    };
+    let len = (x_end_exclusive - x_start) as usize * 4;
+    let Some(dst_row) = dst.get_mut(dst_start..dst_start + len) else {
+        return;
+    };
+    let Some(src_row) = src.data.get(src_start..src_start + len) else {
+        return;
+    };
+    composite_normal_compat_row(dst_row, src_row, group_alpha);
 }
 
 fn fill_opaque_run(
@@ -1271,9 +1762,208 @@ fn fill_opaque_run(
     let Some(slice) = data.get_mut(start..end) else {
         return;
     };
+    if color.iter().all(|component| *component == color[0]) {
+        slice.fill(color[0]);
+        return;
+    }
     for chunk in slice.chunks_exact_mut(4) {
         chunk.copy_from_slice(&color);
     }
+}
+
+fn blend_normal_compat_run(
+    data: &mut [u8],
+    width: u32,
+    row: i32,
+    x_start: i32,
+    x_end_exclusive: i32,
+    color: PixelColor,
+) {
+    if row < 0 || x_start < 0 || x_end_exclusive <= x_start || color[3] == 0 {
+        return;
+    }
+    let Some(start) = (row as usize)
+        .checked_mul(width as usize)
+        .and_then(|row_base| row_base.checked_add(x_start as usize))
+        .and_then(|pixel| pixel.checked_mul(4))
+    else {
+        return;
+    };
+    let Some(end) = (row as usize)
+        .checked_mul(width as usize)
+        .and_then(|row_base| row_base.checked_add(x_end_exclusive as usize))
+        .and_then(|pixel| pixel.checked_mul(4))
+    else {
+        return;
+    };
+    let Some(slice) = data.get_mut(start..end) else {
+        return;
+    };
+
+    if row_alpha_is(slice, 255) && blend_normal_compat_opaque_dst_wide(slice, color) {
+        return;
+    }
+
+    blend_normal_compat_run_scalar(slice, color);
+}
+
+fn blend_normal_compat_run_scalar(slice: &mut [u8], color: PixelColor) {
+    let src_a = color[3] as f32 / 255.0;
+    let src_rgb = [
+        color[0] as f32 / 255.0,
+        color[1] as f32 / 255.0,
+        color[2] as f32 / 255.0,
+    ];
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    for chunk in slice.chunks_exact_mut(4) {
+        let dst_a = chunk[3] as f32 / 255.0;
+        let out_a = src_a + dst_a * (1.0 - src_a);
+        if out_a < 1e-6 {
+            chunk.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        let inv_alpha = 1.0 / out_a;
+        for channel in 0..3 {
+            let dst = chunk[channel] as f32 / 255.0;
+            let out = (src_rgb[channel] * src_a + dst * dst_a * (1.0 - src_a)) * inv_alpha;
+            chunk[channel] = to_byte(out);
+        }
+        chunk[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn blend_normal_compat_opaque_dst_wide(slice: &mut [u8], color: PixelColor) -> bool {
+    if color[3] == 0 {
+        return true;
+    }
+    if color[3] == 255 {
+        for chunk in slice.chunks_exact_mut(4) {
+            chunk.copy_from_slice(&color);
+        }
+        return true;
+    }
+    if slice.len() < 8 {
+        return false;
+    }
+
+    let alpha = u16::from(color[3]);
+    let inv_alpha = 255_u16.saturating_sub(alpha);
+    let src = wide::u16x8::new([
+        u16::from(color[0]),
+        u16::from(color[1]),
+        u16::from(color[2]),
+        255,
+        u16::from(color[0]),
+        u16::from(color[1]),
+        u16::from(color[2]),
+        255,
+    ]);
+    let alpha_v = wide::u16x8::new([alpha, alpha, alpha, 255, alpha, alpha, alpha, 255]);
+    let inv_v = wide::u16x8::new([
+        inv_alpha, inv_alpha, inv_alpha, 0, inv_alpha, inv_alpha, inv_alpha, 0,
+    ]);
+    let round = wide::u16x8::splat(128);
+    let mut offset = 0usize;
+    let simd_len = (slice.len() / 8) * 8;
+    while offset < simd_len {
+        let dst = wide::u16x8::new([
+            u16::from(slice[offset]),
+            u16::from(slice[offset + 1]),
+            u16::from(slice[offset + 2]),
+            u16::from(slice[offset + 3]),
+            u16::from(slice[offset + 4]),
+            u16::from(slice[offset + 5]),
+            u16::from(slice[offset + 6]),
+            u16::from(slice[offset + 7]),
+        ]);
+        let mixed = src * alpha_v + dst * inv_v + round;
+        let out = ((mixed + (mixed >> 8_u32)) >> 8_u32).to_array();
+        for lane in 0..8 {
+            slice[offset + lane] = out[lane].min(255) as u8;
+        }
+        slice[offset + 3] = 255;
+        slice[offset + 7] = 255;
+        offset += 8;
+    }
+
+    if offset < slice.len() {
+        blend_normal_compat_run_scalar(&mut slice[offset..], color);
+    }
+    true
+}
+
+fn composite_normal_compat_buffer_unclipped(
+    dst: &mut [u8],
+    dst_width: u32,
+    dst_height: u32,
+    src: &PixelBuffer,
+    group_alpha: f32,
+) {
+    let width = dst_width.min(src.width) as usize;
+    let height = dst_height.min(src.height) as usize;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let dst_stride = dst_width as usize * 4;
+    let src_stride = src.width as usize * 4;
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    for row in 0..height {
+        let Some(dst_row) = dst.get_mut(row * dst_stride..row * dst_stride + width * 4) else {
+            return;
+        };
+        let Some(src_row) = src.data.get(row * src_stride..row * src_stride + width * 4) else {
+            return;
+        };
+        if alpha >= 1.0 {
+            if row_alpha_is(src_row, 0) {
+                continue;
+            }
+            if row_alpha_is(src_row, 255) {
+                dst_row.copy_from_slice(src_row);
+                continue;
+            }
+        }
+        composite_normal_compat_row(dst_row, src_row, alpha);
+    }
+}
+
+fn composite_normal_compat_row(dst_row: &mut [u8], src_row: &[u8], group_alpha: f32) {
+    let alpha = group_alpha.clamp(0.0, 1.0);
+    if alpha <= 0.0 {
+        return;
+    }
+    let to_byte = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) as u8;
+    for (d, s) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
+        if s[3] == 0 {
+            continue;
+        }
+        let src_a = (s[3] as f32 / 255.0 * alpha).clamp(0.0, 1.0);
+        if src_a <= 0.0 {
+            continue;
+        }
+        if src_a >= 1.0 {
+            d.copy_from_slice(&[s[0], s[1], s[2], 255]);
+            continue;
+        }
+        let dst_a = d[3] as f32 / 255.0;
+        let out_a = src_a + dst_a * (1.0 - src_a);
+        if out_a < 1e-6 {
+            d.copy_from_slice(&TRANSPARENT);
+            continue;
+        }
+        let inv_alpha = 1.0 / out_a;
+        for channel in 0..3 {
+            let src_channel = s[channel] as f32 / 255.0;
+            let dst_channel = d[channel] as f32 / 255.0;
+            let out = (src_channel * src_a + dst_channel * dst_a * (1.0 - src_a)) * inv_alpha;
+            d[channel] = to_byte(out);
+        }
+        d[3] = (out_a * 255.0).clamp(0.0, 255.0) as u8;
+    }
+}
+
+fn row_alpha_is(row: &[u8], alpha: u8) -> bool {
+    row.chunks_exact(4).all(|pixel| pixel[3] == alpha)
 }
 
 #[cfg(test)]
@@ -1286,6 +1976,271 @@ mod tests {
         assert_eq!(buf.render_mode(), RenderMode::Compat);
         assert_eq!(buf.get_pixel(0, 0), TRANSPARENT);
         assert_eq!(buf.get_pixel(3, 3), TRANSPARENT);
+    }
+
+    #[test]
+    fn copy_rect_to_new_buffer_uses_exact_pixel_window() {
+        let mut src = PixelBuffer::new(4, 3);
+        for y in 0..3 {
+            for x in 0..4 {
+                src.set_pixel(
+                    x,
+                    y,
+                    [(10 + x) as u8, (20 + y) as u8, (30 + x + y) as u8, 255],
+                );
+            }
+        }
+
+        let cropped = src.copy_rect_to_new_buffer(1, 1, 2, 2).expect("valid crop");
+        assert_eq!(cropped.width, 2);
+        assert_eq!(cropped.height, 2);
+        assert_eq!(cropped.get_pixel(0, 0), src.get_pixel(1, 1));
+        assert_eq!(cropped.get_pixel(1, 0), src.get_pixel(2, 1));
+        assert_eq!(cropped.get_pixel(0, 1), src.get_pixel(1, 2));
+        assert_eq!(cropped.get_pixel(1, 1), src.get_pixel(2, 2));
+        assert!(src.copy_rect_to_new_buffer(3, 2, 2, 1).is_none());
+    }
+
+    #[test]
+    fn blit_from_buffer_copies_rows_without_paint_clip() {
+        let mut src = PixelBuffer::new(2, 2);
+        src.fill_rect(0, 0, 2, 2, RED);
+
+        let mut dst = PixelBuffer::new(4, 4);
+        dst.set_clip(ClipMask::empty(4, 4));
+        assert!(
+            dst.blit_from_buffer(&src, 1, 1),
+            "assembly blit ignores paint clip"
+        );
+        assert_eq!(dst.get_pixel(1, 1), RED);
+        assert_eq!(dst.get_pixel(2, 2), RED);
+        assert_eq!(dst.get_pixel(0, 0), TRANSPARENT);
+        assert!(!dst.blit_from_buffer(&src, 3, 3));
+    }
+
+    #[test]
+    fn opaque_fill_rect_short_circuits_solid_clip_states() {
+        let mut empty = PixelBuffer::new(3, 3);
+        empty.set_clip(ClipMask::empty(3, 3));
+        empty.fill_rect(0, 0, 3, 3, BLUE);
+        assert_eq!(empty.get_pixel(1, 1), TRANSPARENT);
+
+        let mut visible = PixelBuffer::new(3, 3);
+        visible.set_clip(ClipMask::all_visible(3, 3));
+        visible.fill_rect(0, 0, 3, 3, GREEN);
+        assert_eq!(visible.get_pixel(1, 1), GREEN);
+    }
+
+    #[test]
+    fn antialiased_clip_mask_preserves_fractional_edge_coverage() {
+        let flat = FlatPath {
+            subpaths: vec![vec![
+                (0.25, 0.25),
+                (4.75, 0.25),
+                (4.75, 4.75),
+                (0.25, 4.75),
+                (0.25, 0.25),
+            ]],
+            closed: vec![true],
+        };
+        let clip = ClipMask::from_path(&flat, 6, 6, FillRule::NonZero);
+
+        assert!(clip.has_partial_coverage());
+        assert!((1..255).contains(&clip.opacity_byte(0, 2)));
+        assert_eq!(clip.opacity_byte(2, 2), 255);
+        assert_eq!(clip.opacity_byte(5, 2), 0);
+
+        let mut buf = PixelBuffer::new_filled(6, 6, WHITE);
+        buf.set_clip(clip);
+        buf.fill_rect(0, 0, 6, 6, BLACK);
+
+        let edge = buf.get_pixel(0, 2);
+        assert!(
+            edge[0] > 0 && edge[0] < 255,
+            "fractional clip edge should blend instead of hard filling: {edge:?}"
+        );
+        assert_eq!(buf.get_pixel(2, 2), BLACK);
+        assert_eq!(buf.get_pixel(5, 2), WHITE);
+    }
+
+    #[test]
+    fn complex_clip_mask_uses_bounded_binary_fallback() {
+        let mut subpaths = Vec::new();
+        let mut closed = Vec::new();
+        for i in 0..1200 {
+            let x = 4.25 + f64::from(i % 24) * 2.0;
+            let y = f64::from(i / 24);
+            subpaths.push(vec![
+                (x, y),
+                (x + 1.75, y),
+                (x + 1.75, y + 900.0),
+                (x, y + 900.0),
+                (x, y),
+            ]);
+            closed.push(true);
+        }
+        let flat = FlatPath { subpaths, closed };
+        let clip = ClipMask::from_path(&flat, 64, 1024, FillRule::NonZero);
+
+        assert!(!clip.has_partial_coverage());
+        assert_eq!(clip.opacity_byte(5, 100), 255);
+        assert_eq!(clip.opacity_byte(0, 100), 0);
+    }
+
+    #[test]
+    fn opaque_normal_blend_pixel_uses_exact_source_fast_path() {
+        let mut buf = PixelBuffer::new(2, 1);
+        buf.set_pixel(0, 0, WHITE);
+
+        assert!(buf.can_write_opaque_unclipped());
+        buf.blend_pixel(0, 0, [7, 11, 13, 255], 1.0);
+        assert_eq!(buf.get_pixel(0, 0), [7, 11, 13, 255]);
+
+        buf.set_clip(ClipMask::empty(2, 1));
+        assert!(!buf.can_write_opaque_unclipped());
+        buf.blend_pixel(1, 0, RED, 1.0);
+        assert_eq!(buf.get_pixel(1, 0), TRANSPARENT);
+    }
+
+    #[test]
+    fn opaque_unclipped_writer_ignores_alpha_after_capability_check() {
+        let mut buf = PixelBuffer::new(1, 1);
+        assert!(buf.can_write_opaque_unclipped());
+        buf.write_opaque_pixel_unclipped(0, 0, [3, 5, 7, 9]);
+        assert_eq!(buf.get_pixel(0, 0), [3, 5, 7, 255]);
+    }
+
+    #[test]
+    fn uniform_full_buffer_and_row_fills_use_byte_fill_fast_path() {
+        let mut buf = PixelBuffer::new(3, 2);
+        buf.fill(WHITE);
+        assert_eq!(buf.get_pixel(0, 0), WHITE);
+        assert_eq!(buf.get_pixel(2, 1), WHITE);
+
+        buf.fill(BLACK);
+        buf.fill_rect(1, 0, 2, 1, WHITE);
+        assert_eq!(buf.get_pixel(0, 0), BLACK);
+        assert_eq!(buf.get_pixel(1, 0), WHITE);
+        assert_eq!(buf.get_pixel(2, 0), WHITE);
+        assert_eq!(buf.get_pixel(0, 1), BLACK);
+    }
+
+    #[test]
+    fn translucent_normal_fill_rect_matches_pixel_blend() {
+        let color = [200, 40, 20, 96];
+        let mut rect = PixelBuffer::new_filled(3, 1, [10, 80, 140, 255]);
+        rect.fill_rect(0, 0, 3, 1, color);
+
+        let mut pixel = PixelBuffer::new_filled(3, 1, [10, 80, 140, 255]);
+        for x in 0..3 {
+            pixel.blend_pixel(x, 0, color, 1.0);
+        }
+
+        assert_eq!(
+            rect.to_raw_image_rgba().pixels,
+            pixel.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn wide_opaque_destination_blend_matches_pixel_blend() {
+        let color = [113, 23, 211, 97];
+        let mut wide_path = PixelBuffer::new_filled(7, 1, [17, 83, 149, 255]);
+        wide_path.fill_rect(0, 0, 7, 1, color);
+
+        let mut scalar_path = PixelBuffer::new_filled(7, 1, [17, 83, 149, 255]);
+        for x in 0..7 {
+            scalar_path.blend_pixel(x, 0, color, 1.0);
+        }
+
+        for (a, b) in wide_path
+            .to_raw_image_rgba()
+            .pixels
+            .iter()
+            .zip(scalar_path.to_raw_image_rgba().pixels.iter())
+        {
+            assert!((*a as i16 - *b as i16).abs() <= 1);
+        }
+    }
+
+    #[test]
+    fn normal_group_composite_fast_path_matches_pixel_blend() {
+        let mut src = PixelBuffer::new_transparent(3, 1);
+        src.set_pixel(0, 0, [200, 40, 20, 128]);
+        src.set_pixel(1, 0, [1, 2, 3, 255]);
+
+        let mut fast = PixelBuffer::new_filled(3, 1, [10, 80, 140, 255]);
+        fast.composite_from(&src, 0.75, BlendMode::Normal, None);
+
+        let mut expected = PixelBuffer::new_filled(3, 1, [10, 80, 140, 255]);
+        for x in 0..3 {
+            expected.blend_pixel(x, 0, src.get_pixel(x, 0), 0.75);
+        }
+
+        assert_eq!(
+            fast.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn clipped_normal_group_composite_matches_pixel_blend() {
+        let mut src = PixelBuffer::new_transparent(5, 1);
+        src.set_pixel(0, 0, [200, 40, 20, 128]);
+        src.set_pixel(1, 0, [1, 2, 3, 255]);
+        src.set_pixel(2, 0, [40, 80, 120, 96]);
+        src.set_pixel(3, 0, [70, 80, 90, 255]);
+        src.set_pixel(4, 0, [11, 22, 33, 128]);
+
+        let mut clip = ClipMask::empty(5, 1);
+        clip.fill_rect(1, 0, 3, 1, true);
+
+        let mut fast = PixelBuffer::new_filled(5, 1, [10, 80, 140, 255]);
+        fast.set_clip(clip.clone());
+        fast.composite_from(&src, 0.75, BlendMode::Normal, None);
+
+        let mut expected = PixelBuffer::new_filled(5, 1, [10, 80, 140, 255]);
+        expected.set_clip(clip);
+        for x in 0..5 {
+            expected.blend_pixel(x, 0, src.get_pixel(x, 0), 0.75);
+        }
+
+        assert_eq!(
+            fast.to_raw_image_rgba().pixels,
+            expected.to_raw_image_rgba().pixels
+        );
+    }
+
+    #[test]
+    fn clip_mask_scanline_full_rect_refreshes_solid_hint() {
+        let flat = FlatPath {
+            subpaths: vec![vec![
+                (0.0, 0.0),
+                (3.0, 0.0),
+                (3.0, 2.0),
+                (0.0, 2.0),
+                (0.0, 0.0),
+            ]],
+            closed: vec![true],
+        };
+        let clip = ClipMask::from_path(&flat, 3, 2, FillRule::NonZero);
+
+        assert!(clip.is_all_visible());
+        assert!(clip.is_visible(0, 0));
+        assert!(clip.is_visible(2, 1));
+    }
+
+    #[test]
+    fn clip_mask_intersect_and_union_refresh_solid_hints() {
+        let mut intersected = ClipMask::all_visible(2, 2);
+        let empty = ClipMask::empty(2, 2);
+        intersected.intersect(&empty);
+        assert!(intersected.is_empty());
+
+        let mut unioned = ClipMask::empty(2, 2);
+        let visible = ClipMask::all_visible(2, 2);
+        unioned.union_with(&visible);
+        assert!(unioned.is_all_visible());
     }
 
     #[test]
@@ -1407,6 +2362,30 @@ mod tests {
             "transparent blue flattens over white: {:?}",
             p
         );
+    }
+
+    #[test]
+    fn flatten_compat_opaque_background_matches_source_over_math() {
+        let background = [20, 40, 60, 255];
+        let mut data = vec![200, 100, 50, 128, 10, 30, 70, 0, 90, 80, 70, 255];
+        flatten_compat_onto_opaque_background(&mut data, background);
+
+        let expected_channel = |src: u8, bg: u8, alpha: u8| -> u8 {
+            let a = alpha as u16;
+            let inv = 255_u16.saturating_sub(a);
+            ((src as u16 * a + bg as u16 * inv + 127) / 255) as u8
+        };
+        assert_eq!(
+            &data[0..4],
+            &[
+                expected_channel(200, 20, 128),
+                expected_channel(100, 40, 128),
+                expected_channel(50, 60, 128),
+                255,
+            ]
+        );
+        assert_eq!(&data[4..8], &background);
+        assert_eq!(&data[8..12], &[90, 80, 70, 255]);
     }
 
     #[test]
@@ -1794,6 +2773,19 @@ mod tests {
         dst.composite_from(&src, 1.0, BlendMode::Normal, None);
         assert_eq!(dst.get_pixel(0, 0), WHITE, "transparent src leaves dst");
         assert_eq!(dst.get_pixel(1, 0), RED);
+    }
+
+    #[test]
+    fn normal_group_composite_copies_opaque_rows_exactly() {
+        let mut dst = PixelBuffer::new_filled(3, 1, WHITE);
+        let mut src = PixelBuffer::new_transparent(3, 1);
+        src.set_pixel(0, 0, [10, 20, 30, 255]);
+        src.set_pixel(1, 0, [40, 50, 60, 255]);
+        src.set_pixel(2, 0, [70, 80, 90, 255]);
+
+        dst.composite_from(&src, 1.0, BlendMode::Normal, None);
+
+        assert_eq!(dst.rgba_bytes(), src.rgba_bytes());
     }
 
     #[test]

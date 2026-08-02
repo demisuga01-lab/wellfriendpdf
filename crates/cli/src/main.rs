@@ -2819,6 +2819,11 @@ struct RenderCorpusArgs {
     /// Optional cap on files for smoke/debug runs
     #[arg(long)]
     max_files: Option<usize>,
+    /// Repeat each selected page render within the same opened document/cache.
+    /// This is for retained warm-replay benchmarking; the default production
+    /// behavior renders each selected page once.
+    #[arg(long, default_value_t = 1)]
+    repeat_page_renders: usize,
     /// Bounded worker count for independent files
     #[arg(long, default_value_t = 1)]
     workers: usize,
@@ -7611,6 +7616,13 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
     let mut jsonl = BufWriter::new(jsonl_file);
     let mut durations_ms = Vec::with_capacity(files.len());
     let mut render_durations_ms = Vec::with_capacity(files.len());
+    let mut first_render_durations_ms = Vec::with_capacity(files.len());
+    let mut warm_render_durations_ms = Vec::new();
+    let mut display_list_compile_durations_ms = Vec::new();
+    let mut display_list_replay_durations_ms = Vec::new();
+    let mut display_list_cache_hits = 0usize;
+    let mut display_list_raster_cache_hits = 0usize;
+    let mut display_list_fallbacks = 0usize;
     let mut attempted_pages = 0usize;
     let mut rendered_pages = 0usize;
     let mut successful_files = 0usize;
@@ -7624,43 +7636,66 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
         pipeline: args.pipeline.clone(),
         document_cache_enabled: args.document_cache == "on",
         evidence: args.evidence.clone(),
+        repeat_page_renders: args.repeat_page_renders.clamp(1, 100),
         password: args.password.clone(),
         timeout_ms: args.timeout_ms,
     };
     let worker_count = args.workers.clamp(1, 64).min(files.len().max(1));
-    let records: Vec<_> = if worker_count == 1 {
-        files
-            .iter()
-            .enumerate()
-            .map(|(index, pdf)| render_corpus_file_record(index, pdf, &options))
-            .collect()
+    if worker_count == 1 {
+        for (index, pdf) in files.iter().enumerate() {
+            let record = render_corpus_file_record(index, pdf, &options);
+            record_render_corpus_result(
+                record,
+                &mut jsonl,
+                &mut durations_ms,
+                &mut render_durations_ms,
+                &mut first_render_durations_ms,
+                &mut warm_render_durations_ms,
+                &mut display_list_compile_durations_ms,
+                &mut display_list_replay_durations_ms,
+                &mut display_list_cache_hits,
+                &mut display_list_raster_cache_hits,
+                &mut display_list_fallbacks,
+                &mut attempted_pages,
+                &mut rendered_pages,
+                &mut successful_files,
+                &mut failed_files,
+                &mut png_bytes_total,
+            )?;
+        }
     } else {
         use rayon::prelude::*;
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(worker_count)
             .thread_name(|index| format!("wellfriend-render-corpus-{index}"))
             .build()?;
-        pool.install(|| {
+        let records: Vec<_> = pool.install(|| {
             files
                 .par_iter()
                 .enumerate()
                 .map(|(index, pdf)| render_corpus_file_record(index, pdf, &options))
                 .collect()
-        })
-    };
-
-    for record in records {
-        durations_ms.push(record.duration_ms);
-        render_durations_ms.push(record.render_duration_ms);
-        attempted_pages += record.pages_attempted;
-        rendered_pages += record.pages_rendered;
-        png_bytes_total += record.png_bytes;
-        if record.ok {
-            successful_files += 1;
-        } else {
-            failed_files += 1;
+        });
+        for record in records {
+            record_render_corpus_result(
+                record,
+                &mut jsonl,
+                &mut durations_ms,
+                &mut render_durations_ms,
+                &mut first_render_durations_ms,
+                &mut warm_render_durations_ms,
+                &mut display_list_compile_durations_ms,
+                &mut display_list_replay_durations_ms,
+                &mut display_list_cache_hits,
+                &mut display_list_raster_cache_hits,
+                &mut display_list_fallbacks,
+                &mut attempted_pages,
+                &mut rendered_pages,
+                &mut successful_files,
+                &mut failed_files,
+                &mut png_bytes_total,
+            )?;
         }
-        writeln!(jsonl, "{}", serde_json::to_string(&record.json)?)?;
     }
     jsonl.flush()?;
 
@@ -7669,8 +7704,16 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
     sorted.sort_by(|a, b| a.total_cmp(b));
     let mut sorted_render = render_durations_ms.clone();
     sorted_render.sort_by(|a, b| a.total_cmp(b));
+    let mut sorted_first_render = first_render_durations_ms.clone();
+    sorted_first_render.sort_by(|a, b| a.total_cmp(b));
+    let mut sorted_warm_render = warm_render_durations_ms.clone();
+    sorted_warm_render.sort_by(|a, b| a.total_cmp(b));
+    let mut sorted_display_list_compile = display_list_compile_durations_ms.clone();
+    sorted_display_list_compile.sort_by(|a, b| a.total_cmp(b));
+    let mut sorted_display_list_replay = display_list_replay_durations_ms.clone();
+    sorted_display_list_replay.sort_by(|a, b| a.total_cmp(b));
     let summary = serde_json::json!({
-        "schema_version": "wellfriend.render_corpus.v1",
+        "schema_version": "wellfriend.render_corpus.v2",
         "corpus": args.corpus.display().to_string(),
         "files": files.len(),
         "successful_files": successful_files,
@@ -7682,6 +7725,7 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
     "render_quality": render_mode.as_str(),
     "pipeline": args.pipeline,
     "document_cache": args.document_cache,
+    "repeat_page_renders": options.repeat_page_renders,
     "evidence": args.evidence,
     "workers": worker_count,
         "timeout_ms": args.timeout_ms,
@@ -7691,6 +7735,21 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
         "median_render_ms": percentile_sorted(&sorted_render, 0.50),
         "p95_render_ms": percentile_sorted(&sorted_render, 0.95),
         "p99_render_ms": percentile_sorted(&sorted_render, 0.99),
+        "first_render_samples": sorted_first_render.len(),
+        "median_first_render_ms": percentile_sorted(&sorted_first_render, 0.50),
+        "p95_first_render_ms": percentile_sorted(&sorted_first_render, 0.95),
+        "warm_render_samples": sorted_warm_render.len(),
+        "median_warm_render_ms": percentile_sorted(&sorted_warm_render, 0.50),
+        "p95_warm_render_ms": percentile_sorted(&sorted_warm_render, 0.95),
+        "display_list_compile_samples": sorted_display_list_compile.len(),
+        "median_display_list_compile_ms": percentile_sorted(&sorted_display_list_compile, 0.50),
+        "p95_display_list_compile_ms": percentile_sorted(&sorted_display_list_compile, 0.95),
+        "display_list_replay_samples": sorted_display_list_replay.len(),
+        "median_display_list_replay_ms": percentile_sorted(&sorted_display_list_replay, 0.50),
+        "p95_display_list_replay_ms": percentile_sorted(&sorted_display_list_replay, 0.95),
+        "display_list_cache_hits": display_list_cache_hits,
+        "display_list_raster_cache_hits": display_list_raster_cache_hits,
+        "display_list_fallbacks": display_list_fallbacks,
         "max_ms": sorted.last().copied().unwrap_or(0.0),
         "total_sec": elapsed_sec,
         "png_bytes_total": png_bytes_total,
@@ -7698,6 +7757,47 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
     });
     std::fs::write(&args.summary, serde_json::to_string_pretty(&summary)?)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_render_corpus_result<W: std::io::Write>(
+    record: RenderCorpusFileRecord,
+    jsonl: &mut W,
+    durations_ms: &mut Vec<f64>,
+    render_durations_ms: &mut Vec<f64>,
+    first_render_durations_ms: &mut Vec<f64>,
+    warm_render_durations_ms: &mut Vec<f64>,
+    display_list_compile_durations_ms: &mut Vec<f64>,
+    display_list_replay_durations_ms: &mut Vec<f64>,
+    display_list_cache_hits: &mut usize,
+    display_list_raster_cache_hits: &mut usize,
+    display_list_fallbacks: &mut usize,
+    attempted_pages: &mut usize,
+    rendered_pages: &mut usize,
+    successful_files: &mut usize,
+    failed_files: &mut usize,
+    png_bytes_total: &mut usize,
+) -> Result<(), Box<dyn Error>> {
+    durations_ms.push(record.duration_ms);
+    render_durations_ms.push(record.render_duration_ms);
+    first_render_durations_ms.extend(record.first_render_samples_ms.iter().copied());
+    warm_render_durations_ms.extend(record.warm_render_samples_ms.iter().copied());
+    display_list_compile_durations_ms
+        .extend(record.display_list_compile_samples_ms.iter().copied());
+    display_list_replay_durations_ms.extend(record.display_list_replay_samples_ms.iter().copied());
+    *display_list_cache_hits += record.display_list_cache_hits;
+    *display_list_raster_cache_hits += record.display_list_raster_cache_hits;
+    *display_list_fallbacks += record.display_list_fallbacks;
+    *attempted_pages += record.pages_attempted;
+    *rendered_pages += record.pages_rendered;
+    *png_bytes_total += record.png_bytes;
+    if record.ok {
+        *successful_files += 1;
+    } else {
+        *failed_files += 1;
+    }
+    writeln!(jsonl, "{}", serde_json::to_string(&record.json)?)?;
     Ok(())
 }
 
@@ -7709,6 +7809,7 @@ struct RenderCorpusRunOptions {
     pipeline: String,
     document_cache_enabled: bool,
     evidence: String,
+    repeat_page_renders: usize,
     password: Option<String>,
     timeout_ms: u64,
 }
@@ -7717,6 +7818,13 @@ struct RenderCorpusFileRecord {
     json: serde_json::Value,
     duration_ms: f64,
     render_duration_ms: f64,
+    first_render_samples_ms: Vec<f64>,
+    warm_render_samples_ms: Vec<f64>,
+    display_list_compile_samples_ms: Vec<f64>,
+    display_list_replay_samples_ms: Vec<f64>,
+    display_list_cache_hits: usize,
+    display_list_raster_cache_hits: usize,
+    display_list_fallbacks: usize,
     pages_attempted: usize,
     pages_rendered: usize,
     png_bytes: usize,
@@ -7739,6 +7847,13 @@ fn render_corpus_file_record(
     let mut file_pages_rendered = 0usize;
     let mut file_png_bytes = 0usize;
     let mut file_hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut first_render_samples_ms = Vec::new();
+    let mut warm_render_samples_ms = Vec::new();
+    let mut display_list_compile_samples_ms = Vec::new();
+    let mut display_list_replay_samples_ms = Vec::new();
+    let mut display_list_cache_hits = 0usize;
+    let mut display_list_raster_cache_hits = 0usize;
+    let mut display_list_fallbacks = 0usize;
     let mut error = None::<String>;
 
     let open_started = Instant::now();
@@ -7758,31 +7873,65 @@ fn render_corpus_file_record(
                         Box::new(std::iter::empty())
                     };
                     for page in pages {
-                        file_pages_attempted += 1;
-                        let render_started = Instant::now();
-                        let rendered =
-                            render_corpus_page(&engine, page, options, &mut document_render_cache);
-                        render_ms += render_started.elapsed().as_secs_f64() * 1000.0;
-                        match rendered {
-                            Ok(buffer) => {
-                                if options.evidence == "raw" || options.evidence == "both" {
-                                    file_hash = fnv1a_update(file_hash, buffer.rgba_bytes());
-                                }
-                                if options.evidence == "png" || options.evidence == "both" {
-                                    match ImageEncoder::encode_png_fast(&buffer.to_raw_image()) {
-                                        Ok(png) => file_png_bytes += png.len(),
-                                        Err(err) => {
-                                            error = Some(format!("page {page} png_encode: {err}"));
-                                            break;
+                        for repeat_index in 0..options.repeat_page_renders {
+                            file_pages_attempted += 1;
+                            let render_started = Instant::now();
+                            let rendered = render_corpus_page(
+                                &engine,
+                                page,
+                                options,
+                                &mut document_render_cache,
+                            );
+                            let sample_ms = render_started.elapsed().as_secs_f64() * 1000.0;
+                            render_ms += sample_ms;
+                            if repeat_index == 0 {
+                                first_render_samples_ms.push(sample_ms);
+                            } else {
+                                warm_render_samples_ms.push(sample_ms);
+                            }
+                            match rendered {
+                                Ok((buffer, metrics)) => {
+                                    if let Some(ms) = metrics.display_list_compile_ms {
+                                        display_list_compile_samples_ms.push(ms);
+                                    }
+                                    if let Some(ms) = metrics.display_list_replay_ms {
+                                        display_list_replay_samples_ms.push(ms);
+                                    }
+                                    if metrics.display_list_cache_hit {
+                                        display_list_cache_hits += 1;
+                                    }
+                                    if metrics.display_list_raster_cache_hit {
+                                        display_list_raster_cache_hits += 1;
+                                    }
+                                    if metrics.display_list_fallback {
+                                        display_list_fallbacks += 1;
+                                    }
+                                    if options.evidence == "raw" || options.evidence == "both" {
+                                        file_hash = fnv1a_update(file_hash, buffer.rgba_bytes());
+                                    }
+                                    if options.evidence == "png" || options.evidence == "both" {
+                                        match ImageEncoder::encode_png_fast(&buffer.to_raw_image())
+                                        {
+                                            Ok(png) => file_png_bytes += png.len(),
+                                            Err(err) => {
+                                                error = Some(format!(
+                                                    "page {page} repeat {repeat_index} png_encode: {err}"
+                                                ));
+                                                break;
+                                            }
                                         }
                                     }
+                                    file_pages_rendered += 1;
                                 }
-                                file_pages_rendered += 1;
+                                Err(err) => {
+                                    error =
+                                        Some(format!("page {page} repeat {repeat_index}: {err}"));
+                                    break;
+                                }
                             }
-                            Err(err) => {
-                                error = Some(format!("page {}: {}", page, err));
-                                break;
-                            }
+                        }
+                        if error.is_some() {
+                            break;
                         }
                     }
                 }
@@ -7801,9 +7950,17 @@ fn render_corpus_file_record(
         "page_count": page_count,
         "pages_attempted": file_pages_attempted,
         "pages_rendered": file_pages_rendered,
+        "repeat_page_renders": options.repeat_page_renders,
         "duration_ms": duration_ms,
         "open_ms": open_ms,
         "render_ms": render_ms,
+        "first_render_samples_ms": first_render_samples_ms.clone(),
+        "warm_render_samples_ms": warm_render_samples_ms.clone(),
+        "display_list_compile_samples_ms": display_list_compile_samples_ms.clone(),
+        "display_list_replay_samples_ms": display_list_replay_samples_ms.clone(),
+        "display_list_cache_hits": display_list_cache_hits,
+        "display_list_raster_cache_hits": display_list_raster_cache_hits,
+        "display_list_fallbacks": display_list_fallbacks,
         "raw_fnv1a64": format!("{file_hash:016x}"),
         "png_bytes": file_png_bytes,
         "ok": ok,
@@ -7814,6 +7971,13 @@ fn render_corpus_file_record(
         json,
         duration_ms,
         render_duration_ms: render_ms,
+        first_render_samples_ms,
+        warm_render_samples_ms,
+        display_list_compile_samples_ms,
+        display_list_replay_samples_ms,
+        display_list_cache_hits,
+        display_list_raster_cache_hits,
+        display_list_fallbacks,
         pages_attempted: file_pages_attempted,
         pages_rendered: file_pages_rendered,
         png_bytes: file_png_bytes,
@@ -7826,7 +7990,7 @@ fn render_corpus_page(
     page: usize,
     options: &RenderCorpusRunOptions,
     document_render_cache: &mut wellfriendpdf_engine::RenderDocumentCache,
-) -> wellfriendpdf_engine::Result<wellfriendpdf_engine::PixelBuffer> {
+) -> wellfriendpdf_engine::Result<(wellfriendpdf_engine::PixelBuffer, RenderCorpusPageMetrics)> {
     if options.timeout_ms == 0 {
         return render_corpus_page_with_cancel(
             engine,
@@ -7873,54 +8037,157 @@ fn render_corpus_page_with_cancel(
     options: &RenderCorpusRunOptions,
     cancel: &wellfriendpdf_engine::CancelToken,
     document_render_cache: &mut wellfriendpdf_engine::RenderDocumentCache,
-) -> wellfriendpdf_engine::Result<wellfriendpdf_engine::PixelBuffer> {
+) -> wellfriendpdf_engine::Result<(wellfriendpdf_engine::PixelBuffer, RenderCorpusPageMetrics)> {
     if options.pipeline == "display-list" {
         if options.document_cache_enabled {
-            match engine.render_page_display_list_cancellable_with_mode_and_cache(
+            render_corpus_display_list_page_with_cache(
+                engine,
+                page,
+                options,
+                cancel,
+                document_render_cache,
+            )
+        } else {
+            render_corpus_display_list_page_without_cache(engine, page, options, cancel)
+        }
+    } else if options.document_cache_enabled {
+        engine
+            .render_page_cancellable_with_mode_and_cache(
                 page,
                 options.dpi,
                 cancel,
                 options.render_mode,
                 document_render_cache,
-            ) {
-                Ok(Some(buf)) => Ok(buf),
-                Ok(None) => engine.render_page_cancellable_with_mode_and_cache(
-                    page,
-                    options.dpi,
-                    cancel,
-                    options.render_mode,
-                    document_render_cache,
-                ),
-                Err(err) => Err(err),
-            }
-        } else {
-            match engine.render_page_display_list_cancellable_with_mode(
-                page,
-                options.dpi,
-                cancel,
-                options.render_mode,
-            ) {
-                Ok(Some(buf)) => Ok(buf),
-                Ok(None) => engine.render_page_cancellable_with_mode(
-                    page,
-                    options.dpi,
-                    cancel,
-                    options.render_mode,
-                ),
-                Err(err) => Err(err),
-            }
-        }
-    } else if options.document_cache_enabled {
-        engine.render_page_cancellable_with_mode_and_cache(
+            )
+            .map(|buffer| (buffer, RenderCorpusPageMetrics::default()))
+    } else {
+        engine
+            .render_page_cancellable_with_mode(page, options.dpi, cancel, options.render_mode)
+            .map(|buffer| (buffer, RenderCorpusPageMetrics::default()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RenderCorpusPageMetrics {
+    display_list_compile_ms: Option<f64>,
+    display_list_replay_ms: Option<f64>,
+    display_list_cache_hit: bool,
+    display_list_raster_cache_hit: bool,
+    display_list_fallback: bool,
+}
+
+fn render_corpus_display_list_page_with_cache(
+    engine: &wellfriendpdf_engine::ContentEngine,
+    page: usize,
+    options: &RenderCorpusRunOptions,
+    cancel: &wellfriendpdf_engine::CancelToken,
+    document_render_cache: &mut wellfriendpdf_engine::RenderDocumentCache,
+) -> wellfriendpdf_engine::Result<(wellfriendpdf_engine::PixelBuffer, RenderCorpusPageMetrics)> {
+    use std::time::Instant;
+
+    let compile_started = Instant::now();
+    let (list, display_list_cache_hit) =
+        wellfriendpdf_engine::PageRenderer::get_or_build_display_list_with_cache(
+            engine,
+            page,
+            options.dpi,
+            document_render_cache,
+        )?;
+    let display_list_compile_ms = compile_started.elapsed().as_secs_f64() * 1000.0;
+    if !list.is_fully_supported() {
+        let buffer = engine.render_page_cancellable_with_mode_and_cache(
             page,
             options.dpi,
             cancel,
             options.render_mode,
             document_render_cache,
-        )
-    } else {
-        engine.render_page_cancellable_with_mode(page, options.dpi, cancel, options.render_mode)
+        )?;
+        return Ok((
+            buffer,
+            RenderCorpusPageMetrics {
+                display_list_compile_ms: Some(display_list_compile_ms),
+                display_list_fallback: true,
+                ..RenderCorpusPageMetrics::default()
+            },
+        ));
     }
+
+    let raster_hits_before = document_render_cache
+        .display_list_raster_cache_metrics()
+        .hits;
+    let replay_started = Instant::now();
+    let buffer =
+        wellfriendpdf_engine::PageRenderer::render_display_list_cancellable_with_mode_and_cache(
+            engine,
+            page,
+            options.dpi,
+            list.as_ref(),
+            cancel,
+            options.render_mode,
+            document_render_cache,
+        )?;
+    let display_list_replay_ms = replay_started.elapsed().as_secs_f64() * 1000.0;
+    let raster_hits_after = document_render_cache
+        .display_list_raster_cache_metrics()
+        .hits;
+    Ok((
+        buffer,
+        RenderCorpusPageMetrics {
+            display_list_compile_ms: Some(display_list_compile_ms),
+            display_list_replay_ms: Some(display_list_replay_ms),
+            display_list_cache_hit,
+            display_list_raster_cache_hit: raster_hits_after > raster_hits_before,
+            display_list_fallback: false,
+        },
+    ))
+}
+
+fn render_corpus_display_list_page_without_cache(
+    engine: &wellfriendpdf_engine::ContentEngine,
+    page: usize,
+    options: &RenderCorpusRunOptions,
+    cancel: &wellfriendpdf_engine::CancelToken,
+) -> wellfriendpdf_engine::Result<(wellfriendpdf_engine::PixelBuffer, RenderCorpusPageMetrics)> {
+    use std::time::Instant;
+
+    let compile_started = Instant::now();
+    let list = engine.build_page_display_list(page, options.dpi)?;
+    let display_list_compile_ms = compile_started.elapsed().as_secs_f64() * 1000.0;
+    if !list.is_fully_supported() {
+        let buffer = engine.render_page_cancellable_with_mode(
+            page,
+            options.dpi,
+            cancel,
+            options.render_mode,
+        )?;
+        return Ok((
+            buffer,
+            RenderCorpusPageMetrics {
+                display_list_compile_ms: Some(display_list_compile_ms),
+                display_list_fallback: true,
+                ..RenderCorpusPageMetrics::default()
+            },
+        ));
+    }
+
+    let replay_started = Instant::now();
+    let buffer = wellfriendpdf_engine::PageRenderer::render_display_list_cancellable_with_mode(
+        engine,
+        page,
+        options.dpi,
+        &list,
+        cancel,
+        options.render_mode,
+    )?;
+    let display_list_replay_ms = replay_started.elapsed().as_secs_f64() * 1000.0;
+    Ok((
+        buffer,
+        RenderCorpusPageMetrics {
+            display_list_compile_ms: Some(display_list_compile_ms),
+            display_list_replay_ms: Some(display_list_replay_ms),
+            ..RenderCorpusPageMetrics::default()
+        },
+    ))
 }
 
 fn collect_pdf_paths(root: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {

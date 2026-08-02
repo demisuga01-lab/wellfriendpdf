@@ -4,7 +4,9 @@ use crate::cancel::CancelToken;
 use crate::engine::ContentEngine;
 use crate::error::{Result, WellfriendError};
 use crate::optional_content::OptionalContentContext;
-use crate::render::{PageRenderer, PixelBuffer, RenderMode, RenderTile, WHITE};
+use crate::render::{
+    PageRenderer, PixelBuffer, RenderDocumentCache, RenderMode, RenderTile, WHITE,
+};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ProgressiveRenderToken {
@@ -49,6 +51,7 @@ pub struct ProgressiveRenderJob<'a> {
     completed: Vec<Option<PixelBuffer>>,
     next_tile_index: usize,
     visibility_fingerprint: String,
+    document_cache: RenderDocumentCache,
     aborted: bool,
 }
 
@@ -97,6 +100,7 @@ impl<'a> ProgressiveRenderJob<'a> {
             visibility_fingerprint: OptionalContentContext::from_document(engine.document())
                 .visibility_fingerprint()
                 .to_string(),
+            document_cache: RenderDocumentCache::new(),
             aborted: false,
         })
     }
@@ -168,14 +172,26 @@ impl<'a> ProgressiveRenderJob<'a> {
             }
             let index = self.next_tile_index;
             let tile = self.tiles[index];
-            let buffer = PageRenderer::render_page_tile_cancellable_with_mode(
-                self.engine,
-                self.page_number,
-                self.dpi,
-                tile,
-                cancel,
-                self.render_mode,
-            )?;
+            let buffer =
+                match PageRenderer::render_page_display_list_tile_cancellable_with_mode_and_cache(
+                    self.engine,
+                    self.page_number,
+                    self.dpi,
+                    tile,
+                    cancel,
+                    self.render_mode,
+                    &mut self.document_cache,
+                )? {
+                    Some(buffer) => buffer,
+                    None => PageRenderer::render_page_tile_cancellable_with_mode(
+                        self.engine,
+                        self.page_number,
+                        self.dpi,
+                        tile,
+                        cancel,
+                        self.render_mode,
+                    )?,
+                };
             self.completed[index] = Some(buffer);
             self.next_tile_index += 1;
             rendered += 1;
@@ -215,11 +231,8 @@ impl<'a> ProgressiveRenderJob<'a> {
         );
         for (tile, buffer) in self.tiles.iter().zip(self.completed.iter()) {
             let buffer = buffer.as_ref()?;
-            for y in 0..tile.height {
-                for x in 0..tile.width {
-                    let pixel = buffer.get_pixel(x as i32, y as i32);
-                    out.set_pixel((tile.x + x) as i32, (tile.y + y) as i32, pixel);
-                }
+            if !out.blit_from_buffer(buffer, tile.x, tile.y) {
+                return None;
             }
         }
         Some(out)

@@ -84,10 +84,12 @@ pub enum DisplayOp {
         path: Path,
         state: DrawState,
         rule: FillRule,
+        bounds: Option<RenderBounds>,
     },
     StrokePath {
         path: Path,
         state: DrawState,
+        bounds: Option<RenderBounds>,
     },
     /// Replayable bridge to the existing content-stream renderer.
     ///
@@ -238,6 +240,96 @@ impl RenderTile {
 
     pub fn estimated_rgba_bytes(self) -> usize {
         self.width as usize * self.height as usize * 4
+    }
+}
+
+/// Full-page pixel-space bounds for display-list culling.
+///
+/// Bounds are computed against the display list's full-page viewport, not a
+/// tile-local viewport. Tile and band replay can therefore skip vector ops whose
+/// retained bounds do not intersect the current viewport window, avoiding the
+/// previous "execute every vector op for every tile" cost.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RenderBounds {
+    pub x0: i32,
+    pub y0: i32,
+    pub x1: i32,
+    pub y1: i32,
+}
+
+impl RenderBounds {
+    pub fn from_path(
+        path: &Path,
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        padding_px: f64,
+    ) -> Option<Self> {
+        let flat = flatten_path(path, ctm, viewport, 0.5);
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for subpath in &flat.subpaths {
+            for &(x, y) in subpath {
+                if !x.is_finite() || !y.is_finite() {
+                    continue;
+                }
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+        if !min_x.is_finite() || !max_x.is_finite() || max_x <= min_x || max_y <= min_y {
+            return None;
+        }
+        let pad = padding_px.max(0.0);
+        Some(Self {
+            x0: floor_i32(min_x - pad),
+            y0: floor_i32(min_y - pad),
+            x1: ceil_i32(max_x + pad),
+            y1: ceil_i32(max_y + pad),
+        })
+    }
+
+    pub fn intersects_viewport(&self, viewport: &Viewport) -> bool {
+        let vx0 = i32_from_u32(viewport.origin_x_px);
+        let vy0 = i32_from_u32(viewport.origin_y_px);
+        let vx1 = i32_from_u32(viewport.origin_x_px.saturating_add(viewport.width_px));
+        let vy1 = i32_from_u32(viewport.origin_y_px.saturating_add(viewport.height_px));
+        self.x1 > vx0 && self.x0 < vx1 && self.y1 > vy0 && self.y0 < vy1
+    }
+}
+
+fn floor_i32(value: f64) -> i32 {
+    if !value.is_finite() {
+        0
+    } else if value <= i32::MIN as f64 {
+        i32::MIN
+    } else if value >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        value.floor() as i32
+    }
+}
+
+fn ceil_i32(value: f64) -> i32 {
+    if !value.is_finite() {
+        0
+    } else if value <= i32::MIN as f64 {
+        i32::MIN
+    } else if value >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        value.ceil() as i32
+    }
+}
+
+fn i32_from_u32(value: u32) -> i32 {
+    if value > i32::MAX as u32 {
+        i32::MAX
+    } else {
+        value as i32
     }
 }
 
@@ -541,8 +633,10 @@ pub fn replay_display_list(list: &DisplayList, device: &mut dyn RenderDevice) {
             DisplayOp::Save => device.save(),
             DisplayOp::Restore => device.restore(),
             DisplayOp::Clip { path, ctm, rule } => device.clip_path(path, ctm, *rule),
-            DisplayOp::FillPath { path, state, rule } => device.fill_path(path, state, *rule),
-            DisplayOp::StrokePath { path, state } => device.stroke_path(path, state),
+            DisplayOp::FillPath {
+                path, state, rule, ..
+            } => device.fill_path(path, state, *rule),
+            DisplayOp::StrokePath { path, state, .. } => device.stroke_path(path, state),
             DisplayOp::ContentRun { kind, ops, .. } => device.content_run(*kind, ops),
             DisplayOp::StateOp { op, .. } => device.state_op(op),
             DisplayOp::NativeTextOp { op, .. } => device.native_text_op(op),
@@ -907,9 +1001,12 @@ impl<'a> DisplayListBuilder<'a> {
             self.stats.path_segments += path.segments.len();
             self.stats.paths += 1;
             self.stats.strokes += 1;
+            let state = self.draw_state();
+            let bounds = self.path_bounds_for_stroke(&state);
             self.ops.push(DisplayOp::StrokePath {
                 path,
-                state: self.draw_state(),
+                state,
+                bounds,
             });
         }
         self.path.clear();
@@ -931,6 +1028,7 @@ impl<'a> DisplayListBuilder<'a> {
                 path,
                 state: self.draw_state(),
                 rule,
+                bounds: self.path_bounds_for_fill(),
             });
         }
         self.path.clear();
@@ -953,11 +1051,30 @@ impl<'a> DisplayListBuilder<'a> {
                 path: path.clone(),
                 state: state.clone(),
                 rule,
+                bounds: self.path_bounds_for_fill(),
             });
             self.stats.strokes += 1;
-            self.ops.push(DisplayOp::StrokePath { path, state });
+            let bounds = self.path_bounds_for_stroke(&state);
+            self.ops.push(DisplayOp::StrokePath {
+                path,
+                state,
+                bounds,
+            });
         }
         self.path.clear();
+    }
+
+    fn path_bounds_for_fill(&self) -> Option<RenderBounds> {
+        RenderBounds::from_path(&self.path, &self.ctm(), &self.viewport, 1.0)
+    }
+
+    fn path_bounds_for_stroke(&self, state: &DrawState) -> Option<RenderBounds> {
+        let pad = state
+            .line_width
+            .abs()
+            .max(1.0)
+            .mul_add(state.ctm.scale_factor() * self.viewport.scale, 2.0);
+        RenderBounds::from_path(&self.path, &state.ctm, &self.viewport, pad)
     }
 
     fn ctm(&self) -> Transform2D {
@@ -1156,6 +1273,42 @@ mod tests {
         assert_eq!(list.stats.fills, 1);
         let buf = render_display_list(&list, RenderMode::Compat);
         assert_eq!(buf.get_pixel(20, 30), RED);
+    }
+
+    #[test]
+    fn path_render_bounds_are_full_page_pixel_space() {
+        let full = Viewport::new([0.0, 0.0, 50.0, 50.0], 72);
+        let mut path = Path::new();
+        path.rect(10.0, 10.0, 20.0, 20.0);
+
+        let bounds = RenderBounds::from_path(&path, &Transform2D::identity(), &full, 0.0)
+            .expect("rectangle should produce bounds");
+
+        assert!(bounds.intersects_viewport(&full.pixel_window(10, 20, 5, 5)));
+        assert!(!bounds.intersects_viewport(&full.pixel_window(0, 0, 5, 5)));
+    }
+
+    #[test]
+    fn captured_fill_path_carries_culling_bounds() {
+        let ops = vec![
+            op("re", vec![num(10.0), num(10.0), num(20.0), num(20.0)]),
+            op("f", vec![]),
+        ];
+        let full = Viewport::new([0.0, 0.0, 50.0, 50.0], 72);
+        let list = build_display_list(&ops, full.clone(), &PageResources::default());
+        let Some(DisplayOp::FillPath {
+            bounds: Some(bounds),
+            ..
+        }) = list
+            .ops
+            .iter()
+            .find(|op| matches!(op, DisplayOp::FillPath { .. }))
+        else {
+            panic!("expected captured fill path bounds");
+        };
+
+        assert!(bounds.intersects_viewport(&full.pixel_window(10, 20, 5, 5)));
+        assert!(!bounds.intersects_viewport(&full.pixel_window(0, 0, 5, 5)));
     }
 
     #[test]

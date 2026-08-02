@@ -49,6 +49,7 @@ cassowary = "0.3.0"
 # languages with English rules.
 hyphenation = { version = "0.8.4", default-features = false, features = ["embed_all"] }
 url = "2.5"
+wide = "1.6"
 cms = { version = "0.2", features = ["builder"] }
 x509-cert = "0.2"
 pkix-path = { version = "0.3.2", features = ["rustcrypto", "std"] }

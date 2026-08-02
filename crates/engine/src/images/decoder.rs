@@ -86,6 +86,37 @@ impl ImageDecoder {
         reader: &PdfReader,
         limits: &DecodeLimits,
     ) -> Result<RawImage> {
+        Self::decode_with_limits_and_color_space_override(image, reader, limits, None, None)
+    }
+
+    /// Decode an image XObject while overriding a named `/ColorSpace` resource
+    /// with the already-resolved colour-space object from the active page/Form
+    /// resources. This keeps the core image decoder source-linked to the real
+    /// image stream while allowing render-time resource inheritance to supply
+    /// CalRGB/Lab/ICCBased/Indexed/Separation/DeviceN details that are not
+    /// present in the image dictionary itself.
+    pub(crate) fn decode_with_resolved_color_space(
+        image: &ImageReference,
+        reader: &PdfReader,
+        color_space_name: &str,
+        color_space_obj: &PdfObject,
+    ) -> Result<RawImage> {
+        Self::decode_with_limits_and_color_space_override(
+            image,
+            reader,
+            &DecodeLimits::default(),
+            Some(color_space_name),
+            Some(color_space_obj),
+        )
+    }
+
+    fn decode_with_limits_and_color_space_override(
+        image: &ImageReference,
+        reader: &PdfReader,
+        limits: &DecodeLimits,
+        color_space_name: Option<&str>,
+        color_space_obj: Option<&PdfObject>,
+    ) -> Result<RawImage> {
         if image.object_number == 0 {
             return Err(WellfriendError::UnsupportedFeature(
                 "inline image decoding via decode() is not supported; use decode_inline() with the raw pixel bytes"
@@ -103,6 +134,14 @@ impl ImageDecoder {
                 )))
             }
         };
+        let mut effective_image = image.clone();
+        if let Some(name) = color_space_name {
+            effective_image.color_space = name.to_string();
+        }
+        let mut effective_dict = dict.clone();
+        if let Some(space_obj) = color_space_obj {
+            effective_dict.insert("ColorSpace", space_obj.clone());
+        }
 
         let stream_obj = PdfObject::Stream {
             dict: dict.clone(),
@@ -113,20 +152,20 @@ impl ImageDecoder {
         match decoded.status {
             StreamDecodeStatus::Complete => Self::build_raw_image(
                 decoded.data,
-                image.width,
-                image.height,
-                image.bits_per_component,
-                &image.color_space,
-                &dict,
+                effective_image.width,
+                effective_image.height,
+                effective_image.bits_per_component,
+                &effective_image.color_space,
+                &effective_dict,
                 Some(reader),
             ),
             StreamDecodeStatus::StoppedAtImageFilter(filter) => {
                 Self::decode_remaining_image_filter(
                     &decoded.data,
                     &filter,
-                    image,
+                    &effective_image,
                     reader,
-                    &dict,
+                    &effective_dict,
                     limits,
                 )
             }
@@ -290,20 +329,21 @@ impl ImageDecoder {
                 "inline JPEG images not supported via this path".to_string(),
             )
         })?;
-        let (mut pixels, width, height, channels) = Self::decode_jpeg_with_info(&raw)?;
-        let final_channels = if channels == 4 {
-            pixels = ColorSpaceConverter::cmyk_to_rgb(&pixels);
-            3
-        } else {
-            channels
+        let obj = reader.get_object(image.object_number, image.generation_number)?;
+        let dict = match obj {
+            PdfObject::Stream { dict, .. } => dict,
+            _ => PdfDictionary::empty(),
         };
-        Ok(RawImage {
+        let (pixels, width, height, channels) = Self::decode_jpeg_with_info(&raw)?;
+        Self::finish_dct_decoded_image(
+            pixels,
             width,
             height,
-            channels: final_channels,
-            bits_per_sample: 8,
-            pixels,
-        })
+            channels,
+            &image.color_space,
+            &dict,
+            Some(reader),
+        )
     }
 
     /// Decode JPEG bytes and return pixels plus width, height, channel count.
@@ -375,7 +415,7 @@ impl ImageDecoder {
     ) -> Result<RawImage> {
         match filter {
             "DCTDecode" | "DCT" => {
-                let (mut pixels, width, height, channels) = Self::decode_jpeg_with_info(data)?;
+                let (pixels, width, height, channels) = Self::decode_jpeg_with_info(data)?;
                 if width != image.width || height != image.height {
                     log::warn!(
                         "JPEG image {}: dict dimensions {}x{} differ from JPEG header {}x{}; using JPEG header",
@@ -386,21 +426,17 @@ impl ImageDecoder {
                         height
                     );
                 }
-                let final_channels = if channels == 4 {
-                    pixels = ColorSpaceConverter::cmyk_to_rgb(&pixels);
-                    3
-                } else {
-                    channels
-                };
-                Ok(RawImage {
+                Self::finish_dct_decoded_image(
+                    pixels,
                     width,
                     height,
-                    channels: final_channels,
-                    bits_per_sample: 8,
-                    pixels,
-                })
+                    channels,
+                    &image.color_space,
+                    dict,
+                    Some(reader),
+                )
             }
-            "JPXDecode" => jpx::decode(data),
+            "JPXDecode" => jpx::decode(data).map(|raw| Self::finish_jpx_decoded_image(raw, dict)),
             "CCITTFaxDecode" | "CCF" => {
                 let decode_params = image_decode_params(dict, Some(reader), filter)?;
                 let params =
@@ -522,6 +558,14 @@ impl ImageDecoder {
                     (normalised, 1u8)
                 }
             }
+            "Separation" | "DeviceN" => {
+                if let Some(reader) = reader {
+                    ColorSpaceConverter::tint_space_to_rgba(&normalised, dict, reader, raw_channels)
+                } else {
+                    log::warn!("{color_space} image color space without reader; using raw data");
+                    (normalised, raw_channels)
+                }
+            }
             "ICCBased" => {
                 if let Some(reader) = reader {
                     if let Some(converted) = cmm::icc_bytes_to_rgb(&normalised, dict, reader) {
@@ -566,6 +610,73 @@ impl ImageDecoder {
         })
     }
 
+    fn finish_dct_decoded_image(
+        pixels: Vec<u8>,
+        width: u32,
+        height: u32,
+        channels: u8,
+        color_space: &str,
+        dict: &PdfDictionary,
+        reader: Option<&PdfReader>,
+    ) -> Result<RawImage> {
+        let expected_channels = Self::raw_channel_count(color_space, dict, reader);
+        if channels == expected_channels {
+            return Self::build_raw_image(pixels, width, height, 8, color_space, dict, reader);
+        }
+        if channels == 4 {
+            let mut pixels = pixels;
+            Self::apply_decode_array(&mut pixels, channels, dict);
+            return Ok(RawImage {
+                width,
+                height,
+                channels: 3,
+                bits_per_sample: 8,
+                pixels: ColorSpaceConverter::cmyk_to_rgb(&pixels),
+            });
+        }
+        Ok(RawImage {
+            width,
+            height,
+            channels,
+            bits_per_sample: 8,
+            pixels,
+        })
+    }
+
+    fn finish_jpx_decoded_image(mut raw: RawImage, dict: &PdfDictionary) -> RawImage {
+        if raw.channels != 4 {
+            return raw;
+        }
+        match dict.get_integer("SMaskInData") {
+            Some(0) => {
+                let mut rgb = Vec::with_capacity((raw.pixels.len() / 4).saturating_mul(3));
+                for px in raw.pixels.chunks(4) {
+                    rgb.extend_from_slice(&px[..3]);
+                }
+                raw.pixels = rgb;
+                raw.channels = 3;
+                raw
+            }
+            Some(2) => {
+                for px in raw.pixels.chunks_mut(4) {
+                    let alpha = u16::from(px[3]);
+                    if alpha == 0 {
+                        px[0] = 0;
+                        px[1] = 0;
+                        px[2] = 0;
+                    } else if alpha < 255 {
+                        for channel in &mut px[..3] {
+                            let value = (u16::from(*channel) * 255 + alpha / 2) / alpha;
+                            *channel = value.min(255) as u8;
+                        }
+                    }
+                }
+                raw
+            }
+            _ => raw,
+        }
+    }
+
     fn apply_decode_array(pixels: &mut [u8], channels: u8, dict: &PdfDictionary) {
         let Some(items) = dict.get("Decode").and_then(PdfObject::as_array) else {
             return;
@@ -603,6 +714,14 @@ impl ImageDecoder {
             "DeviceGray" | "G" | "CalGray" | "Indexed" => 1,
             "DeviceRGB" | "RGB" | "CalRGB" | "sRGB" | "Lab" => 3,
             "DeviceCMYK" | "CMYK" => 4,
+            "Separation" => 1,
+            "DeviceN" => dict
+                .get("ColorSpace")
+                .and_then(PdfObject::as_array)
+                .and_then(|arr| arr.get(1))
+                .and_then(PdfObject::as_array)
+                .map(|names| names.len().clamp(1, 16) as u8)
+                .unwrap_or(1),
             "ICCBased" => reader
                 .and_then(|reader| ColorSpaceConverter::icc_channel_count(dict, reader))
                 .unwrap_or(3),
@@ -657,6 +776,12 @@ impl ColorSpaceConverter {
                 }
             }
             "Indexed" => Self::decode_indexed(&pixels, dict, reader, width, height),
+            "Separation" | "DeviceN" => Ok(Self::tint_space_to_rgba(
+                &pixels,
+                dict,
+                reader,
+                Self::tint_space_channel_count(dict, source_cs),
+            )),
             "Lab" => Ok((
                 cmm::lab_bytes_to_rgb(&pixels, cmm::lab_params_from_image_dict(dict, Some(reader))),
                 3,
@@ -673,6 +798,59 @@ impl ColorSpaceConverter {
                 };
                 Ok((pixels, channels))
             }
+        }
+    }
+
+    fn tint_space_to_rgba(
+        pixels: &[u8],
+        dict: &PdfDictionary,
+        reader: &PdfReader,
+        channels: u8,
+    ) -> (Vec<u8>, u8) {
+        let Some(space_obj) = dict.get("ColorSpace").or_else(|| dict.get("CS")) else {
+            return (pixels.to_vec(), channels.max(1));
+        };
+        let channels = channels.max(1) as usize;
+        let mut output = Vec::with_capacity((pixels.len() / channels).saturating_mul(4));
+        for chunk in pixels.chunks(channels) {
+            let mut components = Vec::with_capacity(channels);
+            for sample in chunk.iter().take(channels) {
+                components.push(f64::from(*sample) / 255.0);
+            }
+            while components.len() < channels {
+                components.push(0.0);
+            }
+            match crate::render::colorspace::resolve_named_color(
+                space_obj,
+                &components,
+                1.0,
+                reader,
+            ) {
+                crate::render::colorspace::NamedColor::Color(color) => {
+                    output.extend_from_slice(&color.to_pixel_color());
+                }
+                crate::render::colorspace::NamedColor::NoPaint => {
+                    output.extend_from_slice(&[0, 0, 0, 0]);
+                }
+                crate::render::colorspace::NamedColor::Unhandled => {
+                    let fallback = chunk.first().copied().unwrap_or(0);
+                    output.extend_from_slice(&[fallback, fallback, fallback, 255]);
+                }
+            }
+        }
+        (output, 4)
+    }
+
+    fn tint_space_channel_count(dict: &PdfDictionary, source_cs: &str) -> u8 {
+        match source_cs {
+            "DeviceN" => dict
+                .get("ColorSpace")
+                .and_then(PdfObject::as_array)
+                .and_then(|arr| arr.get(1))
+                .and_then(PdfObject::as_array)
+                .map(|names| names.len().clamp(1, 16) as u8)
+                .unwrap_or(1),
+            _ => 1,
         }
     }
 
@@ -698,10 +876,11 @@ impl ColorSpaceConverter {
             return Ok((pixels.to_vec(), 1));
         }
 
-        let base_cs = cs_array
+        let base_space = cs_array
             .get(1)
-            .and_then(PdfObject::as_name)
-            .unwrap_or("DeviceRGB");
+            .cloned()
+            .unwrap_or_else(|| PdfObject::Name("DeviceRGB".to_string()));
+        let base_cs = Self::color_space_family_name(&base_space, reader);
         let hival = cs_array
             .get(2)
             .and_then(PdfObject::as_integer)
@@ -726,12 +905,7 @@ impl ColorSpaceConverter {
             }
         };
 
-        let base_channels = match base_cs {
-            "DeviceGray" | "G" => 1usize,
-            "DeviceRGB" | "RGB" => 3usize,
-            "DeviceCMYK" | "CMYK" => 4usize,
-            _ => 3usize,
-        };
+        let base_channels = Self::indexed_base_channel_count(&base_cs, &base_space, reader);
         let expected_lookup_len = (hival + 1) * base_channels;
         if lookup.len() < expected_lookup_len {
             log::warn!(
@@ -741,24 +915,107 @@ impl ColorSpaceConverter {
             );
         }
 
-        let mut output = Vec::with_capacity(pixels.len() * base_channels);
-        for &idx in pixels {
-            let idx = (idx as usize).min(hival);
+        let mut raw_palette = Vec::with_capacity(expected_lookup_len);
+        for idx in 0..=hival {
             let start = idx * base_channels;
             let end = (start + base_channels).min(lookup.len());
             if end <= start {
-                output.extend(std::iter::repeat_n(0u8, base_channels));
+                raw_palette.extend(std::iter::repeat_n(0u8, base_channels));
             } else {
-                output.extend_from_slice(&lookup[start..end]);
-                output.extend(std::iter::repeat_n(0u8, start + base_channels - end));
+                raw_palette.extend_from_slice(&lookup[start..end]);
+                raw_palette.extend(std::iter::repeat_n(0u8, start + base_channels - end));
             }
         }
 
-        if base_channels == 4 {
-            Ok((Self::cmyk_to_rgb(&output), 3))
-        } else {
-            Ok((output, base_channels as u8))
+        let mut base_dict = PdfDictionary::empty();
+        base_dict.insert("ColorSpace", base_space);
+        let (palette, palette_channels) = match base_cs.as_str() {
+            "Indexed" => (raw_palette, base_channels as u8),
+            _ => Self::convert(
+                raw_palette,
+                (hival + 1).min(u32::MAX as usize) as u32,
+                1,
+                &base_cs,
+                &base_dict,
+                reader,
+            )?,
+        };
+        let palette_channels = palette_channels.max(1) as usize;
+        let mut output = Vec::with_capacity(pixels.len() * palette_channels);
+        for &idx in pixels {
+            let idx = (idx as usize).min(hival);
+            let start = idx * palette_channels;
+            let end = start + palette_channels;
+            if let Some(entry) = palette.get(start..end) {
+                output.extend_from_slice(entry);
+            } else {
+                output.extend(std::iter::repeat_n(0u8, palette_channels));
+            }
         }
+        Ok((output, palette_channels as u8))
+    }
+
+    fn color_space_family_name(space: &PdfObject, reader: &PdfReader) -> String {
+        let resolved = match space {
+            PdfObject::Reference { .. } => reader
+                .resolve(space.clone())
+                .unwrap_or_else(|_| space.clone()),
+            other => other.clone(),
+        };
+        match resolved {
+            PdfObject::Name(name) => name,
+            PdfObject::Array(items) => items
+                .first()
+                .and_then(PdfObject::as_name)
+                .unwrap_or("DeviceRGB")
+                .to_string(),
+            _ => "DeviceRGB".to_string(),
+        }
+    }
+
+    fn indexed_base_channel_count(
+        base_cs: &str,
+        base_space: &PdfObject,
+        reader: &PdfReader,
+    ) -> usize {
+        match base_cs {
+            "DeviceGray" | "G" | "CalGray" | "Separation" => 1,
+            "DeviceCMYK" | "CMYK" => 4,
+            "DeviceN" => Self::device_n_component_count(base_space, reader).unwrap_or(1),
+            "ICCBased" => Self::icc_component_count_from_space(base_space, reader).unwrap_or(3),
+            "DeviceRGB" | "RGB" | "CalRGB" | "sRGB" | "Lab" => 3,
+            _ => 3,
+        }
+    }
+
+    fn device_n_component_count(space: &PdfObject, reader: &PdfReader) -> Option<usize> {
+        let resolved = match space {
+            PdfObject::Reference { .. } => reader.resolve(space.clone()).ok()?,
+            other => other.clone(),
+        };
+        let arr = resolved.as_array()?;
+        if arr.first().and_then(PdfObject::as_name) != Some("DeviceN") {
+            return None;
+        }
+        arr.get(1)
+            .and_then(PdfObject::as_array)
+            .map(|names| names.len().clamp(1, 16))
+    }
+
+    fn icc_component_count_from_space(space: &PdfObject, reader: &PdfReader) -> Option<usize> {
+        let resolved = match space {
+            PdfObject::Reference { .. } => reader.resolve(space.clone()).ok()?,
+            other => other.clone(),
+        };
+        let arr = resolved.as_array()?;
+        if arr.first().and_then(PdfObject::as_name) != Some("ICCBased") {
+            return None;
+        }
+        let profile = reader.resolve(arr.get(1)?.clone()).ok()?;
+        profile
+            .as_stream()
+            .and_then(|(dict, _)| dict.get_integer("N"))
+            .map(|n| n.clamp(1, 4) as usize)
     }
 
     fn icc_channel_count(dict: &PdfDictionary, reader: &PdfReader) -> Option<u8> {
@@ -1115,6 +1372,72 @@ mod tests {
     }
 
     #[test]
+    fn dct_finish_applies_decode_array_before_rgb_output() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert(
+            "Decode",
+            PdfObject::Array(vec![
+                PdfObject::Integer(1),
+                PdfObject::Integer(0),
+                PdfObject::Integer(1),
+                PdfObject::Integer(0),
+                PdfObject::Integer(1),
+                PdfObject::Integer(0),
+            ]),
+        );
+
+        let image = ImageDecoder::finish_dct_decoded_image(
+            vec![0, 128, 255],
+            1,
+            1,
+            3,
+            "DeviceRGB",
+            &dict,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(image.channels, 3);
+        assert_eq!(image.pixels, vec![255, 127, 0]);
+    }
+
+    #[test]
+    fn jpx_smask_in_data_zero_drops_internal_alpha() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert("SMaskInData", PdfObject::Integer(0));
+        let raw = RawImage {
+            width: 1,
+            height: 1,
+            channels: 4,
+            bits_per_sample: 8,
+            pixels: vec![10, 20, 30, 40],
+        };
+
+        let image = ImageDecoder::finish_jpx_decoded_image(raw, &dict);
+
+        assert_eq!(image.channels, 3);
+        assert_eq!(image.pixels, vec![10, 20, 30]);
+    }
+
+    #[test]
+    fn jpx_smask_in_data_two_unpremultiplies_rgb() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert("SMaskInData", PdfObject::Integer(2));
+        let raw = RawImage {
+            width: 1,
+            height: 1,
+            channels: 4,
+            bits_per_sample: 8,
+            pixels: vec![64, 32, 16, 128],
+        };
+
+        let image = ImageDecoder::finish_jpx_decoded_image(raw, &dict);
+
+        assert_eq!(image.channels, 4);
+        assert_eq!(image.pixels, vec![128, 64, 32, 128]);
+    }
+
+    #[test]
     fn cmyk_to_rgb_pure_black() {
         let cmyk = vec![0u8, 0, 0, 255];
         assert_eq!(ColorSpaceConverter::cmyk_to_rgb(&cmyk), vec![35, 31, 32]);
@@ -1145,6 +1468,29 @@ mod tests {
         let cmyk = vec![0u8, 0, 0, 0, 0, 0, 0, 255];
         let rgb = ColorSpaceConverter::cmyk_to_rgb(&cmyk);
         assert_eq!(rgb, vec![255, 255, 255, 35, 31, 32]);
+    }
+
+    #[test]
+    fn indexed_cmyk_palette_converts_palette_entries() {
+        let reader =
+            crate::reader::PdfReader::from_bytes(crate::render::shading::tests_minimal_pdf())
+                .unwrap();
+        let mut dict = PdfDictionary::empty();
+        dict.insert(
+            "ColorSpace",
+            PdfObject::Array(vec![
+                PdfObject::Name("Indexed".to_string()),
+                PdfObject::Name("DeviceCMYK".to_string()),
+                PdfObject::Integer(1),
+                PdfObject::String(vec![0, 0, 0, 0, 0, 0, 0, 255]),
+            ]),
+        );
+
+        let (pixels, channels) =
+            ColorSpaceConverter::decode_indexed(&[0, 1], &dict, &reader, 2, 1).unwrap();
+
+        assert_eq!(channels, 3);
+        assert_eq!(pixels, vec![255, 255, 255, 35, 31, 32]);
     }
 
     #[test]

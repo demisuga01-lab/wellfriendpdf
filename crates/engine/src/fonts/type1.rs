@@ -71,8 +71,108 @@ pub(crate) fn outline_by_name(font_bytes: &[u8], glyph_name: &str) -> Option<(Op
     Some(font.outline_by_name(glyph_name))
 }
 
+pub(crate) fn builtin_encoding(font_bytes: &[u8]) -> Option<Vec<String>> {
+    let normalized = normalize_pfb_segments(font_bytes).unwrap_or_else(|| font_bytes.to_vec());
+    let clear = match find_token(&normalized, b"eexec") {
+        Some(pos) => &normalized[..pos],
+        None => normalized.as_slice(),
+    };
+    let encoding_pos = find_token(clear, b"/Encoding")?;
+    let mut p = encoding_pos + b"/Encoding".len();
+    skip_space(clear, &mut p);
+
+    if starts_token(clear, p, b"StandardEncoding") || starts_token(clear, p, b"/StandardEncoding") {
+        return Some(
+            (0u8..=255)
+                .map(|code| Encoding::lookup("StandardEncoding", code).to_string())
+                .collect(),
+        );
+    }
+    if starts_token(clear, p, b"WinAnsiEncoding") || starts_token(clear, p, b"/WinAnsiEncoding") {
+        return Some(
+            (0u8..=255)
+                .map(|code| Encoding::lookup("WinAnsiEncoding", code).to_string())
+                .collect(),
+        );
+    }
+    if starts_token(clear, p, b"MacRomanEncoding") || starts_token(clear, p, b"/MacRomanEncoding") {
+        return Some(
+            (0u8..=255)
+                .map(|code| Encoding::lookup("MacRomanEncoding", code).to_string())
+                .collect(),
+        );
+    }
+
+    let mut table = vec![".notdef".to_string(); 256];
+    let mut found = false;
+    let mut scan = p;
+    while scan < clear.len() {
+        let Some(dup) = find_token_from(clear, b"dup", scan) else {
+            break;
+        };
+        let mut q = dup + 3;
+        skip_space(clear, &mut q);
+        let Some(code) = read_i32(clear, &mut q).filter(|value| (0..=255).contains(value)) else {
+            scan = dup + 3;
+            continue;
+        };
+        skip_space(clear, &mut q);
+        if clear.get(q) != Some(&b'/') {
+            scan = dup + 3;
+            continue;
+        }
+        q += 1;
+        let Some(name) = read_name(clear, &mut q).filter(|name| !name.is_empty()) else {
+            scan = dup + 3;
+            continue;
+        };
+        skip_space(clear, &mut q);
+        if !starts_token(clear, q, b"put") {
+            scan = dup + 3;
+            continue;
+        }
+        table[code as usize] = name;
+        found = true;
+        scan = q + 3;
+    }
+
+    found.then_some(table)
+}
+
 pub(crate) fn units_per_em() -> f64 {
     1000.0
+}
+
+fn normalize_pfb_segments(font_bytes: &[u8]) -> Option<Vec<u8>> {
+    if font_bytes.first() != Some(&0x80) {
+        return None;
+    }
+    let mut pos = 0usize;
+    let mut out = Vec::with_capacity(font_bytes.len());
+    while pos + 6 <= font_bytes.len() && font_bytes[pos] == 0x80 {
+        let kind = font_bytes[pos + 1];
+        pos += 2;
+        if kind == 0x03 {
+            return Some(out);
+        }
+        if kind != 0x01 && kind != 0x02 {
+            return None;
+        }
+        let len = u32::from_le_bytes([
+            font_bytes[pos],
+            font_bytes[pos + 1],
+            font_bytes[pos + 2],
+            font_bytes[pos + 3],
+        ]) as usize;
+        pos += 4;
+        let end = pos.checked_add(len)?;
+        if end > font_bytes.len() {
+            return None;
+        }
+        out.extend_from_slice(&font_bytes[pos..end]);
+        pos = end;
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn decrypt_private_program(font_bytes: &[u8]) -> Option<Vec<u8>> {
@@ -216,6 +316,7 @@ struct Interpreter<'a> {
     path: Path,
     stack: Vec<f64>,
     othersubr_results: Vec<f64>,
+    flex_points: Option<Vec<(f64, f64)>>,
     x: f64,
     y: f64,
     width: f64,
@@ -228,6 +329,7 @@ impl<'a> Interpreter<'a> {
             path: Path::new(),
             stack: Vec::new(),
             othersubr_results: Vec::new(),
+            flex_points: None,
             x: 0.0,
             y: 0.0,
             width: 500.0,
@@ -416,8 +518,9 @@ impl<'a> Interpreter<'a> {
                 self.clear();
             }
             17 => {
-                let value = self.othersubr_results.pop().unwrap_or(0.0);
-                self.stack.push(value);
+                if let Some(value) = self.othersubr_results.pop() {
+                    self.stack.push(value);
+                }
             }
             33 => {
                 let values = self.take_stack();
@@ -439,11 +542,40 @@ impl<'a> Interpreter<'a> {
                 self.othersubr_results.extend(args.into_iter().rev());
             }
             // Standard flex OtherSubrs 0, 1 and 2 mostly communicate via the
-            // Type1 interpreter state. These outlines still contain the normal
-            // curve operators in the fonts we exercise; consume the operands so
-            // the stack remains balanced.
-            0..=2 => {}
+            // Type1 interpreter state. Capture the seven rmoveto points used by
+            // the Flex encoding, then emit the equivalent two cubic Bezier
+            // segments at OtherSubr 0. This mirrors the Type 1 spec's mandated
+            // semantics for the first four OtherSubrs and avoids treating flex
+            // control-point moves as real subpath moves.
+            0 => self.finish_flex(args),
+            1 => {
+                self.flex_points = Some(vec![(self.x, self.y)]);
+            }
+            2 => {}
             _ => {}
+        }
+    }
+
+    fn finish_flex(&mut self, args: Vec<f64>) {
+        let points = self.flex_points.take().unwrap_or_default();
+        if points.len() >= 8 {
+            let (_start_x, _start_y) = points[0];
+            let (_ref_x, _ref_y) = points[1];
+            let (cp1x, cp1y) = points[2];
+            let (cp2x, cp2y) = points[3];
+            let (mid_x, mid_y) = points[4];
+            let (cp3x, cp3y) = points[5];
+            let (cp4x, cp4y) = points[6];
+            let (end_x, end_y) = points[7];
+            self.curve_to(cp1x, cp1y, cp2x, cp2y, mid_x, mid_y);
+            self.curve_to(cp3x, cp3y, cp4x, cp4y, end_x, end_y);
+        }
+        if args.len() >= 3 {
+            // OtherSubr 0 returns the final current point to the following two
+            // Type 1 `pop` operators. Our pop implementation consumes from the
+            // end, so store y then x.
+            self.othersubr_results.push(args[2]);
+            self.othersubr_results.push(args[1]);
         }
     }
 
@@ -469,6 +601,12 @@ impl<'a> Interpreter<'a> {
     }
 
     fn move_to(&mut self, x: f64, y: f64) {
+        if let Some(points) = self.flex_points.as_mut() {
+            points.push((x, y));
+            self.x = x;
+            self.y = y;
+            return;
+        }
         self.path.move_to(x, y);
         self.x = x;
         self.y = y;
@@ -578,6 +716,14 @@ fn starts_word(data: &[u8], pos: usize, word: &[u8]) -> bool {
             .map(|b| is_space(*b))
             .unwrap_or(true)
         && (pos == 0 || data.get(pos - 1).map(|b| is_space(*b)).unwrap_or(true))
+}
+
+fn starts_token(data: &[u8], pos: usize, token: &[u8]) -> bool {
+    data.get(pos..pos.saturating_add(token.len())) == Some(token)
+        && data
+            .get(pos + token.len())
+            .map(|b| is_delimiter(*b))
+            .unwrap_or(true)
 }
 
 fn trim_leading_space(mut data: &[u8]) -> &[u8] {
@@ -710,6 +856,73 @@ mod tests {
         let outline = outline.expect("glyph A should have an outline");
         assert!(outline.segments.len() > 5);
         assert!(advance > 500.0);
+    }
+
+    #[test]
+    fn type1_builtin_encoding_parses_postscript_dup_array() {
+        let pfa = b"%!PS-AdobeFont-1.0
+/Encoding 256 array
+0 1 255 {1 index exch /.notdef put} for
+dup 65 /A put
+dup 66 /B put
+dup 173 /endash put
+readonly def
+eexec
+";
+        let table = builtin_encoding(pfa).expect("builtin encoding");
+        assert_eq!(table[64], ".notdef");
+        assert_eq!(table[65], "A");
+        assert_eq!(table[66], "B");
+        assert_eq!(table[173], "endash");
+    }
+
+    #[test]
+    fn type1_builtin_encoding_parses_pfb_segments() {
+        let ascii = b"%!PS-AdobeFont-1.0\n/Encoding StandardEncoding def\neexec\n";
+        let mut pfb = Vec::new();
+        pfb.extend_from_slice(&[0x80, 0x01]);
+        pfb.extend_from_slice(&(ascii.len() as u32).to_le_bytes());
+        pfb.extend_from_slice(ascii);
+        pfb.extend_from_slice(&[0x80, 0x03]);
+        let table = builtin_encoding(&pfb).expect("pfb builtin encoding");
+        assert_eq!(table[0x41], "A");
+        assert_eq!(table[0xAE], "fi");
+    }
+
+    #[test]
+    fn type1_flex_records_control_moves_as_curves() {
+        let font = Type1Font {
+            #[cfg(test)]
+            len_iv: DEFAULT_LEN_IV,
+            subrs: HashMap::new(),
+            charstrings: HashMap::new(),
+        };
+        let mut interpreter = Interpreter::new(&font);
+        interpreter.move_to(100.0, -10.0);
+        interpreter.handle_callothersubr(1, Vec::new());
+        for point in [
+            (150.0, -10.0),
+            (115.0, -10.0),
+            (125.0, 0.0),
+            (150.0, 0.0),
+            (175.0, 0.0),
+            (185.0, -10.0),
+            (200.0, -10.0),
+        ] {
+            interpreter.move_to(point.0, point.1);
+            interpreter.handle_callothersubr(2, Vec::new());
+        }
+        interpreter.finish_flex(vec![50.0, 200.0, -10.0]);
+
+        assert!(matches!(
+            interpreter.path.segments.as_slice(),
+            [
+                PathSegment::MoveTo(100.0, -10.0),
+                PathSegment::CubicTo { .. },
+                PathSegment::CubicTo { .. }
+            ]
+        ));
+        assert_eq!(interpreter.othersubr_results, vec![-10.0, 200.0]);
     }
 
     fn tracemonkey_type1_font_bytes(resource_name: &str) -> Vec<u8> {

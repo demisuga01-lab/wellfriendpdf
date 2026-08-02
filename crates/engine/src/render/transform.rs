@@ -217,6 +217,8 @@ pub struct Viewport {
     pub dpi: u32,
     /// Pixels per point.
     pub scale: f64,
+    /// PDF `/UserUnit` multiplier for page user-space units.
+    pub user_unit: f64,
     /// Rendered image width in pixels.
     pub width_px: u32,
     /// Rendered image height in pixels.
@@ -238,8 +240,18 @@ pub struct Viewport {
 impl Viewport {
     /// Create a Viewport for a MediaBox at a given DPI.
     pub fn new(media_box: [f64; 4], dpi: u32) -> Self {
+        Self::new_with_user_unit(media_box, dpi, 1.0)
+    }
+
+    /// Create a Viewport for a MediaBox at a given DPI and `/UserUnit`.
+    pub fn new_with_user_unit(media_box: [f64; 4], dpi: u32, user_unit: f64) -> Self {
         let dpi = dpi.max(1);
-        let scale = dpi as f64 / 72.0;
+        let user_unit = if user_unit.is_finite() && user_unit > 0.0 {
+            user_unit
+        } else {
+            1.0
+        };
+        let scale = dpi as f64 / 72.0 * user_unit;
         let page_w = (media_box[2] - media_box[0]).abs();
         let page_h = (media_box[3] - media_box[1]).abs();
         let width_px = safe_ceil_to_u32(page_w * scale);
@@ -248,6 +260,7 @@ impl Viewport {
             media_box,
             dpi,
             scale,
+            user_unit,
             width_px,
             height_px,
             rotation: 0,
@@ -258,12 +271,23 @@ impl Viewport {
 
     /// Create a Viewport that accounts for page display rotation.
     pub fn new_rotated(media_box: [f64; 4], dpi: u32, rotation: u32) -> Self {
-        let base = Self::new(media_box, dpi);
+        Self::new_rotated_with_user_unit(media_box, dpi, rotation, 1.0)
+    }
+
+    /// Create a Viewport that accounts for page display rotation and `/UserUnit`.
+    pub fn new_rotated_with_user_unit(
+        media_box: [f64; 4],
+        dpi: u32,
+        rotation: u32,
+        user_unit: f64,
+    ) -> Self {
+        let base = Self::new_with_user_unit(media_box, dpi, user_unit);
         match rotation % 360 {
             90 | 270 => Self {
                 media_box: base.media_box,
                 dpi: base.dpi,
                 scale: base.scale,
+                user_unit: base.user_unit,
                 width_px: base.height_px,
                 height_px: base.width_px,
                 rotation,
@@ -289,6 +313,7 @@ impl Viewport {
             media_box: self.media_box,
             dpi: self.dpi,
             scale: self.scale,
+            user_unit: self.user_unit,
             width_px: clamped_width,
             height_px: clamped_height,
             rotation: self.rotation,
@@ -687,6 +712,25 @@ mod tests {
         let vp = Viewport::new_rotated([0.0, 0.0, 100.0, 200.0], 72, 270);
         assert_eq!(vp.width_px, 200);
         assert_eq!(vp.height_px, 100);
+    }
+
+    #[test]
+    fn viewport_user_unit_scales_pixels_without_changing_page_box() {
+        let vp = Viewport::new_with_user_unit([0.0, 0.0, 100.0, 50.0], 72, 2.0);
+        assert_eq!(vp.user_unit, 2.0);
+        assert_eq!(vp.width_px, 200);
+        assert_eq!(vp.height_px, 100);
+        assert_eq!(vp.page_width_pts(), 100.0);
+        assert_eq!(vp.page_height_pts(), 50.0);
+    }
+
+    #[test]
+    fn rotated_viewport_user_unit_scales_swapped_dimensions() {
+        let vp = Viewport::new_rotated_with_user_unit([0.0, 0.0, 100.0, 200.0], 72, 90, 2.0);
+        assert_eq!(vp.user_unit, 2.0);
+        assert_eq!(vp.width_px, 400);
+        assert_eq!(vp.height_px, 200);
+        assert_eq!(vp.rotation, 90);
     }
 
     #[test]

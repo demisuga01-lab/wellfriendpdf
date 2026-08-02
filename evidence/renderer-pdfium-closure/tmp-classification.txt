@@ -1,0 +1,5 @@
+classification=generated_scratch_debug_not_for_commit
+path=E:\wellpdfsdk\tmp
+within_workspace=True
+file_count=4
+bytes=3270039

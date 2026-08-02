@@ -5,6 +5,7 @@ use crate::fonts::cmap::ToUnicodeCMap;
 use crate::fonts::encoding::Encoding;
 use crate::fonts::glyph_list::glyph_name_to_unicode;
 use crate::fonts::predefined_cmap::{self, PredefinedCMapInfo};
+use crate::fonts::type1;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::reader::PdfReader;
 
@@ -76,6 +77,7 @@ pub struct FontResolver {
     default_width: f64,
     code_size: u8,
     predefined_cmap: Option<PredefinedCMapInfo>,
+    standard14_base: Option<String>,
     /// Writing mode of the font's encoding CMap: 0 = horizontal (glyphs advance
     /// left-to-right), 1 = vertical (glyphs advance top-to-bottom, columns
     /// arranged right-to-left). Only Type0 (composite) fonts can be vertical;
@@ -242,6 +244,10 @@ impl FontResolver {
         self.decode_char(code) == " "
     }
 
+    pub fn has_standard14_metrics(&self) -> bool {
+        self.standard14_base.is_some()
+    }
+
     pub fn glyph_width(&self, char_code: u16) -> f64 {
         if let Some(descendant_font) = &self.descendant_font {
             return lookup_cid_width(u32::from(char_code), descendant_font);
@@ -250,9 +256,14 @@ impl FontResolver {
         let index = u32::from(char_code);
         if index >= self.first_char && index <= self.last_char {
             let i = (index - self.first_char) as usize;
-            self.widths.get(i).copied().unwrap_or(self.default_width)
+            self.widths
+                .get(i)
+                .copied()
+                .or_else(|| self.standard14_width(char_code))
+                .unwrap_or(self.default_width)
         } else {
-            self.default_width
+            self.standard14_width(char_code)
+                .unwrap_or(self.default_width)
         }
     }
 
@@ -313,13 +324,17 @@ impl FontResolver {
             .filter(|value| *value >= 0)
             .and_then(|value| u32::try_from(value).ok())
             .unwrap_or(255);
-        let widths = parse_widths(font_dict, first_char, last_char);
+        let widths = parse_widths(font_dict, reader, first_char, last_char);
         let default_width = if font_type.is_cid() {
             descendant_font
                 .as_ref()
                 .and_then(|dict| dict.get("DW"))
                 .and_then(PdfObject::as_number)
                 .unwrap_or(1000.0)
+        } else if let Some(missing_width) =
+            font_descriptor_number(font_dict, reader, "MissingWidth")
+        {
+            missing_width
         } else if widths.is_empty() {
             500.0
         } else {
@@ -330,6 +345,9 @@ impl FontResolver {
         } else {
             None
         };
+        let standard14_base = font_dict
+            .get_name("BaseFont")
+            .and_then(standard14_base_name);
         let code_size = if font_type.is_cid() {
             to_unicode
                 .as_ref()
@@ -360,8 +378,281 @@ impl FontResolver {
             code_size,
             predefined_cmap,
             wmode,
+            standard14_base,
         }
     }
+
+    fn standard14_width(&self, char_code: u16) -> Option<f64> {
+        let base = self.standard14_base.as_deref()?;
+        let glyph_name = self.glyph_name(char_code)?;
+        standard14_width(base, glyph_name)
+    }
+}
+
+fn standard14_base_name(name: &str) -> Option<String> {
+    let raw = name.trim_start_matches('/');
+    let raw = raw.rsplit('+').next().unwrap_or(raw);
+    match raw {
+        "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique" => {
+            Some(raw.to_string())
+        }
+        "Helvetica" | "Helvetica-Bold" | "Helvetica-Oblique" | "Helvetica-BoldOblique" => {
+            Some(raw.to_string())
+        }
+        "Times-Roman" | "Times-Bold" | "Times-Italic" | "Times-BoldItalic" => Some(raw.to_string()),
+        _ => None,
+    }
+}
+
+fn standard14_width(base: &str, glyph_name: &str) -> Option<f64> {
+    match base {
+        "Courier" | "Courier-Bold" | "Courier-Oblique" | "Courier-BoldOblique" => {
+            (glyph_name != ".notdef").then_some(600.0)
+        }
+        "Helvetica" | "Helvetica-Oblique" => helvetica_standard_width(glyph_name),
+        "Helvetica-Bold" | "Helvetica-BoldOblique" => helvetica_bold_standard_width(glyph_name),
+        "Times-Roman" => times_roman_standard_width(glyph_name),
+        "Times-Bold" => times_bold_standard_width(glyph_name),
+        "Times-Italic" => times_italic_standard_width(glyph_name),
+        "Times-BoldItalic" => times_bold_italic_standard_width(glyph_name),
+        _ => None,
+    }
+}
+
+fn helvetica_standard_width(glyph: &str) -> Option<f64> {
+    Some(match glyph {
+        "space" => 278.0,
+        "exclam" => 278.0,
+        "quotedbl" => 355.0,
+        "numbersign" | "dollar" => 556.0,
+        "percent" => 889.0,
+        "ampersand" => 667.0,
+        "quoteright" | "quotesingle" | "quoteleft" | "grave" | "acute" => 222.0,
+        "parenleft" | "parenright" | "bracketleft" | "bracketright" => 333.0,
+        "asterisk" => 389.0,
+        "plus" | "less" | "equal" | "greater" | "asciitilde" => 584.0,
+        "comma" | "period" | "colon" | "semicolon" => 278.0,
+        "hyphen" => 333.0,
+        "slash" | "backslash" => 278.0,
+        "zero" | "one" | "two" | "three" | "four" | "five" | "six" | "seven" | "eight" | "nine" => {
+            556.0
+        }
+        "question" => 556.0,
+        "at" => 1015.0,
+        "A" | "B" | "K" | "X" | "Y" => 667.0,
+        "C" | "H" | "N" | "R" | "U" => 722.0,
+        "D" | "G" | "O" | "Q" => 778.0,
+        "E" => 667.0,
+        "F" | "T" | "Z" => 611.0,
+        "I" => 278.0,
+        "J" => 500.0,
+        "L" => 556.0,
+        "M" => 833.0,
+        "P" => 667.0,
+        "S" => 667.0,
+        "V" => 667.0,
+        "W" => 944.0,
+        "asciicircum" => 469.0,
+        "underscore" => 556.0,
+        "a" | "b" | "d" | "e" | "g" | "n" | "o" | "p" | "q" | "u" => 556.0,
+        "c" | "k" | "s" | "v" | "x" | "y" | "z" => 500.0,
+        "f" | "t" => 278.0,
+        "h" => 556.0,
+        "i" | "j" | "l" => 222.0,
+        "m" => 833.0,
+        "r" => 333.0,
+        "w" => 722.0,
+        "braceleft" | "braceright" => 334.0,
+        "bar" => 260.0,
+        _ => return None,
+    })
+}
+
+fn helvetica_bold_standard_width(glyph: &str) -> Option<f64> {
+    Some(match glyph {
+        "space" | "quoteright" | "quotesingle" | "quoteleft" | "grave" | "acute" | "comma"
+        | "period" | "slash" | "backslash" | "I" | "i" | "j" | "l" => 278.0,
+        "exclam" | "parenleft" | "parenright" | "colon" | "semicolon" | "bracketleft"
+        | "bracketright" | "f" | "t" => 333.0,
+        "quotedbl" => 474.0,
+        "numbersign" | "dollar" | "zero" | "one" | "two" | "three" | "four" | "five" | "six"
+        | "seven" | "eight" | "nine" | "L" | "T" | "c" | "k" | "s" | "x" | "z" => 556.0,
+        "percent" | "m" => 889.0,
+        "ampersand" | "E" | "P" | "S" | "Y" => 667.0,
+        "asterisk" | "r" => 389.0,
+        "plus" | "less" | "equal" | "greater" | "asciicircum" | "asciitilde" => 584.0,
+        "hyphen" => 333.0,
+        "question" | "F" => 611.0,
+        "at" => 975.0,
+        "A" | "B" | "H" | "K" | "N" | "R" | "U" => 722.0,
+        "C" | "D" | "G" | "O" | "Q" => 778.0,
+        "J" | "a" => 556.0,
+        "M" => 833.0,
+        "V" => 722.0,
+        "W" => 944.0,
+        "X" => 722.0,
+        "Z" => 611.0,
+        "underscore" => 556.0,
+        "b" | "d" | "g" | "h" | "n" | "o" | "p" | "q" | "u" => 611.0,
+        "e" | "v" | "y" => 556.0,
+        "w" => 778.0,
+        "braceleft" | "braceright" => 389.0,
+        "bar" => 280.0,
+        _ => return None,
+    })
+}
+
+fn times_roman_standard_width(glyph: &str) -> Option<f64> {
+    Some(match glyph {
+        "space" => 250.0,
+        "exclam" => 333.0,
+        "quotedbl" => 408.0,
+        "numbersign" | "dollar" | "asterisk" => 500.0,
+        "percent" => 833.0,
+        "ampersand" => 778.0,
+        "quoteright" | "quotesingle" | "quoteleft" => 180.0,
+        "parenleft" | "parenright" | "bracketleft" | "bracketright" | "grave" | "acute" => 333.0,
+        "plus" | "less" | "equal" | "greater" => 564.0,
+        "comma" | "period" => 250.0,
+        "hyphen" => 333.0,
+        "slash" | "backslash" | "colon" | "semicolon" | "i" | "j" | "l" | "t" => 278.0,
+        "zero" | "one" | "two" | "three" | "four" | "five" | "six" | "seven" | "eight" | "nine" => {
+            500.0
+        }
+        "question" | "a" | "c" | "e" | "z" => 444.0,
+        "at" => 921.0,
+        "A" | "K" | "N" | "O" | "Q" | "V" | "X" | "Y" => 722.0,
+        "B" | "C" | "R" => 667.0,
+        "D" => 722.0,
+        "E" | "L" | "T" | "Z" => 611.0,
+        "F" | "S" => 556.0,
+        "G" | "H" => 722.0,
+        "I" => 333.0,
+        "J" | "s" => 389.0,
+        "M" => 889.0,
+        "P" => 556.0,
+        "U" => 722.0,
+        "W" => 944.0,
+        "asciicircum" => 469.0,
+        "underscore" => 500.0,
+        "b" | "d" | "g" | "h" | "k" | "n" | "o" | "p" | "q" | "u" | "v" | "x" | "y" => 500.0,
+        "f" | "r" => 333.0,
+        "m" => 778.0,
+        "w" => 722.0,
+        "braceleft" | "braceright" => 480.0,
+        "bar" => 200.0,
+        "asciitilde" => 541.0,
+        _ => return None,
+    })
+}
+
+fn times_bold_standard_width(glyph: &str) -> Option<f64> {
+    Some(match glyph {
+        "space" | "comma" | "period" => 250.0,
+        "exclam" | "parenleft" | "parenright" | "colon" | "semicolon" | "bracketleft"
+        | "bracketright" | "grave" | "acute" | "f" | "t" => 333.0,
+        "quotedbl" | "J" | "P" | "S" | "a" | "o" | "v" | "x" | "y" => 500.0,
+        "numbersign" | "dollar" | "asterisk" | "zero" | "one" | "two" | "three" | "four"
+        | "five" | "six" | "seven" | "eight" | "nine" | "question" => 500.0,
+        "percent" => 1000.0,
+        "ampersand" => 833.0,
+        "quoteright" | "quotesingle" | "quoteleft" | "slash" | "backslash" | "i" | "l" => 278.0,
+        "plus" | "less" | "equal" | "greater" => 570.0,
+        "at" => 930.0,
+        "A" | "C" | "N" | "R" | "U" | "V" | "X" => 722.0,
+        "B" | "E" | "L" | "Z" => 667.0,
+        "D" | "H" | "K" | "O" | "Q" => 778.0,
+        "F" => 611.0,
+        "G" => 778.0,
+        "I" => 389.0,
+        "M" => 944.0,
+        "T" => 667.0,
+        "W" => 1000.0,
+        "Y" => 722.0,
+        "asciicircum" => 581.0,
+        "underscore" => 500.0,
+        "b" | "d" | "h" | "k" | "n" | "p" | "q" | "u" => 556.0,
+        "c" | "e" | "z" => 444.0,
+        "g" => 500.0,
+        "j" => 333.0,
+        "m" => 833.0,
+        "r" => 444.0,
+        "s" => 389.0,
+        "w" => 722.0,
+        "braceleft" | "braceright" => 394.0,
+        "bar" => 220.0,
+        "asciitilde" => 520.0,
+        _ => return None,
+    })
+}
+
+fn times_italic_standard_width(glyph: &str) -> Option<f64> {
+    Some(match glyph {
+        "space" | "comma" | "period" => 250.0,
+        "exclam" | "parenleft" | "parenright" | "colon" | "semicolon" | "bracketleft"
+        | "bracketright" | "grave" | "acute" => 333.0,
+        "quotedbl" => 420.0,
+        "numbersign" | "dollar" | "asterisk" | "zero" | "one" | "two" | "three" | "four"
+        | "five" | "six" | "seven" | "eight" | "nine" | "question" | "a" | "b" | "d" | "g"
+        | "h" | "n" | "o" | "p" | "q" | "u" => 500.0,
+        "percent" | "M" | "W" => 833.0,
+        "ampersand" => 778.0,
+        "quoteright" | "quotesingle" | "quoteleft" => 214.0,
+        "plus" | "less" | "equal" | "greater" => 675.0,
+        "hyphen" => 333.0,
+        "slash" | "backslash" | "i" | "j" | "l" | "t" => 278.0,
+        "at" => 920.0,
+        "A" | "B" | "E" | "F" | "P" | "R" | "V" | "X" => 611.0,
+        "C" | "K" => 667.0,
+        "D" | "G" | "H" | "O" | "Q" | "U" => 722.0,
+        "I" => 333.0,
+        "J" => 444.0,
+        "L" | "T" | "Y" | "Z" => 556.0,
+        "S" | "r" | "s" | "z" => 389.0,
+        "asciicircum" | "x" | "y" => 422.0,
+        "underscore" => 500.0,
+        "c" | "e" | "k" | "v" => 444.0,
+        "f" => 278.0,
+        "m" => 722.0,
+        "w" => 667.0,
+        "braceleft" | "braceright" => 400.0,
+        "bar" => 275.0,
+        "asciitilde" => 541.0,
+        _ => return None,
+    })
+}
+
+fn times_bold_italic_standard_width(glyph: &str) -> Option<f64> {
+    Some(match glyph {
+        "space" | "comma" | "period" => 250.0,
+        "exclam" | "I" | "colon" | "semicolon" | "f" => 389.0,
+        "quotedbl" | "r" | "s" | "z" => 389.0,
+        "numbersign" | "dollar" | "asterisk" | "zero" | "one" | "two" | "three" | "four"
+        | "five" | "six" | "seven" | "eight" | "nine" | "question" | "a" | "b" | "d" | "g"
+        | "k" | "o" | "p" | "q" | "x" => 500.0,
+        "percent" => 833.0,
+        "ampersand" | "H" | "m" => 778.0,
+        "quoteright" | "quotesingle" | "quoteleft" | "slash" | "backslash" | "i" | "j" | "l"
+        | "t" => 278.0,
+        "parenleft" | "parenright" | "bracketleft" | "bracketright" | "grave" | "acute" => 333.0,
+        "plus" | "less" | "equal" | "greater" | "asciicircum" | "asciitilde" => 570.0,
+        "hyphen" => 333.0,
+        "at" => 832.0,
+        "A" | "B" | "C" | "E" | "K" | "R" | "V" | "X" => 667.0,
+        "D" | "G" | "N" | "O" | "Q" | "U" => 722.0,
+        "F" => 667.0,
+        "J" => 500.0,
+        "L" | "P" | "T" | "Y" | "Z" => 611.0,
+        "M" | "W" => 889.0,
+        "S" => 556.0,
+        "underscore" => 500.0,
+        "c" | "e" | "v" | "y" => 444.0,
+        "h" | "n" | "u" => 556.0,
+        "w" => 667.0,
+        "braceleft" | "braceright" => 348.0,
+        "bar" => 220.0,
+        _ => return None,
+    })
 }
 
 pub fn predefined_cmap_name(
@@ -660,24 +951,34 @@ fn build_encoding_table(
         FontType::TrueType => "MacRomanEncoding",
         _ => "StandardEncoding",
     });
+    let type1_builtin =
+        if symbolic_base.is_none() && matches!(font_type, FontType::Type1 | FontType::MMType1) {
+            embedded_font_program_bytes(font_dict, reader)
+                .and_then(|bytes| type1::builtin_encoding(bytes.as_slice()))
+        } else {
+            None
+        };
 
     let Some(encoding_obj) = font_dict.get("Encoding") else {
-        return table_for(default_base);
+        return type1_builtin.unwrap_or_else(|| table_for(default_base));
     };
 
     let resolved = resolve_optional(encoding_obj, reader).unwrap_or_else(|_| encoding_obj.clone());
     match resolved {
         PdfObject::Name(name) => table_for(&name),
         PdfObject::Dictionary(dict) => {
-            let base = dict.get_name("BaseEncoding").unwrap_or(default_base);
             let diffs = dict
                 .get_array("Differences")
                 .map(pdf_objects_to_operands)
                 .unwrap_or_default();
+            let base_table = dict
+                .get_name("BaseEncoding")
+                .map(table_for)
+                .unwrap_or_else(|| type1_builtin.unwrap_or_else(|| table_for(default_base)));
             if diffs.is_empty() {
-                table_for(base)
+                base_table
             } else {
-                Encoding::apply_differences(base, &diffs)
+                apply_differences_to_table(base_table, &diffs)
             }
         }
         _ => table_for(default_base),
@@ -706,6 +1007,76 @@ fn table_for(name: &str) -> Vec<String> {
         .collect()
 }
 
+fn apply_differences_to_table(mut table: Vec<String>, differences: &[Operand]) -> Vec<String> {
+    if table.len() < 256 {
+        table.resize(256, ".notdef".to_string());
+    }
+    let mut current_code: usize = 0;
+    for item in differences {
+        match item {
+            Operand::Integer(n) if *n >= 0 => {
+                current_code = *n as usize;
+            }
+            Operand::Name(name) => {
+                if current_code < 256 {
+                    table[current_code] = name.clone();
+                }
+                current_code = current_code.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    table
+}
+
+fn embedded_font_program_bytes(
+    font_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+) -> Option<Vec<u8>> {
+    let reader = reader?;
+    let descriptor = match reader
+        .resolve(font_dict.get("FontDescriptor")?.clone())
+        .ok()?
+    {
+        PdfObject::Dictionary(dict) => dict,
+        _ => return None,
+    };
+    for key in ["FontFile", "FontFile3", "FontFile2"] {
+        let Some(font_file) = descriptor.get(key) else {
+            continue;
+        };
+        let PdfObject::Stream { dict, raw } = reader.resolve(font_file.clone()).ok()? else {
+            continue;
+        };
+        if raw.is_empty() {
+            continue;
+        }
+        let stream = PdfObject::Stream {
+            dict: dict.clone(),
+            raw: raw.clone(),
+        };
+        if let Ok(decoded) = decode_stream_lossless(&stream, reader) {
+            if !decoded.data.is_empty() {
+                return Some(decoded.data);
+            }
+        }
+        return Some(raw);
+    }
+    None
+}
+
+fn font_descriptor_number(
+    font_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+    key: &str,
+) -> Option<f64> {
+    let descriptor = resolve_optional(font_dict.get("FontDescriptor")?, reader).ok()?;
+    match descriptor {
+        PdfObject::Dictionary(dict) => dict.get(key).and_then(PdfObject::as_number),
+        _ => None,
+    }
+}
+
 fn pdf_objects_to_operands(objects: &[PdfObject]) -> Vec<Operand> {
     objects
         .iter()
@@ -721,8 +1092,17 @@ fn pdf_objects_to_operands(objects: &[PdfObject]) -> Vec<Operand> {
         .collect()
 }
 
-fn parse_widths(font_dict: &PdfDictionary, first_char: u32, last_char: u32) -> Vec<f64> {
-    let Some(widths) = font_dict.get_array("Widths") else {
+fn parse_widths(
+    font_dict: &PdfDictionary,
+    reader: Option<&PdfReader>,
+    first_char: u32,
+    last_char: u32,
+) -> Vec<f64> {
+    let Some(widths_obj) = font_dict.get("Widths") else {
+        return Vec::new();
+    };
+    let widths_obj = resolve_optional(widths_obj, reader).unwrap_or_else(|_| widths_obj.clone());
+    let Some(widths) = widths_obj.as_array() else {
         return Vec::new();
     };
     let wanted_len = last_char
@@ -730,7 +1110,14 @@ fn parse_widths(font_dict: &PdfDictionary, first_char: u32, last_char: u32) -> V
         .and_then(|value| value.checked_add(1))
         .and_then(|value| usize::try_from(value).ok())
         .unwrap_or(0);
-    let mut values: Vec<f64> = widths.iter().filter_map(PdfObject::as_number).collect();
+    let mut values: Vec<f64> = widths
+        .iter()
+        .filter_map(|object| {
+            object
+                .as_number()
+                .or_else(|| resolve_optional(object, reader).ok()?.as_number())
+        })
+        .collect();
     if wanted_len > 0 {
         values.truncate(wanted_len);
     }
@@ -923,6 +1310,100 @@ mod cid_font_tests {
         dict.insert("Encoding", PdfObject::Name("WinAnsiEncoding".to_string()));
         let resolver = FontResolver::new_from_dict_only(&dict);
         assert!(!resolver.is_vertical());
+    }
+
+    #[test]
+    fn standard14_font_without_widths_uses_builtin_metrics() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        dict.insert("BaseFont", PdfObject::Name("Helvetica".to_string()));
+        let resolver = FontResolver::new_from_dict_only(&dict);
+
+        assert!(resolver.has_standard14_metrics());
+        assert_eq!(resolver.glyph_width(u16::from(b'A')), 667.0);
+        assert_eq!(resolver.glyph_width(u16::from(b'i')), 222.0);
+        assert_eq!(resolver.glyph_width(u16::from(b' ')), 278.0);
+    }
+
+    #[test]
+    fn courier_standard14_font_without_widths_is_fixed_width() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        dict.insert(
+            "BaseFont",
+            PdfObject::Name("Courier-BoldOblique".to_string()),
+        );
+        let resolver = FontResolver::new_from_dict_only(&dict);
+
+        assert_eq!(resolver.glyph_width(u16::from(b'i')), 600.0);
+        assert_eq!(resolver.glyph_width(u16::from(b'W')), 600.0);
+    }
+
+    #[test]
+    fn standard14_variant_metrics_are_style_specific() {
+        let mut helvetica_bold = PdfDictionary::empty();
+        helvetica_bold.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        helvetica_bold.insert("BaseFont", PdfObject::Name("Helvetica-Bold".to_string()));
+        let helvetica_bold = FontResolver::new_from_dict_only(&helvetica_bold);
+        assert_eq!(helvetica_bold.glyph_width(u16::from(b'W')), 944.0);
+        assert_eq!(helvetica_bold.glyph_width(u16::from(b'm')), 889.0);
+
+        let mut times_italic = PdfDictionary::empty();
+        times_italic.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        times_italic.insert("BaseFont", PdfObject::Name("Times-Italic".to_string()));
+        let times_italic = FontResolver::new_from_dict_only(&times_italic);
+        assert_eq!(times_italic.glyph_width(u16::from(b'A')), 611.0);
+        assert_eq!(times_italic.glyph_width(u16::from(b'w')), 667.0);
+    }
+
+    #[test]
+    fn simple_width_array_truncates_to_declared_code_span() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert(
+            "Widths",
+            PdfObject::Array(vec![
+                PdfObject::Integer(250),
+                PdfObject::Integer(600),
+                PdfObject::Integer(700),
+            ]),
+        );
+
+        assert_eq!(parse_widths(&dict, None, 10, 11), vec![250.0, 600.0]);
+    }
+
+    #[test]
+    fn simple_width_array_ignores_malformed_entries() {
+        let mut dict = PdfDictionary::empty();
+        dict.insert(
+            "Widths",
+            PdfObject::Array(vec![
+                PdfObject::Integer(250),
+                PdfObject::Name("bad".to_string()),
+                PdfObject::Real(333.5),
+            ]),
+        );
+
+        assert_eq!(parse_widths(&dict, None, 0, 2), vec![250.0, 333.5]);
+    }
+
+    #[test]
+    fn simple_font_missing_width_uses_font_descriptor_before_average_width() {
+        let mut descriptor = PdfDictionary::empty();
+        descriptor.insert("MissingWidth", PdfObject::Integer(420));
+
+        let mut dict = PdfDictionary::empty();
+        dict.insert("Subtype", PdfObject::Name("Type1".to_string()));
+        dict.insert("FirstChar", PdfObject::Integer(65));
+        dict.insert("LastChar", PdfObject::Integer(66));
+        dict.insert(
+            "Widths",
+            PdfObject::Array(vec![PdfObject::Integer(700), PdfObject::Integer(710)]),
+        );
+        dict.insert("FontDescriptor", PdfObject::Dictionary(descriptor));
+
+        let resolver = FontResolver::new_from_dict_only(&dict);
+
+        assert_eq!(resolver.glyph_width(10), 420.0);
     }
 
     #[test]

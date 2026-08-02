@@ -5759,7 +5759,7 @@ mod tests {
              /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>",
         );
         b.add_stream(b"BT /F1 12 Tf 40 120 Td (Hello C API) Tj ET");
-        b.add("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+        b.add("<< /Type /Font /Subtype /Type1 /BaseFont /Courier >>");
         b.build()
     }
 
@@ -6818,7 +6818,14 @@ mod tests {
                 &mut error,
             )
         };
-        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let error_text = if error.is_null() {
+            String::new()
+        } else {
+            unsafe { CStr::from_ptr(error) }
+                .to_string_lossy()
+                .into_owned()
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK, "{error_text}");
         let bytes = unsafe { slice::from_raw_parts(output.data, output.len) };
         assert!(bytes.starts_with(b"%PDF-"));
         let report = unsafe { CStr::from_ptr(edit_json) }.to_string_lossy();

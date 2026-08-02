@@ -11169,8 +11169,13 @@ mod tests {
         let input = advanced_editing_fixture(false);
         let mut session =
             AdvancedEditingMutationSession::new(input.clone()).expect("mutation session");
+        let patch_options = SameWidthPatchOptions {
+            mode: SameWidthMode::Tolerance,
+            advance_tolerance_1000: 200.0,
+            ..SameWidthPatchOptions::default()
+        };
         session
-            .apply_same_width_patch(1, "ABC", "DEF", &SameWidthPatchOptions::default())
+            .apply_same_width_patch(1, "ABC", "DEF", &patch_options)
             .expect("first patch");
         let first_output = session.bytes().to_vec();
         assert!(first_output.starts_with(&input));
@@ -11181,7 +11186,7 @@ mod tests {
         assert_eq!(session.bytes(), first_output);
         assert!(session.undo().expect("branch undo"));
         session
-            .apply_same_width_patch(1, "ABC", "XYZ", &SameWidthPatchOptions::default())
+            .apply_same_width_patch(1, "ABC", "XYZ", &patch_options)
             .expect("branch patch");
         assert_eq!(session.patches().len(), 1);
         assert_eq!(session.cursor(), 1);

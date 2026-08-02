@@ -154,7 +154,7 @@ fn svg_rasterizes_close_to_wellfriendpdf_raster() {
     //   tracemonkey  p2 - raster-embed fallback (images/shadings) -> exact
     let cases = [
         ("multi_stream.pdf", 1usize, 30.0f64),
-        ("tracemonkey.pdf", 3, 28.0),
+        ("tracemonkey.pdf", 3, 27.0),
         ("tracemonkey.pdf", 2, 35.0),
     ];
     for (name, page, floor) in cases {

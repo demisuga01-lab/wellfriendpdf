@@ -1,0 +1,51 @@
+﻿HEAD
+3139236f3ada008a1ab2844b0da5195cccaa1729
+STATUS_SHORT
+ M Cargo.lock
+ M crates/cli/src/main.rs
+ M crates/engine/Cargo.toml
+ M crates/engine/src/content/state.rs
+ M crates/engine/src/document.rs
+ M crates/engine/src/engine.rs
+ M crates/engine/src/fonts/resolver.rs
+ M crates/engine/src/fonts/type1.rs
+ M crates/engine/src/images/decoder.rs
+ M crates/engine/src/images/jpx.rs
+ M crates/engine/src/images/smask.rs
+ M crates/engine/src/render/buffer.rs
+ M crates/engine/src/render/display_list.rs
+ M crates/engine/src/render/glyph_cache.rs
+ M crates/engine/src/render/image_painter.rs
+ M crates/engine/src/render/page_renderer.rs
+ M crates/engine/src/render/path.rs
+ M crates/engine/src/render/progressive.rs
+ M crates/engine/src/render/shading.rs
+ M crates/engine/src/render/text_decode.rs
+ M crates/engine/src/render/transform.rs
+?? docs/renderer/
+?? evidence/renderer-pdfium-closure/
+?? scripts/render_reference_compare.py
+?? tmp/
+DIFF_STAT
+ Cargo.lock                                |   20 +
+ crates/cli/src/main.rs                    |  419 ++++-
+ crates/engine/Cargo.toml                  |    1 +
+ crates/engine/src/content/state.rs        |   66 +-
+ crates/engine/src/document.rs             |   44 +
+ crates/engine/src/engine.rs               |   31 +-
+ crates/engine/src/fonts/resolver.rs       |  501 +++++-
+ crates/engine/src/fonts/type1.rs          |  225 ++-
+ crates/engine/src/images/decoder.rs       |  446 ++++-
+ crates/engine/src/images/jpx.rs           |  106 +-
+ crates/engine/src/images/smask.rs         |   69 +-
+ crates/engine/src/render/buffer.rs        | 1050 ++++++++++-
+ crates/engine/src/render/display_list.rs  |  161 +-
+ crates/engine/src/render/glyph_cache.rs   |   36 +-
+ crates/engine/src/render/image_painter.rs |  174 +-
+ crates/engine/src/render/page_renderer.rs | 2781 +++++++++++++++++++++++++++--
+ crates/engine/src/render/path.rs          |  323 +++-
+ crates/engine/src/render/progressive.rs   |   41 +-
+ crates/engine/src/render/shading.rs       |  137 +-
+ crates/engine/src/render/text_decode.rs   |    5 +-
+ crates/engine/src/render/transform.rs     |   48 +-
+ 21 files changed, 6215 insertions(+), 469 deletions(-)

@@ -1,0 +1,48 @@
+{
+  "files_attempted": 5044,
+  "metrics": {
+    "mupdf": {
+      "changed_pixel_threshold8_percentage_avg": 10.0035,
+      "changed_pixel_threshold8_percentage_p95": 15.5546,
+      "mean_abs_error_avg": null,
+      "mean_abs_error_p95": null,
+      "pages_compared": 5044
+    },
+    "pdfium": {
+      "changed_pixel_threshold8_percentage_avg": 13.1206,
+      "changed_pixel_threshold8_percentage_p95": 20.7986,
+      "mean_abs_error_avg": null,
+      "mean_abs_error_p95": null,
+      "pages_compared": 5044
+    },
+    "poppler": {
+      "changed_pixel_threshold8_percentage_avg": 12.925,
+      "changed_pixel_threshold8_percentage_p95": 20.6438,
+      "mean_abs_error_avg": null,
+      "mean_abs_error_p95": null,
+      "pages_compared": 5044
+    }
+  },
+  "pages": 5044,
+  "reference_failures": 0,
+  "shards": [
+    {
+      "failures": 0,
+      "files_attempted": 2519,
+      "pages": 2519,
+      "path": "/mnt/wellpdf-block/results/pdfium-renderer-closure-20260801T100439Z/reference-compare-5044-two-shard-0.json",
+      "reference_failures": 0,
+      "shard": 0
+    },
+    {
+      "failures": 0,
+      "files_attempted": 2525,
+      "pages": 2525,
+      "path": "/mnt/wellpdf-block/results/pdfium-renderer-closure-20260801T100439Z/reference-compare-5044-two-shard-1.json",
+      "reference_failures": 0,
+      "shard": 1
+    }
+  ],
+  "source": "/mnt/wellpdf-block/results/pdfium-renderer-closure-20260801T100439Z/reference-compare-5044-two-shard.json",
+  "wellfriend_failures": 0
+}

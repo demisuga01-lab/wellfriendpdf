@@ -1210,7 +1210,7 @@ mod tests {
         let mut font = crate::PdfDictionary::empty();
         font.insert("Type", PdfObject::Name("Font".into()));
         font.insert("Subtype", PdfObject::Name("Type1".into()));
-        font.insert("BaseFont", PdfObject::Name("Helvetica".into()));
+        font.insert("BaseFont", PdfObject::Name("Courier".into()));
         font.insert("Encoding", PdfObject::Name("WinAnsiEncoding".into()));
         let mut fonts = crate::PdfDictionary::empty();
         fonts.insert(

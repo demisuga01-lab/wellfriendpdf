@@ -42,10 +42,30 @@ impl SmaskLoader {
             xobject_name: format!("{}_smask", main_image.xobject_name),
             object_number: smask_ref.0,
             generation_number: smask_ref.1,
-            width: main_image.width,
-            height: main_image.height,
-            bits_per_component: 8,
-            color_space: "DeviceGray".to_string(),
+            width: smask_dict
+                .as_ref()
+                .and_then(|dict| {
+                    positive_u32(dict.get_integer("Width").or_else(|| dict.get_integer("W")))
+                })
+                .unwrap_or(main_image.width),
+            height: smask_dict
+                .as_ref()
+                .and_then(|dict| {
+                    positive_u32(dict.get_integer("Height").or_else(|| dict.get_integer("H")))
+                })
+                .unwrap_or(main_image.height),
+            bits_per_component: smask_dict
+                .as_ref()
+                .and_then(|dict| {
+                    dict.get_integer("BitsPerComponent")
+                        .or_else(|| dict.get_integer("BPC"))
+                })
+                .unwrap_or(8)
+                .clamp(1, 16) as u8,
+            color_space: smask_dict
+                .as_ref()
+                .and_then(smask_color_space_name)
+                .unwrap_or_else(|| "DeviceGray".to_string()),
             filter: vec![],
             is_inline: false,
             is_mask: false,
@@ -153,6 +173,23 @@ fn smask_matte_rgb(dict: &PdfDictionary, main_color_space: &str) -> Option<[u8; 
     }
     let color = ColorSpaceHandler::from_components(main_color_space, &comps, 1.0).to_pixel_color();
     Some([color[0], color[1], color[2]])
+}
+
+fn positive_u32(value: Option<i64>) -> Option<u32> {
+    value
+        .and_then(|value| u32::try_from(value).ok())
+        .filter(|value| *value > 0)
+}
+
+fn smask_color_space_name(dict: &PdfDictionary) -> Option<String> {
+    match dict.get("ColorSpace").or_else(|| dict.get("CS"))? {
+        PdfObject::Name(name) => Some(name.clone()),
+        PdfObject::Array(items) => items
+            .first()
+            .and_then(PdfObject::as_name)
+            .map(str::to_string),
+        _ => None,
+    }
 }
 
 fn unmatte_channel(sample: u8, matte: u8, alpha: u8) -> u8 {
@@ -282,5 +319,29 @@ mod tests {
         let matte = smask_matte_rgb(&dict, "DeviceCMYK").expect("CMYK matte");
 
         assert_eq!(matte, [255, 255, 255]);
+    }
+
+    #[test]
+    fn smask_color_space_name_accepts_name_and_array_forms() {
+        let mut named = PdfDictionary::empty();
+        named.insert("ColorSpace", PdfObject::Name("DeviceGray".to_string()));
+        assert_eq!(
+            smask_color_space_name(&named).as_deref(),
+            Some("DeviceGray")
+        );
+
+        let mut array = PdfDictionary::empty();
+        array.insert(
+            "CS",
+            PdfObject::Array(vec![PdfObject::Name("ICCBased".to_string())]),
+        );
+        assert_eq!(smask_color_space_name(&array).as_deref(), Some("ICCBased"));
+    }
+
+    #[test]
+    fn positive_u32_rejects_zero_and_negative_dimensions() {
+        assert_eq!(positive_u32(Some(7)), Some(7));
+        assert_eq!(positive_u32(Some(0)), None);
+        assert_eq!(positive_u32(Some(-1)), None);
     }
 }
