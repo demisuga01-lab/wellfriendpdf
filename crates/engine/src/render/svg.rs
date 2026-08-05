@@ -55,7 +55,10 @@ pub struct SvgPage {
 
 /// Operators that the vector sink cannot faithfully represent here, triggering
 /// the whole-page rasterize-and-embed fallback.
+const MAX_VECTOR_TEXT_SHOWING_OPS: usize = 64;
+
 fn needs_raster_fallback(ops: &[ContentOperation]) -> bool {
+    let mut text_showing_ops = 0usize;
     for op in ops {
         match op.operator.as_str() {
             // Images (XObject Do or inline), shadings, and pattern fills.
@@ -69,6 +72,16 @@ fn needs_raster_fallback(ops: &[ContentOperation]) -> bool {
             // alpha, blend, transfer, and soft-mask behavior must therefore use
             // the existing page-raster embed path rather than silently diverge.
             "gs" => return true,
+            // The sibling SVG sink is deliberately not a full PDF text engine:
+            // dense streams amplify outline/fallback-font positioning divergence.
+            // Preserve output fidelity by using the explicit rasterized-page
+            // representation once the page exceeds this bounded vector-text scope.
+            "Tj" | "TJ" | "'" | "\"" => {
+                text_showing_ops = text_showing_ops.saturating_add(1);
+                if text_showing_ops > MAX_VECTOR_TEXT_SHOWING_OPS {
+                    return true;
+                }
+            }
             _ => {}
         }
     }
@@ -731,6 +744,10 @@ mod tests {
         assert!(needs_raster_fallback(&[sh_op]));
         let gs_op = ContentOperation::new("gs", vec![Operand::Name("GS0".into())]);
         assert!(needs_raster_fallback(&[gs_op]));
+        let dense_text: Vec<_> = (0..=MAX_VECTOR_TEXT_SHOWING_OPS)
+            .map(|_| ContentOperation::new("Tj", vec![Operand::String(vec![b'x'])]))
+            .collect();
+        assert!(needs_raster_fallback(&dense_text));
         // Pure path ops do not trigger the fallback.
         let m = ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]);
         let f = ContentOperation::new("f", vec![]);
