@@ -65,6 +65,10 @@ fn needs_raster_fallback(ops: &[ContentOperation]) -> bool {
             "scn" | "SCN" if op.operands.iter().any(|o| matches!(o, Operand::Name(_))) => {
                 return true;
             }
+            // The vector sink does not resolve the named ExtGState dictionary;
+            // alpha, blend, transfer, and soft-mask behavior must therefore use
+            // the existing page-raster embed path rather than silently diverge.
+            "gs" => return true,
             _ => {}
         }
     }
@@ -725,6 +729,8 @@ mod tests {
         assert!(needs_raster_fallback(&[do_op]));
         let sh_op = ContentOperation::new("sh", vec![Operand::Name("Sh0".into())]);
         assert!(needs_raster_fallback(&[sh_op]));
+        let gs_op = ContentOperation::new("gs", vec![Operand::Name("GS0".into())]);
+        assert!(needs_raster_fallback(&[gs_op]));
         // Pure path ops do not trigger the fallback.
         let m = ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]);
         let f = ContentOperation::new("f", vec![]);
