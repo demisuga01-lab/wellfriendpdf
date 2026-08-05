@@ -32,6 +32,7 @@ log = "0.4"
 md-5 = "0.10"
 png = "0.17"
 qcms = { version = "0.3", default-features = true }
+wellfriendpdf-render-simd = { path = "../render-simd" }
 lcms2 = { version = "6.1.1", optional = true, default-features = true }
 rayon = "1"
 rustybuzz = "0.20"

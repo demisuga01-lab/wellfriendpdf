@@ -45,6 +45,10 @@ impl ColorSpace {
             ColorSpace::Named(_) => 0,
         }
     }
+
+    fn is_pattern(&self) -> bool {
+        matches!(self, ColorSpace::Named(name) if name == "Pattern")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -710,12 +714,14 @@ impl GraphicsState {
         let g = op.number(0).unwrap_or(0.0).clamp(0.0, 1.0);
         self.stroke_color_space = ColorSpace::DeviceGray;
         self.stroke_color = Color::device_gray(g);
+        self.stroke_pattern_name = None;
     }
 
     fn op_fill_gray(&mut self, op: &ContentOperation) {
         let g = op.number(0).unwrap_or(0.0).clamp(0.0, 1.0);
         self.fill_color_space = ColorSpace::DeviceGray;
         self.fill_color = Color::device_gray(g);
+        self.fill_pattern_name = None;
     }
 
     fn op_stroke_rgb(&mut self, op: &ContentOperation) {
@@ -724,6 +730,7 @@ impl GraphicsState {
         let b = op.number(2).unwrap_or(0.0).clamp(0.0, 1.0);
         self.stroke_color_space = ColorSpace::DeviceRGB;
         self.stroke_color = Color::device_rgb(r, g, b);
+        self.stroke_pattern_name = None;
     }
 
     fn op_fill_rgb(&mut self, op: &ContentOperation) {
@@ -732,6 +739,7 @@ impl GraphicsState {
         let b = op.number(2).unwrap_or(0.0).clamp(0.0, 1.0);
         self.fill_color_space = ColorSpace::DeviceRGB;
         self.fill_color = Color::device_rgb(r, g, b);
+        self.fill_pattern_name = None;
     }
 
     fn op_stroke_cmyk(&mut self, op: &ContentOperation) {
@@ -741,6 +749,7 @@ impl GraphicsState {
         let k = op.number(3).unwrap_or(0.0).clamp(0.0, 1.0);
         self.stroke_color_space = ColorSpace::DeviceCMYK;
         self.stroke_color = Color::device_cmyk(c, m, y, k);
+        self.stroke_pattern_name = None;
     }
 
     fn op_fill_cmyk(&mut self, op: &ContentOperation) {
@@ -750,12 +759,16 @@ impl GraphicsState {
         let k = op.number(3).unwrap_or(0.0).clamp(0.0, 1.0);
         self.fill_color_space = ColorSpace::DeviceCMYK;
         self.fill_color = Color::device_cmyk(c, m, y, k);
+        self.fill_pattern_name = None;
     }
 
     fn op_stroke_color_space(&mut self, op: &ContentOperation) {
         if let Some(name) = op.name(0) {
             self.stroke_color_space = color_space_from_name(name);
             self.stroke_color = default_color_for(&self.stroke_color_space);
+            if !self.stroke_color_space.is_pattern() {
+                self.stroke_pattern_name = None;
+            }
         }
     }
 
@@ -763,6 +776,9 @@ impl GraphicsState {
         if let Some(name) = op.name(0) {
             self.fill_color_space = color_space_from_name(name);
             self.fill_color = default_color_for(&self.fill_color_space);
+            if !self.fill_color_space.is_pattern() {
+                self.fill_pattern_name = None;
+            }
         }
     }
 
@@ -1205,6 +1221,29 @@ mod tests {
         ));
         assert_eq!(gs.stroke_color.space, ColorSpace::DeviceCMYK);
         assert_eq!(gs.stroke_color.components, [0.1, 0.2, 0.3, 0.4]);
+    }
+
+    #[test]
+    fn device_color_operators_clear_previous_pattern_names() {
+        let mut gs = GraphicsState::new();
+        gs.process(&op("cs", [Operand::Name("Pattern".to_string())]));
+        gs.process(&op("scn", [Operand::Name("P1".to_string())]));
+        assert_eq!(gs.fill_pattern_name.as_deref(), Some("P1"));
+
+        gs.process(&op(
+            "rg",
+            [Operand::Real(0.2), Operand::Real(0.3), Operand::Real(0.4)],
+        ));
+        assert_eq!(gs.fill_color.space, ColorSpace::DeviceRGB);
+        assert_eq!(gs.fill_pattern_name, None);
+
+        gs.process(&op("CS", [Operand::Name("Pattern".to_string())]));
+        gs.process(&op("SCN", [Operand::Name("P2".to_string())]));
+        assert_eq!(gs.stroke_pattern_name.as_deref(), Some("P2"));
+
+        gs.process(&op("G", [Operand::Real(0.7)]));
+        assert_eq!(gs.stroke_color.space, ColorSpace::DeviceGray);
+        assert_eq!(gs.stroke_pattern_name, None);
     }
 
     #[test]

@@ -49,10 +49,23 @@ fn simple_pdf(content: &str) -> Vec<u8> {
     out
 }
 
-fn assert_same_pixels(expected: &PixelBuffer, actual: &PixelBuffer) {
-    assert_eq!(expected.width, actual.width);
-    assert_eq!(expected.height, actual.height);
-    assert_eq!(expected.to_rgba_bytes(), actual.to_rgba_bytes());
+fn assert_same_pixels(label: &str, expected: &PixelBuffer, actual: &PixelBuffer) {
+    assert_eq!(expected.width, actual.width, "{label} width");
+    assert_eq!(expected.height, actual.height, "{label} height");
+    let expected_bytes = expected.to_rgba_bytes();
+    let actual_bytes = actual.to_rgba_bytes();
+    if expected_bytes != actual_bytes {
+        let first = expected_bytes
+            .iter()
+            .zip(actual_bytes.iter())
+            .position(|(left, right)| left != right)
+            .unwrap_or(0);
+        panic!(
+            "{label} pixel mismatch at byte {first}: expected {}, actual {}",
+            expected_bytes.get(first).copied().unwrap_or_default(),
+            actual_bytes.get(first).copied().unwrap_or_default()
+        );
+    }
 }
 
 fn stitch_tiles(engine: &ContentEngine, page: usize, dpi: u32, tile_size: u32) -> PixelBuffer {
@@ -129,14 +142,30 @@ fn renderer_fuzz_cmm_full_tile_band_and_tile_size_equivalence() {
         ContentEngine::open_path(fixture("attach_annot.pdf")).expect("open annotation fixture"),
     ];
 
-    for engine in cases {
+    for (case_index, engine) in cases.into_iter().enumerate() {
         let full = engine
             .render_page_with_mode(1, 36, RenderMode::Compat)
             .expect("full render");
-        assert_same_pixels(&full, &stitch_tiles(&engine, 1, 36, 37));
-        assert_same_pixels(&full, &stitch_tiles(&engine, 1, 36, 79));
-        assert_same_pixels(&full, &stitch_bands(&engine, 1, 36, 23));
-        assert_same_pixels(&full, &stitch_bands(&engine, 1, 36, 61));
+        assert_same_pixels(
+            &format!("case {case_index} tile37"),
+            &full,
+            &stitch_tiles(&engine, 1, 36, 37),
+        );
+        assert_same_pixels(
+            &format!("case {case_index} tile79"),
+            &full,
+            &stitch_tiles(&engine, 1, 36, 79),
+        );
+        assert_same_pixels(
+            &format!("case {case_index} band23"),
+            &full,
+            &stitch_bands(&engine, 1, 36, 23),
+        );
+        assert_same_pixels(
+            &format!("case {case_index} band61"),
+            &full,
+            &stitch_bands(&engine, 1, 36, 61),
+        );
     }
 }
 
@@ -160,8 +189,8 @@ fn renderer_fuzz_cmm_cache_cold_warm_and_no_cache_are_equivalent() {
     let warm = engine
         .render_page_tile_with_mode(1, 72, tile, RenderMode::Compat, Some(&mut cache))
         .expect("tile warm cache");
-    assert_same_pixels(&no_cache, &cold);
-    assert_same_pixels(&cold, &warm);
+    assert_same_pixels("tile cache cold", &no_cache, &cold);
+    assert_same_pixels("tile cache warm", &cold, &warm);
     assert_eq!(cache.metrics().hits, 1);
 }
 
@@ -186,7 +215,7 @@ fn renderer_fuzz_cmm_progressive_resume_matches_uninterrupted_render() {
             .expect("progressive resume step");
     }
     let progressive = job.finish().expect("completed progressive render");
-    assert_same_pixels(&full, &progressive);
+    assert_same_pixels("progressive", &full, &progressive);
 }
 
 #[test]
@@ -204,5 +233,5 @@ fn renderer_fuzz_cmm_cancelled_render_does_not_poison_later_render() {
     let repeated = engine
         .render_page_with_mode(1, 72, RenderMode::Compat)
         .expect("repeat render");
-    assert_same_pixels(&after_cancel, &repeated);
+    assert_same_pixels("after cancellation", &after_cancel, &repeated);
 }

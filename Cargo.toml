@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/render-simd",
     "crates/engine",
     "crates/server",
     "crates/cli",

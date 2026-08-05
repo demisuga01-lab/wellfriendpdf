@@ -11,6 +11,14 @@ enum SmoothMode {
 
 pub struct ImagePainter;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct AxisAlignedImageTarget {
+    pub x_origin: i32,
+    pub y_origin: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
 impl ImagePainter {
     /// Paint a decoded image onto the buffer.
     pub fn paint_image(
@@ -64,6 +72,160 @@ impl ImagePainter {
             SmoothMode::None
         };
         Self::paint_image_with_mode(buf, image, ctm, viewport, mode, paint_alpha);
+    }
+
+    /// Return an exact integer-pixel target for a non-skewed image draw.
+    ///
+    /// The cached scaled-image path uses this to ensure replay paints the same
+    /// device pixels as the ordinary axis-aligned renderer. Fractional origins
+    /// or dimensions stay on the general sampler because caching those would
+    /// require sub-pixel phase to be part of the cache key.
+    pub(crate) fn axis_aligned_integer_target(
+        ctm: &Transform2D,
+        viewport: &Viewport,
+    ) -> Option<AxisAlignedImageTarget> {
+        if !ctm.is_axis_aligned() || ctm.determinant().abs() < 1e-10 {
+            return None;
+        }
+        let combined = ctm.concat(&viewport.to_transform());
+        let corners = [
+            combined.transform_point(0.0, 0.0),
+            combined.transform_point(1.0, 0.0),
+            combined.transform_point(0.0, 1.0),
+            combined.transform_point(1.0, 1.0),
+        ];
+        let (px_min, px_max, py_min, py_max) = bounding_box(&corners);
+        let x0 = exact_integer_pixel(px_min)?;
+        let x1 = exact_integer_pixel(px_max)?;
+        let y0 = exact_integer_pixel(py_min)?;
+        let y1 = exact_integer_pixel(py_max)?;
+        let width = u32::try_from(x1.checked_sub(x0)?).ok()?;
+        let height = u32::try_from(y1.checked_sub(y0)?).ok()?;
+        if width == 0 || height == 0 {
+            return None;
+        }
+        Some(AxisAlignedImageTarget {
+            x_origin: x0,
+            y_origin: y0,
+            width,
+            height,
+        })
+    }
+
+    /// Pre-scale an axis-aligned image to a device-size RGB image using the same
+    /// default sampling decisions as [`paint_axis_aligned`].
+    ///
+    /// This deliberately supports only opaque 8-bit gray/RGB sources. Images
+    /// with alpha, soft masks, interpolation, fractional phase, or affine
+    /// transforms remain on the exact general path. The return value is a
+    /// one-to-one RGB image that can be row-copied or binary-clipped quickly on
+    /// every later occurrence of the same XObject/scale/render-mode key.
+    pub(crate) fn scale_axis_aligned_default_rgb(
+        image: &RawImage,
+        target_width: u32,
+        target_height: u32,
+        high_quality: bool,
+    ) -> Option<RawImage> {
+        if target_width == 0
+            || target_height == 0
+            || image.width == 0
+            || image.height == 0
+            || image.bits_per_sample != 8
+            || !matches!(image.channels, 1 | 3)
+        {
+            return None;
+        }
+        let pixels_len = (target_width as usize)
+            .checked_mul(target_height as usize)?
+            .checked_mul(3)?;
+        let mut pixels = vec![0u8; pixels_len];
+        let dst_w = target_width as f64;
+        let dst_h = target_height as f64;
+        let footprint_x = image.width as f64 / dst_w;
+        let footprint_y = image.height as f64 / dst_h;
+        let smooth = if Self::magnifying(image, dst_w, dst_h) {
+            SmoothMode::None
+        } else {
+            SmoothMode::LegacyBilinear
+        };
+        for y in 0..target_height as usize {
+            let v = (y as f64 + 0.5) / dst_h;
+            for x in 0..target_width as usize {
+                let u = (x as f64 + 0.5) / dst_w;
+                let sample =
+                    Self::sample(image, u, v, footprint_x, footprint_y, smooth, high_quality);
+                let base = (y * target_width as usize + x) * 3;
+                pixels[base] = sample[0];
+                pixels[base + 1] = sample[1];
+                pixels[base + 2] = sample[2];
+            }
+        }
+        Some(RawImage {
+            width: target_width,
+            height: target_height,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels,
+        })
+    }
+
+    pub(crate) fn paint_scaled_rgb_at_device_target(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        target: AxisAlignedImageTarget,
+        paint_alpha: f32,
+    ) -> bool {
+        let paint_alpha = paint_alpha.clamp(0.0, 1.0);
+        if paint_alpha <= 0.0 {
+            return true;
+        }
+        if image.width != target.width
+            || image.height != target.height
+            || image.channels != 3
+            || image.bits_per_sample != 8
+            || !image.is_valid()
+        {
+            return false;
+        }
+        let (x0, x1, y0, y1) = clipped_bounds(
+            buf,
+            f64::from(target.x_origin),
+            f64::from(target.x_origin) + f64::from(target.width),
+            f64::from(target.y_origin),
+            f64::from(target.y_origin) + f64::from(target.height),
+        );
+        if x0 > x1 || y0 > y1 {
+            return true;
+        }
+        if paint_alpha >= 1.0 && buf.can_write_opaque_with_binary_clip() {
+            return Self::paint_axis_aligned_one_to_one_rgb_runs(
+                buf,
+                image,
+                f64::from(target.x_origin),
+                f64::from(target.y_origin),
+                f64::from(target.width),
+                f64::from(target.height),
+                x0,
+                x1,
+                y0,
+                y1,
+            );
+        }
+        for py in y0..=y1 {
+            let sy = py - target.y_origin;
+            if sy < 0 || sy >= image.height as i32 {
+                continue;
+            }
+            for px in x0..=x1 {
+                let sx = px - target.x_origin;
+                if sx < 0 || sx >= image.width as i32 {
+                    continue;
+                }
+                let sample = Self::get_pixel_channels(image, sx as usize, sy as usize);
+                buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], paint_alpha);
+            }
+        }
+        true
     }
 
     /// Preserve the older JPX compatibility path where Poppler smooths some
@@ -180,6 +342,18 @@ impl ImagePainter {
             return;
         }
 
+        if image.channels == 3
+            && image.bits_per_sample == 8
+            && paint_alpha >= 1.0
+            && matches!(smooth, SmoothMode::None)
+            && buf.can_write_opaque_with_binary_clip()
+            && Self::paint_axis_aligned_one_to_one_rgb_runs(
+                buf, image, px_min, py_min, dst_w, dst_h, x0, x1, y0, y1,
+            )
+        {
+            return;
+        }
+
         if image.channels != 4
             && paint_alpha >= 1.0
             && matches!(smooth, SmoothMode::None)
@@ -244,6 +418,62 @@ impl ImagePainter {
                 buf.blend_pixel(px, py, [sample[0], sample[1], sample[2], 255], coverage);
             }
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn paint_axis_aligned_one_to_one_rgb_runs(
+        buf: &mut PixelBuffer,
+        image: &RawImage,
+        px_min: f64,
+        py_min: f64,
+        dst_w: f64,
+        dst_h: f64,
+        x0: i32,
+        x1: i32,
+        y0: i32,
+        y1: i32,
+    ) -> bool {
+        if (dst_w - image.width as f64).abs() > 1e-6 || (dst_h - image.height as f64).abs() > 1e-6 {
+            return false;
+        }
+        let Some(x_origin) = exact_integer_pixel(px_min) else {
+            return false;
+        };
+        let Some(y_origin) = exact_integer_pixel(py_min) else {
+            return false;
+        };
+        let stride = match (image.width as usize).checked_mul(3) {
+            Some(stride) => stride,
+            None => return false,
+        };
+        for py in y0..=y1 {
+            let sy = py - y_origin;
+            if sy < 0 || sy >= image.height as i32 {
+                continue;
+            }
+            let sx0 = (x0 - x_origin).max(0).min(image.width as i32);
+            let sx1 = (x1 - x_origin + 1).max(0).min(image.width as i32);
+            if sx1 <= sx0 {
+                continue;
+            }
+            let Some(row_start) = (sy as usize)
+                .checked_mul(stride)
+                .and_then(|row| row.checked_add(sx0 as usize * 3))
+            else {
+                return false;
+            };
+            let len = (sx1 - sx0) as usize * 3;
+            let Some(row) = image.pixels.get(row_start..row_start + len) else {
+                return false;
+            };
+            let written = buf.write_opaque_rgb_run_binary_clipped(x_origin + sx0, py, row);
+            if written != (sx1 - sx0) as usize
+                && buf.clip_mask().is_none_or(|clip| clip.is_all_visible())
+            {
+                return false;
+            }
+        }
+        true
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -614,6 +844,17 @@ fn bounding_box(corners: &[(f64, f64); 4]) -> (f64, f64, f64, f64) {
     (px_min, px_max, py_min, py_max)
 }
 
+fn exact_integer_pixel(value: f64) -> Option<i32> {
+    if !value.is_finite() {
+        return None;
+    }
+    let rounded = value.round();
+    if (value - rounded).abs() > 1e-6 || rounded < i32::MIN as f64 || rounded > i32::MAX as f64 {
+        return None;
+    }
+    Some(rounded as i32)
+}
+
 fn clipped_bounds(
     buf: &PixelBuffer,
     px_min: f64,
@@ -663,7 +904,7 @@ fn ceil_i32(value: f64) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::buffer::{BLACK, WHITE};
+    use crate::render::buffer::{ClipMask, BLACK, WHITE};
 
     fn rgb_2x2_image() -> RawImage {
         RawImage {
@@ -763,6 +1004,57 @@ mod tests {
             );
         }
         assert_eq!(sample[3], 255);
+    }
+
+    #[test]
+    fn integer_target_requires_exact_device_phase() {
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let ctm = Transform2D::translation(10.0, 20.0).concat(&Transform2D::scale(12.0, 8.0));
+        let target = ImagePainter::axis_aligned_integer_target(&ctm, &viewport)
+            .expect("integer phase target");
+        assert_eq!(target.width, 12);
+        assert_eq!(target.height, 8);
+
+        let fractional =
+            Transform2D::translation(10.3, 20.0).concat(&Transform2D::scale(12.0, 8.0));
+        assert!(ImagePainter::axis_aligned_integer_target(&fractional, &viewport).is_none());
+    }
+
+    #[test]
+    fn scale_axis_aligned_default_rgb_matches_center_samples() {
+        let image = rgb_2x2_image();
+        let scaled = ImagePainter::scale_axis_aligned_default_rgb(&image, 4, 4, false)
+            .expect("scaled RGB image");
+        assert_eq!(scaled.width, 4);
+        assert_eq!(scaled.height, 4);
+        assert_eq!(scaled.channels, 3);
+        assert_eq!(&scaled.pixels[0..3], &[255, 0, 0]);
+        let bottom_right = (3 * 4 + 3) * 3;
+        assert_eq!(
+            &scaled.pixels[bottom_right..bottom_right + 3],
+            &[255, 255, 0]
+        );
+    }
+
+    #[test]
+    fn paint_scaled_rgb_at_device_target_uses_binary_clip() {
+        let image = ImagePainter::scale_axis_aligned_default_rgb(&rgb_2x2_image(), 2, 2, false)
+            .expect("scaled RGB image");
+        let mut buf = PixelBuffer::new_filled(4, 4, WHITE);
+        let mut clip = ClipMask::empty(4, 4);
+        clip.set(1, 1, true);
+        buf.set_clip(clip);
+        let target = AxisAlignedImageTarget {
+            x_origin: 1,
+            y_origin: 1,
+            width: 2,
+            height: 2,
+        };
+        assert!(ImagePainter::paint_scaled_rgb_at_device_target(
+            &mut buf, &image, target, 1.0
+        ));
+        assert_eq!(buf.get_pixel(1, 1), [255, 0, 0, 255]);
+        assert_eq!(buf.get_pixel(2, 1), WHITE);
     }
 
     #[test]
@@ -1037,6 +1329,63 @@ mod tests {
         assert_eq!(&buf.get_pixel(0, 6)[..3], &[255, 255, 0]);
         assert_eq!(&buf.get_pixel(6, 6)[..3], &[0, 255, 255]);
         assert_eq!(&buf.get_pixel(12, 6)[..3], &[255, 0, 255]);
+    }
+
+    #[test]
+    fn one_to_one_rgb_fast_path_writes_exact_source_rows() {
+        let mut buf = PixelBuffer::new_filled(6, 5, WHITE);
+        let image = RawImage {
+            width: 3,
+            height: 2,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![
+                255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0, 0, 255, 255, 255, 0, 255,
+            ],
+        };
+
+        assert!(ImagePainter::paint_axis_aligned_one_to_one_rgb_runs(
+            &mut buf, &image, 2.0, 1.0, 3.0, 2.0, 0, 5, 0, 4,
+        ));
+
+        assert_eq!(&buf.get_pixel(2, 1)[..3], &[255, 0, 0]);
+        assert_eq!(&buf.get_pixel(3, 1)[..3], &[0, 255, 0]);
+        assert_eq!(&buf.get_pixel(4, 1)[..3], &[0, 0, 255]);
+        assert_eq!(&buf.get_pixel(2, 2)[..3], &[255, 255, 0]);
+        assert_eq!(&buf.get_pixel(3, 2)[..3], &[0, 255, 255]);
+        assert_eq!(&buf.get_pixel(4, 2)[..3], &[255, 0, 255]);
+        assert_eq!(buf.get_pixel(1, 1), WHITE);
+        assert_eq!(buf.get_pixel(5, 2), WHITE);
+    }
+
+    #[test]
+    fn one_to_one_rgb_fast_path_respects_binary_clip_runs() {
+        let mut buf = PixelBuffer::new_filled(5, 4, WHITE);
+        let mut clip = ClipMask::empty(5, 4);
+        clip.set(2, 1, true);
+        clip.set(4, 1, true);
+        clip.set(3, 2, true);
+        buf.set_clip(clip);
+        let image = RawImage {
+            width: 3,
+            height: 2,
+            channels: 3,
+            bits_per_sample: 8,
+            pixels: vec![
+                255, 0, 0, 0, 255, 0, 0, 0, 255, 255, 255, 0, 0, 255, 255, 255, 0, 255,
+            ],
+        };
+
+        assert!(ImagePainter::paint_axis_aligned_one_to_one_rgb_runs(
+            &mut buf, &image, 2.0, 1.0, 3.0, 2.0, 0, 4, 0, 3,
+        ));
+
+        assert_eq!(&buf.get_pixel(2, 1)[..3], &[255, 0, 0]);
+        assert_eq!(buf.get_pixel(3, 1), WHITE);
+        assert_eq!(&buf.get_pixel(4, 1)[..3], &[0, 0, 255]);
+        assert_eq!(buf.get_pixel(2, 2), WHITE);
+        assert_eq!(&buf.get_pixel(3, 2)[..3], &[0, 255, 255]);
+        assert_eq!(buf.get_pixel(4, 2), WHITE);
     }
 
     #[test]

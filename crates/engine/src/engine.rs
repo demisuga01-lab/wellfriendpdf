@@ -29,6 +29,8 @@ pub struct PageResources {
     pub fonts: HashMap<String, PdfDictionary>,
     pub xobjects: HashMap<String, (u32, u16)>,
     pub xobject_subtypes: HashMap<String, String>,
+    pub xobject_bboxes: HashMap<String, [f64; 4]>,
+    pub xobject_matrices: HashMap<String, [f64; 6]>,
     pub color_spaces: HashMap<String, PdfObject>,
     pub ext_g_states: HashMap<String, PdfDictionary>,
     pub patterns: HashMap<String, PdfObject>,
@@ -355,6 +357,14 @@ impl PageResources {
                             page_resources
                                 .xobject_subtypes
                                 .insert(name.clone(), subtype.to_string());
+                            if subtype == "Form" {
+                                if let Some(bbox) = numeric_array_4(&dict, "BBox") {
+                                    page_resources.xobject_bboxes.insert(name.clone(), bbox);
+                                }
+                                if let Some(matrix) = numeric_array_6(&dict, "Matrix") {
+                                    page_resources.xobject_matrices.insert(name.clone(), matrix);
+                                }
+                            }
                         }
                     }
                 } else {
@@ -425,6 +435,22 @@ impl PageResources {
 
         page_resources
     }
+}
+
+fn numeric_array_4(dict: &PdfDictionary, key: &str) -> Option<[f64; 4]> {
+    let arr = dict.get(key)?.as_array()?;
+    let values: Vec<f64> = arr.iter().filter_map(PdfObject::as_number).collect();
+    (values.len() >= 4).then(|| [values[0], values[1], values[2], values[3]])
+}
+
+fn numeric_array_6(dict: &PdfDictionary, key: &str) -> Option<[f64; 6]> {
+    let arr = dict.get(key)?.as_array()?;
+    let values: Vec<f64> = arr.iter().filter_map(PdfObject::as_number).collect();
+    (values.len() >= 6).then(|| {
+        [
+            values[0], values[1], values[2], values[3], values[4], values[5],
+        ]
+    })
 }
 
 /// Parse a `/Resources` object (a direct dictionary or an indirect reference)

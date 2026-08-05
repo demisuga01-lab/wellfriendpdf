@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -2780,6 +2782,9 @@ struct RenderCompareArgs {
     /// Raster compositing mode: compat matches Poppler/Splash; high uses linear-light RGB compositing
     #[arg(long, default_value = "compat", value_parser = ["compat", "high", "high-quality", "hq"])]
     render_quality: String,
+    /// Build display-list coverage without replaying the page.
+    #[arg(long)]
+    skip_render: bool,
     /// Password for an encrypted PDF (the empty user password is tried automatically)
     #[arg(long)]
     password: Option<String>,
@@ -2798,8 +2803,8 @@ struct RenderCorpusArgs {
     /// Aggregate summary JSON output path
     #[arg(long)]
     summary: PathBuf,
-    /// Page selection: first or all
-    #[arg(long, default_value = "first", value_parser = ["first", "all"])]
+    /// Page selection: first, all, 1, 2-5, or 1,3,7
+    #[arg(long, default_value = "first")]
     pages: String,
     /// Resolution in DPI
     #[arg(short, long, default_value = "72")]
@@ -7361,7 +7366,11 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
 
     for page in &pages {
         let list = engine.build_page_display_list(*page, dpi)?;
-        let rendered = engine.render_page_display_list_with_mode(*page, dpi, render_mode)?;
+        let rendered = if args.skip_render {
+            None
+        } else {
+            engine.render_page_display_list_with_mode(*page, dpi, render_mode)?
+        };
         let stats = &list.stats;
         for (reason, count) in &stats.compatibility_fallback_reasons {
             *totals_fallback_reasons.entry(reason.clone()).or_insert(0) += count;
@@ -7453,6 +7462,7 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
         "input": args.pdf.display().to_string(),
         "dpi": dpi,
         "render_quality": args.render_quality,
+        "skip_render": args.skip_render,
         "pages": pages,
         "totals": totals,
         "compatibility_fallback_reasons": totals_fallback_reasons,
@@ -7469,7 +7479,9 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
 fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     use rayon::prelude::*;
     use std::io::Write;
-    use wellfriendpdf_engine::{ImageEncoder, ImageOutputFormat, RenderMode};
+    use wellfriendpdf_engine::{
+        CancelToken, ImageEncoder, ImageOutputFormat, RenderDocumentCache, RenderMode,
+    };
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
     let dpi = args.dpi.clamp(24, 600);
@@ -7519,31 +7531,41 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 
     const PARALLEL_RENDER_PAGE_THRESHOLD: usize = 32;
     let quality = args.quality;
-    let encode_page = |page_num: usize| -> Result<Vec<u8>, String> {
-        let buf = engine
-            .render_page_with_mode(page_num, dpi, render_mode)
-            .map_err(|err| err.to_string())?;
-        let raw = buf.to_raw_image();
-        match &format {
-            ImageOutputFormat::Jpeg => ImageEncoder::encode_jpeg(&raw, quality),
-            ImageOutputFormat::Webp => ImageEncoder::encode_webp(&raw, quality),
-            ImageOutputFormat::Png | ImageOutputFormat::Original => {
-                ImageEncoder::encode_png_fast(&raw)
+    let encode_page =
+        |page_num: usize, document_cache: &mut RenderDocumentCache| -> Result<Vec<u8>, String> {
+            let buf = engine
+                .render_page_cancellable_with_mode_and_cache(
+                    page_num,
+                    dpi,
+                    &CancelToken::none(),
+                    render_mode,
+                    document_cache,
+                )
+                .map_err(|err| err.to_string())?;
+            let raw = buf.to_raw_image();
+            match &format {
+                ImageOutputFormat::Jpeg => ImageEncoder::encode_jpeg(&raw, quality),
+                ImageOutputFormat::Webp => ImageEncoder::encode_webp(&raw, quality),
+                ImageOutputFormat::Png | ImageOutputFormat::Original => {
+                    ImageEncoder::encode_png_fast(&raw)
+                }
             }
-        }
-        .map_err(|err| err.to_string())
-    };
+            .map_err(|err| err.to_string())
+        };
 
     let rendered_pages: Vec<(usize, Result<Vec<u8>, String>)> =
         if page_nums.len() >= PARALLEL_RENDER_PAGE_THRESHOLD {
             page_nums
                 .par_iter()
-                .map(|&page_num| (page_num, encode_page(page_num)))
+                .map_init(RenderDocumentCache::new, |document_cache, &page_num| {
+                    (page_num, encode_page(page_num, document_cache))
+                })
                 .collect()
         } else {
+            let mut document_cache = RenderDocumentCache::new();
             page_nums
                 .iter()
-                .map(|&page_num| (page_num, encode_page(page_num)))
+                .map(|&page_num| (page_num, encode_page(page_num, &mut document_cache)))
                 .collect()
         };
 
@@ -7589,7 +7611,11 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
     use std::io::{BufWriter, Write};
     use std::time::Instant;
-    use wellfriendpdf_engine::RenderMode;
+    use wellfriendpdf_engine::{
+        path_raster_stats, pixel_buffer_allocation_stats, pixel_compositor_backend,
+        pixel_compositor_detected_hardware_backend, pixel_compositor_operation_backend,
+        pixel_compositor_stats, PixelCompositorOperation, RenderMode,
+    };
 
     let dpi = args.dpi.clamp(24, 600);
     let render_mode = RenderMode::from_name(&args.render_quality)
@@ -7611,6 +7637,9 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
         std::fs::create_dir_all(parent)?;
     }
 
+    let pixel_stats_start = pixel_buffer_allocation_stats();
+    let compositor_stats_start = pixel_compositor_stats();
+    let path_raster_stats_start = path_raster_stats();
     let started = Instant::now();
     let jsonl_file = std::fs::File::create(&args.jsonl)?;
     let mut jsonl = BufWriter::new(jsonl_file);
@@ -7664,38 +7693,58 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
             )?;
         }
     } else {
-        use rayon::prelude::*;
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(worker_count)
-            .thread_name(|index| format!("wellfriend-render-corpus-{index}"))
-            .build()?;
-        let records: Vec<_> = pool.install(|| {
-            files
-                .par_iter()
-                .enumerate()
-                .map(|(index, pdf)| render_corpus_file_record(index, pdf, &options))
-                .collect()
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc,
+        };
+
+        let files = Arc::new(files.clone());
+        let options = Arc::new(options.clone());
+        let next_index = Arc::new(AtomicUsize::new(0));
+        let (tx, rx) = mpsc::sync_channel(worker_count.saturating_mul(2).max(1));
+
+        let stream_result: Result<(), Box<dyn Error>> = std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let files = Arc::clone(&files);
+                let options = Arc::clone(&options);
+                let next_index = Arc::clone(&next_index);
+                let tx = tx.clone();
+                scope.spawn(move || loop {
+                    let index = next_index.fetch_add(1, Ordering::Relaxed);
+                    let Some(pdf) = files.get(index) else {
+                        break;
+                    };
+                    let record = render_corpus_file_record(index, pdf, &options);
+                    if tx.send(record).is_err() {
+                        break;
+                    }
+                });
+            }
+            drop(tx);
+
+            for record in rx {
+                record_render_corpus_result(
+                    record,
+                    &mut jsonl,
+                    &mut durations_ms,
+                    &mut render_durations_ms,
+                    &mut first_render_durations_ms,
+                    &mut warm_render_durations_ms,
+                    &mut display_list_compile_durations_ms,
+                    &mut display_list_replay_durations_ms,
+                    &mut display_list_cache_hits,
+                    &mut display_list_raster_cache_hits,
+                    &mut display_list_fallbacks,
+                    &mut attempted_pages,
+                    &mut rendered_pages,
+                    &mut successful_files,
+                    &mut failed_files,
+                    &mut png_bytes_total,
+                )?;
+            }
+            Ok(())
         });
-        for record in records {
-            record_render_corpus_result(
-                record,
-                &mut jsonl,
-                &mut durations_ms,
-                &mut render_durations_ms,
-                &mut first_render_durations_ms,
-                &mut warm_render_durations_ms,
-                &mut display_list_compile_durations_ms,
-                &mut display_list_replay_durations_ms,
-                &mut display_list_cache_hits,
-                &mut display_list_raster_cache_hits,
-                &mut display_list_fallbacks,
-                &mut attempted_pages,
-                &mut rendered_pages,
-                &mut successful_files,
-                &mut failed_files,
-                &mut png_bytes_total,
-            )?;
-        }
+        stream_result?;
     }
     jsonl.flush()?;
 
@@ -7712,6 +7761,9 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
     sorted_display_list_compile.sort_by(|a, b| a.total_cmp(b));
     let mut sorted_display_list_replay = display_list_replay_durations_ms.clone();
     sorted_display_list_replay.sort_by(|a, b| a.total_cmp(b));
+    let pixel_stats_end = pixel_buffer_allocation_stats();
+    let compositor_stats_end = pixel_compositor_stats();
+    let path_raster_stats_end = path_raster_stats();
     let summary = serde_json::json!({
         "schema_version": "wellfriend.render_corpus.v2",
         "corpus": args.corpus.display().to_string(),
@@ -7750,6 +7802,101 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
         "display_list_cache_hits": display_list_cache_hits,
         "display_list_raster_cache_hits": display_list_raster_cache_hits,
         "display_list_fallbacks": display_list_fallbacks,
+        "process_peak_rss_kib": current_process_peak_rss_kib(),
+        "pixel_buffer_allocation_count_delta": pixel_stats_end
+            .allocation_count
+            .saturating_sub(pixel_stats_start.allocation_count),
+        "pixel_buffer_allocated_bytes_delta": pixel_stats_end
+            .allocated_bytes
+            .saturating_sub(pixel_stats_start.allocated_bytes),
+        "pixel_buffer_live_bytes": pixel_stats_end.live_bytes,
+        "pixel_buffer_peak_live_bytes": pixel_stats_end.peak_live_bytes,
+        "pixel_compositor": {
+            "backend": pixel_compositor_backend().as_str(),
+            "detected_hardware_backend": pixel_compositor_detected_hardware_backend().as_str(),
+            "operation_backends": {
+                "solid_fill": pixel_compositor_operation_backend(PixelCompositorOperation::SolidFill).as_str(),
+                "source_over": pixel_compositor_operation_backend(PixelCompositorOperation::SourceOver).as_str(),
+                "alpha_mask": pixel_compositor_operation_backend(PixelCompositorOperation::AlphaMask).as_str(),
+                "glyph_mask": pixel_compositor_operation_backend(PixelCompositorOperation::GlyphMask).as_str(),
+                "soft_mask": pixel_compositor_operation_backend(PixelCompositorOperation::SoftMask).as_str(),
+                "separable_blend": pixel_compositor_operation_backend(PixelCompositorOperation::SeparableBlend).as_str()
+            },
+            "wide_solid_color_pixels_delta": compositor_stats_end
+                .wide_solid_color_pixels
+                .saturating_sub(compositor_stats_start.wide_solid_color_pixels),
+            "wide_opaque_dst_pixels_delta": compositor_stats_end
+                .wide_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.wide_opaque_dst_pixels),
+            "wide_uniform_alpha_pixels_delta": compositor_stats_end
+                .wide_uniform_alpha_pixels
+                .saturating_sub(compositor_stats_start.wide_uniform_alpha_pixels),
+            "wide_separable_blend_pixels_delta": compositor_stats_end
+                .wide_separable_blend_pixels
+                .saturating_sub(compositor_stats_start.wide_separable_blend_pixels),
+            "scalar_solid_color_pixels_delta": compositor_stats_end
+                .scalar_solid_color_pixels
+                .saturating_sub(compositor_stats_start.scalar_solid_color_pixels),
+            "scalar_opaque_dst_pixels_delta": compositor_stats_end
+                .scalar_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.scalar_opaque_dst_pixels),
+            "scalar_uniform_alpha_pixels_delta": compositor_stats_end
+                .scalar_uniform_alpha_pixels
+                .saturating_sub(compositor_stats_start.scalar_uniform_alpha_pixels),
+            "scalar_separable_blend_pixels_delta": compositor_stats_end
+                .scalar_separable_blend_pixels
+                .saturating_sub(compositor_stats_start.scalar_separable_blend_pixels),
+            "scalar_general_pixels_delta": compositor_stats_end
+                .scalar_general_pixels
+                .saturating_sub(compositor_stats_start.scalar_general_pixels),
+            "soft_mask_opaque_dst_pixels_delta": compositor_stats_end
+                .soft_mask_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.soft_mask_opaque_dst_pixels),
+            "wide_soft_mask_opaque_dst_pixels_delta": compositor_stats_end
+                .wide_soft_mask_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.wide_soft_mask_opaque_dst_pixels),
+            "scalar_soft_mask_opaque_dst_pixels_delta": compositor_stats_end
+                .scalar_soft_mask_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.scalar_soft_mask_opaque_dst_pixels),
+            "soft_mask_general_pixels_delta": compositor_stats_end
+                .soft_mask_general_pixels
+                .saturating_sub(compositor_stats_start.soft_mask_general_pixels),
+        },
+        "path_raster": {
+            "accumulator_allocations_delta": path_raster_stats_end
+                .accumulator_allocations
+                .saturating_sub(path_raster_stats_start.accumulator_allocations),
+            "accumulator_reuses_delta": path_raster_stats_end
+                .accumulator_reuses
+                .saturating_sub(path_raster_stats_start.accumulator_reuses),
+            "accumulator_cells_delta": path_raster_stats_end
+                .accumulator_cells
+                .saturating_sub(path_raster_stats_start.accumulator_cells),
+            "banded_accumulator_bands_delta": path_raster_stats_end
+                .banded_accumulator_bands
+                .saturating_sub(path_raster_stats_start.banded_accumulator_bands),
+            "scanline_fast_rows_delta": path_raster_stats_end
+                .scanline_fast_rows
+                .saturating_sub(path_raster_stats_start.scanline_fast_rows),
+            "scanline_crossing_reuses_delta": path_raster_stats_end
+                .scanline_crossing_reuses
+                .saturating_sub(path_raster_stats_start.scanline_crossing_reuses),
+            "scanline_span_pixels_delta": path_raster_stats_end
+                .scanline_span_pixels
+                .saturating_sub(path_raster_stats_start.scanline_span_pixels),
+            "solid_run_pixels_delta": path_raster_stats_end
+                .solid_run_pixels
+                .saturating_sub(path_raster_stats_start.solid_run_pixels),
+            "edge_bucket_builds_delta": path_raster_stats_end
+                .edge_bucket_builds
+                .saturating_sub(path_raster_stats_start.edge_bucket_builds),
+            "edge_bucket_links_delta": path_raster_stats_end
+                .edge_bucket_links
+                .saturating_sub(path_raster_stats_start.edge_bucket_links),
+            "edge_bucket_rows_delta": path_raster_stats_end
+                .edge_bucket_rows
+                .saturating_sub(path_raster_stats_start.edge_bucket_rows),
+        },
         "max_ms": sorted.last().copied().unwrap_or(0.0),
         "total_sec": elapsed_sec,
         "png_bytes_total": png_bytes_total,
@@ -7758,6 +7905,38 @@ fn run_render_corpus(args: RenderCorpusArgs) -> Result<(), Box<dyn Error>> {
     std::fs::write(&args.summary, serde_json::to_string_pretty(&summary)?)?;
     println!("{}", serde_json::to_string_pretty(&summary)?);
     Ok(())
+}
+
+fn current_process_peak_rss_kib() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        for line in status.lines() {
+            let Some(rest) = line.strip_prefix("VmHWM:") else {
+                continue;
+            };
+            let kib = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+            return Some(kib);
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+fn render_artifact_cache_stats_json(
+    stats: wellfriendpdf_engine::RenderArtifactCacheStats,
+) -> serde_json::Value {
+    serde_json::json!({
+        "hits": stats.hits,
+        "misses": stats.misses,
+        "evictions": stats.evictions,
+        "skipped_oversized": stats.skipped_oversized,
+        "entries": stats.entries,
+        "bytes": stats.bytes,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7854,7 +8033,65 @@ fn render_corpus_file_record(
     let mut display_list_cache_hits = 0usize;
     let mut display_list_raster_cache_hits = 0usize;
     let mut display_list_fallbacks = 0usize;
+    let mut final_glyph_cache_entries = 0usize;
+    let mut final_glyph_cache_hits = 0u64;
+    let mut final_glyph_cache_misses = 0u64;
+    let mut final_glyph_cache_evictions = 0u64;
+    let mut final_glyph_cache_skipped_oversized = 0u64;
+    let mut final_glyph_cache_bytes = 0usize;
+    let mut final_glyph_cache_monochrome_entries = 0usize;
+    let mut final_glyph_cache_color_entries = 0usize;
+    let mut final_glyph_cache_bitmap_entries = 0usize;
+    let mut final_glyph_cache_svg_blocked_entries = 0usize;
+    let mut final_glyph_cache_unsupported_bitmap_entries = 0usize;
+    let mut final_glyph_cache_other_entries = 0usize;
+    let mut final_glyph_mask_entries = 0usize;
+    let mut final_glyph_mask_bytes = 0usize;
+    let mut final_type3_mask_entries = 0usize;
+    let mut final_type3_mask_bytes = 0usize;
+    let mut final_type3_rendered_entries = 0usize;
+    let mut final_type3_rendered_bytes = 0usize;
+    let mut final_path_fill_mask_entries = 0usize;
+    let mut final_path_fill_mask_bytes = 0usize;
+    let mut final_path_stroke_mask_entries = 0usize;
+    let mut final_path_stroke_mask_bytes = 0usize;
+    let mut final_glyph_mask_cache_stats = serde_json::Value::Null;
+    let mut final_type3_mask_cache_stats = serde_json::Value::Null;
+    let mut final_type3_rendered_cache_stats = serde_json::Value::Null;
+    let mut final_path_fill_mask_cache_stats = serde_json::Value::Null;
+    let mut final_path_stroke_mask_cache_stats = serde_json::Value::Null;
+    let mut final_font_byte_entries = 0usize;
+    let mut final_font_bytes_cache_stats = serde_json::Value::Null;
+    let mut final_font_resolver_entries = 0usize;
+    let mut final_font_resolver_cache_stats = serde_json::Value::Null;
+    let mut final_display_list_entries = 0usize;
+    let mut final_image_xobject_entries = 0usize;
+    let mut final_image_xobject_bytes = 0usize;
+    let mut final_image_xobject_cache_stats = serde_json::Value::Null;
+    let mut final_scaled_image_entries = 0usize;
+    let mut final_scaled_image_bytes = 0usize;
+    let mut final_scaled_image_cache_stats = serde_json::Value::Null;
+    let mut final_smask_group_entries = 0usize;
+    let mut final_smask_group_cache_stats = serde_json::Value::Null;
+    let mut final_shading_mesh_entries = 0usize;
+    let mut final_shading_mesh_bytes = 0usize;
+    let mut final_shading_mesh_cache_stats = serde_json::Value::Null;
+    let mut final_form_xobject_program_entries = 0usize;
+    let mut final_form_xobject_program_cache_stats = serde_json::Value::Null;
+    let mut final_tiling_pattern_program_entries = 0usize;
+    let mut final_tiling_pattern_program_cache_stats = serde_json::Value::Null;
+    let mut final_offscreen_buffer_pool_entries = 0usize;
+    let mut final_offscreen_buffer_pool_bytes = 0usize;
+    let mut final_display_list_raster_bytes = 0usize;
+    let mut final_display_list_raster_hits = 0usize;
+    let mut final_display_list_raster_misses = 0usize;
+    let mut final_display_list_raster_inserts = 0usize;
+    let mut final_display_list_raster_evictions = 0usize;
+    let mut final_display_list_raster_skipped_oversized = 0usize;
     let mut error = None::<String>;
+    let pixel_stats_start = wellfriendpdf_engine::pixel_buffer_allocation_stats();
+    let compositor_stats_start = wellfriendpdf_engine::pixel_compositor_stats();
+    let path_raster_stats_start = wellfriendpdf_engine::path_raster_stats();
 
     let open_started = Instant::now();
     match open_engine(pdf, &options.password) {
@@ -7865,12 +8102,22 @@ fn render_corpus_file_record(
                     page_count = total;
                     let mut document_render_cache =
                         wellfriendpdf_engine::RenderDocumentCache::new();
-                    let pages: Box<dyn Iterator<Item = usize>> = if options.pages == "all" {
-                        Box::new(1..=total)
-                    } else if total > 0 {
-                        Box::new(std::iter::once(1))
+                    let pages = if options.pages == "all" {
+                        (1..=total).collect::<Vec<_>>()
+                    } else if options.pages == "first" {
+                        if total > 0 {
+                            vec![1]
+                        } else {
+                            Vec::new()
+                        }
                     } else {
-                        Box::new(std::iter::empty())
+                        match parse_page_range_cli(&options.pages, total) {
+                            Ok(pages) => pages,
+                            Err(err) => {
+                                error = Some(format!("page_selection: {err}"));
+                                Vec::new()
+                            }
+                        }
                     };
                     for page in pages {
                         for repeat_index in 0..options.repeat_page_renders {
@@ -7934,6 +8181,95 @@ fn render_corpus_file_record(
                             break;
                         }
                     }
+                    let raster_metrics = document_render_cache.display_list_raster_cache_metrics();
+                    final_glyph_cache_entries = document_render_cache.glyph_entries();
+                    let glyph_metrics = document_render_cache.glyph_cache_stats();
+                    final_glyph_cache_hits = glyph_metrics.hits;
+                    final_glyph_cache_misses = glyph_metrics.misses;
+                    final_glyph_cache_evictions = glyph_metrics.evictions;
+                    final_glyph_cache_skipped_oversized = glyph_metrics.skipped_oversized;
+                    final_glyph_cache_bytes = glyph_metrics.bytes;
+                    final_glyph_cache_monochrome_entries = glyph_metrics.monochrome_entries;
+                    final_glyph_cache_color_entries = glyph_metrics.color_entries;
+                    final_glyph_cache_bitmap_entries = glyph_metrics.bitmap_entries;
+                    final_glyph_cache_svg_blocked_entries = glyph_metrics.svg_blocked_entries;
+                    final_glyph_cache_unsupported_bitmap_entries =
+                        glyph_metrics.unsupported_bitmap_entries;
+                    final_glyph_cache_other_entries = glyph_metrics.other_entries;
+                    final_glyph_mask_entries = document_render_cache.glyph_mask_entries();
+                    final_glyph_mask_bytes = document_render_cache.glyph_mask_bytes();
+                    final_glyph_mask_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.glyph_mask_cache_stats(),
+                    );
+                    final_type3_mask_entries = document_render_cache.type3_mask_entries();
+                    final_type3_mask_bytes = document_render_cache.type3_mask_bytes();
+                    final_type3_mask_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.type3_mask_cache_stats(),
+                    );
+                    final_type3_rendered_entries = document_render_cache.type3_rendered_entries();
+                    final_type3_rendered_bytes = document_render_cache.type3_rendered_bytes();
+                    final_type3_rendered_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.type3_rendered_cache_stats(),
+                    );
+                    final_path_fill_mask_entries = document_render_cache.path_fill_mask_entries();
+                    final_path_fill_mask_bytes = document_render_cache.path_fill_mask_bytes();
+                    final_path_fill_mask_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.path_fill_mask_cache_stats(),
+                    );
+                    final_path_stroke_mask_entries =
+                        document_render_cache.path_stroke_mask_entries();
+                    final_path_stroke_mask_bytes = document_render_cache.path_stroke_mask_bytes();
+                    final_path_stroke_mask_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.path_stroke_mask_cache_stats(),
+                    );
+                    final_font_byte_entries = document_render_cache.font_byte_entries();
+                    final_font_bytes_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.font_bytes_cache_stats(),
+                    );
+                    final_font_resolver_entries = document_render_cache.font_resolver_entries();
+                    final_font_resolver_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.font_resolver_cache_stats(),
+                    );
+                    final_display_list_entries = document_render_cache.display_list_entries();
+                    final_image_xobject_entries = document_render_cache.image_xobject_entries();
+                    final_image_xobject_bytes = document_render_cache.image_xobject_bytes();
+                    final_image_xobject_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.image_xobject_cache_stats(),
+                    );
+                    final_scaled_image_entries = document_render_cache.scaled_image_entries();
+                    final_scaled_image_bytes = document_render_cache.scaled_image_bytes();
+                    final_scaled_image_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.scaled_image_cache_stats(),
+                    );
+                    final_smask_group_entries = document_render_cache.smask_group_entries();
+                    final_smask_group_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.smask_group_cache_stats(),
+                    );
+                    final_shading_mesh_entries = document_render_cache.shading_mesh_entries();
+                    final_shading_mesh_bytes = document_render_cache.shading_mesh_bytes();
+                    final_shading_mesh_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.shading_mesh_cache_stats(),
+                    );
+                    final_form_xobject_program_entries =
+                        document_render_cache.form_xobject_program_entries();
+                    final_form_xobject_program_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.form_xobject_program_cache_stats(),
+                    );
+                    final_tiling_pattern_program_entries =
+                        document_render_cache.tiling_pattern_program_entries();
+                    final_tiling_pattern_program_cache_stats = render_artifact_cache_stats_json(
+                        document_render_cache.tiling_pattern_program_cache_stats(),
+                    );
+                    final_offscreen_buffer_pool_entries =
+                        document_render_cache.offscreen_buffer_pool_entries();
+                    final_offscreen_buffer_pool_bytes =
+                        document_render_cache.offscreen_buffer_pool_bytes();
+                    final_display_list_raster_bytes = raster_metrics.bytes;
+                    final_display_list_raster_hits = raster_metrics.hits;
+                    final_display_list_raster_misses = raster_metrics.misses;
+                    final_display_list_raster_inserts = raster_metrics.inserts;
+                    final_display_list_raster_evictions = raster_metrics.evictions;
+                    final_display_list_raster_skipped_oversized = raster_metrics.skipped_oversized;
                 }
                 Err(err) => error = Some(format!("page_count: {err}")),
             }
@@ -7941,6 +8277,9 @@ fn render_corpus_file_record(
         Err(err) => error = Some(format!("open: {err}")),
     }
 
+    let pixel_stats_end = wellfriendpdf_engine::pixel_buffer_allocation_stats();
+    let compositor_stats_end = wellfriendpdf_engine::pixel_compositor_stats();
+    let path_raster_stats_end = wellfriendpdf_engine::path_raster_stats();
     let duration_ms = file_started.elapsed().as_secs_f64() * 1000.0;
     let ok = error.is_none() && file_pages_rendered == file_pages_attempted;
     let json = serde_json::json!({
@@ -7961,6 +8300,159 @@ fn render_corpus_file_record(
         "display_list_cache_hits": display_list_cache_hits,
         "display_list_raster_cache_hits": display_list_raster_cache_hits,
         "display_list_fallbacks": display_list_fallbacks,
+        "cache_after_file": {
+            "glyph_entries": final_glyph_cache_entries,
+            "glyph_hits": final_glyph_cache_hits,
+            "glyph_misses": final_glyph_cache_misses,
+            "glyph_evictions": final_glyph_cache_evictions,
+            "glyph_skipped_oversized": final_glyph_cache_skipped_oversized,
+            "glyph_bytes": final_glyph_cache_bytes,
+            "glyph_family_entries": {
+                "monochrome": final_glyph_cache_monochrome_entries,
+                "color": final_glyph_cache_color_entries,
+                "bitmap": final_glyph_cache_bitmap_entries,
+                "svg_blocked": final_glyph_cache_svg_blocked_entries,
+                "unsupported_bitmap": final_glyph_cache_unsupported_bitmap_entries,
+                "other": final_glyph_cache_other_entries
+            },
+            "glyph_mask_entries": final_glyph_mask_entries,
+            "glyph_mask_bytes": final_glyph_mask_bytes,
+            "glyph_mask_cache": final_glyph_mask_cache_stats,
+            "type3_mask_entries": final_type3_mask_entries,
+            "type3_mask_bytes": final_type3_mask_bytes,
+            "type3_mask_cache": final_type3_mask_cache_stats,
+            "type3_rendered_entries": final_type3_rendered_entries,
+            "type3_rendered_bytes": final_type3_rendered_bytes,
+            "type3_rendered_cache": final_type3_rendered_cache_stats,
+            "path_fill_mask_entries": final_path_fill_mask_entries,
+            "path_fill_mask_bytes": final_path_fill_mask_bytes,
+            "path_fill_mask_cache": final_path_fill_mask_cache_stats,
+            "path_stroke_mask_entries": final_path_stroke_mask_entries,
+            "path_stroke_mask_bytes": final_path_stroke_mask_bytes,
+            "path_stroke_mask_cache": final_path_stroke_mask_cache_stats,
+            "font_byte_entries": final_font_byte_entries,
+            "font_bytes_cache": final_font_bytes_cache_stats,
+            "font_resolver_entries": final_font_resolver_entries,
+            "font_resolver_cache": final_font_resolver_cache_stats,
+            "display_list_entries": final_display_list_entries,
+            "image_xobject_entries": final_image_xobject_entries,
+            "image_xobject_bytes": final_image_xobject_bytes,
+            "image_xobject_cache": final_image_xobject_cache_stats,
+            "scaled_image_entries": final_scaled_image_entries,
+            "scaled_image_bytes": final_scaled_image_bytes,
+            "scaled_image_cache": final_scaled_image_cache_stats,
+            "smask_group_entries": final_smask_group_entries,
+            "smask_group_cache": final_smask_group_cache_stats,
+            "shading_mesh_entries": final_shading_mesh_entries,
+            "shading_mesh_bytes": final_shading_mesh_bytes,
+            "shading_mesh_cache": final_shading_mesh_cache_stats,
+            "form_xobject_program_entries": final_form_xobject_program_entries,
+            "form_xobject_program_cache": final_form_xobject_program_cache_stats,
+            "tiling_pattern_program_entries": final_tiling_pattern_program_entries,
+            "tiling_pattern_program_cache": final_tiling_pattern_program_cache_stats,
+            "offscreen_buffer_pool_entries": final_offscreen_buffer_pool_entries,
+            "offscreen_buffer_pool_bytes": final_offscreen_buffer_pool_bytes,
+            "display_list_raster_bytes": final_display_list_raster_bytes,
+            "display_list_raster_hits": final_display_list_raster_hits,
+            "display_list_raster_misses": final_display_list_raster_misses,
+            "display_list_raster_inserts": final_display_list_raster_inserts,
+            "display_list_raster_evictions": final_display_list_raster_evictions,
+            "display_list_raster_skipped_oversized": final_display_list_raster_skipped_oversized,
+        },
+        "pixel_buffer_allocation_count_delta": pixel_stats_end
+            .allocation_count
+            .saturating_sub(pixel_stats_start.allocation_count),
+        "pixel_buffer_allocated_bytes_delta": pixel_stats_end
+            .allocated_bytes
+            .saturating_sub(pixel_stats_start.allocated_bytes),
+        "pixel_buffer_live_bytes_after_file": pixel_stats_end.live_bytes,
+        "pixel_buffer_peak_live_bytes_after_file": pixel_stats_end.peak_live_bytes,
+        "pixel_compositor": {
+            "backend": wellfriendpdf_engine::pixel_compositor_backend().as_str(),
+            "detected_hardware_backend": wellfriendpdf_engine::pixel_compositor_detected_hardware_backend().as_str(),
+            "operation_backends": {
+                "solid_fill": wellfriendpdf_engine::pixel_compositor_operation_backend(wellfriendpdf_engine::PixelCompositorOperation::SolidFill).as_str(),
+                "source_over": wellfriendpdf_engine::pixel_compositor_operation_backend(wellfriendpdf_engine::PixelCompositorOperation::SourceOver).as_str(),
+                "alpha_mask": wellfriendpdf_engine::pixel_compositor_operation_backend(wellfriendpdf_engine::PixelCompositorOperation::AlphaMask).as_str(),
+                "glyph_mask": wellfriendpdf_engine::pixel_compositor_operation_backend(wellfriendpdf_engine::PixelCompositorOperation::GlyphMask).as_str(),
+                "soft_mask": wellfriendpdf_engine::pixel_compositor_operation_backend(wellfriendpdf_engine::PixelCompositorOperation::SoftMask).as_str(),
+                "separable_blend": wellfriendpdf_engine::pixel_compositor_operation_backend(wellfriendpdf_engine::PixelCompositorOperation::SeparableBlend).as_str()
+            },
+            "wide_solid_color_pixels_delta": compositor_stats_end
+                .wide_solid_color_pixels
+                .saturating_sub(compositor_stats_start.wide_solid_color_pixels),
+            "wide_opaque_dst_pixels_delta": compositor_stats_end
+                .wide_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.wide_opaque_dst_pixels),
+            "wide_uniform_alpha_pixels_delta": compositor_stats_end
+                .wide_uniform_alpha_pixels
+                .saturating_sub(compositor_stats_start.wide_uniform_alpha_pixels),
+            "wide_separable_blend_pixels_delta": compositor_stats_end
+                .wide_separable_blend_pixels
+                .saturating_sub(compositor_stats_start.wide_separable_blend_pixels),
+            "scalar_solid_color_pixels_delta": compositor_stats_end
+                .scalar_solid_color_pixels
+                .saturating_sub(compositor_stats_start.scalar_solid_color_pixels),
+            "scalar_opaque_dst_pixels_delta": compositor_stats_end
+                .scalar_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.scalar_opaque_dst_pixels),
+            "scalar_uniform_alpha_pixels_delta": compositor_stats_end
+                .scalar_uniform_alpha_pixels
+                .saturating_sub(compositor_stats_start.scalar_uniform_alpha_pixels),
+            "scalar_separable_blend_pixels_delta": compositor_stats_end
+                .scalar_separable_blend_pixels
+                .saturating_sub(compositor_stats_start.scalar_separable_blend_pixels),
+            "scalar_general_pixels_delta": compositor_stats_end
+                .scalar_general_pixels
+                .saturating_sub(compositor_stats_start.scalar_general_pixels),
+            "soft_mask_opaque_dst_pixels_delta": compositor_stats_end
+                .soft_mask_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.soft_mask_opaque_dst_pixels),
+            "wide_soft_mask_opaque_dst_pixels_delta": compositor_stats_end
+                .wide_soft_mask_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.wide_soft_mask_opaque_dst_pixels),
+            "scalar_soft_mask_opaque_dst_pixels_delta": compositor_stats_end
+                .scalar_soft_mask_opaque_dst_pixels
+                .saturating_sub(compositor_stats_start.scalar_soft_mask_opaque_dst_pixels),
+            "soft_mask_general_pixels_delta": compositor_stats_end
+                .soft_mask_general_pixels
+                .saturating_sub(compositor_stats_start.soft_mask_general_pixels),
+        },
+        "path_raster": {
+            "accumulator_allocations_delta": path_raster_stats_end
+                .accumulator_allocations
+                .saturating_sub(path_raster_stats_start.accumulator_allocations),
+            "accumulator_reuses_delta": path_raster_stats_end
+                .accumulator_reuses
+                .saturating_sub(path_raster_stats_start.accumulator_reuses),
+            "accumulator_cells_delta": path_raster_stats_end
+                .accumulator_cells
+                .saturating_sub(path_raster_stats_start.accumulator_cells),
+            "banded_accumulator_bands_delta": path_raster_stats_end
+                .banded_accumulator_bands
+                .saturating_sub(path_raster_stats_start.banded_accumulator_bands),
+            "scanline_fast_rows_delta": path_raster_stats_end
+                .scanline_fast_rows
+                .saturating_sub(path_raster_stats_start.scanline_fast_rows),
+            "scanline_crossing_reuses_delta": path_raster_stats_end
+                .scanline_crossing_reuses
+                .saturating_sub(path_raster_stats_start.scanline_crossing_reuses),
+            "scanline_span_pixels_delta": path_raster_stats_end
+                .scanline_span_pixels
+                .saturating_sub(path_raster_stats_start.scanline_span_pixels),
+            "solid_run_pixels_delta": path_raster_stats_end
+                .solid_run_pixels
+                .saturating_sub(path_raster_stats_start.solid_run_pixels),
+            "edge_bucket_builds_delta": path_raster_stats_end
+                .edge_bucket_builds
+                .saturating_sub(path_raster_stats_start.edge_bucket_builds),
+            "edge_bucket_links_delta": path_raster_stats_end
+                .edge_bucket_links
+                .saturating_sub(path_raster_stats_start.edge_bucket_links),
+            "edge_bucket_rows_delta": path_raster_stats_end
+                .edge_bucket_rows
+                .saturating_sub(path_raster_stats_start.edge_bucket_rows),
+        },
         "raw_fnv1a64": format!("{file_hash:016x}"),
         "png_bytes": file_png_bytes,
         "ok": ok,

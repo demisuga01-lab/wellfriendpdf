@@ -3668,6 +3668,7 @@ dependencies = [
  "unicode-linebreak",
  "unicode-segmentation",
  "url",
+ "wellfriendpdf-render-simd",
  "wide",
  "x509-cert",
  "x509-ocsp",
@@ -3692,6 +3693,10 @@ dependencies = [
  "serde_json",
  "wellfriendpdf-engine",
 ]
+
+[[package]]
+name = "wellfriendpdf-render-simd"
+version = "0.1.0"
 
 [[package]]
 name = "wellfriendpdf-server"

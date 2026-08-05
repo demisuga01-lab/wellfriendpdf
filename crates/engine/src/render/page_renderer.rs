@@ -15,47 +15,95 @@ use crate::info::decode_pdf_text_string;
 use crate::object::{PdfDictionary, PdfObject};
 use crate::optional_content::OptionalContentContext;
 use crate::prepress::{self, SeparationFramebuffer, SeparationFramebufferReport};
-use crate::render::buffer::{AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, WHITE};
+use crate::render::buffer::{
+    AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, BLACK, WHITE,
+};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::display_list::{
-    build_display_list, render_display_list, DisplayList, DisplayOp, RenderCache, RenderCacheKey,
-    RenderTile,
+    build_display_list, render_display_list, DisplayList, DisplayOp, RenderBounds, RenderCache,
+    RenderCacheKey, RenderTile,
 };
 use crate::render::font_rasterizer::{get_fallback_font, FontRasterizer};
-use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey};
+use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey, GlyphCacheStats};
 use crate::render::image_painter::ImagePainter;
 use crate::render::line::DashState;
 use crate::render::path::{
-    flatten_path, stroke_flat_path, FillRule, FlatPath, GlyphHinting, Path, PathPainter,
+    axis_aligned_integer_rect, flatten_path, rasterize_flat_alpha_mask,
+    rasterize_flat_binary_clip_mask, rasterize_glyph_alpha_mask, stroke_flat_path, FillRule,
+    FlatPath, GlyphHinting, Path, PathPainter, RasterizedGlyphMask,
 };
 use crate::render::shading::ShadingRenderer;
 use crate::render::text_decode::{decode_text_bytes_with_resolver, DecodedGlyph};
 use crate::render::transform::{Transform2D, Viewport};
-use std::collections::HashMap;
+use std::collections::{hash_map::DefaultHasher, HashMap, VecDeque};
 use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
 pub struct PageRenderer;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RenderArtifactCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub evictions: u64,
+    pub skipped_oversized: u64,
+    pub entries: usize,
+    pub bytes: usize,
+}
+
+fn merge_artifact_cache_counts(dst: &mut RenderArtifactCacheStats, src: RenderArtifactCacheStats) {
+    dst.hits = dst.hits.saturating_add(src.hits);
+    dst.misses = dst.misses.saturating_add(src.misses);
+    dst.evictions = dst.evictions.saturating_add(src.evictions);
+    dst.skipped_oversized = dst.skipped_oversized.saturating_add(src.skipped_oversized);
+}
 
 /// Per-document renderer scratch reused across sequential page renders.
 ///
 /// The normal `render_page*` entry points keep the historical per-page cache
 /// behavior. Callers that render many pages from one already-open document can
 /// pass this cache to the `*_with_document_cache` variants to reuse font bytes,
-/// font resolvers, glyph outlines, and Type3 glyph geometry without changing
-/// rendering semantics. The cache is intentionally `&mut` rather than shared
-/// behind locks: a caller may keep one cache per document worker, while parallel
-/// rendering uses separate caches and remains deterministic.
+/// font resolvers, glyph outlines/masks, Type3 glyph geometry/masks, path
+/// raster masks, image/shading/Form/pattern programs, retained display lists,
+/// and bounded offscreen buffers without changing rendering semantics. The
+/// cache is intentionally `&mut` rather than shared behind locks: a caller may
+/// keep one cache per document worker, while parallel rendering uses separate
+/// caches and remains deterministic.
 pub struct RenderDocumentCache {
     glyph_cache: GlyphCache,
+    glyph_mask_cache: GlyphMaskCache,
+    type3_mask_cache: Type3MaskCache,
+    type3_rendered_cache: Type3RenderedGlyphCache,
+    path_fill_mask_cache: PathFillMaskCache,
+    path_stroke_mask_cache: PathStrokeMaskCache,
     font_bytes_cache: HashMap<String, Option<Arc<Vec<u8>>>>,
+    font_bytes_cache_stats: RenderArtifactCacheStats,
     font_resolver_cache: HashMap<String, Arc<FontResolver>>,
+    font_resolver_cache_stats: RenderArtifactCacheStats,
     type3_geometry_cache: HashMap<String, Option<Arc<Type3GlyphGeometry>>>,
     type3_charproc_cache: HashMap<String, Option<Arc<Type3CharProc>>>,
     image_xobject_cache: HashMap<String, Arc<RawImage>>,
+    image_xobject_cache_order: VecDeque<String>,
     image_xobject_cache_bytes: usize,
+    image_xobject_cache_stats: RenderArtifactCacheStats,
+    scaled_image_cache: HashMap<String, Arc<RawImage>>,
+    scaled_image_cache_order: VecDeque<String>,
+    scaled_image_cache_bytes: usize,
+    scaled_image_cache_stats: RenderArtifactCacheStats,
     smask_group_cache: HashMap<String, Arc<AlphaMask>>,
+    smask_group_cache_order: VecDeque<String>,
+    smask_group_cache_bytes: usize,
+    smask_group_cache_stats: RenderArtifactCacheStats,
     shading_mesh_cache: HashMap<String, Arc<Vec<u8>>>,
+    shading_mesh_cache_order: VecDeque<String>,
+    shading_mesh_cache_bytes: usize,
+    shading_mesh_cache_stats: RenderArtifactCacheStats,
+    form_xobject_program_cache: HashMap<String, Option<Arc<FormXObjectProgram>>>,
+    form_xobject_program_cache_stats: RenderArtifactCacheStats,
+    tiling_pattern_program_cache: HashMap<String, Option<Arc<Vec<ContentOperation>>>>,
+    tiling_pattern_program_cache_stats: RenderArtifactCacheStats,
+    offscreen_buffer_pool: Vec<PixelBuffer>,
     display_list_cache: HashMap<String, Arc<DisplayList>>,
     display_list_raster_cache: RenderCache,
     transparent_page_group_cache: HashMap<String, bool>,
@@ -65,14 +113,38 @@ impl RenderDocumentCache {
     pub fn new() -> Self {
         Self {
             glyph_cache: GlyphCache::with_default_capacity(),
+            glyph_mask_cache: GlyphMaskCache::default(),
+            type3_mask_cache: Type3MaskCache::default(),
+            type3_rendered_cache: Type3RenderedGlyphCache::default(),
+            path_fill_mask_cache: PathFillMaskCache::default(),
+            path_stroke_mask_cache: PathStrokeMaskCache::default(),
             font_bytes_cache: HashMap::new(),
+            font_bytes_cache_stats: RenderArtifactCacheStats::default(),
             font_resolver_cache: HashMap::new(),
+            font_resolver_cache_stats: RenderArtifactCacheStats::default(),
             type3_geometry_cache: HashMap::new(),
             type3_charproc_cache: HashMap::new(),
             image_xobject_cache: HashMap::new(),
+            image_xobject_cache_order: VecDeque::new(),
             image_xobject_cache_bytes: 0,
+            image_xobject_cache_stats: RenderArtifactCacheStats::default(),
+            scaled_image_cache: HashMap::new(),
+            scaled_image_cache_order: VecDeque::new(),
+            scaled_image_cache_bytes: 0,
+            scaled_image_cache_stats: RenderArtifactCacheStats::default(),
             smask_group_cache: HashMap::new(),
+            smask_group_cache_order: VecDeque::new(),
+            smask_group_cache_bytes: 0,
+            smask_group_cache_stats: RenderArtifactCacheStats::default(),
             shading_mesh_cache: HashMap::new(),
+            shading_mesh_cache_order: VecDeque::new(),
+            shading_mesh_cache_bytes: 0,
+            shading_mesh_cache_stats: RenderArtifactCacheStats::default(),
+            form_xobject_program_cache: HashMap::new(),
+            form_xobject_program_cache_stats: RenderArtifactCacheStats::default(),
+            tiling_pattern_program_cache: HashMap::new(),
+            tiling_pattern_program_cache_stats: RenderArtifactCacheStats::default(),
+            offscreen_buffer_pool: Vec::new(),
             display_list_cache: HashMap::new(),
             display_list_raster_cache: RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
             transparent_page_group_cache: HashMap::new(),
@@ -81,14 +153,38 @@ impl RenderDocumentCache {
 
     pub fn clear(&mut self) {
         self.glyph_cache.clear();
+        self.glyph_mask_cache.clear();
+        self.type3_mask_cache.clear();
+        self.type3_rendered_cache.clear();
+        self.path_fill_mask_cache.clear();
+        self.path_stroke_mask_cache.clear();
         self.font_bytes_cache.clear();
+        self.font_bytes_cache_stats = RenderArtifactCacheStats::default();
         self.font_resolver_cache.clear();
+        self.font_resolver_cache_stats = RenderArtifactCacheStats::default();
         self.type3_geometry_cache.clear();
         self.type3_charproc_cache.clear();
         self.image_xobject_cache.clear();
+        self.image_xobject_cache_order.clear();
         self.image_xobject_cache_bytes = 0;
+        self.image_xobject_cache_stats = RenderArtifactCacheStats::default();
+        self.scaled_image_cache.clear();
+        self.scaled_image_cache_order.clear();
+        self.scaled_image_cache_bytes = 0;
+        self.scaled_image_cache_stats = RenderArtifactCacheStats::default();
         self.smask_group_cache.clear();
+        self.smask_group_cache_order.clear();
+        self.smask_group_cache_bytes = 0;
+        self.smask_group_cache_stats = RenderArtifactCacheStats::default();
         self.shading_mesh_cache.clear();
+        self.shading_mesh_cache_order.clear();
+        self.shading_mesh_cache_bytes = 0;
+        self.shading_mesh_cache_stats = RenderArtifactCacheStats::default();
+        self.form_xobject_program_cache.clear();
+        self.form_xobject_program_cache_stats = RenderArtifactCacheStats::default();
+        self.tiling_pattern_program_cache.clear();
+        self.tiling_pattern_program_cache_stats = RenderArtifactCacheStats::default();
+        self.offscreen_buffer_pool.clear();
         self.display_list_cache.clear();
         self.display_list_raster_cache = RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024);
         self.transparent_page_group_cache.clear();
@@ -98,12 +194,95 @@ impl RenderDocumentCache {
         self.glyph_cache.len()
     }
 
+    pub fn glyph_cache_stats(&self) -> GlyphCacheStats {
+        self.glyph_cache.stats()
+    }
+
+    pub fn glyph_mask_entries(&self) -> usize {
+        self.glyph_mask_cache.len()
+    }
+
+    pub fn glyph_mask_bytes(&self) -> usize {
+        self.glyph_mask_cache.bytes()
+    }
+
+    pub fn glyph_mask_cache_stats(&self) -> RenderArtifactCacheStats {
+        self.glyph_mask_cache.stats()
+    }
+
+    pub fn type3_mask_entries(&self) -> usize {
+        self.type3_mask_cache.len()
+    }
+
+    pub fn type3_mask_bytes(&self) -> usize {
+        self.type3_mask_cache.bytes()
+    }
+
+    pub fn type3_mask_cache_stats(&self) -> RenderArtifactCacheStats {
+        self.type3_mask_cache.stats()
+    }
+
+    pub fn type3_rendered_entries(&self) -> usize {
+        self.type3_rendered_cache.len()
+    }
+
+    pub fn type3_rendered_bytes(&self) -> usize {
+        self.type3_rendered_cache.bytes()
+    }
+
+    pub fn type3_rendered_cache_stats(&self) -> RenderArtifactCacheStats {
+        self.type3_rendered_cache.stats()
+    }
+
+    pub fn path_fill_mask_entries(&self) -> usize {
+        self.path_fill_mask_cache.len()
+    }
+
+    pub fn path_fill_mask_bytes(&self) -> usize {
+        self.path_fill_mask_cache.bytes()
+    }
+
+    pub fn path_fill_mask_cache_stats(&self) -> RenderArtifactCacheStats {
+        self.path_fill_mask_cache.stats()
+    }
+
+    pub fn path_stroke_mask_entries(&self) -> usize {
+        self.path_stroke_mask_cache.len()
+    }
+
+    pub fn path_stroke_mask_bytes(&self) -> usize {
+        self.path_stroke_mask_cache.bytes()
+    }
+
+    pub fn path_stroke_mask_cache_stats(&self) -> RenderArtifactCacheStats {
+        self.path_stroke_mask_cache.stats()
+    }
+
     pub fn font_byte_entries(&self) -> usize {
         self.font_bytes_cache.len()
     }
 
+    pub fn font_bytes_cache_stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.font_bytes_cache.len(),
+            bytes: font_bytes_cache_bytes(&self.font_bytes_cache),
+            ..self.font_bytes_cache_stats
+        }
+    }
+
     pub fn font_resolver_entries(&self) -> usize {
         self.font_resolver_cache.len()
+    }
+
+    pub fn font_resolver_cache_stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.font_resolver_cache.len(),
+            bytes: self
+                .font_resolver_cache
+                .len()
+                .saturating_mul(std::mem::size_of::<FontResolver>()),
+            ..self.font_resolver_cache_stats
+        }
     }
 
     pub fn display_list_entries(&self) -> usize {
@@ -118,12 +297,95 @@ impl RenderDocumentCache {
         self.image_xobject_cache_bytes
     }
 
+    pub fn image_xobject_cache_stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.image_xobject_cache.len(),
+            bytes: self.image_xobject_cache_bytes,
+            ..self.image_xobject_cache_stats
+        }
+    }
+
+    pub fn scaled_image_entries(&self) -> usize {
+        self.scaled_image_cache.len()
+    }
+
+    pub fn scaled_image_bytes(&self) -> usize {
+        self.scaled_image_cache_bytes
+    }
+
+    pub fn scaled_image_cache_stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.scaled_image_cache.len(),
+            bytes: self.scaled_image_cache_bytes,
+            ..self.scaled_image_cache_stats
+        }
+    }
+
     pub fn smask_group_entries(&self) -> usize {
         self.smask_group_cache.len()
     }
 
+    pub fn smask_group_cache_stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.smask_group_cache.len(),
+            bytes: self.smask_group_cache_bytes,
+            ..self.smask_group_cache_stats
+        }
+    }
+
     pub fn shading_mesh_entries(&self) -> usize {
         self.shading_mesh_cache.len()
+    }
+
+    pub fn shading_mesh_bytes(&self) -> usize {
+        self.shading_mesh_cache_bytes
+    }
+
+    pub fn shading_mesh_cache_stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.shading_mesh_cache.len(),
+            bytes: self.shading_mesh_cache_bytes,
+            ..self.shading_mesh_cache_stats
+        }
+    }
+
+    pub fn form_xobject_program_entries(&self) -> usize {
+        self.form_xobject_program_cache.len()
+    }
+
+    pub fn form_xobject_program_cache_stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.form_xobject_program_cache.len(),
+            bytes: 0,
+            ..self.form_xobject_program_cache_stats
+        }
+    }
+
+    pub fn tiling_pattern_program_entries(&self) -> usize {
+        self.tiling_pattern_program_cache.len()
+    }
+
+    pub fn tiling_pattern_program_cache_stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.tiling_pattern_program_cache.len(),
+            bytes: 0,
+            ..self.tiling_pattern_program_cache_stats
+        }
+    }
+
+    pub fn offscreen_buffer_pool_entries(&self) -> usize {
+        self.offscreen_buffer_pool.len()
+    }
+
+    pub fn offscreen_buffer_pool_bytes(&self) -> usize {
+        self.offscreen_buffer_pool
+            .iter()
+            .map(|buf| {
+                (buf.width as usize)
+                    .saturating_mul(buf.height as usize)
+                    .saturating_mul(4)
+            })
+            .sum()
     }
 
     pub fn transparent_page_group_entries(&self) -> usize {
@@ -173,6 +435,13 @@ impl RenderDocumentCache {
         self.display_list_raster_cache.get(key)
     }
 
+    pub(crate) fn cached_display_list_raster_ref(
+        &mut self,
+        key: &RenderCacheKey,
+    ) -> Option<&PixelBuffer> {
+        self.display_list_raster_cache.get_ref(key)
+    }
+
     pub(crate) fn insert_display_list_raster(&mut self, key: RenderCacheKey, buffer: PixelBuffer) {
         self.display_list_raster_cache.insert(key, buffer);
     }
@@ -182,6 +451,18 @@ impl Default for RenderDocumentCache {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn font_bytes_cache_bytes(cache: &HashMap<String, Option<Arc<Vec<u8>>>>) -> usize {
+    cache
+        .values()
+        .filter_map(|bytes| bytes.as_ref())
+        .map(|bytes| {
+            std::mem::size_of::<Arc<Vec<u8>>>()
+                .saturating_add(std::mem::size_of::<Vec<u8>>())
+                .saturating_add(bytes.len())
+        })
+        .sum()
 }
 
 impl PageRenderer {
@@ -282,6 +563,20 @@ impl PageRenderer {
         render_mode: RenderMode,
         cache: &mut RenderDocumentCache,
     ) -> Result<PixelBuffer> {
+        let (list, _) =
+            Self::get_or_build_display_list_with_cache(engine, page_number, dpi, cache)?;
+        if list.is_fully_supported() {
+            return Self::render_display_list_cancellable_with_mode_and_cache(
+                engine,
+                page_number,
+                dpi,
+                list.as_ref(),
+                cancel,
+                render_mode,
+                cache,
+            );
+        }
+
         let ops = engine.get_page_content(page_number)?;
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
@@ -314,11 +609,12 @@ impl PageRenderer {
         Ok(buf)
     }
 
-    /// Build the conservative Release Packaging display list for a page.
+    /// Build the native retained display list for a page.
     ///
-    /// The list always records what it can inspect, but it is marked unsupported
-    /// when it sees primitives that still require the immediate renderer (text,
-    /// images, shadings, patterns, soft masks, or Form XObjects).
+    /// The list keeps high-level text, image, shading, pattern, inline-image,
+    /// Form XObject, optional-content, clip, and graphics-state operations as
+    /// typed replay ops. Unsupported status is reserved for malformed or missing
+    /// source evidence, not for normal PDF graphics features.
     pub fn build_display_list(
         engine: &ContentEngine,
         page_number: usize,
@@ -333,10 +629,10 @@ impl PageRenderer {
     /// Render a page through display-list replay.
     ///
     /// Vector-only lists replay through the normalized CPU device. Pages with
-    /// higher-level text/image/XObject/shading/pattern content replay through a
-    /// typed compatibility content-run op that delegates to the same immediate
-    /// content implementation. `Ok(None)` is now reserved for an explicitly
-    /// unsupported display-list diagnostic.
+    /// higher-level text/image/XObject/shading/pattern content replay through
+    /// typed native ops so retained replay and cache hits use the same canonical
+    /// source renderer without page-wide immediate fallback. `Ok(None)` is
+    /// reserved for an explicitly unsupported display-list diagnostic.
     pub fn render_page_display_list_with_mode(
         engine: &ContentEngine,
         page_number: usize,
@@ -563,16 +859,35 @@ impl PageRenderer {
             resources.color_spaces.values(),
             resources.ext_g_states.values(),
         );
+        let full_tile = RenderTile::full(full_viewport.width_px, full_viewport.height_px);
         let raster_key = RenderCacheKey::new_with_visibility_and_prepress(
             page_number,
             dpi,
             render_mode,
             tile,
-            visibility_fingerprint,
-            prepress_fingerprint,
+            visibility_fingerprint.clone(),
+            prepress_fingerprint.clone(),
         );
         if let Some(hit) = cache.cached_display_list_raster(&raster_key) {
             return Ok(Some(hit));
+        }
+        if tile != full_tile {
+            let full_raster_key = RenderCacheKey::new_with_visibility_and_prepress(
+                page_number,
+                dpi,
+                render_mode,
+                full_tile,
+                visibility_fingerprint,
+                prepress_fingerprint,
+            );
+            if let Some(cropped) = cache
+                .cached_display_list_raster_ref(&full_raster_key)
+                .map(|full_page| crop_buffer(full_page, tile))
+                .transpose()?
+            {
+                cache.insert_display_list_raster(raster_key, cropped.clone());
+                return Ok(Some(cropped));
+            }
         }
         let transparent_key = RenderDocumentCache::transparent_page_group_key(page_number);
         let transparent_page_group = match cache.cached_transparent_page_group(&transparent_key) {
@@ -692,6 +1007,36 @@ impl PageRenderer {
         cancel: &CancelToken,
         render_mode: RenderMode,
     ) -> Result<PixelBuffer> {
+        let mut document_cache = RenderDocumentCache::new();
+        if let Some(buffer) = Self::render_page_display_list_tile_cancellable_with_mode_and_cache(
+            engine,
+            page_number,
+            dpi,
+            tile,
+            cancel,
+            render_mode,
+            &mut document_cache,
+        )? {
+            return Ok(buffer);
+        }
+        Self::render_page_tile_immediate_cancellable_with_mode(
+            engine,
+            page_number,
+            dpi,
+            tile,
+            cancel,
+            render_mode,
+        )
+    }
+
+    fn render_page_tile_immediate_cancellable_with_mode(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        tile: RenderTile,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+    ) -> Result<PixelBuffer> {
         let ops = engine.get_page_content(page_number)?;
         let full_viewport = engine.page_viewport(page_number, dpi)?;
         if tile.width == 0 || tile.height == 0 {
@@ -781,10 +1126,17 @@ impl PageRenderer {
         let viewport = engine.page_viewport(page_number, dpi)?;
         let band_height = band_height.max(1);
         let mut bands = Vec::new();
+        let mut document_cache = RenderDocumentCache::new();
         let mut y = 0u32;
         while y < viewport.height_px {
             let height = band_height.min(viewport.height_px - y);
-            bands.push(Self::render_page_tile_with_mode(
+            let tile = RenderTile {
+                x: 0,
+                y,
+                width: viewport.width_px,
+                height,
+            };
+            let band = match Self::render_page_display_list_tile_cancellable_with_mode_and_cache(
                 engine,
                 page_number,
                 dpi,
@@ -794,9 +1146,21 @@ impl PageRenderer {
                     width: viewport.width_px,
                     height,
                 },
+                &CancelToken::none(),
                 render_mode,
-                None,
-            )?);
+                &mut document_cache,
+            )? {
+                Some(buffer) => buffer,
+                None => Self::render_page_tile_immediate_cancellable_with_mode(
+                    engine,
+                    page_number,
+                    dpi,
+                    tile,
+                    &CancelToken::none(),
+                    render_mode,
+                )?,
+            };
+            bands.push(band);
             y += height;
         }
         Ok(bands)
@@ -893,14 +1257,39 @@ struct RenderState<'a> {
     pending_clip: Option<FillRule>,
     pending_text_clip: Option<ClipMask>,
     glyph_cache: GlyphCache,
+    glyph_mask_cache: GlyphMaskCache,
+    type3_mask_cache: Type3MaskCache,
+    type3_rendered_cache: Type3RenderedGlyphCache,
+    path_fill_mask_cache: PathFillMaskCache,
+    path_stroke_mask_cache: PathStrokeMaskCache,
     font_bytes_cache: HashMap<String, Option<Arc<Vec<u8>>>>,
+    font_bytes_cache_stats: RenderArtifactCacheStats,
     font_resolver_cache: HashMap<String, Arc<FontResolver>>,
+    font_resolver_cache_stats: RenderArtifactCacheStats,
+    font_resource_key_cache: HashMap<(String, usize), String>,
     type3_geometry_cache: HashMap<String, Option<Arc<Type3GlyphGeometry>>>,
     type3_charproc_cache: HashMap<String, Option<Arc<Type3CharProc>>>,
     image_xobject_cache: HashMap<String, Arc<RawImage>>,
+    image_xobject_cache_order: VecDeque<String>,
     image_xobject_cache_bytes: usize,
+    image_xobject_cache_stats: RenderArtifactCacheStats,
+    scaled_image_cache: HashMap<String, Arc<RawImage>>,
+    scaled_image_cache_order: VecDeque<String>,
+    scaled_image_cache_bytes: usize,
+    scaled_image_cache_stats: RenderArtifactCacheStats,
     smask_group_cache: HashMap<String, Arc<AlphaMask>>,
+    smask_group_cache_order: VecDeque<String>,
+    smask_group_cache_bytes: usize,
+    smask_group_cache_stats: RenderArtifactCacheStats,
     shading_mesh_cache: HashMap<String, Arc<Vec<u8>>>,
+    shading_mesh_cache_order: VecDeque<String>,
+    shading_mesh_cache_bytes: usize,
+    shading_mesh_cache_stats: RenderArtifactCacheStats,
+    form_xobject_program_cache: HashMap<String, Option<Arc<FormXObjectProgram>>>,
+    form_xobject_program_cache_stats: RenderArtifactCacheStats,
+    tiling_pattern_program_cache: HashMap<String, Option<Arc<Vec<ContentOperation>>>>,
+    tiling_pattern_program_cache_stats: RenderArtifactCacheStats,
+    offscreen_buffer_pool: Vec<PixelBuffer>,
     /// Tiling-pattern stream keys currently being replayed. PDF pattern
     /// resources can legally refer to other patterns, but real files sometimes
     /// contain accidental self-recursive pattern fills. Bound those at the
@@ -908,6 +1297,10 @@ struct RenderState<'a> {
     pattern_stack: Vec<String>,
     /// Current Form XObject nesting depth, used to bound recursion.
     form_depth: usize,
+    /// Source object stack for currently replayed Form XObjects. This catches
+    /// direct and indirect cycles before the coarse depth guard would force
+    /// repeated full-form replay attempts.
+    form_object_stack: Vec<(u32, u16)>,
     /// Parameters from the most recent `ID` operator, awaiting the following
     /// `inline_image_data` so the inline image can be painted.
     pending_inline: Option<Vec<Operand>>,
@@ -935,6 +1328,493 @@ struct RenderState<'a> {
 }
 
 const RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES: usize = 512 * 1024 * 1024;
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct GlyphMaskCacheKey {
+    glyph: GlyphCacheKey,
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    frac_e: i64,
+    frac_f: i64,
+    hinting: bool,
+}
+
+#[derive(Default)]
+struct GlyphMaskCache {
+    entries: HashMap<GlyphMaskCacheKey, Arc<RasterizedGlyphMask>>,
+    bytes: usize,
+    stats: RenderArtifactCacheStats,
+}
+
+impl GlyphMaskCache {
+    const MAX_ENTRIES: usize = 4096;
+    const MAX_BYTES: usize = 32 * 1024 * 1024;
+
+    fn get(&mut self, key: &GlyphMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
+        let hit = self.entries.get(key).cloned();
+        if hit.is_some() {
+            self.stats.hits = self.stats.hits.saturating_add(1);
+        } else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+        }
+        hit
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+        self.stats = RenderArtifactCacheStats::default();
+    }
+
+    fn stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.entries.len(),
+            bytes: self.bytes,
+            ..self.stats
+        }
+    }
+
+    fn insert(&mut self, key: GlyphMaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
+        let bytes = mask.approximate_bytes();
+        if bytes > Self::MAX_BYTES / 4 {
+            self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
+            return;
+        }
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(old.approximate_bytes());
+        }
+        if self.entries.len() >= Self::MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
+        {
+            self.stats.evictions = self
+                .stats
+                .evictions
+                .saturating_add(self.entries.len() as u64);
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(key, mask);
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct Type3MaskCacheKey {
+    glyph: String,
+    fill_index: u16,
+    fill_rule: u8,
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    frac_e: i64,
+    frac_f: i64,
+}
+
+#[derive(Default)]
+struct Type3MaskCache {
+    entries: HashMap<Type3MaskCacheKey, Arc<RasterizedGlyphMask>>,
+    bytes: usize,
+    stats: RenderArtifactCacheStats,
+}
+
+impl Type3MaskCache {
+    const MAX_ENTRIES: usize = 8192;
+    const MAX_BYTES: usize = 64 * 1024 * 1024;
+
+    fn get(&mut self, key: &Type3MaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
+        let hit = self.entries.get(key).cloned();
+        if hit.is_some() {
+            self.stats.hits = self.stats.hits.saturating_add(1);
+        } else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+        }
+        hit
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+        self.stats = RenderArtifactCacheStats::default();
+    }
+
+    fn stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.entries.len(),
+            bytes: self.bytes,
+            ..self.stats
+        }
+    }
+
+    fn insert(&mut self, key: Type3MaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
+        let bytes = mask.approximate_bytes();
+        if bytes > Self::MAX_BYTES / 4 {
+            self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
+            return;
+        }
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(old.approximate_bytes());
+        }
+        if self.entries.len() >= Self::MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
+        {
+            self.stats.evictions = self
+                .stats
+                .evictions
+                .saturating_add(self.entries.len() as u64);
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(key, mask);
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct Type3RenderedGlyphCacheKey {
+    glyph: String,
+    render_mode: i32,
+    fill_color: PixelColor,
+    stroke_color: PixelColor,
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    frac_e: i64,
+    frac_f: i64,
+}
+
+#[derive(Clone)]
+struct Type3RenderedGlyph {
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
+impl Type3RenderedGlyph {
+    fn from_buffer_with_origin(
+        buf: &PixelBuffer,
+        bounds: (u32, u32, u32, u32),
+        full_x0: i32,
+        full_y0: i32,
+        origin_dx: i32,
+        origin_dy: i32,
+    ) -> Option<Self> {
+        if buf.width == 0 || buf.height == 0 {
+            return None;
+        }
+        let (scan_x0, scan_y0, scan_x1, scan_y1) = bounds;
+        if scan_x0 > scan_x1 || scan_y0 > scan_y1 || scan_x0 >= buf.width || scan_y0 >= buf.height {
+            return None;
+        }
+        let scan_x1 = scan_x1.min(buf.width.saturating_sub(1));
+        let scan_y1 = scan_y1.min(buf.height.saturating_sub(1));
+        let mut min_x = buf.width as i32;
+        let mut min_y = buf.height as i32;
+        let mut max_x = -1;
+        let mut max_y = -1;
+        for y in scan_y0 as i32..=scan_y1 as i32 {
+            for x in scan_x0 as i32..=scan_x1 as i32 {
+                if buf.get_pixel(x, y)[3] != 0 {
+                    min_x = min_x.min(x);
+                    min_y = min_y.min(y);
+                    max_x = max_x.max(x);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        if max_x < min_x || max_y < min_y {
+            return None;
+        }
+        let width = (max_x - min_x + 1) as u32;
+        let height = (max_y - min_y + 1) as u32;
+        let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                pixels.extend_from_slice(&buf.get_pixel(x, y));
+            }
+        }
+        Some(Self {
+            x: full_x0.saturating_add(min_x).saturating_sub(origin_dx),
+            y: full_y0.saturating_add(min_y).saturating_sub(origin_dy),
+            width,
+            height,
+            pixels,
+        })
+    }
+
+    fn paint(&self, buf: &mut PixelBuffer, dx: i32, dy: i32) {
+        buf.blend_rgba_pixels_at(
+            dx.saturating_add(self.x),
+            dy.saturating_add(self.y),
+            self.width,
+            self.height,
+            &self.pixels,
+        );
+    }
+
+    fn approximate_bytes(&self) -> usize {
+        std::mem::size_of::<Self>() + self.pixels.len()
+    }
+}
+
+#[derive(Default)]
+struct Type3RenderedGlyphCache {
+    entries: HashMap<Type3RenderedGlyphCacheKey, Arc<Type3RenderedGlyph>>,
+    bytes: usize,
+    stats: RenderArtifactCacheStats,
+}
+
+impl Type3RenderedGlyphCache {
+    const MAX_ENTRIES: usize = 2048;
+    const MAX_BYTES: usize = 96 * 1024 * 1024;
+
+    fn get(&mut self, key: &Type3RenderedGlyphCacheKey) -> Option<Arc<Type3RenderedGlyph>> {
+        let hit = self.entries.get(key).cloned();
+        if hit.is_some() {
+            self.stats.hits = self.stats.hits.saturating_add(1);
+        } else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+        }
+        hit
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+        self.stats = RenderArtifactCacheStats::default();
+    }
+
+    fn stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.entries.len(),
+            bytes: self.bytes,
+            ..self.stats
+        }
+    }
+
+    fn insert(&mut self, key: Type3RenderedGlyphCacheKey, glyph: Arc<Type3RenderedGlyph>) {
+        let bytes = glyph.approximate_bytes();
+        if bytes > Self::MAX_BYTES / 4 {
+            self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
+            return;
+        }
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(old.approximate_bytes());
+        }
+        if self.entries.len() >= Self::MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
+        {
+            self.stats.evictions = self
+                .stats
+                .evictions
+                .saturating_add(self.entries.len() as u64);
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(key, glyph);
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct PathFillMaskCacheKey {
+    path_hash: u64,
+    fill_rule: u8,
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    frac_e: i64,
+    frac_f: i64,
+}
+
+#[derive(Default)]
+struct PathFillMaskCache {
+    entries: HashMap<PathFillMaskCacheKey, Arc<RasterizedGlyphMask>>,
+    bytes: usize,
+    stats: RenderArtifactCacheStats,
+}
+
+impl PathFillMaskCache {
+    const MAX_ENTRIES: usize = 8192;
+    const MAX_BYTES: usize = 96 * 1024 * 1024;
+
+    fn get(&mut self, key: &PathFillMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
+        let hit = self.entries.get(key).cloned();
+        if hit.is_some() {
+            self.stats.hits = self.stats.hits.saturating_add(1);
+        } else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+        }
+        hit
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+        self.stats = RenderArtifactCacheStats::default();
+    }
+
+    fn stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.entries.len(),
+            bytes: self.bytes,
+            ..self.stats
+        }
+    }
+
+    fn insert(&mut self, key: PathFillMaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
+        let bytes = mask.approximate_bytes();
+        if bytes > Self::MAX_BYTES / 4 {
+            self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
+            return;
+        }
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(old.approximate_bytes());
+        }
+        if self.entries.len() >= Self::MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
+        {
+            self.stats.evictions = self
+                .stats
+                .evictions
+                .saturating_add(self.entries.len() as u64);
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(key, mask);
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct PathStrokeMaskCacheKey {
+    path_hash: u64,
+    width: i64,
+    cap: u8,
+    join: u8,
+    miter_limit: i64,
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    frac_e: i64,
+    frac_f: i64,
+}
+
+#[derive(Default)]
+struct PathStrokeMaskCache {
+    entries: HashMap<PathStrokeMaskCacheKey, Arc<RasterizedGlyphMask>>,
+    bytes: usize,
+    stats: RenderArtifactCacheStats,
+}
+
+impl PathStrokeMaskCache {
+    const MAX_ENTRIES: usize = 8192;
+    const MAX_BYTES: usize = 96 * 1024 * 1024;
+
+    fn get(&mut self, key: &PathStrokeMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
+        let hit = self.entries.get(key).cloned();
+        if hit.is_some() {
+            self.stats.hits = self.stats.hits.saturating_add(1);
+        } else {
+            self.stats.misses = self.stats.misses.saturating_add(1);
+        }
+        hit
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.bytes = 0;
+        self.stats = RenderArtifactCacheStats::default();
+    }
+
+    fn stats(&self) -> RenderArtifactCacheStats {
+        RenderArtifactCacheStats {
+            entries: self.entries.len(),
+            bytes: self.bytes,
+            ..self.stats
+        }
+    }
+
+    fn insert(&mut self, key: PathStrokeMaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
+        let bytes = mask.approximate_bytes();
+        if bytes > Self::MAX_BYTES / 4 {
+            self.stats.skipped_oversized = self.stats.skipped_oversized.saturating_add(1);
+            return;
+        }
+        if let Some(old) = self.entries.remove(&key) {
+            self.bytes = self.bytes.saturating_sub(old.approximate_bytes());
+        }
+        if self.entries.len() >= Self::MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
+        {
+            self.stats.evictions = self
+                .stats
+                .evictions
+                .saturating_add(self.entries.len() as u64);
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(key, mask);
+    }
+}
+
+#[derive(Clone)]
+struct FormXObjectProgram {
+    dict: PdfDictionary,
+    ops: Arc<Vec<ContentOperation>>,
+    form_matrix: crate::content::Matrix,
+    bbox: Option<[f64; 4]>,
+    resources: Option<PageResources>,
+    is_transparency_group: bool,
+}
 
 #[derive(Clone, Debug)]
 struct RenderDecodeScheduler {
@@ -1080,7 +1960,29 @@ impl<'a> RenderState<'a> {
         let viewport_width = viewport.width_px;
         let viewport_height = viewport.height_px;
         let image_xobject_cache_bytes = cache.image_xobject_cache_bytes;
+        let scaled_image_cache_bytes = cache.scaled_image_cache_bytes;
+        let smask_group_cache_bytes = cache.smask_group_cache_bytes;
+        let shading_mesh_cache_bytes = cache.shading_mesh_cache_bytes;
+        let font_bytes_cache_stats = cache.font_bytes_cache_stats;
+        let font_resolver_cache_stats = cache.font_resolver_cache_stats;
+        let image_xobject_cache_stats = cache.image_xobject_cache_stats;
+        let scaled_image_cache_stats = cache.scaled_image_cache_stats;
+        let smask_group_cache_stats = cache.smask_group_cache_stats;
+        let shading_mesh_cache_stats = cache.shading_mesh_cache_stats;
+        let form_xobject_program_cache_stats = cache.form_xobject_program_cache_stats;
+        let tiling_pattern_program_cache_stats = cache.tiling_pattern_program_cache_stats;
         cache.image_xobject_cache_bytes = 0;
+        cache.scaled_image_cache_bytes = 0;
+        cache.smask_group_cache_bytes = 0;
+        cache.shading_mesh_cache_bytes = 0;
+        cache.font_bytes_cache_stats = RenderArtifactCacheStats::default();
+        cache.font_resolver_cache_stats = RenderArtifactCacheStats::default();
+        cache.image_xobject_cache_stats = RenderArtifactCacheStats::default();
+        cache.scaled_image_cache_stats = RenderArtifactCacheStats::default();
+        cache.smask_group_cache_stats = RenderArtifactCacheStats::default();
+        cache.shading_mesh_cache_stats = RenderArtifactCacheStats::default();
+        cache.form_xobject_program_cache_stats = RenderArtifactCacheStats::default();
+        cache.tiling_pattern_program_cache_stats = RenderArtifactCacheStats::default();
         Self {
             engine,
             page_number,
@@ -1097,16 +1999,42 @@ impl<'a> RenderState<'a> {
                 &mut cache.glyph_cache,
                 GlyphCache::with_default_capacity(),
             ),
+            glyph_mask_cache: std::mem::take(&mut cache.glyph_mask_cache),
+            type3_mask_cache: std::mem::take(&mut cache.type3_mask_cache),
+            type3_rendered_cache: std::mem::take(&mut cache.type3_rendered_cache),
+            path_fill_mask_cache: std::mem::take(&mut cache.path_fill_mask_cache),
+            path_stroke_mask_cache: std::mem::take(&mut cache.path_stroke_mask_cache),
             font_bytes_cache: std::mem::take(&mut cache.font_bytes_cache),
+            font_bytes_cache_stats,
             font_resolver_cache: std::mem::take(&mut cache.font_resolver_cache),
+            font_resolver_cache_stats,
+            font_resource_key_cache: HashMap::new(),
             type3_geometry_cache: std::mem::take(&mut cache.type3_geometry_cache),
             type3_charproc_cache: std::mem::take(&mut cache.type3_charproc_cache),
             image_xobject_cache: std::mem::take(&mut cache.image_xobject_cache),
+            image_xobject_cache_order: std::mem::take(&mut cache.image_xobject_cache_order),
             image_xobject_cache_bytes,
+            image_xobject_cache_stats,
+            scaled_image_cache: std::mem::take(&mut cache.scaled_image_cache),
+            scaled_image_cache_order: std::mem::take(&mut cache.scaled_image_cache_order),
+            scaled_image_cache_bytes,
+            scaled_image_cache_stats,
             smask_group_cache: std::mem::take(&mut cache.smask_group_cache),
+            smask_group_cache_order: std::mem::take(&mut cache.smask_group_cache_order),
+            smask_group_cache_bytes,
+            smask_group_cache_stats,
             shading_mesh_cache: std::mem::take(&mut cache.shading_mesh_cache),
+            shading_mesh_cache_order: std::mem::take(&mut cache.shading_mesh_cache_order),
+            shading_mesh_cache_bytes,
+            shading_mesh_cache_stats,
+            form_xobject_program_cache: std::mem::take(&mut cache.form_xobject_program_cache),
+            form_xobject_program_cache_stats,
+            tiling_pattern_program_cache: std::mem::take(&mut cache.tiling_pattern_program_cache),
+            tiling_pattern_program_cache_stats,
+            offscreen_buffer_pool: std::mem::take(&mut cache.offscreen_buffer_pool),
             pattern_stack: Vec::new(),
             form_depth: 0,
+            form_object_stack: Vec::new(),
             pending_inline: None,
             base_ctm: Transform2D::identity(),
             cancel: CancelToken::none(),
@@ -1135,14 +2063,38 @@ impl<'a> RenderState<'a> {
         let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
         *cache = RenderDocumentCache {
             glyph_cache: self.glyph_cache,
+            glyph_mask_cache: self.glyph_mask_cache,
+            type3_mask_cache: self.type3_mask_cache,
+            type3_rendered_cache: self.type3_rendered_cache,
+            path_fill_mask_cache: self.path_fill_mask_cache,
+            path_stroke_mask_cache: self.path_stroke_mask_cache,
             font_bytes_cache: self.font_bytes_cache,
+            font_bytes_cache_stats: self.font_bytes_cache_stats,
             font_resolver_cache: self.font_resolver_cache,
+            font_resolver_cache_stats: self.font_resolver_cache_stats,
             type3_geometry_cache: self.type3_geometry_cache,
             type3_charproc_cache: self.type3_charproc_cache,
             image_xobject_cache: self.image_xobject_cache,
+            image_xobject_cache_order: self.image_xobject_cache_order,
             image_xobject_cache_bytes: self.image_xobject_cache_bytes,
+            image_xobject_cache_stats: self.image_xobject_cache_stats,
+            scaled_image_cache: self.scaled_image_cache,
+            scaled_image_cache_order: self.scaled_image_cache_order,
+            scaled_image_cache_bytes: self.scaled_image_cache_bytes,
+            scaled_image_cache_stats: self.scaled_image_cache_stats,
             smask_group_cache: self.smask_group_cache,
+            smask_group_cache_order: self.smask_group_cache_order,
+            smask_group_cache_bytes: self.smask_group_cache_bytes,
+            smask_group_cache_stats: self.smask_group_cache_stats,
             shading_mesh_cache: self.shading_mesh_cache,
+            shading_mesh_cache_order: self.shading_mesh_cache_order,
+            shading_mesh_cache_bytes: self.shading_mesh_cache_bytes,
+            shading_mesh_cache_stats: self.shading_mesh_cache_stats,
+            form_xobject_program_cache: self.form_xobject_program_cache,
+            form_xobject_program_cache_stats: self.form_xobject_program_cache_stats,
+            tiling_pattern_program_cache: self.tiling_pattern_program_cache,
+            tiling_pattern_program_cache_stats: self.tiling_pattern_program_cache_stats,
+            offscreen_buffer_pool: self.offscreen_buffer_pool,
             display_list_cache,
             display_list_raster_cache,
             transparent_page_group_cache,
@@ -1153,14 +2105,38 @@ impl<'a> RenderState<'a> {
         let RenderState {
             buf,
             glyph_cache,
+            glyph_mask_cache,
+            type3_mask_cache,
+            type3_rendered_cache,
+            path_fill_mask_cache,
+            path_stroke_mask_cache,
             font_bytes_cache,
+            font_bytes_cache_stats,
             font_resolver_cache,
+            font_resolver_cache_stats,
             type3_geometry_cache,
             type3_charproc_cache,
             image_xobject_cache,
+            image_xobject_cache_order,
             image_xobject_cache_bytes,
+            image_xobject_cache_stats,
+            scaled_image_cache,
+            scaled_image_cache_order,
+            scaled_image_cache_bytes,
+            scaled_image_cache_stats,
             smask_group_cache,
+            smask_group_cache_order,
+            smask_group_cache_bytes,
+            smask_group_cache_stats,
             shading_mesh_cache,
+            shading_mesh_cache_order,
+            shading_mesh_cache_bytes,
+            shading_mesh_cache_stats,
+            form_xobject_program_cache,
+            form_xobject_program_cache_stats,
+            tiling_pattern_program_cache,
+            tiling_pattern_program_cache_stats,
+            offscreen_buffer_pool,
             ..
         } = self;
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
@@ -1171,14 +2147,38 @@ impl<'a> RenderState<'a> {
         let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
         *cache = RenderDocumentCache {
             glyph_cache,
+            glyph_mask_cache,
+            type3_mask_cache,
+            type3_rendered_cache,
+            path_fill_mask_cache,
+            path_stroke_mask_cache,
             font_bytes_cache,
+            font_bytes_cache_stats,
             font_resolver_cache,
+            font_resolver_cache_stats,
             type3_geometry_cache,
             type3_charproc_cache,
             image_xobject_cache,
+            image_xobject_cache_order,
             image_xobject_cache_bytes,
+            image_xobject_cache_stats,
+            scaled_image_cache,
+            scaled_image_cache_order,
+            scaled_image_cache_bytes,
+            scaled_image_cache_stats,
             smask_group_cache,
+            smask_group_cache_order,
+            smask_group_cache_bytes,
+            smask_group_cache_stats,
             shading_mesh_cache,
+            shading_mesh_cache_order,
+            shading_mesh_cache_bytes,
+            shading_mesh_cache_stats,
+            form_xobject_program_cache,
+            form_xobject_program_cache_stats,
+            tiling_pattern_program_cache,
+            tiling_pattern_program_cache_stats,
+            offscreen_buffer_pool,
             display_list_cache,
             display_list_raster_cache,
             transparent_page_group_cache,
@@ -1238,9 +2238,16 @@ impl<'a> RenderState<'a> {
         let cache_key = color_space_override
             .map(|(name, obj)| image_xobject_cache_key_with_color_space(image_ref, name, obj))
             .unwrap_or_else(|| image_xobject_cache_key(image_ref));
-        if let Some(cached) = self.image_xobject_cache.get(&cache_key) {
-            return Ok(Arc::clone(cached));
+        if self.image_xobject_cache.contains_key(&cache_key) {
+            touch_image_xobject_cache_key(&mut self.image_xobject_cache_order, &cache_key);
+            if let Some(cached) = self.image_xobject_cache.get(&cache_key) {
+                self.image_xobject_cache_stats.hits =
+                    self.image_xobject_cache_stats.hits.saturating_add(1);
+                return Ok(Arc::clone(cached));
+            }
         }
+        self.image_xobject_cache_stats.misses =
+            self.image_xobject_cache_stats.misses.saturating_add(1);
         let estimated = estimate_image_ref_decode_bytes(image_ref);
         let reader = self.engine.document().reader();
         let raw = self
@@ -1259,14 +2266,52 @@ impl<'a> RenderState<'a> {
             })?;
         let raw = Arc::new(raw);
         let raw_bytes = raw.byte_count();
-        if raw_bytes <= RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES
-            && self.image_xobject_cache_bytes.saturating_add(raw_bytes)
-                <= RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES
-        {
-            self.image_xobject_cache_bytes += raw_bytes;
-            self.image_xobject_cache.insert(cache_key, Arc::clone(&raw));
-        }
+        insert_image_xobject_cache_entry(
+            &mut self.image_xobject_cache,
+            &mut self.image_xobject_cache_order,
+            &mut self.image_xobject_cache_bytes,
+            cache_key,
+            Arc::clone(&raw),
+            raw_bytes,
+            RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES,
+        );
         Ok(raw)
+    }
+
+    fn cached_axis_aligned_scaled_image(
+        &mut self,
+        base_key: &str,
+        image: &RawImage,
+        target_width: u32,
+        target_height: u32,
+    ) -> Option<Arc<RawImage>> {
+        let high_quality = self.buf.render_mode().is_high_quality();
+        let cache_key = scaled_image_cache_key(base_key, target_width, target_height, high_quality);
+        if self.scaled_image_cache.contains_key(&cache_key) {
+            touch_scaled_image_cache_key(&mut self.scaled_image_cache_order, &cache_key);
+            if let Some(cached) = self.scaled_image_cache.get(&cache_key) {
+                self.scaled_image_cache_stats.hits =
+                    self.scaled_image_cache_stats.hits.saturating_add(1);
+                return Some(Arc::clone(cached));
+            }
+        }
+        self.scaled_image_cache_stats.misses =
+            self.scaled_image_cache_stats.misses.saturating_add(1);
+        let scaled = ImagePainter::scale_axis_aligned_default_rgb(
+            image,
+            target_width,
+            target_height,
+            high_quality,
+        )?;
+        let scaled = Arc::new(scaled);
+        insert_scaled_image_cache_entry(
+            &mut self.scaled_image_cache,
+            &mut self.scaled_image_cache_order,
+            &mut self.scaled_image_cache_bytes,
+            cache_key,
+            Arc::clone(&scaled),
+        );
+        Some(scaled)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1402,6 +2447,224 @@ impl<'a> RenderState<'a> {
         )
     }
 
+    fn take_transparent_offscreen_buffer(
+        &mut self,
+        width: u32,
+        height: u32,
+        render_mode: RenderMode,
+    ) -> PixelBuffer {
+        if let Some(index) = self
+            .offscreen_buffer_pool
+            .iter()
+            .position(|buf| buf.width == width && buf.height == height)
+        {
+            let mut buf = self.offscreen_buffer_pool.swap_remove(index);
+            if buf.reset_transparent_for_reuse(width, height, render_mode) {
+                return buf;
+            }
+        }
+        PixelBuffer::new_transparent_with_mode(width, height, render_mode)
+    }
+
+    fn take_filled_offscreen_buffer(
+        &mut self,
+        width: u32,
+        height: u32,
+        color: PixelColor,
+        render_mode: RenderMode,
+    ) -> PixelBuffer {
+        if let Some(index) = self
+            .offscreen_buffer_pool
+            .iter()
+            .position(|buf| buf.width == width && buf.height == height)
+        {
+            let mut buf = self.offscreen_buffer_pool.swap_remove(index);
+            if buf.reset_filled_for_reuse(width, height, color, render_mode) {
+                return buf;
+            }
+        }
+        PixelBuffer::new_filled_with_mode(width, height, color, render_mode)
+    }
+
+    fn recycle_offscreen_buffer(&mut self, mut buf: PixelBuffer) {
+        const MAX_POOLED_BUFFERS: usize = 4;
+        const MAX_POOLED_BYTES: usize = 64 * 1024 * 1024;
+        let bytes = (buf.width as usize)
+            .saturating_mul(buf.height as usize)
+            .saturating_mul(4);
+        if bytes == 0
+            || bytes > MAX_POOLED_BYTES
+            || self.offscreen_buffer_pool.len() >= MAX_POOLED_BUFFERS
+        {
+            return;
+        }
+        if !buf.reset_transparent_for_reuse(buf.width, buf.height, buf.render_mode()) {
+            return;
+        }
+        self.offscreen_buffer_pool.push(buf);
+    }
+
+    fn absorb_child_render_caches(&mut self, child: &mut RenderState<'a>) {
+        self.glyph_cache.absorb_from(std::mem::replace(
+            &mut child.glyph_cache,
+            GlyphCache::with_default_capacity(),
+        ));
+
+        merge_artifact_cache_counts(
+            &mut self.glyph_mask_cache.stats,
+            child.glyph_mask_cache.stats(),
+        );
+        for (key, mask) in std::mem::take(&mut child.glyph_mask_cache.entries) {
+            self.glyph_mask_cache.insert(key, mask);
+        }
+        child.glyph_mask_cache.bytes = 0;
+
+        merge_artifact_cache_counts(
+            &mut self.type3_mask_cache.stats,
+            child.type3_mask_cache.stats(),
+        );
+        for (key, mask) in std::mem::take(&mut child.type3_mask_cache.entries) {
+            self.type3_mask_cache.insert(key, mask);
+        }
+        child.type3_mask_cache.bytes = 0;
+
+        merge_artifact_cache_counts(
+            &mut self.type3_rendered_cache.stats,
+            child.type3_rendered_cache.stats(),
+        );
+        for (key, glyph) in std::mem::take(&mut child.type3_rendered_cache.entries) {
+            self.type3_rendered_cache.insert(key, glyph);
+        }
+        child.type3_rendered_cache.bytes = 0;
+
+        merge_artifact_cache_counts(
+            &mut self.path_fill_mask_cache.stats,
+            child.path_fill_mask_cache.stats(),
+        );
+        for (key, mask) in std::mem::take(&mut child.path_fill_mask_cache.entries) {
+            self.path_fill_mask_cache.insert(key, mask);
+        }
+        child.path_fill_mask_cache.bytes = 0;
+
+        merge_artifact_cache_counts(
+            &mut self.path_stroke_mask_cache.stats,
+            child.path_stroke_mask_cache.stats(),
+        );
+        for (key, mask) in std::mem::take(&mut child.path_stroke_mask_cache.entries) {
+            self.path_stroke_mask_cache.insert(key, mask);
+        }
+        child.path_stroke_mask_cache.bytes = 0;
+
+        self.font_bytes_cache.extend(child.font_bytes_cache.drain());
+        merge_artifact_cache_counts(
+            &mut self.font_bytes_cache_stats,
+            child.font_bytes_cache_stats,
+        );
+        child.font_bytes_cache_stats = RenderArtifactCacheStats::default();
+        self.font_resolver_cache
+            .extend(child.font_resolver_cache.drain());
+        merge_artifact_cache_counts(
+            &mut self.font_resolver_cache_stats,
+            child.font_resolver_cache_stats,
+        );
+        child.font_resolver_cache_stats = RenderArtifactCacheStats::default();
+        self.font_resource_key_cache
+            .extend(child.font_resource_key_cache.drain());
+        self.type3_geometry_cache
+            .extend(child.type3_geometry_cache.drain());
+        self.type3_charproc_cache
+            .extend(child.type3_charproc_cache.drain());
+        for (key, mask) in std::mem::take(&mut child.smask_group_cache) {
+            insert_smask_group_cache_entry(
+                &mut self.smask_group_cache,
+                &mut self.smask_group_cache_order,
+                &mut self.smask_group_cache_bytes,
+                &mut self.smask_group_cache_stats,
+                key,
+                mask,
+            );
+        }
+        merge_artifact_cache_counts(
+            &mut self.smask_group_cache_stats,
+            child.smask_group_cache_stats,
+        );
+        child.smask_group_cache_stats = RenderArtifactCacheStats::default();
+        child.smask_group_cache_order.clear();
+        child.smask_group_cache_bytes = 0;
+        self.form_xobject_program_cache
+            .extend(child.form_xobject_program_cache.drain());
+        merge_artifact_cache_counts(
+            &mut self.form_xobject_program_cache_stats,
+            child.form_xobject_program_cache_stats,
+        );
+        child.form_xobject_program_cache_stats = RenderArtifactCacheStats::default();
+        self.tiling_pattern_program_cache
+            .extend(child.tiling_pattern_program_cache.drain());
+        merge_artifact_cache_counts(
+            &mut self.tiling_pattern_program_cache_stats,
+            child.tiling_pattern_program_cache_stats,
+        );
+        child.tiling_pattern_program_cache_stats = RenderArtifactCacheStats::default();
+
+        for (key, raw) in std::mem::take(&mut child.image_xobject_cache) {
+            let raw_bytes = raw.byte_count();
+            insert_image_xobject_cache_entry(
+                &mut self.image_xobject_cache,
+                &mut self.image_xobject_cache_order,
+                &mut self.image_xobject_cache_bytes,
+                key,
+                raw,
+                raw_bytes,
+                RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES,
+            );
+        }
+        merge_artifact_cache_counts(
+            &mut self.image_xobject_cache_stats,
+            child.image_xobject_cache_stats,
+        );
+        child.image_xobject_cache_stats = RenderArtifactCacheStats::default();
+        child.image_xobject_cache_order.clear();
+        child.image_xobject_cache_bytes = 0;
+
+        for (key, raw) in std::mem::take(&mut child.scaled_image_cache) {
+            insert_scaled_image_cache_entry(
+                &mut self.scaled_image_cache,
+                &mut self.scaled_image_cache_order,
+                &mut self.scaled_image_cache_bytes,
+                key,
+                raw,
+            );
+        }
+        merge_artifact_cache_counts(
+            &mut self.scaled_image_cache_stats,
+            child.scaled_image_cache_stats,
+        );
+        child.scaled_image_cache_stats = RenderArtifactCacheStats::default();
+        child.scaled_image_cache_order.clear();
+        child.scaled_image_cache_bytes = 0;
+
+        for (key, bytes) in std::mem::take(&mut child.shading_mesh_cache) {
+            insert_shading_mesh_cache_entry(
+                &mut self.shading_mesh_cache,
+                &mut self.shading_mesh_cache_order,
+                &mut self.shading_mesh_cache_bytes,
+                key,
+                bytes,
+            );
+        }
+        merge_artifact_cache_counts(
+            &mut self.shading_mesh_cache_stats,
+            child.shading_mesh_cache_stats,
+        );
+        child.shading_mesh_cache_stats = RenderArtifactCacheStats::default();
+        child.shading_mesh_cache_order.clear();
+        child.shading_mesh_cache_bytes = 0;
+
+        for pooled in child.offscreen_buffer_pool.drain(..) {
+            self.recycle_offscreen_buffer(pooled);
+        }
+    }
+
     fn shading_mesh_data(
         &mut self,
         shading_obj: &PdfObject,
@@ -1415,8 +2678,13 @@ impl<'a> RenderState<'a> {
         let cache_key = shading_mesh_cache_key(shading_obj, st);
         if let Some(key) = cache_key.as_deref() {
             if let Some(cached) = self.shading_mesh_cache.get(key) {
+                touch_shading_mesh_cache_key(&mut self.shading_mesh_cache_order, key);
+                self.shading_mesh_cache_stats.hits =
+                    self.shading_mesh_cache_stats.hits.saturating_add(1);
                 return Some(Arc::clone(cached));
             }
+            self.shading_mesh_cache_stats.misses =
+                self.shading_mesh_cache_stats.misses.saturating_add(1);
         }
         let (dict, raw) = resolve_to_stream(shading_obj, reader)?;
         let stream_obj = PdfObject::Stream { dict, raw };
@@ -1425,9 +2693,158 @@ impl<'a> RenderState<'a> {
             .ok()?;
         let bytes = Arc::new(bytes);
         if let Some(key) = cache_key {
-            self.shading_mesh_cache.insert(key, Arc::clone(&bytes));
+            insert_shading_mesh_cache_entry(
+                &mut self.shading_mesh_cache,
+                &mut self.shading_mesh_cache_order,
+                &mut self.shading_mesh_cache_bytes,
+                key,
+                Arc::clone(&bytes),
+            );
         }
         Some(bytes)
+    }
+
+    fn cached_form_xobject_program(
+        &mut self,
+        name: &str,
+        obj_num: u32,
+        gen_num: u16,
+    ) -> Option<Arc<FormXObjectProgram>> {
+        let cache_key = form_xobject_program_cache_key(obj_num, gen_num);
+        if let Some(cached) = self.form_xobject_program_cache.get(&cache_key) {
+            self.form_xobject_program_cache_stats.hits =
+                self.form_xobject_program_cache_stats.hits.saturating_add(1);
+            return cached.as_ref().map(Arc::clone);
+        }
+        self.form_xobject_program_cache_stats.misses = self
+            .form_xobject_program_cache_stats
+            .misses
+            .saturating_add(1);
+
+        let reader = self.engine.document().reader();
+        let (form_dict, raw_bytes) = match reader.get_object(obj_num, gen_num) {
+            Ok(PdfObject::Stream { dict, raw }) => (dict, raw),
+            Ok(_) => {
+                log::warn!("PageRenderer: Form XObject '{}' is not a stream", name);
+                self.form_xobject_program_cache.insert(cache_key, None);
+                return None;
+            }
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: failed to fetch Form XObject '{}': {}",
+                    name,
+                    err
+                );
+                self.form_xobject_program_cache.insert(cache_key, None);
+                return None;
+            }
+        };
+
+        if form_dict.get_name("Subtype") != Some("Form") {
+            log::debug!(
+                "PageRenderer: XObject '{}' is not /Subtype /Form, skipping",
+                name
+            );
+            self.form_xobject_program_cache.insert(cache_key, None);
+            return None;
+        }
+
+        let stream_obj = PdfObject::Stream {
+            dict: form_dict.clone(),
+            raw: raw_bytes,
+        };
+        let content_bytes = match self.scheduled_decode_stream(
+            &stream_obj,
+            reader,
+            "renderer Form XObject program stream decode",
+        ) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: Form XObject '{}' stream decode failed: {}",
+                    name,
+                    err
+                );
+                self.form_xobject_program_cache.insert(cache_key, None);
+                return None;
+            }
+        };
+        let ops = match crate::content::ContentParser::parse(&content_bytes) {
+            Ok(ops) => ops,
+            Err(err) => {
+                log::warn!(
+                    "PageRenderer: Form XObject '{}' content parse failed: {}",
+                    name,
+                    err
+                );
+                self.form_xobject_program_cache.insert(cache_key, None);
+                return None;
+            }
+        };
+        let resources = form_dict
+            .get("Resources")
+            .map(|res_obj| crate::engine::parse_resources_from_obj(res_obj, reader));
+        let program = Arc::new(FormXObjectProgram {
+            form_matrix: extract_form_matrix(&form_dict),
+            bbox: extract_bbox(&form_dict),
+            is_transparency_group: is_transparency_group(&form_dict),
+            dict: form_dict,
+            ops: Arc::new(ops),
+            resources,
+        });
+        self.form_xobject_program_cache
+            .insert(cache_key, Some(Arc::clone(&program)));
+        Some(program)
+    }
+
+    fn cached_tiling_pattern_program(
+        &mut self,
+        cache_key: &str,
+        pat_dict: &PdfDictionary,
+        raw_bytes: Vec<u8>,
+    ) -> Option<Arc<Vec<ContentOperation>>> {
+        if let Some(cached) = self.tiling_pattern_program_cache.get(cache_key) {
+            self.tiling_pattern_program_cache_stats.hits = self
+                .tiling_pattern_program_cache_stats
+                .hits
+                .saturating_add(1);
+            return cached.as_ref().map(Arc::clone);
+        }
+        self.tiling_pattern_program_cache_stats.misses = self
+            .tiling_pattern_program_cache_stats
+            .misses
+            .saturating_add(1);
+
+        let reader = self.engine.document().reader();
+        let stream_obj = PdfObject::Stream {
+            dict: pat_dict.clone(),
+            raw: raw_bytes,
+        };
+        let content_bytes = match self.scheduled_decode_stream(
+            &stream_obj,
+            reader,
+            "renderer tiling pattern program stream decode",
+        ) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                log::warn!("tiling pattern: content decode failed: {err}");
+                self.tiling_pattern_program_cache
+                    .insert(cache_key.to_string(), None);
+                return None;
+            }
+        };
+        let ops = match crate::content::ContentParser::parse(&content_bytes) {
+            Ok(ops) => Arc::new(ops),
+            Err(err) => {
+                log::warn!("tiling pattern: content parse failed: {err}");
+                self.tiling_pattern_program_cache
+                    .insert(cache_key.to_string(), None);
+                return None;
+            }
+        };
+        self.tiling_pattern_program_cache
+            .insert(cache_key.to_string(), Some(Arc::clone(&ops)));
+        Some(ops)
     }
 
     fn replay_display_list(&mut self, list: &DisplayList) {
@@ -1459,7 +2876,42 @@ impl<'a> RenderState<'a> {
                     None => log::warn!("DisplayList replay: restore with empty SMask stack"),
                 }
             }
-            DisplayOp::Clip { path, ctm, rule } => {
+            DisplayOp::Clip {
+                path,
+                ctm,
+                rule,
+                bounds,
+            } => {
+                if bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.intersects_viewport(&self.viewport))
+                {
+                    self.buf
+                        .set_clip(ClipMask::empty(self.buf.width, self.buf.height));
+                    return;
+                }
+                if let Some((x, y, width, height)) =
+                    axis_aligned_integer_rect(path, ctm, &self.viewport)
+                {
+                    let clip = if x <= 0
+                        && y <= 0
+                        && x.saturating_add(width) >= self.buf.width as i32
+                        && y.saturating_add(height) >= self.buf.height as i32
+                    {
+                        ClipMask::all_visible(self.buf.width, self.buf.height)
+                    } else {
+                        ClipMask::from_visible_rect(
+                            self.buf.width,
+                            self.buf.height,
+                            x,
+                            y,
+                            width,
+                            height,
+                        )
+                    };
+                    self.buf.set_clip(clip);
+                    return;
+                }
                 let flat = flatten_path(path, ctm, &self.viewport, 0.5);
                 let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, *rule);
                 self.buf.set_clip(clip);
@@ -1478,14 +2930,31 @@ impl<'a> RenderState<'a> {
                 }
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
-                PathPainter::fill(
+                if !paint_cached_path_fill(
+                    &mut self.path_fill_mask_cache,
                     &mut self.buf,
+                    &self.viewport,
                     path,
                     &state.ctm,
-                    &self.viewport,
-                    state.fill_color,
                     *rule,
-                );
+                    state.fill_color,
+                ) {
+                    // Cache miss/general-path fallback only: normalized
+                    // display-list replay attempts bounded path-mask reuse
+                    // before direct path painting. Use the scanline-capable
+                    // bounded fast path so retained replay does not fall back
+                    // to accumulator-heavy rasterization on complex vector
+                    // pages.
+                    let _ = PathPainter::fill_fast_cancellable(
+                        &mut self.buf,
+                        path,
+                        &state.ctm,
+                        &self.viewport,
+                        state.fill_color,
+                        *rule,
+                        &self.cancel,
+                    );
+                }
                 self.buf.blend_mode = saved_blend;
             }
             DisplayOp::StrokePath {
@@ -1501,26 +2970,266 @@ impl<'a> RenderState<'a> {
                 }
                 let saved_blend = self.buf.blend_mode;
                 self.buf.blend_mode = state.blend_mode;
-                PathPainter::stroke_with_style(
+                if !paint_cached_path_stroke(
+                    &mut self.path_stroke_mask_cache,
                     &mut self.buf,
+                    &self.viewport,
                     path,
                     &state.ctm,
-                    &self.viewport,
                     state.stroke_color,
                     state.line_width,
                     &state.dash,
                     &state.line_cap,
                     &state.line_join,
                     state.miter_limit,
-                );
+                ) {
+                    // Cache miss/general-path fallback only: normalized
+                    // display-list replay attempts bounded stroke-mask reuse
+                    // before direct path painting. Use the scanline-capable
+                    // bounded fast path so retained replay does not fall back
+                    // to accumulator-heavy stroke rasterization.
+                    let _ = PathPainter::stroke_with_style_fast_cancellable(
+                        &mut self.buf,
+                        path,
+                        &state.ctm,
+                        &self.viewport,
+                        state.stroke_color,
+                        state.line_width,
+                        &state.dash,
+                        &state.line_cap,
+                        &state.line_join,
+                        state.miter_limit,
+                        &self.cancel,
+                    );
+                }
                 self.buf.blend_mode = saved_blend;
             }
-            DisplayOp::ContentRun { ops, .. } => self.dispatch_all(ops),
             DisplayOp::StateOp { op, .. } => self.dispatch(op),
-            DisplayOp::NativeTextOp { op, .. }
-            | DisplayOp::NativeImageXObject { op, .. }
-            | DisplayOp::NativeFormXObject { op, .. } => self.dispatch(op),
-            DisplayOp::NativeInlineImage { ops, .. } => self.dispatch_all(ops),
+            DisplayOp::NativeTextOp { op, bounds, .. } => {
+                if bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.intersects_viewport(&self.viewport))
+                    && text_showing_operator(op)
+                    && !text_rendering_mode_clips(self.gs.text.rendering_mode)
+                {
+                    self.dispatch_text_showing_without_paint(op);
+                    return;
+                }
+                self.replay_native_text_op(op);
+            }
+            DisplayOp::NativeShadingOp { op, bounds, .. } => {
+                if bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.intersects_viewport(&self.viewport))
+                {
+                    return;
+                }
+                self.replay_native_shading_op(op);
+            }
+            DisplayOp::NativeFormXObject { op, bounds, .. } => {
+                if bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.intersects_viewport(&self.viewport))
+                {
+                    return;
+                }
+                self.replay_native_xobject_op(op);
+            }
+            DisplayOp::NativeImageXObject { op, bounds, .. } => {
+                if bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.intersects_viewport(&self.viewport))
+                {
+                    return;
+                }
+                self.replay_native_xobject_op(op);
+            }
+            DisplayOp::NativePatternPathOp { ops, bounds, .. } => {
+                if bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.intersects_viewport(&self.viewport))
+                {
+                    return;
+                }
+                self.replay_native_pattern_path_ops(ops);
+            }
+            DisplayOp::NativeInlineImage { ops, bounds, .. } => {
+                if bounds
+                    .as_ref()
+                    .is_some_and(|bounds| !bounds.intersects_viewport(&self.viewport))
+                {
+                    return;
+                }
+                self.replay_native_inline_image_ops(ops);
+            }
+        }
+    }
+
+    fn replay_native_xobject_op(&mut self, op: &ContentOperation) {
+        if !self.oc_current_visible {
+            return;
+        }
+        if let Some(name) = op.name(0) {
+            self.handle_do(name);
+        }
+    }
+
+    fn replay_native_shading_op(&mut self, op: &ContentOperation) {
+        if !self.oc_current_visible {
+            return;
+        }
+        if let Some(name) = op.name(0) {
+            self.handle_sh(name.to_string());
+        }
+    }
+
+    fn replay_native_text_op(&mut self, op: &ContentOperation) {
+        if !self.oc_current_visible {
+            return;
+        }
+        match op.operator.as_str() {
+            "Tj" => {
+                if let Some(bytes) = op.string_bytes(0) {
+                    self.render_text_string(bytes);
+                }
+            }
+            "TJ" => self.render_text_array(op),
+            "'" => {
+                self.move_to_next_text_line();
+                if let Some(bytes) = op.string_bytes(0) {
+                    self.render_text_string(bytes);
+                }
+            }
+            "\"" => {
+                if let Some(word_spacing) = op.number(0) {
+                    self.gs.text.word_spacing = word_spacing;
+                }
+                if let Some(char_spacing) = op.number(1) {
+                    self.gs.text.char_spacing = char_spacing;
+                }
+                self.move_to_next_text_line();
+                if let Some(bytes) = op.string_bytes(2) {
+                    self.render_text_string(bytes);
+                }
+            }
+            _ => self.dispatch(op),
+        }
+    }
+
+    fn replay_native_pattern_path_ops(&mut self, ops: &[ContentOperation]) {
+        if !self.oc_current_visible {
+            return;
+        }
+        if ops.is_empty() {
+            return;
+        }
+        for op in &ops[..ops.len().saturating_sub(1)] {
+            match op.operator.as_str() {
+                "m" => {
+                    if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
+                        self.path.move_to(x, y);
+                    }
+                }
+                "l" => {
+                    if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
+                        self.path.line_to(x, y);
+                    }
+                }
+                "c" => {
+                    if let (Some(x1), Some(y1), Some(x2), Some(y2), Some(x3), Some(y3)) = (
+                        op.number(0),
+                        op.number(1),
+                        op.number(2),
+                        op.number(3),
+                        op.number(4),
+                        op.number(5),
+                    ) {
+                        self.path.curve_to(x1, y1, x2, y2, x3, y3);
+                    }
+                }
+                "v" => {
+                    if let (Some(x2), Some(y2), Some(x3), Some(y3)) =
+                        (op.number(0), op.number(1), op.number(2), op.number(3))
+                    {
+                        let (cx, cy) = self.path.current_point.unwrap_or((0.0, 0.0));
+                        self.path.curve_to(cx, cy, x2, y2, x3, y3);
+                    }
+                }
+                "y" => {
+                    if let (Some(x1), Some(y1), Some(x3), Some(y3)) =
+                        (op.number(0), op.number(1), op.number(2), op.number(3))
+                    {
+                        self.path.curve_to(x1, y1, x3, y3, x3, y3);
+                    }
+                }
+                "h" => self.path.close(),
+                "re" => {
+                    if let (Some(x), Some(y), Some(w), Some(h)) =
+                        (op.number(0), op.number(1), op.number(2), op.number(3))
+                    {
+                        self.path.rect(x, y, w, h);
+                    }
+                }
+                _ => {
+                    log::debug!(
+                        "Display-list native path replay skipped unexpected operator '{}'",
+                        op.operator
+                    );
+                    self.path.clear();
+                    return;
+                }
+            }
+        }
+        let paint_op = &ops[ops.len() - 1];
+        match paint_op.operator.as_str() {
+            "S" => self.stroke_and_clear(),
+            "s" => {
+                self.path.close();
+                self.stroke_and_clear();
+            }
+            "f" | "F" => self.fill_and_clear(FillRule::NonZero),
+            "f*" => self.fill_and_clear(FillRule::EvenOdd),
+            "B" => self.fill_stroke_and_clear(FillRule::NonZero),
+            "B*" => self.fill_stroke_and_clear(FillRule::EvenOdd),
+            "b" => {
+                self.path.close();
+                self.fill_stroke_and_clear(FillRule::NonZero);
+            }
+            "b*" => {
+                self.path.close();
+                self.fill_stroke_and_clear(FillRule::EvenOdd);
+            }
+            _ => {
+                log::debug!(
+                    "Display-list native path replay skipped unexpected paint operator '{}'",
+                    paint_op.operator
+                );
+                self.path.clear();
+            }
+        }
+    }
+
+    fn replay_native_inline_image_ops(&mut self, ops: &[ContentOperation]) {
+        if !self.oc_current_visible {
+            return;
+        }
+        for op in ops {
+            match op.operator.as_str() {
+                "ID" => self.pending_inline = Some(op.operands.clone()),
+                "inline_image_data" => {
+                    if let (Some(params), Some(bytes)) =
+                        (self.pending_inline.take(), op.string_bytes(0))
+                    {
+                        self.paint_inline_image(&params, bytes);
+                    }
+                }
+                _ => {
+                    log::debug!(
+                        "Display-list native inline-image replay ignored unexpected operator '{}'",
+                        op.operator
+                    );
+                }
+            }
         }
     }
 
@@ -1691,6 +3400,13 @@ impl<'a> RenderState<'a> {
             "MP" | "DP" | "BX" | "EX" | "BI" | "EI" => {}
             _ => self.gs.process(op),
         }
+    }
+
+    fn dispatch_text_showing_without_paint(&mut self, op: &ContentOperation) {
+        let saved_mode = self.gs.text.rendering_mode;
+        self.gs.text.rendering_mode = 3;
+        self.dispatch(op);
+        self.gs.text.rendering_mode = saved_mode;
     }
 
     fn push_optional_content_visibility(&mut self, op: &ContentOperation) {
@@ -2046,18 +3762,33 @@ impl<'a> RenderState<'a> {
                 return;
             }
         }
-        PathPainter::stroke_with_style(
+        if !paint_cached_path_stroke(
+            &mut self.path_stroke_mask_cache,
             &mut self.buf,
+            &self.viewport,
             &self.path,
             &ctm,
-            &self.viewport,
             color,
             width,
             &dash,
             &self.gs.line_cap,
             &self.gs.line_join,
             self.gs.miter_limit,
-        );
+        ) {
+            PathPainter::stroke_with_style_fast_cancellable(
+                &mut self.buf,
+                &self.path,
+                &ctm,
+                &self.viewport,
+                color,
+                width,
+                &dash,
+                &self.gs.line_cap,
+                &self.gs.line_join,
+                self.gs.miter_limit,
+                &self.cancel,
+            );
+        }
         self.path.clear();
     }
 
@@ -2092,7 +3823,25 @@ impl<'a> RenderState<'a> {
             }
         }
         let color = self.fill_pixel_color();
-        PathPainter::fill(&mut self.buf, &self.path, &ctm, &self.viewport, color, rule);
+        if !paint_cached_path_fill(
+            &mut self.path_fill_mask_cache,
+            &mut self.buf,
+            &self.viewport,
+            &self.path,
+            &ctm,
+            rule,
+            color,
+        ) {
+            let _ = PathPainter::fill_fast_cancellable(
+                &mut self.buf,
+                &self.path,
+                &ctm,
+                &self.viewport,
+                color,
+                rule,
+                &self.cancel,
+            );
+        }
         self.path.clear();
     }
 
@@ -2121,11 +3870,47 @@ impl<'a> RenderState<'a> {
                     );
                 } else {
                     let fill = self.fill_pixel_color();
-                    PathPainter::fill(&mut self.buf, &self.path, &ctm, &self.viewport, fill, rule);
+                    if !paint_cached_path_fill(
+                        &mut self.path_fill_mask_cache,
+                        &mut self.buf,
+                        &self.viewport,
+                        &self.path,
+                        &ctm,
+                        rule,
+                        fill,
+                    ) {
+                        let _ = PathPainter::fill_fast_cancellable(
+                            &mut self.buf,
+                            &self.path,
+                            &ctm,
+                            &self.viewport,
+                            fill,
+                            rule,
+                            &self.cancel,
+                        );
+                    }
                 }
             } else {
                 let fill = self.fill_pixel_color();
-                PathPainter::fill(&mut self.buf, &self.path, &ctm, &self.viewport, fill, rule);
+                if !paint_cached_path_fill(
+                    &mut self.path_fill_mask_cache,
+                    &mut self.buf,
+                    &self.viewport,
+                    &self.path,
+                    &ctm,
+                    rule,
+                    fill,
+                ) {
+                    let _ = PathPainter::fill_fast_cancellable(
+                        &mut self.buf,
+                        &self.path,
+                        &ctm,
+                        &self.viewport,
+                        fill,
+                        rule,
+                        &self.cancel,
+                    );
+                }
             }
         }
         self.record_plate_contribution(&stroke_color_state, self.gs.stroke_alpha as f32, "stroke");
@@ -2161,18 +3946,33 @@ impl<'a> RenderState<'a> {
                 return;
             }
         }
-        PathPainter::stroke_with_style(
+        if !paint_cached_path_stroke(
+            &mut self.path_stroke_mask_cache,
             &mut self.buf,
+            &self.viewport,
             &self.path,
             &ctm,
-            &self.viewport,
             stroke,
             width,
             &dash,
             &self.gs.line_cap,
             &self.gs.line_join,
             self.gs.miter_limit,
-        );
+        ) {
+            PathPainter::stroke_with_style_fast_cancellable(
+                &mut self.buf,
+                &self.path,
+                &ctm,
+                &self.viewport,
+                stroke,
+                width,
+                &dash,
+                &self.gs.line_cap,
+                &self.gs.line_join,
+                self.gs.miter_limit,
+                &self.cancel,
+            );
+        }
         self.path.clear();
     }
 
@@ -2266,9 +4066,14 @@ impl<'a> RenderState<'a> {
             .map(|seed| self.smask_group_cache_key(seed, subtype));
         if let Some(key) = cache_key.as_deref() {
             if let Some(mask) = self.smask_group_cache.get(key) {
+                touch_smask_group_cache_key(&mut self.smask_group_cache_order, key);
+                self.smask_group_cache_stats.hits =
+                    self.smask_group_cache_stats.hits.saturating_add(1);
                 self.buf.set_smask(mask.as_ref().clone());
                 return;
             }
+            self.smask_group_cache_stats.misses =
+                self.smask_group_cache_stats.misses.saturating_add(1);
         }
 
         let reader = self.engine.document().reader();
@@ -2338,6 +4143,21 @@ impl<'a> RenderState<'a> {
         mask_gs.stroke_alpha = 1.0;
         mask_gs.blend_mode = BlendMode::Normal;
         let mask_base_ctm = Transform2D::from(mask_gs.ctm);
+        let mask_window = match transparency_group_pixel_window(
+            extract_bbox(&g_dict),
+            &mask_base_ctm,
+            &self.viewport,
+            self.buf.clip_mask(),
+        ) {
+            Some(window) => window,
+            None => return,
+        };
+        let mask_viewport = self.viewport.pixel_window(
+            mask_window.x,
+            mask_window.y,
+            mask_window.width,
+            mask_window.height,
+        );
 
         // Backdrop initialization per subtype:
         //  - Luminosity: opaque black (mask 0 = fully masked) so areas the mask
@@ -2352,8 +4172,8 @@ impl<'a> RenderState<'a> {
         //    /TR(0) is effectively transparent (or /TR is absent).
         let render_mode = self.buf.render_mode();
         let _surface_token = match self.reserve_offscreen_surface(
-            self.buf.width,
-            self.buf.height,
+            mask_window.width,
+            mask_window.height,
             "renderer soft mask offscreen surface",
         ) {
             Ok(token) => token,
@@ -2367,26 +4187,51 @@ impl<'a> RenderState<'a> {
         };
         let mut mask_buf = if is_alpha {
             if alpha_smask_uses_opaque_bc_backdrop(&smask_dict, reader) {
-                PixelBuffer::new_filled_with_mode(
-                    self.buf.width,
-                    self.buf.height,
+                self.take_filled_offscreen_buffer(
+                    mask_window.width,
+                    mask_window.height,
                     [0, 0, 0, 255],
                     render_mode,
                 )
             } else {
-                PixelBuffer::new_transparent_with_mode(self.buf.width, self.buf.height, render_mode)
+                self.take_transparent_offscreen_buffer(
+                    mask_window.width,
+                    mask_window.height,
+                    render_mode,
+                )
             }
         } else {
             let bc = smask_backdrop_color(&smask_dict, &g_dict);
-            PixelBuffer::new_filled_with_mode(self.buf.width, self.buf.height, bc, render_mode)
+            self.take_filled_offscreen_buffer(
+                mask_window.width,
+                mask_window.height,
+                bc,
+                render_mode,
+            )
         };
         mask_buf.blend_mode = BlendMode::Normal;
+
+        let ops = match crate::content::ContentParser::parse(&content_bytes) {
+            Ok(ops) => ops,
+            Err(err) => {
+                log::warn!("PageRenderer: SMask /G content parse failed: {}", err);
+                return;
+            }
+        };
+        let child_glyph_cache =
+            std::mem::replace(&mut self.glyph_cache, GlyphCache::with_default_capacity());
+        let child_glyph_mask_cache = std::mem::take(&mut self.glyph_mask_cache);
+        let child_type3_mask_cache = std::mem::take(&mut self.type3_mask_cache);
+        let child_type3_rendered_cache = std::mem::take(&mut self.type3_rendered_cache);
+        let child_path_fill_mask_cache = std::mem::take(&mut self.path_fill_mask_cache);
+        let child_path_stroke_mask_cache = std::mem::take(&mut self.path_stroke_mask_cache);
+        let child_offscreen_buffer_pool = std::mem::take(&mut self.offscreen_buffer_pool);
 
         let mut mask_state = RenderState {
             engine: self.engine,
             page_number: self.page_number,
             buf: mask_buf,
-            viewport: self.viewport.clone(),
+            viewport: mask_viewport.clone(),
             resources: g_resources,
             gs: mask_gs,
             clip_stack: Vec::new(),
@@ -2394,17 +4239,43 @@ impl<'a> RenderState<'a> {
             path: Path::new(),
             pending_clip: None,
             pending_text_clip: None,
-            glyph_cache: GlyphCache::with_default_capacity(),
+            glyph_cache: child_glyph_cache,
+            glyph_mask_cache: child_glyph_mask_cache,
+            type3_mask_cache: child_type3_mask_cache,
+            type3_rendered_cache: child_type3_rendered_cache,
+            path_fill_mask_cache: child_path_fill_mask_cache,
+            path_stroke_mask_cache: child_path_stroke_mask_cache,
             font_bytes_cache: self.font_bytes_cache.clone(),
+            font_bytes_cache_stats: RenderArtifactCacheStats::default(),
             font_resolver_cache: self.font_resolver_cache.clone(),
+            font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            font_resource_key_cache: self.font_resource_key_cache.clone(),
             type3_geometry_cache: self.type3_geometry_cache.clone(),
             type3_charproc_cache: self.type3_charproc_cache.clone(),
             image_xobject_cache: self.image_xobject_cache.clone(),
+            image_xobject_cache_order: self.image_xobject_cache_order.clone(),
             image_xobject_cache_bytes: self.image_xobject_cache_bytes,
+            image_xobject_cache_stats: RenderArtifactCacheStats::default(),
+            scaled_image_cache: self.scaled_image_cache.clone(),
+            scaled_image_cache_order: self.scaled_image_cache_order.clone(),
+            scaled_image_cache_bytes: self.scaled_image_cache_bytes,
+            scaled_image_cache_stats: RenderArtifactCacheStats::default(),
             smask_group_cache: self.smask_group_cache.clone(),
+            smask_group_cache_order: self.smask_group_cache_order.clone(),
+            smask_group_cache_bytes: self.smask_group_cache_bytes,
+            smask_group_cache_stats: RenderArtifactCacheStats::default(),
             shading_mesh_cache: self.shading_mesh_cache.clone(),
+            shading_mesh_cache_order: self.shading_mesh_cache_order.clone(),
+            shading_mesh_cache_bytes: self.shading_mesh_cache_bytes,
+            shading_mesh_cache_stats: RenderArtifactCacheStats::default(),
+            form_xobject_program_cache: self.form_xobject_program_cache.clone(),
+            form_xobject_program_cache_stats: RenderArtifactCacheStats::default(),
+            tiling_pattern_program_cache: self.tiling_pattern_program_cache.clone(),
+            tiling_pattern_program_cache_stats: RenderArtifactCacheStats::default(),
+            offscreen_buffer_pool: child_offscreen_buffer_pool,
             pattern_stack: self.pattern_stack.clone(),
             form_depth: self.form_depth + 1,
+            form_object_stack: self.form_object_stack.clone(),
             pending_inline: None,
             base_ctm: mask_base_ctm,
             cancel: self.cancel.clone(),
@@ -2414,32 +4285,31 @@ impl<'a> RenderState<'a> {
             oc_current_visible: self.oc_current_visible,
             separation_framebuffer: SeparationFramebuffer::for_page(
                 self.page_number,
-                self.viewport.width_px,
-                self.viewport.height_px,
+                mask_viewport.width_px,
+                mask_viewport.height_px,
             ),
         };
 
         if let Some(bbox) = extract_bbox(&g_dict) {
             mask_state.apply_form_bbox_clip(bbox);
         }
-
-        let ops = match crate::content::ContentParser::parse(&content_bytes) {
-            Ok(ops) => ops,
-            Err(err) => {
-                log::warn!("PageRenderer: SMask /G content parse failed: {}", err);
-                return;
-            }
-        };
         mask_state.dispatch_all(&ops);
         self.separation_framebuffer
             .absorb(mask_state.separation_framebuffer.clone());
+        self.absorb_child_render_caches(&mut mask_state);
         let mask_buf = mask_state.into_buffer();
 
-        let mut mask = if is_alpha {
+        let window_mask = if is_alpha {
             AlphaMask::from_alpha_channel(&mask_buf)
         } else {
             AlphaMask::from_luminosity(&mask_buf)
         };
+        let default_alpha = smask_default_alpha(&smask_dict, &g_dict, is_alpha, reader);
+        let mut mask = window_mask.with_origin_and_outside_alpha(
+            mask_window.x as i32,
+            mask_window.y as i32,
+            default_alpha,
+        );
 
         // Apply the /TR transfer function if present and not the /Identity
         // no-op. All function types (0/2/3/4) are supported via the shared
@@ -2449,20 +4319,35 @@ impl<'a> RenderState<'a> {
         }
 
         if let Some(key) = cache_key {
-            self.smask_group_cache.insert(key, Arc::new(mask.clone()));
+            insert_smask_group_cache_entry(
+                &mut self.smask_group_cache,
+                &mut self.smask_group_cache_order,
+                &mut self.smask_group_cache_bytes,
+                &mut self.smask_group_cache_stats,
+                key,
+                Arc::new(mask.clone()),
+            );
         }
         self.buf.set_smask(mask);
+        self.recycle_offscreen_buffer(mask_buf);
     }
 
     fn smask_group_cache_key(&self, seed: &str, subtype: &str) -> String {
+        let clip_bounds = self
+            .buf
+            .clip_mask()
+            .and_then(ClipMask::visible_bounds)
+            .map(|(x0, y0, x1, y1)| format!("{x0}:{y0}:{x1}:{y1}"))
+            .unwrap_or_else(|| "clip:none".to_string());
         format!(
-            "{seed}:page:{}:w:{}:h:{}:mode:{:?}:subtype:{}:ctm:{:?}",
+            "{seed}:page:{}:w:{}:h:{}:mode:{:?}:subtype:{}:ctm:{:?}:clip:{}",
             self.page_number,
             self.buf.width,
             self.buf.height,
             self.buf.render_mode(),
             subtype,
-            self.gs.ctm
+            self.gs.ctm,
+            clip_bounds
         )
     }
 
@@ -2645,6 +4530,16 @@ impl<'a> RenderState<'a> {
             is_smask: false,
             inline_data: None,
         };
+        let image_cache_key = color_space_override
+            .as_ref()
+            .map(|(color_space_name, color_space_obj)| {
+                image_xobject_cache_key_with_color_space(
+                    &image_ref,
+                    color_space_name,
+                    color_space_obj,
+                )
+            })
+            .unwrap_or_else(|| image_xobject_cache_key(&image_ref));
         self.record_image_plate_sample(
             dict,
             &image_ref,
@@ -2707,7 +4602,34 @@ impl<'a> RenderState<'a> {
                 } else {
                     self.gs.fill_alpha as f32
                 };
-                if image_interpolate(dict) {
+                let interpolate = image_interpolate(dict);
+                if !image_ref.is_mask
+                    && !dict.contains_key("SMask")
+                    && !dict.contains_key("Mask")
+                    && !interpolate
+                    && !smooth_jpx
+                {
+                    if let Some(target) =
+                        ImagePainter::axis_aligned_integer_target(&ctm, &self.viewport)
+                    {
+                        if let Some(scaled) = self.cached_axis_aligned_scaled_image(
+                            &image_cache_key,
+                            paint_raw,
+                            target.width,
+                            target.height,
+                        ) {
+                            if ImagePainter::paint_scaled_rgb_at_device_target(
+                                &mut self.buf,
+                                scaled.as_ref(),
+                                target,
+                                paint_alpha,
+                            ) {
+                                return;
+                            }
+                        }
+                    }
+                }
+                if interpolate {
                     ImagePainter::paint_image_with_options_and_alpha(
                         &mut self.buf,
                         paint_raw,
@@ -2759,8 +4681,6 @@ impl<'a> RenderState<'a> {
 
     fn handle_do_form(&mut self, name: &str, obj_num: u32, gen_num: u16) {
         // Depth guard: prevent runaway recursion from malformed or cyclic PDFs.
-        // TODO: track object numbers on the stack to catch a direct A->B->A
-        // cycle immediately instead of after 8 levels.
         if self.form_depth >= 8 {
             log::warn!(
                 "PageRenderer: Form XObject nesting depth limit (8) exceeded at '{}' (obj {})",
@@ -2769,156 +4689,106 @@ impl<'a> RenderState<'a> {
             );
             return;
         }
-
-        let reader = self.engine.document().reader();
-
-        // ── Step 1: Fetch the Form stream object ─────────────────────────────
-        // get_object already decrypts; decode_stream then decompresses.
-        let (form_dict, raw_bytes) = match reader.get_object(obj_num, gen_num) {
-            Ok(PdfObject::Stream { dict, raw }) => (dict, raw),
-            Ok(_) => {
-                log::warn!("PageRenderer: Form XObject '{}' is not a stream", name);
-                return;
-            }
-            Err(err) => {
-                log::warn!(
-                    "PageRenderer: failed to fetch Form XObject '{}': {}",
-                    name,
-                    err
-                );
-                return;
-            }
-        };
-
-        if form_dict.get_name("Subtype") != Some("Form") {
-            log::debug!(
-                "PageRenderer: XObject '{}' is not /Subtype /Form, skipping",
-                name
+        let form_key = (obj_num, gen_num);
+        if self.form_object_stack.contains(&form_key) {
+            log::warn!(
+                "PageRenderer: Form XObject cycle detected at '{}' (obj {} {})",
+                name,
+                obj_num,
+                gen_num
             );
             return;
         }
 
-        if is_transparency_group(&form_dict) {
-            let stream_obj = PdfObject::Stream {
-                dict: form_dict.clone(),
-                raw: raw_bytes.clone(),
-            };
-            let content_bytes = match self.scheduled_decode_stream(
-                &stream_obj,
-                reader,
-                "renderer transparency form stream decode",
-            ) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    log::warn!(
-                        "PageRenderer: Form XObject '{}' stream decode failed: {}",
-                        name,
-                        err
-                    );
-                    return;
-                }
-            };
-            self.handle_do_form_group(name, obj_num, gen_num, &form_dict, &content_bytes);
+        let Some(program) = self.cached_form_xobject_program(name, obj_num, gen_num) else {
+            return;
+        };
+        let form_matrix = program.form_matrix;
+        let bbox = program.bbox;
+        let current_ctm = Transform2D::from(self.gs.ctm);
+        let form_t = Transform2D::from(form_matrix);
+        let form_ctm = form_t.concat(&current_ctm);
+        if bbox.is_some_and(|bb| !form_bbox_intersects_viewport(bb, &form_ctm, &self.viewport)) {
+            return;
+        }
+
+        // â”€â”€ Step 1: Fetch the Form stream object â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // get_object already decrypts; decode_stream then decompresses.
+        if program.is_transparency_group {
+            self.form_object_stack.push(form_key);
+            self.handle_do_form_group(
+                name,
+                &program.dict,
+                program.ops.as_slice(),
+                program.form_matrix,
+                program.bbox,
+                program.resources.as_ref(),
+            );
+            self.form_object_stack.pop();
             return;
         }
 
         // A /Group that is NOT /S /Transparency (e.g. some other group subtype)
         // falls through to direct rendering, which is correct for the common
         // non-transparent case. /S /Transparency groups are handled above.
-        if form_dict.get("Group").is_some() {
+        if program.dict.get("Group").is_some() {
             log::debug!(
-                "PageRenderer: Form XObject '{}' has a non-transparency /Group — rendering directly",
+                "PageRenderer: Form XObject '{}' has a non-transparency /Group â€” rendering directly",
                 name
             );
         }
 
-        // ── Step 2: Extract Matrix and BBox ──────────────────────────────────
-        let form_matrix = extract_form_matrix(&form_dict);
-        let bbox = extract_bbox(&form_dict);
-
-        // ── Step 3: Save graphics state, clip, and resources ─────────────────
+        // â”€â”€ Step 2: Extract Matrix and BBox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // â”€â”€ Step 3: Save graphics state, clip, and resources â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         let saved_gs = self.gs.clone();
         self.clip_stack.push(self.buf.clip_mask().cloned());
         self.smask_stack.push(self.buf.smask_mask().cloned());
-        let saved_resources = self.resources.clone();
         let saved_base_ctm = self.base_ctm;
         self.form_depth += 1;
+        self.form_object_stack.push(form_key);
 
-        // ── Step 4: Apply the Form matrix to the CTM ─────────────────────────
-        // The Form /Matrix maps Form space → the user space in effect at the Do.
+        // â”€â”€ Step 4: Apply the Form matrix to the CTM â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // The Form /Matrix maps Form space â†’ the user space in effect at the Do.
         // concat(self, other) applies `self` first then `other`, so to apply the
         // form matrix before the current CTM we compute form_matrix.concat(ctm).
-        let current_ctm = Transform2D::from(self.gs.ctm);
-        let form_t = Transform2D::from(form_matrix);
-        self.gs.ctm = form_t.concat(&current_ctm).to_array();
+        self.gs.ctm = form_ctm.to_array();
         // Patterns referenced inside this Form are relative to the Form's own
         // default coordinate system.
         self.base_ctm = Transform2D::from(self.gs.ctm);
 
-        // ── Step 5: Clip to the BBox (intersected with any existing clip) ────
+        // â”€â”€ Step 5: Clip to the BBox (intersected with any existing clip) â”€â”€â”€â”€
         if let Some(bb) = bbox {
             self.apply_form_bbox_clip(bb);
         }
 
-        // ── Step 6: Merge the Form's own resources over the page resources ───
-        if let Some(res_obj) = form_dict.get("Resources") {
-            let form_res = crate::engine::parse_resources_from_obj(res_obj, reader);
-            self.resources = merge_resources(form_res, &saved_resources);
-        }
+        // â”€â”€ Step 6: Merge the Form's own resources over the page resources â”€â”€â”€
+        let resource_overlay = program
+            .resources
+            .as_ref()
+            .map(|form_res| overlay_page_resources(&mut self.resources, form_res));
         // No /Resources: keep using the inherited (page) resources already set.
 
-        // ── Step 7: Decode and parse the content stream ──────────────────────
-        let stream_obj = PdfObject::Stream {
-            dict: form_dict.clone(),
-            raw: raw_bytes,
-        };
-        let content_bytes = match self.scheduled_decode_stream(
-            &stream_obj,
-            reader,
-            "renderer form XObject stream decode",
-        ) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                log::warn!(
-                    "PageRenderer: Form XObject '{}' stream decode failed: {}",
-                    name,
-                    err
-                );
-                self.cleanup_after_form(saved_gs, saved_resources, saved_base_ctm);
-                return;
-            }
-        };
+        // â”€â”€ Step 7: Decode and parse the content stream â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // Render the cached Form XObject program; stream decode and content parsing happen once per object revision.
+        self.dispatch_all(program.ops.as_slice());
 
-        let ops = match crate::content::ContentParser::parse(&content_bytes) {
-            Ok(ops) => ops,
-            Err(err) => {
-                log::warn!(
-                    "PageRenderer: Form XObject '{}' content parse failed: {}",
-                    name,
-                    err
-                );
-                self.cleanup_after_form(saved_gs, saved_resources, saved_base_ctm);
-                return;
-            }
-        };
-
-        // ── Step 8: Render the Form's content stream ─────────────────────────
-        self.dispatch_all(&ops);
-
-        // ── Step 9: Restore the saved state ──────────────────────────────────
-        self.cleanup_after_form(saved_gs, saved_resources, saved_base_ctm);
+        // â”€â”€ Step 9: Restore the saved state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        if let Some(restore) = resource_overlay {
+            restore.restore(&mut self.resources);
+        }
+        self.form_object_stack.pop();
+        self.cleanup_after_form(saved_gs, saved_base_ctm);
     }
 
     fn handle_do_form_group(
         &mut self,
         name: &str,
-        _obj_num: u32,
-        _gen_num: u16,
         form_dict: &PdfDictionary,
-        content_bytes: &[u8],
+        ops: &[ContentOperation],
+        form_matrix: crate::content::Matrix,
+        bbox: Option<[f64; 4]>,
+        form_resources: Option<&PageResources>,
     ) {
-        let reader = self.engine.document().reader();
-
         // Group flags: /I (isolated) and /K (knockout), both default false.
         let (isolated, knockout) = match transparency_group_dict(form_dict) {
             Some(group) => (group_is_isolated(group), group_is_knockout(group)),
@@ -2938,11 +4808,19 @@ impl<'a> RenderState<'a> {
         // page/parent buffer so far), so blend modes inside the group can
         // interact with what is already painted. We remove that backdrop
         // contribution again before compositing the group result back, so the
-        // backdrop is not counted twice (PDF 32000-1 §11.4.8).
+        // backdrop is not counted twice (PDF 32000-1 Â§11.4.8).
         let render_mode = self.buf.render_mode();
+        let current_ctm = Transform2D::from(self.gs.ctm);
+        let form_t = Transform2D::from(form_matrix);
+        let group_ctm = form_t.concat(&current_ctm);
+        let Some(group_window) =
+            transparency_group_pixel_window(bbox, &group_ctm, &self.viewport, self.buf.clip_mask())
+        else {
+            return;
+        };
         let _surface_token = match self.reserve_offscreen_surface(
-            self.buf.width,
-            self.buf.height,
+            group_window.width,
+            group_window.height,
             "renderer transparency group offscreen surface",
         ) {
             Ok(token) => token,
@@ -2955,21 +4833,44 @@ impl<'a> RenderState<'a> {
                 return;
             }
         };
+        let group_viewport = self.viewport.pixel_window(
+            group_window.x,
+            group_window.y,
+            group_window.width,
+            group_window.height,
+        );
+        let backdrop_window = (!isolated)
+            .then(|| {
+                self.buf.copy_rect_to_new_buffer(
+                    group_window.x,
+                    group_window.y,
+                    group_window.width,
+                    group_window.height,
+                )
+            })
+            .flatten();
         let mut group_buf = if isolated {
-            PixelBuffer::new_transparent_with_mode(self.buf.width, self.buf.height, render_mode)
+            self.take_transparent_offscreen_buffer(
+                group_window.width,
+                group_window.height,
+                render_mode,
+            )
         } else {
-            let mut copy = self.buf.clone();
+            let mut copy = backdrop_window.clone().unwrap_or_else(|| {
+                PixelBuffer::new_transparent_with_mode(
+                    group_window.width,
+                    group_window.height,
+                    render_mode,
+                )
+            });
             copy.clear_clip();
             copy.clear_smask();
             copy
         };
         group_buf.blend_mode = BlendMode::Normal;
 
-        let form_matrix = extract_form_matrix(form_dict);
-        let current_ctm = Transform2D::from(self.gs.ctm);
-        let form_t = Transform2D::from(form_matrix);
         let mut group_gs = self.gs.clone();
-        group_gs.ctm = form_t.concat(&current_ctm).to_array();
+        group_gs.ctm = group_ctm.to_array();
         // Inside the group, painting starts from a clean compositing state:
         // the group's own alpha/blend/soft-mask are applied when the *result*
         // is composited back, not to each interior element.
@@ -2978,18 +4879,26 @@ impl<'a> RenderState<'a> {
         group_gs.blend_mode = BlendMode::Normal;
         let group_base_ctm = Transform2D::from(group_gs.ctm);
 
-        let group_resources = if let Some(res_obj) = form_dict.get("Resources") {
-            let form_res = crate::engine::parse_resources_from_obj(res_obj, reader);
-            merge_resources(form_res, &self.resources)
+        let group_resources = if let Some(form_res) = form_resources {
+            merge_resources_ref(form_res, &self.resources)
         } else {
             self.resources.clone()
         };
+
+        let child_glyph_cache =
+            std::mem::replace(&mut self.glyph_cache, GlyphCache::with_default_capacity());
+        let child_glyph_mask_cache = std::mem::take(&mut self.glyph_mask_cache);
+        let child_type3_mask_cache = std::mem::take(&mut self.type3_mask_cache);
+        let child_type3_rendered_cache = std::mem::take(&mut self.type3_rendered_cache);
+        let child_path_fill_mask_cache = std::mem::take(&mut self.path_fill_mask_cache);
+        let child_path_stroke_mask_cache = std::mem::take(&mut self.path_stroke_mask_cache);
+        let child_offscreen_buffer_pool = std::mem::take(&mut self.offscreen_buffer_pool);
 
         let mut group_state = RenderState {
             engine: self.engine,
             page_number: self.page_number,
             buf: group_buf,
-            viewport: self.viewport.clone(),
+            viewport: group_viewport.clone(),
             resources: group_resources,
             gs: group_gs,
             clip_stack: Vec::new(),
@@ -2997,17 +4906,43 @@ impl<'a> RenderState<'a> {
             path: Path::new(),
             pending_clip: None,
             pending_text_clip: None,
-            glyph_cache: GlyphCache::with_default_capacity(),
+            glyph_cache: child_glyph_cache,
+            glyph_mask_cache: child_glyph_mask_cache,
+            type3_mask_cache: child_type3_mask_cache,
+            type3_rendered_cache: child_type3_rendered_cache,
+            path_fill_mask_cache: child_path_fill_mask_cache,
+            path_stroke_mask_cache: child_path_stroke_mask_cache,
             font_bytes_cache: self.font_bytes_cache.clone(),
+            font_bytes_cache_stats: RenderArtifactCacheStats::default(),
             font_resolver_cache: self.font_resolver_cache.clone(),
+            font_resolver_cache_stats: RenderArtifactCacheStats::default(),
+            font_resource_key_cache: self.font_resource_key_cache.clone(),
             type3_geometry_cache: self.type3_geometry_cache.clone(),
             type3_charproc_cache: self.type3_charproc_cache.clone(),
             image_xobject_cache: self.image_xobject_cache.clone(),
+            image_xobject_cache_order: self.image_xobject_cache_order.clone(),
             image_xobject_cache_bytes: self.image_xobject_cache_bytes,
+            image_xobject_cache_stats: RenderArtifactCacheStats::default(),
+            scaled_image_cache: self.scaled_image_cache.clone(),
+            scaled_image_cache_order: self.scaled_image_cache_order.clone(),
+            scaled_image_cache_bytes: self.scaled_image_cache_bytes,
+            scaled_image_cache_stats: RenderArtifactCacheStats::default(),
             smask_group_cache: self.smask_group_cache.clone(),
+            smask_group_cache_order: self.smask_group_cache_order.clone(),
+            smask_group_cache_bytes: self.smask_group_cache_bytes,
+            smask_group_cache_stats: RenderArtifactCacheStats::default(),
             shading_mesh_cache: self.shading_mesh_cache.clone(),
+            shading_mesh_cache_order: self.shading_mesh_cache_order.clone(),
+            shading_mesh_cache_bytes: self.shading_mesh_cache_bytes,
+            shading_mesh_cache_stats: RenderArtifactCacheStats::default(),
+            form_xobject_program_cache: self.form_xobject_program_cache.clone(),
+            form_xobject_program_cache_stats: RenderArtifactCacheStats::default(),
+            tiling_pattern_program_cache: self.tiling_pattern_program_cache.clone(),
+            tiling_pattern_program_cache_stats: RenderArtifactCacheStats::default(),
+            offscreen_buffer_pool: child_offscreen_buffer_pool,
             pattern_stack: self.pattern_stack.clone(),
             form_depth: self.form_depth + 1,
+            form_object_stack: self.form_object_stack.clone(),
             pending_inline: None,
             base_ctm: group_base_ctm,
             cancel: self.cancel.clone(),
@@ -3017,17 +4952,24 @@ impl<'a> RenderState<'a> {
             oc_current_visible: self.oc_current_visible,
             separation_framebuffer: SeparationFramebuffer::for_page(
                 self.page_number,
-                self.viewport.width_px,
-                self.viewport.height_px,
+                group_viewport.width_px,
+                group_viewport.height_px,
             ),
         };
 
         // Carry the parent clip into the group so content is bounded the same
         // way direct rendering would be, then intersect the Form BBox.
         if let Some(clip) = self.buf.clip_mask().cloned() {
-            group_state.buf.set_clip(clip);
+            if let Some(cropped) = clip.copy_rect_to_new_mask(
+                group_window.x,
+                group_window.y,
+                group_window.width,
+                group_window.height,
+            ) {
+                group_state.buf.set_clip(cropped);
+            }
         }
-        if let Some(bbox) = extract_bbox(form_dict) {
+        if let Some(bbox) = bbox {
             group_state.apply_form_bbox_clip(bbox);
         }
         if knockout {
@@ -3035,20 +4977,10 @@ impl<'a> RenderState<'a> {
             group_state.buf.set_knockout_backdrop(knockout_backdrop);
         }
 
-        let ops = match crate::content::ContentParser::parse(content_bytes) {
-            Ok(ops) => ops,
-            Err(err) => {
-                log::warn!(
-                    "PageRenderer: transparency Form XObject '{}' content parse failed: {}",
-                    name,
-                    err
-                );
-                return;
-            }
-        };
-        group_state.dispatch_all(&ops);
+        group_state.dispatch_all(ops);
         self.separation_framebuffer
             .absorb(group_state.separation_framebuffer.clone());
+        self.absorb_child_render_caches(&mut group_state);
         let mut group_buf = group_state.into_buffer();
         group_buf.clear_knockout_backdrop();
         group_buf.clear_clip();
@@ -3056,7 +4988,9 @@ impl<'a> RenderState<'a> {
         // For a non-isolated group, subtract the backdrop we seeded it with so
         // it is not double-counted when we composite the group back.
         if !isolated {
-            group_buf.remove_backdrop(&self.buf);
+            if let Some(backdrop) = backdrop_window.as_ref() {
+                group_buf.remove_backdrop(backdrop);
+            }
         }
 
         // Composite the finished group as a single unit, using the alpha /
@@ -3064,20 +4998,21 @@ impl<'a> RenderState<'a> {
         let group_alpha = self.gs.fill_alpha as f32;
         let blend_mode = self.gs.blend_mode;
         let soft_mask = self.buf.smask_mask().cloned();
-        self.buf
-            .composite_from(&group_buf, group_alpha, blend_mode, soft_mask.as_ref());
+        self.buf.composite_from_at(
+            &group_buf,
+            group_window.x,
+            group_window.y,
+            group_alpha,
+            blend_mode,
+            soft_mask.as_ref(),
+        );
+        self.recycle_offscreen_buffer(group_buf);
     }
 
-    /// Restore the graphics state, clip mask, and resources saved before a Form
+    /// Restore the graphics state and clip mask saved before a Form
     /// XObject was rendered, and decrement the depth counter.
-    fn cleanup_after_form(
-        &mut self,
-        saved_gs: GraphicsState,
-        saved_resources: PageResources,
-        saved_base_ctm: Transform2D,
-    ) {
+    fn cleanup_after_form(&mut self, saved_gs: GraphicsState, saved_base_ctm: Transform2D) {
         self.form_depth = self.form_depth.saturating_sub(1);
-        self.resources = saved_resources;
         self.gs = saved_gs;
         self.base_ctm = saved_base_ctm;
         self.sync_blend_mode();
@@ -3219,7 +5154,33 @@ impl<'a> RenderState<'a> {
         };
 
         if is_transparency_group(form_dict) {
-            self.handle_do_form_group(name, 0, 0, form_dict, &content_bytes);
+            let ops = match crate::content::ContentParser::parse(&content_bytes) {
+                Ok(ops) => ops,
+                Err(err) => {
+                    log::warn!(
+                        "PageRenderer: transparency annotation appearance '{}' content parse failed: {}",
+                        name,
+                        err
+                    );
+                    self.gs = saved_gs;
+                    self.buf.restore_clip(saved_clip);
+                    self.buf.restore_smask(saved_smask);
+                    self.sync_blend_mode();
+                    return;
+                }
+            };
+            let reader = self.engine.document().reader();
+            let form_resources = form_dict
+                .get("Resources")
+                .map(|res_obj| crate::engine::parse_resources_from_obj(res_obj, reader));
+            self.handle_do_form_group(
+                name,
+                form_dict,
+                &ops,
+                extract_form_matrix(form_dict),
+                extract_bbox(form_dict),
+                form_resources.as_ref(),
+            );
         } else {
             self.render_form_content_stream(name, form_dict, &content_bytes);
         }
@@ -3243,7 +5204,6 @@ impl<'a> RenderState<'a> {
         let saved_gs = self.gs.clone();
         self.clip_stack.push(self.buf.clip_mask().cloned());
         self.smask_stack.push(self.buf.smask_mask().cloned());
-        let saved_resources = self.resources.clone();
         let saved_base_ctm = self.base_ctm;
         self.form_depth += 1;
 
@@ -3256,10 +5216,12 @@ impl<'a> RenderState<'a> {
             self.apply_form_bbox_clip(bb);
         }
 
-        if let Some(res_obj) = form_dict.get("Resources") {
+        let resource_overlay = if let Some(res_obj) = form_dict.get("Resources") {
             let form_res = crate::engine::parse_resources_from_obj(res_obj, reader);
-            self.resources = merge_resources(form_res, &saved_resources);
-        }
+            Some(overlay_page_resources(&mut self.resources, &form_res))
+        } else {
+            None
+        };
 
         let ops = match crate::content::ContentParser::parse(content_bytes) {
             Ok(ops) => ops,
@@ -3269,13 +5231,19 @@ impl<'a> RenderState<'a> {
                     name,
                     err
                 );
-                self.cleanup_after_form(saved_gs, saved_resources, saved_base_ctm);
+                if let Some(restore) = resource_overlay {
+                    restore.restore(&mut self.resources);
+                }
+                self.cleanup_after_form(saved_gs, saved_base_ctm);
                 return;
             }
         };
 
         self.dispatch_all(&ops);
-        self.cleanup_after_form(saved_gs, saved_resources, saved_base_ctm);
+        if let Some(restore) = resource_overlay {
+            restore.restore(&mut self.resources);
+        }
+        self.cleanup_after_form(saved_gs, saved_base_ctm);
     }
 
     /// Clip subsequent painting to the Form's BBox, transformed by the current
@@ -3292,6 +5260,13 @@ impl<'a> RenderState<'a> {
         let mut bbox_path = Path::new();
         bbox_path.rect(x_min, y_min, width, height);
         let ctm = self.ctm();
+        if let Some((x, y, w, h)) =
+            axis_aligned_bbox_clip_rect(bbox, &ctm, &self.viewport, self.buf.width, self.buf.height)
+        {
+            let clip = ClipMask::from_visible_rect(self.buf.width, self.buf.height, x, y, w, h);
+            self.buf.set_clip(clip);
+            return;
+        }
         let flat = flatten_path(&bbox_path, &ctm, &self.viewport, 0.5);
         let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, FillRule::NonZero);
         self.buf.set_clip(clip);
@@ -3467,14 +5442,16 @@ impl<'a> RenderState<'a> {
             return;
         }
         let paint_type = pat_dict.get_integer("PaintType").unwrap_or(1);
+        let raw_hash = fingerprint_bytes64(&raw_bytes);
         let pattern_key = tiling_pattern_stack_key(pattern_obj, &pat_dict, raw_bytes.len());
+        let program_cache_key = format!("tiling-program:{pattern_key}:raw:{raw_hash:016x}");
         if self.pattern_stack.iter().any(|key| key == &pattern_key) {
             log::warn!("tiling pattern: recursive pattern reference detected; using fallback");
             self.paint_tiling_pattern_solid_fallback(path_clip, paint_type, use_stroke_color);
             return;
         }
 
-        // pattern space → device. The pattern /Matrix is relative to the base
+        // pattern space â†’ device. The pattern /Matrix is relative to the base
         // CTM of the parent content stream (NOT the fill-time CTM).
         let pat_matrix = match get_float_array_dict(&pat_dict, "Matrix") {
             Some(m) if m.len() >= 6 => Transform2D::from([m[0], m[1], m[2], m[3], m[4], m[5]]),
@@ -3537,29 +5514,10 @@ impl<'a> RenderState<'a> {
             return;
         }
 
-        let content_bytes = {
-            let stream_obj = PdfObject::Stream {
-                dict: pat_dict.clone(),
-                raw: raw_bytes,
-            };
-            match self.scheduled_decode_stream(
-                &stream_obj,
-                reader,
-                "renderer tiling pattern stream decode",
-            ) {
-                Ok(bytes) => bytes,
-                Err(err) => {
-                    log::warn!("tiling pattern: content decode failed: {err}");
-                    return;
-                }
-            }
-        };
-        let ops = match crate::content::ContentParser::parse(&content_bytes) {
-            Ok(ops) => ops,
-            Err(err) => {
-                log::warn!("tiling pattern: content parse failed: {err}");
-                return;
-            }
+        let Some(ops) =
+            self.cached_tiling_pattern_program(&program_cache_key, &pat_dict, raw_bytes)
+        else {
+            return;
         };
 
         let pat_resources = if let Some(res_obj) = pat_dict.get("Resources") {
@@ -3606,7 +5564,7 @@ impl<'a> RenderState<'a> {
                     Transform2D::new(1.0, 0.0, 0.0, 1.0, i as f64 * x_step, j as f64 * y_step);
                 let tile_ctm = translate.concat(&pattern_ctm);
                 self.render_pattern_tile(
-                    &ops,
+                    ops.as_ref().as_slice(),
                     &pat_resources,
                     tile_ctm,
                     bbox,
@@ -3683,11 +5641,20 @@ impl<'a> RenderState<'a> {
         let w = (bbox[2] - bbox[0]).abs();
         let h = (bbox[3] - bbox[1]).abs();
         if w > 0.0 && h > 0.0 {
-            let mut bbox_path = Path::new();
-            bbox_path.rect(x_min, y_min, w, h);
-            let flat = flatten_path(&bbox_path, &self.ctm(), &self.viewport, 0.5);
-            let bbox_clip =
-                ClipMask::from_path(&flat, self.buf.width, self.buf.height, FillRule::NonZero);
+            let bbox_clip = if let Some((x, y, width, height)) = axis_aligned_bbox_clip_rect(
+                bbox,
+                &self.ctm(),
+                &self.viewport,
+                self.buf.width,
+                self.buf.height,
+            ) {
+                ClipMask::from_visible_rect(self.buf.width, self.buf.height, x, y, width, height)
+            } else {
+                let mut bbox_path = Path::new();
+                bbox_path.rect(x_min, y_min, w, h);
+                let flat = flatten_path(&bbox_path, &self.ctm(), &self.viewport, 0.5);
+                ClipMask::from_path(&flat, self.buf.width, self.buf.height, FillRule::NonZero)
+            };
             self.buf.set_clip(bbox_clip); // intersects with the installed path clip
         }
 
@@ -3741,9 +5708,9 @@ impl<'a> RenderState<'a> {
             "pattern_shading",
         );
 
-        // The pattern carries its own /Matrix (pattern space → the default user
+        // The pattern carries its own /Matrix (pattern space â†’ the default user
         // coordinate system of the pattern's parent content stream). Per PDF
-        // 32000-1 §8.7.3.1 the pattern matrix is relative to that *base* CTM, not
+        // 32000-1 Â§8.7.3.1 the pattern matrix is relative to that *base* CTM, not
         // the CTM in effect at the moment of the fill, so combine it with
         // `base_ctm` (matching the tiling-pattern path).
         let ctm = match get_float_array_dict(pattern_dict, "Matrix") {
@@ -3807,39 +5774,16 @@ impl<'a> RenderState<'a> {
             return None;
         }
         // Pattern strokes need a device-space clip for the stroked outline.
-        // The general ClipMask path rasterizer is intentionally hard-edged and
-        // optimized for filled PDF paths; for open stroked paths it can miss
-        // thin/axis-aligned outlines that the antialiased stroke rasterizer
-        // paints correctly. Build the stroke clip from the same stroke painter
-        // used by solid strokes, then threshold its alpha channel. This keeps
-        // patterned strokes visually aligned with ordinary strokes and still
-        // allows the pattern tile renderer to reuse its existing clipped fill
-        // path.
-        let mut stroke_alpha = PixelBuffer::new_transparent_with_mode(
+        // Generate that clip directly from the already-computed stroke outline
+        // using row-run scan conversion. This avoids allocating a page-sized
+        // alpha buffer only to threshold it back into a binary clip.
+        let mut path_clip = rasterize_flat_binary_clip_mask(
+            &outline,
             self.buf.width,
             self.buf.height,
-            self.buf.render_mode(),
-        );
-        PathPainter::stroke_with_style(
-            &mut stroke_alpha,
-            &self.path,
-            &ctm,
-            &self.viewport,
-            WHITE,
-            self.gs.line_width,
-            &self.dash_state(),
-            &self.gs.line_cap,
-            &self.gs.line_join,
-            self.gs.miter_limit,
-        );
-        let mut path_clip = ClipMask::empty(self.buf.width, self.buf.height);
-        for y in 0..self.buf.height as i32 {
-            for x in 0..self.buf.width as i32 {
-                if stroke_alpha.get_pixel(x, y)[3] > 0 {
-                    path_clip.set(x, y, true);
-                }
-            }
-        }
+            FillRule::NonZero,
+            Some(&self.cancel),
+        )?;
         if let Some(existing) = self.buf.clip_mask() {
             path_clip.intersect(existing);
         }
@@ -3866,11 +5810,23 @@ impl<'a> RenderState<'a> {
         if font_size <= 0.0 {
             return;
         }
+        let font_cache_key = if let Some(font_dict) = self.resources.fonts.get(&font_name) {
+            let lookup = (
+                font_name.clone(),
+                font_dict as *const PdfDictionary as usize,
+            );
+            if let Some(cached) = self.font_resource_key_cache.get(&lookup) {
+                cached.clone()
+            } else {
+                let computed = font_resource_cache_key(&font_name, font_dict);
+                self.font_resource_key_cache
+                    .insert(lookup, computed.clone());
+                computed
+            }
+        } else {
+            format!("{font_name}:missing")
+        };
         let font_dict = self.resources.fonts.get(&font_name).cloned();
-        let font_cache_key = font_dict
-            .as_ref()
-            .map(|font_dict| font_resource_cache_key(&font_name, font_dict))
-            .unwrap_or_else(|| format!("{font_name}:missing"));
         let decoded = if let Some(font_dict) = font_dict.as_ref() {
             let resolver = self.get_font_resolver(&font_cache_key, font_dict);
             decode_text_bytes_with_resolver(
@@ -3926,7 +5882,54 @@ impl<'a> RenderState<'a> {
             {
                 if is_type3 {
                     if let Some(font_dict) = font_dict.as_ref() {
-                        ttf_advance = self.render_type3_glyph(&font_name, font_dict, &glyph);
+                        if !text_rendering_mode_clips(text_mode)
+                            && !self.buf.render_mode().is_high_quality()
+                        {
+                            if let Some(font_bytes) =
+                                self.get_type3_compat_font_bytes(&font_cache_key, font_dict)
+                            {
+                                if !font_bytes.is_empty() {
+                                    let font_hash = font_resource_glyph_cache_hash(
+                                        font_bytes.as_slice(),
+                                        &font_cache_key,
+                                    );
+                                    let upem = Self::get_upem(font_bytes.as_slice())
+                                        .map(f64::from)
+                                        .filter(|value| *value > 0.0)
+                                        .unwrap_or(upem);
+                                    let light_hinting_supported =
+                                        ttf_parser::Face::parse(font_bytes.as_slice(), 0).is_ok()
+                                            || crate::fonts::type1::Type1Font::is_type1(
+                                                font_bytes.as_slice(),
+                                            );
+                                    ttf_advance =
+                                        self.render_glyph_with_cache(GlyphRenderRequest {
+                                            font_name: &font_name,
+                                            font_subtype: FontSubtype::TrueType,
+                                            code: glyph.code,
+                                            ch: glyph.unicode,
+                                            glyph_name: glyph.glyph_name.as_deref(),
+                                            is_gid: false,
+                                            font_bytes: font_bytes.as_slice(),
+                                            font_hash,
+                                            variation: &variation,
+                                            upem,
+                                            light_hinting_supported,
+                                            offset_x: glyph
+                                                .vertical_origin
+                                                .map(|(vx, _)| -vx)
+                                                .unwrap_or(0.0),
+                                            offset_y: glyph
+                                                .vertical_origin
+                                                .map(|(_, vy)| vy)
+                                                .unwrap_or(0.0),
+                                        });
+                                }
+                            }
+                        }
+                        if ttf_advance.is_none() {
+                            ttf_advance = self.render_type3_glyph(&font_name, font_dict, &glyph);
+                        }
                     }
                     if ttf_advance.is_none() && !text_rendering_mode_clips(text_mode) {
                         let allow_compat_fallback = !self.buf.render_mode().is_high_quality();
@@ -4047,7 +6050,7 @@ impl<'a> RenderState<'a> {
                     )
                 };
                 let cached = CachedGlyph::from_path(path, advance_width);
-                self.glyph_cache.insert(cache_key, cached.clone());
+                self.glyph_cache.insert(cache_key.clone(), cached.clone());
                 cached
             }
         };
@@ -4152,7 +6155,15 @@ impl<'a> RenderState<'a> {
 
         match self.gs.text.rendering_mode {
             0 | 4 => {
-                if !color_fill_painted {
+                if !color_fill_painted
+                    && !self.paint_cached_glyph_fill(
+                        &cache_key,
+                        glyph_path,
+                        &glyph_ctm,
+                        fill_color,
+                        glyph_hinting,
+                    )
+                {
                     PathPainter::fill_glyph(
                         &mut self.buf,
                         glyph_path,
@@ -4164,28 +6175,8 @@ impl<'a> RenderState<'a> {
                     );
                 }
             }
-            1 | 5 => PathPainter::stroke(
-                &mut self.buf,
-                glyph_path,
-                &glyph_ctm,
-                &self.viewport,
-                stroke_color,
-                self.gs.line_width,
-                &DashState::solid(),
-            ),
-            2 | 6 => {
-                if !color_fill_painted {
-                    PathPainter::fill_glyph(
-                        &mut self.buf,
-                        glyph_path,
-                        &glyph_ctm,
-                        &self.viewport,
-                        fill_color,
-                        FillRule::NonZero,
-                        glyph_hinting,
-                    );
-                }
-                PathPainter::stroke(
+            1 | 5 => {
+                PathPainter::stroke_with_style_fast_cancellable(
                     &mut self.buf,
                     glyph_path,
                     &glyph_ctm,
@@ -4193,12 +6184,116 @@ impl<'a> RenderState<'a> {
                     stroke_color,
                     self.gs.line_width,
                     &DashState::solid(),
+                    &LineCap::Butt,
+                    &LineJoin::Miter,
+                    10.0,
+                    &self.cancel,
+                );
+            }
+            2 | 6 => {
+                if !color_fill_painted
+                    && !self.paint_cached_glyph_fill(
+                        &cache_key,
+                        glyph_path,
+                        &glyph_ctm,
+                        fill_color,
+                        glyph_hinting,
+                    )
+                {
+                    PathPainter::fill_glyph(
+                        &mut self.buf,
+                        glyph_path,
+                        &glyph_ctm,
+                        &self.viewport,
+                        fill_color,
+                        FillRule::NonZero,
+                        glyph_hinting,
+                    );
+                }
+                PathPainter::stroke_with_style_fast_cancellable(
+                    &mut self.buf,
+                    glyph_path,
+                    &glyph_ctm,
+                    &self.viewport,
+                    stroke_color,
+                    self.gs.line_width,
+                    &DashState::solid(),
+                    &LineCap::Butt,
+                    &LineJoin::Miter,
+                    10.0,
+                    &self.cancel,
                 );
             }
             3 | 7 => {}
             other => log::warn!("PageRenderer: unknown text render mode {}", other),
         }
         Some(advance_width)
+    }
+
+    fn paint_cached_glyph_fill(
+        &mut self,
+        glyph_key: &GlyphCacheKey,
+        glyph_path: &Path,
+        glyph_ctm: &Transform2D,
+        fill_color: PixelColor,
+        glyph_hinting: GlyphHinting,
+    ) -> bool {
+        let device_t = glyph_ctm.concat(&self.viewport.to_transform());
+        if [
+            device_t.a, device_t.b, device_t.c, device_t.d, device_t.e, device_t.f,
+        ]
+        .iter()
+        .any(|value| !value.is_finite())
+        {
+            return false;
+        }
+        if device_t.scale_factor() <= 0.0 || device_t.scale_factor() > 256.0 {
+            return false;
+        }
+        let origin_x = device_t.e.floor();
+        let origin_y = device_t.f.floor();
+        let normalized_t = Transform2D {
+            e: device_t.e - origin_x,
+            f: device_t.f - origin_y,
+            ..device_t
+        };
+        let key = GlyphMaskCacheKey {
+            glyph: glyph_key.clone(),
+            a: quantize_glyph_mask_value(normalized_t.a),
+            b: quantize_glyph_mask_value(normalized_t.b),
+            c: quantize_glyph_mask_value(normalized_t.c),
+            d: quantize_glyph_mask_value(normalized_t.d),
+            frac_e: quantize_glyph_mask_fraction(normalized_t.e),
+            frac_f: quantize_glyph_mask_fraction(normalized_t.f),
+            hinting: glyph_hinting.should_apply(),
+        };
+        let dx = if origin_x <= i32::MIN as f64 {
+            i32::MIN
+        } else if origin_x >= i32::MAX as f64 {
+            i32::MAX
+        } else {
+            origin_x as i32
+        };
+        let dy = if origin_y <= i32::MIN as f64 {
+            i32::MIN
+        } else if origin_y >= i32::MAX as f64 {
+            i32::MAX
+        } else {
+            origin_y as i32
+        };
+        if let Some(mask) = self.glyph_mask_cache.get(&key) {
+            mask.paint(&mut self.buf, dx, dy, fill_color);
+            return true;
+        }
+        let Some(mask) =
+            rasterize_glyph_alpha_mask(glyph_path, &normalized_t, FillRule::NonZero, glyph_hinting)
+        else {
+            return false;
+        };
+        let mask = Arc::new(mask);
+        mask.paint(&mut self.buf, dx, dy, fill_color);
+        self.glyph_mask_cache.insert(key, mask);
+        true
     }
 
     fn paint_color_glyph_fill(
@@ -4357,9 +6452,12 @@ impl<'a> RenderState<'a> {
         if ops.is_empty() {
             return false;
         }
+        let tile = self
+            .colr_paint_ops_device_tile(request, ops, glyph_ctm)
+            .unwrap_or_else(|| RenderTile::full(self.buf.width, self.buf.height));
         let token = match self.reserve_offscreen_surface(
-            self.buf.width,
-            self.buf.height,
+            tile.width,
+            tile.height,
             "COLRv1 glyph paint surface",
         ) {
             Ok(token) => token,
@@ -4372,23 +6470,82 @@ impl<'a> RenderState<'a> {
                 return true;
             }
         };
-        let mut surface = PixelBuffer::new_transparent_with_mode(
-            self.buf.width,
-            self.buf.height,
-            self.buf.render_mode(),
-        );
+        let mut surface =
+            self.take_transparent_offscreen_buffer(tile.width, tile.height, self.buf.render_mode());
+        let original_viewport = self.viewport.clone();
+        self.viewport = original_viewport.pixel_window(tile.x, tile.y, tile.width, tile.height);
         let mut painted = false;
         for op in ops {
             painted |=
                 self.paint_colr_op_to_buffer(&mut surface, request, op, glyph_ctm, glyph_hinting);
         }
+        self.viewport = original_viewport;
         drop(token);
         if painted {
             let smask = self.buf.smask_mask().cloned();
-            self.buf
-                .composite_from(&surface, 1.0, BlendMode::Normal, smask.as_ref());
+            self.buf.composite_from_at(
+                &surface,
+                tile.x,
+                tile.y,
+                1.0,
+                BlendMode::Normal,
+                smask.as_ref(),
+            );
         }
+        self.recycle_offscreen_buffer(surface);
         painted
+    }
+
+    fn colr_paint_ops_device_tile(
+        &self,
+        request: &GlyphRenderRequest<'_>,
+        ops: &[crate::render::color_glyph::ColrPaintOp],
+        glyph_ctm: &Transform2D,
+    ) -> Option<RenderTile> {
+        let mut min_x = i32::MAX;
+        let mut min_y = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut max_y = i32::MIN;
+        for op in ops {
+            let Some(path) = crate::render::color_glyph::outline_gid_path(
+                request.font_bytes,
+                op.glyph_id,
+                request.variation,
+            ) else {
+                continue;
+            };
+            let op_ctm = op.transform.concat(glyph_ctm);
+            let flat = flatten_path(&path, &op_ctm, &self.viewport, 0.2);
+            let (x0, y0, x1, y1) = path_device_bounds(&flat, self.buf.width, self.buf.height);
+            if x1 < x0 || y1 < y0 {
+                continue;
+            }
+            min_x = min_x.min(x0);
+            min_y = min_y.min(y0);
+            max_x = max_x.max(x1);
+            max_y = max_y.max(y1);
+        }
+        if max_x < min_x || max_y < min_y {
+            return None;
+        }
+        let pad = 2i32;
+        let x0 = min_x.saturating_sub(pad).max(0);
+        let y0 = min_y.saturating_sub(pad).max(0);
+        let x1 = max_x
+            .saturating_add(pad)
+            .min(self.buf.width.saturating_sub(1) as i32);
+        let y1 = max_y
+            .saturating_add(pad)
+            .min(self.buf.height.saturating_sub(1) as i32);
+        if x1 < x0 || y1 < y0 {
+            return None;
+        }
+        Some(RenderTile {
+            x: x0 as u32,
+            y: y0 as u32,
+            width: x1.saturating_sub(x0).saturating_add(1) as u32,
+            height: y1.saturating_sub(y0).saturating_add(1) as u32,
+        })
     }
 
     fn paint_colr_op_to_buffer(
@@ -4616,21 +6773,35 @@ impl<'a> RenderState<'a> {
         let text_mode = self.gs.text.rendering_mode;
         let needs_clip = text_rendering_mode_clips(text_mode);
         let paints = text_rendering_mode_paints(text_mode);
-        let mut geometry = None;
-        if needs_clip {
-            geometry = self.cached_type3_glyph_geometry(font_name, font_dict, glyph_name);
-            if geometry.is_none() {
-                log::debug!(
-                    "PageRenderer: Type3 text clipping requested but charproc '{}' did not yield supported path geometry",
-                    glyph_name
-                );
-                self.fail_closed_text_clip();
-                return None;
-            }
+        let geometry = self.cached_type3_glyph_geometry(font_name, font_dict, glyph_name);
+        if needs_clip && geometry.is_none() {
+            log::debug!(
+                "PageRenderer: Type3 text clipping requested but charproc '{}' did not yield supported path geometry",
+                glyph_name
+            );
+            self.fail_closed_text_clip();
+            return None;
         }
 
         if paints {
+            if let Some(geometry) = geometry.as_ref() {
+                let glyph_ctm = self.type3_glyph_ctm(font_dict);
+                if needs_clip {
+                    self.accumulate_type3_text_clip(geometry.as_ref(), &glyph_ctm);
+                }
+                self.paint_type3_geometry(geometry.as_ref(), &glyph_ctm);
+                return geometry.advance_width.or(glyph.width);
+            }
+
             if let Some(charproc) = self.cached_type3_charproc(font_name, font_dict, glyph_name) {
+                if self.paint_cached_type3_rendered_charproc(
+                    font_name,
+                    font_dict,
+                    glyph_name,
+                    charproc.as_ref(),
+                ) {
+                    return charproc.advance_width.or(glyph.width);
+                }
                 if self.render_type3_charproc_full(font_dict, charproc.as_ref()) {
                     if let Some(geometry) = geometry.as_ref() {
                         self.accumulate_type3_text_clip(
@@ -4643,7 +6814,7 @@ impl<'a> RenderState<'a> {
             }
         }
 
-        let geometry = match self.cached_type3_glyph_geometry(font_name, font_dict, glyph_name) {
+        let geometry = match geometry {
             Some(geometry) => geometry,
             None => {
                 if needs_clip {
@@ -4733,9 +6904,12 @@ impl<'a> RenderState<'a> {
             );
             return None;
         }
+        let advance_width = type3_advance_width_from_ops(&ops);
+        let glyph_bbox = type3_glyph_bbox_from_ops(&ops);
         Some(Type3CharProc {
-            advance_width: type3_advance_width_from_ops(&ops),
             ops,
+            advance_width,
+            glyph_bbox,
         })
     }
 
@@ -4743,6 +6917,16 @@ impl<'a> RenderState<'a> {
         &mut self,
         font_dict: &PdfDictionary,
         charproc: &Type3CharProc,
+    ) -> bool {
+        let glyph_ctm = self.type3_glyph_ctm(font_dict);
+        self.render_type3_charproc_full_with_ctm(font_dict, charproc, glyph_ctm)
+    }
+
+    fn render_type3_charproc_full_with_ctm(
+        &mut self,
+        font_dict: &PdfDictionary,
+        charproc: &Type3CharProc,
+        glyph_ctm: Transform2D,
     ) -> bool {
         if self.form_depth >= 8 {
             log::warn!("PageRenderer: Type3 charproc nesting depth limit reached; skipping");
@@ -4757,7 +6941,6 @@ impl<'a> RenderState<'a> {
                 merge_resources(font_res, &self.resources)
             })
             .unwrap_or_else(|| self.resources.clone());
-        let glyph_ctm = self.type3_glyph_ctm(font_dict);
 
         let saved_gs = self.gs.clone();
         let saved_resources = self.resources.clone();
@@ -4798,18 +6981,116 @@ impl<'a> RenderState<'a> {
         !self.cancel.is_cancelled()
     }
 
+    fn paint_cached_type3_rendered_charproc(
+        &mut self,
+        font_name: &str,
+        font_dict: &PdfDictionary,
+        glyph_name: &str,
+        charproc: &Type3CharProc,
+    ) -> bool {
+        if self.buf.width == 0
+            || self.buf.height == 0
+            || (self.buf.width as usize).saturating_mul(self.buf.height as usize) > 4_000_000
+        {
+            return false;
+        }
+        let glyph_ctm = self.type3_glyph_ctm(font_dict);
+        let Some((_normalized_t, dx, dy, transform_key)) =
+            self.type3_mask_transform_parts(&glyph_ctm)
+        else {
+            return false;
+        };
+        let device_t = glyph_ctm.concat(&self.viewport.to_transform());
+        let Some((full_x0, full_y0, full_x1, full_y1)) = type3_charproc_device_bounds(
+            charproc,
+            font_dict,
+            &device_t,
+            self.buf.width,
+            self.buf.height,
+        ) else {
+            return false;
+        };
+        let Ok(tile_width) = u32::try_from(full_x1.saturating_sub(full_x0).saturating_add(1))
+        else {
+            return false;
+        };
+        let Ok(tile_height) = u32::try_from(full_y1.saturating_sub(full_y0).saturating_add(1))
+        else {
+            return false;
+        };
+        if tile_width == 0
+            || tile_height == 0
+            || (tile_width as usize).saturating_mul(tile_height as usize) > 4_000_000
+        {
+            return false;
+        }
+        let cache_key = Type3RenderedGlyphCacheKey {
+            glyph: type3_charproc_cache_key(font_name, font_dict, glyph_name),
+            render_mode: self.gs.text.rendering_mode,
+            fill_color: self.fill_pixel_color(),
+            stroke_color: self.stroke_pixel_color(),
+            a: transform_key[0],
+            b: transform_key[1],
+            c: transform_key[2],
+            d: transform_key[3],
+            frac_e: transform_key[4],
+            frac_f: transform_key[5],
+        };
+        if let Some(glyph) = self.type3_rendered_cache.get(&cache_key) {
+            glyph.paint(&mut self.buf, dx, dy);
+            return true;
+        }
+
+        let original_viewport = self.viewport.clone();
+        let render_mode = self.buf.render_mode();
+        let (Ok(tile_x), Ok(tile_y)) = (u32::try_from(full_x0), u32::try_from(full_y0)) else {
+            return false;
+        };
+        let tile_viewport = original_viewport.pixel_window(tile_x, tile_y, tile_width, tile_height);
+        let original = std::mem::replace(
+            &mut self.buf,
+            PixelBuffer::new_transparent_with_mode(tile_width, tile_height, render_mode),
+        );
+        self.viewport = tile_viewport;
+        let ok = self.render_type3_charproc_full_with_ctm(font_dict, charproc, glyph_ctm);
+        self.viewport = original_viewport;
+        let rendered = std::mem::replace(&mut self.buf, original);
+        if !ok || self.cancel.is_cancelled() {
+            return false;
+        }
+        let Some(glyph) = Type3RenderedGlyph::from_buffer_with_origin(
+            &rendered,
+            (
+                0,
+                0,
+                tile_width.saturating_sub(1),
+                tile_height.saturating_sub(1),
+            ),
+            full_x0,
+            full_y0,
+            dx,
+            dy,
+        )
+        .map(Arc::new) else {
+            return false;
+        };
+        self.type3_rendered_cache.insert(cache_key, glyph.clone());
+        glyph.paint(&mut self.buf, dx, dy);
+        true
+    }
+
     fn cached_type3_glyph_geometry(
         &mut self,
         font_name: &str,
         font_dict: &PdfDictionary,
         glyph_name: &str,
     ) -> Option<Arc<Type3GlyphGeometry>> {
-        let cache_key = format!("{font_name}\0{glyph_name}");
+        let cache_key = type3_charproc_cache_key(font_name, font_dict, glyph_name);
         if let Some(cached) = self.type3_geometry_cache.get(&cache_key) {
             return cached.clone();
         }
         let geometry = self
-            .collect_type3_glyph_geometry(font_dict, glyph_name)
+            .collect_type3_glyph_geometry(font_dict, glyph_name, &cache_key)
             .map(Arc::new);
         self.type3_geometry_cache
             .insert(cache_key, geometry.clone());
@@ -4820,6 +7101,7 @@ impl<'a> RenderState<'a> {
         &self,
         font_dict: &PdfDictionary,
         glyph_name: &str,
+        cache_key: &str,
     ) -> Option<Type3GlyphGeometry> {
         let reader = self.engine.document().reader();
         let stream_obj = resolve_type3_charproc_object(font_dict, glyph_name, reader)?;
@@ -4857,7 +7139,7 @@ impl<'a> RenderState<'a> {
                 return None;
             }
         };
-        Type3PathCollector::collect(glyph_name, &ops)
+        Type3PathCollector::collect(glyph_name, &ops, cache_key)
     }
 
     fn type3_glyph_ctm(&self, font_dict: &PdfDictionary) -> Transform2D {
@@ -4878,10 +7160,12 @@ impl<'a> RenderState<'a> {
         geometry: &Type3GlyphGeometry,
         glyph_ctm: &Transform2D,
     ) {
-        for fill in &geometry.fills {
-            let flat = flatten_path(&fill.path, glyph_ctm, &self.viewport, 0.25);
-            let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, fill.rule);
-            self.accumulate_text_clip_mask(clip);
+        for (idx, fill) in geometry.fills.iter().enumerate() {
+            if !self.accumulate_cached_type3_fill_clip(geometry, idx, fill, glyph_ctm) {
+                let flat = flatten_path(&fill.path, glyph_ctm, &self.viewport, 0.25);
+                let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, fill.rule);
+                self.accumulate_text_clip_mask(clip);
+            }
         }
         for stroke in &geometry.strokes {
             let flat = flatten_path(&stroke.path, glyph_ctm, &self.viewport, 0.25);
@@ -4904,6 +7188,27 @@ impl<'a> RenderState<'a> {
                 self.accumulate_text_clip_mask(clip);
             }
         }
+    }
+
+    fn accumulate_cached_type3_fill_clip(
+        &mut self,
+        geometry: &Type3GlyphGeometry,
+        fill_index: usize,
+        fill: &Type3Fill,
+        glyph_ctm: &Transform2D,
+    ) -> bool {
+        let Some((mask, dx, dy)) =
+            self.cached_type3_fill_mask(geometry, fill_index, fill, glyph_ctm)
+        else {
+            return false;
+        };
+        if self.pending_text_clip.is_none() {
+            self.pending_text_clip = Some(ClipMask::empty(self.buf.width, self.buf.height));
+        }
+        if let Some(clip) = &mut self.pending_text_clip {
+            mask.union_into_clip_mask(clip, dx, dy);
+        }
+        true
     }
 
     fn paint_type3_geometry(&mut self, geometry: &Type3GlyphGeometry, glyph_ctm: &Transform2D) {
@@ -4929,16 +7234,29 @@ impl<'a> RenderState<'a> {
         }
         match self.gs.text.rendering_mode {
             0 | 4 => {
-                for fill in &geometry.fills {
-                    if !PathPainter::fill_fast_cancellable(
-                        &mut self.buf,
-                        &fill.path,
-                        glyph_ctm,
-                        &self.viewport,
-                        fill_color,
-                        fill.rule,
-                        &self.cancel,
-                    ) {
+                if let Some((mask, dx, dy, color)) =
+                    self.cached_type3_composite_fill_mask(geometry, glyph_ctm, fill_color)
+                {
+                    mask.paint(&mut self.buf, dx, dy, color);
+                    return;
+                }
+                for (idx, fill) in geometry.fills.iter().enumerate() {
+                    let fill_color = type3_color_with_alpha(
+                        fill.color.unwrap_or(fill_color),
+                        self.gs.fill_alpha,
+                    );
+                    if !self.paint_type3_rect_fill(fill, glyph_ctm, fill_color)
+                        && !self.paint_cached_type3_fill(geometry, idx, fill, glyph_ctm, fill_color)
+                        && !PathPainter::fill_fast_cancellable(
+                            &mut self.buf,
+                            &fill.path,
+                            glyph_ctm,
+                            &self.viewport,
+                            fill_color,
+                            fill.rule,
+                            &self.cancel,
+                        )
+                    {
                         return;
                     }
                 }
@@ -4964,16 +7282,23 @@ impl<'a> RenderState<'a> {
                 self.paint_type3_strokes(geometry, glyph_ctm, stroke_color);
             }
             2 | 6 => {
-                for fill in &geometry.fills {
-                    if !PathPainter::fill_fast_cancellable(
-                        &mut self.buf,
-                        &fill.path,
-                        glyph_ctm,
-                        &self.viewport,
-                        fill_color,
-                        fill.rule,
-                        &self.cancel,
-                    ) {
+                for (idx, fill) in geometry.fills.iter().enumerate() {
+                    let fill_color = type3_color_with_alpha(
+                        fill.color.unwrap_or(fill_color),
+                        self.gs.fill_alpha,
+                    );
+                    if !self.paint_type3_rect_fill(fill, glyph_ctm, fill_color)
+                        && !self.paint_cached_type3_fill(geometry, idx, fill, glyph_ctm, fill_color)
+                        && !PathPainter::fill_fast_cancellable(
+                            &mut self.buf,
+                            &fill.path,
+                            glyph_ctm,
+                            &self.viewport,
+                            fill_color,
+                            fill.rule,
+                            &self.cancel,
+                        )
+                    {
                         return;
                     }
                     if !PathPainter::stroke_with_style_fast_cancellable(
@@ -4999,6 +7324,241 @@ impl<'a> RenderState<'a> {
         }
     }
 
+    fn paint_type3_rect_fill(
+        &mut self,
+        fill: &Type3Fill,
+        glyph_ctm: &Transform2D,
+        fill_color: PixelColor,
+    ) -> bool {
+        if fill.rule != FillRule::NonZero {
+            return false;
+        }
+        let Some((x, y, w, h)) = axis_aligned_integer_rect(&fill.path, glyph_ctm, &self.viewport)
+        else {
+            return false;
+        };
+        self.buf.fill_rect(x, y, w, h, fill_color);
+        true
+    }
+
+    fn paint_cached_type3_fill(
+        &mut self,
+        geometry: &Type3GlyphGeometry,
+        fill_index: usize,
+        fill: &Type3Fill,
+        glyph_ctm: &Transform2D,
+        fill_color: PixelColor,
+    ) -> bool {
+        let Some((mask, dx, dy)) =
+            self.cached_type3_fill_mask(geometry, fill_index, fill, glyph_ctm)
+        else {
+            return false;
+        };
+        mask.paint(&mut self.buf, dx, dy, fill_color);
+        true
+    }
+
+    fn cached_type3_fill_mask(
+        &mut self,
+        geometry: &Type3GlyphGeometry,
+        fill_index: usize,
+        fill: &Type3Fill,
+        glyph_ctm: &Transform2D,
+    ) -> Option<(Arc<RasterizedGlyphMask>, i32, i32)> {
+        let (normalized_t, dx, dy, transform_key) = self.type3_mask_transform_parts(glyph_ctm)?;
+        self.cached_type3_fill_mask_with_transform(
+            geometry,
+            fill_index,
+            fill,
+            &normalized_t,
+            dx,
+            dy,
+            transform_key,
+        )
+    }
+
+    fn cached_type3_composite_fill_mask(
+        &mut self,
+        geometry: &Type3GlyphGeometry,
+        glyph_ctm: &Transform2D,
+        fallback_fill_color: PixelColor,
+    ) -> Option<(Arc<RasterizedGlyphMask>, i32, i32, PixelColor)> {
+        if geometry.fills.len() <= 1 || !geometry.strokes.is_empty() || self.gs.fill_alpha < 0.999 {
+            return None;
+        }
+        let color = type3_color_with_alpha(
+            geometry.fills.first()?.color.unwrap_or(fallback_fill_color),
+            self.gs.fill_alpha,
+        );
+        if geometry.fills.iter().any(|fill| {
+            type3_color_with_alpha(
+                fill.color.unwrap_or(fallback_fill_color),
+                self.gs.fill_alpha,
+            ) != color
+        }) {
+            return None;
+        }
+
+        let (normalized_t, dx, dy, transform_key) = self.type3_mask_transform_parts(glyph_ctm)?;
+        let key = Type3MaskCacheKey {
+            glyph: geometry.cache_key.clone(),
+            fill_index: u16::MAX,
+            fill_rule: 255,
+            a: transform_key[0],
+            b: transform_key[1],
+            c: transform_key[2],
+            d: transform_key[3],
+            frac_e: transform_key[4],
+            frac_f: transform_key[5],
+        };
+        if let Some(mask) = self.type3_mask_cache.get(&key) {
+            return Some((mask, dx, dy, color));
+        }
+
+        let mut parts = Vec::with_capacity(geometry.fills.len());
+        for (idx, fill) in geometry.fills.iter().enumerate() {
+            let (mask, _, _) = self.cached_type3_fill_mask_with_transform(
+                geometry,
+                idx,
+                fill,
+                &normalized_t,
+                dx,
+                dy,
+                transform_key,
+            )?;
+            parts.push(mask);
+        }
+        let mut min_x = i32::MAX;
+        let mut min_y = i32::MAX;
+        let mut max_x = i32::MIN;
+        let mut max_y = i32::MIN;
+        for mask in &parts {
+            min_x = min_x.min(mask.x);
+            min_y = min_y.min(mask.y);
+            max_x = max_x.max(mask.x.saturating_add(mask.width as i32));
+            max_y = max_y.max(mask.y.saturating_add(mask.height as i32));
+        }
+        if max_x <= min_x || max_y <= min_y {
+            return None;
+        }
+        let width = (max_x - min_x) as u32;
+        let height = (max_y - min_y) as u32;
+        let mut alpha = vec![0u8; width as usize * height as usize];
+        for mask in &parts {
+            for row in 0..mask.height as usize {
+                let src_base = row * mask.width as usize;
+                let dst_y = (mask.y - min_y) as usize + row;
+                let dst_base = dst_y * width as usize + (mask.x - min_x) as usize;
+                for col in 0..mask.width as usize {
+                    let value = mask.alpha_slice()[src_base + col];
+                    let dst = &mut alpha[dst_base + col];
+                    if value > *dst {
+                        *dst = value;
+                    }
+                }
+            }
+        }
+        let mask = Arc::new(RasterizedGlyphMask::from_alpha(
+            min_x, min_y, width, height, alpha,
+        )?);
+        self.type3_mask_cache.insert(key, mask.clone());
+        Some((mask, dx, dy, color))
+    }
+
+    fn type3_mask_transform_parts(
+        &self,
+        glyph_ctm: &Transform2D,
+    ) -> Option<(Transform2D, i32, i32, [i64; 6])> {
+        let device_t = glyph_ctm.concat(&self.viewport.to_transform());
+        if [
+            device_t.a, device_t.b, device_t.c, device_t.d, device_t.e, device_t.f,
+        ]
+        .iter()
+        .any(|value| !value.is_finite())
+        {
+            return None;
+        }
+        if device_t.scale_factor() <= 0.0 || device_t.scale_factor() > 256.0 {
+            return None;
+        }
+        let origin_x = device_t.e.floor();
+        let origin_y = device_t.f.floor();
+        let normalized_t = Transform2D {
+            e: device_t.e - origin_x,
+            f: device_t.f - origin_y,
+            ..device_t
+        };
+        let dx = if origin_x <= i32::MIN as f64 {
+            i32::MIN
+        } else if origin_x >= i32::MAX as f64 {
+            i32::MAX
+        } else {
+            origin_x as i32
+        };
+        let dy = if origin_y <= i32::MIN as f64 {
+            i32::MIN
+        } else if origin_y >= i32::MAX as f64 {
+            i32::MAX
+        } else {
+            origin_y as i32
+        };
+        Some((
+            normalized_t,
+            dx,
+            dy,
+            [
+                quantize_glyph_mask_value(normalized_t.a),
+                quantize_glyph_mask_value(normalized_t.b),
+                quantize_glyph_mask_value(normalized_t.c),
+                quantize_glyph_mask_value(normalized_t.d),
+                quantize_glyph_mask_fraction(normalized_t.e),
+                quantize_glyph_mask_fraction(normalized_t.f),
+            ],
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn cached_type3_fill_mask_with_transform(
+        &mut self,
+        geometry: &Type3GlyphGeometry,
+        fill_index: usize,
+        fill: &Type3Fill,
+        normalized_t: &Transform2D,
+        dx: i32,
+        dy: i32,
+        transform_key: [i64; 6],
+    ) -> Option<(Arc<RasterizedGlyphMask>, i32, i32)> {
+        if fill_index > u16::MAX as usize {
+            return None;
+        }
+        let key = Type3MaskCacheKey {
+            glyph: geometry.cache_key.clone(),
+            fill_index: fill_index as u16,
+            fill_rule: match fill.rule {
+                FillRule::NonZero => 0,
+                FillRule::EvenOdd => 1,
+            },
+            a: transform_key[0],
+            b: transform_key[1],
+            c: transform_key[2],
+            d: transform_key[3],
+            frac_e: transform_key[4],
+            frac_f: transform_key[5],
+        };
+        if let Some(mask) = self.type3_mask_cache.get(&key) {
+            return Some((mask, dx, dy));
+        }
+        let mask = rasterize_glyph_alpha_mask(
+            &fill.path,
+            normalized_t,
+            fill.rule,
+            GlyphHinting::disabled(),
+        )?;
+        let mask = Arc::new(mask);
+        self.type3_mask_cache.insert(key, mask.clone());
+        Some((mask, dx, dy))
+    }
+
     fn paint_type3_strokes(
         &mut self,
         geometry: &Type3GlyphGeometry,
@@ -5006,6 +7566,8 @@ impl<'a> RenderState<'a> {
         stroke_color: PixelColor,
     ) {
         for stroke in &geometry.strokes {
+            let stroke_color =
+                type3_color_with_alpha(stroke.color.unwrap_or(stroke_color), self.gs.stroke_alpha);
             if !PathPainter::stroke_with_style_fast_cancellable(
                 &mut self.buf,
                 &stroke.path,
@@ -5049,9 +7611,9 @@ impl<'a> RenderState<'a> {
     }
 
     /// Build the variable-font [`VariationRequest`] for a font resource from its
-    /// `FontDescriptor` (`/FontWeight` → `wght`, `/FontStretch` → `wdth`). Returns
+    /// `FontDescriptor` (`/FontWeight` â†’ `wght`, `/FontStretch` â†’ `wdth`). Returns
     /// the empty request (default instance) when there is no descriptor or no
-    /// non-normal weight/stretch — so static fonts and default-instance variable
+    /// non-normal weight/stretch â€” so static fonts and default-instance variable
     /// fonts keep the byte-identical pre-variation cache key and outline.
     fn font_variation_request_from_dict(&self, font_dict: &PdfDictionary) -> VariationRequest {
         let reader = self.engine.document().reader();
@@ -5071,8 +7633,10 @@ impl<'a> RenderState<'a> {
 
     fn get_font_bytes(&mut self, font_name: &str, cache_key: &str) -> Option<Arc<Vec<u8>>> {
         if let Some(cached) = self.font_bytes_cache.get(cache_key) {
+            self.font_bytes_cache_stats.hits = self.font_bytes_cache_stats.hits.saturating_add(1);
             return cached.clone();
         }
+        self.font_bytes_cache_stats.misses = self.font_bytes_cache_stats.misses.saturating_add(1);
         let resolved = self.resolve_font_bytes(font_name).map(Arc::new);
         self.font_bytes_cache
             .insert(cache_key.to_string(), resolved.clone());
@@ -5086,8 +7650,10 @@ impl<'a> RenderState<'a> {
     ) -> Option<Arc<Vec<u8>>> {
         let cache_key = format!("__type3_compat__{font_cache_key}");
         if let Some(cached) = self.font_bytes_cache.get(&cache_key) {
+            self.font_bytes_cache_stats.hits = self.font_bytes_cache_stats.hits.saturating_add(1);
             return cached.clone();
         }
+        self.font_bytes_cache_stats.misses = self.font_bytes_cache_stats.misses.saturating_add(1);
         let resolved = font_dict
             .get("BaseFont")
             .and_then(PdfObject::as_name)
@@ -5104,8 +7670,12 @@ impl<'a> RenderState<'a> {
         font_dict: &PdfDictionary,
     ) -> Arc<FontResolver> {
         if let Some(cached) = self.font_resolver_cache.get(cache_key) {
+            self.font_resolver_cache_stats.hits =
+                self.font_resolver_cache_stats.hits.saturating_add(1);
             return Arc::clone(cached);
         }
+        self.font_resolver_cache_stats.misses =
+            self.font_resolver_cache_stats.misses.saturating_add(1);
         let resolver = Arc::new(FontResolver::new(
             font_dict,
             self.engine.document().reader(),
@@ -5218,6 +7788,7 @@ const TYPE3_MAX_Q_DEPTH: usize = 32;
 struct Type3Fill {
     path: Path,
     rule: FillRule,
+    color: Option<PixelColor>,
 }
 
 #[derive(Clone)]
@@ -5228,17 +7799,29 @@ struct Type3Stroke {
     cap: LineCap,
     join: LineJoin,
     miter_limit: f64,
+    color: Option<PixelColor>,
 }
 
 struct Type3GlyphGeometry {
+    cache_key: String,
     fills: Vec<Type3Fill>,
     strokes: Vec<Type3Stroke>,
     advance_width: Option<f64>,
+    _uses_color_state: bool,
 }
 
 struct Type3CharProc {
     ops: Vec<ContentOperation>,
     advance_width: Option<f64>,
+    glyph_bbox: Option<[f64; 4]>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Type3DeviceColorSpace {
+    Gray,
+    Rgb,
+    Cmyk,
+    Unsupported,
 }
 
 #[derive(Clone)]
@@ -5249,6 +7832,10 @@ struct Type3CollectorState {
     cap: LineCap,
     join: LineJoin,
     miter_limit: f64,
+    fill_color: PixelColor,
+    stroke_color: PixelColor,
+    fill_color_space: Type3DeviceColorSpace,
+    stroke_color_space: Type3DeviceColorSpace,
 }
 
 struct Type3PathCollector {
@@ -5259,11 +7846,16 @@ struct Type3PathCollector {
     state: Type3CollectorState,
     stack: Vec<Type3CollectorState>,
     advance_width: Option<f64>,
+    uses_color_state: bool,
     unsupported: Option<String>,
 }
 
 impl Type3PathCollector {
-    fn collect(glyph_name: &str, ops: &[ContentOperation]) -> Option<Type3GlyphGeometry> {
+    fn collect(
+        glyph_name: &str,
+        ops: &[ContentOperation],
+        cache_key: &str,
+    ) -> Option<Type3GlyphGeometry> {
         if ops.len() > TYPE3_MAX_CHARPROC_OPS {
             log::debug!(
                 "PageRenderer: Type3 charproc '{}' exceeded op cap {}",
@@ -5285,9 +7877,14 @@ impl Type3PathCollector {
                 cap: LineCap::Butt,
                 join: LineJoin::Miter,
                 miter_limit: 10.0,
+                fill_color: BLACK,
+                stroke_color: BLACK,
+                fill_color_space: Type3DeviceColorSpace::Gray,
+                stroke_color_space: Type3DeviceColorSpace::Gray,
             },
             stack: Vec::new(),
             advance_width: None,
+            uses_color_state: false,
             unsupported: None,
         };
 
@@ -5310,9 +7907,11 @@ impl Type3PathCollector {
             return None;
         }
         Some(Type3GlyphGeometry {
+            cache_key: cache_key.to_string(),
             fills: collector.fills,
             strokes: collector.strokes,
             advance_width: collector.advance_width,
+            _uses_color_state: collector.uses_color_state,
         })
     }
 
@@ -5429,13 +8028,63 @@ impl Type3PathCollector {
                     .number(0)
                     .filter(|value| value.is_finite() && *value > 0.0);
             }
-            // Color state does not alter clip geometry.
-            "G" | "g" | "RG" | "rg" | "K" | "k" | "CS" | "cs" | "SC" | "SCN" | "sc" | "scn"
-            | "ri" | "i" => {}
+            "g" => {
+                if let Some(gray) = op.number(0) {
+                    self.state.fill_color = type3_gray_color(gray);
+                    self.state.fill_color_space = Type3DeviceColorSpace::Gray;
+                    self.uses_color_state = true;
+                }
+            }
+            "G" => {
+                if let Some(gray) = op.number(0) {
+                    self.state.stroke_color = type3_gray_color(gray);
+                    self.state.stroke_color_space = Type3DeviceColorSpace::Gray;
+                    self.uses_color_state = true;
+                }
+            }
+            "rg" => {
+                if let (Some(r), Some(g), Some(b)) = (op.number(0), op.number(1), op.number(2)) {
+                    self.state.fill_color = type3_rgb_color(r, g, b);
+                    self.state.fill_color_space = Type3DeviceColorSpace::Rgb;
+                    self.uses_color_state = true;
+                }
+            }
+            "RG" => {
+                if let (Some(r), Some(g), Some(b)) = (op.number(0), op.number(1), op.number(2)) {
+                    self.state.stroke_color = type3_rgb_color(r, g, b);
+                    self.state.stroke_color_space = Type3DeviceColorSpace::Rgb;
+                    self.uses_color_state = true;
+                }
+            }
+            "k" => {
+                if let (Some(c), Some(m), Some(y), Some(k)) =
+                    (op.number(0), op.number(1), op.number(2), op.number(3))
+                {
+                    self.state.fill_color = type3_cmyk_color(c, m, y, k);
+                    self.state.fill_color_space = Type3DeviceColorSpace::Cmyk;
+                    self.uses_color_state = true;
+                }
+            }
+            "K" => {
+                if let (Some(c), Some(m), Some(y), Some(k)) =
+                    (op.number(0), op.number(1), op.number(2), op.number(3))
+                {
+                    self.state.stroke_color = type3_cmyk_color(c, m, y, k);
+                    self.state.stroke_color_space = Type3DeviceColorSpace::Cmyk;
+                    self.uses_color_state = true;
+                }
+            }
+            "ri" | "i" => {
+                self.uses_color_state = true;
+            }
+            "cs" => self.set_fill_color_space(op),
+            "CS" => self.set_stroke_color_space(op),
+            "sc" | "scn" => self.set_fill_color_from_space(op),
+            "SC" | "SCN" => self.set_stroke_color_from_space(op),
             // Resource-heavy glyphs need a real recursive Type3 interpreter,
             // not a bounding-box fallback.
             "Do" | "sh" | "BI" | "ID" | "inline_image_data" | "Tj" | "TJ" | "'" | "\"" | "BT"
-            | "ET" | "W" | "W*" => {
+            | "ET" | "W" | "W*" | "gs" => {
                 self.unsupported = Some(format!("operator '{}' is not path-only", op.operator));
             }
             _ => {}
@@ -5464,6 +8113,46 @@ impl Type3PathCollector {
         self.state.dash = DashState::new(pattern, phase);
     }
 
+    fn set_fill_color_space(&mut self, op: &ContentOperation) {
+        self.state.fill_color_space = type3_device_color_space(op.name(0));
+        self.uses_color_state = true;
+    }
+
+    fn set_stroke_color_space(&mut self, op: &ContentOperation) {
+        self.state.stroke_color_space = type3_device_color_space(op.name(0));
+        self.uses_color_state = true;
+    }
+
+    fn set_fill_color_from_space(&mut self, op: &ContentOperation) {
+        match type3_color_from_space(self.state.fill_color_space, op) {
+            Some(color) => {
+                self.state.fill_color = color;
+                self.uses_color_state = true;
+            }
+            None => {
+                self.unsupported = Some(format!(
+                    "operator '{}' needs unsupported fill color space",
+                    op.operator
+                ));
+            }
+        }
+    }
+
+    fn set_stroke_color_from_space(&mut self, op: &ContentOperation) {
+        match type3_color_from_space(self.state.stroke_color_space, op) {
+            Some(color) => {
+                self.state.stroke_color = color;
+                self.uses_color_state = true;
+            }
+            None => {
+                self.unsupported = Some(format!(
+                    "operator '{}' needs unsupported stroke color space",
+                    op.operator
+                ));
+            }
+        }
+    }
+
     fn transformed_rect(&mut self, x: f64, y: f64, w: f64, h: f64) {
         let points = [(x, y), (x + w, y), (x + w, y + h), (x, y + h)];
         let [(x0, y0), (x1, y1), (x2, y2), (x3, y3)] =
@@ -5486,6 +8175,7 @@ impl Type3PathCollector {
                 cap: self.state.cap.clone(),
                 join: self.state.join.clone(),
                 miter_limit: self.state.miter_limit,
+                color: Some(self.state.stroke_color),
             });
         }
     }
@@ -5495,6 +8185,7 @@ impl Type3PathCollector {
             self.fills.push(Type3Fill {
                 path: self.path.clone(),
                 rule,
+                color: Some(self.state.fill_color),
             });
         }
         self.path.clear();
@@ -5509,6 +8200,7 @@ impl Type3PathCollector {
                 cap: self.state.cap.clone(),
                 join: self.state.join.clone(),
                 miter_limit: self.state.miter_limit,
+                color: Some(self.state.stroke_color),
             });
         }
         self.path.clear();
@@ -5551,6 +8243,74 @@ fn type3_fallback_charproc_name(ch: char) -> Option<String> {
     }
 }
 
+fn type3_device_color_space(name: Option<&str>) -> Type3DeviceColorSpace {
+    match name {
+        Some("DeviceGray" | "G") => Type3DeviceColorSpace::Gray,
+        Some("DeviceRGB" | "RGB") => Type3DeviceColorSpace::Rgb,
+        Some("DeviceCMYK" | "CMYK") => Type3DeviceColorSpace::Cmyk,
+        _ => Type3DeviceColorSpace::Unsupported,
+    }
+}
+
+fn type3_color_from_space(
+    space: Type3DeviceColorSpace,
+    op: &ContentOperation,
+) -> Option<PixelColor> {
+    match space {
+        Type3DeviceColorSpace::Gray => op.number(0).map(type3_gray_color),
+        Type3DeviceColorSpace::Rgb => {
+            let (Some(r), Some(g), Some(b)) = (op.number(0), op.number(1), op.number(2)) else {
+                return None;
+            };
+            Some(type3_rgb_color(r, g, b))
+        }
+        Type3DeviceColorSpace::Cmyk => {
+            let (Some(c), Some(m), Some(y), Some(k)) =
+                (op.number(0), op.number(1), op.number(2), op.number(3))
+            else {
+                return None;
+            };
+            Some(type3_cmyk_color(c, m, y, k))
+        }
+        Type3DeviceColorSpace::Unsupported => None,
+    }
+}
+
+fn type3_gray_color(gray: f64) -> PixelColor {
+    let g = unit_to_u8(gray);
+    [g, g, g, 255]
+}
+
+fn type3_rgb_color(r: f64, g: f64, b: f64) -> PixelColor {
+    [unit_to_u8(r), unit_to_u8(g), unit_to_u8(b), 255]
+}
+
+fn type3_cmyk_color(c: f64, m: f64, y: f64, k: f64) -> PixelColor {
+    let c = c.clamp(0.0, 1.0);
+    let m = m.clamp(0.0, 1.0);
+    let y = y.clamp(0.0, 1.0);
+    let k = k.clamp(0.0, 1.0);
+    [
+        unit_to_u8((1.0 - c) * (1.0 - k)),
+        unit_to_u8((1.0 - m) * (1.0 - k)),
+        unit_to_u8((1.0 - y) * (1.0 - k)),
+        255,
+    ]
+}
+
+fn type3_color_with_alpha(mut color: PixelColor, alpha: f64) -> PixelColor {
+    color[3] = unit_to_u8(alpha);
+    color
+}
+
+fn unit_to_u8(value: f64) -> u8 {
+    if !value.is_finite() {
+        0
+    } else {
+        (value.clamp(0.0, 1.0) * 255.0).round() as u8
+    }
+}
+
 fn resolve_type3_charproc_object(
     font_dict: &PdfDictionary,
     glyph_name: &str,
@@ -5581,6 +8341,105 @@ fn type3_font_matrix(font_dict: &PdfDictionary) -> Transform2D {
     ])
 }
 
+fn type3_font_bbox(font_dict: &PdfDictionary) -> Option<[f64; 4]> {
+    let items = font_dict.get("FontBBox").and_then(PdfObject::as_array)?;
+    bbox_from_pdf_array(items)
+}
+
+fn bbox_from_pdf_array(items: &[PdfObject]) -> Option<[f64; 4]> {
+    if items.len() < 4 {
+        return None;
+    }
+    let mut values = [0.0; 4];
+    for (idx, item) in items.iter().take(4).enumerate() {
+        let value = item.as_number()?;
+        if !value.is_finite() {
+            return None;
+        }
+        values[idx] = value;
+    }
+    if (values[2] - values[0]).abs() <= f64::EPSILON
+        || (values[3] - values[1]).abs() <= f64::EPSILON
+    {
+        return None;
+    }
+    Some(values)
+}
+
+fn type3_charproc_device_bounds(
+    charproc: &Type3CharProc,
+    font_dict: &PdfDictionary,
+    device_t: &Transform2D,
+    width: u32,
+    height: u32,
+) -> Option<(i32, i32, i32, i32)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let bbox = charproc.glyph_bbox.or_else(|| type3_font_bbox(font_dict))?;
+    let padding = (device_t.scale_factor().ceil() as i32).clamp(4, 64);
+    bbox_device_bounds(bbox, device_t, width, height, padding)
+}
+
+fn bbox_device_bounds(
+    bbox: [f64; 4],
+    device_t: &Transform2D,
+    width: u32,
+    height: u32,
+    padding: i32,
+) -> Option<(i32, i32, i32, i32)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let x0 = bbox[0].min(bbox[2]);
+    let x1 = bbox[0].max(bbox[2]);
+    let y0 = bbox[1].min(bbox[3]);
+    let y1 = bbox[1].max(bbox[3]);
+    let corners = [
+        device_t.transform_point(x0, y0),
+        device_t.transform_point(x1, y0),
+        device_t.transform_point(x1, y1),
+        device_t.transform_point(x0, y1),
+    ];
+    if corners
+        .iter()
+        .any(|(x, y)| !x.is_finite() || !y.is_finite())
+    {
+        return None;
+    }
+    let min_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let page_x1 = u32_to_i32_saturating(width.saturating_sub(1));
+    let page_y1 = u32_to_i32_saturating(height.saturating_sub(1));
+    let left = f64_floor_to_i32_saturating(min_x).saturating_sub(padding);
+    let top = f64_floor_to_i32_saturating(min_y).saturating_sub(padding);
+    let right = f64_ceil_to_i32_saturating(max_x).saturating_add(padding);
+    let bottom = f64_ceil_to_i32_saturating(max_y).saturating_add(padding);
+    let left = left.clamp(0, page_x1);
+    let top = top.clamp(0, page_y1);
+    let right = right.clamp(0, page_x1);
+    let bottom = bottom.clamp(0, page_y1);
+    if right < left || bottom < top {
+        None
+    } else {
+        Some((left, top, right, bottom))
+    }
+}
+
 fn type3_charproc_cache_key(
     font_name: &str,
     font_dict: &PdfDictionary,
@@ -5600,6 +8459,47 @@ fn type3_advance_width_from_ops(ops: &[ContentOperation]) -> Option<f64> {
             .filter(|value| value.is_finite() && *value > 0.0),
         _ => None,
     })
+}
+
+fn type3_glyph_bbox_from_ops(ops: &[ContentOperation]) -> Option<[f64; 4]> {
+    ops.iter().find_map(|op| match op.operator.as_str() {
+        "d1" => {
+            let bbox = [op.number(2)?, op.number(3)?, op.number(4)?, op.number(5)?];
+            if bbox.iter().all(|value| value.is_finite())
+                && (bbox[2] - bbox[0]).abs() > f64::EPSILON
+                && (bbox[3] - bbox[1]).abs() > f64::EPSILON
+            {
+                Some(bbox)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    })
+}
+
+fn f64_floor_to_i32_saturating(value: f64) -> i32 {
+    if !value.is_finite() {
+        0
+    } else if value <= i32::MIN as f64 {
+        i32::MIN
+    } else if value >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        value.floor() as i32
+    }
+}
+
+fn f64_ceil_to_i32_saturating(value: f64) -> i32 {
+    if !value.is_finite() {
+        0
+    } else if value <= i32::MIN as f64 {
+        i32::MIN
+    } else if value >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        value.ceil() as i32
+    }
 }
 
 #[cfg(test)]
@@ -5750,6 +8650,10 @@ fn text_rendering_mode_clips(mode: i32) -> bool {
     matches!(mode, 4..=7)
 }
 
+fn text_showing_operator(op: &ContentOperation) -> bool {
+    matches!(op.operator.as_str(), "Tj" | "TJ" | "'" | "\"")
+}
+
 fn positive_u32(value: Option<i64>, default: u32) -> u32 {
     value
         .filter(|number| *number > 0)
@@ -5840,6 +8744,254 @@ fn font_size_scale(font_size: f64, upem: f64) -> f64 {
         0.0
     } else {
         font_size / upem
+    }
+}
+
+fn paint_cached_path_fill(
+    cache: &mut PathFillMaskCache,
+    buf: &mut PixelBuffer,
+    viewport: &Viewport,
+    path: &Path,
+    ctm: &Transform2D,
+    rule: FillRule,
+    color: PixelColor,
+) -> bool {
+    if path.segments.is_empty() || path.segments.len() > 16_384 {
+        return false;
+    }
+    let device_t = ctm.concat(&viewport.to_transform());
+    if [
+        device_t.a, device_t.b, device_t.c, device_t.d, device_t.e, device_t.f,
+    ]
+    .iter()
+    .any(|value| !value.is_finite())
+    {
+        return false;
+    }
+    if device_t.scale_factor() <= 0.0 || device_t.scale_factor() > 256.0 {
+        return false;
+    }
+    let origin_x = device_t.e.floor();
+    let origin_y = device_t.f.floor();
+    let normalized_t = Transform2D {
+        e: device_t.e - origin_x,
+        f: device_t.f - origin_y,
+        ..device_t
+    };
+    let key = PathFillMaskCacheKey {
+        path_hash: hash_path_for_fill_cache(path),
+        fill_rule: match rule {
+            FillRule::NonZero => 0,
+            FillRule::EvenOdd => 1,
+        },
+        a: quantize_glyph_mask_value(normalized_t.a),
+        b: quantize_glyph_mask_value(normalized_t.b),
+        c: quantize_glyph_mask_value(normalized_t.c),
+        d: quantize_glyph_mask_value(normalized_t.d),
+        frac_e: quantize_glyph_mask_fraction(normalized_t.e),
+        frac_f: quantize_glyph_mask_fraction(normalized_t.f),
+    };
+    let dx = if origin_x <= i32::MIN as f64 {
+        i32::MIN
+    } else if origin_x >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        origin_x as i32
+    };
+    let dy = if origin_y <= i32::MIN as f64 {
+        i32::MIN
+    } else if origin_y >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        origin_y as i32
+    };
+    if let Some(mask) = cache.get(&key) {
+        mask.paint(buf, dx, dy, color);
+        return true;
+    }
+    if let Some((x, y, width, height)) = axis_aligned_integer_rect(path, ctm, viewport) {
+        buf.fill_rect(x, y, width, height, color);
+        return true;
+    }
+    let Some(mask) =
+        rasterize_glyph_alpha_mask(path, &normalized_t, rule, GlyphHinting::disabled())
+    else {
+        return false;
+    };
+    let mask = Arc::new(mask);
+    mask.paint(buf, dx, dy, color);
+    cache.insert(key, mask);
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn paint_cached_path_stroke(
+    cache: &mut PathStrokeMaskCache,
+    buf: &mut PixelBuffer,
+    viewport: &Viewport,
+    path: &Path,
+    ctm: &Transform2D,
+    color: PixelColor,
+    stroke_width: f64,
+    dash: &DashState,
+    cap: &LineCap,
+    join: &LineJoin,
+    miter_limit: f64,
+) -> bool {
+    if path.segments.is_empty()
+        || path.segments.len() > 16_384
+        || !dash.is_solid()
+        || stroke_width <= 0.0
+        || !stroke_width.is_finite()
+    {
+        return false;
+    }
+    let device_t = ctm.concat(&viewport.to_transform());
+    if [
+        device_t.a, device_t.b, device_t.c, device_t.d, device_t.e, device_t.f,
+    ]
+    .iter()
+    .any(|value| !value.is_finite())
+    {
+        return false;
+    }
+    if device_t.scale_factor() <= 0.0 || device_t.scale_factor() > 256.0 {
+        return false;
+    }
+    let origin_x = device_t.e.floor();
+    let origin_y = device_t.f.floor();
+    let normalized_t = Transform2D {
+        e: device_t.e - origin_x,
+        f: device_t.f - origin_y,
+        ..device_t
+    };
+    let key = PathStrokeMaskCacheKey {
+        path_hash: hash_path_for_fill_cache(path),
+        width: quantize_glyph_mask_value(stroke_width * device_t.scale_factor()),
+        cap: line_cap_cache_id(cap),
+        join: line_join_cache_id(join),
+        miter_limit: quantize_glyph_mask_value(miter_limit),
+        a: quantize_glyph_mask_value(normalized_t.a),
+        b: quantize_glyph_mask_value(normalized_t.b),
+        c: quantize_glyph_mask_value(normalized_t.c),
+        d: quantize_glyph_mask_value(normalized_t.d),
+        frac_e: quantize_glyph_mask_fraction(normalized_t.e),
+        frac_f: quantize_glyph_mask_fraction(normalized_t.f),
+    };
+    let dx = if origin_x <= i32::MIN as f64 {
+        i32::MIN
+    } else if origin_x >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        origin_x as i32
+    };
+    let dy = if origin_y <= i32::MIN as f64 {
+        i32::MIN
+    } else if origin_y >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        origin_y as i32
+    };
+    if let Some(mask) = cache.get(&key) {
+        mask.paint(buf, dx, dy, color);
+        return true;
+    }
+    let flat = crate::render::path::flatten_path_device_transform(path, &normalized_t, 0.5);
+    let width_px = (stroke_width * normalized_t.scale_factor()).max(1.0);
+    let outline = stroke_flat_path(
+        &flat,
+        width_px,
+        dash,
+        cap.clone(),
+        join.clone(),
+        miter_limit,
+    );
+    if outline.subpaths.is_empty() {
+        return true;
+    }
+    let Some(mask) = rasterize_flat_alpha_mask(&outline, FillRule::NonZero) else {
+        return false;
+    };
+    let mask = Arc::new(mask);
+    mask.paint(buf, dx, dy, color);
+    cache.insert(key, mask);
+    true
+}
+
+fn line_cap_cache_id(cap: &LineCap) -> u8 {
+    match cap {
+        LineCap::Butt => 0,
+        LineCap::Round => 1,
+        LineCap::ProjectingSquare => 2,
+    }
+}
+
+fn line_join_cache_id(join: &LineJoin) -> u8 {
+    match join {
+        LineJoin::Miter => 0,
+        LineJoin::Round => 1,
+        LineJoin::Bevel => 2,
+    }
+}
+
+fn hash_path_for_fill_cache(path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.segments.len().hash(&mut hasher);
+    for segment in &path.segments {
+        match segment {
+            crate::render::path::PathSegment::MoveTo(x, y) => {
+                0u8.hash(&mut hasher);
+                x.to_bits().hash(&mut hasher);
+                y.to_bits().hash(&mut hasher);
+            }
+            crate::render::path::PathSegment::LineTo(x, y) => {
+                1u8.hash(&mut hasher);
+                x.to_bits().hash(&mut hasher);
+                y.to_bits().hash(&mut hasher);
+            }
+            crate::render::path::PathSegment::CubicTo {
+                cp1x,
+                cp1y,
+                cp2x,
+                cp2y,
+                x,
+                y,
+            } => {
+                2u8.hash(&mut hasher);
+                cp1x.to_bits().hash(&mut hasher);
+                cp1y.to_bits().hash(&mut hasher);
+                cp2x.to_bits().hash(&mut hasher);
+                cp2y.to_bits().hash(&mut hasher);
+                x.to_bits().hash(&mut hasher);
+                y.to_bits().hash(&mut hasher);
+            }
+            crate::render::path::PathSegment::ClosePath => {
+                3u8.hash(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
+}
+
+fn quantize_glyph_mask_value(value: f64) -> i64 {
+    const SCALE: f64 = 64.0;
+    if !value.is_finite() {
+        0
+    } else if value <= i64::MIN as f64 / SCALE {
+        i64::MIN
+    } else if value >= i64::MAX as f64 / SCALE {
+        i64::MAX
+    } else {
+        (value * SCALE).round() as i64
+    }
+}
+
+fn quantize_glyph_mask_fraction(value: f64) -> i64 {
+    const SCALE: f64 = 2.0;
+    if !value.is_finite() {
+        0
+    } else {
+        (value.fract() * SCALE).round() as i64
     }
 }
 
@@ -6258,8 +9410,8 @@ fn decode_array_paints_ones(mut values: impl Iterator<Item = f64>) -> Option<boo
 ///
 /// Defaults to black `[0,0,0,255]` (the spec default, which yields mask=0 in
 /// unpainted areas). An explicit `/BC` array overrides it, interpreted in the
-/// mask group's color space (`/Group /CS`) by component count: 1 → gray, 3 →
-/// RGB, 4 → CMYK. The result is always opaque (alpha 255) so luminosity is
+/// mask group's color space (`/Group /CS`) by component count: 1 â†’ gray, 3 â†’
+/// RGB, 4 â†’ CMYK. The result is always opaque (alpha 255) so luminosity is
 /// well-defined everywhere.
 fn smask_backdrop_color(smask_dict: &PdfDictionary, g_dict: &PdfDictionary) -> PixelColor {
     let Some(bc) = smask_dict
@@ -6298,6 +9450,26 @@ fn smask_backdrop_color(smask_dict: &PdfDictionary, g_dict: &PdfDictionary) -> P
     [p[0], p[1], p[2], 255]
 }
 
+fn smask_default_alpha(
+    smask_dict: &PdfDictionary,
+    g_dict: &PdfDictionary,
+    is_alpha: bool,
+    reader: &crate::reader::PdfReader,
+) -> u8 {
+    if is_alpha {
+        if alpha_smask_uses_opaque_bc_backdrop(smask_dict, reader) {
+            255
+        } else {
+            0
+        }
+    } else {
+        let bc = smask_backdrop_color(smask_dict, g_dict);
+        (0.299 * bc[0] as f32 + 0.587 * bc[1] as f32 + 0.114 * bc[2] as f32)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    }
+}
+
 fn alpha_smask_uses_opaque_bc_backdrop(
     smask_dict: &PdfDictionary,
     reader: &crate::reader::PdfReader,
@@ -6331,6 +9503,19 @@ fn shading_mesh_cache_key(shading_obj: &PdfObject, shading_type: i64) -> Option<
         )),
         _ => None,
     }
+}
+
+fn form_xobject_program_cache_key(obj_num: u32, gen_num: u16) -> String {
+    format!("form-program:{obj_num}:{gen_num}")
+}
+
+fn fingerprint_bytes64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 /// The `/Group` sub-dictionary of a Form XObject, if it is a transparency
@@ -6432,9 +9617,9 @@ fn tiling_pattern_stack_key(
     format!("inline:{raw_len}:{x_step:.6}:{y_step:.6}:{bbox:?}")
 }
 
-/// For a mesh shading (ShadingType 4–7), decode and return the shading stream's
+/// For a mesh shading (ShadingType 4â€“7), decode and return the shading stream's
 /// data (the packed vertex/patch records). Returns `None` for dictionary-only
-/// shadings (Types 1–3) or if the object is not a stream.
+/// shadings (Types 1â€“3) or if the object is not a stream.
 fn estimate_stream_decode_bytes(stream_obj: &PdfObject) -> u64 {
     let raw_len = match stream_obj {
         PdfObject::Stream { raw, .. } => raw.len() as u64,
@@ -6489,6 +9674,199 @@ fn image_xobject_cache_key_with_color_space(
     fnv1a_update(&mut hash, color_space_name.as_bytes());
     hash_pdf_object(&mut hash, color_space_obj, 0);
     format!("{}:cs:{hash:016x}", image_xobject_cache_key(image))
+}
+
+fn touch_image_xobject_cache_key(order: &mut VecDeque<String>, key: &str) {
+    if let Some(pos) = order.iter().position(|item| item == key) {
+        if let Some(existing) = order.remove(pos) {
+            order.push_back(existing);
+        }
+    }
+}
+
+fn insert_image_xobject_cache_entry(
+    cache: &mut HashMap<String, Arc<RawImage>>,
+    order: &mut VecDeque<String>,
+    cache_bytes: &mut usize,
+    key: String,
+    raw: Arc<RawImage>,
+    raw_bytes: usize,
+    max_bytes: usize,
+) {
+    if max_bytes == 0 || raw_bytes > max_bytes {
+        return;
+    }
+    if let Some(previous) = cache.remove(&key) {
+        *cache_bytes = cache_bytes.saturating_sub(previous.byte_count());
+        if let Some(pos) = order.iter().position(|item| item == &key) {
+            order.remove(pos);
+        }
+    }
+    while cache_bytes.saturating_add(raw_bytes) > max_bytes {
+        let Some(victim) = order.pop_front() else {
+            break;
+        };
+        if let Some(removed) = cache.remove(&victim) {
+            *cache_bytes = cache_bytes.saturating_sub(removed.byte_count());
+        }
+    }
+    if cache_bytes.saturating_add(raw_bytes) <= max_bytes {
+        order.push_back(key.clone());
+        cache.insert(key, raw);
+        *cache_bytes = cache_bytes.saturating_add(raw_bytes);
+    }
+}
+
+const SCALED_IMAGE_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const SCALED_IMAGE_CACHE_MAX_ENTRY_BYTES: usize = 32 * 1024 * 1024;
+
+fn scaled_image_cache_key(
+    base_key: &str,
+    target_width: u32,
+    target_height: u32,
+    high_quality: bool,
+) -> String {
+    format!(
+        "{base_key}:scaled:{}x{}:{}",
+        target_width,
+        target_height,
+        if high_quality { "hq" } else { "compat" }
+    )
+}
+
+fn touch_scaled_image_cache_key(order: &mut VecDeque<String>, key: &str) {
+    if let Some(pos) = order.iter().position(|item| item == key) {
+        if let Some(existing) = order.remove(pos) {
+            order.push_back(existing);
+        }
+    }
+}
+
+fn insert_scaled_image_cache_entry(
+    cache: &mut HashMap<String, Arc<RawImage>>,
+    order: &mut VecDeque<String>,
+    cache_bytes: &mut usize,
+    key: String,
+    raw: Arc<RawImage>,
+) {
+    let raw_bytes = raw.byte_count();
+    if raw_bytes == 0
+        || raw_bytes > SCALED_IMAGE_CACHE_MAX_ENTRY_BYTES
+        || SCALED_IMAGE_CACHE_MAX_BYTES == 0
+    {
+        return;
+    }
+    if let Some(previous) = cache.remove(&key) {
+        *cache_bytes = cache_bytes.saturating_sub(previous.byte_count());
+        if let Some(pos) = order.iter().position(|item| item == &key) {
+            order.remove(pos);
+        }
+    }
+    while cache_bytes.saturating_add(raw_bytes) > SCALED_IMAGE_CACHE_MAX_BYTES {
+        let Some(victim) = order.pop_front() else {
+            break;
+        };
+        if let Some(removed) = cache.remove(&victim) {
+            *cache_bytes = cache_bytes.saturating_sub(removed.byte_count());
+        }
+    }
+    if cache_bytes.saturating_add(raw_bytes) <= SCALED_IMAGE_CACHE_MAX_BYTES {
+        order.push_back(key.clone());
+        cache.insert(key, raw);
+        *cache_bytes = cache_bytes.saturating_add(raw_bytes);
+    }
+}
+
+const SMASK_GROUP_CACHE_MAX_BYTES: usize = 64 * 1024 * 1024;
+const SMASK_GROUP_CACHE_MAX_ENTRY_BYTES: usize = 32 * 1024 * 1024;
+
+fn touch_smask_group_cache_key(order: &mut VecDeque<String>, key: &str) {
+    if let Some(pos) = order.iter().position(|item| item == key) {
+        if let Some(existing) = order.remove(pos) {
+            order.push_back(existing);
+        }
+    }
+}
+
+fn insert_smask_group_cache_entry(
+    cache: &mut HashMap<String, Arc<AlphaMask>>,
+    order: &mut VecDeque<String>,
+    cache_bytes: &mut usize,
+    stats: &mut RenderArtifactCacheStats,
+    key: String,
+    mask: Arc<AlphaMask>,
+) {
+    let mask_bytes = mask.approximate_bytes();
+    if mask_bytes == 0
+        || mask_bytes > SMASK_GROUP_CACHE_MAX_ENTRY_BYTES
+        || SMASK_GROUP_CACHE_MAX_BYTES == 0
+    {
+        stats.skipped_oversized = stats.skipped_oversized.saturating_add(1);
+        return;
+    }
+    if let Some(previous) = cache.remove(&key) {
+        *cache_bytes = cache_bytes.saturating_sub(previous.approximate_bytes());
+        if let Some(pos) = order.iter().position(|item| item == &key) {
+            order.remove(pos);
+        }
+    }
+    while cache_bytes.saturating_add(mask_bytes) > SMASK_GROUP_CACHE_MAX_BYTES {
+        let Some(victim) = order.pop_front() else {
+            break;
+        };
+        if let Some(removed) = cache.remove(&victim) {
+            *cache_bytes = cache_bytes.saturating_sub(removed.approximate_bytes());
+            stats.evictions = stats.evictions.saturating_add(1);
+        }
+    }
+    if cache_bytes.saturating_add(mask_bytes) <= SMASK_GROUP_CACHE_MAX_BYTES {
+        order.push_back(key.clone());
+        cache.insert(key, mask);
+        *cache_bytes = cache_bytes.saturating_add(mask_bytes);
+    }
+}
+
+const SHADING_MESH_CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
+const SHADING_MESH_CACHE_MAX_ENTRY_BYTES: usize = 16 * 1024 * 1024;
+
+fn touch_shading_mesh_cache_key(order: &mut VecDeque<String>, key: &str) {
+    if let Some(pos) = order.iter().position(|item| item == key) {
+        if let Some(existing) = order.remove(pos) {
+            order.push_back(existing);
+        }
+    }
+}
+
+fn insert_shading_mesh_cache_entry(
+    cache: &mut HashMap<String, Arc<Vec<u8>>>,
+    order: &mut VecDeque<String>,
+    cache_bytes: &mut usize,
+    key: String,
+    data: Arc<Vec<u8>>,
+) {
+    let data_bytes = data.len();
+    if data_bytes == 0 || data_bytes > SHADING_MESH_CACHE_MAX_ENTRY_BYTES {
+        return;
+    }
+    if let Some(previous) = cache.remove(&key) {
+        *cache_bytes = cache_bytes.saturating_sub(previous.len());
+        if let Some(pos) = order.iter().position(|item| item == &key) {
+            order.remove(pos);
+        }
+    }
+    while cache_bytes.saturating_add(data_bytes) > SHADING_MESH_CACHE_MAX_BYTES {
+        let Some(victim) = order.pop_front() else {
+            break;
+        };
+        if let Some(removed) = cache.remove(&victim) {
+            *cache_bytes = cache_bytes.saturating_sub(removed.len());
+        }
+    }
+    if cache_bytes.saturating_add(data_bytes) <= SHADING_MESH_CACHE_MAX_BYTES {
+        order.push_back(key.clone());
+        cache.insert(key, data);
+        *cache_bytes = cache_bytes.saturating_add(data_bytes);
+    }
 }
 
 fn estimate_inline_image_decode_bytes(raw_len: usize, width: u32, height: u32, bpc: u8) -> u64 {
@@ -8277,6 +11655,148 @@ fn extract_bbox(dict: &PdfDictionary) -> Option<[f64; 4]> {
     Some([vals[0], vals[1], vals[2], vals[3]])
 }
 
+fn form_bbox_intersects_viewport(bbox: [f64; 4], ctm: &Transform2D, viewport: &Viewport) -> bool {
+    let x_min = bbox[0].min(bbox[2]);
+    let y_min = bbox[1].min(bbox[3]);
+    let width = (bbox[2] - bbox[0]).abs();
+    let height = (bbox[3] - bbox[1]).abs();
+    if width <= 0.0 || height <= 0.0 {
+        return true;
+    }
+    let mut path = Path::new();
+    path.rect(x_min, y_min, width, height);
+    RenderBounds::from_path(&path, ctm, viewport, 1.0)
+        .is_none_or(|bounds| bounds.intersects_viewport(viewport))
+}
+
+fn axis_aligned_bbox_clip_rect(
+    bbox: [f64; 4],
+    ctm: &Transform2D,
+    viewport: &Viewport,
+    width: u32,
+    height: u32,
+) -> Option<(i32, i32, i32, i32)> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let x0 = bbox[0].min(bbox[2]);
+    let x1 = bbox[0].max(bbox[2]);
+    let y0 = bbox[1].min(bbox[3]);
+    let y1 = bbox[1].max(bbox[3]);
+    if [x0, x1, y0, y1].iter().any(|value| !value.is_finite())
+        || (x1 - x0).abs() <= f64::EPSILON
+        || (y1 - y0).abs() <= f64::EPSILON
+    {
+        return None;
+    }
+    let device_t = ctm.concat(&viewport.to_transform());
+    let corners = [
+        device_t.transform_point(x0, y0),
+        device_t.transform_point(x1, y0),
+        device_t.transform_point(x1, y1),
+        device_t.transform_point(x0, y1),
+    ];
+    if corners
+        .iter()
+        .any(|(x, y)| !x.is_finite() || !y.is_finite())
+    {
+        return None;
+    }
+    let horizontal = |a: (f64, f64), b: (f64, f64)| (a.1 - b.1).abs() <= 1e-6;
+    let vertical = |a: (f64, f64), b: (f64, f64)| (a.0 - b.0).abs() <= 1e-6;
+    let axis_aligned_edges = corners
+        .iter()
+        .copied()
+        .zip(corners.iter().copied().cycle().skip(1))
+        .take(4)
+        .all(|(a, b)| horizontal(a, b) || vertical(a, b));
+    if !axis_aligned_edges {
+        return None;
+    }
+    let min_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::INFINITY, f64::min);
+    let max_x = corners
+        .iter()
+        .map(|(x, _)| *x)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let min_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::INFINITY, f64::min);
+    let max_y = corners
+        .iter()
+        .map(|(_, y)| *y)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let left = f64_floor_to_i32_saturating(min_x).clamp(0, u32_to_i32_saturating(width));
+    let top = f64_floor_to_i32_saturating(min_y).clamp(0, u32_to_i32_saturating(height));
+    let right = f64_ceil_to_i32_saturating(max_x).clamp(0, u32_to_i32_saturating(width));
+    let bottom = f64_ceil_to_i32_saturating(max_y).clamp(0, u32_to_i32_saturating(height));
+    if right <= left || bottom <= top {
+        None
+    } else {
+        Some((left, top, right - left, bottom - top))
+    }
+}
+
+fn transparency_group_pixel_window(
+    bbox: Option<[f64; 4]>,
+    ctm: &Transform2D,
+    viewport: &Viewport,
+    clip: Option<&ClipMask>,
+) -> Option<RenderTile> {
+    let vx0 = u32_to_i32_saturating(viewport.origin_x_px);
+    let vy0 = u32_to_i32_saturating(viewport.origin_y_px);
+    let vx1 = u32_to_i32_saturating(viewport.origin_x_px.saturating_add(viewport.width_px));
+    let vy1 = u32_to_i32_saturating(viewport.origin_y_px.saturating_add(viewport.height_px));
+    let mut x0 = vx0;
+    let mut y0 = vy0;
+    let mut x1 = vx1;
+    let mut y1 = vy1;
+
+    if let Some(bounds) = bbox.and_then(|bbox| RenderBounds::from_bbox(bbox, ctm, viewport, 2.0)) {
+        x0 = x0.max(bounds.x0);
+        y0 = y0.max(bounds.y0);
+        x1 = x1.min(bounds.x1);
+        y1 = y1.min(bounds.y1);
+    }
+
+    if let Some(clip) = clip {
+        let (cx0, cy0, cx1, cy1) = clip.visible_bounds()?;
+        x0 = x0.max(vx0.saturating_add(cx0));
+        y0 = y0.max(vy0.saturating_add(cy0));
+        x1 = x1.min(vx0.saturating_add(cx1));
+        y1 = y1.min(vy0.saturating_add(cy1));
+    }
+
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let local_x = x0.saturating_sub(vx0).max(0) as u32;
+    let local_y = y0.saturating_sub(vy0).max(0) as u32;
+    let width = (x1 - x0).max(0) as u32;
+    let height = (y1 - y0).max(0) as u32;
+    if width == 0 || height == 0 {
+        None
+    } else {
+        Some(RenderTile {
+            x: local_x,
+            y: local_y,
+            width: width.min(viewport.width_px.saturating_sub(local_x)),
+            height: height.min(viewport.height_px.saturating_sub(local_y)),
+        })
+    }
+}
+
+fn u32_to_i32_saturating(value: u32) -> i32 {
+    if value > i32::MAX as u32 {
+        i32::MAX
+    } else {
+        value as i32
+    }
+}
+
 /// Extract a Form XObject's `/Matrix`, defaulting to the identity matrix when
 /// absent or malformed.
 fn extract_form_matrix(dict: &PdfDictionary) -> crate::content::Matrix {
@@ -8291,33 +11811,152 @@ fn extract_form_matrix(dict: &PdfDictionary) -> crate::content::Matrix {
     [v[0], v[1], v[2], v[3], v[4], v[5]]
 }
 
+#[derive(Default)]
+struct ResourceOverlayRestore {
+    fonts: Vec<(String, Option<PdfDictionary>)>,
+    xobjects: Vec<(String, Option<(u32, u16)>)>,
+    xobject_subtypes: Vec<(String, Option<String>)>,
+    xobject_bboxes: Vec<(String, Option<[f64; 4]>)>,
+    xobject_matrices: Vec<(String, Option<[f64; 6]>)>,
+    color_spaces: Vec<(String, Option<PdfObject>)>,
+    ext_g_states: Vec<(String, Option<PdfDictionary>)>,
+    patterns: Vec<(String, Option<PdfObject>)>,
+    shadings: Vec<(String, Option<PdfObject>)>,
+    properties: Vec<(String, Option<PdfObject>)>,
+}
+
+impl ResourceOverlayRestore {
+    fn restore(self, resources: &mut PageResources) {
+        restore_overlay_map(&mut resources.fonts, self.fonts);
+        restore_overlay_map(&mut resources.xobjects, self.xobjects);
+        restore_overlay_map(&mut resources.xobject_subtypes, self.xobject_subtypes);
+        restore_overlay_map(&mut resources.xobject_bboxes, self.xobject_bboxes);
+        restore_overlay_map(&mut resources.xobject_matrices, self.xobject_matrices);
+        restore_overlay_map(&mut resources.color_spaces, self.color_spaces);
+        restore_overlay_map(&mut resources.ext_g_states, self.ext_g_states);
+        restore_overlay_map(&mut resources.patterns, self.patterns);
+        restore_overlay_map(&mut resources.shadings, self.shadings);
+        restore_overlay_map(&mut resources.properties, self.properties);
+    }
+}
+
+fn overlay_page_resources(
+    resources: &mut PageResources,
+    form_res: &PageResources,
+) -> ResourceOverlayRestore {
+    let mut restore = ResourceOverlayRestore::default();
+    overlay_resource_map(&mut resources.fonts, &form_res.fonts, &mut restore.fonts);
+    overlay_resource_map(
+        &mut resources.xobjects,
+        &form_res.xobjects,
+        &mut restore.xobjects,
+    );
+    overlay_resource_map(
+        &mut resources.xobject_subtypes,
+        &form_res.xobject_subtypes,
+        &mut restore.xobject_subtypes,
+    );
+    overlay_resource_map(
+        &mut resources.xobject_bboxes,
+        &form_res.xobject_bboxes,
+        &mut restore.xobject_bboxes,
+    );
+    overlay_resource_map(
+        &mut resources.xobject_matrices,
+        &form_res.xobject_matrices,
+        &mut restore.xobject_matrices,
+    );
+    overlay_resource_map(
+        &mut resources.color_spaces,
+        &form_res.color_spaces,
+        &mut restore.color_spaces,
+    );
+    overlay_resource_map(
+        &mut resources.ext_g_states,
+        &form_res.ext_g_states,
+        &mut restore.ext_g_states,
+    );
+    overlay_resource_map(
+        &mut resources.patterns,
+        &form_res.patterns,
+        &mut restore.patterns,
+    );
+    overlay_resource_map(
+        &mut resources.shadings,
+        &form_res.shadings,
+        &mut restore.shadings,
+    );
+    overlay_resource_map(
+        &mut resources.properties,
+        &form_res.properties,
+        &mut restore.properties,
+    );
+    restore
+}
+
+fn overlay_resource_map<T: Clone>(
+    target: &mut HashMap<String, T>,
+    source: &HashMap<String, T>,
+    restore: &mut Vec<(String, Option<T>)>,
+) {
+    for (key, value) in source {
+        restore.push((key.clone(), target.insert(key.clone(), value.clone())));
+    }
+}
+
+fn restore_overlay_map<T>(target: &mut HashMap<String, T>, restore: Vec<(String, Option<T>)>) {
+    for (key, previous) in restore.into_iter().rev() {
+        match previous {
+            Some(value) => {
+                target.insert(key, value);
+            }
+            None => {
+                target.remove(&key);
+            }
+        }
+    }
+}
+
+fn merge_resources_ref(form_res: &PageResources, page_res: &PageResources) -> PageResources {
+    let mut merged = page_res.clone();
+    for (k, v) in &form_res.fonts {
+        merged.fonts.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &form_res.xobjects {
+        merged.xobjects.insert(k.clone(), *v);
+    }
+    for (k, v) in &form_res.xobject_subtypes {
+        merged.xobject_subtypes.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &form_res.xobject_bboxes {
+        merged.xobject_bboxes.insert(k.clone(), *v);
+    }
+    for (k, v) in &form_res.xobject_matrices {
+        merged.xobject_matrices.insert(k.clone(), *v);
+    }
+    for (k, v) in &form_res.color_spaces {
+        merged.color_spaces.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &form_res.ext_g_states {
+        merged.ext_g_states.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &form_res.patterns {
+        merged.patterns.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &form_res.shadings {
+        merged.shadings.insert(k.clone(), v.clone());
+    }
+    for (k, v) in &form_res.properties {
+        merged.properties.insert(k.clone(), v.clone());
+    }
+    merged
+}
+
 /// Merge a Form XObject's resources over the parent page's resources. The
 /// Form's entries take priority on a name collision; names absent from the Form
 /// fall through to the page's resources.
 fn merge_resources(form_res: PageResources, page_res: &PageResources) -> PageResources {
-    let mut merged = page_res.clone();
-    for (k, v) in form_res.fonts {
-        merged.fonts.insert(k, v);
-    }
-    for (k, v) in form_res.xobjects {
-        merged.xobjects.insert(k, v);
-    }
-    for (k, v) in form_res.color_spaces {
-        merged.color_spaces.insert(k, v);
-    }
-    for (k, v) in form_res.ext_g_states {
-        merged.ext_g_states.insert(k, v);
-    }
-    for (k, v) in form_res.patterns {
-        merged.patterns.insert(k, v);
-    }
-    for (k, v) in form_res.shadings {
-        merged.shadings.insert(k, v);
-    }
-    for (k, v) in form_res.properties {
-        merged.properties.insert(k, v);
-    }
-    merged
+    merge_resources_ref(&form_res, page_res)
 }
 
 #[cfg(test)]
@@ -8761,7 +12400,7 @@ mod tests {
         let list = engine
             .build_page_display_list(1, 72)
             .expect("build display list");
-        assert!(list.has_compatibility_runs());
+        assert!(!list.has_compatibility_runs());
         assert!(list.stats.optional_content_ops > 0);
 
         let report = OptionalContentContext::from_document(engine.document());
@@ -9032,6 +12671,49 @@ mod tests {
     }
 
     #[test]
+    fn display_list_tile_replay_crops_warm_full_page_raster() {
+        let pdf = simple_vector_pdf("1 0 0 rg 0 0 100 100 re f\n0 0 1 rg 25 25 50 50 re f\n");
+        let engine = ContentEngine::open_bytes(pdf).expect("open vector PDF");
+        let mut document_cache = RenderDocumentCache::new();
+        let full = engine
+            .render_page_display_list_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut document_cache,
+            )
+            .expect("full display-list render")
+            .expect("vector page should replay");
+        let metrics_after_full = document_cache.display_list_raster_cache_metrics();
+        assert_eq!(metrics_after_full.inserts, 1);
+        assert_eq!(metrics_after_full.hits, 0);
+
+        let tile = RenderTile {
+            x: 20,
+            y: 20,
+            width: 40,
+            height: 40,
+        };
+        let from_warm_full = engine
+            .render_page_display_list_tile_cancellable_with_mode_and_cache(
+                1,
+                72,
+                tile,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut document_cache,
+            )
+            .expect("tile from warm full-page raster")
+            .expect("vector page should replay from full-page cache");
+        let expected = crop_buffer(&full, tile).expect("expected crop");
+        let metrics_after_tile = document_cache.display_list_raster_cache_metrics();
+        assert_eq!(metrics_after_tile.inserts, 2);
+        assert_eq!(metrics_after_tile.hits, 1);
+        assert_same_pixels(&expected, &from_warm_full);
+    }
+
+    #[test]
     fn render_document_cache_retains_display_lists_by_page_and_dpi() {
         let mut cache = RenderDocumentCache::new();
         let key = RenderDocumentCache::display_list_key(2, 144);
@@ -9169,6 +12851,148 @@ mod tests {
 
         cache.clear();
         assert_eq!(cache.image_xobject_entries(), 0);
+    }
+
+    #[test]
+    fn render_document_cache_retains_form_xobject_programs() {
+        let pdf = pdf_with_repeated_form_xobject();
+        let engine = ContentEngine::open_bytes(pdf).expect("open repeated Form XObject PDF");
+        let mut cache = RenderDocumentCache::new();
+
+        let first = engine
+            .render_page_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("first cached form render");
+        assert_eq!(
+            cache.form_xobject_program_entries(),
+            1,
+            "repeated Form XObject should decode and parse into one cached program"
+        );
+
+        let second = engine
+            .render_page_cancellable_with_mode_and_cache(
+                1,
+                72,
+                &CancelToken::none(),
+                RenderMode::Compat,
+                &mut cache,
+            )
+            .expect("second cached form render");
+        assert_eq!(cache.form_xobject_program_entries(), 1);
+        assert_same_pixels(&first, &second);
+
+        cache.clear();
+        assert_eq!(cache.form_xobject_program_entries(), 0);
+    }
+
+    #[test]
+    fn image_xobject_cache_evicts_least_recently_used_entry_by_byte_budget() {
+        fn raw(bytes: usize) -> Arc<RawImage> {
+            Arc::new(RawImage {
+                width: bytes as u32,
+                height: 1,
+                channels: 1,
+                bits_per_sample: 8,
+                pixels: vec![0; bytes],
+            })
+        }
+
+        let mut cache = HashMap::new();
+        let mut order = VecDeque::new();
+        let mut bytes = 0usize;
+
+        insert_image_xobject_cache_entry(
+            &mut cache,
+            &mut order,
+            &mut bytes,
+            "a".to_string(),
+            raw(10),
+            10,
+            20,
+        );
+        insert_image_xobject_cache_entry(
+            &mut cache,
+            &mut order,
+            &mut bytes,
+            "b".to_string(),
+            raw(10),
+            10,
+            20,
+        );
+        touch_image_xobject_cache_key(&mut order, "a");
+        insert_image_xobject_cache_entry(
+            &mut cache,
+            &mut order,
+            &mut bytes,
+            "c".to_string(),
+            raw(10),
+            10,
+            20,
+        );
+
+        assert!(
+            cache.contains_key("a"),
+            "recently touched image should remain"
+        );
+        assert!(
+            !cache.contains_key("b"),
+            "least-recently-used image should evict"
+        );
+        assert!(cache.contains_key("c"));
+        assert_eq!(bytes, 20);
+        assert_eq!(
+            order.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["a", "c"]
+        );
+    }
+
+    #[test]
+    fn shading_mesh_cache_evicts_least_recently_used_entry_by_byte_budget() {
+        fn mesh(bytes: usize) -> Arc<Vec<u8>> {
+            Arc::new(vec![0; bytes])
+        }
+
+        let mut cache = HashMap::new();
+        let mut order = VecDeque::new();
+        let mut bytes = 0usize;
+        let entry = SHADING_MESH_CACHE_MAX_BYTES / 2;
+
+        insert_shading_mesh_cache_entry(
+            &mut cache,
+            &mut order,
+            &mut bytes,
+            "a".to_string(),
+            mesh(entry),
+        );
+        insert_shading_mesh_cache_entry(
+            &mut cache,
+            &mut order,
+            &mut bytes,
+            "b".to_string(),
+            mesh(entry),
+        );
+        touch_shading_mesh_cache_key(&mut order, "a");
+        insert_shading_mesh_cache_entry(
+            &mut cache,
+            &mut order,
+            &mut bytes,
+            "c".to_string(),
+            mesh(entry),
+        );
+
+        assert!(cache.contains_key("a"));
+        assert!(!cache.contains_key("b"));
+        assert!(cache.contains_key("c"));
+        assert_eq!(bytes, SHADING_MESH_CACHE_MAX_BYTES);
+        assert_eq!(
+            order.iter().map(String::as_str).collect::<Vec<_>>(),
+            vec!["a", "c"]
+        );
     }
 
     #[test]
@@ -9331,6 +13155,42 @@ mod tests {
                 && (paper[2] as i32 - 242).abs() <= 2,
             "area outside the masked source should remain the gray page background: {:?}",
             paper
+        );
+    }
+
+    #[test]
+    fn display_list_replay_keeps_soft_mask_native_instead_of_page_fallback() {
+        let content = "q\n0.95 0.95 0.95 rg\n0 0 220 160 re\nf\nQ\n\
+                       q\n/GS1 gs\n0.2 0.6 0.9 rg\n10 10 200 140 re\nf\nQ\n";
+        let mask_content = "1 g\n40 30 60 60 re\nf\n";
+        let pdf = pdf_with_alpha_smask(content, mask_content, "1", None);
+        let engine = ContentEngine::open_bytes(pdf).expect("open display-list SMask PDF");
+        let list = engine
+            .build_page_display_list(1, 72)
+            .expect("build display-list SMask page");
+
+        assert!(
+            list.is_fully_supported(),
+            "SMask ExtGState should replay through RenderState, not force immediate page fallback: {:?}",
+            list.unsupported
+        );
+
+        let immediate = engine
+            .render_page_cancellable_with_mode(1, 72, &CancelToken::none(), RenderMode::Compat)
+            .expect("render immediate SMask page");
+        let display_list = PageRenderer::render_display_list_cancellable_with_mode(
+            &engine,
+            1,
+            72,
+            &list,
+            &CancelToken::none(),
+            RenderMode::Compat,
+        )
+        .expect("render display-list SMask page");
+
+        assert_eq!(
+            immediate.to_raw_image_rgba().pixels,
+            display_list.to_raw_image_rgba().pixels
         );
     }
 
@@ -9728,6 +13588,51 @@ mod tests {
                 "<< /Type /Pattern /PatternType 1 /PaintType 1 /TilingType 1 /BBox [0 0 10 10] /XStep 10 /YStep 10 /Resources << >> /Length {} >>\nstream\n{}\nendstream",
                 pattern.len(),
                 pattern
+            )
+            .into_bytes(),
+        ];
+        let mut out = bytearray_pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    fn pdf_with_repeated_form_xobject() -> Vec<u8> {
+        let page_content = "q\n1 0 0 1 0 0 cm\n/Fm1 Do\nQ\nq\n1 0 0 1 35 35 cm\n/Fm1 Do\nQ\n";
+        let form_content = "1 0 0 rg\n0 0 25 25 re f\n0 0 1 RG\n0 0 25 25 re S\n";
+        let objects = [
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << /XObject << /Fm1 5 0 R >> >> /Contents 4 0 R >>".to_vec(),
+            format!(
+                "<< /Length {} >>\nstream\n{}\nendstream",
+                page_content.len(),
+                page_content
+            )
+            .into_bytes(),
+            format!(
+                "<< /Type /XObject /Subtype /Form /FormType 1 /BBox [0 0 25 25] /Resources << >> /Length {} >>\nstream\n{}\nendstream",
+                form_content.len(),
+                form_content
             )
             .into_bytes(),
         ];
@@ -10327,6 +14232,41 @@ mod tests {
     }
 
     #[test]
+    fn type3_charproc_cache_key_includes_resource_dictionary() {
+        let mut first = PdfDictionary::empty();
+        first.insert("Subtype", PdfObject::Name("Type3".to_string()));
+        first.insert(
+            "FontMatrix",
+            PdfObject::Array(vec![
+                PdfObject::Real(0.001),
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Real(0.001),
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+            ]),
+        );
+
+        let mut second = first.clone();
+        second.insert(
+            "FontMatrix",
+            PdfObject::Array(vec![
+                PdfObject::Real(0.002),
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+                PdfObject::Real(0.002),
+                PdfObject::Integer(0),
+                PdfObject::Integer(0),
+            ]),
+        );
+
+        assert_ne!(
+            type3_charproc_cache_key("F1", &first, "A"),
+            type3_charproc_cache_key("F1", &second, "A")
+        );
+    }
+
+    #[test]
     fn document_glyph_cache_hash_includes_resource_identity() {
         let font_bytes = b"same embedded font bytes";
         let base = font_resource_glyph_cache_hash(font_bytes, "F1:aaaaaaaaaaaaaaaa");
@@ -10673,9 +14613,9 @@ mod tests {
 
     #[test]
     fn porter_duff_pixel_blend_matches_half_red_over_white() {
-        // Half-red (rgb 128,0,0 at alpha 128/255≈0.502) over white, composited in
+        // Half-red (rgb 128,0,0 at alpha 128/255â‰ˆ0.502) over white, composited in
         // sRGB space (matches Poppler/Splash). Each channel mixes directly:
-        // R = 0.502*128 + 0.498*255 ≈ 191; G = B = 0.502*0 + 0.498*255 ≈ 127.
+        // R = 0.502*128 + 0.498*255 â‰ˆ 191; G = B = 0.502*0 + 0.498*255 â‰ˆ 127.
         let mut buf = PixelBuffer::new_filled(1, 1, WHITE);
         buf.blend_pixel(0, 0, [128, 0, 0, 128], 1.0);
         let pixel = buf.get_pixel(0, 0);
@@ -10819,7 +14759,7 @@ mod tests {
         }
     }
 
-    // ── Form XObject helper tests ───────────────────────────────────────────
+    // â”€â”€ Form XObject helper tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     fn dict_with(entries: &[(&str, PdfObject)]) -> PdfDictionary {
         PdfDictionary::new(
@@ -10870,6 +14810,23 @@ mod tests {
             PdfObject::Array(vec![PdfObject::Real(0.0), PdfObject::Real(1.0)]),
         )]);
         assert!(extract_bbox(&dict).is_none());
+    }
+
+    #[test]
+    fn form_bbox_intersection_supports_tile_culling() {
+        let viewport = Viewport::new([0.0, 0.0, 50.0, 50.0], 72);
+        let bbox = [10.0, 10.0, 30.0, 30.0];
+
+        assert!(form_bbox_intersects_viewport(
+            bbox,
+            &Transform2D::identity(),
+            &viewport.pixel_window(10, 20, 5, 5)
+        ));
+        assert!(!form_bbox_intersects_viewport(
+            bbox,
+            &Transform2D::identity(),
+            &viewport.pixel_window(0, 0, 5, 5)
+        ));
     }
 
     #[test]

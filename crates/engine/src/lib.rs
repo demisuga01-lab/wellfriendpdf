@@ -419,14 +419,19 @@ pub use pubsec::{
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
-    flatten_cubic, flatten_path, get_fallback_font, rgb, rgba, AlphaMask, CachedGlyph, ClipMask,
-    ColorSpaceHandler, CpuRenderDevice, DashState, DisplayList, DisplayListStats, DisplayOp,
-    DisplayRunKind, DrawState, FillRule, FlatPath, FontRasterizer, GlyphCache, GlyphCacheKey,
-    ImagePainter, LinePainter, PageRenderer, Path, PathPainter, PathSegment, PixelBuffer,
-    PixelColor, ProgressiveRenderJob, ProgressiveRenderStepReport, ProgressiveRenderToken,
-    RenderCache, RenderCacheKey, RenderCacheMetrics, RenderColor, RenderDevice,
-    RenderDocumentCache, RenderMode, RenderQuality, RenderTile, SvgPage, Transform2D,
-    UnsupportedRenderOp, Viewport, WuLineRenderer, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
+    flatten_cubic, flatten_path, get_fallback_font, path_raster_stats,
+    pixel_buffer_allocation_stats, pixel_compositor_backend,
+    pixel_compositor_detected_hardware_backend, pixel_compositor_operation_backend,
+    pixel_compositor_stats, rgb, rgba, AlphaMask, CachedGlyph, ClipMask, ColorSpaceHandler,
+    CpuRenderDevice, DashState, DisplayList, DisplayListStats, DisplayOp, DrawState, FillRule,
+    FlatPath, FontRasterizer, GlyphCache, GlyphCacheKey, GlyphCacheStats, ImagePainter,
+    LinePainter, PageRenderer, Path, PathPainter, PathRasterStats, PathSegment, PixelBuffer,
+    PixelBufferAllocationStats, PixelColor, PixelCompositorBackend, PixelCompositorOperation,
+    PixelCompositorStats, ProgressiveRenderJob, ProgressiveRenderStepReport,
+    ProgressiveRenderToken, RenderArtifactCacheStats, RenderCache, RenderCacheKey,
+    RenderCacheMetrics, RenderColor, RenderDevice, RenderDocumentCache, RenderMode, RenderQuality,
+    RenderTile, SvgPage, Transform2D, UnsupportedRenderOp, Viewport, WuLineRenderer, BLACK, BLUE,
+    GREEN, RED, TRANSPARENT, WHITE,
 };
 pub use render::{render_page_svg, svg, text_decode};
 pub use runtime::*;

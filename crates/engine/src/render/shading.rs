@@ -286,6 +286,20 @@ fn quantize_shading_color(color: RenderColor, x: i32, y: i32, dither: bool) -> P
 }
 
 impl ShadingRenderer {
+    fn paint_bounds(buf: &PixelBuffer) -> Option<(i32, i32, i32, i32)> {
+        match buf.clip_mask().and_then(|clip| clip.visible_bounds()) {
+            Some((x0, y0, x1, y1)) => Some((
+                x0.max(0).min(buf.width as i32),
+                y0.max(0).min(buf.height as i32),
+                x1.max(0).min(buf.width as i32),
+                y1.max(0).min(buf.height as i32),
+            )),
+            None if buf.clip_mask().is_some() => None,
+            None => Some((0, 0, buf.width as i32, buf.height as i32)),
+        }
+        .filter(|(x0, y0, x1, y1)| x1 > x0 && y1 > y0)
+    }
+
     /// Paint a shading dictionary into `buf`, bounded by the buffer's current
     /// clip mask. `ctm` is the current user-space → media-box transform.
     /// `mesh_data` is the shading's decoded stream body, required for mesh
@@ -352,10 +366,11 @@ impl ShadingRenderer {
             .inverse()
             .unwrap_or_else(Transform2D::identity);
 
-        let w = buf.width as i32;
-        let h = buf.height as i32;
-        for py in 0..h {
-            for px in 0..w {
+        let Some((x_start, y_start, x_end, y_end)) = Self::paint_bounds(buf) else {
+            return;
+        };
+        for py in y_start..y_end {
+            for px in x_start..x_end {
                 if !buf.clip_allows(px, py) {
                     continue;
                 }
@@ -433,8 +448,9 @@ impl ShadingRenderer {
         }
 
         let pixel_to_user = Self::pixel_to_user(ctm, viewport);
-        let w = buf.width as i32;
-        let h = buf.height as i32;
+        let Some((x_start, y_start, x_end, y_end)) = Self::paint_bounds(buf) else {
+            return;
+        };
 
         // Cache high-resolution float colours to avoid re-evaluating the
         // function per pixel without prematurely stepping the gradient at 8-bit
@@ -442,8 +458,8 @@ impl ShadingRenderer {
         let mut cache = ShadingColorCache::new();
         let dither = buf.render_mode().is_high_quality();
 
-        for py in 0..h {
-            for px in 0..w {
+        for py in y_start..y_end {
+            for px in x_start..x_end {
                 if !buf.clip_allows(px, py) {
                     continue;
                 }
@@ -512,13 +528,14 @@ impl ShadingRenderer {
         let aa = ax * ax + ay * ay - ar * ar;
 
         let pixel_to_user = Self::pixel_to_user(ctm, viewport);
-        let w = buf.width as i32;
-        let h = buf.height as i32;
+        let Some((x_start, y_start, x_end, y_end)) = Self::paint_bounds(buf) else {
+            return;
+        };
         let mut cache = ShadingColorCache::new();
         let dither = buf.render_mode().is_high_quality();
 
-        for py in 0..h {
-            for px in 0..w {
+        for py in y_start..y_end {
+            for px in x_start..x_end {
                 if !buf.clip_allows(px, py) {
                     continue;
                 }

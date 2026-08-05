@@ -21,21 +21,27 @@ pub mod text_decode;
 pub mod transform;
 
 pub use buffer::{
-    rgb, rgba, AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, BLACK, BLUE, GREEN, RED,
-    TRANSPARENT, WHITE,
+    pixel_buffer_allocation_stats, pixel_compositor_backend,
+    pixel_compositor_detected_hardware_backend, pixel_compositor_operation_backend,
+    pixel_compositor_stats, rgb, rgba, AlphaMask, ClipMask, PixelBuffer,
+    PixelBufferAllocationStats, PixelColor, PixelCompositorBackend, PixelCompositorOperation,
+    PixelCompositorStats, RenderMode, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
 };
 pub use color::{ColorSpaceHandler, RenderColor};
 pub use display_list::{
     build_display_list, render_display_list, replay_display_list, CpuRenderDevice, DisplayList,
-    DisplayListStats, DisplayOp, DisplayRunKind, DrawState, RenderCache, RenderCacheKey,
-    RenderCacheMetrics, RenderDevice, RenderTile, UnsupportedRenderOp,
+    DisplayListStats, DisplayOp, DrawState, RenderCache, RenderCacheKey, RenderCacheMetrics,
+    RenderDevice, RenderTile, UnsupportedRenderOp,
 };
 pub use font_rasterizer::{get_fallback_font, FontRasterizer};
-pub use glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey};
+pub use glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey, GlyphCacheStats};
 pub use image_painter::ImagePainter;
 pub use line::{DashState, LinePainter, WuLineRenderer};
-pub use page_renderer::{PageRenderer, RenderDocumentCache};
-pub use path::{flatten_cubic, flatten_path, FillRule, FlatPath, Path, PathPainter, PathSegment};
+pub use page_renderer::{PageRenderer, RenderArtifactCacheStats, RenderDocumentCache};
+pub use path::{
+    flatten_cubic, flatten_path, path_raster_stats, FillRule, FlatPath, Path, PathPainter,
+    PathRasterStats, PathSegment,
+};
 pub use postscript::{assemble_eps_document, assemble_ps_document, render_page_ps, PsPage};
 pub use progressive::{ProgressiveRenderJob, ProgressiveRenderStepReport, ProgressiveRenderToken};
 pub use quality::RenderQuality;

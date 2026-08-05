@@ -1,21 +1,28 @@
 //! Display-list capture and replay for PDF rendering.
 //!
-//! This module is intentionally conservative: the normalized vector operations
-//! are replayed directly through the CPU rasterizer, while higher-level content
-//! categories are represented as typed native replay operations or measured
-//! compatibility fallbacks. That bridge is the display-list path for text,
-//! images, XObjects, shadings, patterns, and transparency until later font/color
-//! passes deepen those primitives.
+//! This module captures a normalized, replayable page drawing program. Vector
+//! path operations carry their draw state directly, while text, images, XObjects,
+//! shadings, patterns, and transparency-sensitive operations are represented as
+//! native high-level replay operations through the canonical renderer state.
 
-use crate::content::operation::ContentOperation;
+use crate::cancel::CancelToken;
+use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{BlendMode, Color, ColorSpace, GraphicsState, LineCap, LineJoin};
 use crate::engine::PageResources;
+use crate::object::PdfObject;
 use crate::render::buffer::{ClipMask, PixelBuffer, PixelColor, RenderMode, WHITE};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::line::DashState;
-use crate::render::path::{flatten_path, FillRule, Path, PathPainter};
+use crate::render::path::{
+    axis_aligned_integer_rect, flatten_path, flatten_path_device_transform,
+    rasterize_flat_alpha_mask, rasterize_glyph_alpha_mask, stroke_flat_path, FillRule,
+    GlyphHinting, Path, PathPainter, RasterizedGlyphMask,
+};
 use crate::render::transform::{Transform2D, Viewport};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, HashMap};
+use std::hash::{Hash, Hasher};
+use std::sync::Arc;
 
 /// A replayable page-level drawing program.
 #[derive(Debug, Clone)]
@@ -33,9 +40,7 @@ impl DisplayList {
     }
 
     pub fn has_compatibility_runs(&self) -> bool {
-        self.ops
-            .iter()
-            .any(|op| matches!(op, DisplayOp::ContentRun { .. }))
+        self.stats.compatibility_runs != 0
     }
 
     pub fn native_vector_only(&self) -> bool {
@@ -54,10 +59,11 @@ impl DisplayList {
                 | DisplayOp::StrokePath { path, .. } => {
                     std::mem::size_of_val(path.segments.as_slice())
                 }
-                DisplayOp::ContentRun { approx_bytes, .. }
-                | DisplayOp::StateOp { approx_bytes, .. } => *approx_bytes,
+                DisplayOp::StateOp { approx_bytes, .. } => *approx_bytes,
                 DisplayOp::NativeTextOp { approx_bytes, .. }
                 | DisplayOp::NativeImageXObject { approx_bytes, .. }
+                | DisplayOp::NativeShadingOp { approx_bytes, .. }
+                | DisplayOp::NativePatternPathOp { approx_bytes, .. }
                 | DisplayOp::NativeFormXObject { approx_bytes, .. }
                 | DisplayOp::NativeInlineImage { approx_bytes, .. } => *approx_bytes,
                 DisplayOp::Save | DisplayOp::Restore => 0,
@@ -79,6 +85,7 @@ pub enum DisplayOp {
         path: Path,
         ctm: Transform2D,
         rule: FillRule,
+        bounds: Option<RenderBounds>,
     },
     FillPath {
         path: Path,
@@ -90,17 +97,6 @@ pub enum DisplayOp {
         path: Path,
         state: DrawState,
         bounds: Option<RenderBounds>,
-    },
-    /// Replayable bridge to the existing content-stream renderer.
-    ///
-    /// This is deliberately typed and accounted for instead of being a silent
-    /// fallback. It lets the display-list path cover real pages now while
-    /// keeping font/color/image semantics exactly aligned with the immediate
-    /// renderer until those primitives are normalized in future passes.
-    ContentRun {
-        kind: DisplayRunKind,
-        ops: Vec<ContentOperation>,
-        approx_bytes: usize,
     },
     /// Replayable graphics-state mutation needed before native high-level ops.
     ///
@@ -116,21 +112,42 @@ pub enum DisplayOp {
     NativeTextOp {
         op: ContentOperation,
         approx_bytes: usize,
+        bounds: Option<RenderBounds>,
     },
     /// Native replay of an Image XObject `Do` operation.
     NativeImageXObject {
         op: ContentOperation,
         approx_bytes: usize,
+        bounds: Option<RenderBounds>,
+    },
+    /// Native replay of a named shading `sh` operation.
+    NativeShadingOp {
+        op: ContentOperation,
+        approx_bytes: usize,
+        bounds: Option<RenderBounds>,
+    },
+    /// Native replay of a path paint through the page renderer's path state.
+    ///
+    /// This is used when canonical `RenderState` must participate in the paint
+    /// operation, for example active tiling/shading patterns or an ExtGState
+    /// soft mask. Direct vector replay intentionally bypasses `RenderState`, so
+    /// it must not be used for those stateful cases.
+    NativePatternPathOp {
+        ops: Vec<ContentOperation>,
+        approx_bytes: usize,
+        bounds: Option<RenderBounds>,
     },
     /// Native replay of an inline image `ID` plus payload operation.
     NativeInlineImage {
         ops: Vec<ContentOperation>,
         approx_bytes: usize,
+        bounds: Option<RenderBounds>,
     },
     /// Native replay of a Form XObject `Do` operation.
     NativeFormXObject {
         op: ContentOperation,
         approx_bytes: usize,
+        bounds: Option<RenderBounds>,
     },
 }
 
@@ -140,24 +157,12 @@ impl DisplayOp {
             self,
             DisplayOp::NativeTextOp { .. }
                 | DisplayOp::NativeImageXObject { .. }
+                | DisplayOp::NativeShadingOp { .. }
+                | DisplayOp::NativePatternPathOp { .. }
                 | DisplayOp::NativeInlineImage { .. }
                 | DisplayOp::NativeFormXObject { .. }
         )
     }
-}
-
-/// Coarse category for a compatibility content run.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum DisplayRunKind {
-    PageContent,
-    Text,
-    Image,
-    InlineImage,
-    FormXObject,
-    Shading,
-    Pattern,
-    Transparency,
-    Mixed,
 }
 
 /// Paint and geometry state needed to replay one operation.
@@ -205,6 +210,8 @@ pub struct DisplayListStats {
     pub compatibility_fallback_reasons: BTreeMap<String, usize>,
     pub native_text_ops: usize,
     pub native_image_xobjects: usize,
+    pub native_shading_ops: usize,
+    pub native_pattern_path_ops: usize,
     pub native_inline_images: usize,
     pub native_form_xobjects: usize,
     pub unsupported_ops: usize,
@@ -258,6 +265,81 @@ pub struct RenderBounds {
 }
 
 impl RenderBounds {
+    pub fn from_bbox(
+        bbox: [f64; 4],
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        padding_px: f64,
+    ) -> Option<Self> {
+        let points = [
+            ctm.transform_point(bbox[0], bbox[1]),
+            ctm.transform_point(bbox[2], bbox[1]),
+            ctm.transform_point(bbox[0], bbox[3]),
+            ctm.transform_point(bbox[2], bbox[3]),
+        ];
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for (x, y) in points {
+            let (px, py) = viewport.page_to_pixel_f64(x, y);
+            if !px.is_finite() || !py.is_finite() {
+                continue;
+            }
+            min_x = min_x.min(px);
+            min_y = min_y.min(py);
+            max_x = max_x.max(px);
+            max_y = max_y.max(py);
+        }
+        if !min_x.is_finite() || !max_x.is_finite() || max_x <= min_x || max_y <= min_y {
+            return None;
+        }
+        let pad = padding_px.max(0.0);
+        Some(Self {
+            x0: floor_i32(min_x - pad),
+            y0: floor_i32(min_y - pad),
+            x1: ceil_i32(max_x + pad),
+            y1: ceil_i32(max_y + pad),
+        })
+    }
+
+    pub fn from_unit_square(
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        padding_px: f64,
+    ) -> Option<Self> {
+        let points = [
+            ctm.transform_point(0.0, 0.0),
+            ctm.transform_point(1.0, 0.0),
+            ctm.transform_point(1.0, 1.0),
+            ctm.transform_point(0.0, 1.0),
+        ];
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for (x, y) in points {
+            let (px, py) = viewport.page_to_pixel_f64(x, y);
+            if !px.is_finite() || !py.is_finite() {
+                continue;
+            }
+            min_x = min_x.min(px);
+            min_y = min_y.min(py);
+            max_x = max_x.max(px);
+            max_y = max_y.max(py);
+        }
+        if !min_x.is_finite() || !max_x.is_finite() || max_x <= min_x || max_y <= min_y {
+            return None;
+        }
+        let pad = padding_px.max(0.0);
+        Some(Self {
+            x0: floor_i32(min_x - pad),
+            y0: floor_i32(min_y - pad),
+            x1: ceil_i32(max_x + pad),
+            y1: ceil_i32(max_y + pad),
+        })
+    }
+
     pub fn from_path(
         path: &Path,
         ctm: &Transform2D,
@@ -299,6 +381,68 @@ impl RenderBounds {
         let vy1 = i32_from_u32(viewport.origin_y_px.saturating_add(viewport.height_px));
         self.x1 > vx0 && self.x0 < vx1 && self.y1 > vy0 && self.y0 < vy1
     }
+
+    pub fn intersect(self, other: Self) -> Option<Self> {
+        let x0 = self.x0.max(other.x0);
+        let y0 = self.y0.max(other.y0);
+        let x1 = self.x1.min(other.x1);
+        let y1 = self.y1.min(other.y1);
+        (x1 > x0 && y1 > y0).then_some(Self { x0, y0, x1, y1 })
+    }
+
+    pub fn from_text_run(
+        start_tm: [f64; 6],
+        end_tm: [f64; 6],
+        ctm: &Transform2D,
+        viewport: &Viewport,
+        font_size: f64,
+        rise: f64,
+        padding_px: f64,
+    ) -> Option<Self> {
+        if font_size <= 0.0 || !font_size.is_finite() {
+            return None;
+        }
+        let descent = -0.30 * font_size;
+        let ascent = 1.20 * font_size;
+        let text_points = [
+            text_matrix_point(start_tm, 0.0, rise + descent),
+            text_matrix_point(start_tm, 0.0, rise + ascent),
+            text_matrix_point(end_tm, 0.0, rise + descent),
+            text_matrix_point(end_tm, 0.0, rise + ascent),
+        ];
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for (x, y) in text_points {
+            let (ux, uy) = ctm.transform_point(x, y);
+            let (px, py) = viewport.page_to_pixel_f64(ux, uy);
+            if !px.is_finite() || !py.is_finite() {
+                continue;
+            }
+            min_x = min_x.min(px);
+            min_y = min_y.min(py);
+            max_x = max_x.max(px);
+            max_y = max_y.max(py);
+        }
+        if !min_x.is_finite() || !max_x.is_finite() || max_x <= min_x || max_y <= min_y {
+            return None;
+        }
+        let pad = padding_px.max(0.0);
+        Some(Self {
+            x0: floor_i32(min_x - pad),
+            y0: floor_i32(min_y - pad),
+            x1: ceil_i32(max_x + pad),
+            y1: ceil_i32(max_y + pad),
+        })
+    }
+}
+
+fn text_matrix_point(tm: [f64; 6], x: f64, y: f64) -> (f64, f64) {
+    (
+        tm[0].mul_add(x, tm[2].mul_add(y, tm[4])),
+        tm[1].mul_add(x, tm[3].mul_add(y, tm[5])),
+    )
 }
 
 fn floor_i32(value: f64) -> i32 {
@@ -330,6 +474,19 @@ fn i32_from_u32(value: u32) -> i32 {
         i32::MAX
     } else {
         value as i32
+    }
+}
+
+fn merge_bounds(a: Option<RenderBounds>, b: Option<RenderBounds>) -> Option<RenderBounds> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(RenderBounds {
+            x0: a.x0.min(b.x0),
+            y0: a.y0.min(b.y0),
+            x1: a.x1.max(b.x1),
+            y1: a.y1.max(b.y1),
+        }),
+        (Some(bounds), None) | (None, Some(bounds)) => Some(bounds),
+        (None, None) => None,
     }
 }
 
@@ -447,6 +604,18 @@ impl RenderCache {
         }
     }
 
+    pub fn get_ref(&mut self, key: &RenderCacheKey) -> Option<&PixelBuffer> {
+        self.clock = self.clock.saturating_add(1);
+        if let Some(entry) = self.entries.get_mut(key) {
+            entry.last_used = self.clock;
+            self.metrics.hits += 1;
+            Some(&entry.buffer)
+        } else {
+            self.metrics.misses += 1;
+            None
+        }
+    }
+
     pub fn insert(&mut self, key: RenderCacheKey, buffer: PixelBuffer) {
         if self.budget_bytes == 0 || self.max_entry_bytes == 0 {
             self.metrics.skipped_oversized += 1;
@@ -495,12 +664,6 @@ pub trait RenderDevice {
     fn clip_path(&mut self, path: &Path, ctm: &Transform2D, rule: FillRule);
     fn fill_path(&mut self, path: &Path, state: &DrawState, rule: FillRule);
     fn stroke_path(&mut self, path: &Path, state: &DrawState);
-    fn content_run(&mut self, kind: DisplayRunKind, ops: &[ContentOperation]) {
-        log::warn!(
-            "DisplayList device cannot replay {kind:?} compatibility run ({} ops)",
-            ops.len()
-        );
-    }
     fn state_op(&mut self, op: &ContentOperation) {
         log::trace!(
             "DisplayList device ignored state op '{}' because vector ops carry captured state",
@@ -517,6 +680,18 @@ pub trait RenderDevice {
         log::warn!(
             "DisplayList device cannot replay native image op '{}' without page context",
             op.operator
+        );
+    }
+    fn native_shading_op(&mut self, op: &ContentOperation) {
+        log::warn!(
+            "DisplayList device cannot replay native shading op '{}' without page context",
+            op.operator
+        );
+    }
+    fn native_pattern_path_op(&mut self, ops: &[ContentOperation]) {
+        log::warn!(
+            "DisplayList device cannot replay native pattern path ({} ops) without page context",
+            ops.len()
         );
     }
     fn native_inline_image(&mut self, ops: &[ContentOperation]) {
@@ -538,6 +713,8 @@ pub struct CpuRenderDevice {
     buf: PixelBuffer,
     viewport: Viewport,
     clip_stack: Vec<Option<ClipMask>>,
+    path_fill_mask_cache: CpuPathFillMaskCache,
+    path_stroke_mask_cache: CpuPathStrokeMaskCache,
 }
 
 impl CpuRenderDevice {
@@ -551,11 +728,327 @@ impl CpuRenderDevice {
             ),
             viewport,
             clip_stack: Vec::new(),
+            path_fill_mask_cache: CpuPathFillMaskCache::default(),
+            path_stroke_mask_cache: CpuPathStrokeMaskCache::default(),
         }
     }
 
     pub fn into_buffer(self) -> PixelBuffer {
         self.buf
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct CpuPathFillMaskCacheKey {
+    path_hash: u64,
+    fill_rule: u8,
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    frac_e: i64,
+    frac_f: i64,
+}
+
+#[derive(Default)]
+struct CpuPathFillMaskCache {
+    entries: HashMap<CpuPathFillMaskCacheKey, Arc<RasterizedGlyphMask>>,
+    bytes: usize,
+}
+
+impl CpuPathFillMaskCache {
+    const MAX_ENTRIES: usize = 4096;
+    const MAX_BYTES: usize = 64 * 1024 * 1024;
+
+    fn get(&self, key: &CpuPathFillMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: CpuPathFillMaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
+        let bytes = mask.approximate_bytes();
+        if bytes > Self::MAX_BYTES / 4 {
+            return;
+        }
+        if self.entries.len() >= Self::MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
+        {
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(key, mask);
+    }
+}
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+struct CpuPathStrokeMaskCacheKey {
+    path_hash: u64,
+    width: i64,
+    cap: u8,
+    join: u8,
+    miter_limit: i64,
+    a: i64,
+    b: i64,
+    c: i64,
+    d: i64,
+    frac_e: i64,
+    frac_f: i64,
+}
+
+#[derive(Default)]
+struct CpuPathStrokeMaskCache {
+    entries: HashMap<CpuPathStrokeMaskCacheKey, Arc<RasterizedGlyphMask>>,
+    bytes: usize,
+}
+
+impl CpuPathStrokeMaskCache {
+    const MAX_ENTRIES: usize = 4096;
+    const MAX_BYTES: usize = 64 * 1024 * 1024;
+
+    fn get(&self, key: &CpuPathStrokeMaskCacheKey) -> Option<Arc<RasterizedGlyphMask>> {
+        self.entries.get(key).cloned()
+    }
+
+    fn insert(&mut self, key: CpuPathStrokeMaskCacheKey, mask: Arc<RasterizedGlyphMask>) {
+        let bytes = mask.approximate_bytes();
+        if bytes > Self::MAX_BYTES / 4 {
+            return;
+        }
+        if self.entries.len() >= Self::MAX_ENTRIES
+            || self.bytes.saturating_add(bytes) > Self::MAX_BYTES
+        {
+            self.entries.clear();
+            self.bytes = 0;
+        }
+        self.bytes = self.bytes.saturating_add(bytes);
+        self.entries.insert(key, mask);
+    }
+}
+
+fn cpu_paint_cached_path_fill(
+    cache: &mut CpuPathFillMaskCache,
+    buf: &mut PixelBuffer,
+    viewport: &Viewport,
+    path: &Path,
+    ctm: &Transform2D,
+    rule: FillRule,
+    color: PixelColor,
+) -> bool {
+    if path.segments.is_empty() || path.segments.len() > 16_384 {
+        return false;
+    }
+    if let Some((x, y, width, height)) = axis_aligned_integer_rect(path, ctm, viewport) {
+        buf.fill_rect(x, y, width, height, color);
+        return true;
+    }
+    let device_t = ctm.concat(&viewport.to_transform());
+    if !cpu_path_cache_transform_allowed(&device_t) {
+        return false;
+    }
+    let origin_x = device_t.e.floor();
+    let origin_y = device_t.f.floor();
+    let normalized_t = Transform2D {
+        e: device_t.e - origin_x,
+        f: device_t.f - origin_y,
+        ..device_t
+    };
+    let key = CpuPathFillMaskCacheKey {
+        path_hash: cpu_hash_path_for_mask_cache(path),
+        fill_rule: match rule {
+            FillRule::NonZero => 0,
+            FillRule::EvenOdd => 1,
+        },
+        a: cpu_quantize_mask_value(normalized_t.a),
+        b: cpu_quantize_mask_value(normalized_t.b),
+        c: cpu_quantize_mask_value(normalized_t.c),
+        d: cpu_quantize_mask_value(normalized_t.d),
+        frac_e: cpu_quantize_mask_fraction(normalized_t.e),
+        frac_f: cpu_quantize_mask_fraction(normalized_t.f),
+    };
+    let dx = cpu_floor_to_i32(origin_x);
+    let dy = cpu_floor_to_i32(origin_y);
+    if let Some(mask) = cache.get(&key) {
+        mask.paint(buf, dx, dy, color);
+        return true;
+    }
+    let Some(mask) =
+        rasterize_glyph_alpha_mask(path, &normalized_t, rule, GlyphHinting::disabled())
+    else {
+        return false;
+    };
+    let mask = Arc::new(mask);
+    mask.paint(buf, dx, dy, color);
+    cache.insert(key, mask);
+    true
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cpu_paint_cached_path_stroke(
+    cache: &mut CpuPathStrokeMaskCache,
+    buf: &mut PixelBuffer,
+    viewport: &Viewport,
+    path: &Path,
+    ctm: &Transform2D,
+    color: PixelColor,
+    stroke_width: f64,
+    dash: &DashState,
+    cap: &LineCap,
+    join: &LineJoin,
+    miter_limit: f64,
+) -> bool {
+    if path.segments.is_empty()
+        || path.segments.len() > 16_384
+        || !dash.is_solid()
+        || stroke_width <= 0.0
+        || !stroke_width.is_finite()
+    {
+        return false;
+    }
+    let device_t = ctm.concat(&viewport.to_transform());
+    if !cpu_path_cache_transform_allowed(&device_t) {
+        return false;
+    }
+    let origin_x = device_t.e.floor();
+    let origin_y = device_t.f.floor();
+    let normalized_t = Transform2D {
+        e: device_t.e - origin_x,
+        f: device_t.f - origin_y,
+        ..device_t
+    };
+    let key = CpuPathStrokeMaskCacheKey {
+        path_hash: cpu_hash_path_for_mask_cache(path),
+        width: cpu_quantize_mask_value(stroke_width * device_t.scale_factor()),
+        cap: cpu_line_cap_id(cap),
+        join: cpu_line_join_id(join),
+        miter_limit: cpu_quantize_mask_value(miter_limit),
+        a: cpu_quantize_mask_value(normalized_t.a),
+        b: cpu_quantize_mask_value(normalized_t.b),
+        c: cpu_quantize_mask_value(normalized_t.c),
+        d: cpu_quantize_mask_value(normalized_t.d),
+        frac_e: cpu_quantize_mask_fraction(normalized_t.e),
+        frac_f: cpu_quantize_mask_fraction(normalized_t.f),
+    };
+    let dx = cpu_floor_to_i32(origin_x);
+    let dy = cpu_floor_to_i32(origin_y);
+    if let Some(mask) = cache.get(&key) {
+        mask.paint(buf, dx, dy, color);
+        return true;
+    }
+    let flat = flatten_path_device_transform(path, &normalized_t, 0.5);
+    let outline = stroke_flat_path(
+        &flat,
+        (stroke_width * normalized_t.scale_factor()).max(1.0),
+        dash,
+        cap.clone(),
+        join.clone(),
+        miter_limit,
+    );
+    if outline.subpaths.is_empty() {
+        return true;
+    }
+    let Some(mask) = rasterize_flat_alpha_mask(&outline, FillRule::NonZero) else {
+        return false;
+    };
+    let mask = Arc::new(mask);
+    mask.paint(buf, dx, dy, color);
+    cache.insert(key, mask);
+    true
+}
+
+fn cpu_path_cache_transform_allowed(device_t: &Transform2D) -> bool {
+    [
+        device_t.a, device_t.b, device_t.c, device_t.d, device_t.e, device_t.f,
+    ]
+    .iter()
+    .all(|value| value.is_finite())
+        && device_t.scale_factor() > 0.0
+        && device_t.scale_factor() <= 256.0
+}
+
+fn cpu_floor_to_i32(value: f64) -> i32 {
+    if value <= i32::MIN as f64 {
+        i32::MIN
+    } else if value >= i32::MAX as f64 {
+        i32::MAX
+    } else {
+        value as i32
+    }
+}
+
+fn cpu_line_cap_id(cap: &LineCap) -> u8 {
+    match cap {
+        LineCap::Butt => 0,
+        LineCap::Round => 1,
+        LineCap::ProjectingSquare => 2,
+    }
+}
+
+fn cpu_line_join_id(join: &LineJoin) -> u8 {
+    match join {
+        LineJoin::Miter => 0,
+        LineJoin::Round => 1,
+        LineJoin::Bevel => 2,
+    }
+}
+
+fn cpu_hash_path_for_mask_cache(path: &Path) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    path.segments.len().hash(&mut hasher);
+    for segment in &path.segments {
+        match segment {
+            crate::render::path::PathSegment::MoveTo(x, y) => {
+                0u8.hash(&mut hasher);
+                x.to_bits().hash(&mut hasher);
+                y.to_bits().hash(&mut hasher);
+            }
+            crate::render::path::PathSegment::LineTo(x, y) => {
+                1u8.hash(&mut hasher);
+                x.to_bits().hash(&mut hasher);
+                y.to_bits().hash(&mut hasher);
+            }
+            crate::render::path::PathSegment::CubicTo {
+                cp1x,
+                cp1y,
+                cp2x,
+                cp2y,
+                x,
+                y,
+            } => {
+                2u8.hash(&mut hasher);
+                cp1x.to_bits().hash(&mut hasher);
+                cp1y.to_bits().hash(&mut hasher);
+                cp2x.to_bits().hash(&mut hasher);
+                cp2y.to_bits().hash(&mut hasher);
+                x.to_bits().hash(&mut hasher);
+                y.to_bits().hash(&mut hasher);
+            }
+            crate::render::path::PathSegment::ClosePath => {
+                3u8.hash(&mut hasher);
+            }
+        }
+    }
+    hasher.finish()
+}
+
+fn cpu_quantize_mask_value(value: f64) -> i64 {
+    const SCALE: f64 = 64.0;
+    if !value.is_finite() {
+        0
+    } else if value <= i64::MIN as f64 / SCALE {
+        i64::MIN
+    } else if value >= i64::MAX as f64 / SCALE {
+        i64::MAX
+    } else {
+        (value * SCALE).round() as i64
+    }
+}
+
+fn cpu_quantize_mask_fraction(value: f64) -> i64 {
+    const SCALE: f64 = 2.0;
+    if !value.is_finite() {
+        0
+    } else {
+        (value.fract() * SCALE).round() as i64
     }
 }
 
@@ -573,6 +1066,17 @@ impl RenderDevice for CpuRenderDevice {
     }
 
     fn clip_path(&mut self, path: &Path, ctm: &Transform2D, rule: FillRule) {
+        if let Some((x, y, width, height)) = axis_aligned_integer_rect(path, ctm, &self.viewport) {
+            self.buf.set_clip(ClipMask::from_visible_rect(
+                self.buf.width,
+                self.buf.height,
+                x,
+                y,
+                width,
+                height,
+            ));
+            return;
+        }
         let flat = flatten_path(path, ctm, &self.viewport, 0.5);
         let clip = ClipMask::from_path(&flat, self.buf.width, self.buf.height, rule);
         self.buf.set_clip(clip);
@@ -597,32 +1101,69 @@ impl RenderDevice for CpuRenderDevice {
                 return;
             }
         }
-        PathPainter::fill(
+        if !cpu_paint_cached_path_fill(
+            &mut self.path_fill_mask_cache,
             &mut self.buf,
+            &self.viewport,
             path,
             &state.ctm,
-            &self.viewport,
-            state.fill_color,
             rule,
-        );
+            state.fill_color,
+        ) {
+            // General-path fallback is retained only for transforms/path
+            // shapes outside the bounded replay-mask cache contract. Route it
+            // through the same scanline-capable fast path used by the canonical
+            // page renderer so CpuRenderDevice does not regress to the old
+            // accumulator-heavy paint for large retained-list paths.
+            let cancel = CancelToken::new();
+            let _ = PathPainter::fill_fast_cancellable(
+                &mut self.buf,
+                path,
+                &state.ctm,
+                &self.viewport,
+                state.fill_color,
+                rule,
+                &cancel,
+            );
+        }
         self.buf.blend_mode = saved_blend;
     }
 
     fn stroke_path(&mut self, path: &Path, state: &DrawState) {
         let saved_blend = self.buf.blend_mode;
         self.buf.blend_mode = state.blend_mode;
-        PathPainter::stroke_with_style(
+        if !cpu_paint_cached_path_stroke(
+            &mut self.path_stroke_mask_cache,
             &mut self.buf,
+            &self.viewport,
             path,
             &state.ctm,
-            &self.viewport,
             state.stroke_color,
             state.line_width,
             &state.dash,
             &state.line_cap,
             &state.line_join,
             state.miter_limit,
-        );
+        ) {
+            // General-path fallback is retained only for dash/transform/path
+            // shapes outside the bounded replay-mask cache contract. Use the
+            // bounded scanline-capable fast path instead of the legacy
+            // accumulator-heavy stroke replay.
+            let cancel = CancelToken::new();
+            let _ = PathPainter::stroke_with_style_fast_cancellable(
+                &mut self.buf,
+                path,
+                &state.ctm,
+                &self.viewport,
+                state.stroke_color,
+                state.line_width,
+                &state.dash,
+                &state.line_cap,
+                &state.line_join,
+                state.miter_limit,
+                &cancel,
+            );
+        }
         self.buf.blend_mode = saved_blend;
     }
 }
@@ -632,15 +1173,18 @@ pub fn replay_display_list(list: &DisplayList, device: &mut dyn RenderDevice) {
         match op {
             DisplayOp::Save => device.save(),
             DisplayOp::Restore => device.restore(),
-            DisplayOp::Clip { path, ctm, rule } => device.clip_path(path, ctm, *rule),
+            DisplayOp::Clip {
+                path, ctm, rule, ..
+            } => device.clip_path(path, ctm, *rule),
             DisplayOp::FillPath {
                 path, state, rule, ..
             } => device.fill_path(path, state, *rule),
             DisplayOp::StrokePath { path, state, .. } => device.stroke_path(path, state),
-            DisplayOp::ContentRun { kind, ops, .. } => device.content_run(*kind, ops),
             DisplayOp::StateOp { op, .. } => device.state_op(op),
             DisplayOp::NativeTextOp { op, .. } => device.native_text_op(op),
             DisplayOp::NativeImageXObject { op, .. } => device.native_image_xobject(op),
+            DisplayOp::NativeShadingOp { op, .. } => device.native_shading_op(op),
+            DisplayOp::NativePatternPathOp { ops, .. } => device.native_pattern_path_op(ops),
             DisplayOp::NativeInlineImage { ops, .. } => device.native_inline_image(ops),
             DisplayOp::NativeFormXObject { op, .. } => device.native_form_xobject(op),
         }
@@ -660,48 +1204,10 @@ pub fn build_display_list(
     resources: &PageResources,
 ) -> DisplayList {
     let stats = classify_content(ops, resources);
-    if let Some(reason) = page_compatibility_fallback_reason(&stats) {
-        let approx_bytes = estimate_ops_bytes(ops);
-        let mut compatibility_fallback_reasons = BTreeMap::new();
-        compatibility_fallback_reasons.insert(reason.to_string(), 1);
-        return DisplayList {
-            viewport,
-            ops: vec![DisplayOp::ContentRun {
-                kind: DisplayRunKind::PageContent,
-                ops: ops.to_vec(),
-                approx_bytes,
-            }],
-            stats: DisplayListStats {
-                operations: 1,
-                compatibility_runs: 1,
-                compatibility_ops: ops.len(),
-                compatibility_bytes: approx_bytes,
-                compatibility_fallback_reasons,
-                ..stats
-            },
-            supported: true,
-            unsupported: Vec::new(),
-        };
-    }
-
     let mut builder = DisplayListBuilder::new(viewport, resources);
     builder.stats = stats;
     builder.dispatch_all(ops);
     builder.finish()
-}
-
-fn page_compatibility_fallback_reason(stats: &DisplayListStats) -> Option<&'static str> {
-    if stats.transparency_ops > 0 {
-        Some("unsupported_graphics_state")
-    } else if stats.optional_content_ops > 0 {
-        Some("optional_content_visibility_requires_immediate_interpreter")
-    } else if stats.shadings > 0 {
-        Some("unsupported_operator_shading")
-    } else if stats.patterns > 0 {
-        Some("unsupported_operator_pattern")
-    } else {
-        None
-    }
 }
 
 fn estimate_ops_bytes(ops: &[ContentOperation]) -> usize {
@@ -735,9 +1241,6 @@ fn estimate_operand_bytes(operand: &crate::content::operation::Operand) -> usize
 
 fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> DisplayListStats {
     let mut stats = DisplayListStats::default();
-    if !resources.properties.is_empty() {
-        stats.optional_content_ops += resources.properties.len();
-    }
     let mut gs = GraphicsState::default();
     let mut pending_inline = false;
     for op in ops {
@@ -755,7 +1258,9 @@ fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> Disp
                 _ => stats.image_xobjects += 1,
             },
             "sh" => stats.shadings += 1,
-            "BMC" | "BDC" | "EMC" => stats.optional_content_ops += 1,
+            "BDC" | "DP" if marked_content_uses_optional_content(op, resources) => {
+                stats.optional_content_ops += 1
+            }
             "ID" => pending_inline = true,
             "inline_image_data" if pending_inline => {
                 stats.inline_images += 1;
@@ -794,12 +1299,53 @@ fn classify_content(ops: &[ContentOperation], resources: &PageResources) -> Disp
     stats
 }
 
+fn marked_content_uses_optional_content(op: &ContentOperation, resources: &PageResources) -> bool {
+    let Some(property) = op.operand(1) else {
+        return false;
+    };
+    match property {
+        Operand::Name(name) => resources
+            .properties
+            .get(name)
+            .is_some_and(pdf_object_is_optional_content_property),
+        Operand::Dictionary(entries) => operand_dictionary_is_optional_content_property(entries),
+        _ => false,
+    }
+}
+
+fn pdf_object_is_optional_content_property(object: &crate::object::PdfObject) -> bool {
+    use crate::object::PdfObject;
+    match object {
+        PdfObject::Dictionary(dict) => {
+            matches!(dict.get_name("Type"), Some("OCG" | "OCMD")) || dict.get("OC").is_some()
+        }
+        PdfObject::Reference { .. } => true,
+        _ => false,
+    }
+}
+
+fn operand_dictionary_is_optional_content_property(entries: &[(String, Operand)]) -> bool {
+    entries.iter().any(|(key, value)| {
+        key == "OC"
+            || (key == "Type"
+                && matches!(
+                    value,
+                    Operand::Name(name) if name == "OCG" || name == "OCMD"
+                ))
+    })
+}
+
 struct DisplayListBuilder<'a> {
     viewport: Viewport,
     resources: &'a PageResources,
     gs: GraphicsState,
     path: Path,
+    path_ops: Vec<ContentOperation>,
     pending_clip: Option<FillRule>,
+    current_clip_bounds: Option<RenderBounds>,
+    clip_bounds_stack: Vec<Option<RenderBounds>>,
+    soft_mask_stack: Vec<bool>,
+    active_soft_mask: bool,
     ops: Vec<DisplayOp>,
     unsupported: Vec<UnsupportedRenderOp>,
     stats: DisplayListStats,
@@ -813,7 +1359,12 @@ impl<'a> DisplayListBuilder<'a> {
             resources,
             gs: GraphicsState::default(),
             path: Path::new(),
+            path_ops: Vec::new(),
             pending_clip: None,
+            current_clip_bounds: None,
+            clip_bounds_stack: Vec::new(),
+            soft_mask_stack: Vec::new(),
+            active_soft_mask: false,
             ops: Vec::new(),
             unsupported: Vec::new(),
             stats: DisplayListStats::default(),
@@ -845,11 +1396,13 @@ impl<'a> DisplayListBuilder<'a> {
             "m" => {
                 if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
                     self.path.move_to(x, y);
+                    self.path_ops.push(op.clone());
                 }
             }
             "l" => {
                 if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
                     self.path.line_to(x, y);
+                    self.path_ops.push(op.clone());
                 }
             }
             "c" => {
@@ -862,6 +1415,7 @@ impl<'a> DisplayListBuilder<'a> {
                     op.number(5),
                 ) {
                     self.path.curve_to(x1, y1, x2, y2, x3, y3);
+                    self.path_ops.push(op.clone());
                 }
             }
             "v" => {
@@ -870,6 +1424,7 @@ impl<'a> DisplayListBuilder<'a> {
                 {
                     let (cx, cy) = self.path.current_point.unwrap_or((0.0, 0.0));
                     self.path.curve_to(cx, cy, x2, y2, x3, y3);
+                    self.path_ops.push(op.clone());
                 }
             }
             "y" => {
@@ -877,47 +1432,66 @@ impl<'a> DisplayListBuilder<'a> {
                     (op.number(0), op.number(1), op.number(2), op.number(3))
                 {
                     self.path.curve_to(x1, y1, x3, y3, x3, y3);
+                    self.path_ops.push(op.clone());
                 }
             }
-            "h" => self.path.close(),
+            "h" => {
+                self.path.close();
+                self.path_ops.push(op.clone());
+            }
             "re" => {
                 if let (Some(x), Some(y), Some(w), Some(h)) =
                     (op.number(0), op.number(1), op.number(2), op.number(3))
                 {
                     self.path.rect(x, y, w, h);
+                    self.path_ops.push(op.clone());
                 }
             }
-            "S" => self.stroke_and_clear(),
+            "S" => self.stroke_and_clear(op),
             "s" => {
                 self.path.close();
-                self.stroke_and_clear();
+                self.path_ops.push(ContentOperation::new("h", Vec::new()));
+                self.stroke_and_clear(op);
             }
-            "f" | "F" => self.fill_and_clear(FillRule::NonZero),
-            "f*" => self.fill_and_clear(FillRule::EvenOdd),
-            "B" => self.fill_stroke_and_clear(FillRule::NonZero),
-            "B*" => self.fill_stroke_and_clear(FillRule::EvenOdd),
+            "f" | "F" => self.fill_and_clear(op, FillRule::NonZero),
+            "f*" => self.fill_and_clear(op, FillRule::EvenOdd),
+            "B" => self.fill_stroke_and_clear(op, FillRule::NonZero),
+            "B*" => self.fill_stroke_and_clear(op, FillRule::EvenOdd),
             "b" => {
                 self.path.close();
-                self.fill_stroke_and_clear(FillRule::NonZero);
+                self.path_ops.push(ContentOperation::new("h", Vec::new()));
+                self.fill_stroke_and_clear(op, FillRule::NonZero);
             }
             "b*" => {
                 self.path.close();
-                self.fill_stroke_and_clear(FillRule::EvenOdd);
+                self.path_ops.push(ContentOperation::new("h", Vec::new()));
+                self.fill_stroke_and_clear(op, FillRule::EvenOdd);
             }
             "n" => {
                 self.apply_pending_clip();
                 self.path.clear();
+                self.path_ops.clear();
             }
             "W" => self.pending_clip = Some(FillRule::NonZero),
             "W*" => self.pending_clip = Some(FillRule::EvenOdd),
             "q" => {
                 self.ops.push(DisplayOp::Save);
                 self.stats.saves += 1;
+                self.clip_bounds_stack.push(self.current_clip_bounds);
+                self.soft_mask_stack.push(self.active_soft_mask);
                 self.gs.process(op);
                 self.stats.max_stack_depth = self.stats.max_stack_depth.max(self.gs.stack_depth());
             }
             "Q" => {
                 self.gs.process(op);
+                self.current_clip_bounds = self.clip_bounds_stack.pop().unwrap_or_else(|| {
+                    log::warn!("DisplayListBuilder: restore with empty clip-bounds stack");
+                    None
+                });
+                self.active_soft_mask = self.soft_mask_stack.pop().unwrap_or_else(|| {
+                    log::warn!("DisplayListBuilder: restore with empty soft-mask stack");
+                    false
+                });
                 self.ops.push(DisplayOp::Restore);
                 self.stats.restores += 1;
             }
@@ -925,25 +1499,21 @@ impl<'a> DisplayListBuilder<'a> {
             | "k" | "CS" | "cs" | "SC" | "SCN" | "sc" | "scn" => {
                 self.gs.process(op);
                 self.push_state_op(op);
-                if self.uses_pattern_or_named_space() {
-                    self.mark_unsupported(
-                        op,
-                        "named/pattern color spaces require resource resolution",
-                    );
-                }
             }
             "gs" => {
                 self.apply_ext_g_state(op);
                 self.push_state_op(op);
             }
-            "BMC" | "BDC" | "EMC" | "MP" | "DP" | "BX" | "EX" => {}
+            "BMC" | "BDC" | "EMC" | "MP" | "DP" | "BX" | "EX" => {
+                self.push_state_op(op);
+            }
             "BT" | "ET" | "Tf" | "Td" | "TD" | "Tm" | "T*" | "Tc" | "Tw" | "Tz" | "TL" | "Tr"
             | "Ts" | "Tj" | "TJ" | "'" | "\"" => {
-                self.gs.process(op);
                 self.push_native_text(op);
+                self.gs.process(op);
             }
             "Do" => self.push_native_xobject(op),
-            "sh" => self.mark_unsupported(op, "shading replay is not captured yet"),
+            "sh" => self.push_native_shading(op),
             "BI" | "EI" => {}
             "ID" => {
                 self.pending_inline = Some(op.clone());
@@ -951,23 +1521,30 @@ impl<'a> DisplayListBuilder<'a> {
             "inline_image_data" => self.push_native_inline_image(op),
             _ => {
                 self.gs.process(op);
-                self.mark_unsupported(op, "operator is not represented in display-list subset");
+                // Unknown or extension operators are replayed through the same
+                // state-dispatch path used by immediate rendering. Unsupported
+                // operators remain exact no-ops or graphics-state updates
+                // according to the canonical dispatcher.
+                self.push_state_op(op);
             }
         }
     }
 
     fn apply_ext_g_state(&mut self, op: &ContentOperation) {
         let Some(name) = op.name(0) else {
-            self.mark_unsupported(op, "malformed ExtGState operator");
             return;
         };
         let Some(dict) = self.resources.ext_g_states.get(name) else {
-            self.mark_unsupported(op, "ExtGState resource not found");
             return;
         };
-        if dict.get("SMask").is_some() {
-            self.mark_unsupported(op, "soft mask ExtGState requires group replay");
-            return;
+        // Soft masks are now represented by retaining the ExtGState operator
+        // itself. Display-list replay goes through the same `RenderState`
+        // dispatch path as immediate rendering, so `/SMask` Form groups,
+        // transfer functions, backdrop colors, and the active clip/CTM stack are
+        // applied by the canonical soft-mask implementation instead of forcing
+        // the whole page back to immediate rendering.
+        if let Some(smask) = dict.get("SMask") {
+            self.active_soft_mask = !matches!(smask, PdfObject::Name(name) if name == "None");
         }
         self.gs.apply_ext_g_state(dict);
         if self.gs.blend_mode != BlendMode::Normal
@@ -983,6 +1560,24 @@ impl<'a> DisplayListBuilder<'a> {
     fn apply_pending_clip(&mut self) {
         if let Some(rule) = self.pending_clip.take() {
             let path = self.path.clone();
+            let clip_bounds = RenderBounds::from_path(&path, &self.ctm(), &self.viewport, 0.0);
+            self.current_clip_bounds = match (self.current_clip_bounds, clip_bounds) {
+                (None, Some(bounds)) => Some(bounds),
+                (Some(existing), Some(bounds)) => {
+                    existing.intersect(bounds).or(Some(RenderBounds {
+                        x0: 0,
+                        y0: 0,
+                        x1: 0,
+                        y1: 0,
+                    }))
+                }
+                (_, None) => Some(RenderBounds {
+                    x0: 0,
+                    y0: 0,
+                    x1: 0,
+                    y1: 0,
+                }),
+            };
             self.stats.path_segments += path.segments.len();
             self.stats.paths += 1;
             self.stats.clips += 1;
@@ -990,12 +1585,19 @@ impl<'a> DisplayListBuilder<'a> {
                 path,
                 ctm: self.ctm(),
                 rule,
+                bounds: clip_bounds,
             });
         }
     }
 
-    fn stroke_and_clear(&mut self) {
+    fn stroke_and_clear(&mut self, paint_op: &ContentOperation) {
         self.apply_pending_clip();
+        if self.active_soft_mask || self.uses_pattern_or_named_space() {
+            self.push_stateful_path_run(paint_op);
+            self.path.clear();
+            self.path_ops.clear();
+            return;
+        }
         if !self.path.is_empty() {
             let path = self.path.clone();
             self.stats.path_segments += path.segments.len();
@@ -1010,13 +1612,15 @@ impl<'a> DisplayListBuilder<'a> {
             });
         }
         self.path.clear();
+        self.path_ops.clear();
     }
 
-    fn fill_and_clear(&mut self, rule: FillRule) {
+    fn fill_and_clear(&mut self, paint_op: &ContentOperation, rule: FillRule) {
         self.apply_pending_clip();
-        if self.uses_pattern_or_named_space() {
-            self.mark_synthetic_unsupported("pattern/named fill cannot be replayed yet");
+        if self.active_soft_mask || self.uses_pattern_or_named_space() {
+            self.push_stateful_path_run(paint_op);
             self.path.clear();
+            self.path_ops.clear();
             return;
         }
         if !self.path.is_empty() {
@@ -1032,13 +1636,15 @@ impl<'a> DisplayListBuilder<'a> {
             });
         }
         self.path.clear();
+        self.path_ops.clear();
     }
 
-    fn fill_stroke_and_clear(&mut self, rule: FillRule) {
+    fn fill_stroke_and_clear(&mut self, paint_op: &ContentOperation, rule: FillRule) {
         self.apply_pending_clip();
-        if self.uses_pattern_or_named_space() {
-            self.mark_synthetic_unsupported("pattern/named fill cannot be replayed yet");
+        if self.active_soft_mask || self.uses_pattern_or_named_space() {
+            self.push_stateful_path_run(paint_op);
             self.path.clear();
+            self.path_ops.clear();
             return;
         }
         if !self.path.is_empty() {
@@ -1062,6 +1668,49 @@ impl<'a> DisplayListBuilder<'a> {
             });
         }
         self.path.clear();
+        self.path_ops.clear();
+    }
+
+    fn push_stateful_path_run(&mut self, paint_op: &ContentOperation) {
+        if self.path.is_empty() || self.path_ops.is_empty() {
+            self.ops.push(DisplayOp::NativePatternPathOp {
+                ops: vec![paint_op.clone()],
+                approx_bytes: estimate_ops_bytes(std::slice::from_ref(paint_op)),
+                bounds: None,
+            });
+            return;
+        }
+        let mut ops = self.path_ops.clone();
+        ops.push(paint_op.clone());
+        self.stats.path_segments += self.path.segments.len();
+        self.stats.paths += 1;
+        if matches!(paint_op.operator.as_str(), "S" | "s") {
+            self.stats.strokes += 1;
+        } else if matches!(paint_op.operator.as_str(), "B" | "B*" | "b" | "b*") {
+            self.stats.fills += 1;
+            self.stats.strokes += 1;
+        } else {
+            self.stats.fills += 1;
+        }
+        self.stats.native_pattern_path_ops += 1;
+        let bounds = self.pattern_path_bounds(paint_op);
+        self.ops.push(DisplayOp::NativePatternPathOp {
+            approx_bytes: estimate_ops_bytes(&ops),
+            ops,
+            bounds,
+        });
+    }
+
+    fn pattern_path_bounds(&self, paint_op: &ContentOperation) -> Option<RenderBounds> {
+        match paint_op.operator.as_str() {
+            "S" | "s" => self.path_bounds_for_stroke(&self.draw_state()),
+            "B" | "B*" | "b" | "b*" => {
+                let fill = self.path_bounds_for_fill();
+                let stroke = self.path_bounds_for_stroke(&self.draw_state());
+                merge_bounds(fill, stroke)
+            }
+            _ => self.path_bounds_for_fill(),
+        }
     }
 
     fn path_bounds_for_fill(&self) -> Option<RenderBounds> {
@@ -1114,10 +1763,44 @@ impl<'a> DisplayListBuilder<'a> {
 
     fn push_native_text(&mut self, op: &ContentOperation) {
         self.stats.native_text_ops += 1;
+        let bounds = self.text_show_bounds(op);
         self.ops.push(DisplayOp::NativeTextOp {
             op: op.clone(),
             approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+            bounds,
         });
+    }
+
+    fn text_show_bounds(&self, op: &ContentOperation) -> Option<RenderBounds> {
+        if !matches!(op.operator.as_str(), "Tj" | "TJ" | "'" | "\"") {
+            return None;
+        }
+        let mut start = self.gs.clone();
+        match op.operator.as_str() {
+            "'" => start.process(&ContentOperation::new("T*", Vec::new())),
+            "\"" => {
+                if let Some(word_spacing) = op.number(0) {
+                    start.text.word_spacing = word_spacing;
+                }
+                if let Some(char_spacing) = op.number(1) {
+                    start.text.char_spacing = char_spacing;
+                }
+                start.process(&ContentOperation::new("T*", Vec::new()));
+            }
+            _ => {}
+        }
+        let start_tm = start.text.tm;
+        let mut end = self.gs.clone();
+        end.process(op);
+        RenderBounds::from_text_run(
+            start_tm,
+            end.text.tm,
+            &self.ctm(),
+            &self.viewport,
+            start.text.font_size,
+            start.text.rise,
+            2.0,
+        )
     }
 
     fn push_state_op(&mut self, op: &ContentOperation) {
@@ -1138,6 +1821,7 @@ impl<'a> DisplayListBuilder<'a> {
                 self.ops.push(DisplayOp::NativeImageXObject {
                     op: op.clone(),
                     approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+                    bounds: self.unit_square_bounds(),
                 });
             }
             Some("Form") => {
@@ -1145,64 +1829,70 @@ impl<'a> DisplayListBuilder<'a> {
                 self.ops.push(DisplayOp::NativeFormXObject {
                     op: op.clone(),
                     approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+                    bounds: op.name(0).and_then(|name| self.form_xobject_bounds(name)),
                 });
             }
             _ => {
-                self.push_compatibility_fallback(
-                    DisplayRunKind::Mixed,
-                    std::slice::from_ref(op),
-                    "unsupported_xobject_subtype",
-                );
+                self.ops.push(DisplayOp::NativeFormXObject {
+                    op: op.clone(),
+                    approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+                    bounds: self.unit_square_bounds(),
+                });
             }
         }
     }
 
+    fn push_native_shading(&mut self, op: &ContentOperation) {
+        if op.name(0).is_none() {
+            self.ops.push(DisplayOp::NativeShadingOp {
+                op: op.clone(),
+                approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+                bounds: self.current_clip_bounds,
+            });
+            return;
+        }
+        self.stats.native_shading_ops += 1;
+        self.ops.push(DisplayOp::NativeShadingOp {
+            op: op.clone(),
+            approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
+            bounds: self.current_clip_bounds,
+        });
+    }
+
     fn push_native_inline_image(&mut self, data_op: &ContentOperation) {
         let Some(id_op) = self.pending_inline.take() else {
-            self.mark_unsupported(data_op, "inline image data without ID parameters");
+            self.ops.push(DisplayOp::NativeInlineImage {
+                ops: vec![data_op.clone()],
+                approx_bytes: estimate_ops_bytes(std::slice::from_ref(data_op)),
+                bounds: self.unit_square_bounds(),
+            });
             return;
         };
         let ops = vec![id_op, data_op.clone()];
         let approx_bytes = estimate_ops_bytes(&ops);
         self.stats.native_inline_images += 1;
-        self.ops
-            .push(DisplayOp::NativeInlineImage { ops, approx_bytes });
-    }
-
-    fn push_compatibility_fallback(
-        &mut self,
-        kind: DisplayRunKind,
-        ops: &[ContentOperation],
-        reason: &str,
-    ) {
-        let approx_bytes = estimate_ops_bytes(ops);
-        self.stats.compatibility_runs += 1;
-        self.stats.compatibility_ops += ops.len();
-        self.stats.compatibility_bytes += approx_bytes;
-        *self
-            .stats
-            .compatibility_fallback_reasons
-            .entry(reason.to_string())
-            .or_insert(0) += 1;
-        self.ops.push(DisplayOp::ContentRun {
-            kind,
-            ops: ops.to_vec(),
+        self.ops.push(DisplayOp::NativeInlineImage {
+            ops,
             approx_bytes,
+            bounds: self.unit_square_bounds(),
         });
     }
 
-    fn mark_unsupported(&mut self, op: &ContentOperation, reason: &str) {
-        self.unsupported.push(UnsupportedRenderOp {
-            operator: op.operator.clone(),
-            reason: reason.to_string(),
-        });
+    fn unit_square_bounds(&self) -> Option<RenderBounds> {
+        RenderBounds::from_unit_square(&self.ctm(), &self.viewport, 1.0)
     }
 
-    fn mark_synthetic_unsupported(&mut self, reason: &str) {
-        self.unsupported.push(UnsupportedRenderOp {
-            operator: "paint".to_string(),
-            reason: reason.to_string(),
-        });
+    fn form_xobject_bounds(&self, name: &str) -> Option<RenderBounds> {
+        const IDENTITY: [f64; 6] = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+        let bbox = *self.resources.xobject_bboxes.get(name)?;
+        let matrix = self
+            .resources
+            .xobject_matrices
+            .get(name)
+            .copied()
+            .unwrap_or(IDENTITY);
+        let ctm = Transform2D::from(matrix).concat(&self.ctm());
+        RenderBounds::from_bbox(bbox, &ctm, &self.viewport, 1.0)
     }
 }
 
@@ -1249,6 +1939,7 @@ fn simple_cmyk_components(color: &Color) -> Option<[f32; 4]> {
 mod tests {
     use super::*;
     use crate::content::operation::Operand;
+    use crate::object::{PdfDictionary, PdfObject};
     use crate::render::buffer::{BLACK, RED};
 
     fn op(operator: &str, operands: Vec<Operand>) -> ContentOperation {
@@ -1349,6 +2040,312 @@ mod tests {
         assert_eq!(list.stats.compatibility_runs, 0);
         assert_eq!(list.stats.compatibility_ops, 0);
         assert!(matches!(list.ops[0], DisplayOp::NativeTextOp { .. }));
+    }
+
+    #[test]
+    fn text_showing_native_op_records_tile_culling_bounds() {
+        let ops = vec![
+            op("BT", vec![]),
+            op("Tf", vec![Operand::Name("F1".to_string()), num(12.0)]),
+            op("Td", vec![num(40.0), num(40.0)]),
+            op("Tj", vec![Operand::String(b"hello".to_vec())]),
+            op("ET", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
+        let text_bounds = list.ops.iter().find_map(|op| match op {
+            DisplayOp::NativeTextOp {
+                op,
+                bounds: Some(bounds),
+                ..
+            } if op.operator == "Tj" => Some(*bounds),
+            _ => None,
+        });
+
+        let bounds = text_bounds.expect("showing text should carry conservative bounds");
+        assert!(bounds.intersects_viewport(&viewport));
+        assert!(!bounds.intersects_viewport(&viewport.pixel_window(0, 0, 10, 10)));
+    }
+
+    #[test]
+    fn text_showing_bounds_use_pre_advance_text_matrix() {
+        let ops = vec![
+            op("BT", vec![]),
+            op("Tf", vec![Operand::Name("F1".to_string()), num(12.0)]),
+            op("Td", vec![num(40.0), num(40.0)]),
+            op("Tj", vec![Operand::String(b"hello".to_vec())]),
+            op("ET", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let list = build_display_list(&ops, viewport.clone(), &PageResources::default());
+        let text_bounds = list.ops.iter().find_map(|op| match op {
+            DisplayOp::NativeTextOp {
+                op,
+                bounds: Some(bounds),
+                ..
+            } if op.operator == "Tj" => Some(*bounds),
+            _ => None,
+        });
+
+        let bounds = text_bounds.expect("showing text should carry conservative bounds");
+        assert!(
+            bounds.intersects_viewport(&viewport.pixel_window(38, 45, 4, 20)),
+            "text culling bounds must include the glyph start, not only the post-showing advance"
+        );
+    }
+
+    #[test]
+    fn alpha_ext_gstate_does_not_force_page_compatibility_run() {
+        let ops = vec![
+            op("gs", vec![Operand::Name("GS1".to_string())]),
+            op("rg", vec![num(1.0), num(0.0), num(0.0)]),
+            op("re", vec![num(1.0), num(1.0), num(8.0), num(8.0)]),
+            op("f", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let mut resources = PageResources::default();
+        let mut gs = PdfDictionary::empty();
+        gs.insert("ca", PdfObject::Real(0.5));
+        gs.insert("CA", PdfObject::Real(0.5));
+        resources.ext_g_states.insert("GS1".to_string(), gs);
+
+        let list = build_display_list(&ops, viewport.clone(), &resources);
+
+        assert!(list.is_fully_supported());
+        assert!(!list.has_compatibility_runs());
+        assert_eq!(list.stats.transparency_ops, 1);
+        assert_eq!(list.stats.compatibility_runs, 0);
+        assert!(matches!(list.ops[0], DisplayOp::StateOp { .. }));
+        assert!(matches!(
+            list.ops.iter().find(|op| matches!(op, DisplayOp::FillPath { .. })),
+            Some(DisplayOp::FillPath { state, .. }) if state.fill_color[3] < 255
+        ));
+    }
+
+    #[test]
+    fn ordinary_marked_content_does_not_force_page_compatibility_run() {
+        let ops = vec![
+            op(
+                "BDC",
+                vec![
+                    Operand::Name("Span".to_string()),
+                    Operand::Dictionary(vec![(
+                        "Lang".to_string(),
+                        Operand::String(b"en-US".to_vec()),
+                    )]),
+                ],
+            ),
+            op("re", vec![num(1.0), num(1.0), num(8.0), num(8.0)]),
+            op("f", vec![]),
+            op("EMC", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+
+        let list = build_display_list(&ops, viewport, &PageResources::default());
+
+        assert!(list.is_fully_supported());
+        assert!(!list.has_compatibility_runs());
+        assert_eq!(list.stats.optional_content_ops, 0);
+        assert_eq!(list.stats.compatibility_runs, 0);
+        assert!(list
+            .ops
+            .iter()
+            .any(|op| matches!(op, DisplayOp::FillPath { .. })));
+    }
+
+    #[test]
+    fn optional_content_marked_content_replays_as_state_ops_without_page_fallback() {
+        let ops = vec![
+            op(
+                "BDC",
+                vec![
+                    Operand::Name("OC".to_string()),
+                    Operand::Name("Layer1".to_string()),
+                ],
+            ),
+            op("re", vec![num(1.0), num(1.0), num(8.0), num(8.0)]),
+            op("f", vec![]),
+            op("EMC", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let mut resources = PageResources::default();
+        let mut ocg = PdfDictionary::empty();
+        ocg.insert("Type", PdfObject::Name("OCG".to_string()));
+        resources
+            .properties
+            .insert("Layer1".to_string(), PdfObject::Dictionary(ocg));
+
+        let list = build_display_list(&ops, viewport, &resources);
+
+        assert!(list.is_fully_supported());
+        assert!(!list.has_compatibility_runs());
+        assert_eq!(list.stats.optional_content_ops, 1);
+        assert_eq!(list.stats.compatibility_runs, 0);
+        assert!(list
+            .ops
+            .iter()
+            .any(|op| matches!(op, DisplayOp::StateOp { op, .. } if op.operator == "BDC")));
+    }
+
+    #[test]
+    fn inline_optional_content_dictionary_replays_as_state_ops_without_page_fallback() {
+        let ops = vec![
+            op(
+                "BDC",
+                vec![
+                    Operand::Name("OC".to_string()),
+                    Operand::Dictionary(vec![(
+                        "Type".to_string(),
+                        Operand::Name("OCMD".to_string()),
+                    )]),
+                ],
+            ),
+            op("re", vec![num(1.0), num(1.0), num(8.0), num(8.0)]),
+            op("f", vec![]),
+            op("EMC", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+
+        let list = build_display_list(&ops, viewport, &PageResources::default());
+
+        assert!(list.is_fully_supported());
+        assert!(!list.has_compatibility_runs());
+        assert_eq!(list.stats.optional_content_ops, 1);
+        assert_eq!(list.stats.compatibility_runs, 0);
+    }
+
+    #[test]
+    fn image_xobject_native_op_records_tile_culling_bounds() {
+        let ops = vec![
+            op(
+                "cm",
+                vec![
+                    num(10.0),
+                    num(0.0),
+                    num(0.0),
+                    num(10.0),
+                    num(30.0),
+                    num(30.0),
+                ],
+            ),
+            op("Do", vec![Operand::Name("Im1".to_string())]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let mut resources = PageResources::default();
+        resources
+            .xobject_subtypes
+            .insert("Im1".to_string(), "Image".to_string());
+
+        let list = build_display_list(&ops, viewport.clone(), &resources);
+        let image_bounds = list.ops.iter().find_map(|op| match op {
+            DisplayOp::NativeImageXObject { bounds, .. } => *bounds,
+            _ => None,
+        });
+
+        let bounds = image_bounds.expect("native image op should carry bounds");
+        assert!(bounds.intersects_viewport(&viewport));
+        assert!(!bounds.intersects_viewport(&viewport.pixel_window(0, 0, 10, 10)));
+    }
+
+    #[test]
+    fn named_shading_is_replayable_as_native_operation() {
+        let ops = vec![op("sh", vec![Operand::Name("S1".to_string())])];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let mut resources = PageResources::default();
+        resources.shadings.insert(
+            "S1".to_string(),
+            PdfObject::Dictionary(PdfDictionary::empty()),
+        );
+
+        let list = build_display_list(&ops, viewport.clone(), &resources);
+
+        assert!(list.is_fully_supported());
+        assert!(!list.has_compatibility_runs());
+        assert_eq!(list.stats.shadings, 1);
+        assert_eq!(list.stats.native_shading_ops, 1);
+        assert_eq!(list.stats.compatibility_runs, 0);
+        assert!(matches!(list.ops[0], DisplayOp::NativeShadingOp { .. }));
+    }
+
+    #[test]
+    fn missing_named_shading_stays_native_and_replays_canonical_noop() {
+        let ops = vec![op("sh", vec![Operand::Name("S1".to_string())])];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+
+        let list = build_display_list(&ops, viewport, &PageResources::default());
+
+        assert!(list.is_fully_supported());
+        assert!(!list.has_compatibility_runs());
+        assert_eq!(list.stats.shadings, 1);
+        assert_eq!(list.stats.native_shading_ops, 1);
+        assert_eq!(list.stats.compatibility_runs, 0);
+        assert!(matches!(list.ops[0], DisplayOp::NativeShadingOp { .. }));
+    }
+
+    #[test]
+    fn pattern_fill_uses_native_path_replay_when_resource_is_available() {
+        let ops = vec![
+            op("q", vec![]),
+            op("cs", vec![Operand::Name("Pattern".to_string())]),
+            op("scn", vec![Operand::Name("P1".to_string())]),
+            op("re", vec![num(1.0), num(1.0), num(8.0), num(8.0)]),
+            op("f", vec![]),
+            op("Q", vec![]),
+            op("rg", vec![num(1.0), num(0.0), num(0.0)]),
+            op("re", vec![num(10.0), num(1.0), num(8.0), num(8.0)]),
+            op("f", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+        let mut resources = PageResources::default();
+        resources.patterns.insert(
+            "P1".to_string(),
+            PdfObject::Dictionary(PdfDictionary::empty()),
+        );
+
+        let list = build_display_list(&ops, viewport.clone(), &resources);
+
+        assert!(list.is_fully_supported());
+        assert!(!list.has_compatibility_runs());
+        assert_eq!(list.stats.compatibility_runs, 0);
+        assert_eq!(list.stats.native_pattern_path_ops, 1);
+        assert_eq!(list.stats.fills, 2);
+        let pattern_bounds = list.ops.iter().find_map(|op| match op {
+            DisplayOp::NativePatternPathOp { bounds, .. } => *bounds,
+            _ => None,
+        });
+        let bounds = pattern_bounds.expect("native pattern path should carry bounds");
+        assert!(bounds.intersects_viewport(&viewport));
+        assert!(!bounds.intersects_viewport(&viewport.pixel_window(12, 12, 4, 4)));
+        assert!(list
+            .ops
+            .iter()
+            .any(|op| matches!(op, DisplayOp::FillPath { .. })));
+    }
+
+    #[test]
+    fn missing_pattern_resource_stays_native_and_replays_canonical_noop() {
+        let ops = vec![
+            op("q", vec![]),
+            op("cs", vec![Operand::Name("Pattern".to_string())]),
+            op("scn", vec![Operand::Name("P1".to_string())]),
+            op("re", vec![num(1.0), num(1.0), num(8.0), num(8.0)]),
+            op("f", vec![]),
+            op("Q", vec![]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
+
+        let list = build_display_list(&ops, viewport, &PageResources::default());
+
+        assert!(list.is_fully_supported());
+        assert!(!list.has_compatibility_runs());
+        assert_eq!(list.stats.compatibility_runs, 0);
+        assert_eq!(list.stats.native_pattern_path_ops, 1);
+        assert!(matches!(
+            list.ops
+                .iter()
+                .find(|op| matches!(op, DisplayOp::NativePatternPathOp { .. })),
+            Some(DisplayOp::NativePatternPathOp { .. })
+        ));
     }
 
     #[test]
