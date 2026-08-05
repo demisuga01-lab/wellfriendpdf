@@ -1080,6 +1080,42 @@ pub fn runtime_capabilities_for(
             reason: "google_azure_aws_and_enterprise_contracts_require_operator_configuration"
                 .to_string(),
         },
+        RuntimeCapability {
+            name: "retained_display_list_renderer".to_string(),
+            state: if config.rendering.retained_display_lists {
+                CapabilityState::Available
+            } else {
+                CapabilityState::InactivePolicy
+            },
+            mode: ExecutionMode::Standard,
+            reason: "retained replay is available for captured operations; unsupported display lists use explicit counted canonical immediate fallback".to_string(),
+        },
+        RuntimeCapability {
+            name: "renderer_fallback_reporting".to_string(),
+            state: CapabilityState::Active,
+            mode: ExecutionMode::Standard,
+            reason: "display-list and render-corpus reports expose compatibility fallback counters; exact fallback closure remains a documented limitation".to_string(),
+        },
+        RuntimeCapability {
+            name: "progressive_renderer_core".to_string(),
+            state: if config.rendering.tile_rendering && config.rendering.progressive_pause_resume {
+                CapabilityState::Available
+            } else {
+                CapabilityState::InactivePolicy
+            },
+            mode: ExecutionMode::Standard,
+            reason: "tile-boundary progressive core and resume tokens are available; full pause-close lifecycle and cross-binding adapters remain incomplete".to_string(),
+        },
+        RuntimeCapability {
+            name: "cpu_simd_compositor".to_string(),
+            state: if config.rendering.cpu_simd_dispatch {
+                CapabilityState::Available
+            } else {
+                CapabilityState::InactivePolicy
+            },
+            mode: ExecutionMode::Standard,
+            reason: "runtime-dispatched CPU SIMD is used for verified operations with an exact scalar fallback for unsupported or declined kernels".to_string(),
+        },
     ];
     for name in [
         "gpu_hybrid_rendering",
@@ -1754,6 +1790,23 @@ mod tests {
             .unwrap();
         assert_eq!(effective.requested_mode, ExecutionMode::Research);
         assert_eq!(effective.effective_mode, ExecutionMode::Standard);
+    }
+
+    #[test]
+    fn renderer_capabilities_disclose_fallback_and_progressive_limits() {
+        let report = runtime_capabilities_for(
+            &RuntimeConfig::standard(),
+            HostRuntimeProfile::minimum_standard(),
+            &HostRuntimePolicy::default(),
+        );
+        for name in [
+            "retained_display_list_renderer",
+            "renderer_fallback_reporting",
+            "progressive_renderer_core",
+            "cpu_simd_compositor",
+        ] {
+            assert!(report.entries.iter().any(|entry| entry.name == name));
+        }
     }
 
     #[test]
