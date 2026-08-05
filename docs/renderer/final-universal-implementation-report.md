@@ -1,0 +1,119 @@
+# Final universal renderer implementation report
+
+**Repository:** `E:\wellpdfsdk`
+**Code-validation commit:** `dd9e9d7b64bd13598b143d54d24a5ecd331a9ec8`
+**Validation VPS:** `ubuntu@51.77.178.150`
+**Evidence root:** `/home/ubuntu/wellpdf/results/final-prebenchmark-verification-20260805T230133Z`
+**Scope:** Final pre-benchmark implementation/verification pass. This report distinguishes repaired and verified work from unresolved universal-architecture requirements.
+
+## Verified implementation work completed in this pass
+
+1. Repaired the interrupted `path.rs` parse break where `fill_flat_aa` had been accidentally commented out by a merged documentation/function line.
+2. Repaired the new `render-simd` crate's `unsafe_op_in_unsafe_fn` boundary: SSE helpers now declare target features and unsafe callers are explicit.
+3. Fixed SIMD scalar-equivalence guard semantics so a declined short row falls through cleanly rather than comparing untouched output to scalar output. Added `render_simd::tests::public_kernels_match_scalar_or_cleanly_decline_unaligned_rows`.
+4. Restored fractional scanline stroke coverage by increasing bounded vertical color coverage samples from two to four; the analytic stroke regression test passes.
+5. Removed/reintegrated source-proven dead helpers and repaired all strict Clippy findings without disabling broad warning policy.
+6. Made SVG output explicitly rasterize pages containing unresolved ExtGState operators or more than 64 text-showing operators. This changes a known low-fidelity vector path into an explicit `SvgPage::is_rasterized` fallback; `svg_output` passes on the VPS.
+7. Exposed retained-list, fallback-reporting, progressive-core limitation, and CPU-SIMD/scalar-fallback state through `wellfriendpdf --mode standard capabilities`, with a dedicated runtime test.
+8. Added source-based pre-audit, full method inventory, and fallback inventory documents.
+
+## Post-status matrix
+
+`YES*` means an active retained path exists but still has the exact fallback/structural limitation named in the row. All rows retain the original stable ID from `final-universal-preimplementation-audit.md`.
+
+| ID | Pre-status | Post-status | Files changed / active call path | Native retained replay | Immediate fallback | Tests added / verification | Bindings | Resource bounds | Remaining limitations |
+|---|---|---|---|---|---|---|---|---|---|
+| RV-01 | MISSING | MISSING | No view implementation; `ContentEngine` remains the common root | no | n/a | source audit | none | n/a | No CanonicalDocument or lazy Render/Edit/Semantic/Validation view split |
+| RV-02 | MISSING | MISSING | No `RenderContract` source | no | n/a | source audit | none | n/a | Contract/version/full cache identity still absent |
+| RV-03 | PARTIAL | PARTIAL | `display_list.rs:RenderDevice/CpuRenderDevice`; `buffer.rs`; `render-simd` | partial | list fallback | VPS check/clippy/test pass | Rust only | existing buffer/cache guards | No backend plan, caller surface API, or GPU boundary |
+| RV-04 | PARTIAL | PARTIAL | `ContentOperation` → `DisplayListBuilder` | partial | n/a | parser/render tests pass | internal | parser/decode limits | No compact source-linked page-program arena |
+| RV-05 | PARTIAL | PARTIAL | `render/display_list.rs`; `PageRenderer::get_or_build_display_list_with_cache` | YES* | `!is_fully_supported()` | full VPS suite | Rust/CLI partial | approximate bytes only | `Vec<DisplayOp>` remains clone-heavy/unpacked |
+| RV-06 | PARTIAL | PARTIAL | `DisplayOp` enum retains paths/states/raw operations | no | n/a | source audit | Rust only | n/a | Required packed hot/cold operation layout absent |
+| RV-07 | MISSING | MISSING | no `RenderPlan` | no | n/a | source audit | none | n/a | Backend-specialized plan/batches absent |
+| RV-08 | PARTIAL | PARTIAL | `RenderState::replay_display_list` | partial | canonical state/resource resolution | retained replay tests pass | Rust/CLI partial | document cache | Replay still retains raw ContentOperation/resource work |
+| RV-09 | PARTIAL | PARTIAL | display list builder/state | partial | n/a | source audit | none | selected caches | State/resource intern tables absent |
+| RV-10 | PARTIAL | PARTIAL | rectangle/mask/bounds specialization | partial | general path fallback | path tests pass | none | bounded masks | No explicit safe optimizer pipeline |
+| RV-11 | MISSING | MISSING | cache key remains page/DPI in `RenderDocumentCache` | no | page-level rebuild | source audit | none | clear-only | No revision dependency graph or edit invalidation |
+| RV-12 | PARTIAL | PARTIAL | `RenderBounds` tile filtering | YES* | unknown bounds execute | metamorphic renderer test passes | internal | tile range validation | Linear scan; no adaptive R-tree/BVH/grid |
+| RV-13 | PARTIAL | PARTIAL | `crates/render-simd/src/lib.rs`, `buffer.rs` | n/a | exact scalar/wide fallback | new SIMD test; VPS SIMD test passes | Rust only | slice bounds/runtime dispatch | AVX2/SSE2/NEON subset only; no WASM SIMD/AVX-512/full operation coverage |
+| RV-14 | PARTIAL | PARTIAL | `path.rs` edge buckets/scanline | yes for guarded paths | general bounded painter | fractional coverage test and full suite pass | internal | edge-link cap 2,000,000; path guards | No formal full AET/monotonic/scratch-contract closure |
+| RV-15 | PARTIAL | PARTIAL | `ClipMask`, `ClipRunCache` | yes | exact dense/general paths | clip tests pass | internal | mask dimensions/caches | No requested persistent clip DAG/representation enum |
+| RV-16 | PARTIAL | PARTIAL | group surfaces and compositor | partial | scalar complex composite | transparency tests pass | internal | scheduler/offscreen limits | Full group/print semantics not closed |
+| RV-17 | PARTIAL | PARTIAL | SMask cache/apply paths | partial | scalar/general mask path | SMask tests pass | internal | surface/decode limits | Complete contract/revision key and inventory closure absent |
+| RV-18 | PARTIAL | PARTIAL | `shading.rs`, `function.rs` | partial | canonical shading paths | shading tests pass | CLI indirect | function/decode limits | Full exact/contract verification remains incomplete |
+| RV-19 | PARTIAL | PARTIAL | pattern paint handlers | partial | FB-04/FB-05 solid fallback | pattern tests pass | Rust/CLI indirect | recursion/tile cap | Recursive/over-cap patterns approximate instead of typed exact refusal |
+| RV-20 | PARTIAL | PARTIAL | Type 3 charproc/cache paths | partial | FB-06 compatibility fallback | Type 3 tests pass | Rust indirect | cache caps | No immutable Type 3 sublist state machine/exact closure |
+| RV-21 | PARTIAL | PARTIAL | fonts/glyph caches | partial | FB-07 bundled substitution | font tests pass | limited | selected byte caches | Atlas/single-flight/full contract keys/binding parity missing |
+| RV-22 | PARTIAL | PARTIAL | image decode/sampler/cache | partial | FB-09 compatibility sampler | image tests pass | limited | scheduler/image cache | Region/progressive strategy and unified identity incomplete |
+| RV-23 | PARTIAL | PARTIAL | CMM/color/overprint | partial | FB-10 qcms backend | CMM tests pass | limited | profile/decode bounds | Print/proof contract and native CMM feature validation blocked |
+| RV-24 | PARTIAL | PARTIAL | Form program cache | partial | list-level immediate fallback | Form tests pass | Rust indirect | decode/depth | Key lacks full resource/revision/contract identity |
+| RV-25 | PARTIAL | PARTIAL | annotation/widget paths | partial | generated appearances | annotation tests pass | CLI/server partial | existing renderer limits | No appearance cache/dirty invalidation/contract switch |
+| RV-26 | PARTIAL | PARTIAL | `RenderDocumentCache` / `RenderCache` | partial | cache miss | cache tests pass | Rust/CLI telemetry | selected LRU budgets | Multiple plain unbounded maps/no tenant policy |
+| RV-27 | PARTIAL | PARTIAL | display list/path/buffer allocations | partial | scalar/general vectors | source + test suite | none | selected pools | Packed arenas/no-clone warm guarantee absent |
+| RV-28 | PARTIAL | PARTIAL | tile/band APIs | YES* | full raster crop/immediate tile | metamorphic test passes | internal/server partial | tile dimensions/overdraw | No priority/adaptive scheduler/complete tile policy |
+| RV-29 | PARTIAL | PARTIAL | `ProgressiveRenderJob` | YES* | immediate tile fallback | progressive tests pass | not cross-bound | completed tile retention | No Created/Paused/Closed lifecycle or binding API |
+| RV-30 | PARTIAL | PARTIAL | Rust/CLI render APIs | partial | existing route selection | current VPS CLI help passes | Rust/CLI partial | max pixels | Full contract/caller surface/flags missing |
+| RV-31 | PARTIAL | PARTIAL | C ABI PNG/JPEG functions | no | core immediate encoding | VPS release build + C API test pass | C API partial | C pointer checks | No versioned full contract/cancellation/progressive surfaces |
+| RV-32 | PARTIAL | PARTIAL | Python/WASM/.NET/Java/server | no | simple binding routes | Rust workspace pass; external tools blocked | Python/WASM partial; .NET/Java no raster | varies | Cross-binding renderer parity incomplete; VPS toolchains missing |
+| RV-33 | PARTIAL | PARTIAL | `prepress.rs`/render paths | partial | display behavior | prepress tests pass | not public parity | existing limits | No explicit PrintRenderProfile contract |
+| RV-34 | PARTIAL | PARTIAL | runtime/server/CLI | partial | n/a | deterministic tests/workspace pass | partial | runtime configs | No renderer structured concurrency proof by thread/cache matrix |
+| RV-35 | PARTIAL | PARTIAL | page/decode/surface limits | partial | typed errors | resource-limit tests pass | server partial | existing caps | No unified all-resource render budget |
+| RV-36 | PARTIAL | PARTIAL | `final-fallback-inventory.md` | partial | FB-01–FB-12 | source inventory + tests | CLI counters partial | n/a | 12 active decisions remain; 8 degraded |
+| RV-37 | PARTIAL | PARTIAL | `scripts/render_reference_compare.py` | n/a | n/a | not run beyond prohibited campaign | script only | script limits | Full requested metrics/masks/adjudication not verified this task |
+| RV-38 | MISSING | BLOCKED | no direct C/C++ harness source | n/a | n/a | VPS tool discovery | none | n/a | No harness implementation; PDFium SDK/header/import library unavailable |
+| RV-39 | UNVERIFIED | PARTIAL | workspace/tests/C API/SIMD/metamorphic | n/a | n/a | current VPS format/check/clippy/workspace tests/build pass | Rust/C API verified; other tools blocked | n/a | All-feature and external binding gates unavailable |
+| RV-40 | UNVERIFIED | PARTIAL | audit/inventory/fallback docs; `runtime.rs` capability entries | n/a | n/a | current VPS CLI capabilities pass | CLI/Rust/C API report partial | n/a | Capability report now exposes core limitations but cannot claim universal completeness |
+
+## Current validation evidence
+
+### Local execution already performed before the user redirected execution to the VPS
+
+| Command | Outcome |
+|---|---|
+| `cargo fmt --all --check` | Initially exposed the `path.rs` parse error; later formatting was applied. No final local command was run after the VPS-only instruction. |
+| `cargo check --workspace --all-targets --jobs 1` | Passed after syntax/SIMD safety repairs. |
+| `cargo test -p wellfriendpdf-engine --lib --jobs 1` | Initially 1,422/1,425 due to two SIMD guard failures and one AA regression; after repairs 1,425/1,425 passed. |
+| `cargo clippy --workspace --all-targets --jobs 1 -- -D warnings` | Passed after clippy repairs. |
+| `cargo test --workspace --all-targets --jobs 1` | Initial local invocation was cancelled by the user before execution. |
+
+### Current VPS code-validation commit
+
+At `dd9e9d7b64bd13598b143d54d24a5ecd331a9ec8`, VPS `HEAD == origin/main`, and `git status --short` was empty. The following commands passed on the VPS:
+
+| Command | Exit code | Evidence log |
+|---|---:|---|
+| `cargo fmt --all --check` | 0 | `cargo-fmt-check-round4.log` |
+| `cargo check --workspace --all-targets --jobs 1` | 0 | `cargo-check-workspace-round4.log` |
+| `cargo clippy --workspace --all-targets --jobs 1 -- -D warnings` | 0 | `cargo-clippy-workspace-round4.log` |
+| `cargo test -p wellfriendpdf-engine --lib renderer_capabilities_disclose_fallback_and_progressive_limits --jobs 1` | 0 | `cargo-test-runtime-capabilities-round4.log` |
+| `cargo test --workspace --all-targets --jobs 1` | 0 | `cargo-test-workspace-round4.log` |
+| `cargo build -p wellfriendpdf-cli --release` | 0 | `cargo-build-cli-release-round4.log` |
+| `cargo build -p wellfriendpdf-capi --release` | 0 | `cargo-build-capi-release-round3.log` |
+| `cargo test -p wellfriendpdf-capi --lib --jobs 1` | 0 | `cargo-test-capi-lib-round3.log` |
+| `cargo test -p wellfriendpdf-render-simd --lib --jobs 1` | 0 | `cargo-test-render-simd-round3.log` |
+| `cargo test -p wellfriendpdf-engine --test binding_surface1_renderer_metamorphic --jobs 1` | 0 | `cargo-test-renderer-metamorphic-round3.log` |
+| `cargo test -p wellfriendpdf-engine --test svg_output --jobs 1` | 0 | `cargo-test-svg-output-round3.log` |
+| `wellfriendpdf --mode standard capabilities` | 0 | `cli-standard-capabilities-round4.log` |
+| `wellfriendpdf --mode standard render --help` | 0 | `cli-standard-render-help-round4.log` |
+| `wellfriendpdf --mode research capabilities` | 0 | `cli-research-capabilities-round4.log` |
+
+The first VPS attempt returned `127` for Cargo only because noninteractive SSH omitted `$HOME/.cargo/bin`; this was diagnosed and rerun after sourcing `$HOME/.cargo/env`. The first full VPS suite found the SVG fidelity defect; the subsequent SVG fallback commits and final current-commit suite pass.
+
+## Binding and feature blockers verified on the VPS
+
+- `cargo check/test --workspace --all-features --all-targets`: **BLOCKED**; `pkg-config` cannot locate `lcms2`, required by `native-cmm-lcms2`.
+- Python package build: **BLOCKED**; `maturin` absent.
+- WASM build: **BLOCKED**; `wasm-pack` and `wasm32-unknown-unknown` target absent.
+- .NET build: **BLOCKED**; `dotnet` absent.
+- Java Maven/Gradle build: **BLOCKED**; only Java runtime 21 exists; `javac`, Maven, Gradle, and repository-required JDK 25 toolchain are absent.
+- Direct PDFium C/C++ harness: **BLOCKED**; no harness source is in this revision and no PDFium SDK/header/import library was available.
+
+## No-benchmark statement
+
+**No performance, corpus, latency, throughput, or competitor benchmark was executed during this task.**
+
+No production service was deployed, no release tag was created, and no package was published.
+
+## Final implementation status
+
+The repaired renderer continuation is source- and VPS-validated for the available Rust/C ABI surfaces, and its capability output is more honest about retained replay, fallback reporting, progressive limitations, and SIMD fallback. It is **not** a universal renderer implementation under the requested definition because the missing/partial IDs above remain active architectural and public-surface blockers.
