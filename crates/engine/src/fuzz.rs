@@ -750,6 +750,7 @@ pub fn fuzz_post_signature_modification(data: &[u8]) {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::*;
 
