@@ -13,7 +13,7 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::pubsec::PubSecKeyProvider;
 use crate::reader::PdfReader;
 use crate::render::{
-    CanonicalDocument, DisplayList, EditDocumentView, PageRenderer, PixelBuffer,
+    CanonicalDocument, DisplayList, EditDocumentView, PageRenderer, PixelBuffer, PixelFormat,
     ProgressiveRenderJob, RenderCache, RenderContract, RenderDocumentCache, RenderDocumentView,
     RenderMode, RenderPlan, RenderTile, SemanticDocumentView, ValidationDocumentView, Viewport,
     WHITE,
@@ -38,6 +38,45 @@ pub struct PageResources {
     pub patterns: HashMap<String, PdfObject>,
     pub shadings: HashMap<String, PdfObject>,
     pub properties: HashMap<String, PdfObject>,
+}
+
+fn encode_contract_row(
+    source: &[u8],
+    destination: &mut [u8],
+    format: PixelFormat,
+    grayscale: bool,
+) {
+    destination.fill(0);
+    let bytes_per_pixel = format.bytes_per_pixel();
+    for (pixel_index, rgba) in source.chunks_exact(4).enumerate() {
+        let offset = pixel_index * bytes_per_pixel;
+        let red = rgba[0];
+        let green = rgba[1];
+        let blue = rgba[2];
+        let alpha = rgba[3];
+        let gray = ((u16::from(red) * 77 + u16::from(green) * 150 + u16::from(blue) * 29 + 128)
+            >> 8) as u8;
+        let (red, green, blue) = if grayscale {
+            (gray, gray, gray)
+        } else {
+            (red, green, blue)
+        };
+        match format {
+            PixelFormat::Rgba8 => {
+                destination[offset..offset + 4].copy_from_slice(&[red, green, blue, alpha])
+            }
+            PixelFormat::Bgra8 => {
+                destination[offset..offset + 4].copy_from_slice(&[blue, green, red, alpha])
+            }
+            PixelFormat::Rgb8 => {
+                destination[offset..offset + 3].copy_from_slice(&[red, green, blue])
+            }
+            PixelFormat::Bgr8 => {
+                destination[offset..offset + 3].copy_from_slice(&[blue, green, red])
+            }
+            PixelFormat::Gray8 => destination[offset] = gray,
+        }
+    }
 }
 
 struct JoinedContentStreams<'a> {
@@ -615,31 +654,150 @@ impl ContentEngine {
         RenderPlan::compile(list, contract)
     }
 
-    /// Render through a fully specified contract. The current Standard backend
-    /// supports the canonical full-page RGBA contract; unsupported policy
-    /// fields are rejected explicitly rather than ignored or approximated.
+    /// Render through a fully specified contract into the engine's canonical
+    /// RGBA surface. Contracts that request a different output layout must use
+    /// [`render_page_into_buffer`](Self::render_page_into_buffer) so the caller
+    /// receives bytes matching the requested format and stride.
     pub fn render_page_with_contract(
         &self,
         contract: &RenderContract,
         cancel: &crate::cancel::CancelToken,
     ) -> Result<PixelBuffer> {
-        contract.validate()?;
-        let expected = self.default_render_contract(
-            contract.page_number,
-            contract.dpi,
-            contract.render_mode(),
-        )?;
-        if contract != &expected {
+        if contract.pixel_format != PixelFormat::Rgba8
+            || contract.alpha_mode != crate::render::AlphaMode::Premultiplied
+            || contract.grayscale
+            || contract.reverse_byte_order
+        {
             return Err(WellfriendError::UnsupportedFeature(
-                "this backend currently supports only the canonical full-page RGBA render contract; use capability negotiation before requesting a different policy".to_string(),
+                "render_page_with_contract returns canonical premultiplied RGBA; use render_page_into_buffer for the requested surface layout".to_string(),
             ));
         }
-        self.render_page_cancellable_with_mode(
+        let (buffer, _) = self.render_contract_pixels(contract, cancel)?;
+        Ok(buffer)
+    }
+
+    /// Render into a caller-owned byte surface. The core validates document
+    /// revision, page identity, clip bounds, output dimensions, stride, format,
+    /// and buffer length before writing a single byte. Unsupported semantic
+    /// policy fields remain typed refusals rather than ignored requests.
+    pub fn render_page_into_buffer(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        output: &mut [u8],
+    ) -> Result<()> {
+        let (buffer, _) = self.render_contract_pixels(contract, cancel)?;
+        let required = contract
+            .stride
+            .checked_mul(contract.height as usize)
+            .ok_or_else(|| {
+                WellfriendError::ResourceLimit("render surface byte length overflows".to_string())
+            })?;
+        if output.len() < required {
+            return Err(WellfriendError::invalid_input(format!(
+                "caller surface has {} bytes but contract requires at least {required}",
+                output.len()
+            )));
+        }
+        let source = buffer.rgba_bytes();
+        let source_row_bytes = contract.width as usize * 4;
+        for row in 0..contract.height as usize {
+            let src = &source[row * source_row_bytes..(row + 1) * source_row_bytes];
+            let dst = &mut output[row * contract.stride..(row + 1) * contract.stride];
+            encode_contract_row(src, dst, contract.pixel_format, contract.grayscale);
+        }
+        Ok(())
+    }
+
+    fn render_contract_pixels(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<(PixelBuffer, RenderTile)> {
+        contract.validate()?;
+        if contract.document_revision != self.canonical.revision() {
+            return Err(WellfriendError::invalid_input(
+                "render contract belongs to a different document revision",
+            ));
+        }
+        if contract.reverse_byte_order {
+            return Err(WellfriendError::UnsupportedFeature(
+                "reverse_byte_order is not implemented for the CPU surface encoder".to_string(),
+            ));
+        }
+        let full_viewport = self.page_viewport(contract.page_number, contract.dpi)?;
+        let full_tile = RenderTile::full(full_viewport.width_px, full_viewport.height_px);
+        let tile = match contract.clip {
+            Some(clip) => {
+                if clip.x < 0 || clip.y < 0 {
+                    return Err(WellfriendError::invalid_input(
+                        "render contract clip origin must be non-negative device coordinates",
+                    ));
+                }
+                let tile = RenderTile {
+                    x: clip.x as u32,
+                    y: clip.y as u32,
+                    width: clip.width,
+                    height: clip.height,
+                };
+                let end_x = tile.x.checked_add(tile.width).ok_or_else(|| {
+                    WellfriendError::invalid_input("render contract clip x range overflows")
+                })?;
+                let end_y = tile.y.checked_add(tile.height).ok_or_else(|| {
+                    WellfriendError::invalid_input("render contract clip y range overflows")
+                })?;
+                if tile.width == 0
+                    || tile.height == 0
+                    || end_x > full_viewport.width_px
+                    || end_y > full_viewport.height_px
+                {
+                    return Err(WellfriendError::invalid_input(
+                        "render contract clip lies outside the requested page viewport",
+                    ));
+                }
+                tile
+            }
+            None => full_tile,
+        };
+        let expected = self.render_contract_for_tile(
             contract.page_number,
             contract.dpi,
-            cancel,
             contract.render_mode(),
-        )
+            tile,
+        )?;
+        let mut normalized = contract.clone();
+        normalized.pixel_format = expected.pixel_format;
+        normalized.alpha_mode = expected.alpha_mode;
+        normalized.stride = expected.stride;
+        normalized.grayscale = expected.grayscale;
+        if normalized != expected {
+            return Err(WellfriendError::UnsupportedFeature(
+                "the requested render contract contains semantic policy fields not yet implemented by the active CPU renderer".to_string(),
+            ));
+        }
+        let buffer = if tile == full_tile {
+            self.render_page_cancellable_with_mode(
+                contract.page_number,
+                contract.dpi,
+                cancel,
+                contract.render_mode(),
+            )?
+        } else {
+            PageRenderer::render_page_tile_cancellable_with_mode(
+                self,
+                contract.page_number,
+                contract.dpi,
+                tile,
+                cancel,
+                contract.render_mode(),
+            )?
+        };
+        if buffer.width != contract.width || buffer.height != contract.height {
+            return Err(WellfriendError::MalformedPdf(
+                "render contract output dimensions diverged from the active viewport".to_string(),
+            ));
+        }
+        Ok((buffer, tile))
     }
 
     pub fn page_count(&self) -> Result<usize> {
@@ -2132,5 +2290,41 @@ mod tests {
         }
 
         assert!(!should_prefer_structured_column_text(&text));
+    }
+
+    #[test]
+    fn contract_renders_into_caller_owned_surface_with_clip_and_format_conversion() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text("surface", 12.0, 780.0, &TextStyle::default())
+            .expect("write surface fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open surface fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 24,
+        });
+        contract.width = 32;
+        contract.height = 24;
+        contract.pixel_format = PixelFormat::Bgra8;
+        contract.stride = 32 * 4 + 8;
+        let mut surface = vec![0xAA; contract.stride * contract.height as usize];
+        engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect("render into BGRA caller surface");
+        assert!(surface
+            .chunks_exact(contract.stride)
+            .all(|row| row[32 * 4..].iter().all(|v| *v == 0)));
+        assert!(engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .is_err());
     }
 }
