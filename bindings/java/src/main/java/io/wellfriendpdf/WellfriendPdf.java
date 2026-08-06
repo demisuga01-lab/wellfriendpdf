@@ -667,6 +667,46 @@ public final class WellfriendPdf {
             }
         }
 
+        public String defaultRenderContractJson(int pageNumber, int dpi, String mode) {
+            ensureOpen();
+            if (pageNumber < 1 || dpi < 1) throw new IllegalArgumentException("page and dpi must be positive");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment modePtr = mode == null ? MemorySegment.NULL : arena.allocateFrom(mode);
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.DEFAULT_RENDER_CONTRACT.invokeExact(
+                    handle, (long) pageNumber, dpi, modePtr, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend default render contract failed", ex);
+            }
+        }
+
+        public String defaultRenderContractJson(int pageNumber, int dpi) {
+            return defaultRenderContractJson(pageNumber, dpi, "compat");
+        }
+
+        public byte[] renderPagePngWithContractJson(String contractJson) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG_WITH_CONTRACT.invokeExact(
+                    handle, contract, buffer, err);
+                Native.throwError(status, err);
+                return Native.takeBuffer(buffer);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend contract PNG rendering failed", ex);
+            }
+        }
+
         public String parseJson() {
             ensureOpen();
             try (Arena arena = Arena.ofConfined()) {
@@ -1671,6 +1711,16 @@ public final class WellfriendPdf {
             "wellfriendpdf_document_render_page_jpeg",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
                 ValueLayout.JAVA_INT, ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle DEFAULT_RENDER_CONTRACT = downcall(
+            "wellfriendpdf_document_default_render_contract_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT = downcall(
+            "wellfriendpdf_document_render_page_png_with_contract_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                BUFFER_LAYOUT, ValueLayout.ADDRESS)
         );
         private static final MethodHandle PARSE_JSON = downcall(
             "wellfriendpdf_document_parse_json",

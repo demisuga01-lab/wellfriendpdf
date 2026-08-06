@@ -17,8 +17,12 @@ public final class WellfriendPdfSmokeTest {
             assertTrue(!doc.page(1).text().isBlank(), "text extraction");
             byte[] png = doc.page(1).renderPng();
             byte[] jpeg = doc.page(1).renderJpeg(72, (byte) 85);
+            String contract = doc.defaultRenderContractJson(1, 72);
+            byte[] contractPng = doc.renderPagePngWithContractJson(contract);
             assertTrue(png.length > 8 && png[0] == (byte) 0x89 && png[1] == (byte) 0x50,
                 "PNG raster rendering");
+            assertTrue(contractPng.length > 8 && contractPng[0] == (byte) 0x89 && contractPng[1] == (byte) 0x50,
+                "contract PNG raster rendering");
             assertTrue(jpeg.length > 4 && jpeg[0] == (byte) 0xff && jpeg[1] == (byte) 0xd8,
                 "JPEG raster rendering");
             assertTrue(doc.parseJson().contains("\"schema_version\""), "parse json");
