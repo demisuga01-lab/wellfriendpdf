@@ -33,6 +33,9 @@ use crate::render::font_substitution_report::{
     FontSubstitutionLog, FontSubstitutionReason,
 };
 use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey, GlyphCacheStats};
+use crate::render::image_decode_planning::{
+    plan_image_decode, ImageDecodePlanDecision, ImageMetadata,
+};
 use crate::render::image_painter::ImagePainter;
 use crate::render::invalidation::{InvalidationResult, RenderDependencyGraph};
 use crate::render::line::DashState;
@@ -4994,6 +4997,35 @@ impl<'a> RenderState<'a> {
             "image_xobject",
         );
 
+        // --- Image decode planning: metadata-first viewport culling (RB-06/RB-13) ---
+        // Compute conservative device bounds for the image before any decode work.
+        // If the image is entirely outside the active tile/viewport, skip decode.
+        let ctm = self.ctm();
+        let decode_plan = {
+            let metadata = ImageMetadata {
+                object_number: obj_num,
+                generation_number: gen_num,
+                width: image_ref.width,
+                height: image_ref.height,
+                bits_per_component: image_ref.bits_per_component,
+                color_space: image_ref.color_space.clone(),
+                filters: image_ref.filter.clone(),
+                is_mask: image_ref.is_mask,
+                is_inline: false,
+            };
+            let high_quality = self.buf.render_mode().is_high_quality();
+            plan_image_decode(
+                &metadata,
+                &ctm,
+                &self.viewport,
+                &image_cache_key,
+                high_quality,
+            )
+        };
+        if decode_plan.decision == ImageDecodePlanDecision::SkipOutsideViewport {
+            return;
+        }
+
         match self.scheduled_decode_image_with_color_space(
             &image_ref,
             color_space_override.as_ref(),
@@ -5042,7 +5074,7 @@ impl<'a> RenderState<'a> {
                 } else {
                     raw.as_ref()
                 };
-                let ctm = self.ctm();
+                // ctm was already computed by the decode planner above.
                 let smooth_jpx = image_ref.filter.iter().any(|filter| filter == "JPXDecode");
                 let paint_alpha = if image_ref.is_mask {
                     1.0
@@ -15722,6 +15754,87 @@ mod tests {
             .expect("plan should produce output for shading page");
             assert_same_pixels(&immediate, &plan_result);
         }
+    }
+
+    #[test]
+    fn image_decode_planning_skips_offscreen_image_in_tile_render() {
+        // Build a PDF with a single image placed at the right side of the page.
+        // Render only the left tile. The image decode planner should skip the
+        // decode entirely because the image is outside the tile viewport.
+        use crate::render::image_decode_planning::{
+            plan_image_decode, ImageDecodePlanDecision, ImageMetadata,
+        };
+
+        let vp = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
+        // A tile viewport covering only the left 100 pixels.
+        let mut tile_vp = vp.clone();
+        tile_vp.width_px = 100;
+        tile_vp.height_px = 200;
+        tile_vp.origin_x_px = 0;
+        tile_vp.origin_y_px = 0;
+
+        // Image placed entirely in the right half: x=[120..180] page coords.
+        let ctm = Transform2D::new(60.0, 0.0, 0.0, 60.0, 120.0, 70.0);
+        let meta = ImageMetadata {
+            object_number: 10,
+            generation_number: 0,
+            width: 400,
+            height: 400,
+            bits_per_component: 8,
+            color_space: "DeviceRGB".to_string(),
+            filters: vec!["DCTDecode".to_string()],
+            is_mask: false,
+            is_inline: false,
+        };
+        let base_key = "xobject:10:0:400:400:8:DCTDecode";
+        let plan = plan_image_decode(&meta, &ctm, &tile_vp, base_key, false);
+
+        assert_eq!(
+            plan.decision,
+            ImageDecodePlanDecision::SkipOutsideViewport,
+            "image in right half must be skipped when rendering left tile"
+        );
+    }
+
+    #[test]
+    fn image_decode_planning_cache_key_reflects_contract_state() {
+        use crate::render::image_decode_planning::{plan_image_decode, ImageMetadata};
+
+        let vp = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let meta = ImageMetadata {
+            object_number: 7,
+            generation_number: 0,
+            width: 300,
+            height: 300,
+            bits_per_component: 8,
+            color_space: "DeviceRGB".to_string(),
+            filters: vec!["FlateDecode".to_string()],
+            is_mask: false,
+            is_inline: false,
+        };
+        let base_key = "xobject:7:0:300:300:8:FlateDecode";
+
+        // Same image at two different scales
+        let ctm_50 = Transform2D::new(50.0, 0.0, 0.0, 50.0, 10.0, 10.0);
+        let ctm_90 = Transform2D::new(90.0, 0.0, 0.0, 90.0, 5.0, 5.0);
+
+        let plan_50 = plan_image_decode(&meta, &ctm_50, &vp, base_key, false);
+        let plan_90 = plan_image_decode(&meta, &ctm_90, &vp, base_key, false);
+
+        assert_ne!(
+            plan_50.cache_key.to_cache_string(),
+            plan_90.cache_key.to_cache_string(),
+            "same image at different device sizes must use different cache keys"
+        );
+
+        // Same image, same scale, different quality mode
+        let plan_compat = plan_image_decode(&meta, &ctm_50, &vp, base_key, false);
+        let plan_hq = plan_image_decode(&meta, &ctm_50, &vp, base_key, true);
+        assert_ne!(
+            plan_compat.cache_key.to_cache_string(),
+            plan_hq.cache_key.to_cache_string(),
+            "same image/scale with different render quality must differ"
+        );
     }
 }
 

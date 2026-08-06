@@ -12,6 +12,7 @@ pub mod font_substitution_report;
 pub mod function;
 pub mod glyph_cache;
 pub mod glyph_outline;
+pub(crate) mod image_decode_planning;
 pub mod image_painter;
 pub mod invalidation;
 pub mod line;
