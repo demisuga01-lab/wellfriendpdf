@@ -149,7 +149,11 @@ fn native_backend_selection_is_denied_by_default() {
     );
     assert!(!selection.ok);
     assert_eq!(selection.status, "native_backend_blocked");
-    assert!(!selection.native_codecs_compiled);
+    assert_eq!(
+        selection.native_codecs_compiled,
+        cfg!(feature = "native-codecs"),
+        "native codec compilation must reflect the selected feature matrix"
+    );
     assert_eq!(
         selection.reason.as_deref(),
         Some("no native backend is registered and allowlisted for this codec")
