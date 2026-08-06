@@ -77,7 +77,7 @@ pub struct PsPage {
 fn needs_raster_fallback(ops: &[ContentOperation]) -> bool {
     for op in ops {
         match op.operator.as_str() {
-            "Do" | "sh" | "BI" | "ID" | "EI" | "inline_image_data" => return true,
+            "Do" | "sh" | "gs" | "BI" | "ID" | "EI" | "inline_image_data" => return true,
             "scn" | "SCN" if op.operands.iter().any(|o| matches!(o, Operand::Name(_))) => {
                 return true;
             }
@@ -816,6 +816,8 @@ mod tests {
         assert!(needs_raster_fallback(&[do_op]));
         let sh_op = ContentOperation::new("sh", vec![Operand::Name("Sh0".into())]);
         assert!(needs_raster_fallback(&[sh_op]));
+        let gs_op = ContentOperation::new("gs", vec![Operand::Name("GS0".into())]);
+        assert!(needs_raster_fallback(&[gs_op]));
         let m = ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]);
         let f = ContentOperation::new("f", vec![]);
         assert!(!needs_raster_fallback(&[m, f]));
