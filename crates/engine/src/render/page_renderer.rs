@@ -5025,6 +5025,7 @@ impl<'a> RenderState<'a> {
         if decode_plan.decision == ImageDecodePlanDecision::SkipOutsideViewport {
             return;
         }
+        let image_cache_key = decode_plan.cache_key.to_cache_string();
 
         match self.scheduled_decode_image_with_color_space(
             &image_ref,

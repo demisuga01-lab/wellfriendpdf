@@ -90,11 +90,10 @@ pub(crate) struct ImageMetadata {
 /// Included in the cache key so that a future partial-decode upgrade will
 /// automatically invalidate stale cache entries.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum ImageSourceRegion {
+pub enum ImageSourceRegion {
     /// Full image decode (the only mode currently supported).
     Full,
     /// Future: a sub-rectangle in image-sample coordinates.
-    #[allow(dead_code)]
     SubRect {
         x: u32,
         y: u32,
@@ -108,11 +107,10 @@ pub(crate) enum ImageSourceRegion {
 /// Currently always `None` because upstream decoders don't expose resolution
 /// levels. The field is included in cache identity for forward compatibility.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum ImageReductionLevel {
+pub enum ImageReductionLevel {
     /// Full resolution decode (the only mode currently supported).
     None,
     /// Future: power-of-two reduction (e.g., 1 = half, 2 = quarter).
-    #[allow(dead_code)]
     PowerOfTwo(u8),
 }
 
@@ -196,14 +194,8 @@ pub(crate) enum ImageDecodePlanDecision {
 pub(crate) struct ImageDecodePlan {
     /// The planning decision.
     pub decision: ImageDecodePlanDecision,
-    /// Device bounds of the image (if computable).
-    pub device_bounds: Option<RenderBounds>,
     /// Cache key incorporating contract state.
     pub cache_key: ImageDecodeCacheKey,
-    /// Source region for the decode (currently always Full).
-    pub source_region: ImageSourceRegion,
-    /// Reduction level (currently always None).
-    pub reduction_level: ImageReductionLevel,
 }
 
 // ---------------------------------------------------------------------------
@@ -218,15 +210,6 @@ pub(crate) struct ImageDecodePlan {
 /// produce axis-aligned device-pixel bounds.
 pub(crate) fn image_device_bounds(ctm: &Transform2D, viewport: &Viewport) -> Option<RenderBounds> {
     RenderBounds::from_unit_square(ctm, viewport, 1.0)
-}
-
-/// Check whether the image's device bounds intersect the active viewport.
-pub(crate) fn image_intersects_viewport(ctm: &Transform2D, viewport: &Viewport) -> bool {
-    match image_device_bounds(ctm, viewport) {
-        Some(bounds) => bounds.intersects_viewport(viewport),
-        // If bounds are non-computable (degenerate CTM), fail open — allow decode.
-        None => true,
-    }
 }
 
 /// Compute the device-space target dimensions for axis-aligned images.
@@ -288,16 +271,23 @@ pub(crate) fn plan_image_decode(
     };
 
     let cache_key = ImageDecodeCacheKey {
-        base_key: base_cache_key.to_string(),
+        base_key: format!(
+            "{base_cache_key}:obj:{}:{}:src:{}x{}:{}:cs:{}:mask:{}:inline:{}",
+            metadata.object_number,
+            metadata.generation_number,
+            metadata.width,
+            metadata.height,
+            metadata.bits_per_component,
+            metadata.color_space,
+            metadata.is_mask,
+            metadata.is_inline,
+        ),
         contract,
     };
 
     ImageDecodePlan {
         decision,
-        device_bounds,
         cache_key,
-        source_region,
-        reduction_level,
     }
 }
 
@@ -347,7 +337,6 @@ mod tests {
         let meta = metadata_for_test();
         let plan = plan_image_decode(&meta, &ctm, &vp, "test:5:0:200:200:8:FlateDecode", false);
         assert_eq!(plan.decision, ImageDecodePlanDecision::DecodeRequired);
-        assert!(plan.device_bounds.is_some());
     }
 
     #[test]
