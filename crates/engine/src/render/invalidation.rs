@@ -113,7 +113,7 @@ impl RenderDependencyGraph {
             current_revision: next_revision,
             invalidated_pages,
             invalidated_tiles,
-            cache_must_reset: previous_revision != next_revision,
+            cache_must_reset: previous_revision != next_revision && invalidated_pages.is_empty(),
         }
     }
 
@@ -155,6 +155,6 @@ mod tests {
         assert_eq!(result.invalidated_pages, vec![1]);
         assert_eq!(result.invalidated_tiles.len(), 1);
         assert_eq!(result.invalidated_tiles[0].0, 1);
-        assert!(result.cache_must_reset);
+        assert!(!result.cache_must_reset);
     }
 }

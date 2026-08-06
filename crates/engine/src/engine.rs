@@ -14,10 +14,10 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::pubsec::PubSecKeyProvider;
 use crate::reader::PdfReader;
 use crate::render::{
-    CanonicalDocument, DisplayList, EditDocumentView, PageRenderer, PixelBuffer, PixelFormat,
-    ProgressiveRenderJob, RenderCache, RenderContract, RenderDocumentCache, RenderDocumentView,
-    RenderMode, RenderPlan, RenderTile, SemanticDocumentView, ValidationDocumentView, Viewport,
-    WHITE,
+    CanonicalDocument, DisplayList, EditDocumentView, InvalidationResult, PageRenderer,
+    PixelBuffer, PixelFormat, ProgressiveRenderJob, RenderCache, RenderContract,
+    RenderDocumentCache, RenderDocumentView, RenderMode, RenderPlan, RenderTile,
+    SemanticDocumentView, ValidationDocumentView, Viewport, WHITE,
 };
 use crate::text::{TextExtractOptions, TextExtractor, TextFormatOptions};
 use crate::{
@@ -579,6 +579,28 @@ impl ContentEngine {
     /// Canonical immutable source identity shared by all lazy views.
     pub fn canonical_document(&self) -> &CanonicalDocument {
         &self.canonical
+    }
+
+    /// Map known changed PDF object references to canonical source identities
+    /// and invalidate only their proven render-page dependencies. Unknown
+    /// objects deliberately fall back to a conservative full cache reset.
+    pub fn invalidate_render_cache_for_changed_objects(
+        &self,
+        cache: &mut RenderDocumentCache,
+        changed_objects: &[(u32, u16)],
+    ) -> InvalidationResult {
+        let changed_ids = self
+            .canonical
+            .object_identities()
+            .iter()
+            .filter(|identity| {
+                changed_objects.iter().any(|(number, generation)| {
+                    *number == identity.number && *generation == identity.generation
+                })
+            })
+            .map(|identity| identity.id)
+            .collect::<Vec<_>>();
+        cache.invalidate_sources(self.canonical.revision(), &changed_ids)
     }
 
     /// Lazily expose only render-required source state.

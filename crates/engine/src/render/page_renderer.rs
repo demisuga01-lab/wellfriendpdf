@@ -310,6 +310,20 @@ impl RenderDocumentCache {
         }
     }
 
+    fn invalidate_page_artifacts(&mut self, pages: &[usize]) {
+        self.display_list_cache.retain(|key, _| {
+            !pages
+                .iter()
+                .any(|page| key.starts_with(&format!("page:{page}:")))
+        });
+        self.transparent_page_group_cache.retain(|key, _| {
+            !pages
+                .iter()
+                .any(|page| key.starts_with(&format!("page:{page}:")))
+        });
+        self.display_list_raster_cache.invalidate_pages(pages);
+    }
+
     pub fn invalidate_sources(
         &mut self,
         next_revision: RevisionId,
@@ -324,6 +338,9 @@ impl RenderDocumentCache {
             self.document_revision = Some(next_revision);
             self.dependency_graph = Some(RenderDependencyGraph::new(next_revision));
         } else {
+            self.invalidate_page_artifacts(&result.invalidated_pages);
+            self.document_revision = Some(next_revision);
+            graph.reset_revision(next_revision);
             self.dependency_graph = Some(graph);
         }
         result

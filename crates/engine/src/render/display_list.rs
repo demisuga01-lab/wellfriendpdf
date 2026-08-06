@@ -682,6 +682,27 @@ impl RenderCache {
         self.bytes += bytes;
         self.metrics.inserts += 1;
     }
+
+    /// Evict every cached raster artifact belonging to one of `page_numbers`.
+    /// Used by dependency-driven edit invalidation; unrelated page entries keep
+    /// their recency and byte charge.
+    pub fn invalidate_pages(&mut self, page_numbers: &[usize]) -> usize {
+        let keys: Vec<_> = self
+            .entries
+            .keys()
+            .filter(|key| page_numbers.contains(&key.page_number))
+            .cloned()
+            .collect();
+        let mut removed_count = 0;
+        for key in keys {
+            if let Some(removed) = self.entries.remove(&key) {
+                self.bytes = self.bytes.saturating_sub(removed.bytes);
+                self.metrics.evictions = self.metrics.evictions.saturating_add(1);
+                removed_count += 1;
+            }
+        }
+        removed_count
+    }
 }
 
 /// Concrete rendering target for display-list replay.
