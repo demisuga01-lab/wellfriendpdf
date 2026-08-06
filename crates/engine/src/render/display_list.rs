@@ -545,6 +545,7 @@ impl RenderCacheKey {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn new_with_full_identity(
         page_number: usize,
         dpi: u32,
