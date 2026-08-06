@@ -184,8 +184,11 @@ impl<'a> ProgressiveRenderJob<'a> {
             (token.schema_version != 1).then_some("schema_version"),
             (token.document_revision != self.engine.canonical_document().revision().0)
                 .then_some("document_revision"),
-            matches!(token.lifecycle_state.as_str(), "cancelled" | "failed" | "closed")
-                .then_some("lifecycle_state"),
+            matches!(
+                token.lifecycle_state.as_str(),
+                "cancelled" | "failed" | "closed"
+            )
+            .then_some("lifecycle_state"),
             (token.page_number != self.page_number).then_some("page_number"),
             (token.dpi != self.dpi).then_some("dpi"),
             (token.render_mode.as_str() != expected_mode).then_some("render_mode"),
@@ -324,31 +327,31 @@ impl<'a> ProgressiveRenderJob<'a> {
             self.state = ProgressiveRenderState::Rendering;
             let index = self.next_tile_index;
             let tile = self.tiles[index];
-            let rendered_tile = match PageRenderer::render_page_display_list_tile_cancellable_with_mode_and_cache(
-                self.engine,
-                self.page_number,
-                self.dpi,
-                tile,
-                cancel,
-                self.render_mode,
-                &mut self.document_cache,
-            ) {
-                Ok(Some(buffer)) => Ok(buffer),
-                Ok(None) => {
-                    self.fallback_events.push(
-                        "unsupported_display_list_immediate_tile".to_string(),
-                    );
-                    PageRenderer::render_page_tile_cancellable_with_mode(
-                        self.engine,
-                        self.page_number,
-                        self.dpi,
-                        tile,
-                        cancel,
-                        self.render_mode,
-                    )
-                }
-                Err(error) => Err(error),
-            };
+            let rendered_tile =
+                match PageRenderer::render_page_display_list_tile_cancellable_with_mode_and_cache(
+                    self.engine,
+                    self.page_number,
+                    self.dpi,
+                    tile,
+                    cancel,
+                    self.render_mode,
+                    &mut self.document_cache,
+                ) {
+                    Ok(Some(buffer)) => Ok(buffer),
+                    Ok(None) => {
+                        self.fallback_events
+                            .push("unsupported_display_list_immediate_tile".to_string());
+                        PageRenderer::render_page_tile_cancellable_with_mode(
+                            self.engine,
+                            self.page_number,
+                            self.dpi,
+                            tile,
+                            cancel,
+                            self.render_mode,
+                        )
+                    }
+                    Err(error) => Err(error),
+                };
             let buffer = match rendered_tile {
                 Ok(buffer) => buffer,
                 Err(error) => {
@@ -370,7 +373,11 @@ impl<'a> ProgressiveRenderJob<'a> {
         Ok(self.step_report(rendered, cancelled))
     }
 
-    fn step_report(&self, rendered_this_step: usize, cancelled: bool) -> ProgressiveRenderStepReport {
+    fn step_report(
+        &self,
+        rendered_this_step: usize,
+        cancelled: bool,
+    ) -> ProgressiveRenderStepReport {
         let completed_tiles = self
             .tiles
             .iter()

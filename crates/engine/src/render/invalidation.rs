@@ -70,7 +70,10 @@ impl RenderDependencyGraph {
     }
 
     pub fn record_page_source(&mut self, page_number: usize, source: ObjectIdentityId) {
-        self.source_pages.entry(source).or_default().insert(page_number);
+        self.source_pages
+            .entry(source)
+            .or_default()
+            .insert(page_number);
     }
 
     pub fn record_tile(&mut self, page_number: usize, tile: RenderTile) {
@@ -99,7 +102,9 @@ impl RenderDependencyGraph {
                 self.page_tiles
                     .get(page)
                     .into_iter()
-                    .flat_map(move |tiles| tiles.iter().copied().map(move |tile| (*page, tile.into())))
+                    .flat_map(move |tiles| {
+                        tiles.iter().copied().map(move |tile| (*page, tile.into()))
+                    })
             })
             .collect();
         self.revision = next_revision;
@@ -128,8 +133,24 @@ mod tests {
         let mut graph = RenderDependencyGraph::new(RevisionId(1));
         graph.record_page_source(1, ObjectIdentityId(10));
         graph.record_page_source(2, ObjectIdentityId(20));
-        graph.record_tile(1, RenderTile { x: 0, y: 0, width: 32, height: 32 });
-        graph.record_tile(2, RenderTile { x: 0, y: 0, width: 64, height: 64 });
+        graph.record_tile(
+            1,
+            RenderTile {
+                x: 0,
+                y: 0,
+                width: 32,
+                height: 32,
+            },
+        );
+        graph.record_tile(
+            2,
+            RenderTile {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+        );
         let result = graph.invalidate_sources(RevisionId(2), &[ObjectIdentityId(10)]);
         assert_eq!(result.invalidated_pages, vec![1]);
         assert_eq!(result.invalidated_tiles.len(), 1);

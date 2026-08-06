@@ -592,12 +592,11 @@ impl ContentEngine {
             tile,
             render_mode,
         );
-        contract.optional_content = crate::optional_content::OptionalContentContext::from_document(
-            self.document(),
-        )
-        .visibility_fingerprint()
-        .to_string()
-        .into();
+        contract.optional_content =
+            crate::optional_content::OptionalContentContext::from_document(self.document())
+                .visibility_fingerprint()
+                .to_string()
+                .into();
         Ok(contract)
     }
 

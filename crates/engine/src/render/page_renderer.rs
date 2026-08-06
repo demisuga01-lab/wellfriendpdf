@@ -20,7 +20,6 @@ use crate::render::buffer::{
 };
 use crate::render::color::ColorSpaceHandler;
 use crate::render::contract::{ObjectIdentityId, RevisionId};
-use crate::render::invalidation::{InvalidationResult, RenderDependencyGraph};
 use crate::render::display_list::{
     build_display_list, render_display_list, DisplayList, DisplayOp, RenderBounds, RenderCache,
     RenderCacheKey, RenderTile,
@@ -28,6 +27,7 @@ use crate::render::display_list::{
 use crate::render::font_rasterizer::{get_fallback_font, FontRasterizer};
 use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey, GlyphCacheStats};
 use crate::render::image_painter::ImagePainter;
+use crate::render::invalidation::{InvalidationResult, RenderDependencyGraph};
 use crate::render::line::DashState;
 use crate::render::path::{
     axis_aligned_integer_rect, flatten_path, rasterize_flat_alpha_mask,
@@ -205,7 +205,10 @@ impl RenderDocumentCache {
         let mut keys: Vec<_> = cache.keys().cloned().collect();
         keys.sort_unstable();
         let mut removed = 0;
-        for key in keys.into_iter().take(cache.len().saturating_sub(max_entries)) {
+        for key in keys
+            .into_iter()
+            .take(cache.len().saturating_sub(max_entries))
+        {
             if cache.remove(&key).is_some() {
                 removed += 1;
             }
@@ -229,23 +232,36 @@ impl RenderDocumentCache {
             if self.font_bytes_cache.len() == before {
                 break;
             }
-            self.font_bytes_cache_stats.evictions = self.font_bytes_cache_stats.evictions.saturating_add(1);
+            self.font_bytes_cache_stats.evictions =
+                self.font_bytes_cache_stats.evictions.saturating_add(1);
         }
         self.font_resolver_cache_stats.evictions = self
             .font_resolver_cache_stats
             .evictions
-            .saturating_add(Self::trim_string_cache(&mut self.font_resolver_cache, FONT_RESOLVER_ENTRIES) as u64);
+            .saturating_add(Self::trim_string_cache(
+                &mut self.font_resolver_cache,
+                FONT_RESOLVER_ENTRIES,
+            ) as u64);
         Self::trim_string_cache(&mut self.type3_geometry_cache, TYPE3_PROGRAM_ENTRIES);
         Self::trim_string_cache(&mut self.type3_charproc_cache, TYPE3_PROGRAM_ENTRIES);
         self.form_xobject_program_cache_stats.evictions = self
             .form_xobject_program_cache_stats
             .evictions
-            .saturating_add(Self::trim_string_cache(&mut self.form_xobject_program_cache, FORM_PROGRAM_ENTRIES) as u64);
+            .saturating_add(Self::trim_string_cache(
+                &mut self.form_xobject_program_cache,
+                FORM_PROGRAM_ENTRIES,
+            ) as u64);
         self.tiling_pattern_program_cache_stats.evictions = self
             .tiling_pattern_program_cache_stats
             .evictions
-            .saturating_add(Self::trim_string_cache(&mut self.tiling_pattern_program_cache, PATTERN_PROGRAM_ENTRIES) as u64);
-        Self::trim_string_cache(&mut self.transparent_page_group_cache, TRANSPARENT_PAGE_ENTRIES);
+            .saturating_add(Self::trim_string_cache(
+                &mut self.tiling_pattern_program_cache,
+                PATTERN_PROGRAM_ENTRIES,
+            ) as u64);
+        Self::trim_string_cache(
+            &mut self.transparent_page_group_cache,
+            TRANSPARENT_PAGE_ENTRIES,
+        );
 
         while self.display_list_cache.len() > DISPLAY_LIST_ENTRIES
             || self
@@ -298,10 +314,9 @@ impl RenderDocumentCache {
         next_revision: RevisionId,
         changed_sources: &[ObjectIdentityId],
     ) -> InvalidationResult {
-        let mut graph = self
-            .dependency_graph
-            .take()
-            .unwrap_or_else(|| RenderDependencyGraph::new(self.document_revision.unwrap_or(next_revision)));
+        let mut graph = self.dependency_graph.take().unwrap_or_else(|| {
+            RenderDependencyGraph::new(self.document_revision.unwrap_or(next_revision))
+        });
         let result = graph.invalidate_sources(next_revision, changed_sources);
         if result.cache_must_reset {
             self.clear();
@@ -643,7 +658,11 @@ impl PageRenderer {
         let page = engine.get_page(page_number)?;
         cache.record_page_source_dependency(
             page_number,
-            engine.canonical_document().page_identity_for(&page).object.id,
+            engine
+                .canonical_document()
+                .page_identity_for(&page)
+                .object
+                .id,
         );
         let key = RenderDocumentCache::display_list_key_with_revision(
             page_number,
@@ -973,7 +992,11 @@ impl PageRenderer {
         let page = engine.get_page(page_number)?;
         cache.record_page_source_dependency(
             page_number,
-            engine.canonical_document().page_identity_for(&page).object.id,
+            engine
+                .canonical_document()
+                .page_identity_for(&page)
+                .object
+                .id,
         );
         let key = RenderDocumentCache::display_list_key_with_revision(
             page_number,

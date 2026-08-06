@@ -133,22 +133,24 @@ impl CanonicalDocument {
 
     pub(crate) fn page_identity_for(&self, page: &PdfPage) -> PageIdentity {
         let mut pages = self.pages.lock().expect("canonical page identity mutex");
-        *pages.entry(page.page_number).or_insert_with(|| PageIdentity {
-            page_number: page.page_number,
-            object: self
-                .object_identities
-                .iter()
-                .copied()
-                .find(|identity| {
-                    identity.number == page.object_number
-                        && identity.generation == page.generation_number
-                })
-                .unwrap_or(ObjectIdentity {
-                    id: ObjectIdentityId(page.object_number),
-                    number: page.object_number,
-                    generation: page.generation_number,
-                }),
-        })
+        *pages
+            .entry(page.page_number)
+            .or_insert_with(|| PageIdentity {
+                page_number: page.page_number,
+                object: self
+                    .object_identities
+                    .iter()
+                    .copied()
+                    .find(|identity| {
+                        identity.number == page.object_number
+                            && identity.generation == page.generation_number
+                    })
+                    .unwrap_or(ObjectIdentity {
+                        id: ObjectIdentityId(page.object_number),
+                        number: page.object_number,
+                        generation: page.generation_number,
+                    }),
+            })
     }
 
     fn source_link_for_page(&self, page: &PdfPage) -> SourceLinkId {
@@ -174,7 +176,9 @@ impl CanonicalDocument {
     }
 
     fn record_validation(&self) {
-        self.counters.validation_pages.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .validation_pages
+            .fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -340,7 +344,10 @@ mod tests {
     #[test]
     fn edit_and_render_views_share_source_identity() {
         let engine = engine();
-        let render = engine.render_view().page_program(1).expect("render program");
+        let render = engine
+            .render_view()
+            .page_program(1)
+            .expect("render program");
         let edit = engine
             .edit_view()
             .page_source_identity(1)
@@ -357,8 +364,8 @@ mod tests {
             .add_page(AuthorPageSize::LETTER)
             .draw_text("different source", 72.0, 720.0, &TextStyle::default())
             .expect("write page");
-        let second = ContentEngine::open_bytes(builder.to_bytes().expect("serialize"))
-            .expect("open");
+        let second =
+            ContentEngine::open_bytes(builder.to_bytes().expect("serialize")).expect("open");
         assert_ne!(
             first.canonical_document().revision(),
             second.canonical_document().revision()

@@ -10,7 +10,9 @@ use std::sync::Arc;
 use crate::error::{Result, WellfriendError};
 
 use super::contract::{DisplayItemId, RenderContract};
-use super::display_list::{CpuRenderDevice, DisplayList, DisplayOp, DrawState, RenderBounds, RenderDevice, RenderTile};
+use super::display_list::{
+    CpuRenderDevice, DisplayList, DisplayOp, DrawState, RenderBounds, RenderDevice, RenderTile,
+};
 use super::path::{FillRule, Path};
 use super::{PixelBuffer, RenderMode, Transform2D};
 
@@ -79,18 +81,21 @@ impl PackedDisplayList {
         let mut path_ids = HashMap::<String, u32>::new();
         let mut requires_native_replay = false;
 
-        let intern_path = |path: &Path, paths: &mut Vec<Path>, path_ids: &mut HashMap<String, u32>| {
-            let fingerprint = format!("{path:?}");
-            if let Some(id) = path_ids.get(&fingerprint) {
-                *id
-            } else {
-                let id = u32::try_from(paths.len()).unwrap_or(u32::MAX);
-                paths.push(path.clone());
-                path_ids.insert(fingerprint, id);
-                id
-            }
-        };
-        let intern_state = |state: &DrawState, states: &mut Vec<DrawState>, state_ids: &mut HashMap<String, u32>| {
+        let intern_path =
+            |path: &Path, paths: &mut Vec<Path>, path_ids: &mut HashMap<String, u32>| {
+                let fingerprint = format!("{path:?}");
+                if let Some(id) = path_ids.get(&fingerprint) {
+                    *id
+                } else {
+                    let id = u32::try_from(paths.len()).unwrap_or(u32::MAX);
+                    paths.push(path.clone());
+                    path_ids.insert(fingerprint, id);
+                    id
+                }
+            };
+        let intern_state = |state: &DrawState,
+                            states: &mut Vec<DrawState>,
+                            state_ids: &mut HashMap<String, u32>| {
             let fingerprint = format!("{state:?}");
             if let Some(id) = state_ids.get(&fingerprint) {
                 *id
@@ -117,7 +122,12 @@ impl PackedDisplayList {
             let (opcode, flags, bounds_id, state_id, payload_offset, payload_len) = match op {
                 DisplayOp::Save => (OP_SAVE, 0, u32::MAX, u32::MAX, 0, 0),
                 DisplayOp::Restore => (OP_RESTORE, 0, u32::MAX, u32::MAX, 0, 0),
-                DisplayOp::Clip { path, ctm, rule, bounds: op_bounds } => {
+                DisplayOp::Clip {
+                    path,
+                    ctm,
+                    rule,
+                    bounds: op_bounds,
+                } => {
                     let path_id = intern_path(path, &mut paths, &mut path_ids);
                     let transform_id = u32::try_from(clip_transforms.len()).unwrap_or(u32::MAX);
                     clip_transforms.push(*ctm);
@@ -130,7 +140,12 @@ impl PackedDisplayList {
                         1,
                     )
                 }
-                DisplayOp::FillPath { path, state, rule, bounds: op_bounds } => (
+                DisplayOp::FillPath {
+                    path,
+                    state,
+                    rule,
+                    bounds: op_bounds,
+                } => (
                     OP_FILL,
                     fill_rule_flag(*rule),
                     push_bounds(*op_bounds, &mut bounds),
@@ -138,7 +153,11 @@ impl PackedDisplayList {
                     intern_path(path, &mut paths, &mut path_ids),
                     1,
                 ),
-                DisplayOp::StrokePath { path, state, bounds: op_bounds } => (
+                DisplayOp::StrokePath {
+                    path,
+                    state,
+                    bounds: op_bounds,
+                } => (
                     OP_STROKE,
                     0,
                     push_bounds(*op_bounds, &mut bounds),
@@ -148,31 +167,104 @@ impl PackedDisplayList {
                 ),
                 DisplayOp::StateOp { op, .. } => {
                     requires_native_replay = true;
-                    (OP_STATE, 0, u32::MAX, u32::MAX, push_payload(ColdPayload::State(op.clone()), &mut cold), 1)
+                    (
+                        OP_STATE,
+                        0,
+                        u32::MAX,
+                        u32::MAX,
+                        push_payload(ColdPayload::State(op.clone()), &mut cold),
+                        1,
+                    )
                 }
-                DisplayOp::NativeTextOp { op, bounds: op_bounds, .. } => {
+                DisplayOp::NativeTextOp {
+                    op,
+                    bounds: op_bounds,
+                    ..
+                } => {
                     requires_native_replay = true;
-                    (OP_NATIVE_TEXT, 0, push_bounds(*op_bounds, &mut bounds), u32::MAX, push_payload(ColdPayload::Operation(op.clone()), &mut cold), 1)
+                    (
+                        OP_NATIVE_TEXT,
+                        0,
+                        push_bounds(*op_bounds, &mut bounds),
+                        u32::MAX,
+                        push_payload(ColdPayload::Operation(op.clone()), &mut cold),
+                        1,
+                    )
                 }
-                DisplayOp::NativeImageXObject { op, bounds: op_bounds, .. } => {
+                DisplayOp::NativeImageXObject {
+                    op,
+                    bounds: op_bounds,
+                    ..
+                } => {
                     requires_native_replay = true;
-                    (OP_NATIVE_IMAGE, 0, push_bounds(*op_bounds, &mut bounds), u32::MAX, push_payload(ColdPayload::Operation(op.clone()), &mut cold), 1)
+                    (
+                        OP_NATIVE_IMAGE,
+                        0,
+                        push_bounds(*op_bounds, &mut bounds),
+                        u32::MAX,
+                        push_payload(ColdPayload::Operation(op.clone()), &mut cold),
+                        1,
+                    )
                 }
-                DisplayOp::NativeShadingOp { op, bounds: op_bounds, .. } => {
+                DisplayOp::NativeShadingOp {
+                    op,
+                    bounds: op_bounds,
+                    ..
+                } => {
                     requires_native_replay = true;
-                    (OP_NATIVE_SHADING, 0, push_bounds(*op_bounds, &mut bounds), u32::MAX, push_payload(ColdPayload::Operation(op.clone()), &mut cold), 1)
+                    (
+                        OP_NATIVE_SHADING,
+                        0,
+                        push_bounds(*op_bounds, &mut bounds),
+                        u32::MAX,
+                        push_payload(ColdPayload::Operation(op.clone()), &mut cold),
+                        1,
+                    )
                 }
-                DisplayOp::NativePatternPathOp { ops, bounds: op_bounds, .. } => {
+                DisplayOp::NativePatternPathOp {
+                    ops,
+                    bounds: op_bounds,
+                    ..
+                } => {
                     requires_native_replay = true;
-                    (OP_NATIVE_PATTERN, 0, push_bounds(*op_bounds, &mut bounds), u32::MAX, push_payload(ColdPayload::Operations(ops.clone()), &mut cold), u32::try_from(ops.len()).unwrap_or(u32::MAX))
+                    (
+                        OP_NATIVE_PATTERN,
+                        0,
+                        push_bounds(*op_bounds, &mut bounds),
+                        u32::MAX,
+                        push_payload(ColdPayload::Operations(ops.clone()), &mut cold),
+                        u32::try_from(ops.len()).unwrap_or(u32::MAX),
+                    )
                 }
-                DisplayOp::NativeInlineImage { ops, bounds: op_bounds, .. } => {
+                DisplayOp::NativeInlineImage {
+                    ops,
+                    bounds: op_bounds,
+                    ..
+                } => {
                     requires_native_replay = true;
-                    (OP_NATIVE_INLINE_IMAGE, 0, push_bounds(*op_bounds, &mut bounds), u32::MAX, push_payload(ColdPayload::Operations(ops.clone()), &mut cold), u32::try_from(ops.len()).unwrap_or(u32::MAX))
+                    (
+                        OP_NATIVE_INLINE_IMAGE,
+                        0,
+                        push_bounds(*op_bounds, &mut bounds),
+                        u32::MAX,
+                        push_payload(ColdPayload::Operations(ops.clone()), &mut cold),
+                        u32::try_from(ops.len()).unwrap_or(u32::MAX),
+                    )
                 }
-                DisplayOp::NativeFormXObject { op, bounds: op_bounds, .. } => {
+                DisplayOp::NativeFormXObject {
+                    op,
+                    bounds: op_bounds,
+                    ..
+                } => {
                     requires_native_replay = true;
-                    (OP_NATIVE_FORM, 0, push_bounds(*op_bounds, &mut bounds), u32::MAX, push_payload(ColdPayload::Operation(op.clone()), &mut cold), 1)
+                    (
+                        OP_NATIVE_FORM,
+                        0,
+                        push_bounds(*op_bounds, &mut bounds),
+                        u32::MAX,
+                        push_payload(ColdPayload::Operation(op.clone()), &mut cold),
+                        1,
+                    )
                 }
             };
             hot_ops.push(HotDisplayOp {
@@ -218,27 +310,50 @@ impl PackedDisplayList {
         }
         for &index in selected {
             let op = self.hot_ops.get(index).ok_or_else(|| {
-                WellfriendError::MalformedPdf("packed display-list index was out of bounds".to_string())
+                WellfriendError::MalformedPdf(
+                    "packed display-list index was out of bounds".to_string(),
+                )
             })?;
             match op.opcode {
                 OP_SAVE => device.save(),
                 OP_RESTORE => device.restore(),
                 OP_CLIP => {
-                    let path = self.paths.get(op.payload_offset as usize).ok_or_else(|| WellfriendError::MalformedPdf("packed clip path missing".to_string()))?;
-                    let ctm = self.clip_transforms.get(op.state_id as usize).ok_or_else(|| WellfriendError::MalformedPdf("packed clip transform missing".to_string()))?;
+                    let path = self.paths.get(op.payload_offset as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed clip path missing".to_string())
+                    })?;
+                    let ctm = self
+                        .clip_transforms
+                        .get(op.state_id as usize)
+                        .ok_or_else(|| {
+                            WellfriendError::MalformedPdf(
+                                "packed clip transform missing".to_string(),
+                            )
+                        })?;
                     device.clip_path(path, ctm, fill_rule_from_flag(op.flags));
                 }
                 OP_FILL => {
-                    let path = self.paths.get(op.payload_offset as usize).ok_or_else(|| WellfriendError::MalformedPdf("packed fill path missing".to_string()))?;
-                    let state = self.states.get(op.state_id as usize).ok_or_else(|| WellfriendError::MalformedPdf("packed fill state missing".to_string()))?;
+                    let path = self.paths.get(op.payload_offset as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed fill path missing".to_string())
+                    })?;
+                    let state = self.states.get(op.state_id as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed fill state missing".to_string())
+                    })?;
                     device.fill_path(path, state, fill_rule_from_flag(op.flags));
                 }
                 OP_STROKE => {
-                    let path = self.paths.get(op.payload_offset as usize).ok_or_else(|| WellfriendError::MalformedPdf("packed stroke path missing".to_string()))?;
-                    let state = self.states.get(op.state_id as usize).ok_or_else(|| WellfriendError::MalformedPdf("packed stroke state missing".to_string()))?;
+                    let path = self.paths.get(op.payload_offset as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed stroke path missing".to_string())
+                    })?;
+                    let state = self.states.get(op.state_id as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed stroke state missing".to_string())
+                    })?;
                     device.stroke_path(path, state);
                 }
-                _ => return Err(WellfriendError::UnsupportedFeature("packed vector replay encountered a non-vector operation".to_string())),
+                _ => {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "packed vector replay encountered a non-vector operation".to_string(),
+                    ))
+                }
             }
         }
         Ok(())
@@ -253,7 +368,11 @@ fn fill_rule_flag(rule: FillRule) -> u16 {
 }
 
 fn fill_rule_from_flag(flag: u16) -> FillRule {
-    if flag & 1 == 1 { FillRule::EvenOdd } else { FillRule::NonZero }
+    if flag & 1 == 1 {
+        FillRule::EvenOdd
+    } else {
+        FillRule::NonZero
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -284,11 +403,9 @@ impl RenderSpatialIndex {
             x1: i32::try_from(tile.x.saturating_add(tile.width)).unwrap_or(i32::MAX),
             y1: i32::try_from(tile.y.saturating_add(tile.height)).unwrap_or(i32::MAX),
         };
-        selected.extend(
-            self.known
-                .iter()
-                .filter_map(|(index, bounds)| bounds.intersect(tile_bounds).is_some().then_some(*index)),
-        );
+        selected.extend(self.known.iter().filter_map(|(index, bounds)| {
+            bounds.intersect(tile_bounds).is_some().then_some(*index)
+        }));
         selected.sort_unstable();
         selected.dedup();
         selected
@@ -315,13 +432,21 @@ impl RenderPlan {
         contract.validate()?;
         let packed = Arc::new(PackedDisplayList::compile(list));
         let contains_native_payload = packed.requires_native_replay();
-        let batches = (!packed.hot_ops.is_empty()).then_some(RenderBatch {
-            first_operation: 0,
-            operation_count: packed.hot_ops.len(),
-            contains_native_payload,
-        }).into_iter().collect();
+        let batches = (!packed.hot_ops.is_empty())
+            .then_some(RenderBatch {
+                first_operation: 0,
+                operation_count: packed.hot_ops.len(),
+                contains_native_payload,
+            })
+            .into_iter()
+            .collect();
         let spatial_index = RenderSpatialIndex::compile(&packed);
-        Ok(Self { contract, packed, spatial_index, batches })
+        Ok(Self {
+            contract,
+            packed,
+            spatial_index,
+            batches,
+        })
     }
 
     pub fn execute_vector_tile(&self, tile: RenderTile) -> Result<Option<PixelBuffer>> {
@@ -330,8 +455,13 @@ impl RenderPlan {
             return Ok(None);
         }
         let selected = self.spatial_index.query(tile);
-        let viewport = self.packed.source().viewport.pixel_window(tile.x, tile.y, tile.width, tile.height);
-        let mut device = CpuRenderDevice::new(viewport, RenderMode::from(self.contract.compositing));
+        let viewport =
+            self.packed
+                .source()
+                .viewport
+                .pixel_window(tile.x, tile.y, tile.width, tile.height);
+        let mut device =
+            CpuRenderDevice::new(viewport, RenderMode::from(self.contract.compositing));
         self.packed.replay_vector(&mut device, &selected)?;
         Ok(Some(device.into_buffer()))
     }
@@ -340,8 +470,8 @@ impl RenderPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::render::{build_display_list, render_display_list, Viewport};
     use crate::content::operation::Operand;
+    use crate::render::{build_display_list, render_display_list, Viewport};
     use crate::ContentOperation;
 
     #[test]
@@ -363,7 +493,11 @@ mod tests {
             ContentOperation::new("f", Vec::new()),
         ];
         let viewport = Viewport::new([0.0, 0.0, 40.0, 40.0], 72);
-        let list = build_display_list(&ops, viewport.clone(), &crate::engine::PageResources::default());
+        let list = build_display_list(
+            &ops,
+            viewport.clone(),
+            &crate::engine::PageResources::default(),
+        );
         assert!(list.native_vector_only());
         let expected = render_display_list(&list, RenderMode::Compat);
         let contract = RenderContract::for_viewport(
@@ -385,8 +519,24 @@ mod tests {
 
     #[test]
     fn spatial_index_preserves_paint_order_after_culling() {
-        let bounds = RenderBounds { x0: 10, y0: 10, x1: 20, y1: 20 };
-        let index = RenderSpatialIndex { known: vec![(2, bounds), (1, bounds)], unknown: vec![0] };
-        assert_eq!(index.query(RenderTile { x: 10, y: 10, width: 2, height: 2 }), vec![0, 1, 2]);
+        let bounds = RenderBounds {
+            x0: 10,
+            y0: 10,
+            x1: 20,
+            y1: 20,
+        };
+        let index = RenderSpatialIndex {
+            known: vec![(2, bounds), (1, bounds)],
+            unknown: vec![0],
+        };
+        assert_eq!(
+            index.query(RenderTile {
+                x: 10,
+                y: 10,
+                width: 2,
+                height: 2
+            }),
+            vec![0, 1, 2]
+        );
     }
 }
