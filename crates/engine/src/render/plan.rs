@@ -429,18 +429,9 @@ impl PackedDisplayList {
                 ),
                 DisplayOp::StateOp { op, .. } => {
                     requires_native_replay = true;
-                    let desc_id = push_descriptor(
-                        NativeDescriptor::State(op.clone()),
-                        &mut descriptors,
-                    );
-                    (
-                        OP_STATE,
-                        0,
-                        u32::MAX,
-                        u32::MAX,
-                        desc_id,
-                        1,
-                    )
+                    let desc_id =
+                        push_descriptor(NativeDescriptor::State(op.clone()), &mut descriptors);
+                    (OP_STATE, 0, u32::MAX, u32::MAX, desc_id, 1)
                 }
                 DisplayOp::NativeTextOp {
                     op,
@@ -702,8 +693,16 @@ pub trait PlanDispatcher {
     fn dispatch_form(&mut self, desc: &FormXObjectDescriptor, bounds: Option<&RenderBounds>);
     fn dispatch_shading(&mut self, desc: &ShadingDescriptor, bounds: Option<&RenderBounds>);
     fn dispatch_state(&mut self, op: &crate::content::ContentOperation);
-    fn dispatch_pattern_ops(&mut self, ops: &[crate::content::ContentOperation], bounds: Option<&RenderBounds>);
-    fn dispatch_inline_image_ops(&mut self, ops: &[crate::content::ContentOperation], bounds: Option<&RenderBounds>);
+    fn dispatch_pattern_ops(
+        &mut self,
+        ops: &[crate::content::ContentOperation],
+        bounds: Option<&RenderBounds>,
+    );
+    fn dispatch_inline_image_ops(
+        &mut self,
+        ops: &[crate::content::ContentOperation],
+        bounds: Option<&RenderBounds>,
+    );
     fn dispatch_save(&mut self);
     fn dispatch_restore(&mut self);
     fn dispatch_clip(&mut self, path: &Path, ctm: &Transform2D, rule: FillRule);
@@ -723,11 +722,7 @@ impl PackedDisplayList {
                     "plan execution cancelled".to_string(),
                 ));
             }
-            let op_bounds = self
-                .bounds
-                .get(hot.bounds_id as usize)
-                .copied()
-                .flatten();
+            let op_bounds = self.bounds.get(hot.bounds_id as usize).copied().flatten();
             match hot.opcode {
                 OP_SAVE => dispatcher.dispatch_save(),
                 OP_RESTORE => dispatcher.dispatch_restore(),
@@ -763,13 +758,21 @@ impl PackedDisplayList {
                     })?;
                     dispatcher.dispatch_stroke(path, state);
                 }
-                OP_STATE | OP_NATIVE_TEXT | OP_NATIVE_IMAGE | OP_NATIVE_SHADING
-                | OP_NATIVE_PATTERN | OP_NATIVE_INLINE_IMAGE | OP_NATIVE_FORM => {
-                    let desc = self.descriptors.get(hot.payload_offset as usize).ok_or_else(|| {
-                        WellfriendError::MalformedPdf(
-                            "packed descriptor index out of bounds".to_string(),
-                        )
-                    })?;
+                OP_STATE
+                | OP_NATIVE_TEXT
+                | OP_NATIVE_IMAGE
+                | OP_NATIVE_SHADING
+                | OP_NATIVE_PATTERN
+                | OP_NATIVE_INLINE_IMAGE
+                | OP_NATIVE_FORM => {
+                    let desc = self
+                        .descriptors
+                        .get(hot.payload_offset as usize)
+                        .ok_or_else(|| {
+                            WellfriendError::MalformedPdf(
+                                "packed descriptor index out of bounds".to_string(),
+                            )
+                        })?;
                     match desc {
                         NativeDescriptor::Text(text) => {
                             dispatcher.dispatch_text(text, op_bounds.as_ref());
@@ -986,10 +989,7 @@ mod tests {
                 "Tf",
                 vec![Operand::Name("F1".to_string()), Operand::Real(12.0)],
             ),
-            ContentOperation::new(
-                "Tj",
-                vec![Operand::String(b"Hello".to_vec())],
-            ),
+            ContentOperation::new("Tj", vec![Operand::String(b"Hello".to_vec())]),
             ContentOperation::new("ET", Vec::new()),
         ];
         let viewport = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
@@ -998,7 +998,10 @@ mod tests {
             viewport.clone(),
             &crate::engine::PageResources::default(),
         );
-        assert!(!list.native_vector_only(), "text page should have native ops");
+        assert!(
+            !list.native_vector_only(),
+            "text page should have native ops"
+        );
         let packed = PackedDisplayList::compile(list);
         assert!(packed.requires_native_replay());
         // Verify typed text descriptor is present, not a raw ContentOperation
@@ -1024,12 +1027,10 @@ mod tests {
 
     #[test]
     fn image_descriptor_compiles_resource_name_only() {
-        let ops = vec![
-            ContentOperation::new(
-                "Do",
-                vec![Operand::Name("Im1".to_string())],
-            ),
-        ];
+        let ops = vec![ContentOperation::new(
+            "Do",
+            vec![Operand::Name("Im1".to_string())],
+        )];
         let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
         let list = build_display_list(
             &ops,
@@ -1057,12 +1058,10 @@ mod tests {
 
     #[test]
     fn form_descriptor_compiles_resource_name_only() {
-        let ops = vec![
-            ContentOperation::new(
-                "Do",
-                vec![Operand::Name("Fm1".to_string())],
-            ),
-        ];
+        let ops = vec![ContentOperation::new(
+            "Do",
+            vec![Operand::Name("Fm1".to_string())],
+        )];
         let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
         let list = build_display_list(
             &ops,
@@ -1088,12 +1087,10 @@ mod tests {
 
     #[test]
     fn shading_descriptor_compiles_resource_name_only() {
-        let ops = vec![
-            ContentOperation::new(
-                "sh",
-                vec![Operand::Name("Sh1".to_string())],
-            ),
-        ];
+        let ops = vec![ContentOperation::new(
+            "sh",
+            vec![Operand::Name("Sh1".to_string())],
+        )];
         let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
         let list = build_display_list(
             &ops,
@@ -1156,7 +1153,11 @@ mod tests {
         fn dispatch_text(&mut self, _desc: &TextDescriptor, _bounds: Option<&RenderBounds>) {
             self.text_count += 1;
         }
-        fn dispatch_image(&mut self, _desc: &ImageXObjectDescriptor, _bounds: Option<&RenderBounds>) {
+        fn dispatch_image(
+            &mut self,
+            _desc: &ImageXObjectDescriptor,
+            _bounds: Option<&RenderBounds>,
+        ) {
             self.image_count += 1;
         }
         fn dispatch_form(&mut self, _desc: &FormXObjectDescriptor, _bounds: Option<&RenderBounds>) {
@@ -1210,10 +1211,7 @@ mod tests {
                 "Tf",
                 vec![Operand::Name("F1".to_string()), Operand::Real(12.0)],
             ),
-            ContentOperation::new(
-                "Tj",
-                vec![Operand::String(b"Plan".to_vec())],
-            ),
+            ContentOperation::new("Tj", vec![Operand::String(b"Plan".to_vec())]),
             ContentOperation::new("ET", Vec::new()),
         ];
         let viewport = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);

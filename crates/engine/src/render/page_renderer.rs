@@ -40,8 +40,8 @@ use crate::render::path::{
     FlatPath, GlyphHinting, Path, PathPainter, RasterizedGlyphMask,
 };
 use crate::render::plan::{
-    FormXObjectDescriptor, ImageXObjectDescriptor, PlanDispatcher, RenderPlan,
-    ShadingDescriptor, TextArrayItem, TextDescriptor,
+    FormXObjectDescriptor, ImageXObjectDescriptor, PlanDispatcher, RenderPlan, ShadingDescriptor,
+    TextArrayItem, TextDescriptor,
 };
 use crate::render::shading::ShadingRenderer;
 use crate::render::text_decode::{decode_text_bytes_with_resolver, DecodedGlyph};
@@ -717,8 +717,12 @@ impl PageRenderer {
     ) -> Result<PixelBuffer> {
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
-        let transparent_page_group =
-            display_list_needs_transparent_page_group(engine, page_number, &resources, plan.packed.source())?;
+        let transparent_page_group = display_list_needs_transparent_page_group(
+            engine,
+            page_number,
+            &resources,
+            plan.packed.source(),
+        )?;
         let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
         let mut state = RenderState::new(buf, viewport.clone(), resources, engine, page_number);
         {
@@ -8919,11 +8923,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
         self.state.dispatch(op);
     }
 
-    fn dispatch_pattern_ops(
-        &mut self,
-        ops: &[ContentOperation],
-        bounds: Option<&RenderBounds>,
-    ) {
+    fn dispatch_pattern_ops(&mut self, ops: &[ContentOperation], bounds: Option<&RenderBounds>) {
         if !self.state.oc_current_visible {
             return;
         }
@@ -8953,9 +8953,14 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
 
     fn dispatch_save(&mut self) {
         // Replicate the Save logic from replay_display_op
-        let node = self.state.clip_dag.intern_option(self.state.buf.clip_mask());
+        let node = self
+            .state
+            .clip_dag
+            .intern_option(self.state.buf.clip_mask());
         self.state.clip_stack.push(node);
-        self.state.smask_stack.push(self.state.buf.smask_mask().cloned());
+        self.state
+            .smask_stack
+            .push(self.state.buf.smask_mask().cloned());
         self.state.gs.push();
     }
 
@@ -8967,7 +8972,11 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
             Some(saved) => {
                 let mask = match &saved.state {
                     ClipState::Full => None,
-                    _ => Some(saved.materialize(self.state.buf.width, self.state.buf.height).clone()),
+                    _ => Some(
+                        saved
+                            .materialize(self.state.buf.width, self.state.buf.height)
+                            .clone(),
+                    ),
                 };
                 self.state.buf.restore_clip(mask);
             }
@@ -8980,8 +8989,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
     }
 
     fn dispatch_clip(&mut self, path: &Path, ctm: &Transform2D, rule: FillRule) {
-        if let Some((x, y, width, height)) =
-            axis_aligned_integer_rect(path, ctm, self.viewport_ref)
+        if let Some((x, y, width, height)) = axis_aligned_integer_rect(path, ctm, self.viewport_ref)
         {
             let clip = if x <= 0
                 && y <= 0
@@ -15579,14 +15587,10 @@ mod tests {
         assert!(list.stats.native_text_ops > 0, "must have native text ops");
         // The plan path is now universally invoked for all fully-supported lists.
         let immediate = engine.render_page(1, 72).expect("immediate render");
-        let plan_result = PageRenderer::render_page_display_list_with_mode(
-            &engine,
-            1,
-            72,
-            RenderMode::Compat,
-        )
-        .expect("plan render")
-        .expect("plan should produce output for text page");
+        let plan_result =
+            PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
+                .expect("plan render")
+                .expect("plan should produce output for text page");
         assert_same_pixels(&immediate, &plan_result);
     }
 
@@ -15603,14 +15607,10 @@ mod tests {
             "must have native image ops"
         );
         let immediate = engine.render_page(1, 72).expect("immediate render");
-        let plan_result = PageRenderer::render_page_display_list_with_mode(
-            &engine,
-            1,
-            72,
-            RenderMode::Compat,
-        )
-        .expect("plan render")
-        .expect("plan should produce output for image page");
+        let plan_result =
+            PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
+                .expect("plan render")
+                .expect("plan should produce output for image page");
         assert_same_pixels(&immediate, &plan_result);
     }
 
@@ -15623,19 +15623,12 @@ mod tests {
             .build_page_display_list(1, 72)
             .expect("build display list");
         assert!(list.is_fully_supported());
-        assert!(
-            list.stats.form_xobjects > 0,
-            "must have form xobject ops"
-        );
+        assert!(list.stats.form_xobjects > 0, "must have form xobject ops");
         let immediate = engine.render_page(1, 72).expect("immediate render");
-        let plan_result = PageRenderer::render_page_display_list_with_mode(
-            &engine,
-            1,
-            72,
-            RenderMode::Compat,
-        )
-        .expect("plan render")
-        .expect("plan should produce output for form xobject page");
+        let plan_result =
+            PageRenderer::render_page_display_list_with_mode(&engine, 1, 72, RenderMode::Compat)
+                .expect("plan render")
+                .expect("plan should produce output for form xobject page");
         assert_same_pixels(&immediate, &plan_result);
     }
 
