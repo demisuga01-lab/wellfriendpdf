@@ -748,6 +748,7 @@ impl PageRenderer {
         let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
         state.cancel = cancel.clone();
         state.dispatch_all(&ops);
+        state.check_fatal_render_error()?;
         // dispatch_all bails out early (without error) when the token trips;
         // surface that as a distinct error so the caller returns a timeout
         // response rather than a half-rendered page presented as success.
@@ -800,6 +801,10 @@ impl PageRenderer {
         );
         state.cancel = cancel.clone();
         state.dispatch_all(&ops);
+        if let Err(err) = state.check_fatal_render_error() {
+            state.return_document_cache(cache);
+            return Err(err);
+        }
         if let Err(err) = cancel.check("page render") {
             state.return_document_cache(cache);
             return Err(err);
@@ -892,6 +897,7 @@ impl PageRenderer {
         let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
         state.cancel = cancel.clone();
         state.replay_display_list(list);
+        state.check_fatal_render_error()?;
         cancel.check("display-list replay")?;
         state.render_page_annotations();
         cancel.check("display-list annotation render")?;
@@ -972,6 +978,10 @@ impl PageRenderer {
         );
         state.cancel = cancel.clone();
         state.replay_display_list(list);
+        if let Err(err) = state.check_fatal_render_error() {
+            state.return_document_cache(cache);
+            return Err(err);
+        }
         if let Err(err) = cancel.check("display-list replay") {
             state.return_document_cache(cache);
             return Err(err);
@@ -1147,6 +1157,10 @@ impl PageRenderer {
         );
         state.cancel = cancel.clone();
         state.replay_display_list(&list);
+        if let Err(err) = state.check_fatal_render_error() {
+            state.return_document_cache(cache);
+            return Err(err);
+        }
         if let Err(err) = cancel.check("display-list tile replay") {
             state.return_document_cache(cache);
             return Err(err);
@@ -1326,6 +1340,7 @@ impl PageRenderer {
         let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
         state.cancel = cancel.clone();
         state.dispatch_all(&ops);
+        state.check_fatal_render_error()?;
         cancel.check("page tile render")?;
         state.render_page_annotations();
         cancel.check("page tile annotation render")?;
@@ -1546,6 +1561,10 @@ struct RenderState<'a> {
     /// the tiling-pattern tile loop so a runaway page can be stopped from
     /// outside. Child states (Form groups, soft masks) share the same token.
     cancel: CancelToken,
+    /// First fatal renderer condition observed while interpreting the page.
+    /// Void operator handlers record here so public page/tile APIs can return
+    /// a typed error after safely unwinding their local state.
+    fatal_render_error: Option<String>,
     /// Per-render decode scheduler context. Current renderer decode is
     /// synchronous for deterministic composition, but every image/stream decode
     /// still acquires a memory token and observes cancellation before work.
@@ -2272,6 +2291,7 @@ impl<'a> RenderState<'a> {
             pending_inline: None,
             base_ctm: Transform2D::identity(),
             cancel: CancelToken::none(),
+            fatal_render_error: None,
             decode_scheduler: RenderDecodeScheduler::new(&DecodeLimits::default()),
             optional_content: OptionalContentContext::from_document(engine.document()),
             oc_visibility_stack: Vec::new(),
@@ -2281,6 +2301,19 @@ impl<'a> RenderState<'a> {
                 viewport_width,
                 viewport_height,
             ),
+        }
+    }
+
+    fn record_fatal_render_error(&mut self, reason: impl Into<String>) {
+        if self.fatal_render_error.is_none() {
+            self.fatal_render_error = Some(reason.into());
+        }
+    }
+
+    fn check_fatal_render_error(&self) -> Result<()> {
+        match &self.fatal_render_error {
+            Some(reason) => Err(WellfriendError::UnsupportedFeature(reason.clone())),
+            None => Ok(()),
         }
     }
 
@@ -5690,8 +5723,9 @@ impl<'a> RenderState<'a> {
         let pattern_key = tiling_pattern_stack_key(pattern_obj, &pat_dict, raw_bytes.len());
         let program_cache_key = format!("tiling-program:{pattern_key}:raw:{raw_hash:016x}");
         if self.pattern_stack.iter().any(|key| key == &pattern_key) {
-            log::warn!("tiling pattern: recursive pattern reference detected; using fallback");
-            self.paint_tiling_pattern_solid_fallback(path_clip, paint_type, use_stroke_color);
+            self.record_fatal_render_error(format!(
+                "recursive tiling pattern resource /{pattern_key} cannot be rendered exactly"
+            ));
             return;
         }
 
@@ -5747,11 +5781,9 @@ impl<'a> RenderState<'a> {
             COMPAT_TILE_CAP
         };
         if tile_count > tile_cap {
-            log::warn!(
-                "tiling pattern: {tile_count} tiles exceeds cap {tile_cap}; using bounded solid \
-                 fallback"
-            );
-            self.paint_tiling_pattern_solid_fallback(path_clip, paint_type, use_stroke_color);
+            self.record_fatal_render_error(format!(
+                "tiling pattern requires {tile_count} visible cells, exceeding exact render limit {tile_cap}"
+            ));
             return;
         }
         if tile_count == 0 {
@@ -5818,38 +5850,6 @@ impl<'a> RenderState<'a> {
         }
 
         self.pattern_stack.pop();
-        self.buf.restore_clip(saved_clip);
-    }
-
-    fn paint_tiling_pattern_solid_fallback(
-        &mut self,
-        path_clip: ClipMask,
-        paint_type: i64,
-        use_stroke_color: bool,
-    ) {
-        let saved_clip = self.buf.clip_mask().cloned();
-        self.buf.set_clip(path_clip);
-        let color = if paint_type == 2 {
-            let source = if use_stroke_color {
-                &self.gs.stroke_color
-            } else {
-                &self.gs.fill_color
-            };
-            let alpha = if use_stroke_color {
-                self.gs.stroke_alpha
-            } else {
-                self.gs.fill_alpha
-            };
-            let (_space, color) = uncolored_pattern_color(source);
-            ColorSpaceHandler::to_render_color(&color, alpha as f32).to_pixel_color()
-        } else if use_stroke_color {
-            self.stroke_pixel_color()
-        } else {
-            self.fill_pixel_color()
-        };
-        let width = self.buf.width as i32;
-        let height = self.buf.height as i32;
-        self.buf.fill_rect(0, 0, width, height, color);
         self.buf.restore_clip(saved_clip);
     }
 
@@ -13540,15 +13540,13 @@ mod tests {
     }
 
     #[test]
-    fn recursive_tiling_pattern_uses_bounded_fallback() {
+    fn recursive_tiling_pattern_returns_typed_refusal() {
         let pdf = pdf_with_recursive_tiling_pattern();
         let engine = ContentEngine::open_bytes(pdf).expect("open recursive pattern PDF");
-        let buf = engine
+        let error = engine
             .render_page_with_mode(1, 72, RenderMode::Compat)
-            .expect("recursive pattern should render through fallback");
-
-        assert_eq!(buf.width, 100);
-        assert_eq!(buf.height, 100);
+            .expect_err("recursive pattern must not silently approximate to solid color");
+        assert!(format!("{error}").contains("recursive tiling pattern"));
     }
 
     #[test]
