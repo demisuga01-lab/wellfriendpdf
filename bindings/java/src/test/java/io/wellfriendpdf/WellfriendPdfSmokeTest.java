@@ -24,6 +24,17 @@ public final class WellfriendPdfSmokeTest {
             doc.renderPageIntoBufferWithContractJson(contract, callerSurface);
             assertTrue(callerSurface.get(0) != 0 || callerSurface.get(1) != 0 || callerSurface.get(2) != 0,
                 "caller-owned render surface");
+            try (WellfriendPdf.ProgressiveRenderSession session = doc.progressiveRenderSession(1, 72, 64, 64, "compat")) {
+                String progressiveToken = session.pauseJson();
+                assertTrue(progressiveToken.contains("\"lifecycle_state\":\"paused\""), "progressive pause");
+                session.resumeJson(progressiveToken);
+                for (int index = 0; index < 64; index++) {
+                    if (session.stepJson(4).contains("\"lifecycle_state\":\"completed\"")) break;
+                }
+                byte[] progressivePng = session.finishPng();
+                assertTrue(progressivePng.length > 8 && progressivePng[0] == (byte) 0x89,
+                    "progressive finish PNG");
+            }
             assertTrue(png.length > 8 && png[0] == (byte) 0x89 && png[1] == (byte) 0x50,
                 "PNG raster rendering");
             assertTrue(contractPng.length > 8 && contractPng[0] == (byte) 0x89 && contractPng[1] == (byte) 0x50,

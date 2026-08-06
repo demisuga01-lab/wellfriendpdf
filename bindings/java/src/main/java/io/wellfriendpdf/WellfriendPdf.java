@@ -729,6 +729,33 @@ public final class WellfriendPdf {
             }
         }
 
+        public ProgressiveRenderSession progressiveRenderSession(
+            int pageNumber, int dpi, int tileWidth, int tileHeight, String mode
+        ) {
+            ensureOpen();
+            if (pageNumber < 1 || dpi < 1 || tileWidth < 1 || tileHeight < 1) {
+                throw new IllegalArgumentException("page, dpi, and tile dimensions must be positive");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment modePtr = mode == null ? MemorySegment.NULL : arena.allocateFrom(mode);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment session = (MemorySegment) Native.PROGRESSIVE_NEW.invokeExact(
+                    handle, (long) pageNumber, dpi, tileWidth, tileHeight, modePtr, err);
+                if (Native.isNull(session)) {
+                    Native.throwError(2, err);
+                }
+                return new ProgressiveRenderSession(session);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive session creation failed", ex);
+            }
+        }
+
+        public ProgressiveRenderSession progressiveRenderSession(int pageNumber) {
+            return progressiveRenderSession(pageNumber, 72, 256, 256, "compat");
+        }
+
         public String parseJson() {
             ensureOpen();
             try (Arena arena = Arena.ofConfined()) {
@@ -1630,6 +1657,122 @@ public final class WellfriendPdf {
         }
     }
 
+    public static final class ProgressiveRenderSession implements AutoCloseable {
+        private MemorySegment handle;
+        private boolean closed;
+
+        private ProgressiveRenderSession(MemorySegment handle) {
+            this.handle = handle;
+        }
+
+        public String stepJson(long maxTiles) {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_STEP.invokeExact(handle, maxTiles, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive step failed", ex);
+            }
+        }
+
+        public String pauseJson() {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_PAUSE.invokeExact(handle, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive pause failed", ex);
+            }
+        }
+
+        public String tokenJson() {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment jsonOut = arena.allocate(ValueLayout.ADDRESS);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_TOKEN.invokeExact(handle, jsonOut, err);
+                Native.throwError(status, err);
+                return Native.takeString(jsonOut);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive token failed", ex);
+            }
+        }
+
+        public void resumeJson(String tokenJson) {
+            ensureOpen();
+            Objects.requireNonNull(tokenJson, "tokenJson");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment token = arena.allocateFrom(tokenJson);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_RESUME.invokeExact(handle, token, err);
+                Native.throwError(status, err);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive resume failed", ex);
+            }
+        }
+
+        public void cancel() {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_CANCEL.invokeExact(handle, err);
+                Native.throwError(status, err);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive cancel failed", ex);
+            }
+        }
+
+        public byte[] finishPng() {
+            ensureOpen();
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.PROGRESSIVE_FINISH.invokeExact(handle, buffer, err);
+                Native.throwError(status, err);
+                return Native.takeBuffer(buffer);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive finish failed", ex);
+            }
+        }
+
+        @Override
+        public void close() {
+            if (closed) return;
+            try {
+                Native.PROGRESSIVE_FREE.invokeExact(handle);
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend progressive session release failed", ex);
+            } finally {
+                handle = MemorySegment.NULL;
+                closed = true;
+            }
+        }
+
+        private void ensureOpen() {
+            if (closed || Native.isNull(handle)) {
+                throw new IllegalStateException("ProgressiveRenderSession is closed");
+            }
+        }
+    }
+
     public record Page(Document document, int number) {
         public String text() {
             return document.extractText(number);
@@ -1748,6 +1891,45 @@ public final class WellfriendPdf {
             "wellfriendpdf_document_render_into_buffer_with_contract_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_NEW = downcall(
+            "wellfriendpdf_document_progressive_render_new",
+            FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_INT, ValueLayout.JAVA_INT,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_STEP = downcall(
+            "wellfriendpdf_progressive_render_step_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_TOKEN = downcall(
+            "wellfriendpdf_progressive_render_token_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_PAUSE = downcall(
+            "wellfriendpdf_progressive_render_pause_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_RESUME = downcall(
+            "wellfriendpdf_progressive_render_resume_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_CANCEL = downcall(
+            "wellfriendpdf_progressive_render_cancel",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_FINISH = downcall(
+            "wellfriendpdf_progressive_render_finish_png",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle PROGRESSIVE_FREE = downcall(
+            "wellfriendpdf_progressive_render_free",
+            FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
         );
         private static final MethodHandle PARSE_JSON = downcall(
             "wellfriendpdf_document_parse_json",
