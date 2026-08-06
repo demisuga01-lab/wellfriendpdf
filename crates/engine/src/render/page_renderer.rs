@@ -536,20 +536,12 @@ impl RenderDocumentCache {
         self.display_list_raster_cache.metrics()
     }
 
-    pub(crate) fn display_list_key(page_number: usize, dpi: u32) -> String {
-        Self::display_list_key_with_revision(page_number, dpi, "revision:legacy")
-    }
-
     pub(crate) fn display_list_key_with_revision(
         page_number: usize,
         dpi: u32,
         revision: impl AsRef<str>,
     ) -> String {
         format!("page:{page_number}:dpi:{dpi}:{}", revision.as_ref())
-    }
-
-    pub(crate) fn transparent_page_group_key(page_number: usize) -> String {
-        Self::transparent_page_group_key_with_revision(page_number, "revision:legacy")
     }
 
     pub(crate) fn transparent_page_group_key_with_revision(
@@ -12944,7 +12936,7 @@ mod tests {
     #[test]
     fn render_document_cache_retains_display_lists_by_page_and_dpi() {
         let mut cache = RenderDocumentCache::new();
-        let key = RenderDocumentCache::display_list_key(2, 144);
+        let key = RenderDocumentCache::display_list_key_with_revision(2, 144, "revision:test");
         let list = DisplayList {
             viewport: Viewport::new([0.0, 0.0, 10.0, 10.0], 144),
             ops: Vec::new(),
