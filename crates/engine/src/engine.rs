@@ -1853,6 +1853,26 @@ impl ContentEngine {
         )
     }
 
+    pub fn progressive_render_job_with_viewport_hint(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        tile_width: u32,
+        tile_height: u32,
+        render_mode: RenderMode,
+        viewport_hint: Option<RenderTile>,
+    ) -> Result<ProgressiveRenderJob> {
+        ProgressiveRenderJob::new_with_viewport_hint(
+            self.clone(),
+            page_number,
+            dpi,
+            render_mode,
+            tile_width,
+            tile_height,
+            viewport_hint,
+        )
+    }
+
     /// Verify every digital signature field in the document (the `verify-sig`
     /// tool — `pdfsig`-equivalent). See [`crate::signature`] for the precise
     /// scope (cryptographic validity + coverage + cert details; no trust-chain

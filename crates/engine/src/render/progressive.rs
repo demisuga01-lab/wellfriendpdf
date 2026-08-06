@@ -51,6 +51,7 @@ pub struct ProgressiveRenderToken {
     pub total_tiles: usize,
     pub completed_tiles: usize,
     pub visibility_fingerprint: String,
+    pub viewport_hint: Option<RenderTile>,
     pub resumable: bool,
     pub complete: bool,
 }
@@ -82,6 +83,8 @@ pub struct ProgressiveRenderJob {
     page_width: u32,
     page_height: u32,
     tiles: Vec<RenderTile>,
+    tile_order: Vec<usize>,
+    viewport_hint: Option<RenderTile>,
     completed: Vec<Option<PixelBuffer>>,
     next_tile_index: usize,
     visibility_fingerprint: String,
@@ -100,6 +103,26 @@ impl ProgressiveRenderJob {
         render_mode: RenderMode,
         tile_width: u32,
         tile_height: u32,
+    ) -> Result<Self> {
+        Self::new_with_viewport_hint(
+            engine,
+            page_number,
+            dpi,
+            render_mode,
+            tile_width,
+            tile_height,
+            None,
+        )
+    }
+
+    pub fn new_with_viewport_hint(
+        engine: ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+        tile_width: u32,
+        tile_height: u32,
+        viewport_hint: Option<RenderTile>,
     ) -> Result<Self> {
         let viewport = engine.page_viewport(page_number, dpi)?;
         let tile_width = tile_width.max(1);
@@ -122,6 +145,10 @@ impl ProgressiveRenderJob {
             y += height;
         }
         let total = tiles.len();
+        let mut tile_order: Vec<usize> = (0..total).collect();
+        if let Some(hint) = viewport_hint {
+            tile_order.sort_by_key(|index| tile_priority_key(tiles[*index], hint));
+        }
         let visibility_fingerprint = OptionalContentContext::from_document(engine.document())
             .visibility_fingerprint()
             .to_string();
@@ -135,6 +162,8 @@ impl ProgressiveRenderJob {
             page_width: viewport.width_px,
             page_height: viewport.height_px,
             tiles,
+            tile_order,
+            viewport_hint,
             completed: vec![None; total],
             next_tile_index: 0,
             visibility_fingerprint,
@@ -162,6 +191,7 @@ impl ProgressiveRenderJob {
             total_tiles: self.tiles.len(),
             completed_tiles: self.completed_count(),
             visibility_fingerprint: self.visibility_fingerprint.clone(),
+            viewport_hint: self.viewport_hint,
             resumable: !self.aborted
                 && matches!(
                     self.state,
@@ -202,6 +232,7 @@ impl ProgressiveRenderJob {
             (token.completed_tiles != self.completed_count()).then_some("completed_tiles"),
             (token.visibility_fingerprint != self.visibility_fingerprint)
                 .then_some("visibility_fingerprint"),
+            (token.viewport_hint != self.viewport_hint).then_some("viewport_hint"),
         ]
         .into_iter()
         .flatten()
@@ -326,7 +357,7 @@ impl ProgressiveRenderJob {
                 break;
             }
             self.state = ProgressiveRenderState::Rendering;
-            let index = self.next_tile_index;
+            let index = self.tile_order[self.next_tile_index];
             let tile = self.tiles[index];
             let rendered_tile =
                 match PageRenderer::render_page_display_list_tile_cancellable_with_mode_and_cache(
@@ -452,6 +483,26 @@ impl ProgressiveRenderJob {
     }
 }
 
+fn tile_priority_key(tile: RenderTile, hint: RenderTile) -> (u8, u64, u32, u32) {
+    let tile_x1 = tile.x.saturating_add(tile.width);
+    let tile_y1 = tile.y.saturating_add(tile.height);
+    let hint_x1 = hint.x.saturating_add(hint.width);
+    let hint_y1 = hint.y.saturating_add(hint.height);
+    let intersects = tile.x < hint_x1 && hint.x < tile_x1 && tile.y < hint_y1 && hint.y < tile_y1;
+    let tile_cx = u64::from(tile.x) * 2 + u64::from(tile.width);
+    let tile_cy = u64::from(tile.y) * 2 + u64::from(tile.height);
+    let hint_cx = u64::from(hint.x) * 2 + u64::from(hint.width);
+    let hint_cy = u64::from(hint.y) * 2 + u64::from(hint.height);
+    let dx = tile_cx.abs_diff(hint_cx);
+    let dy = tile_cy.abs_diff(hint_cy);
+    (
+        if intersects { 0 } else { 1 },
+        dx.saturating_mul(dx).saturating_add(dy.saturating_mul(dy)),
+        tile.y,
+        tile.x,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,5 +535,38 @@ mod tests {
         job.close();
         assert_eq!(job.state(), ProgressiveRenderState::Closed);
         assert!(job.finish().is_none());
+    }
+
+    #[test]
+    fn viewport_hint_prioritizes_intersecting_tile() {
+        let engine = test_engine();
+        let hint = RenderTile {
+            x: 576,
+            y: 704,
+            width: 32,
+            height: 64,
+        };
+        let mut job = ProgressiveRenderJob::new_with_viewport_hint(
+            engine,
+            1,
+            72,
+            RenderMode::Compat,
+            64,
+            64,
+            Some(hint),
+        )
+        .expect("create hinted job");
+        let report = job
+            .render_next(1, &CancelToken::none())
+            .expect("render visible tile");
+        assert_eq!(report.completed_tiles.len(), 1);
+        let first = report.completed_tiles[0];
+        assert!(
+            first.x < hint.x.saturating_add(hint.width)
+                && hint.x < first.x.saturating_add(first.width)
+                && first.y < hint.y.saturating_add(hint.height)
+                && hint.y < first.y.saturating_add(first.height),
+            "first tile {first:?} must intersect hint {hint:?}"
+        );
     }
 }
