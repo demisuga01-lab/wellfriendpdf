@@ -107,7 +107,7 @@ impl GlyphHinting {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Path {
     pub segments: Vec<PathSegment>,
     pub current_point: Option<(f64, f64)>,
