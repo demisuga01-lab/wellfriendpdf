@@ -304,7 +304,7 @@ mod tests {
     #[test]
     fn image_xobject_with_axis_aligned_ctm_is_regional() {
         // Set up a CTM that places a 200x100 image at (50, 300) — axis-aligned.
-        let mut ops = vec![
+        let ops = vec![
             ContentOperation::new(
                 "cm",
                 vec![
