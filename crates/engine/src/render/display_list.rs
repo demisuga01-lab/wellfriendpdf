@@ -2502,6 +2502,38 @@ mod tests {
             RenderCacheKey::new_with_visibility(1, 72, RenderMode::Compat, tile, "ocg:view:hidden");
 
         assert_ne!(visible, hidden);
+        let changed_revision = RenderCacheKey::new_with_full_identity(
+            1,
+            72,
+            RenderMode::Compat,
+            tile,
+            "ocg:view:visible",
+            "prepress:none",
+            "revision:two",
+            "contract:one",
+        );
+        let changed_contract = RenderCacheKey::new_with_full_identity(
+            1,
+            72,
+            RenderMode::Compat,
+            tile,
+            "ocg:view:visible",
+            "prepress:none",
+            "revision:one",
+            "contract:two",
+        );
+        let baseline = RenderCacheKey::new_with_full_identity(
+            1,
+            72,
+            RenderMode::Compat,
+            tile,
+            "ocg:view:visible",
+            "prepress:none",
+            "revision:one",
+            "contract:one",
+        );
+        assert_ne!(baseline, changed_revision);
+        assert_ne!(baseline, changed_contract);
         let mut cache = RenderCache::new(4_000, 4_000);
         cache.insert(
             visible.clone(),
