@@ -11,6 +11,7 @@ pub enum SimdBackend {
     Sse2,
     Avx2,
     Neon,
+    WasmSimd,
 }
 
 impl SimdBackend {
@@ -20,6 +21,7 @@ impl SimdBackend {
             SimdBackend::Sse2 => "sse2",
             SimdBackend::Avx2 => "avx2",
             SimdBackend::Neon => "neon",
+            SimdBackend::WasmSimd => "wasm_simd",
         }
     }
 }
@@ -41,6 +43,10 @@ pub fn active_backend() -> SimdBackend {
     #[cfg(all(target_arch = "arm", target_feature = "neon"))]
     {
         return SimdBackend::Neon;
+    }
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        return SimdBackend::WasmSimd;
     }
     SimdBackend::Scalar
 }
@@ -68,7 +74,11 @@ pub fn fill_opaque_run(slice: &mut [u8], color: [u8; 4]) -> bool {
     {
         return guarded_fill_opaque_run_neon_aarch64(slice, color);
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        return guarded_fill_opaque_run_wasm_simd128(slice, color);
+    }
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "simd128")))]
     {
         return fill_opaque_run_scalar(slice, color);
     }
@@ -296,6 +306,45 @@ fn row_pixels(dst_row: &[u8], src_row: &[u8], mask_row: &[u8]) -> usize {
 fn div255_round_u16(value: u16) -> u16 {
     let adjusted = value.saturating_add(128);
     (adjusted + (adjusted >> 8)) >> 8
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn guarded_fill_opaque_run_wasm_simd128(slice: &mut [u8], color: [u8; 4]) -> bool {
+    let mut scalar = cfg!(debug_assertions).then(|| {
+        let mut copy = slice.to_vec();
+        fill_opaque_run_scalar(&mut copy, color);
+        copy
+    });
+    // SAFETY: this function is compiled only for wasm simd128 targets.
+    let ok = unsafe { fill_opaque_run_wasm_simd128(slice, color) };
+    if ok {
+        if let Some(expected) = scalar.take() {
+            debug_assert_eq!(slice, expected.as_slice());
+        }
+    }
+    ok
+}
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn fill_opaque_run_wasm_simd128(slice: &mut [u8], color: [u8; 4]) -> bool {
+    use std::arch::wasm32::{i32x4_splat, v128, v128_store};
+
+    let fill = i32x4_splat(i32::from_le_bytes(color));
+    let simd_len = (slice.len() / 16) * 16;
+    let mut offset = 0usize;
+    while offset < simd_len {
+        // SAFETY: offset stays below the rounded-down slice length and storeu
+        // semantics accept an arbitrary byte alignment.
+        unsafe {
+            v128_store(slice.as_mut_ptr().add(offset) as *mut v128, fill);
+        }
+        offset += 16;
+    }
+    if offset < slice.len() {
+        fill_opaque_run_scalar(&mut slice[offset..], color);
+    }
+    true
 }
 
 #[cfg(target_arch = "x86_64")]

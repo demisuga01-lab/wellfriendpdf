@@ -1695,6 +1695,7 @@ fn native_pixel_compositor_backend() -> Option<PixelCompositorBackend> {
         wellfriendpdf_render_simd::SimdBackend::Avx2 => Some(PixelCompositorBackend::Avx2),
         wellfriendpdf_render_simd::SimdBackend::Sse2 => Some(PixelCompositorBackend::Sse2),
         wellfriendpdf_render_simd::SimdBackend::Neon => Some(PixelCompositorBackend::Neon),
+        wellfriendpdf_render_simd::SimdBackend::WasmSimd => Some(PixelCompositorBackend::WasmSimd),
         wellfriendpdf_render_simd::SimdBackend::Scalar => None,
     }
 }
