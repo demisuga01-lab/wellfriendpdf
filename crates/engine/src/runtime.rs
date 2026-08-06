@@ -1081,6 +1081,22 @@ pub fn runtime_capabilities_for(
                 .to_string(),
         },
         RuntimeCapability {
+            name: "versioned_render_contract_v1".to_string(),
+            state: CapabilityState::Active,
+            mode: ExecutionMode::Standard,
+            reason: "canonical_revision_aware_contract_is_active_for_full_page_rgba_rendering_and_binding_json_adapters; unsupported policy combinations are rejected rather than silently ignored".to_string(),
+        },
+        RuntimeCapability {
+            name: "packed_vector_render_plan".to_string(),
+            state: if config.rendering.retained_display_lists {
+                CapabilityState::Available
+            } else {
+                CapabilityState::InactivePolicy
+            },
+            mode: ExecutionMode::Standard,
+            reason: "fully_vector_retained_display_lists_compile_to_packed_hot_operations_state_path_arenas_and_ordered_spatial_queries; high_level_resource_payloads remain on canonical_native_replay".to_string(),
+        },
+        RuntimeCapability {
             name: "retained_display_list_renderer".to_string(),
             state: if config.rendering.retained_display_lists {
                 CapabilityState::Available
@@ -1104,7 +1120,7 @@ pub fn runtime_capabilities_for(
                 CapabilityState::InactivePolicy
             },
             mode: ExecutionMode::Standard,
-            reason: "tile-boundary progressive core and resume tokens are available; full pause-close lifecycle and cross-binding adapters remain incomplete".to_string(),
+            reason: "tile-boundary lifecycle states pause_resume_cancel_close and revision-bound tokens are available in the Rust core; cross-binding progressive session adapters remain incomplete".to_string(),
         },
         RuntimeCapability {
             name: "cpu_simd_compositor".to_string(),
@@ -1800,6 +1816,8 @@ mod tests {
             &HostRuntimePolicy::default(),
         );
         for name in [
+            "versioned_render_contract_v1",
+            "packed_vector_render_plan",
             "retained_display_list_renderer",
             "renderer_fallback_reporting",
             "progressive_renderer_core",
