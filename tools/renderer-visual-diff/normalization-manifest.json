@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "purpose": "RB-15 visual-reference normalization manifest for compact renderer comparisons",
+  "scope": "fixture-scale normalization; no corpus loops, timing, or competitor benchmarks",
+  "normalization_pipeline": [
+    {
+      "step": 1,
+      "name": "channel_order_normalization",
+      "description": "Convert input from any supported channel order to canonical RGBA",
+      "supported_orders": ["rgba", "bgra", "argb", "rgb", "bgr", "gray", "gray_alpha"],
+      "output": "8-bit RGBA",
+      "cli_flags": ["--left-channel-order", "--right-channel-order"]
+    },
+    {
+      "step": 2,
+      "name": "alpha_premultiplication",
+      "description": "Detect or assume premultiplied alpha and convert to straight alpha",
+      "detection": "heuristic sampling (channels <= alpha with partial transparency)",
+      "override": "explicit --left-premultiplied / --right-premultiplied flags",
+      "output": "straight-alpha RGBA"
+    },
+    {
+      "step": 3,
+      "name": "exif_orientation",
+      "description": "Apply EXIF orientation tag to normalize rotation/flip metadata",
+      "supported_orientations": [1, 2, 3, 4, 5, 6, 7, 8],
+      "skip_flag": "--no-exif",
+      "output": "orientation-corrected RGBA"
+    },
+    {
+      "step": 4,
+      "name": "canonical_rgba_surface",
+      "description": "Final unified 8-bit RGBA surface for comparison",
+      "bit_depth": 8,
+      "channels": 4,
+      "mode": "RGBA"
+    },
+    {
+      "step": 5,
+      "name": "expected_difference_mask",
+      "description": "Grayscale mask where nonzero pixels are excluded from comparison",
+      "format": "any image format loadable as grayscale",
+      "semantics": "nonzero = ignored (expected to differ)",
+      "validation": "dimensions must match input images exactly",
+      "cli_flag": "--expected-difference-mask"
+    },
+    {
+      "step": 6,
+      "name": "critical_region_classification",
+      "description": "Connected mismatch regions classified by severity tier",
+      "severity_tiers": {
+        "critical": "large region (>=16px), high edge weight (>=30.0), high fill ratio (>=0.6)",
+        "significant": "moderate size (>=16px) or moderate edge weight (>=15.0)",
+        "minor": "small region (>=4px) with low structural impact",
+        "negligible": "very small region (<4px)"
+      },
+      "output_field": "connected_mismatch_regions[].severity"
+    }
+  ],
+  "comparison_output": {
+    "schema_version": 2,
+    "metrics": [
+      "changed_pixel_count",
+      "changed_pixel_percent",
+      "mae",
+      "rmse",
+      "psnr",
+      "ssim_global_luminance",
+      "alpha_mae",
+      "edge_weighted_difference"
+    ],
+    "region_fields": ["x", "y", "width", "height", "changed_pixels", "severity"],
+    "summary_field": "severity_summary",
+    "normalization_report_field": "normalization"
+  },
+  "legacy_compatibility": {
+    "description": "Legacy --left-bgra-raw / --right-bgra-raw flags map to channel_order=bgra + raw_mode",
+    "preserved_flags": ["--left-bgra-raw", "--right-bgra-raw"]
+  },
+  "test_coverage": {
+    "file": "test_visual_normalization.py",
+    "fixture_strategy": "synthetic in-memory images via Pillow; no external files required",
+    "test_classes": [
+      "TestChannelOrderNormalization",
+      "TestAlphaPremultiplication",
+      "TestExifRotation",
+      "TestExpectedDifferenceMask",
+      "TestCriticalRegionClassification",
+      "TestFullPipelineIntegration"
+    ]
+  }
+}
