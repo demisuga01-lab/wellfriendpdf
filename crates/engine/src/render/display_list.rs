@@ -1870,11 +1870,17 @@ impl<'a> DisplayListBuilder<'a> {
     }
 
     fn push_native_shading(&mut self, op: &ContentOperation) {
-        if op.name(0).is_none() {
-            self.ops.push(DisplayOp::NativeShadingOp {
-                op: op.clone(),
-                approx_bytes: estimate_ops_bytes(std::slice::from_ref(op)),
-                bounds: self.current_clip_bounds,
+        let Some(name) = op.name(0) else {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "sh".to_string(),
+                reason: "named shading operator is missing its resource name".to_string(),
+            });
+            return;
+        };
+        if !self.resources.shadings.contains_key(name) {
+            self.unsupported.push(UnsupportedRenderOp {
+                operator: "sh".to_string(),
+                reason: format!("named shading resource /{name} is missing"),
             });
             return;
         }
@@ -2295,18 +2301,18 @@ mod tests {
     }
 
     #[test]
-    fn missing_named_shading_stays_native_and_replays_canonical_noop() {
+    fn missing_named_shading_is_explicitly_unsupported() {
         let ops = vec![op("sh", vec![Operand::Name("S1".to_string())])];
         let viewport = Viewport::new([0.0, 0.0, 20.0, 20.0], 72);
 
         let list = build_display_list(&ops, viewport, &PageResources::default());
 
-        assert!(list.is_fully_supported());
-        assert!(!list.has_compatibility_runs());
+        assert!(!list.is_fully_supported());
         assert_eq!(list.stats.shadings, 1);
-        assert_eq!(list.stats.native_shading_ops, 1);
-        assert_eq!(list.stats.compatibility_runs, 0);
-        assert!(matches!(list.ops[0], DisplayOp::NativeShadingOp { .. }));
+        assert_eq!(list.stats.native_shading_ops, 0);
+        assert_eq!(list.unsupported.len(), 1);
+        assert_eq!(list.unsupported[0].operator, "sh");
+        assert!(list.unsupported[0].reason.contains("missing"));
     }
 
     #[test]
