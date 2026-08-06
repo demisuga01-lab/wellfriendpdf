@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::cancel::CancelToken;
 use crate::engine::ContentEngine;
@@ -35,7 +35,7 @@ impl ProgressiveRenderState {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ProgressiveRenderToken {
     pub schema_version: u32,
     pub document_revision: u64,
