@@ -32,7 +32,7 @@ typedef struct {
     bool has_matrix;
     FS_MATRIX matrix;
     bool has_clip;
-    FS_RECT clip;
+    FS_RECTF clip;
 } Options;
 
 static void usage(const char* program) {
@@ -228,9 +228,9 @@ static int render_page(FPDF_DOCUMENT document, const Options* options, int page_
     FS_MATRIX matrix = options->has_matrix
         ? options->matrix
         : (FS_MATRIX){(float)scale, 0.0f, 0.0f, (float)-scale, 0.0f, (float)height};
-    FS_RECT clip = options->has_clip
+    FS_RECTF clip = options->has_clip
         ? options->clip
-        : (FS_RECT){0, 0, width, height};
+        : (FS_RECTF){0, 0, width, height};
     FPDF_RenderPageBitmapWithMatrix(bitmap, page, &matrix, &clip, flags);
 
     int stride = FPDFBitmap_GetStride(bitmap);
@@ -327,7 +327,7 @@ int main(int argc, char** argv) {
                 usage(argv[0]);
                 return 2;
             }
-            options.clip = (FS_RECT){values[0], values[1], values[0] + values[2], values[1] + values[3]};
+            options.clip = (FS_RECTF){values[0], values[1], values[0] + values[2], values[1] + values[3]};
             options.has_clip = true;
         } else {
             usage(argv[0]);
