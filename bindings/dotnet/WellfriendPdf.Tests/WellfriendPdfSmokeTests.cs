@@ -148,8 +148,11 @@ public sealed class WellfriendPdfSmokeTests
         using var doc = WellfriendDocument.Open(FixturePath());
         var png = doc.GetPage(1).RenderPng();
         var jpeg = doc.GetPage(1).RenderJpeg();
+        var contract = doc.DefaultRenderContractJson(1);
+        var contractPng = doc.RenderPagePngWithContractJson(contract);
         Assert.True(png.Length > 8);
         Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, png[..4]);
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, contractPng[..4]);
         Assert.True(jpeg.Length > 4);
         Assert.Equal(new byte[] { 0xFF, 0xD8 }, jpeg[..2]);
     }

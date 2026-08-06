@@ -237,6 +237,41 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeBuffer(buffer);
     }
 
+    public string DefaultRenderContractJson(int pageNumber, uint dpi = 72, string? mode = null)
+    {
+        ThrowIfDisposed();
+        if (pageNumber < 1 || dpi == 0) throw new ArgumentOutOfRangeException(nameof(pageNumber));
+        var modePtr = NativeMethods.StringToNativeOrNull(mode);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_default_render_contract_json(
+                _handle, (UIntPtr)pageNumber, dpi, modePtr, out var json, out var error);
+            return NativeMethods.TakeJson(status, json, error);
+        }
+        finally
+        {
+            if (modePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(modePtr);
+        }
+    }
+
+    public byte[] RenderPagePngWithContractJson(string contractJson)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_render_page_png_with_contract_json(
+                _handle, contractPtr, out var buffer, out var error);
+            NativeMethods.ThrowIfError(status, error);
+            return NativeMethods.TakeBuffer(buffer);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
     public string ParseJson()
     {
         ThrowIfDisposed();

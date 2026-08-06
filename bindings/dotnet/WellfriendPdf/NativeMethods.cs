@@ -270,6 +270,22 @@ internal static partial class NativeMethods
         out IntPtr errorOut);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_default_render_contract_json(
+        DocumentHandle document,
+        UIntPtr page,
+        uint dpi,
+        IntPtr renderMode,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_document_render_page_png_with_contract_json(
+        DocumentHandle document,
+        IntPtr contractJson,
+        out WellfriendBuffer buffer,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_parse_json(
         DocumentHandle document,
         out IntPtr json,
