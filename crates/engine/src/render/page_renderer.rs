@@ -746,6 +746,88 @@ impl PageRenderer {
         Ok(buf)
     }
 
+    fn render_packed_vector_plan_with_cache(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        list: &DisplayList,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<PixelBuffer> {
+        let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
+        let plan = RenderPlan::compile(list.clone(), contract)?;
+        if !plan.packed.requires_native_replay() {
+            return plan
+                .execute_vector_tile(RenderTile::full(
+                    list.viewport.width_px,
+                    list.viewport.height_px,
+                ))?
+                .ok_or_else(|| {
+                    WellfriendError::UnsupportedFeature(
+                        "packed vector plan unexpectedly retained a native payload".to_string(),
+                    )
+                });
+        }
+        Self::execute_plan_with_state_and_cache(engine, page_number, dpi, &plan, render_mode, cache)
+    }
+
+    fn execute_plan_with_state_and_cache(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        plan: &RenderPlan,
+        render_mode: RenderMode,
+        cache: &mut RenderDocumentCache,
+    ) -> Result<PixelBuffer> {
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let resources = engine.get_page_resources(page_number)?;
+        let transparent_key = RenderDocumentCache::transparent_page_group_key_with_revision(
+            page_number,
+            Self::revision_cache_key(engine),
+        );
+        let transparent_page_group = match cache.cached_transparent_page_group(&transparent_key) {
+            Some(value) => value,
+            None => {
+                let value = display_list_needs_transparent_page_group(
+                    engine,
+                    page_number,
+                    &resources,
+                    plan.packed.source(),
+                )?;
+                cache.insert_transparent_page_group(transparent_key, value);
+                value
+            }
+        };
+        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
+        let mut state = RenderState::new_with_document_cache(
+            buf,
+            viewport.clone(),
+            resources,
+            engine,
+            page_number,
+            cache,
+        );
+        {
+            let mut adapter = RenderStatePlanAdapter {
+                state: &mut state,
+                viewport_ref: &viewport,
+            };
+            if let Err(error) = plan.execute_full(&mut adapter) {
+                state.return_document_cache(cache);
+                return Err(error);
+            }
+        }
+        if let Err(error) = state.check_fatal_render_error() {
+            state.return_document_cache(cache);
+            return Err(error);
+        }
+        let mut buf = state.into_buffer_and_document_cache(cache);
+        if transparent_page_group {
+            buf.flatten_onto_background(WHITE);
+        }
+        Ok(buf)
+    }
+
     /// Return a retained page display list from the caller's document cache, or
     /// build and retain it exactly once for subsequent warm replay.
     pub fn get_or_build_display_list_with_cache(
@@ -1062,8 +1144,14 @@ impl PageRenderer {
         }
 
         if list.is_fully_supported() {
-            let mut buf =
-                Self::render_packed_vector_plan(engine, page_number, dpi, list, render_mode)?;
+            let mut buf = Self::render_packed_vector_plan_with_cache(
+                engine,
+                page_number,
+                dpi,
+                list,
+                render_mode,
+                cache,
+            )?;
             cancel.check("display-list plan replay")?;
             Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
             cancel.check("display-list annotation render")?;
