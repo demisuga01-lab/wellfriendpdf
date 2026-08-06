@@ -36,12 +36,7 @@ pub(crate) mod annotation_flags {
     pub const INVISIBLE: i64 = 1 << 0;
     pub const HIDDEN: i64 = 1 << 1;
     pub const PRINT: i64 = 1 << 2;
-    pub const NO_ZOOM: i64 = 1 << 3;
-    pub const NO_ROTATE: i64 = 1 << 4;
     pub const NO_VIEW: i64 = 1 << 5;
-    pub const READ_ONLY: i64 = 1 << 6;
-    pub const LOCKED: i64 = 1 << 7;
-    pub const TOGGLE_NO_VIEW: i64 = 1 << 8;
 }
 
 /// Determines whether an annotation with the given /F flags value should be
@@ -161,25 +156,6 @@ pub(crate) fn validate_print_profile_prepress(
     }
 
     Ok(())
-}
-
-/// Returns the CMM rendering intent override for a given PrintProfile.
-/// - Display: use the contract's declared rendering intent (no override).
-/// - Print: use the contract's declared rendering intent (no override).
-/// - Proof: when native CMM is available, prefer AbsoluteColorimetric to
-///   simulate output device appearance; otherwise fall back to declared intent.
-///
-/// Returns `None` if no override should be applied.
-pub(crate) fn proof_intent_override(
-    profile: PrintProfile,
-    native_cmm_available: bool,
-) -> Option<crate::render::contract::RenderingIntent> {
-    match profile {
-        PrintProfile::Proof if native_cmm_available => {
-            Some(crate::render::contract::RenderingIntent::AbsoluteColorimetric)
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]

@@ -847,6 +847,7 @@ impl PageRenderer {
 
     /// Render with explicit contract policies for PrintProfile, annotations,
     /// and forms. Used by the contract-driven render path to activate policies.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn render_page_cancellable_with_contract_policies(
         engine: &ContentEngine,
         page_number: usize,
@@ -5533,10 +5534,10 @@ impl<'a> RenderState<'a> {
             }
             // Respect FormRenderPolicy: exclude Widget annotations when forms
             // are excluded from the render contract.
-            if self.form_policy == FormRenderPolicy::Exclude {
-                if annot.get_name("Subtype") == Some("Widget") {
-                    continue;
-                }
+            if self.form_policy == FormRenderPolicy::Exclude
+                && annot.get_name("Subtype") == Some("Widget")
+            {
+                continue;
             }
             if !self
                 .optional_content
