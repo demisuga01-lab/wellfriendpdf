@@ -290,6 +290,35 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
+    public ProgressiveRenderSession CreateProgressiveRenderSession(
+        int pageNumber,
+        uint dpi = 72,
+        uint tileWidth = 256,
+        uint tileHeight = 256,
+        string? mode = null)
+    {
+        ThrowIfDisposed();
+        if (pageNumber < 1 || dpi == 0 || tileWidth == 0 || tileHeight == 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(pageNumber));
+        }
+        var modePtr = NativeMethods.StringToNativeOrNull(mode);
+        try
+        {
+            var handle = NativeMethods.wellfriendpdf_document_progressive_render_new(
+                _handle, (UIntPtr)pageNumber, dpi, tileWidth, tileHeight, modePtr, out var error);
+            if (handle.IsInvalid)
+            {
+                NativeMethods.ThrowIfError(2, error);
+            }
+            return new ProgressiveRenderSession(handle);
+        }
+        finally
+        {
+            if (modePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(modePtr);
+        }
+    }
+
     public string ParseJson()
     {
         ThrowIfDisposed();

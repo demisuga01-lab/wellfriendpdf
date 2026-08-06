@@ -109,6 +109,20 @@ internal static partial class NativeMethods
         }
     }
 
+    internal sealed class ProgressiveRenderJobHandle : SafeHandleZeroOrMinusOneIsInvalid
+    {
+        private ProgressiveRenderJobHandle()
+            : base(ownsHandle: true)
+        {
+        }
+
+        protected override bool ReleaseHandle()
+        {
+            wellfriendpdf_progressive_render_free(handle);
+            return true;
+        }
+    }
+
     internal sealed class SignatureValidationOptionsHandle : SafeHandleZeroOrMinusOneIsInvalid
     {
         private SignatureValidationOptionsHandle()
@@ -292,6 +306,49 @@ internal static partial class NativeMethods
         [Out] byte[] output,
         UIntPtr outputLen,
         out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern ProgressiveRenderJobHandle wellfriendpdf_document_progressive_render_new(
+        DocumentHandle document,
+        UIntPtr page,
+        uint dpi,
+        uint tileWidth,
+        uint tileHeight,
+        IntPtr renderMode,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_step_json(
+        ProgressiveRenderJobHandle job,
+        UIntPtr maxTiles,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_pause_json(
+        ProgressiveRenderJobHandle job,
+        out IntPtr json,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_resume_json(
+        ProgressiveRenderJobHandle job,
+        IntPtr tokenJson,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_cancel(
+        ProgressiveRenderJobHandle job,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int wellfriendpdf_progressive_render_finish_png(
+        ProgressiveRenderJobHandle job,
+        out WellfriendBuffer buffer,
+        out IntPtr errorOut);
+
+    [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+    internal static extern void wellfriendpdf_progressive_render_free(IntPtr job);
 
     [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
     internal static extern int wellfriendpdf_document_parse_json(

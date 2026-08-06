@@ -164,6 +164,23 @@ public sealed class WellfriendPdfSmokeTests
     }
 
     [Fact]
+    public void ProgressiveRenderSessionUsesOwnedLifecycle()
+    {
+        using var doc = WellfriendDocument.Open(FixturePath());
+        using var session = doc.CreateProgressiveRenderSession(1, 72, 64, 64);
+        var token = session.PauseJson();
+        Assert.Equal("paused", JsonDocument.Parse(token).RootElement.GetProperty("lifecycle_state").GetString());
+        session.ResumeJson(token);
+        for (var index = 0; index < 16; index++)
+        {
+            var report = JsonDocument.Parse(session.StepJson(4));
+            if (report.RootElement.GetProperty("lifecycle_state").GetString() == "completed") break;
+        }
+        var png = session.FinishPng();
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, png[..4]);
+    }
+
+    [Fact]
     public void SignatureComponentHandlesHaveExplicitOwnershipAndCancellation()
     {
         using var doc = WellfriendDocument.Open(FixturePath());
