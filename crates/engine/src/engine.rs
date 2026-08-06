@@ -1806,6 +1806,18 @@ impl ContentEngine {
         ImageEncoder::encode_png_fast(&buf.to_raw_image())
     }
 
+    /// Render through a fully specified contract and encode the resulting
+    /// canonical RGBA surface as PNG. Unsupported contract semantics are
+    /// rejected by `render_page_with_contract`; they are never ignored.
+    pub fn render_page_png_with_contract(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<Vec<u8>> {
+        let buf = self.render_page_with_contract(contract, cancel)?;
+        ImageEncoder::encode_png_fast(&buf.to_raw_image())
+    }
+
     /// Build a new PDF containing exactly the given 1-based pages, in the
     /// order given (duplicates and arbitrary ordering are honoured). Underlies
     /// the `extract-pages` tool. Output is unencrypted (see [`crate::writer`]).

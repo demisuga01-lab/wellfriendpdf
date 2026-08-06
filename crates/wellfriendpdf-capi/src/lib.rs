@@ -672,6 +672,71 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_page_png(
     })
 }
 
+/// Returns the canonical default render contract as JSON for one page.
+///
+/// `render_mode` may be null (the deterministic compatibility default),
+/// `compat`, or `high`. The returned JSON is owned and must be freed with
+/// `wellfriendpdf_string_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_default_render_contract_json(
+    document: *const WellfriendDocument,
+    page: usize,
+    dpi: u32,
+    render_mode: *const c_char,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let mode_name =
+            unsafe { optional_c_string(render_mode) }?.unwrap_or_else(|| "compat".to_string());
+        let mode = wellfriendpdf_engine::RenderMode::from_name(&mode_name)
+            .ok_or_else(|| format!("unsupported render mode '{mode_name}'"))?;
+        let contract = wellfriendpdf(doc.engine.default_render_contract(page, dpi, mode))?;
+        let json = serde_json::to_string(&contract).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Renders a page to PNG using a versioned canonical render-contract JSON.
+///
+/// The contract's document revision and every supported raster policy are
+/// validated by the Rust core; unsupported policy combinations return a stable
+/// C ABI error rather than being silently ignored.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract: wellfriendpdf_engine::RenderContract =
+            serde_json::from_str(&contract_json)
+                .map_err(|err| format!("render contract JSON: {err}"))?;
+        let png =
+            wellfriendpdf(doc.engine.render_page_png_with_contract(
+                &contract,
+                &wellfriendpdf_engine::CancelToken::none(),
+            ))?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+        }
+        Ok(())
+    })
+}
+
 /// Renders a page to JPEG bytes.
 ///
 /// # Safety
@@ -5800,6 +5865,42 @@ mod tests {
         assert!(extracted.contains("Hello C API"));
         unsafe {
             wellfriendpdf_string_free(text);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_render_contract_round_trips_to_png() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mut contract = std::ptr::null_mut();
+        let status = unsafe {
+            wellfriendpdf_document_default_render_contract_json(
+                doc,
+                1,
+                72,
+                std::ptr::null(),
+                &mut contract,
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(!contract.is_null());
+        let mut png = WellfriendBuffer::empty();
+        let status = unsafe {
+            wellfriendpdf_document_render_page_png_with_contract_json(
+                doc, contract, &mut png, &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let bytes = unsafe { slice::from_raw_parts(png.data, png.len) };
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        unsafe {
+            wellfriendpdf_buffer_free(png);
+            wellfriendpdf_string_free(contract);
             wellfriendpdf_document_free(doc);
         }
     }
