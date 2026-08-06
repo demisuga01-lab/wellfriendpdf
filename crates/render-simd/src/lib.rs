@@ -48,6 +48,7 @@ pub fn active_backend() -> SimdBackend {
     {
         return SimdBackend::WasmSimd;
     }
+    #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
     SimdBackend::Scalar
 }
 
