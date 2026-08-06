@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "purpose": "compact functional renderer conformance; no timing, corpus, or performance measurements",
+  "fixtures": [
+    {
+      "id": "minimal-page-rgba",
+      "pdf": "crates/engine/tests/fixtures/minimal.pdf",
+      "page": 1,
+      "dpi": 72,
+      "contract": {
+        "mode": "compat",
+        "page_box": "crop",
+        "annotations": "include",
+        "forms": "include",
+        "pixel_format": "rgba8"
+      },
+      "expected": {
+        "classification": "png",
+        "png_signature_hex": "89504e470d0a1a0a",
+        "dimensions": [200, 200],
+        "status": "ok"
+      },
+      "bindings": [
+        "rust",
+        "cli",
+        "c_abi",
+        "python",
+        "wasm_node",
+        "dotnet",
+        "java_maven",
+        "java_gradle",
+        "server"
+      ]
+    }
+  ],
+  "comparison_rules": {
+    "status": "must match",
+    "dimensions": "must match",
+    "png_signature": "must match",
+    "contract_schema_version": 1,
+    "fallback_reporting": "must be explicit where the surface exposes it"
+  }
+}
