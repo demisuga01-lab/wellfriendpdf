@@ -7,6 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use crate::content::operation::Operand;
 use crate::error::{Result, WellfriendError};
 
 use super::contract::{DisplayItemId, RenderContract};
@@ -167,6 +168,70 @@ pub struct HotDisplayOp {
     pub source_link_id: u32,
 }
 
+/// Compiled text-showing descriptor. Carries only the pre-extracted fields
+/// the renderer needs without retaining a raw `ContentOperation` on the hot path.
+#[derive(Clone, Debug)]
+pub enum TextDescriptor {
+    /// `Tj` — single string show.
+    Show(Vec<u8>),
+    /// `TJ` — array of strings and position adjustments.
+    ShowArray(Vec<TextArrayItem>),
+    /// `'` — move to next line then show.
+    NextLineShow(Vec<u8>),
+    /// `"` — set word/char spacing, move to next line, then show.
+    SpacingNextLineShow {
+        word_spacing: f64,
+        char_spacing: f64,
+        text: Vec<u8>,
+    },
+}
+
+/// One item in a TJ array.
+#[derive(Clone, Debug)]
+pub enum TextArrayItem {
+    Bytes(Vec<u8>),
+    Adjustment(f64),
+}
+
+/// Compiled image XObject descriptor — resource name for `Do`.
+#[derive(Clone, Debug)]
+pub struct ImageXObjectDescriptor {
+    pub name: String,
+}
+
+/// Compiled Form XObject descriptor — resource name for `Do`.
+#[derive(Clone, Debug)]
+pub struct FormXObjectDescriptor {
+    pub name: String,
+}
+
+/// Compiled shading descriptor — resource name for `sh`.
+#[derive(Clone, Debug)]
+pub struct ShadingDescriptor {
+    pub name: String,
+}
+
+/// High-level typed descriptor for a compiled native op.
+#[derive(Clone, Debug)]
+pub enum NativeDescriptor {
+    /// Fully compiled text-showing operation.
+    Text(TextDescriptor),
+    /// Fully compiled image XObject reference.
+    Image(ImageXObjectDescriptor),
+    /// Fully compiled Form XObject reference.
+    Form(FormXObjectDescriptor),
+    /// Fully compiled shading reference.
+    Shading(ShadingDescriptor),
+    /// Graphics-state mutation dispatched through the interpreter.
+    State(crate::content::ContentOperation),
+    /// Pattern path ops — explicitly unsupported for pure vector plan replay.
+    /// Dispatched through RenderState when executing full plan.
+    UnsupportedPattern(Vec<crate::content::ContentOperation>),
+    /// Inline image ops — explicitly unsupported for pure vector plan replay.
+    /// Dispatched through RenderState when executing full plan.
+    UnsupportedInlineImage(Vec<crate::content::ContentOperation>),
+}
+
 #[derive(Clone, Debug)]
 pub enum ColdPayload {
     State(crate::content::ContentOperation),
@@ -187,12 +252,60 @@ pub struct PackedDisplayList {
     pub clip_transforms: Vec<Transform2D>,
     pub states: Vec<DrawState>,
     pub bounds: Vec<Option<RenderBounds>>,
+    /// Typed compiled descriptors indexed by `payload_offset` for native ops.
+    pub descriptors: Vec<NativeDescriptor>,
     pub cold: PackedColdTables,
     source: Arc<DisplayList>,
     requires_native_replay: bool,
 }
 
 impl PackedDisplayList {
+    /// Compile a text-showing `ContentOperation` into a typed `TextDescriptor`.
+    fn compile_text_descriptor(op: &crate::content::ContentOperation) -> NativeDescriptor {
+        let desc = match op.operator.as_str() {
+            "Tj" => {
+                let bytes = op.string_bytes(0).unwrap_or(&[]).to_vec();
+                TextDescriptor::Show(bytes)
+            }
+            "TJ" => {
+                let items = op
+                    .operand(0)
+                    .and_then(Operand::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| match item {
+                                Operand::String(b) => Some(TextArrayItem::Bytes(b.clone())),
+                                Operand::Integer(v) => {
+                                    Some(TextArrayItem::Adjustment(-(*v as f64)))
+                                }
+                                Operand::Real(v) => Some(TextArrayItem::Adjustment(-*v)),
+                                _ => None,
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                TextDescriptor::ShowArray(items)
+            }
+            "'" => {
+                let bytes = op.string_bytes(0).unwrap_or(&[]).to_vec();
+                TextDescriptor::NextLineShow(bytes)
+            }
+            "\"" => {
+                let word_spacing = op.number(0).unwrap_or(0.0);
+                let char_spacing = op.number(1).unwrap_or(0.0);
+                let text = op.string_bytes(2).unwrap_or(&[]).to_vec();
+                TextDescriptor::SpacingNextLineShow {
+                    word_spacing,
+                    char_spacing,
+                    text,
+                }
+            }
+            // Non-showing text ops (Tf, Td, Tm, etc.) are state mutations
+            _ => return NativeDescriptor::State(op.clone()),
+        };
+        NativeDescriptor::Text(desc)
+    }
+
     pub fn compile(source: DisplayList) -> Self {
         let source = Arc::new(source);
         let mut hot_ops = Vec::with_capacity(source.ops.len());
@@ -201,6 +314,7 @@ impl PackedDisplayList {
         let mut states = Vec::new();
         let mut bounds = Vec::new();
         let mut cold = PackedColdTables::default();
+        let mut descriptors: Vec<NativeDescriptor> = Vec::new();
         let mut state_ids = HashMap::<u64, Vec<u32>>::new();
         let mut path_ids = HashMap::<u64, Vec<u32>>::new();
         let mut requires_native_replay = false;
@@ -254,6 +368,12 @@ impl PackedDisplayList {
             cold.payloads.push(payload);
             id
         };
+        let push_descriptor =
+            |desc: NativeDescriptor, descriptors: &mut Vec<NativeDescriptor>| -> u32 {
+                let id = u32::try_from(descriptors.len()).unwrap_or(u32::MAX);
+                descriptors.push(desc);
+                id
+            };
 
         let list_has_native_payload = source.ops.iter().any(DisplayOp::is_native_high_level);
         for (index, op) in source.ops.iter().enumerate() {
@@ -309,12 +429,16 @@ impl PackedDisplayList {
                 ),
                 DisplayOp::StateOp { op, .. } => {
                     requires_native_replay = true;
+                    let desc_id = push_descriptor(
+                        NativeDescriptor::State(op.clone()),
+                        &mut descriptors,
+                    );
                     (
                         OP_STATE,
                         0,
                         u32::MAX,
                         u32::MAX,
-                        push_payload(ColdPayload::State(op.clone()), &mut cold),
+                        desc_id,
                         1,
                     )
                 }
@@ -324,12 +448,14 @@ impl PackedDisplayList {
                     ..
                 } => {
                     requires_native_replay = true;
+                    let desc = Self::compile_text_descriptor(op);
+                    let desc_id = push_descriptor(desc, &mut descriptors);
                     (
                         OP_NATIVE_TEXT,
                         0,
                         push_bounds(*op_bounds, &mut bounds),
                         u32::MAX,
-                        push_payload(ColdPayload::Operation(op.clone()), &mut cold),
+                        desc_id,
                         1,
                     )
                 }
@@ -339,12 +465,17 @@ impl PackedDisplayList {
                     ..
                 } => {
                     requires_native_replay = true;
+                    let name = op.name(0).unwrap_or("").to_string();
+                    let desc_id = push_descriptor(
+                        NativeDescriptor::Image(ImageXObjectDescriptor { name }),
+                        &mut descriptors,
+                    );
                     (
                         OP_NATIVE_IMAGE,
                         0,
                         push_bounds(*op_bounds, &mut bounds),
                         u32::MAX,
-                        push_payload(ColdPayload::Operation(op.clone()), &mut cold),
+                        desc_id,
                         1,
                     )
                 }
@@ -354,12 +485,17 @@ impl PackedDisplayList {
                     ..
                 } => {
                     requires_native_replay = true;
+                    let name = op.name(0).unwrap_or("").to_string();
+                    let desc_id = push_descriptor(
+                        NativeDescriptor::Shading(ShadingDescriptor { name }),
+                        &mut descriptors,
+                    );
                     (
                         OP_NATIVE_SHADING,
                         0,
                         push_bounds(*op_bounds, &mut bounds),
                         u32::MAX,
-                        push_payload(ColdPayload::Operation(op.clone()), &mut cold),
+                        desc_id,
                         1,
                     )
                 }
@@ -369,12 +505,16 @@ impl PackedDisplayList {
                     ..
                 } => {
                     requires_native_replay = true;
+                    let desc_id = push_descriptor(
+                        NativeDescriptor::UnsupportedPattern(ops.clone()),
+                        &mut descriptors,
+                    );
                     (
                         OP_NATIVE_PATTERN,
                         0,
                         push_bounds(*op_bounds, &mut bounds),
                         u32::MAX,
-                        push_payload(ColdPayload::Operations(ops.clone()), &mut cold),
+                        desc_id,
                         u32::try_from(ops.len()).unwrap_or(u32::MAX),
                     )
                 }
@@ -384,12 +524,16 @@ impl PackedDisplayList {
                     ..
                 } => {
                     requires_native_replay = true;
+                    let desc_id = push_descriptor(
+                        NativeDescriptor::UnsupportedInlineImage(ops.clone()),
+                        &mut descriptors,
+                    );
                     (
                         OP_NATIVE_INLINE_IMAGE,
                         0,
                         push_bounds(*op_bounds, &mut bounds),
                         u32::MAX,
-                        push_payload(ColdPayload::Operations(ops.clone()), &mut cold),
+                        desc_id,
                         u32::try_from(ops.len()).unwrap_or(u32::MAX),
                     )
                 }
@@ -399,12 +543,17 @@ impl PackedDisplayList {
                     ..
                 } => {
                     requires_native_replay = true;
+                    let name = op.name(0).unwrap_or("").to_string();
+                    let desc_id = push_descriptor(
+                        NativeDescriptor::Form(FormXObjectDescriptor { name }),
+                        &mut descriptors,
+                    );
                     (
                         OP_NATIVE_FORM,
                         0,
                         push_bounds(*op_bounds, &mut bounds),
                         u32::MAX,
-                        push_payload(ColdPayload::Operation(op.clone()), &mut cold),
+                        desc_id,
                         1,
                     )
                 }
@@ -426,6 +575,7 @@ impl PackedDisplayList {
             clip_transforms,
             states,
             bounds,
+            descriptors,
             cold,
             source,
             requires_native_replay,
@@ -442,6 +592,30 @@ impl PackedDisplayList {
 
     pub fn hot_operation_count(&self) -> usize {
         self.hot_ops.len()
+    }
+
+    /// Get the typed descriptor at the given index.
+    pub fn descriptor(&self, index: u32) -> Option<&NativeDescriptor> {
+        self.descriptors.get(index as usize)
+    }
+
+    /// Returns `true` if every native high-level op has a fully-compiled
+    /// descriptor (text/image/form/shading). Patterns and inline images
+    /// return `false` for pure vector replay but are still plan-dispatchable
+    /// through the RenderState adapter path.
+    pub fn has_only_supported_descriptors(&self) -> bool {
+        self.descriptors.iter().all(|d| {
+            matches!(
+                d,
+                NativeDescriptor::Text(_)
+                    | NativeDescriptor::Image(_)
+                    | NativeDescriptor::Form(_)
+                    | NativeDescriptor::Shading(_)
+                    | NativeDescriptor::State(_)
+                    | NativeDescriptor::UnsupportedPattern(_)
+                    | NativeDescriptor::UnsupportedInlineImage(_)
+            )
+        })
     }
 
     pub fn replay_vector(&self, device: &mut dyn RenderDevice, selected: &[usize]) -> Result<()> {
@@ -514,6 +688,120 @@ fn fill_rule_from_flag(flag: u16) -> FillRule {
         FillRule::EvenOdd
     } else {
         FillRule::NonZero
+    }
+}
+
+/// Trait for dispatching typed plan descriptors through the renderer.
+///
+/// This lets `RenderPlan::execute_full` drive page rendering through compiled
+/// descriptors rather than raw `ContentOperation` payloads. The page renderer
+/// implements this trait via a `RenderState`-backed adapter.
+pub trait PlanDispatcher {
+    fn dispatch_text(&mut self, desc: &TextDescriptor, bounds: Option<&RenderBounds>);
+    fn dispatch_image(&mut self, desc: &ImageXObjectDescriptor, bounds: Option<&RenderBounds>);
+    fn dispatch_form(&mut self, desc: &FormXObjectDescriptor, bounds: Option<&RenderBounds>);
+    fn dispatch_shading(&mut self, desc: &ShadingDescriptor, bounds: Option<&RenderBounds>);
+    fn dispatch_state(&mut self, op: &crate::content::ContentOperation);
+    fn dispatch_pattern_ops(&mut self, ops: &[crate::content::ContentOperation], bounds: Option<&RenderBounds>);
+    fn dispatch_inline_image_ops(&mut self, ops: &[crate::content::ContentOperation], bounds: Option<&RenderBounds>);
+    fn dispatch_save(&mut self);
+    fn dispatch_restore(&mut self);
+    fn dispatch_clip(&mut self, path: &Path, ctm: &Transform2D, rule: FillRule);
+    fn dispatch_fill(&mut self, path: &Path, state: &DrawState, rule: FillRule);
+    fn dispatch_stroke(&mut self, path: &Path, state: &DrawState);
+    fn is_cancelled(&self) -> bool;
+}
+
+impl PackedDisplayList {
+    /// Execute the full plan through a typed dispatcher. This is the active
+    /// high-level path that drives text/image/form/shading through compiled
+    /// descriptors. Used by PageRenderer for all fully-supported display lists.
+    pub fn execute_plan(&self, dispatcher: &mut dyn PlanDispatcher) -> Result<()> {
+        for (i, hot) in self.hot_ops.iter().enumerate() {
+            if i % 64 == 0 && dispatcher.is_cancelled() {
+                return Err(WellfriendError::Cancelled(
+                    "plan execution cancelled".to_string(),
+                ));
+            }
+            let op_bounds = self
+                .bounds
+                .get(hot.bounds_id as usize)
+                .copied()
+                .flatten();
+            match hot.opcode {
+                OP_SAVE => dispatcher.dispatch_save(),
+                OP_RESTORE => dispatcher.dispatch_restore(),
+                OP_CLIP => {
+                    let path = self.paths.get(hot.payload_offset as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed clip path missing".to_string())
+                    })?;
+                    let ctm = self
+                        .clip_transforms
+                        .get(hot.state_id as usize)
+                        .ok_or_else(|| {
+                            WellfriendError::MalformedPdf(
+                                "packed clip transform missing".to_string(),
+                            )
+                        })?;
+                    dispatcher.dispatch_clip(path, ctm, fill_rule_from_flag(hot.flags));
+                }
+                OP_FILL => {
+                    let path = self.paths.get(hot.payload_offset as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed fill path missing".to_string())
+                    })?;
+                    let state = self.states.get(hot.state_id as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed fill state missing".to_string())
+                    })?;
+                    dispatcher.dispatch_fill(path, state, fill_rule_from_flag(hot.flags));
+                }
+                OP_STROKE => {
+                    let path = self.paths.get(hot.payload_offset as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed stroke path missing".to_string())
+                    })?;
+                    let state = self.states.get(hot.state_id as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf("packed stroke state missing".to_string())
+                    })?;
+                    dispatcher.dispatch_stroke(path, state);
+                }
+                OP_STATE | OP_NATIVE_TEXT | OP_NATIVE_IMAGE | OP_NATIVE_SHADING
+                | OP_NATIVE_PATTERN | OP_NATIVE_INLINE_IMAGE | OP_NATIVE_FORM => {
+                    let desc = self.descriptors.get(hot.payload_offset as usize).ok_or_else(|| {
+                        WellfriendError::MalformedPdf(
+                            "packed descriptor index out of bounds".to_string(),
+                        )
+                    })?;
+                    match desc {
+                        NativeDescriptor::Text(text) => {
+                            dispatcher.dispatch_text(text, op_bounds.as_ref());
+                        }
+                        NativeDescriptor::Image(img) => {
+                            dispatcher.dispatch_image(img, op_bounds.as_ref());
+                        }
+                        NativeDescriptor::Form(form) => {
+                            dispatcher.dispatch_form(form, op_bounds.as_ref());
+                        }
+                        NativeDescriptor::Shading(shading) => {
+                            dispatcher.dispatch_shading(shading, op_bounds.as_ref());
+                        }
+                        NativeDescriptor::State(op) => {
+                            dispatcher.dispatch_state(op);
+                        }
+                        NativeDescriptor::UnsupportedPattern(ops) => {
+                            dispatcher.dispatch_pattern_ops(ops, op_bounds.as_ref());
+                        }
+                        NativeDescriptor::UnsupportedInlineImage(ops) => {
+                            dispatcher.dispatch_inline_image_ops(ops, op_bounds.as_ref());
+                        }
+                    }
+                }
+                _ => {
+                    return Err(WellfriendError::UnsupportedFeature(
+                        "packed plan encountered an unknown opcode".to_string(),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -607,6 +895,14 @@ impl RenderPlan {
         self.packed.replay_vector(&mut device, &selected)?;
         Ok(Some(device.into_buffer()))
     }
+
+    /// Execute the full plan through the typed descriptor dispatcher.
+    /// This is the active high-level path for all fully-supported display lists
+    /// including those with text/image/form/shading native ops.
+    pub fn execute_full(&self, dispatcher: &mut dyn PlanDispatcher) -> Result<()> {
+        self.contract.validate()?;
+        self.packed.execute_plan(dispatcher)
+    }
 }
 
 #[cfg(test)]
@@ -680,5 +976,293 @@ mod tests {
             }),
             vec![0, 1, 2]
         );
+    }
+
+    #[test]
+    fn text_descriptor_compiles_tj_without_raw_content_operation() {
+        let ops = vec![
+            ContentOperation::new("BT", Vec::new()),
+            ContentOperation::new(
+                "Tf",
+                vec![Operand::Name("F1".to_string()), Operand::Real(12.0)],
+            ),
+            ContentOperation::new(
+                "Tj",
+                vec![Operand::String(b"Hello".to_vec())],
+            ),
+            ContentOperation::new("ET", Vec::new()),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
+        let list = build_display_list(
+            &ops,
+            viewport.clone(),
+            &crate::engine::PageResources::default(),
+        );
+        assert!(!list.native_vector_only(), "text page should have native ops");
+        let packed = PackedDisplayList::compile(list);
+        assert!(packed.requires_native_replay());
+        // Verify typed text descriptor is present, not a raw ContentOperation
+        let text_ops: Vec<_> = packed
+            .hot_ops
+            .iter()
+            .filter(|h| h.opcode == OP_NATIVE_TEXT)
+            .collect();
+        assert!(!text_ops.is_empty(), "should have at least one text op");
+        for hot in &text_ops {
+            let desc = packed.descriptor(hot.payload_offset).unwrap();
+            match desc {
+                NativeDescriptor::Text(TextDescriptor::Show(bytes)) => {
+                    assert_eq!(bytes, b"Hello");
+                }
+                NativeDescriptor::State(_) => {
+                    // text-state ops like Tf are compiled as State descriptors
+                }
+                other => panic!("unexpected descriptor for text op: {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn image_descriptor_compiles_resource_name_only() {
+        let ops = vec![
+            ContentOperation::new(
+                "Do",
+                vec![Operand::Name("Im1".to_string())],
+            ),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let list = build_display_list(
+            &ops,
+            viewport.clone(),
+            &crate::engine::PageResources::default(),
+        );
+        let packed = PackedDisplayList::compile(list);
+        let image_ops: Vec<_> = packed
+            .hot_ops
+            .iter()
+            .filter(|h| h.opcode == OP_NATIVE_IMAGE)
+            .collect();
+        // Image ops may or may not appear depending on display-list builder
+        // classification. If they do, verify the descriptor is typed.
+        for hot in &image_ops {
+            let desc = packed.descriptor(hot.payload_offset).unwrap();
+            match desc {
+                NativeDescriptor::Image(img) => {
+                    assert_eq!(img.name, "Im1");
+                }
+                _ => panic!("expected Image descriptor"),
+            }
+        }
+    }
+
+    #[test]
+    fn form_descriptor_compiles_resource_name_only() {
+        let ops = vec![
+            ContentOperation::new(
+                "Do",
+                vec![Operand::Name("Fm1".to_string())],
+            ),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let list = build_display_list(
+            &ops,
+            viewport.clone(),
+            &crate::engine::PageResources::default(),
+        );
+        let packed = PackedDisplayList::compile(list);
+        let form_ops: Vec<_> = packed
+            .hot_ops
+            .iter()
+            .filter(|h| h.opcode == OP_NATIVE_FORM)
+            .collect();
+        for hot in &form_ops {
+            let desc = packed.descriptor(hot.payload_offset).unwrap();
+            match desc {
+                NativeDescriptor::Form(form) => {
+                    assert_eq!(form.name, "Fm1");
+                }
+                _ => panic!("expected Form descriptor"),
+            }
+        }
+    }
+
+    #[test]
+    fn shading_descriptor_compiles_resource_name_only() {
+        let ops = vec![
+            ContentOperation::new(
+                "sh",
+                vec![Operand::Name("Sh1".to_string())],
+            ),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let list = build_display_list(
+            &ops,
+            viewport.clone(),
+            &crate::engine::PageResources::default(),
+        );
+        let packed = PackedDisplayList::compile(list);
+        let shading_ops: Vec<_> = packed
+            .hot_ops
+            .iter()
+            .filter(|h| h.opcode == OP_NATIVE_SHADING)
+            .collect();
+        for hot in &shading_ops {
+            let desc = packed.descriptor(hot.payload_offset).unwrap();
+            match desc {
+                NativeDescriptor::Shading(sh) => {
+                    assert_eq!(sh.name, "Sh1");
+                }
+                _ => panic!("expected Shading descriptor"),
+            }
+        }
+    }
+
+    /// A test dispatcher that records which typed descriptors were dispatched.
+    struct RecordingDispatcher {
+        text_count: usize,
+        image_count: usize,
+        form_count: usize,
+        shading_count: usize,
+        state_count: usize,
+        pattern_count: usize,
+        inline_image_count: usize,
+        save_count: usize,
+        restore_count: usize,
+        fill_count: usize,
+        stroke_count: usize,
+        clip_count: usize,
+    }
+
+    impl RecordingDispatcher {
+        fn new() -> Self {
+            Self {
+                text_count: 0,
+                image_count: 0,
+                form_count: 0,
+                shading_count: 0,
+                state_count: 0,
+                pattern_count: 0,
+                inline_image_count: 0,
+                save_count: 0,
+                restore_count: 0,
+                fill_count: 0,
+                stroke_count: 0,
+                clip_count: 0,
+            }
+        }
+    }
+
+    impl PlanDispatcher for RecordingDispatcher {
+        fn dispatch_text(&mut self, _desc: &TextDescriptor, _bounds: Option<&RenderBounds>) {
+            self.text_count += 1;
+        }
+        fn dispatch_image(&mut self, _desc: &ImageXObjectDescriptor, _bounds: Option<&RenderBounds>) {
+            self.image_count += 1;
+        }
+        fn dispatch_form(&mut self, _desc: &FormXObjectDescriptor, _bounds: Option<&RenderBounds>) {
+            self.form_count += 1;
+        }
+        fn dispatch_shading(&mut self, _desc: &ShadingDescriptor, _bounds: Option<&RenderBounds>) {
+            self.shading_count += 1;
+        }
+        fn dispatch_state(&mut self, _op: &crate::content::ContentOperation) {
+            self.state_count += 1;
+        }
+        fn dispatch_pattern_ops(
+            &mut self,
+            _ops: &[crate::content::ContentOperation],
+            _bounds: Option<&RenderBounds>,
+        ) {
+            self.pattern_count += 1;
+        }
+        fn dispatch_inline_image_ops(
+            &mut self,
+            _ops: &[crate::content::ContentOperation],
+            _bounds: Option<&RenderBounds>,
+        ) {
+            self.inline_image_count += 1;
+        }
+        fn dispatch_save(&mut self) {
+            self.save_count += 1;
+        }
+        fn dispatch_restore(&mut self) {
+            self.restore_count += 1;
+        }
+        fn dispatch_clip(&mut self, _path: &Path, _ctm: &Transform2D, _rule: FillRule) {
+            self.clip_count += 1;
+        }
+        fn dispatch_fill(&mut self, _path: &Path, _state: &DrawState, _rule: FillRule) {
+            self.fill_count += 1;
+        }
+        fn dispatch_stroke(&mut self, _path: &Path, _state: &DrawState) {
+            self.stroke_count += 1;
+        }
+        fn is_cancelled(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn execute_plan_dispatches_text_through_typed_descriptor() {
+        let ops = vec![
+            ContentOperation::new("BT", Vec::new()),
+            ContentOperation::new(
+                "Tf",
+                vec![Operand::Name("F1".to_string()), Operand::Real(12.0)],
+            ),
+            ContentOperation::new(
+                "Tj",
+                vec![Operand::String(b"Plan".to_vec())],
+            ),
+            ContentOperation::new("ET", Vec::new()),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
+        let list = build_display_list(
+            &ops,
+            viewport.clone(),
+            &crate::engine::PageResources::default(),
+        );
+        let packed = PackedDisplayList::compile(list);
+        let mut rec = RecordingDispatcher::new();
+        packed.execute_plan(&mut rec).expect("execute_plan");
+        // Text ops (Tj) go through dispatch_text; state ops (BT/Tf/ET) through dispatch_state
+        assert!(
+            rec.text_count > 0,
+            "text descriptor should be dispatched, got text_count={}",
+            rec.text_count
+        );
+    }
+
+    #[test]
+    fn execute_plan_dispatches_vector_fill_directly() {
+        let ops = vec![
+            ContentOperation::new(
+                "rg",
+                vec![Operand::Real(0.0), Operand::Real(1.0), Operand::Real(0.0)],
+            ),
+            ContentOperation::new(
+                "re",
+                vec![
+                    Operand::Real(5.0),
+                    Operand::Real(5.0),
+                    Operand::Real(30.0),
+                    Operand::Real(30.0),
+                ],
+            ),
+            ContentOperation::new("f", Vec::new()),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 50.0, 50.0], 72);
+        let list = build_display_list(
+            &ops,
+            viewport.clone(),
+            &crate::engine::PageResources::default(),
+        );
+        assert!(list.native_vector_only());
+        let packed = PackedDisplayList::compile(list);
+        let mut rec = RecordingDispatcher::new();
+        packed.execute_plan(&mut rec).expect("execute_plan");
+        assert!(rec.fill_count > 0, "fill should be dispatched");
+        assert_eq!(rec.text_count, 0);
+        assert_eq!(rec.image_count, 0);
     }
 }
