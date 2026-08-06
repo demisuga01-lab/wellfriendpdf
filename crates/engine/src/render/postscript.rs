@@ -32,16 +32,20 @@
 //! Pages using only operations PostScript represents natively here — paths,
 //! text-as-outlines, solid fills/strokes, clipping — are emitted as **true
 //! vector PostScript**. Pages using operations not faithfully expressible here
-//! (images, shadings, tiling/shading patterns, Form XObjects, soft masks,
-//! non-trivial blend modes) fall back to embedding the **whole page as one
-//! rasterised image** drawn with the PostScript `image`/`colorimage` operator
-//! (pixel-identical to the raster render). This is the SAME fallback strategy
-//! `svg.rs` uses and guarantees visual correctness everywhere. The trigger is
-//! reported via [`PsPage::is_rasterized`].
+//! (Form XObjects, shadings, tiling/shading patterns, soft masks, non-trivial
+//! blend modes) fall back to embedding the **whole page as one rasterised
+//! image** drawn with the PostScript `image`/`colorimage` operator
+//! (pixel-identical to the raster render).
 //!
-//! Native axial/radial shadings via `shfill`, image passthrough via the
-//! `DCTDecode` filter, and selectable text via font embedding are noted as
-//! follow-ups (see `docs/postscript_output.md`).
+//! # Regional image fallback (RB-14)
+//!
+//! Pages with simple axis-aligned Image XObject `Do` operations now use a
+//! **regional fallback**: the image is embedded as a bounded `colorimage`
+//! region at its correct device-space position, while surrounding vector
+//! content (paths, text, clips) is preserved as native PostScript. This avoids
+//! whole-page rasterization for the common "vector page with one logo/figure"
+//! case. Eligibility is determined by
+//! [`crate::render::vector_fallback::classify_page_for_vector_output`].
 
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{Color, ColorSpace, GraphicsState};
@@ -54,6 +58,9 @@ use crate::render::glyph_outline::{
 use crate::render::path::{flatten_path, FillRule, FlatPath, Path};
 use crate::render::text_decode::{decode_text_bytes, get_font_bytes, DecodedGlyph};
 use crate::render::transform::{Transform2D, Viewport};
+use crate::render::vector_fallback::{
+    classify_page_for_vector_output, image_device_rect, VectorFallbackDecision,
+};
 
 /// A single rendered PostScript page body plus the flag indicating whether it
 /// was emitted as true vector PostScript or as a rasterize-and-embed fallback.
@@ -70,52 +77,63 @@ pub struct PsPage {
     /// True when the whole page was embedded as a raster image because it used
     /// operations the vector sink cannot express natively.
     pub is_rasterized: bool,
+    /// True when the page used regional image fallback: vector content is
+    /// preserved natively around bounded embedded image regions.
+    pub has_regional_images: bool,
 }
 
-/// Operators that the vector sink cannot faithfully represent here, triggering
-/// the whole-page rasterize-and-embed fallback. Mirrors `svg::needs_raster_fallback`.
-fn needs_raster_fallback(ops: &[ContentOperation]) -> bool {
-    for op in ops {
-        match op.operator.as_str() {
-            "Do" | "sh" | "gs" | "BI" | "ID" | "EI" | "inline_image_data" => return true,
-            "scn" | "SCN" if op.operands.iter().any(|o| matches!(o, Operand::Name(_))) => {
-                return true;
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-/// Render a single page to a PostScript page body. Falls back to a rasterised
-/// page image when the content uses operations PostScript can't represent
-/// natively here (see module docs).
+/// Render a single page to a PostScript page body. Uses the shared fallback
+/// classifier to decide: pure vector, regional image fallback, or whole-page
+/// raster.
 pub fn render_page_ps(engine: &ContentEngine, page_number: usize, dpi: u32) -> Result<PsPage> {
     let viewport = engine.page_viewport(page_number, dpi)?;
     let ops = engine.get_page_content(page_number)?;
-    let (w, h) = (viewport.width_px, viewport.height_px);
-
-    if needs_raster_fallback(&ops) {
-        return rasterized_page(engine, page_number, &viewport);
-    }
-
     let resources = engine.get_page_resources(page_number)?;
+
+    let decision = classify_page_for_vector_output(&ops, &resources, viewport.scale);
+
+    match decision {
+        VectorFallbackDecision::WholePageRaster { .. } => {
+            rasterized_page(engine, page_number, &viewport)
+        }
+        VectorFallbackDecision::PureVector => {
+            render_vector_ps(engine, &ops, &resources, &viewport, &[])
+        }
+        VectorFallbackDecision::RegionalImageFallback { ref image_names } => {
+            render_vector_ps(engine, &ops, &resources, &viewport, image_names)
+        }
+    }
+}
+
+/// Render a page as native vector PostScript, optionally embedding regional
+/// raster images for named Image XObjects.
+fn render_vector_ps(
+    engine: &ContentEngine,
+    ops: &[ContentOperation],
+    resources: &PageResources,
+    viewport: &Viewport,
+    regional_image_names: &[String],
+) -> Result<PsPage> {
+    let (w, h) = (viewport.width_px, viewport.height_px);
     let mut sink = PsSink::new(w, h);
     let mut state = PsRenderState {
         engine,
-        resources,
-        viewport,
+        resources: resources.clone(),
+        viewport: viewport.clone(),
         gs: GraphicsState::default(),
         path: Path::new(),
         pending_clip: None,
         sink: &mut sink,
+        regional_image_names: regional_image_names.to_vec(),
     };
-    state.run(&ops);
+    state.run(ops);
+    let has_regional = !regional_image_names.is_empty();
     Ok(PsPage {
         body: sink.finish(),
         width: w,
         height: h,
         is_rasterized: false,
+        has_regional_images: has_regional,
     })
 }
 
@@ -138,6 +156,7 @@ fn rasterized_page(
         width: w,
         height: h,
         is_rasterized: true,
+        has_regional_images: false,
     })
 }
 
@@ -290,6 +309,12 @@ impl PsSink {
         self.body.contains("picstr")
     }
 
+    /// Whether the page body emits a regional raster image (it needs the
+    /// `regionpicstr` scratch string declared in the prologue).
+    fn body_needs_regionpicstr(&self) -> bool {
+        self.body.contains("regionpicstr")
+    }
+
     /// Finish the page body: wrap it with `gsave`, the top-left device-space
     /// coordinate flip, any required scratch declarations, and `grestore`.
     fn finish(self) -> String {
@@ -301,6 +326,13 @@ impl PsSink {
         if self.body_needs_picstr() {
             // Scratch string holding one image row (width * 3 RGB bytes).
             out.push_str(&format!("/picstr {} string def\n", self.width as usize * 3));
+        }
+        if self.body_needs_regionpicstr() {
+            // Scratch string for regional images — size is max row width * 3.
+            // We use a generous fixed size; PostScript `readhexstring` only reads
+            // as many chars as the string length, so oversizing is safe.
+            let max_row = self.width.max(4096) as usize * 3;
+            out.push_str(&format!("/regionpicstr {} string def\n", max_row));
         }
         out.push_str(&self.body);
         out.push_str("grestore\n");
@@ -318,6 +350,8 @@ struct PsRenderState<'a> {
     path: Path,
     pending_clip: Option<FillRule>,
     sink: &'a mut PsSink,
+    /// Names of Image XObjects eligible for regional embedding.
+    regional_image_names: Vec<String>,
 }
 
 impl PsRenderState<'_> {
@@ -444,9 +478,130 @@ impl PsRenderState<'_> {
                     self.show_text(bytes);
                 }
             }
+            // Regional image `Do` for eligible Image XObjects.
+            // Safety: "Do" | "sh" | "gs" are classified by vector_fallback before dispatch.
+            "Do" => {
+                if let Some(Operand::Name(name)) = op.operands.first() {
+                    if self.regional_image_names.contains(name) {
+                        self.emit_regional_image(name);
+                    }
+                }
+                self.gs.process(op);
+            }
             // All state operators handled identically to the raster renderer.
             _ => self.gs.process(op),
         }
+    }
+
+    /// Handle a `Do` operation for a regional image embed. Renders the image
+    /// XObject through the engine's decoder and embeds it as a bounded
+    /// `colorimage` region at its correct device-space position.
+    fn emit_regional_image(&mut self, name: &str) {
+        use crate::images::locator::ImageReference;
+
+        let page_h = self.viewport.height_px as f64;
+        let rect = match image_device_rect(&self.gs, self.viewport.scale, page_h) {
+            Some(r) => r,
+            None => return,
+        };
+
+        let [x, y, w, h] = rect;
+
+        let (obj_num, gen_num) = match self.resources.xobjects.get(name) {
+            Some(&(o, g)) => (o, g),
+            None => return,
+        };
+
+        let reader = self.engine.document().reader();
+        let dict = match reader.get_object(obj_num, gen_num) {
+            Ok(crate::object::PdfObject::Stream { dict, .. }) => dict,
+            _ => return,
+        };
+
+        let image_ref = ImageReference {
+            page_number: 0,
+            xobject_name: name.to_string(),
+            object_number: obj_num,
+            generation_number: gen_num,
+            width: dict
+                .get_integer("Width")
+                .or_else(|| dict.get_integer("W"))
+                .unwrap_or(0)
+                .max(0) as u32,
+            height: dict
+                .get_integer("Height")
+                .or_else(|| dict.get_integer("H"))
+                .unwrap_or(0)
+                .max(0) as u32,
+            bits_per_component: dict
+                .get_integer("BitsPerComponent")
+                .or_else(|| dict.get_integer("BPC"))
+                .unwrap_or(8)
+                .clamp(1, 16) as u8,
+            color_space: "DeviceRGB".to_string(),
+            filter: Vec::new(),
+            is_inline: false,
+            is_mask: false,
+            is_smask: false,
+            inline_data: None,
+        };
+
+        let raw = match self.engine.decode_image(&image_ref) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        // Emit the image as a regional colorimage at the computed device rect.
+        // PostScript coordinate system is already flipped (y-down) by our prologue,
+        // so we can position directly with gsave/translate/scale.
+        let iw = raw.width;
+        let ih = raw.height;
+        let rgb_pixels = &raw.pixels;
+        let channels = raw.channels as usize;
+
+        self.sink.push_line("gsave");
+        self.sink.push_line(&format!("{x:.2} {y:.2} translate"));
+        self.sink.push_line(&format!("{w:.2} {h:.2} scale"));
+        self.sink
+            .push_line(&format!("{iw} {ih} 8 [{iw} 0 0 {ih} 0 0]"));
+        self.sink
+            .push_line("{currentfile regionpicstr readhexstring pop} false 3 colorimage");
+
+        // Emit hex RGB data.
+        const HEXCHARS: &[u8; 16] = b"0123456789ABCDEF";
+        let mut hex =
+            String::with_capacity(iw as usize * ih as usize * 6 + iw as usize * ih as usize / 13);
+        let mut col = 0usize;
+        for row in 0..ih {
+            for px in 0..iw {
+                let offset = (row as usize * iw as usize + px as usize) * channels;
+                let (r, g, b) = if channels >= 3 {
+                    (
+                        rgb_pixels[offset],
+                        rgb_pixels[offset + 1],
+                        rgb_pixels[offset + 2],
+                    )
+                } else {
+                    // Grayscale → expand to RGB.
+                    let v = rgb_pixels.get(offset).copied().unwrap_or(0);
+                    (v, v, v)
+                };
+                hex.push(HEXCHARS[(r >> 4) as usize] as char);
+                hex.push(HEXCHARS[(r & 0xf) as usize] as char);
+                hex.push(HEXCHARS[(g >> 4) as usize] as char);
+                hex.push(HEXCHARS[(g & 0xf) as usize] as char);
+                hex.push(HEXCHARS[(b >> 4) as usize] as char);
+                hex.push(HEXCHARS[(b & 0xf) as usize] as char);
+                col += 6;
+                if col >= 78 {
+                    hex.push('\n');
+                    col = 0;
+                }
+            }
+        }
+        self.sink.body.push_str(&hex);
+        self.sink.body.push('\n');
+        self.sink.push_line("grestore");
     }
 
     /// Apply a pending `W`/`W*` clip: emit the path and `clip`/`eoclip`. Because
@@ -811,16 +966,68 @@ mod tests {
     }
 
     #[test]
-    fn raster_fallback_triggers_on_images_and_shadings() {
-        let do_op = ContentOperation::new("Do", vec![Operand::Name("Im0".into())]);
-        assert!(needs_raster_fallback(&[do_op]));
+    fn raster_fallback_triggers_on_unsupported_constructs() {
+        use crate::render::vector_fallback::{
+            classify_page_for_vector_output, VectorFallbackDecision,
+        };
+        let r = PageResources::default();
+
+        // Shading → whole-page.
         let sh_op = ContentOperation::new("sh", vec![Operand::Name("Sh0".into())]);
-        assert!(needs_raster_fallback(&[sh_op]));
+        assert!(matches!(
+            classify_page_for_vector_output(&[sh_op], &r, 1.0),
+            VectorFallbackDecision::WholePageRaster { .. }
+        ));
+
+        // ExtGState → whole-page.
         let gs_op = ContentOperation::new("gs", vec![Operand::Name("GS0".into())]);
-        assert!(needs_raster_fallback(&[gs_op]));
+        assert!(matches!(
+            classify_page_for_vector_output(&[gs_op], &r, 1.0),
+            VectorFallbackDecision::WholePageRaster { .. }
+        ));
+
+        // Form XObject → whole-page.
+        let mut r_form = PageResources::default();
+        r_form
+            .xobject_subtypes
+            .insert("Im0".to_string(), "Form".to_string());
+        r_form.xobjects.insert("Im0".to_string(), (1, 0));
+        let do_op = ContentOperation::new("Do", vec![Operand::Name("Im0".into())]);
+        assert!(matches!(
+            classify_page_for_vector_output(&[do_op], &r_form, 1.0),
+            VectorFallbackDecision::WholePageRaster { .. }
+        ));
+
+        // Pure path ops → pure vector.
         let m = ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]);
         let f = ContentOperation::new("f", vec![]);
-        assert!(!needs_raster_fallback(&[m, f]));
+        assert!(matches!(
+            classify_page_for_vector_output(&[m, f], &r, 1.0),
+            VectorFallbackDecision::PureVector
+        ));
+
+        // Axis-aligned Image XObject → regional fallback.
+        let mut r_img = PageResources::default();
+        r_img
+            .xobject_subtypes
+            .insert("Im0".to_string(), "Image".to_string());
+        r_img.xobjects.insert("Im0".to_string(), (1, 0));
+        let cm = ContentOperation::new(
+            "cm",
+            vec![
+                Operand::Real(200.0),
+                Operand::Real(0.0),
+                Operand::Real(0.0),
+                Operand::Real(-100.0),
+                Operand::Real(50.0),
+                Operand::Real(400.0),
+            ],
+        );
+        let do_img = ContentOperation::new("Do", vec![Operand::Name("Im0".into())]);
+        assert!(matches!(
+            classify_page_for_vector_output(&[cm, do_img], &r_img, 1.0),
+            VectorFallbackDecision::RegionalImageFallback { .. }
+        ));
     }
 
     #[test]
@@ -843,12 +1050,14 @@ mod tests {
                 width: 80,
                 height: 100,
                 is_rasterized: false,
+                has_regional_images: false,
             },
             PsPage {
                 body: "gsave\n0 120 translate\n1 -1 scale\ngrestore\n".into(),
                 width: 90,
                 height: 120,
                 is_rasterized: false,
+                has_regional_images: false,
             },
         ];
         let doc = assemble_ps_document(&pages);
@@ -869,6 +1078,7 @@ mod tests {
             width: 42,
             height: 50,
             is_rasterized: false,
+            has_regional_images: false,
         };
         let eps = assemble_eps_document(&page);
         assert!(eps.starts_with("%!PS-Adobe-3.0 EPSF-3.0\n"));

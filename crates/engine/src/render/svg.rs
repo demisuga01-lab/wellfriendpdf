@@ -19,16 +19,20 @@
 //!
 //! Pages that use only operations SVG represents natively — paths, text, solid
 //! fills/strokes, clipping, opacity — are emitted as **true scalable SVG**.
-//! Pages that use operations SVG cannot faithfully express here — images,
-//! shadings, tiling/shading patterns, Form XObjects, soft masks, non-trivial
-//! blend modes — fall back to embedding the **whole page as one rasterized
-//! PNG** `<image>` (pixel-identical to the raster render). This guarantees
-//! visual equivalence everywhere while giving real vector output for the common
-//! vector/text case. The decision and the trigger are reported via
-//! [`SvgPage::is_rasterized`].
+//! Pages that use operations SVG cannot faithfully express here — Form XObjects,
+//! shadings, tiling/shading patterns, soft masks, non-trivial blend modes — fall
+//! back to embedding the **whole page as one rasterized PNG** `<image>`
+//! (pixel-identical to the raster render).
 //!
-//! Native per-region image embedding and SVG gradients for axial/radial
-//! shadings are noted as follow-ups (see `docs/vector_output.md`).
+//! # Regional image fallback (RB-14)
+//!
+//! Pages with simple axis-aligned Image XObject `Do` operations now use a
+//! **regional fallback**: the image is embedded as a bounded `<image>` element
+//! at its correct device-space position, while surrounding vector content
+//! (paths, text, clips) is preserved as native SVG elements. This avoids
+//! whole-page rasterization for the common "vector page with one logo/figure"
+//! case. The eligibility is determined by
+//! [`crate::render::vector_fallback::classify_page_for_vector_output`].
 
 use crate::content::operation::{ContentOperation, Operand};
 use crate::content::state::{Color, ColorSpace, GraphicsState};
@@ -41,6 +45,9 @@ use crate::render::glyph_outline::{
 use crate::render::path::{flatten_path, FillRule, FlatPath, Path};
 use crate::render::text_decode::{decode_text_bytes, get_font_bytes, DecodedGlyph};
 use crate::render::transform::{Transform2D, Viewport};
+use crate::render::vector_fallback::{
+    classify_page_for_vector_output, image_device_rect, VectorFallbackDecision,
+};
 
 /// A rendered SVG page plus a flag indicating whether it was emitted as true
 /// vector SVG or as a rasterize-and-embed fallback.
@@ -51,69 +58,64 @@ pub struct SvgPage {
     /// operations the vector sink cannot express natively (images, shadings,
     /// patterns, forms, soft masks, blend modes).
     pub is_rasterized: bool,
+    /// True when the page used regional image fallback: vector content is
+    /// preserved natively around bounded embedded image regions.
+    pub has_regional_images: bool,
 }
 
-/// Operators that the vector sink cannot faithfully represent here, triggering
-/// the whole-page rasterize-and-embed fallback.
-const MAX_VECTOR_TEXT_SHOWING_OPS: usize = 64;
-
-fn needs_raster_fallback(ops: &[ContentOperation]) -> bool {
-    let mut text_showing_ops = 0usize;
-    for op in ops {
-        match op.operator.as_str() {
-            // Images (XObject Do or inline), shadings, and pattern fills.
-            "Do" | "sh" | "BI" | "ID" | "EI" | "inline_image_data" => return true,
-            // Pattern colour space set as the fill/stroke colour (scn/SCN with a
-            // pattern name) — shading/tiling patterns can't map to plain paths.
-            "scn" | "SCN" if op.operands.iter().any(|o| matches!(o, Operand::Name(_))) => {
-                return true;
-            }
-            // The vector sink does not resolve the named ExtGState dictionary;
-            // alpha, blend, transfer, and soft-mask behavior must therefore use
-            // the existing page-raster embed path rather than silently diverge.
-            "gs" => return true,
-            // The sibling SVG sink is deliberately not a full PDF text engine:
-            // dense streams amplify outline/fallback-font positioning divergence.
-            // Preserve output fidelity by using the explicit rasterized-page
-            // representation once the page exceeds this bounded vector-text scope.
-            "Tj" | "TJ" | "'" | "\"" => {
-                text_showing_ops = text_showing_ops.saturating_add(1);
-                if text_showing_ops > MAX_VECTOR_TEXT_SHOWING_OPS {
-                    return true;
-                }
-            }
-            _ => {}
-        }
-    }
-    false
-}
-
-/// Render a single page to SVG. Falls back to a rasterized page image when the
-/// content uses operations SVG can't represent natively (see module docs).
+/// Render a single page to SVG. Uses the shared fallback classifier to decide:
+/// - Pure vector: emit all content as SVG paths/text.
+/// - Regional image fallback: embed axis-aligned images as `<image>` elements
+///   while preserving surrounding vector content natively.
+/// - Whole-page raster: embed the entire page as one PNG `<image>`.
 pub fn render_page_svg(engine: &ContentEngine, page_number: usize, dpi: u32) -> Result<SvgPage> {
     let viewport = engine.page_viewport(page_number, dpi)?;
     let ops = engine.get_page_content(page_number)?;
-
-    if needs_raster_fallback(&ops) {
-        return rasterized_page(engine, page_number, dpi, &viewport);
-    }
-
     let resources = engine.get_page_resources(page_number)?;
-    let mut sink = SvgSink::new(viewport.width_px, viewport.height_px);
+
+    let decision = classify_page_for_vector_output(&ops, &resources, viewport.scale);
+
+    match decision {
+        VectorFallbackDecision::WholePageRaster { .. } => {
+            rasterized_page(engine, page_number, dpi, &viewport)
+        }
+        VectorFallbackDecision::PureVector => {
+            render_vector_page(engine, &ops, &resources, &viewport, &[])
+        }
+        VectorFallbackDecision::RegionalImageFallback { ref image_names } => {
+            render_vector_page(engine, &ops, &resources, &viewport, image_names)
+        }
+    }
+}
+
+/// Render a page as native SVG vector content, optionally embedding regional
+/// raster images for named Image XObjects.
+fn render_vector_page(
+    engine: &ContentEngine,
+    ops: &[ContentOperation],
+    resources: &PageResources,
+    viewport: &Viewport,
+    regional_image_names: &[String],
+) -> Result<SvgPage> {
+    let (w, h) = (viewport.width_px, viewport.height_px);
+    let mut sink = SvgSink::new(w, h);
     let mut state = SvgRenderState {
         engine,
-        resources,
-        viewport,
+        resources: resources.clone(),
+        viewport: viewport.clone(),
         gs: GraphicsState::default(),
         path: Path::new(),
         pending_clip: None,
         clip_stack: Vec::new(),
         sink: &mut sink,
+        regional_image_names: regional_image_names.to_vec(),
     };
-    state.run(&ops);
+    state.run(ops);
+    let has_regional = !regional_image_names.is_empty();
     Ok(SvgPage {
         svg: sink.finish(),
         is_rasterized: false,
+        has_regional_images: has_regional,
     })
 }
 
@@ -139,6 +141,7 @@ fn rasterized_page(
     Ok(SvgPage {
         svg,
         is_rasterized: true,
+        has_regional_images: false,
     })
 }
 
@@ -186,8 +189,14 @@ impl SvgSink {
     fn finish(self) -> String {
         let mut out = String::new();
         out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        // Include the xlink namespace when regional images are embedded.
+        let xlink_ns = if self.body.contains("xlink:href") {
+            " xmlns:xlink=\"http://www.w3.org/1999/xlink\""
+        } else {
+            ""
+        };
         out.push_str(&format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" \
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"{xlink_ns} \
              width=\"{}\" height=\"{}\" viewBox=\"0 0 {} {}\">\n",
             self.width, self.height, self.width, self.height
         ));
@@ -213,6 +222,8 @@ struct SvgRenderState<'a> {
     /// Stack of active clip-path ids saved at each `q` (None = no clip).
     clip_stack: Vec<Option<String>>,
     sink: &'a mut SvgSink,
+    /// Names of Image XObjects eligible for regional embedding.
+    regional_image_names: Vec<String>,
 }
 
 impl SvgRenderState<'_> {
@@ -344,9 +355,95 @@ impl SvgRenderState<'_> {
                     self.show_text(bytes);
                 }
             }
+            // Regional image `Do` for eligible Image XObjects.
+            "Do" => {
+                if let Some(Operand::Name(name)) = op.operands.first() {
+                    if self.regional_image_names.contains(name) {
+                        self.emit_regional_image(name);
+                    }
+                }
+                // Update graphics state (Do is a no-op for gs but we call
+                // process for uniformity).
+                self.gs.process(op);
+            }
             // All state operators handled identically to the raster renderer.
             _ => self.gs.process(op),
         }
+    }
+
+    /// Handle a `Do` operation for a regional image embed. Renders the image
+    /// XObject through the raster renderer and embeds it as a bounded
+    /// `<image>` element at the correct device-space position.
+    fn emit_regional_image(&mut self, name: &str) {
+        use crate::images::encoder::ImageEncoder;
+        use crate::images::locator::ImageReference;
+
+        let page_h = self.viewport.height_px as f64;
+        let rect = match image_device_rect(&self.gs, self.viewport.scale, page_h) {
+            Some(r) => r,
+            None => return, // Should not happen (classifier verified eligibility).
+        };
+
+        let [x, y, w, h] = rect;
+
+        // Resolve the XObject to build an ImageReference for decoding.
+        let (obj_num, gen_num) = match self.resources.xobjects.get(name) {
+            Some(&(o, g)) => (o, g),
+            None => return,
+        };
+
+        let reader = self.engine.document().reader();
+        let dict = match reader.get_object(obj_num, gen_num) {
+            Ok(crate::object::PdfObject::Stream { dict, .. }) => dict,
+            _ => return,
+        };
+
+        let image_ref = ImageReference {
+            page_number: 0,
+            xobject_name: name.to_string(),
+            object_number: obj_num,
+            generation_number: gen_num,
+            width: dict
+                .get_integer("Width")
+                .or_else(|| dict.get_integer("W"))
+                .unwrap_or(0)
+                .max(0) as u32,
+            height: dict
+                .get_integer("Height")
+                .or_else(|| dict.get_integer("H"))
+                .unwrap_or(0)
+                .max(0) as u32,
+            bits_per_component: dict
+                .get_integer("BitsPerComponent")
+                .or_else(|| dict.get_integer("BPC"))
+                .unwrap_or(8)
+                .clamp(1, 16) as u8,
+            color_space: "DeviceRGB".to_string(),
+            filter: Vec::new(),
+            is_inline: false,
+            is_mask: false,
+            is_smask: false,
+            inline_data: None,
+        };
+
+        let raw = match self.engine.decode_image(&image_ref) {
+            Ok(r) => r,
+            Err(_) => return,
+        };
+
+        let png = match ImageEncoder::encode_png_fast(&raw) {
+            Ok(p) => p,
+            Err(_) => return,
+        };
+
+        let b64 = base64_encode(&png);
+        let clip = self.clip_attr();
+        let iw = w.round() as u32;
+        let ih = h.round() as u32;
+        self.sink.push_element(&format!(
+            "<image x=\"{x:.2}\" y=\"{y:.2}\" width=\"{iw}\" height=\"{ih}\" \
+             xlink:href=\"data:image/png;base64,{b64}\"{clip}/>"
+        ));
     }
 
     fn apply_pending_clip(&mut self) {
@@ -737,20 +834,83 @@ mod tests {
     }
 
     #[test]
-    fn raster_fallback_triggers_on_images_and_shadings() {
-        let do_op = ContentOperation::new("Do", vec![Operand::Name("Im0".into())]);
-        assert!(needs_raster_fallback(&[do_op]));
+    fn raster_fallback_triggers_on_unsupported_constructs() {
+        use crate::render::vector_fallback::{
+            classify_page_for_vector_output, VectorFallbackDecision, MAX_VECTOR_TEXT_SHOWING_OPS,
+        };
+        let r = PageResources::default();
+
+        // Inline image → whole-page.
+        let bi_op = ContentOperation::new("BI", vec![]);
+        assert!(matches!(
+            classify_page_for_vector_output(&[bi_op], &r, 1.0),
+            VectorFallbackDecision::WholePageRaster { .. }
+        ));
+
+        // Named shading → whole-page.
         let sh_op = ContentOperation::new("sh", vec![Operand::Name("Sh0".into())]);
-        assert!(needs_raster_fallback(&[sh_op]));
+        assert!(matches!(
+            classify_page_for_vector_output(&[sh_op], &r, 1.0),
+            VectorFallbackDecision::WholePageRaster { .. }
+        ));
+
+        // ExtGState → whole-page.
         let gs_op = ContentOperation::new("gs", vec![Operand::Name("GS0".into())]);
-        assert!(needs_raster_fallback(&[gs_op]));
+        assert!(matches!(
+            classify_page_for_vector_output(&[gs_op], &r, 1.0),
+            VectorFallbackDecision::WholePageRaster { .. }
+        ));
+
+        // Dense text → whole-page.
         let dense_text: Vec<_> = (0..=MAX_VECTOR_TEXT_SHOWING_OPS)
             .map(|_| ContentOperation::new("Tj", vec![Operand::String(vec![b'x'])]))
             .collect();
-        assert!(needs_raster_fallback(&dense_text));
-        // Pure path ops do not trigger the fallback.
+        assert!(matches!(
+            classify_page_for_vector_output(&dense_text, &r, 1.0),
+            VectorFallbackDecision::WholePageRaster { .. }
+        ));
+
+        // Pure path ops → pure vector.
         let m = ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]);
         let f = ContentOperation::new("f", vec![]);
-        assert!(!needs_raster_fallback(&[m, f]));
+        assert!(matches!(
+            classify_page_for_vector_output(&[m, f], &r, 1.0),
+            VectorFallbackDecision::PureVector
+        ));
+
+        // Image XObject Do with axis-aligned CTM → regional fallback.
+        let mut r_img = PageResources::default();
+        r_img
+            .xobject_subtypes
+            .insert("Im0".to_string(), "Image".to_string());
+        r_img.xobjects.insert("Im0".to_string(), (1, 0));
+        let cm = ContentOperation::new(
+            "cm",
+            vec![
+                Operand::Real(200.0),
+                Operand::Real(0.0),
+                Operand::Real(0.0),
+                Operand::Real(-100.0),
+                Operand::Real(50.0),
+                Operand::Real(400.0),
+            ],
+        );
+        let do_op = ContentOperation::new("Do", vec![Operand::Name("Im0".into())]);
+        assert!(matches!(
+            classify_page_for_vector_output(&[cm, do_op], &r_img, 1.0),
+            VectorFallbackDecision::RegionalImageFallback { .. }
+        ));
+
+        // Form XObject Do → whole-page.
+        let mut r_form = PageResources::default();
+        r_form
+            .xobject_subtypes
+            .insert("Fm0".to_string(), "Form".to_string());
+        r_form.xobjects.insert("Fm0".to_string(), (2, 0));
+        let do_form = ContentOperation::new("Do", vec![Operand::Name("Fm0".into())]);
+        assert!(matches!(
+            classify_page_for_vector_output(&[do_form], &r_form, 1.0),
+            VectorFallbackDecision::WholePageRaster { .. }
+        ));
     }
 }

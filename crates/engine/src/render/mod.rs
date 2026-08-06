@@ -25,6 +25,7 @@ pub mod shading;
 pub mod svg;
 pub mod text_decode;
 pub mod transform;
+pub mod vector_fallback;
 
 pub use buffer::{
     pixel_buffer_allocation_stats, pixel_compositor_backend,
@@ -79,3 +80,6 @@ pub use quality::RenderQuality;
 pub use shading::ShadingRenderer;
 pub use svg::{render_page_svg, SvgPage};
 pub use transform::{Transform2D, Viewport};
+pub use vector_fallback::{
+    classify_page_for_vector_output, image_device_rect, VectorFallbackDecision,
+};
