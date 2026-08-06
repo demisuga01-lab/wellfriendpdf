@@ -1720,7 +1720,7 @@ public final class WellfriendPdf {
         private static final MethodHandle RENDER_PAGE_PNG_WITH_CONTRACT = downcall(
             "wellfriendpdf_document_render_page_png_with_contract_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
-                BUFFER_LAYOUT, ValueLayout.ADDRESS)
+                ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle PARSE_JSON = downcall(
             "wellfriendpdf_document_parse_json",
