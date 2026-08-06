@@ -31,6 +31,14 @@ pub struct WellfriendDocument {
     ocr: Option<Arc<dyn wellfriendpdf_engine::OcrEngine>>,
 }
 
+/// Opaque owned progressive renderer session. The underlying core job owns a
+/// clone of the immutable document source, so the session remains valid even
+/// when the original document handle is closed.
+#[repr(C)]
+pub struct WellfriendProgressiveRenderJob {
+    job: wellfriendpdf_engine::ProgressiveRenderJob,
+}
+
 /// Opaque, owned Signature Validation signature-validation configuration.
 ///
 /// The handle contains only public certificates, revocation evidence, and
@@ -785,6 +793,214 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract
         ))?;
         Ok(())
     })
+}
+
+/// Creates an owned progressive rendering session.
+///
+/// # Safety
+/// `document` must be a valid open document. `render_mode`, when non-null,
+/// must point to a NUL-terminated UTF-8 string. `error_out`, when non-null,
+/// must be writable and freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_progressive_render_new(
+    document: *const WellfriendDocument,
+    page: usize,
+    dpi: u32,
+    tile_width: u32,
+    tile_height: u32,
+    render_mode: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut WellfriendProgressiveRenderJob {
+    clear_error(error_out);
+    match catch_unwind(AssertUnwindSafe(|| {
+        let doc = checked_doc(document)?;
+        let mode_name =
+            unsafe { optional_c_string(render_mode) }?.unwrap_or_else(|| "compat".to_string());
+        let mode = wellfriendpdf_engine::RenderMode::from_name(&mode_name)
+            .ok_or_else(|| format!("unsupported render mode '{mode_name}'"))?;
+        let job = wellfriendpdf(doc.engine.progressive_render_job_with_mode(
+            page,
+            dpi,
+            tile_width,
+            tile_height,
+            mode,
+        ))?;
+        Ok::<_, String>(Box::new(WellfriendProgressiveRenderJob { job }))
+    })) {
+        Ok(Ok(job)) => Box::into_raw(job),
+        Ok(Err(error)) => {
+            set_error(error_out, &error);
+            ptr::null_mut()
+        }
+        Err(_) => {
+            set_error(error_out, "panic while creating progressive render session");
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Advances a progressive session by at most `max_tiles` tiles and returns a
+/// JSON `ProgressiveRenderStepReport` owned by the caller.
+///
+/// # Safety
+/// `job` must be a valid progressive handle. `out_json` must be writable and
+/// freed with `wellfriendpdf_string_free`. `error_out`, when non-null, must be
+/// writable and freed with `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_step_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    max_tiles: usize,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let report = wellfriendpdf(
+            job.job
+                .render_next(max_tiles, &wellfriendpdf_engine::CancelToken::none()),
+        )?;
+        let json = serde_json::to_string(&report).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Returns a JSON resume token for a progressive session.
+///
+/// # Safety
+/// `job` must be valid. `out_json` must be writable and freed with
+/// `wellfriendpdf_string_free`; `error_out` follows standard C ABI ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_token_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let json = serde_json::to_string(&job.job.token()).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Pauses a progressive session and returns its resume token JSON.
+///
+/// # Safety
+/// Same pointer and ownership requirements as `wellfriendpdf_progressive_render_token_json`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_pause_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    out_json: *mut *mut c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_json.is_null() {
+            return Err("out_json pointer is null".into());
+        }
+        let token = wellfriendpdf(job.job.pause())?;
+        let json = serde_json::to_string(&token).map_err(|err| err.to_string())?;
+        unsafe {
+            *out_json = into_c_string(json);
+        }
+        Ok(())
+    })
+}
+
+/// Resumes a progressive session from its matching token JSON.
+///
+/// # Safety
+/// `job` must be valid; `token_json` must be a valid NUL-terminated UTF-8
+/// JSON token. `error_out` follows standard C ABI ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_resume_json(
+    job: *mut WellfriendProgressiveRenderJob,
+    token_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        let token_json = unsafe { required_c_string(token_json, "token_json") }?;
+        let token: wellfriendpdf_engine::ProgressiveRenderToken = serde_json::from_str(&token_json)
+            .map_err(|err| format!("progressive token JSON: {err}"))?;
+        wellfriendpdf(job.job.resume(&token))?;
+        Ok(())
+    })
+}
+
+/// Cancels a progressive session, releasing temporary tiles while retaining the
+/// immutable document source until the handle is closed.
+///
+/// # Safety
+/// `job` must be valid; `error_out` follows standard C ABI ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_cancel(
+    job: *mut WellfriendProgressiveRenderJob,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        checked_progressive_job(job)?.job.cancel();
+        Ok(())
+    })
+}
+
+/// Returns final PNG bytes once a progressive session is completed.
+///
+/// # Safety
+/// `job` must be valid. `out_buffer` must be writable and its result freed
+/// with `wellfriendpdf_buffer_free`; `error_out` follows standard ownership.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_finish_png(
+    job: *mut WellfriendProgressiveRenderJob,
+    out_buffer: *mut WellfriendBuffer,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let job = checked_progressive_job(job)?;
+        if out_buffer.is_null() {
+            return Err("out_buffer pointer is null".into());
+        }
+        let buffer = job
+            .job
+            .finish()
+            .ok_or_else(|| "progressive session has not completed".to_string())?;
+        let png = wellfriendpdf(
+            wellfriendpdf_engine::images::encoder::ImageEncoder::encode_png_fast(
+                &buffer.to_raw_image(),
+            ),
+        )?;
+        unsafe {
+            *out_buffer = into_buffer(png);
+        }
+        Ok(())
+    })
+}
+
+/// Closes and frees an owned progressive session. Repeated calls with a null
+/// handle are harmless; callers must not reuse a freed non-null handle.
+///
+/// # Safety
+/// `job` must be null or a handle returned by `wellfriendpdf_document_progressive_render_new`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_progressive_render_free(
+    job: *mut WellfriendProgressiveRenderJob,
+) {
+    if job.is_null() {
+        return;
+    }
+    let mut job = unsafe { Box::from_raw(job) };
+    job.job.close();
 }
 
 /// Renders a page to JPEG bytes.
@@ -5576,6 +5792,16 @@ unsafe fn read_c_string_array(
     Ok(out)
 }
 
+fn checked_progressive_job<'a>(
+    job: *mut WellfriendProgressiveRenderJob,
+) -> Result<&'a mut WellfriendProgressiveRenderJob, String> {
+    if job.is_null() {
+        Err("progressive render job pointer is null".to_string())
+    } else {
+        Ok(unsafe { &mut *job })
+    }
+}
+
 fn checked_doc<'a>(document: *const WellfriendDocument) -> Result<&'a WellfriendDocument, String> {
     if document.is_null() {
         Err("document pointer is null".to_string())
@@ -5968,6 +6194,55 @@ mod tests {
         unsafe {
             wellfriendpdf_buffer_free(png);
             wellfriendpdf_string_free(contract);
+            wellfriendpdf_document_free(doc);
+        }
+    }
+
+    #[test]
+    fn capi_progressive_render_session_lifecycle_and_finish_png() {
+        let pdf = sample_pdf();
+        let mut error = std::ptr::null_mut();
+        let doc =
+            unsafe { wellfriendpdf_document_open_from_bytes(pdf.as_ptr(), pdf.len(), &mut error) };
+        assert!(!doc.is_null());
+        let mode = CString::new("compat").expect("mode CString");
+        let job = unsafe {
+            wellfriendpdf_document_progressive_render_new(
+                doc,
+                1,
+                72,
+                64,
+                64,
+                mode.as_ptr(),
+                &mut error,
+            )
+        };
+        assert!(!job.is_null());
+        let mut token = std::ptr::null_mut();
+        let status =
+            unsafe { wellfriendpdf_progressive_render_pause_json(job, &mut token, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let status =
+            unsafe { wellfriendpdf_progressive_render_resume_json(job, token, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        unsafe { wellfriendpdf_string_free(token) };
+        for _ in 0..16 {
+            let mut step = std::ptr::null_mut();
+            let status = unsafe {
+                wellfriendpdf_progressive_render_step_json(job, 4, &mut step, &mut error)
+            };
+            assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+            unsafe { wellfriendpdf_string_free(step) };
+        }
+        let mut png = WellfriendBuffer::empty();
+        let status =
+            unsafe { wellfriendpdf_progressive_render_finish_png(job, &mut png, &mut error) };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        let bytes = unsafe { slice::from_raw_parts(png.data, png.len) };
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        unsafe {
+            wellfriendpdf_buffer_free(png);
+            wellfriendpdf_progressive_render_free(job);
             wellfriendpdf_document_free(doc);
         }
     }
