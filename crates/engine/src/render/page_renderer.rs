@@ -19,6 +19,8 @@ use crate::render::buffer::{
     AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, BLACK, WHITE,
 };
 use crate::render::color::ColorSpaceHandler;
+use crate::render::contract::{ObjectIdentityId, RevisionId};
+use crate::render::invalidation::{InvalidationResult, RenderDependencyGraph};
 use crate::render::display_list::{
     build_display_list, render_display_list, DisplayList, DisplayOp, RenderBounds, RenderCache,
     RenderCacheKey, RenderTile,
@@ -107,6 +109,8 @@ pub struct RenderDocumentCache {
     display_list_cache: HashMap<String, Arc<DisplayList>>,
     display_list_raster_cache: RenderCache,
     transparent_page_group_cache: HashMap<String, bool>,
+    document_revision: Option<RevisionId>,
+    dependency_graph: Option<RenderDependencyGraph>,
 }
 
 impl RenderDocumentCache {
@@ -148,6 +152,8 @@ impl RenderDocumentCache {
             display_list_cache: HashMap::new(),
             display_list_raster_cache: RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
             transparent_page_group_cache: HashMap::new(),
+            document_revision: None,
+            dependency_graph: None,
         }
     }
 
@@ -188,6 +194,123 @@ impl RenderDocumentCache {
         self.display_list_cache.clear();
         self.display_list_raster_cache = RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024);
         self.transparent_page_group_cache.clear();
+        self.document_revision = None;
+        self.dependency_graph = None;
+    }
+
+    fn trim_string_cache<V>(cache: &mut HashMap<String, V>, max_entries: usize) -> usize {
+        if cache.len() <= max_entries {
+            return 0;
+        }
+        let mut keys: Vec<_> = cache.keys().cloned().collect();
+        keys.sort_unstable();
+        let mut removed = 0;
+        for key in keys.into_iter().take(cache.len().saturating_sub(max_entries)) {
+            if cache.remove(&key).is_some() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    fn enforce_bounded_maps(&mut self) {
+        const FONT_BYTES_BUDGET: usize = 64 * 1024 * 1024;
+        const FONT_RESOLVER_ENTRIES: usize = 2_048;
+        const TYPE3_PROGRAM_ENTRIES: usize = 1_024;
+        const FORM_PROGRAM_ENTRIES: usize = 1_024;
+        const PATTERN_PROGRAM_ENTRIES: usize = 1_024;
+        const DISPLAY_LIST_ENTRIES: usize = 512;
+        const TRANSPARENT_PAGE_ENTRIES: usize = 512;
+        const OFFSCREEN_POOL_BYTES: usize = 64 * 1024 * 1024;
+
+        while font_bytes_cache_bytes(&self.font_bytes_cache) > FONT_BYTES_BUDGET {
+            let before = self.font_bytes_cache.len();
+            Self::trim_string_cache(&mut self.font_bytes_cache, before.saturating_sub(1));
+            if self.font_bytes_cache.len() == before {
+                break;
+            }
+            self.font_bytes_cache_stats.evictions = self.font_bytes_cache_stats.evictions.saturating_add(1);
+        }
+        self.font_resolver_cache_stats.evictions = self
+            .font_resolver_cache_stats
+            .evictions
+            .saturating_add(Self::trim_string_cache(&mut self.font_resolver_cache, FONT_RESOLVER_ENTRIES) as u64);
+        Self::trim_string_cache(&mut self.type3_geometry_cache, TYPE3_PROGRAM_ENTRIES);
+        Self::trim_string_cache(&mut self.type3_charproc_cache, TYPE3_PROGRAM_ENTRIES);
+        self.form_xobject_program_cache_stats.evictions = self
+            .form_xobject_program_cache_stats
+            .evictions
+            .saturating_add(Self::trim_string_cache(&mut self.form_xobject_program_cache, FORM_PROGRAM_ENTRIES) as u64);
+        self.tiling_pattern_program_cache_stats.evictions = self
+            .tiling_pattern_program_cache_stats
+            .evictions
+            .saturating_add(Self::trim_string_cache(&mut self.tiling_pattern_program_cache, PATTERN_PROGRAM_ENTRIES) as u64);
+        Self::trim_string_cache(&mut self.transparent_page_group_cache, TRANSPARENT_PAGE_ENTRIES);
+
+        while self.display_list_cache.len() > DISPLAY_LIST_ENTRIES
+            || self
+                .display_list_cache
+                .values()
+                .map(|list| list.approximate_memory_bytes())
+                .sum::<usize>()
+                > 128 * 1024 * 1024
+        {
+            let before = self.display_list_cache.len();
+            Self::trim_string_cache(&mut self.display_list_cache, before.saturating_sub(1));
+            if self.display_list_cache.len() == before {
+                break;
+            }
+        }
+        while self.offscreen_buffer_pool_bytes() > OFFSCREEN_POOL_BYTES {
+            if self.offscreen_buffer_pool.pop().is_none() {
+                break;
+            }
+        }
+    }
+
+    pub fn bind_document_revision(&mut self, revision: RevisionId) {
+        if self.document_revision == Some(revision) {
+            return;
+        }
+        self.clear();
+        self.document_revision = Some(revision);
+        self.dependency_graph = Some(RenderDependencyGraph::new(revision));
+    }
+
+    pub fn document_revision(&self) -> Option<RevisionId> {
+        self.document_revision
+    }
+
+    pub fn record_page_source_dependency(&mut self, page_number: usize, source: ObjectIdentityId) {
+        if let Some(graph) = &mut self.dependency_graph {
+            graph.record_page_source(page_number, source);
+        }
+    }
+
+    pub fn record_tile_dependency(&mut self, page_number: usize, tile: RenderTile) {
+        if let Some(graph) = &mut self.dependency_graph {
+            graph.record_tile(page_number, tile);
+        }
+    }
+
+    pub fn invalidate_sources(
+        &mut self,
+        next_revision: RevisionId,
+        changed_sources: &[ObjectIdentityId],
+    ) -> InvalidationResult {
+        let mut graph = self
+            .dependency_graph
+            .take()
+            .unwrap_or_else(|| RenderDependencyGraph::new(self.document_revision.unwrap_or(next_revision)));
+        let result = graph.invalidate_sources(next_revision, changed_sources);
+        if result.cache_must_reset {
+            self.clear();
+            self.document_revision = Some(next_revision);
+            self.dependency_graph = Some(RenderDependencyGraph::new(next_revision));
+        } else {
+            self.dependency_graph = Some(graph);
+        }
+        result
     }
 
     pub fn glyph_entries(&self) -> usize {
@@ -399,11 +522,26 @@ impl RenderDocumentCache {
     }
 
     pub(crate) fn display_list_key(page_number: usize, dpi: u32) -> String {
-        format!("page:{page_number}:dpi:{dpi}")
+        Self::display_list_key_with_revision(page_number, dpi, "revision:legacy")
+    }
+
+    pub(crate) fn display_list_key_with_revision(
+        page_number: usize,
+        dpi: u32,
+        revision: impl AsRef<str>,
+    ) -> String {
+        format!("page:{page_number}:dpi:{dpi}:{}", revision.as_ref())
     }
 
     pub(crate) fn transparent_page_group_key(page_number: usize) -> String {
-        format!("page:{page_number}")
+        Self::transparent_page_group_key_with_revision(page_number, "revision:legacy")
+    }
+
+    pub(crate) fn transparent_page_group_key_with_revision(
+        page_number: usize,
+        revision: impl AsRef<str>,
+    ) -> String {
+        format!("page:{page_number}:{}", revision.as_ref())
     }
 
     pub(crate) fn cached_display_list(&self, key: &str) -> Option<Arc<DisplayList>> {
@@ -443,6 +581,7 @@ impl RenderDocumentCache {
     }
 
     pub(crate) fn insert_display_list_raster(&mut self, key: RenderCacheKey, buffer: PixelBuffer) {
+        self.record_tile_dependency(key.page_number, key.tile);
         self.display_list_raster_cache.insert(key, buffer);
     }
 }
@@ -466,6 +605,32 @@ fn font_bytes_cache_bytes(cache: &HashMap<String, Option<Arc<Vec<u8>>>>) -> usiz
 }
 
 impl PageRenderer {
+    fn contract_cache_key(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+        tile: RenderTile,
+        visibility_fingerprint: impl Into<String>,
+        prepress_fingerprint: impl Into<String>,
+    ) -> Result<RenderCacheKey> {
+        let contract = engine.render_contract_for_tile(page_number, dpi, render_mode, tile)?;
+        Ok(RenderCacheKey::new_with_full_identity(
+            page_number,
+            dpi,
+            render_mode,
+            tile,
+            visibility_fingerprint,
+            prepress_fingerprint,
+            format!("{:016x}", contract.document_revision.0),
+            contract.cache_fingerprint(),
+        ))
+    }
+
+    fn revision_cache_key(engine: &ContentEngine) -> String {
+        format!("revision:{:016x}", engine.canonical_document().revision().0)
+    }
+
     /// Return a retained page display list from the caller's document cache, or
     /// build and retain it exactly once for subsequent warm replay.
     pub fn get_or_build_display_list_with_cache(
@@ -474,7 +639,17 @@ impl PageRenderer {
         dpi: u32,
         cache: &mut RenderDocumentCache,
     ) -> Result<(Arc<DisplayList>, bool)> {
-        let key = RenderDocumentCache::display_list_key(page_number, dpi);
+        cache.bind_document_revision(engine.canonical_document().revision());
+        let page = engine.get_page(page_number)?;
+        cache.record_page_source_dependency(
+            page_number,
+            engine.canonical_document().page_identity_for(&page).object.id,
+        );
+        let key = RenderDocumentCache::display_list_key_with_revision(
+            page_number,
+            dpi,
+            Self::revision_cache_key(engine),
+        );
         if let Some(list) = cache.cached_display_list(&key) {
             return Ok((list, true));
         }
@@ -712,14 +887,15 @@ impl PageRenderer {
             resources.color_spaces.values(),
             resources.ext_g_states.values(),
         );
-        let raster_key = RenderCacheKey::new_with_visibility_and_prepress(
+        let raster_key = Self::contract_cache_key(
+            engine,
             page_number,
             dpi,
             render_mode,
             RenderTile::full(list.viewport.width_px, list.viewport.height_px),
             visibility_fingerprint,
             prepress_fingerprint,
-        );
+        )?;
         if let Some(hit) = cache.cached_display_list_raster(&raster_key) {
             return Ok(hit);
         }
@@ -733,7 +909,10 @@ impl PageRenderer {
             return Ok(buf);
         }
         let viewport = engine.page_viewport(page_number, dpi)?;
-        let transparent_key = RenderDocumentCache::transparent_page_group_key(page_number);
+        let transparent_key = RenderDocumentCache::transparent_page_group_key_with_revision(
+            page_number,
+            Self::revision_cache_key(engine),
+        );
         let transparent_page_group = match cache.cached_transparent_page_group(&transparent_key) {
             Some(value) => value,
             None => {
@@ -790,7 +969,17 @@ impl PageRenderer {
         cache: &mut RenderDocumentCache,
     ) -> Result<Option<PixelBuffer>> {
         cancel.check("display-list tile render start")?;
-        let key = RenderDocumentCache::display_list_key(page_number, dpi);
+        cache.bind_document_revision(engine.canonical_document().revision());
+        let page = engine.get_page(page_number)?;
+        cache.record_page_source_dependency(
+            page_number,
+            engine.canonical_document().page_identity_for(&page).object.id,
+        );
+        let key = RenderDocumentCache::display_list_key_with_revision(
+            page_number,
+            dpi,
+            Self::revision_cache_key(engine),
+        );
         let list = match cache.cached_display_list(&key) {
             Some(list) => list,
             None => {
@@ -860,26 +1049,28 @@ impl PageRenderer {
             resources.ext_g_states.values(),
         );
         let full_tile = RenderTile::full(full_viewport.width_px, full_viewport.height_px);
-        let raster_key = RenderCacheKey::new_with_visibility_and_prepress(
+        let raster_key = Self::contract_cache_key(
+            engine,
             page_number,
             dpi,
             render_mode,
             tile,
             visibility_fingerprint.clone(),
             prepress_fingerprint.clone(),
-        );
+        )?;
         if let Some(hit) = cache.cached_display_list_raster(&raster_key) {
             return Ok(Some(hit));
         }
         if tile != full_tile {
-            let full_raster_key = RenderCacheKey::new_with_visibility_and_prepress(
+            let full_raster_key = Self::contract_cache_key(
+                engine,
                 page_number,
                 dpi,
                 render_mode,
                 full_tile,
                 visibility_fingerprint,
                 prepress_fingerprint,
-            );
+            )?;
             if let Some(cropped) = cache
                 .cached_display_list_raster_ref(&full_raster_key)
                 .map(|full_page| crop_buffer(full_page, tile))
@@ -889,7 +1080,10 @@ impl PageRenderer {
                 return Ok(Some(cropped));
             }
         }
-        let transparent_key = RenderDocumentCache::transparent_page_group_key(page_number);
+        let transparent_key = RenderDocumentCache::transparent_page_group_key_with_revision(
+            page_number,
+            Self::revision_cache_key(engine),
+        );
         let transparent_page_group = match cache.cached_transparent_page_group(&transparent_key) {
             Some(value) => value,
             None => {
@@ -965,14 +1159,15 @@ impl PageRenderer {
             resources.color_spaces.values(),
             resources.ext_g_states.values(),
         );
-        let key = RenderCacheKey::new_with_visibility_and_prepress(
+        let key = Self::contract_cache_key(
+            engine,
             page_number,
             dpi,
             render_mode,
             tile,
             ocg_fingerprint,
             plate_fingerprint,
-        );
+        )?;
         if let Some(cache) = cache {
             if let Some(hit) = cache.get(&key) {
                 return Ok(hit);
@@ -2061,6 +2256,8 @@ impl<'a> RenderState<'a> {
             RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
         );
         let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
+        let document_revision = cache.document_revision;
+        let dependency_graph = std::mem::take(&mut cache.dependency_graph);
         *cache = RenderDocumentCache {
             glyph_cache: self.glyph_cache,
             glyph_mask_cache: self.glyph_mask_cache,
@@ -2098,7 +2295,10 @@ impl<'a> RenderState<'a> {
             display_list_cache,
             display_list_raster_cache,
             transparent_page_group_cache,
+            document_revision,
+            dependency_graph,
         };
+        cache.enforce_bounded_maps();
     }
 
     fn into_buffer_and_document_cache(self, cache: &mut RenderDocumentCache) -> PixelBuffer {
@@ -2145,6 +2345,8 @@ impl<'a> RenderState<'a> {
             RenderCache::new(256 * 1024 * 1024, 64 * 1024 * 1024),
         );
         let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
+        let document_revision = cache.document_revision;
+        let dependency_graph = std::mem::take(&mut cache.dependency_graph);
         *cache = RenderDocumentCache {
             glyph_cache,
             glyph_mask_cache,
@@ -2182,7 +2384,10 @@ impl<'a> RenderState<'a> {
             display_list_cache,
             display_list_raster_cache,
             transparent_page_group_cache,
+            document_revision,
+            dependency_graph,
         };
+        cache.enforce_bounded_maps();
         buf
     }
 

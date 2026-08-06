@@ -13,8 +13,10 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::pubsec::PubSecKeyProvider;
 use crate::reader::PdfReader;
 use crate::render::{
-    DisplayList, PageRenderer, PixelBuffer, ProgressiveRenderJob, RenderCache, RenderDocumentCache,
-    RenderMode, RenderTile, Viewport, WHITE,
+    CanonicalDocument, DisplayList, EditDocumentView, PageRenderer, PixelBuffer,
+    ProgressiveRenderJob, RenderCache, RenderContract, RenderDocumentCache, RenderDocumentView,
+    RenderMode, RenderPlan, RenderTile, SemanticDocumentView, ValidationDocumentView, Viewport,
+    WHITE,
 };
 use crate::text::{TextExtractOptions, TextExtractor, TextFormatOptions};
 use crate::{
@@ -475,17 +477,23 @@ pub(crate) fn parse_resources_from_obj(res_obj: &PdfObject, reader: &PdfReader) 
 
 pub struct ContentEngine {
     doc: PdfDocument,
+    canonical: CanonicalDocument,
 }
 
 impl ContentEngine {
+    fn from_document(doc: PdfDocument) -> Self {
+        let canonical = CanonicalDocument::from_document(&doc);
+        Self { doc, canonical }
+    }
+
     pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
         let doc = PdfDocument::open_path(path)?;
-        Ok(Self { doc })
+        Ok(Self::from_document(doc))
     }
 
     pub fn open_bytes(data: Vec<u8>) -> Result<Self> {
         let doc = PdfDocument::open_bytes(data)?;
-        Ok(Self { doc })
+        Ok(Self::from_document(doc))
     }
 
     /// Open a PDF from bytes, supplying a password for encrypted PDFs.
@@ -496,13 +504,13 @@ impl ContentEngine {
     /// [`open_bytes`]: ContentEngine::open_bytes
     pub fn open_bytes_with_password(data: Vec<u8>, password: &[u8]) -> Result<Self> {
         let doc = PdfDocument::open_bytes_with_password(data, password)?;
-        Ok(Self { doc })
+        Ok(Self::from_document(doc))
     }
 
     /// Open a PDF from a file path, supplying a password for encrypted PDFs.
     pub fn open_path_with_password(path: impl AsRef<Path>, password: &[u8]) -> Result<Self> {
         let doc = PdfDocument::open_path_with_password(path, password)?;
-        Ok(Self { doc })
+        Ok(Self::from_document(doc))
     }
 
     /// Open a public-key encrypted PDF from bytes using an explicit provider.
@@ -511,7 +519,7 @@ impl ContentEngine {
         provider: &PubSecKeyProvider,
     ) -> Result<Self> {
         let doc = PdfDocument::open_bytes_with_pubsec_provider(data, provider)?;
-        Ok(Self { doc })
+        Ok(Self::from_document(doc))
     }
 
     /// True if the underlying reader has an active encryption (decryption)
@@ -522,6 +530,117 @@ impl ContentEngine {
 
     pub fn document(&self) -> &PdfDocument {
         &self.doc
+    }
+
+    /// Canonical immutable source identity shared by all lazy views.
+    pub fn canonical_document(&self) -> &CanonicalDocument {
+        &self.canonical
+    }
+
+    /// Lazily expose only render-required source state.
+    pub fn render_view(&self) -> RenderDocumentView<'_> {
+        RenderDocumentView::new(self)
+    }
+
+    /// Lazily expose source-linked edit state without constructing semantic or
+    /// validation models.
+    pub fn edit_view(&self) -> EditDocumentView<'_> {
+        EditDocumentView::new(self)
+    }
+
+    /// Lazily expose semantic analysis. Ordinary rendering never constructs it.
+    pub fn semantic_view(&self) -> SemanticDocumentView<'_> {
+        SemanticDocumentView::new(self)
+    }
+
+    /// Lazily expose validation work. Ordinary rendering never constructs it.
+    pub fn validation_view(&self) -> ValidationDocumentView<'_> {
+        ValidationDocumentView::new(self)
+    }
+
+    /// Build the canonical default render contract for a full page.
+    pub fn default_render_contract(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+    ) -> Result<RenderContract> {
+        let viewport = self.page_viewport(page_number, dpi)?;
+        self.render_contract_for_tile(
+            page_number,
+            dpi,
+            render_mode,
+            RenderTile::full(viewport.width_px, viewport.height_px),
+        )
+    }
+
+    pub(crate) fn render_contract_for_tile(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+        tile: RenderTile,
+    ) -> Result<RenderContract> {
+        let page = self.get_page(page_number)?;
+        let viewport = self.page_viewport(page_number, dpi)?;
+        let page_identity = self.canonical.page_identity_for(&page);
+        let mut contract = RenderContract::for_viewport(
+            self.canonical.revision(),
+            page_identity.object.id,
+            page_number,
+            &viewport,
+            tile,
+            render_mode,
+        );
+        contract.optional_content = crate::optional_content::OptionalContentContext::from_document(
+            self.document(),
+        )
+        .visibility_fingerprint()
+        .to_string()
+        .into();
+        Ok(contract)
+    }
+
+    /// Compile a packed retained plan. Native high-level resource payloads are
+    /// represented explicitly in the plan's cold table until their backend
+    /// compiler is available; callers can inspect this through the plan rather
+    /// than falling back silently.
+    pub fn compile_render_plan(&self, contract: RenderContract) -> Result<RenderPlan> {
+        contract.validate()?;
+        if contract.document_revision != self.canonical.revision() {
+            return Err(WellfriendError::invalid_input(
+                "render contract belongs to a different document revision",
+            ));
+        }
+        let list = self.build_page_display_list(contract.page_number, contract.dpi)?;
+        RenderPlan::compile(list, contract)
+    }
+
+    /// Render through a fully specified contract. The current Standard backend
+    /// supports the canonical full-page RGBA contract; unsupported policy
+    /// fields are rejected explicitly rather than ignored or approximated.
+    pub fn render_page_with_contract(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<PixelBuffer> {
+        contract.validate()?;
+        let expected = self.default_render_contract(
+            contract.page_number,
+            contract.dpi,
+            contract.render_mode(),
+        )?;
+        if contract != &expected {
+            return Err(WellfriendError::UnsupportedFeature(
+                "this backend currently supports only the canonical full-page RGBA render contract; use capability negotiation before requesting a different policy".to_string(),
+            ));
+        }
+        self.render_page_cancellable_with_mode(
+            contract.page_number,
+            contract.dpi,
+            cancel,
+            contract.render_mode(),
+        )
     }
 
     pub fn page_count(&self) -> Result<usize> {

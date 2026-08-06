@@ -8,8 +8,38 @@ use crate::render::{
     PageRenderer, PixelBuffer, RenderDocumentCache, RenderMode, RenderTile, WHITE,
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub enum ProgressiveRenderState {
+    Created,
+    Preparing,
+    Rendering,
+    Paused,
+    Completed,
+    Cancelled,
+    Failed,
+    Closed,
+}
+
+impl ProgressiveRenderState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Created => "created",
+            Self::Preparing => "preparing",
+            Self::Rendering => "rendering",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+            Self::Cancelled => "cancelled",
+            Self::Failed => "failed",
+            Self::Closed => "closed",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct ProgressiveRenderToken {
+    pub schema_version: u32,
+    pub document_revision: u64,
+    pub lifecycle_state: String,
     pub page_number: usize,
     pub dpi: u32,
     pub render_mode: String,
@@ -27,7 +57,11 @@ pub struct ProgressiveRenderToken {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct ProgressiveRenderStepReport {
+    pub lifecycle_state: String,
     pub phase: String,
+    pub completed_tiles: Vec<RenderTile>,
+    pub warnings: Vec<String>,
+    pub fallback_events: Vec<String>,
     pub completed_units: usize,
     pub total_units: usize,
     pub rendered_this_step: usize,
@@ -52,6 +86,9 @@ pub struct ProgressiveRenderJob<'a> {
     next_tile_index: usize,
     visibility_fingerprint: String,
     document_cache: RenderDocumentCache,
+    state: ProgressiveRenderState,
+    warnings: Vec<String>,
+    fallback_events: Vec<String>,
     aborted: bool,
 }
 
@@ -101,12 +138,18 @@ impl<'a> ProgressiveRenderJob<'a> {
                 .visibility_fingerprint()
                 .to_string(),
             document_cache: RenderDocumentCache::new(),
+            state: ProgressiveRenderState::Created,
+            warnings: Vec::new(),
+            fallback_events: Vec::new(),
             aborted: false,
         })
     }
 
     pub fn token(&self) -> ProgressiveRenderToken {
         ProgressiveRenderToken {
+            schema_version: 1,
+            document_revision: self.engine.canonical_document().revision().0,
+            lifecycle_state: self.state.as_str().to_string(),
             page_number: self.page_number,
             dpi: self.dpi,
             render_mode: self.render_mode.as_str().to_string(),
@@ -118,7 +161,14 @@ impl<'a> ProgressiveRenderJob<'a> {
             total_tiles: self.tiles.len(),
             completed_tiles: self.completed_count(),
             visibility_fingerprint: self.visibility_fingerprint.clone(),
-            resumable: !self.aborted,
+            resumable: !self.aborted
+                && matches!(
+                    self.state,
+                    ProgressiveRenderState::Created
+                        | ProgressiveRenderState::Preparing
+                        | ProgressiveRenderState::Rendering
+                        | ProgressiveRenderState::Paused
+                ),
             complete: self.is_complete(),
         }
     }
@@ -131,6 +181,11 @@ impl<'a> ProgressiveRenderJob<'a> {
         }
         let expected_mode = self.render_mode.as_str();
         let mismatches = [
+            (token.schema_version != 1).then_some("schema_version"),
+            (token.document_revision != self.engine.canonical_document().revision().0)
+                .then_some("document_revision"),
+            matches!(token.lifecycle_state.as_str(), "cancelled" | "failed" | "closed")
+                .then_some("lifecycle_state"),
             (token.page_number != self.page_number).then_some("page_number"),
             (token.dpi != self.dpi).then_some("dpi"),
             (token.render_mode.as_str() != expected_mode).then_some("render_mode"),
@@ -157,46 +212,174 @@ impl<'a> ProgressiveRenderJob<'a> {
         }
     }
 
+    pub fn state(&self) -> ProgressiveRenderState {
+        self.state
+    }
+
+    pub fn pause(&mut self) -> Result<ProgressiveRenderToken> {
+        match self.state {
+            ProgressiveRenderState::Created
+            | ProgressiveRenderState::Preparing
+            | ProgressiveRenderState::Rendering => {
+                self.state = ProgressiveRenderState::Paused;
+                Ok(self.token())
+            }
+            ProgressiveRenderState::Paused => Ok(self.token()),
+            ProgressiveRenderState::Completed => Err(WellfriendError::invalid_input(
+                "completed progressive render cannot be paused",
+            )),
+            ProgressiveRenderState::Cancelled
+            | ProgressiveRenderState::Failed
+            | ProgressiveRenderState::Closed => Err(WellfriendError::invalid_input(
+                "terminal progressive render cannot be paused",
+            )),
+        }
+    }
+
+    pub fn resume(&mut self, token: &ProgressiveRenderToken) -> Result<()> {
+        self.validate_resume_token(token)?;
+        match self.state {
+            ProgressiveRenderState::Created | ProgressiveRenderState::Paused => {
+                self.state = if self.is_complete() {
+                    ProgressiveRenderState::Completed
+                } else {
+                    ProgressiveRenderState::Rendering
+                };
+                Ok(())
+            }
+            ProgressiveRenderState::Rendering | ProgressiveRenderState::Preparing => Ok(()),
+            ProgressiveRenderState::Completed => Ok(()),
+            ProgressiveRenderState::Cancelled
+            | ProgressiveRenderState::Failed
+            | ProgressiveRenderState::Closed => Err(WellfriendError::invalid_input(
+                "terminal progressive render cannot resume",
+            )),
+        }
+    }
+
+    /// Terminal cancellation releases temporary tile surfaces and mutable cache
+    /// reservations while retaining the immutable source document.
+    pub fn cancel(&mut self) {
+        if matches!(self.state, ProgressiveRenderState::Closed) {
+            return;
+        }
+        self.aborted = true;
+        self.completed.fill(None);
+        self.document_cache.clear();
+        self.state = ProgressiveRenderState::Cancelled;
+        self.warnings
+            .push("progressive render cancelled; temporary tile surfaces released".to_string());
+    }
+
+    /// Release progressive temporary state. Calls after close are harmless.
+    pub fn close(&mut self) {
+        self.aborted = true;
+        self.completed.fill(None);
+        self.document_cache.clear();
+        self.state = ProgressiveRenderState::Closed;
+    }
+
+    fn ensure_renderable(&self) -> Result<()> {
+        match self.state {
+            ProgressiveRenderState::Cancelled
+            | ProgressiveRenderState::Failed
+            | ProgressiveRenderState::Closed => Err(WellfriendError::invalid_input(
+                "progressive render is in a terminal state",
+            )),
+            ProgressiveRenderState::Paused => Err(WellfriendError::invalid_input(
+                "progressive render is paused; call resume with its token",
+            )),
+            ProgressiveRenderState::Created
+            | ProgressiveRenderState::Preparing
+            | ProgressiveRenderState::Rendering
+            | ProgressiveRenderState::Completed => Ok(()),
+        }
+    }
+
     pub fn render_next(
         &mut self,
         max_tiles: usize,
         cancel: &CancelToken,
     ) -> Result<ProgressiveRenderStepReport> {
+        self.ensure_renderable()?;
+        if self.is_complete() {
+            self.state = ProgressiveRenderState::Completed;
+            return Ok(self.step_report(0, false));
+        }
+
+        self.state = ProgressiveRenderState::Preparing;
         let max_tiles = max_tiles.max(1);
         let mut rendered = 0;
         let mut cancelled = false;
         while self.next_tile_index < self.tiles.len() && rendered < max_tiles {
             if cancel.is_cancelled() {
                 cancelled = true;
+                self.state = ProgressiveRenderState::Paused;
+                self.warnings.push(
+                    "progressive work quantum observed cancellation and paused at a tile boundary"
+                        .to_string(),
+                );
                 break;
             }
+            self.state = ProgressiveRenderState::Rendering;
             let index = self.next_tile_index;
             let tile = self.tiles[index];
-            let buffer =
-                match PageRenderer::render_page_display_list_tile_cancellable_with_mode_and_cache(
-                    self.engine,
-                    self.page_number,
-                    self.dpi,
-                    tile,
-                    cancel,
-                    self.render_mode,
-                    &mut self.document_cache,
-                )? {
-                    Some(buffer) => buffer,
-                    None => PageRenderer::render_page_tile_cancellable_with_mode(
+            let rendered_tile = match PageRenderer::render_page_display_list_tile_cancellable_with_mode_and_cache(
+                self.engine,
+                self.page_number,
+                self.dpi,
+                tile,
+                cancel,
+                self.render_mode,
+                &mut self.document_cache,
+            ) {
+                Ok(Some(buffer)) => Ok(buffer),
+                Ok(None) => {
+                    self.fallback_events.push(
+                        "unsupported_display_list_immediate_tile".to_string(),
+                    );
+                    PageRenderer::render_page_tile_cancellable_with_mode(
                         self.engine,
                         self.page_number,
                         self.dpi,
                         tile,
                         cancel,
                         self.render_mode,
-                    )?,
-                };
+                    )
+                }
+                Err(error) => Err(error),
+            };
+            let buffer = match rendered_tile {
+                Ok(buffer) => buffer,
+                Err(error) => {
+                    self.state = ProgressiveRenderState::Failed;
+                    self.warnings
+                        .push(format!("progressive rendering failed: {error}"));
+                    return Err(error);
+                }
+            };
             self.completed[index] = Some(buffer);
             self.next_tile_index += 1;
             rendered += 1;
         }
-        Ok(ProgressiveRenderStepReport {
+        if self.is_complete() {
+            self.state = ProgressiveRenderState::Completed;
+        } else if !cancelled {
+            self.state = ProgressiveRenderState::Rendering;
+        }
+        Ok(self.step_report(rendered, cancelled))
+    }
+
+    fn step_report(&self, rendered_this_step: usize, cancelled: bool) -> ProgressiveRenderStepReport {
+        let completed_tiles = self
+            .tiles
+            .iter()
+            .copied()
+            .zip(self.completed.iter())
+            .filter_map(|(tile, buffer)| buffer.is_some().then_some(tile))
+            .collect();
+        ProgressiveRenderStepReport {
+            lifecycle_state: self.state.as_str().to_string(),
             phase: if self.is_complete() {
                 "complete".to_string()
             } else if cancelled {
@@ -204,15 +387,25 @@ impl<'a> ProgressiveRenderJob<'a> {
             } else {
                 "rendering_tiles".to_string()
             },
+            completed_tiles,
+            warnings: self.warnings.clone(),
+            fallback_events: self.fallback_events.clone(),
             completed_units: self.completed_count(),
             total_units: self.tiles.len(),
-            rendered_this_step: rendered,
+            rendered_this_step,
             next_tile_index: self.next_tile_index,
             cancelled,
-            resume_possible: !self.aborted,
+            resume_possible: !self.aborted
+                && matches!(
+                    self.state,
+                    ProgressiveRenderState::Created
+                        | ProgressiveRenderState::Preparing
+                        | ProgressiveRenderState::Rendering
+                        | ProgressiveRenderState::Paused
+                ),
             memory_bytes_retained: self.memory_bytes_retained(),
             visibility_fingerprint: self.visibility_fingerprint.clone(),
-        })
+        }
     }
 
     pub fn is_complete(&self) -> bool {

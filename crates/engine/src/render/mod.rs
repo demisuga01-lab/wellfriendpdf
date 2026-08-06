@@ -1,4 +1,8 @@
 pub mod buffer;
+pub mod contract;
+pub mod document_view;
+pub mod invalidation;
+pub mod plan;
 pub(crate) mod cmm;
 pub mod color;
 pub(crate) mod color_glyph;
@@ -27,6 +31,20 @@ pub use buffer::{
     PixelBufferAllocationStats, PixelColor, PixelCompositorBackend, PixelCompositorOperation,
     PixelCompositorStats, RenderMode, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
 };
+pub use contract::{
+    AlphaMode, AnnotationRenderPolicy, BackendSelection, ColorManagementPolicy,
+    ColorScheme, CompositingPolicy, ContractColor, DeterminismPolicy, DeviceClip,
+    DeviceMatrix, DisplayItemId, ExactnessPolicy, ExecutionMode, FormRenderPolicy,
+    HalftonePolicy, ObjectIdentityId, OptionalContentStateId, OverprintPolicy, PageBox,
+    PixelFormat, PrintProfile, RenderContract, RenderResourceBudget, RenderingIntent,
+    ResourceId, RevisionId, SmoothingPolicy, SourceLinkId, RENDER_CONTRACT_SCHEMA_VERSION,
+};
+pub use document_view::{
+    CanonicalDocument, EditDocumentView, ObjectIdentity, PageIdentity, ParsedPageProgram,
+    RenderDocumentView, SemanticDocumentView, ValidationDocumentView, ViewMaterializationStats,
+};
+pub use invalidation::{InvalidationResult, RenderDependencyGraph};
+pub use plan::{ColdPayload, HotDisplayOp, PackedColdTables, PackedDisplayList, RenderBatch, RenderPlan, RenderSpatialIndex};
 pub use color::{ColorSpaceHandler, RenderColor};
 pub use display_list::{
     build_display_list, render_display_list, replay_display_list, CpuRenderDevice, DisplayList,
@@ -43,7 +61,9 @@ pub use path::{
     PathRasterStats, PathSegment,
 };
 pub use postscript::{assemble_eps_document, assemble_ps_document, render_page_ps, PsPage};
-pub use progressive::{ProgressiveRenderJob, ProgressiveRenderStepReport, ProgressiveRenderToken};
+pub use progressive::{
+    ProgressiveRenderJob, ProgressiveRenderState, ProgressiveRenderStepReport, ProgressiveRenderToken,
+};
 pub use quality::RenderQuality;
 pub use shading::ShadingRenderer;
 pub use svg::{render_page_svg, SvgPage};

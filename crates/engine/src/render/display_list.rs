@@ -227,7 +227,7 @@ pub struct UnsupportedRenderOp {
 }
 
 /// Pixel-space page tile rectangle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct RenderTile {
     pub x: u32,
     pub y: u32,
@@ -499,6 +499,8 @@ pub struct RenderCacheKey {
     pub tile: RenderTile,
     pub visibility_fingerprint: String,
     pub prepress_fingerprint: String,
+    pub document_revision: String,
+    pub contract_fingerprint: String,
 }
 
 impl RenderCacheKey {
@@ -531,6 +533,28 @@ impl RenderCacheKey {
         visibility_fingerprint: impl Into<String>,
         prepress_fingerprint: impl Into<String>,
     ) -> Self {
+        Self::new_with_full_identity(
+            page_number,
+            dpi,
+            render_mode,
+            tile,
+            visibility_fingerprint,
+            prepress_fingerprint,
+            "revision:legacy",
+            "contract:legacy",
+        )
+    }
+
+    pub fn new_with_full_identity(
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+        tile: RenderTile,
+        visibility_fingerprint: impl Into<String>,
+        prepress_fingerprint: impl Into<String>,
+        document_revision: impl Into<String>,
+        contract_fingerprint: impl Into<String>,
+    ) -> Self {
         Self {
             page_number,
             dpi,
@@ -538,6 +562,8 @@ impl RenderCacheKey {
             tile,
             visibility_fingerprint: visibility_fingerprint.into(),
             prepress_fingerprint: prepress_fingerprint.into(),
+            document_revision: document_revision.into(),
+            contract_fingerprint: contract_fingerprint.into(),
         }
     }
 }
