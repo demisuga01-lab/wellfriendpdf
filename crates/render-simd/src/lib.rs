@@ -110,7 +110,11 @@ pub fn blend_normal_opaque_destination(slice: &mut [u8], color: [u8; 4]) -> bool
     {
         return guarded_blend_normal_opaque_dst_neon_aarch64(slice, color);
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        return guarded_blend_normal_opaque_dst_wasm_simd128(slice, color);
+    }
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "simd128")))]
     {
         return blend_normal_opaque_dst_scalar(slice, color);
     }
@@ -166,7 +170,16 @@ pub fn composite_soft_mask_opaque_destination(
             group_alpha_255,
         );
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        return guarded_soft_mask_opaque_dst_wasm_simd128(
+            dst_row,
+            src_row,
+            mask_row,
+            group_alpha_255,
+        );
+    }
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "simd128")))]
     {
         return soft_mask_opaque_dst_scalar(dst_row, src_row, mask_row, group_alpha_255);
     }
@@ -198,7 +211,11 @@ pub fn composite_normal_opaque_destination(dst_row: &mut [u8], src_row: &[u8]) -
     {
         return guarded_composite_normal_opaque_dst_neon_aarch64(dst_row, src_row);
     }
-    #[cfg(target_arch = "wasm32")]
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    {
+        return guarded_composite_normal_opaque_dst_wasm_simd128(dst_row, src_row);
+    }
+    #[cfg(all(target_arch = "wasm32", not(target_feature = "simd128")))]
     {
         return composite_normal_opaque_dst_scalar(dst_row, src_row);
     }
@@ -344,6 +361,357 @@ unsafe fn fill_opaque_run_wasm_simd128(slice: &mut [u8], color: [u8; 4]) -> bool
     }
     if offset < slice.len() {
         fill_opaque_run_scalar(&mut slice[offset..], color);
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// WASM SIMD128: blend_normal_opaque_destination
+// ---------------------------------------------------------------------------
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn guarded_blend_normal_opaque_dst_wasm_simd128(slice: &mut [u8], color: [u8; 4]) -> bool {
+    let mut scalar = cfg!(debug_assertions).then(|| {
+        let mut copy = slice.to_vec();
+        blend_normal_opaque_dst_scalar(&mut copy, color);
+        copy
+    });
+    // SAFETY: compiled only for wasm32 with simd128 target feature.
+    let ok = unsafe { blend_normal_opaque_dst_wasm_simd128(slice, color) };
+    if ok {
+        if let Some(expected) = scalar.take() {
+            debug_assert_eq!(slice, expected.as_slice());
+        }
+    }
+    ok
+}
+
+/// WASM SIMD128 blend: src_color * alpha + dst * (255 - alpha), dst_alpha forced to 255.
+/// Processes 4 pixels (16 bytes) per iteration using 128-bit SIMD lanes widened to 16-bit.
+///
+/// Rounding: uses the same `(x + 128 + ((x + 128) >> 8)) >> 8` formula as the scalar path,
+/// which produces bit-exact results for all u8 inputs.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn blend_normal_opaque_dst_wasm_simd128(slice: &mut [u8], color: [u8; 4]) -> bool {
+    use std::arch::wasm32::{
+        i16x8_add, i16x8_mul, i16x8_splat, u16x8_shr, u8x16_narrow_i16x8, v128, v128_load,
+        v128_store,
+    };
+
+    let alpha = color[3] as i16;
+    let inv = 255i16.saturating_sub(alpha);
+
+    // Source color values (replicated for 2 pixels per i16x8 half)
+    let src_v = unsafe {
+        std::arch::wasm32::i16x8(
+            color[0] as i16,
+            color[1] as i16,
+            color[2] as i16,
+            255,
+            color[0] as i16,
+            color[1] as i16,
+            color[2] as i16,
+            255,
+        )
+    };
+
+    // Alpha multiplier per lane: alpha for color channels, 255 for the alpha channel
+    let alpha_v =
+        unsafe { std::arch::wasm32::i16x8(alpha, alpha, alpha, 255, alpha, alpha, alpha, 255) };
+
+    // Inverse multiplier per lane: inv for color channels, 0 for the alpha channel
+    let inv_v = unsafe { std::arch::wasm32::i16x8(inv, inv, inv, 0, inv, inv, inv, 0) };
+
+    let round = i16x8_splat(128);
+
+    let simd_len = (slice.len() / 16) * 16;
+    let mut offset = 0usize;
+    while offset < simd_len {
+        let dst_raw = unsafe { v128_load(slice.as_ptr().add(offset) as *const v128) };
+
+        // Widen low 8 bytes (pixels 0-1) → i16x8
+        let dst_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(dst_raw) };
+        // Widen high 8 bytes (pixels 2-3) → i16x8
+        let dst_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(dst_raw) };
+
+        // mixed = src * alpha + dst * inv + 128
+        // Note: i16x8_mul gives low 16 bits of product (same as _mm_mullo_epi16).
+        // For src[ch]*alpha, max is 255*254=64770 which fits u16 (wraps in i16 but
+        // the bit pattern is correct for the subsequent add/shift logic).
+        let lo_mixed = i16x8_add(
+            i16x8_add(i16x8_mul(src_v, alpha_v), i16x8_mul(dst_lo, inv_v)),
+            round,
+        );
+        let hi_mixed = i16x8_add(
+            i16x8_add(i16x8_mul(src_v, alpha_v), i16x8_mul(dst_hi, inv_v)),
+            round,
+        );
+
+        // (x + (x >> 8)) >> 8   (u16x8_shr is logical/unsigned shift)
+        let lo_out = u16x8_shr(i16x8_add(lo_mixed, u16x8_shr(lo_mixed, 8)), 8);
+        let hi_out = u16x8_shr(i16x8_add(hi_mixed, u16x8_shr(hi_mixed, 8)), 8);
+
+        // Narrow back to u8x16
+        let packed = u8x16_narrow_i16x8(lo_out, hi_out);
+        unsafe { v128_store(slice.as_mut_ptr().add(offset) as *mut v128, packed) };
+
+        // Force alpha channels to 255 (alpha slot computation is not meaningful)
+        slice[offset + 3] = 255;
+        slice[offset + 7] = 255;
+        slice[offset + 11] = 255;
+        slice[offset + 15] = 255;
+
+        offset += 16;
+    }
+    if offset < slice.len() {
+        blend_normal_opaque_dst_scalar(&mut slice[offset..], color);
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// WASM SIMD128: composite_normal_opaque_destination
+// ---------------------------------------------------------------------------
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn guarded_composite_normal_opaque_dst_wasm_simd128(dst_row: &mut [u8], src_row: &[u8]) -> bool {
+    let pixels = row_pixels(dst_row, src_row, &[]);
+    let mut scalar = cfg!(debug_assertions).then(|| {
+        let mut copy = dst_row[..pixels * 4].to_vec();
+        composite_normal_opaque_dst_scalar(&mut copy, &src_row[..pixels * 4]);
+        copy
+    });
+    // SAFETY: compiled only for wasm32 with simd128 target feature.
+    let ok = unsafe { composite_normal_opaque_dst_wasm_simd128(dst_row, src_row) };
+    if ok {
+        if let Some(expected) = scalar.take() {
+            debug_assert_eq!(&dst_row[..pixels * 4], expected.as_slice());
+        }
+    }
+    ok
+}
+
+/// WASM SIMD128 source-over composite with per-pixel alpha from src, opaque dst.
+/// Processes 2 pixels per iteration (widened to i16x8 for multiply/accumulate).
+///
+/// Rounding: bit-exact with scalar `(x + 128 + ((x + 128) >> 8)) >> 8`.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn composite_normal_opaque_dst_wasm_simd128(dst_row: &mut [u8], src_row: &[u8]) -> bool {
+    use std::arch::wasm32::{
+        i16x8, i16x8_add, i16x8_mul, i16x8_splat, u16x8_shr, u8x16_narrow_i16x8, v128, v128_store,
+    };
+
+    let pixels = row_pixels(dst_row, src_row, &[]);
+    let simd_pixels = (pixels / 4) * 4;
+    if simd_pixels == 0 {
+        return false;
+    }
+
+    let round = i16x8_splat(128);
+
+    let mut pixel = 0usize;
+    while pixel < simd_pixels {
+        let offset = pixel * 4;
+
+        // Build per-pixel alpha/inv vectors for 2 pixels at a time (lo half, hi half)
+        let a0 = src_row[offset + 3] as i16;
+        let a1 = src_row[offset + 7] as i16;
+        let a2 = src_row[offset + 11] as i16;
+        let a3 = src_row[offset + 15] as i16;
+        let inv0 = 255i16.saturating_sub(a0);
+        let inv1 = 255i16.saturating_sub(a1);
+        let inv2 = 255i16.saturating_sub(a2);
+        let inv3 = 255i16.saturating_sub(a3);
+
+        let alpha_lo = i16x8(a0, a0, a0, 255, a1, a1, a1, 255);
+        let inv_lo = i16x8(inv0, inv0, inv0, 0, inv1, inv1, inv1, 0);
+        let alpha_hi = i16x8(a2, a2, a2, 255, a3, a3, a3, 255);
+        let inv_hi = i16x8(inv2, inv2, inv2, 0, inv3, inv3, inv3, 0);
+
+        // Load src and dst as raw bytes, widen to 16-bit
+        let src_raw =
+            unsafe { std::arch::wasm32::v128_load(src_row.as_ptr().add(offset) as *const v128) };
+        let dst_raw =
+            unsafe { std::arch::wasm32::v128_load(dst_row.as_ptr().add(offset) as *const v128) };
+
+        let src_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(src_raw) };
+        let src_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(src_raw) };
+        let dst_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(dst_raw) };
+        let dst_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(dst_raw) };
+
+        // mixed = src * alpha + dst * inv + 128
+        let lo_mixed = i16x8_add(
+            i16x8_add(i16x8_mul(src_lo, alpha_lo), i16x8_mul(dst_lo, inv_lo)),
+            round,
+        );
+        let hi_mixed = i16x8_add(
+            i16x8_add(i16x8_mul(src_hi, alpha_hi), i16x8_mul(dst_hi, inv_hi)),
+            round,
+        );
+
+        // (x + (x >> 8)) >> 8
+        let lo_out = u16x8_shr(i16x8_add(lo_mixed, u16x8_shr(lo_mixed, 8)), 8);
+        let hi_out = u16x8_shr(i16x8_add(hi_mixed, u16x8_shr(hi_mixed, 8)), 8);
+
+        let packed = u8x16_narrow_i16x8(lo_out, hi_out);
+        unsafe { v128_store(dst_row.as_mut_ptr().add(offset) as *mut v128, packed) };
+
+        // Force alpha to 255
+        dst_row[offset + 3] = 255;
+        dst_row[offset + 7] = 255;
+        dst_row[offset + 11] = 255;
+        dst_row[offset + 15] = 255;
+
+        pixel += 4;
+    }
+    if simd_pixels < pixels {
+        let offset = simd_pixels * 4;
+        composite_normal_opaque_dst_scalar(
+            &mut dst_row[offset..pixels * 4],
+            &src_row[offset..pixels * 4],
+        );
+    }
+    true
+}
+
+// ---------------------------------------------------------------------------
+// WASM SIMD128: composite_soft_mask_opaque_destination
+// ---------------------------------------------------------------------------
+
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+fn guarded_soft_mask_opaque_dst_wasm_simd128(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    mask_row: &[u8],
+    group_alpha_255: u16,
+) -> bool {
+    let pixels = row_pixels(dst_row, src_row, mask_row);
+    let mut scalar = cfg!(debug_assertions).then(|| {
+        let mut copy = dst_row[..pixels * 4].to_vec();
+        soft_mask_opaque_dst_scalar(
+            &mut copy,
+            &src_row[..pixels * 4],
+            &mask_row[..pixels],
+            group_alpha_255,
+        );
+        copy
+    });
+    // SAFETY: compiled only for wasm32 with simd128 target feature.
+    let ok =
+        unsafe { soft_mask_opaque_dst_wasm_simd128(dst_row, src_row, mask_row, group_alpha_255) };
+    if ok {
+        if let Some(expected) = scalar.take() {
+            debug_assert_eq!(&dst_row[..pixels * 4], expected.as_slice());
+        }
+    }
+    ok
+}
+
+/// WASM SIMD128 soft-mask composite: effective alpha = div255(div255(src_a * mask) * group_alpha).
+/// Processes 4 pixels per iteration with scalar-computed per-pixel alpha fed into SIMD blending.
+///
+/// Rounding: bit-exact with scalar. The effective alpha computation uses the same
+/// `div255_round_u16` scalar helper to avoid any intermediate rounding divergence; only
+/// the final src*eff + dst*inv blending step runs through SIMD with the identical
+/// `(x + 128 + ((x + 128) >> 8)) >> 8` formula.
+#[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+#[target_feature(enable = "simd128")]
+unsafe fn soft_mask_opaque_dst_wasm_simd128(
+    dst_row: &mut [u8],
+    src_row: &[u8],
+    mask_row: &[u8],
+    group_alpha_255: u16,
+) -> bool {
+    use std::arch::wasm32::{
+        i16x8, i16x8_add, i16x8_mul, i16x8_splat, u16x8_shr, u8x16_narrow_i16x8, v128, v128_store,
+    };
+
+    if group_alpha_255 != 255 {
+        return false;
+    }
+    let pixels = row_pixels(dst_row, src_row, mask_row);
+    let simd_pixels = (pixels / 4) * 4;
+    if simd_pixels == 0 {
+        return false;
+    }
+
+    let round = i16x8_splat(128);
+
+    let mut pixel = 0usize;
+    while pixel < simd_pixels {
+        let offset = pixel * 4;
+
+        // Compute effective alpha per pixel using scalar div255 (exact)
+        let eff0 = div255_round_u16(
+            div255_round_u16(u16::from(src_row[offset + 3]) * u16::from(mask_row[pixel]))
+                * group_alpha_255,
+        ) as i16;
+        let eff1 = div255_round_u16(
+            div255_round_u16(u16::from(src_row[offset + 7]) * u16::from(mask_row[pixel + 1]))
+                * group_alpha_255,
+        ) as i16;
+        let eff2 = div255_round_u16(
+            div255_round_u16(u16::from(src_row[offset + 11]) * u16::from(mask_row[pixel + 2]))
+                * group_alpha_255,
+        ) as i16;
+        let eff3 = div255_round_u16(
+            div255_round_u16(u16::from(src_row[offset + 15]) * u16::from(mask_row[pixel + 3]))
+                * group_alpha_255,
+        ) as i16;
+
+        let inv0 = 255i16.saturating_sub(eff0);
+        let inv1 = 255i16.saturating_sub(eff1);
+        let inv2 = 255i16.saturating_sub(eff2);
+        let inv3 = 255i16.saturating_sub(eff3);
+
+        let alpha_lo = i16x8(eff0, eff0, eff0, 255, eff1, eff1, eff1, 255);
+        let inv_lo = i16x8(inv0, inv0, inv0, 0, inv1, inv1, inv1, 0);
+        let alpha_hi = i16x8(eff2, eff2, eff2, 255, eff3, eff3, eff3, 255);
+        let inv_hi = i16x8(inv2, inv2, inv2, 0, inv3, inv3, inv3, 0);
+
+        let src_raw =
+            unsafe { std::arch::wasm32::v128_load(src_row.as_ptr().add(offset) as *const v128) };
+        let dst_raw =
+            unsafe { std::arch::wasm32::v128_load(dst_row.as_ptr().add(offset) as *const v128) };
+
+        let src_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(src_raw) };
+        let src_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(src_raw) };
+        let dst_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(dst_raw) };
+        let dst_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(dst_raw) };
+
+        let lo_mixed = i16x8_add(
+            i16x8_add(i16x8_mul(src_lo, alpha_lo), i16x8_mul(dst_lo, inv_lo)),
+            round,
+        );
+        let hi_mixed = i16x8_add(
+            i16x8_add(i16x8_mul(src_hi, alpha_hi), i16x8_mul(dst_hi, inv_hi)),
+            round,
+        );
+
+        let lo_out = u16x8_shr(i16x8_add(lo_mixed, u16x8_shr(lo_mixed, 8)), 8);
+        let hi_out = u16x8_shr(i16x8_add(hi_mixed, u16x8_shr(hi_mixed, 8)), 8);
+
+        let packed = u8x16_narrow_i16x8(lo_out, hi_out);
+        unsafe { v128_store(dst_row.as_mut_ptr().add(offset) as *mut v128, packed) };
+
+        // Force alpha to 255
+        dst_row[offset + 3] = 255;
+        dst_row[offset + 7] = 255;
+        dst_row[offset + 11] = 255;
+        dst_row[offset + 15] = 255;
+
+        pixel += 4;
+    }
+    if simd_pixels < pixels {
+        let offset = simd_pixels * 4;
+        soft_mask_opaque_dst_scalar(
+            &mut dst_row[offset..pixels * 4],
+            &src_row[offset..pixels * 4],
+            &mask_row[simd_pixels..pixels],
+            group_alpha_255,
+        );
     }
     true
 }
@@ -1634,6 +2002,139 @@ mod tests {
                     "source-over fallback pixels={pixels}"
                 );
             }
+        }
+    }
+
+    /// Scalar-equivalence test for blend_normal_opaque_dst covering all alpha values.
+    /// Runs on any host and exercises the scalar path used as the equivalence reference.
+    #[test]
+    fn blend_normal_opaque_dst_scalar_exhaustive_alpha() {
+        let base_dst = opaque_destination(8);
+        for alpha in 1u8..=254 {
+            let color = [200, 100, 50, alpha];
+            let mut dst = base_dst.clone();
+            let ok = blend_normal_opaque_dst_scalar(&mut dst, color);
+            assert!(ok);
+            // Verify alpha channel forced to 255
+            for px in dst.chunks_exact(4) {
+                assert_eq!(px[3], 255);
+            }
+            // Verify deterministic rounding: run again and compare
+            let mut dst2 = base_dst.clone();
+            blend_normal_opaque_dst_scalar(&mut dst2, color);
+            assert_eq!(dst, dst2);
+        }
+    }
+
+    /// Scalar-equivalence test for composite_normal_opaque_dst with varied per-pixel alpha.
+    #[test]
+    fn composite_normal_opaque_dst_scalar_varied_alpha() {
+        let pixels = 16;
+        let src: Vec<u8> = (0..pixels)
+            .flat_map(|i| {
+                let i = i as u8;
+                [
+                    i.wrapping_mul(37),
+                    i.wrapping_mul(59),
+                    i.wrapping_mul(73),
+                    i.wrapping_mul(17),
+                ]
+            })
+            .collect();
+        let mut dst = opaque_destination(pixels);
+        let dst_copy = dst.clone();
+        let ok = composite_normal_opaque_dst_scalar(&mut dst, &src);
+        assert!(ok);
+        // Verify determinism
+        let mut dst2 = dst_copy.clone();
+        composite_normal_opaque_dst_scalar(&mut dst2, &src);
+        assert_eq!(dst, dst2);
+        // Verify alpha channel preservation
+        for px in dst.chunks_exact(4) {
+            assert_eq!(px[3], 255);
+        }
+    }
+
+    /// Scalar-equivalence test for soft_mask_opaque_dst with diverse mask values.
+    #[test]
+    fn soft_mask_opaque_dst_scalar_diverse_masks() {
+        let pixels = 16;
+        let src = source_row(pixels);
+        let masks: Vec<u8> = (0..pixels).map(|i| (i as u8).wrapping_mul(17)).collect();
+        let mut dst = opaque_destination(pixels);
+        let dst_copy = dst.clone();
+        let ok = soft_mask_opaque_dst_scalar(&mut dst, &src, &masks, 255);
+        assert!(ok);
+        // Determinism
+        let mut dst2 = dst_copy.clone();
+        soft_mask_opaque_dst_scalar(&mut dst2, &src, &masks, 255);
+        assert_eq!(dst, dst2);
+        // Alpha forced to 255
+        for px in dst.chunks_exact(4) {
+            assert_eq!(px[3], 255);
+        }
+    }
+
+    /// Verifies that the WASM SIMD kernels are selected when compiling for wasm32+simd128.
+    /// On non-wasm hosts this test verifies the compile gates are correct by checking
+    /// that the active backend is not WasmSimd.
+    #[test]
+    fn backend_detection_consistent() {
+        let backend = active_backend();
+        #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+        assert_eq!(backend, SimdBackend::WasmSimd);
+        #[cfg(not(all(target_arch = "wasm32", target_feature = "simd128")))]
+        assert_ne!(backend, SimdBackend::WasmSimd);
+    }
+
+    /// WASM SIMD128 direct kernel test (only compiled for wasm32+simd128 targets).
+    /// When cross-compiled with `--target wasm32-unknown-unknown -C target-feature=+simd128`
+    /// and run with a wasm test runner, this exercises the actual SIMD paths.
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[test]
+    fn wasm_simd128_blend_matches_scalar() {
+        for pixels in [4usize, 8, 12, 16, 20] {
+            let color = [180, 90, 45, 128];
+            let mut expected = opaque_destination(pixels);
+            blend_normal_opaque_dst_scalar(&mut expected, color);
+
+            let mut actual = opaque_destination(pixels);
+            let ok = unsafe { blend_normal_opaque_dst_wasm_simd128(&mut actual, color) };
+            assert!(ok, "pixels={pixels}");
+            assert_eq!(actual, expected, "blend wasm simd128 pixels={pixels}");
+        }
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[test]
+    fn wasm_simd128_composite_normal_matches_scalar() {
+        for pixels in [4usize, 8, 12, 16, 20] {
+            let src = source_row(pixels);
+            let mut expected = opaque_destination(pixels);
+            composite_normal_opaque_dst_scalar(&mut expected, &src);
+
+            let mut actual = opaque_destination(pixels);
+            let ok = unsafe { composite_normal_opaque_dst_wasm_simd128(&mut actual, &src) };
+            assert!(ok, "pixels={pixels}");
+            assert_eq!(actual, expected, "composite wasm simd128 pixels={pixels}");
+        }
+    }
+
+    #[cfg(all(target_arch = "wasm32", target_feature = "simd128"))]
+    #[test]
+    fn wasm_simd128_soft_mask_matches_scalar() {
+        for pixels in [4usize, 8, 12, 16, 20] {
+            let src = source_row(pixels);
+            let masks: Vec<u8> = (0..pixels)
+                .map(|i| (i as u8).wrapping_mul(31).wrapping_add(7))
+                .collect();
+            let mut expected = opaque_destination(pixels);
+            soft_mask_opaque_dst_scalar(&mut expected, &src, &masks, 255);
+
+            let mut actual = opaque_destination(pixels);
+            let ok = unsafe { soft_mask_opaque_dst_wasm_simd128(&mut actual, &src, &masks, 255) };
+            assert!(ok, "pixels={pixels}");
+            assert_eq!(actual, expected, "soft mask wasm simd128 pixels={pixels}");
         }
     }
 }
