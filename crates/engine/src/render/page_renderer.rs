@@ -1,6 +1,9 @@
 use crate::cancel::CancelToken;
 use crate::content::operation::{ContentOperation, Operand};
-use crate::content::state::{BlendMode, ColorSpace, GraphicsState, LineCap, LineJoin};
+use crate::content::state::{
+    color_space_from_name, concat_matrix, default_color_for, BlendMode, Color, ColorSpace,
+    GraphicsState, LineCap, LineDash, LineJoin,
+};
 use crate::decode_scheduler::{DecodeMemoryBudget, DecodeMemoryToken};
 use crate::engine::{ContentEngine, PageResources};
 use crate::error::{Result, WellfriendError};
@@ -45,9 +48,9 @@ use crate::render::path::{
     FlatPath, GlyphHinting, Path, PathPainter, PathSegment, RasterizedGlyphMask,
 };
 use crate::render::plan::{
-    FormXObjectDescriptor, ImageXObjectDescriptor, InlineImageDescriptor, PackedCompileRefusal,
-    PatternPaintPhase, PatternPathDescriptor, PlanDispatcher, RenderPlan, ShadingDescriptor,
-    TextArrayItem, TextDescriptor,
+    FormXObjectDescriptor, GraphicsStateDescriptor, ImageXObjectDescriptor, InlineImageDescriptor,
+    MarkedContentProperties, PackedCompileRefusal, PatternPaintPhase, PatternPathDescriptor,
+    PlanDispatcher, RenderPlan, ShadingDescriptor, TextArrayItem, TextDescriptor,
 };
 use crate::render::shading::ShadingRenderer;
 use crate::render::text_decode::{decode_text_bytes_with_resolver, DecodedGlyph};
@@ -9156,8 +9159,275 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
         self.state.handle_sh(desc.name.clone());
     }
 
-    fn dispatch_state(&mut self, op: &ContentOperation) {
-        self.state.dispatch(op);
+    fn dispatch_state(&mut self, desc: &GraphicsStateDescriptor) {
+        // Direct typed application — no ContentOperation reconstruction.
+        // Each descriptor variant is applied directly to the underlying
+        // GraphicsState / RenderState fields.
+        use GraphicsStateDescriptor::*;
+        match desc {
+            // --- Transform ---
+            ConcatMatrix { a, b, c, d, e, f } => {
+                let m = [*a, *b, *c, *d, *e, *f];
+                self.state.gs.ctm = concat_matrix(&m, &self.state.gs.ctm);
+            }
+
+            // --- Line/stroke parameters ---
+            SetLineWidth(w) => {
+                self.state.gs.line_width = w.max(0.0);
+            }
+            SetLineCap(c) => {
+                self.state.gs.line_cap = match c {
+                    1 => LineCap::Round,
+                    2 => LineCap::ProjectingSquare,
+                    _ => LineCap::Butt,
+                };
+            }
+            SetLineJoin(j) => {
+                self.state.gs.line_join = match j {
+                    1 => LineJoin::Round,
+                    2 => LineJoin::Bevel,
+                    _ => LineJoin::Miter,
+                };
+            }
+            SetMiterLimit(m) => {
+                self.state.gs.miter_limit = m.max(1.0);
+            }
+            SetDash { array, phase } => {
+                self.state.gs.dash = LineDash {
+                    pattern: array.clone(),
+                    phase: *phase,
+                };
+            }
+            SetRenderingIntent(name) => {
+                self.state.gs.rendering_intent = name.clone();
+            }
+            SetFlatness(_f) => {
+                // Flatness is a device hint with no GraphicsState field effect
+                // in the renderer; intentionally a no-op (same as gs.process).
+            }
+
+            // --- Device color operators ---
+            SetStrokeGray(g) => {
+                let g = g.clamp(0.0, 1.0);
+                self.state.gs.stroke_color_space = ColorSpace::DeviceGray;
+                self.state.gs.stroke_color = Color::device_gray(g);
+                self.state.gs.stroke_pattern_name = None;
+            }
+            SetFillGray(g) => {
+                let g = g.clamp(0.0, 1.0);
+                self.state.gs.fill_color_space = ColorSpace::DeviceGray;
+                self.state.gs.fill_color = Color::device_gray(g);
+                self.state.gs.fill_pattern_name = None;
+            }
+            SetStrokeRgb { r, g, b } => {
+                self.state.gs.stroke_color_space = ColorSpace::DeviceRGB;
+                self.state.gs.stroke_color =
+                    Color::device_rgb(r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0));
+                self.state.gs.stroke_pattern_name = None;
+            }
+            SetFillRgb { r, g, b } => {
+                self.state.gs.fill_color_space = ColorSpace::DeviceRGB;
+                self.state.gs.fill_color =
+                    Color::device_rgb(r.clamp(0.0, 1.0), g.clamp(0.0, 1.0), b.clamp(0.0, 1.0));
+                self.state.gs.fill_pattern_name = None;
+            }
+            SetStrokeCmyk { c, m, y, k } => {
+                self.state.gs.stroke_color_space = ColorSpace::DeviceCMYK;
+                self.state.gs.stroke_color = Color::device_cmyk(
+                    c.clamp(0.0, 1.0),
+                    m.clamp(0.0, 1.0),
+                    y.clamp(0.0, 1.0),
+                    k.clamp(0.0, 1.0),
+                );
+                self.state.gs.stroke_pattern_name = None;
+            }
+            SetFillCmyk { c, m, y, k } => {
+                self.state.gs.fill_color_space = ColorSpace::DeviceCMYK;
+                self.state.gs.fill_color = Color::device_cmyk(
+                    c.clamp(0.0, 1.0),
+                    m.clamp(0.0, 1.0),
+                    y.clamp(0.0, 1.0),
+                    k.clamp(0.0, 1.0),
+                );
+                self.state.gs.fill_pattern_name = None;
+            }
+
+            // --- Color space operators ---
+            SetStrokeColorSpace(name) => {
+                let cs = color_space_from_name(name);
+                self.state.gs.stroke_color = default_color_for(&cs);
+                if !cs.is_pattern() {
+                    self.state.gs.stroke_pattern_name = None;
+                }
+                self.state.gs.stroke_color_space = cs;
+            }
+            SetFillColorSpace(name) => {
+                let cs = color_space_from_name(name);
+                self.state.gs.fill_color = default_color_for(&cs);
+                if !cs.is_pattern() {
+                    self.state.gs.fill_pattern_name = None;
+                }
+                self.state.gs.fill_color_space = cs;
+            }
+            SetStrokeColor { components, name } => {
+                if let Some(n) = name {
+                    self.state.gs.stroke_pattern_name = Some(n.clone());
+                }
+                if !components.is_empty() {
+                    self.state.gs.stroke_color = Color {
+                        space: self.state.gs.stroke_color_space.clone(),
+                        components: components.iter().map(|v| v.clamp(0.0, 1.0)).collect(),
+                    };
+                }
+            }
+            SetFillColor { components, name } => {
+                if let Some(n) = name {
+                    self.state.gs.fill_pattern_name = Some(n.clone());
+                }
+                if !components.is_empty() {
+                    self.state.gs.fill_color = Color {
+                        space: self.state.gs.fill_color_space.clone(),
+                        components: components.iter().map(|v| v.clamp(0.0, 1.0)).collect(),
+                    };
+                }
+            }
+
+            // --- ExtGState: direct resource lookup, no ContentOperation ---
+            ApplyExtGState(name) => {
+                if let Some(dict) = self
+                    .state
+                    .resources
+                    .ext_g_states
+                    .get(name.as_str())
+                    .cloned()
+                {
+                    self.state.gs.apply_ext_g_state(&dict);
+                    self.state.sync_blend_mode();
+                    self.state.apply_ext_g_state_smask(&dict);
+                } else {
+                    log::warn!(
+                        "RenderStatePlanAdapter: ExtGState '{}' not found in resources",
+                        name
+                    );
+                }
+            }
+
+            // --- Text state operators ---
+            BeginText => {
+                self.state.pending_text_clip = None;
+                self.state.gs.text.begin_text();
+            }
+            EndText => {
+                self.state.apply_pending_text_clip();
+                // ET is a no-op on GraphicsState (same as gs.process for "ET")
+            }
+            SetFont { name, size } => {
+                self.state.gs.text.font_name = name.clone();
+                self.state.gs.text.font_size = *size;
+            }
+            MoveTextPosition { tx, ty } => {
+                let tlm = self.state.gs.text.tlm;
+                let mut new_tlm = tlm;
+                new_tlm[4] = tlm[4] + tlm[0] * tx + tlm[2] * ty;
+                new_tlm[5] = tlm[5] + tlm[1] * tx + tlm[3] * ty;
+                self.state.gs.text.tlm = new_tlm;
+                self.state.gs.text.tm = new_tlm;
+            }
+            MoveTextPositionSetLeading { tx, ty } => {
+                self.state.gs.text.leading = -ty;
+                let tlm = self.state.gs.text.tlm;
+                let mut new_tlm = tlm;
+                new_tlm[4] = tlm[4] + tlm[0] * tx + tlm[2] * ty;
+                new_tlm[5] = tlm[5] + tlm[1] * tx + tlm[3] * ty;
+                self.state.gs.text.tlm = new_tlm;
+                self.state.gs.text.tm = new_tlm;
+            }
+            SetTextMatrix { a, b, c, d, e, f } => {
+                let m = [*a, *b, *c, *d, *e, *f];
+                self.state.gs.text.tm = m;
+                self.state.gs.text.tlm = m;
+            }
+            NextLine => {
+                let tl = self.state.gs.text.leading;
+                let tlm = self.state.gs.text.tlm;
+                let mut new_tlm = tlm;
+                new_tlm[4] = tlm[4] + tlm[2] * (-tl);
+                new_tlm[5] = tlm[5] + tlm[3] * (-tl);
+                self.state.gs.text.tlm = new_tlm;
+                self.state.gs.text.tm = new_tlm;
+            }
+            SetCharSpacing(v) => {
+                self.state.gs.text.char_spacing = *v;
+            }
+            SetWordSpacing(v) => {
+                self.state.gs.text.word_spacing = *v;
+            }
+            SetHorizontalScaling(v) => {
+                self.state.gs.text.horizontal_scaling = *v;
+            }
+            SetTextLeading(v) => {
+                self.state.gs.text.leading = *v;
+            }
+            SetTextRenderingMode(m) => {
+                self.state.gs.text.rendering_mode = *m as i32;
+            }
+            SetTextRise(v) => {
+                self.state.gs.text.rise = *v;
+            }
+
+            // --- Marked content / optional content: direct OC visibility ---
+            BeginMarkedContent(tag) => {
+                // BMC — push visibility (only OC tag triggers actual check)
+                let parent_visible = self.state.oc_current_visible;
+                // BMC never carries properties, so it cannot be an OC group
+                let _ = tag;
+                self.state.oc_visibility_stack.push(parent_visible);
+                // oc_current_visible stays at parent_visible (no OC group)
+            }
+            BeginMarkedContentWithProperties { tag, properties } => {
+                // BDC — push visibility with OC resource check if tag is "OC"
+                let parent_visible = self.state.oc_current_visible;
+                let mut visible = parent_visible;
+                if tag == "OC" {
+                    if let MarkedContentProperties::Name(oc_name) = properties {
+                        let reader = self.state.engine.document().reader();
+                        let oc_visible = self.state.optional_content.is_resource_visible(
+                            oc_name,
+                            &self.state.resources.properties,
+                            reader,
+                        );
+                        visible = parent_visible && oc_visible;
+                    }
+                }
+                self.state.oc_visibility_stack.push(parent_visible);
+                self.state.oc_current_visible = visible;
+            }
+            EndMarkedContent => {
+                // EMC — pop visibility
+                self.state.oc_current_visible =
+                    self.state.oc_visibility_stack.pop().unwrap_or(true);
+            }
+            MarkedContentPoint(_tag) => {
+                // MP — marked-content point with no properties; no state effect.
+            }
+            MarkedContentPointWithProperties {
+                tag: _,
+                properties: _,
+            } => {
+                // DP — marked-content point with properties; no persistent state effect.
+            }
+            BeginCompatibility | EndCompatibility => {
+                // BX/EX — no renderer state effect.
+            }
+
+            // --- Unsupported: typed refusal, skip ---
+            Unsupported { operator, .. } => {
+                log::debug!(
+                    "RenderStatePlanAdapter: unsupported state operator '{}' (skipping)",
+                    operator
+                );
+            }
+        }
     }
 
     fn dispatch_pattern(&mut self, desc: &PatternPathDescriptor, bounds: Option<&RenderBounds>) {

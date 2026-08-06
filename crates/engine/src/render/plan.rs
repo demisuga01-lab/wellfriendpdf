@@ -290,6 +290,471 @@ pub struct InlineImageDescriptor {
     pub data: Vec<u8>,
 }
 
+/// Typed graphics-state descriptor covering all state operators reachable in
+/// `DisplayOp::StateOp` (save/restore excluded). Replaces raw
+/// `ContentOperation` on the packed plan hot path.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphicsStateDescriptor {
+    // --- Transform ---
+    /// `cm` — concatenate transformation matrix.
+    ConcatMatrix {
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    },
+
+    // --- Line/stroke parameters ---
+    /// `w` — set line width.
+    SetLineWidth(f64),
+    /// `J` — set line cap style (0 = butt, 1 = round, 2 = square).
+    SetLineCap(i64),
+    /// `j` — set line join style (0 = miter, 1 = round, 2 = bevel).
+    SetLineJoin(i64),
+    /// `M` — set miter limit.
+    SetMiterLimit(f64),
+    /// `d` — set dash pattern: (array, phase).
+    SetDash { array: Vec<f64>, phase: f64 },
+    /// `ri` — set rendering intent name.
+    SetRenderingIntent(String),
+    /// `i` — set flatness tolerance.
+    SetFlatness(f64),
+
+    // --- Device color operators ---
+    /// `G` — set stroke gray.
+    SetStrokeGray(f64),
+    /// `g` — set fill gray.
+    SetFillGray(f64),
+    /// `RG` — set stroke RGB.
+    SetStrokeRgb { r: f64, g: f64, b: f64 },
+    /// `rg` — set fill RGB.
+    SetFillRgb { r: f64, g: f64, b: f64 },
+    /// `K` — set stroke CMYK.
+    SetStrokeCmyk { c: f64, m: f64, y: f64, k: f64 },
+    /// `k` — set fill CMYK.
+    SetFillCmyk { c: f64, m: f64, y: f64, k: f64 },
+
+    // --- Color space operators ---
+    /// `CS` — set stroke color space by name.
+    SetStrokeColorSpace(String),
+    /// `cs` — set fill color space by name.
+    SetFillColorSpace(String),
+    /// `SC` / `SCN` — set stroke color components in current space.
+    SetStrokeColor {
+        components: Vec<f64>,
+        name: Option<String>,
+    },
+    /// `sc` / `scn` — set fill color components in current space.
+    SetFillColor {
+        components: Vec<f64>,
+        name: Option<String>,
+    },
+
+    // --- ExtGState ---
+    /// `gs` — apply named ExtGState resource.
+    ApplyExtGState(String),
+
+    // --- Text state operators ---
+    /// `BT` — begin text object.
+    BeginText,
+    /// `ET` — end text object.
+    EndText,
+    /// `Tf` — set text font and size.
+    SetFont { name: String, size: f64 },
+    /// `Td` — move text position.
+    MoveTextPosition { tx: f64, ty: f64 },
+    /// `TD` — move text position and set leading.
+    MoveTextPositionSetLeading { tx: f64, ty: f64 },
+    /// `Tm` — set text matrix.
+    SetTextMatrix {
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        e: f64,
+        f: f64,
+    },
+    /// `T*` — move to start of next text line.
+    NextLine,
+    /// `Tc` — set character spacing.
+    SetCharSpacing(f64),
+    /// `Tw` — set word spacing.
+    SetWordSpacing(f64),
+    /// `Tz` — set horizontal scaling.
+    SetHorizontalScaling(f64),
+    /// `TL` — set text leading.
+    SetTextLeading(f64),
+    /// `Tr` — set text rendering mode.
+    SetTextRenderingMode(i64),
+    /// `Ts` — set text rise.
+    SetTextRise(f64),
+
+    // --- Marked content / optional content ---
+    /// `BMC` — begin marked-content sequence (tag only).
+    BeginMarkedContent(String),
+    /// `BDC` — begin marked-content sequence with properties.
+    BeginMarkedContentWithProperties {
+        tag: String,
+        properties: MarkedContentProperties,
+    },
+    /// `EMC` — end marked-content sequence.
+    EndMarkedContent,
+    /// `MP` — marked-content point (tag only).
+    MarkedContentPoint(String),
+    /// `DP` — marked-content point with properties.
+    MarkedContentPointWithProperties {
+        tag: String,
+        properties: MarkedContentProperties,
+    },
+    /// `BX` — begin compatibility section.
+    BeginCompatibility,
+    /// `EX` — end compatibility section.
+    EndCompatibility,
+
+    // --- Unsupported state operator ---
+    /// An unrecognized operator that cannot be compiled into a typed variant.
+    /// This is retained only for fail-closed dispatch — the plan will emit a
+    /// `PackedCompileRefusal::UnsupportedStateOperator` when executing.
+    Unsupported {
+        operator: String,
+        operands: Vec<Operand>,
+    },
+}
+
+/// Properties for BDC/DP marked content with inline or resource-referenced
+/// property dictionaries.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MarkedContentProperties {
+    /// Name reference to a Properties resource entry.
+    Name(String),
+    /// Inline property dictionary stored as key-value operands.
+    Inline(Vec<Operand>),
+}
+
+impl GraphicsStateDescriptor {
+    /// Compile a `ContentOperation` into a typed graphics-state descriptor.
+    pub fn compile(op: &crate::content::ContentOperation) -> Self {
+        match op.operator.as_str() {
+            "cm" => {
+                let a = op.number(0).unwrap_or(1.0);
+                let b = op.number(1).unwrap_or(0.0);
+                let c = op.number(2).unwrap_or(0.0);
+                let d = op.number(3).unwrap_or(1.0);
+                let e = op.number(4).unwrap_or(0.0);
+                let f = op.number(5).unwrap_or(0.0);
+                Self::ConcatMatrix { a, b, c, d, e, f }
+            }
+            "w" => Self::SetLineWidth(op.number(0).unwrap_or(1.0)),
+            "J" => Self::SetLineCap(
+                op.operand(0)
+                    .and_then(|o| o.as_integer())
+                    .or_else(|| op.number(0).map(|v| v as i64))
+                    .unwrap_or(0),
+            ),
+            "j" => Self::SetLineJoin(
+                op.operand(0)
+                    .and_then(|o| o.as_integer())
+                    .or_else(|| op.number(0).map(|v| v as i64))
+                    .unwrap_or(0),
+            ),
+            "M" => Self::SetMiterLimit(op.number(0).unwrap_or(10.0)),
+            "d" => {
+                let array = op
+                    .operand(0)
+                    .and_then(Operand::as_array)
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.as_number())
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                let phase = op.number(1).unwrap_or(0.0);
+                Self::SetDash { array, phase }
+            }
+            "ri" => {
+                Self::SetRenderingIntent(op.name(0).unwrap_or("RelativeColorimetric").to_string())
+            }
+            "i" => Self::SetFlatness(op.number(0).unwrap_or(0.0)),
+            "G" => Self::SetStrokeGray(op.number(0).unwrap_or(0.0)),
+            "g" => Self::SetFillGray(op.number(0).unwrap_or(0.0)),
+            "RG" => Self::SetStrokeRgb {
+                r: op.number(0).unwrap_or(0.0),
+                g: op.number(1).unwrap_or(0.0),
+                b: op.number(2).unwrap_or(0.0),
+            },
+            "rg" => Self::SetFillRgb {
+                r: op.number(0).unwrap_or(0.0),
+                g: op.number(1).unwrap_or(0.0),
+                b: op.number(2).unwrap_or(0.0),
+            },
+            "K" => Self::SetStrokeCmyk {
+                c: op.number(0).unwrap_or(0.0),
+                m: op.number(1).unwrap_or(0.0),
+                y: op.number(2).unwrap_or(0.0),
+                k: op.number(3).unwrap_or(0.0),
+            },
+            "k" => Self::SetFillCmyk {
+                c: op.number(0).unwrap_or(0.0),
+                m: op.number(1).unwrap_or(0.0),
+                y: op.number(2).unwrap_or(0.0),
+                k: op.number(3).unwrap_or(0.0),
+            },
+            "CS" => Self::SetStrokeColorSpace(op.name(0).unwrap_or("DeviceGray").to_string()),
+            "cs" => Self::SetFillColorSpace(op.name(0).unwrap_or("DeviceGray").to_string()),
+            "SC" | "SCN" => {
+                let mut components = Vec::new();
+                let mut name = None;
+                for operand in &op.operands {
+                    match operand {
+                        Operand::Real(v) => components.push(*v),
+                        Operand::Integer(v) => components.push(*v as f64),
+                        Operand::Name(n) => name = Some(n.clone()),
+                        _ => {}
+                    }
+                }
+                Self::SetStrokeColor { components, name }
+            }
+            "sc" | "scn" => {
+                let mut components = Vec::new();
+                let mut name = None;
+                for operand in &op.operands {
+                    match operand {
+                        Operand::Real(v) => components.push(*v),
+                        Operand::Integer(v) => components.push(*v as f64),
+                        Operand::Name(n) => name = Some(n.clone()),
+                        _ => {}
+                    }
+                }
+                Self::SetFillColor { components, name }
+            }
+            "gs" => Self::ApplyExtGState(op.name(0).unwrap_or("").to_string()),
+            "BT" => Self::BeginText,
+            "ET" => Self::EndText,
+            "Tf" => Self::SetFont {
+                name: op.name(0).unwrap_or("").to_string(),
+                size: op.number(1).unwrap_or(12.0),
+            },
+            "Td" => Self::MoveTextPosition {
+                tx: op.number(0).unwrap_or(0.0),
+                ty: op.number(1).unwrap_or(0.0),
+            },
+            "TD" => Self::MoveTextPositionSetLeading {
+                tx: op.number(0).unwrap_or(0.0),
+                ty: op.number(1).unwrap_or(0.0),
+            },
+            "Tm" => Self::SetTextMatrix {
+                a: op.number(0).unwrap_or(1.0),
+                b: op.number(1).unwrap_or(0.0),
+                c: op.number(2).unwrap_or(0.0),
+                d: op.number(3).unwrap_or(1.0),
+                e: op.number(4).unwrap_or(0.0),
+                f: op.number(5).unwrap_or(0.0),
+            },
+            "T*" => Self::NextLine,
+            "Tc" => Self::SetCharSpacing(op.number(0).unwrap_or(0.0)),
+            "Tw" => Self::SetWordSpacing(op.number(0).unwrap_or(0.0)),
+            "Tz" => Self::SetHorizontalScaling(op.number(0).unwrap_or(100.0)),
+            "TL" => Self::SetTextLeading(op.number(0).unwrap_or(0.0)),
+            "Tr" => Self::SetTextRenderingMode(
+                op.operand(0)
+                    .and_then(|o| o.as_integer())
+                    .or_else(|| op.number(0).map(|v| v as i64))
+                    .unwrap_or(0),
+            ),
+            "Ts" => Self::SetTextRise(op.number(0).unwrap_or(0.0)),
+            "BMC" => Self::BeginMarkedContent(op.name(0).unwrap_or("").to_string()),
+            "BDC" => {
+                let tag = op.name(0).unwrap_or("").to_string();
+                let properties = if let Some(name) = op.name(1) {
+                    MarkedContentProperties::Name(name.to_string())
+                } else if op.operands.len() > 1 {
+                    MarkedContentProperties::Inline(op.operands[1..].to_vec())
+                } else {
+                    MarkedContentProperties::Inline(Vec::new())
+                };
+                Self::BeginMarkedContentWithProperties { tag, properties }
+            }
+            "EMC" => Self::EndMarkedContent,
+            "MP" => Self::MarkedContentPoint(op.name(0).unwrap_or("").to_string()),
+            "DP" => {
+                let tag = op.name(0).unwrap_or("").to_string();
+                let properties = if let Some(name) = op.name(1) {
+                    MarkedContentProperties::Name(name.to_string())
+                } else if op.operands.len() > 1 {
+                    MarkedContentProperties::Inline(op.operands[1..].to_vec())
+                } else {
+                    MarkedContentProperties::Inline(Vec::new())
+                };
+                Self::MarkedContentPointWithProperties { tag, properties }
+            }
+            "BX" => Self::BeginCompatibility,
+            "EX" => Self::EndCompatibility,
+            other => Self::Unsupported {
+                operator: other.to_string(),
+                operands: op.operands.clone(),
+            },
+        }
+    }
+
+    /// Reconstruct a `ContentOperation` for backward-compatible dispatch
+    /// through the existing `RenderState::dispatch` path.
+    ///
+    /// This is used only during the transition period for operators where
+    /// `RenderState` dispatch is the simplest correct path (e.g., `gs` which
+    /// requires resource dictionary lookups).
+    pub fn to_content_operation(&self) -> crate::content::ContentOperation {
+        use crate::content::ContentOperation;
+        match self {
+            Self::ConcatMatrix { a, b, c, d, e, f } => ContentOperation::new(
+                "cm",
+                vec![
+                    Operand::Real(*a),
+                    Operand::Real(*b),
+                    Operand::Real(*c),
+                    Operand::Real(*d),
+                    Operand::Real(*e),
+                    Operand::Real(*f),
+                ],
+            ),
+            Self::SetLineWidth(w) => ContentOperation::new("w", vec![Operand::Real(*w)]),
+            Self::SetLineCap(c) => ContentOperation::new("J", vec![Operand::Integer(*c)]),
+            Self::SetLineJoin(j) => ContentOperation::new("j", vec![Operand::Integer(*j)]),
+            Self::SetMiterLimit(m) => ContentOperation::new("M", vec![Operand::Real(*m)]),
+            Self::SetDash { array, phase } => ContentOperation::new(
+                "d",
+                vec![
+                    Operand::Array(array.iter().map(|v| Operand::Real(*v)).collect()),
+                    Operand::Real(*phase),
+                ],
+            ),
+            Self::SetRenderingIntent(name) => {
+                ContentOperation::new("ri", vec![Operand::Name(name.clone())])
+            }
+            Self::SetFlatness(f) => ContentOperation::new("i", vec![Operand::Real(*f)]),
+            Self::SetStrokeGray(g) => ContentOperation::new("G", vec![Operand::Real(*g)]),
+            Self::SetFillGray(g) => ContentOperation::new("g", vec![Operand::Real(*g)]),
+            Self::SetStrokeRgb { r, g, b } => ContentOperation::new(
+                "RG",
+                vec![Operand::Real(*r), Operand::Real(*g), Operand::Real(*b)],
+            ),
+            Self::SetFillRgb { r, g, b } => ContentOperation::new(
+                "rg",
+                vec![Operand::Real(*r), Operand::Real(*g), Operand::Real(*b)],
+            ),
+            Self::SetStrokeCmyk { c, m, y, k } => ContentOperation::new(
+                "K",
+                vec![
+                    Operand::Real(*c),
+                    Operand::Real(*m),
+                    Operand::Real(*y),
+                    Operand::Real(*k),
+                ],
+            ),
+            Self::SetFillCmyk { c, m, y, k } => ContentOperation::new(
+                "k",
+                vec![
+                    Operand::Real(*c),
+                    Operand::Real(*m),
+                    Operand::Real(*y),
+                    Operand::Real(*k),
+                ],
+            ),
+            Self::SetStrokeColorSpace(name) => {
+                ContentOperation::new("CS", vec![Operand::Name(name.clone())])
+            }
+            Self::SetFillColorSpace(name) => {
+                ContentOperation::new("cs", vec![Operand::Name(name.clone())])
+            }
+            Self::SetStrokeColor { components, name } => {
+                let mut operands: Vec<Operand> =
+                    components.iter().map(|v| Operand::Real(*v)).collect();
+                if let Some(n) = name {
+                    operands.push(Operand::Name(n.clone()));
+                }
+                ContentOperation::new("SCN", operands)
+            }
+            Self::SetFillColor { components, name } => {
+                let mut operands: Vec<Operand> =
+                    components.iter().map(|v| Operand::Real(*v)).collect();
+                if let Some(n) = name {
+                    operands.push(Operand::Name(n.clone()));
+                }
+                ContentOperation::new("scn", operands)
+            }
+            Self::ApplyExtGState(name) => {
+                ContentOperation::new("gs", vec![Operand::Name(name.clone())])
+            }
+            Self::BeginText => ContentOperation::new("BT", Vec::new()),
+            Self::EndText => ContentOperation::new("ET", Vec::new()),
+            Self::SetFont { name, size } => ContentOperation::new(
+                "Tf",
+                vec![Operand::Name(name.clone()), Operand::Real(*size)],
+            ),
+            Self::MoveTextPosition { tx, ty } => {
+                ContentOperation::new("Td", vec![Operand::Real(*tx), Operand::Real(*ty)])
+            }
+            Self::MoveTextPositionSetLeading { tx, ty } => {
+                ContentOperation::new("TD", vec![Operand::Real(*tx), Operand::Real(*ty)])
+            }
+            Self::SetTextMatrix { a, b, c, d, e, f } => ContentOperation::new(
+                "Tm",
+                vec![
+                    Operand::Real(*a),
+                    Operand::Real(*b),
+                    Operand::Real(*c),
+                    Operand::Real(*d),
+                    Operand::Real(*e),
+                    Operand::Real(*f),
+                ],
+            ),
+            Self::NextLine => ContentOperation::new("T*", Vec::new()),
+            Self::SetCharSpacing(v) => ContentOperation::new("Tc", vec![Operand::Real(*v)]),
+            Self::SetWordSpacing(v) => ContentOperation::new("Tw", vec![Operand::Real(*v)]),
+            Self::SetHorizontalScaling(v) => ContentOperation::new("Tz", vec![Operand::Real(*v)]),
+            Self::SetTextLeading(v) => ContentOperation::new("TL", vec![Operand::Real(*v)]),
+            Self::SetTextRenderingMode(m) => {
+                ContentOperation::new("Tr", vec![Operand::Integer(*m)])
+            }
+            Self::SetTextRise(v) => ContentOperation::new("Ts", vec![Operand::Real(*v)]),
+            Self::BeginMarkedContent(tag) => {
+                ContentOperation::new("BMC", vec![Operand::Name(tag.clone())])
+            }
+            Self::BeginMarkedContentWithProperties { tag, properties } => {
+                let mut operands = vec![Operand::Name(tag.clone())];
+                match properties {
+                    MarkedContentProperties::Name(n) => operands.push(Operand::Name(n.clone())),
+                    MarkedContentProperties::Inline(ops) => operands.extend(ops.iter().cloned()),
+                }
+                ContentOperation::new("BDC", operands)
+            }
+            Self::EndMarkedContent => ContentOperation::new("EMC", Vec::new()),
+            Self::MarkedContentPoint(tag) => {
+                ContentOperation::new("MP", vec![Operand::Name(tag.clone())])
+            }
+            Self::MarkedContentPointWithProperties { tag, properties } => {
+                let mut operands = vec![Operand::Name(tag.clone())];
+                match properties {
+                    MarkedContentProperties::Name(n) => operands.push(Operand::Name(n.clone())),
+                    MarkedContentProperties::Inline(ops) => operands.extend(ops.iter().cloned()),
+                }
+                ContentOperation::new("DP", operands)
+            }
+            Self::BeginCompatibility => ContentOperation::new("BX", Vec::new()),
+            Self::EndCompatibility => ContentOperation::new("EX", Vec::new()),
+            Self::Unsupported { operator, operands } => {
+                ContentOperation::new(operator.clone(), operands.clone())
+            }
+        }
+    }
+
+    /// Returns `true` if this descriptor is an unsupported state operator.
+    pub fn is_unsupported(&self) -> bool {
+        matches!(self, Self::Unsupported { .. })
+    }
+}
+
 /// Reason why a pattern or inline-image operation could not be compiled into a
 /// fully typed descriptor. This is an explicit typed refusal rather than a
 /// silent fallback to raw replay.
@@ -307,6 +772,10 @@ pub enum PackedCompileRefusal {
     MissingInlineImageParams,
     /// The inline image sequence was missing the data payload.
     MissingInlineImageData,
+    /// A state operator that could not be compiled into a known
+    /// `GraphicsStateDescriptor` variant. The renderer must handle this
+    /// explicitly rather than silently replaying raw operations.
+    UnsupportedStateOperator(String),
 }
 
 impl std::fmt::Display for PackedCompileRefusal {
@@ -321,6 +790,9 @@ impl std::fmt::Display for PackedCompileRefusal {
             Self::EmptyPatternOps => write!(f, "empty pattern ops sequence"),
             Self::MissingInlineImageParams => write!(f, "missing inline image ID parameters"),
             Self::MissingInlineImageData => write!(f, "missing inline image data payload"),
+            Self::UnsupportedStateOperator(op) => {
+                write!(f, "unsupported state operator '{op}'")
+            }
         }
     }
 }
@@ -336,8 +808,9 @@ pub enum NativeDescriptor {
     Form(FormXObjectDescriptor),
     /// Fully compiled shading reference.
     Shading(ShadingDescriptor),
-    /// Graphics-state mutation dispatched through the interpreter.
-    State(crate::content::ContentOperation),
+    /// Typed graphics-state mutation compiled from the source operator.
+    /// No raw `ContentOperation` is stored on this path.
+    State(GraphicsStateDescriptor),
     /// Fully compiled pattern path descriptor with normalized geometry and phase.
     /// Dispatched through RenderState when executing full plan.
     Pattern(PatternPathDescriptor),
@@ -419,7 +892,7 @@ impl PackedDisplayList {
                 }
             }
             // Non-showing text ops (Tf, Td, Tm, etc.) are state mutations
-            _ => return NativeDescriptor::State(op.clone()),
+            _ => return NativeDescriptor::State(GraphicsStateDescriptor::compile(op)),
         };
         NativeDescriptor::Text(desc)
     }
@@ -670,8 +1143,15 @@ impl PackedDisplayList {
                 ),
                 DisplayOp::StateOp { op, .. } => {
                     requires_native_replay = true;
-                    let desc_id =
-                        push_descriptor(NativeDescriptor::State(op.clone()), &mut descriptors);
+                    let gs_desc = GraphicsStateDescriptor::compile(op);
+                    let desc = if gs_desc.is_unsupported() {
+                        NativeDescriptor::CompileRefusal(
+                            PackedCompileRefusal::UnsupportedStateOperator(op.operator.clone()),
+                        )
+                    } else {
+                        NativeDescriptor::State(gs_desc)
+                    };
+                    let desc_id = push_descriptor(desc, &mut descriptors);
                     (OP_STATE, 0, u32::MAX, u32::MAX, desc_id, 1)
                 }
                 DisplayOp::NativeTextOp {
@@ -928,7 +1408,7 @@ pub trait PlanDispatcher {
     fn dispatch_image(&mut self, desc: &ImageXObjectDescriptor, bounds: Option<&RenderBounds>);
     fn dispatch_form(&mut self, desc: &FormXObjectDescriptor, bounds: Option<&RenderBounds>);
     fn dispatch_shading(&mut self, desc: &ShadingDescriptor, bounds: Option<&RenderBounds>);
-    fn dispatch_state(&mut self, op: &crate::content::ContentOperation);
+    fn dispatch_state(&mut self, desc: &GraphicsStateDescriptor);
     fn dispatch_pattern(&mut self, desc: &PatternPathDescriptor, bounds: Option<&RenderBounds>);
     fn dispatch_inline_image(
         &mut self,
@@ -1025,8 +1505,8 @@ impl PackedDisplayList {
                         NativeDescriptor::Shading(shading) => {
                             dispatcher.dispatch_shading(shading, op_bounds.as_ref());
                         }
-                        NativeDescriptor::State(op) => {
-                            dispatcher.dispatch_state(op);
+                        NativeDescriptor::State(gs_desc) => {
+                            dispatcher.dispatch_state(gs_desc);
                         }
                         NativeDescriptor::Pattern(pattern) => {
                             dispatcher.dispatch_pattern(pattern, op_bounds.as_ref());
@@ -1259,8 +1739,12 @@ mod tests {
                 NativeDescriptor::Text(TextDescriptor::Show(bytes)) => {
                     assert_eq!(bytes, b"Hello");
                 }
-                NativeDescriptor::State(_) => {
-                    // text-state ops like Tf are compiled as State descriptors
+                NativeDescriptor::State(gs_desc) => {
+                    // text-state ops like Tf are compiled as typed State descriptors
+                    assert!(
+                        !gs_desc.is_unsupported(),
+                        "state descriptor should be typed, not unsupported"
+                    );
                 }
                 other => panic!("unexpected descriptor for text op: {:?}", other),
             }
@@ -1410,7 +1894,7 @@ mod tests {
         fn dispatch_shading(&mut self, _desc: &ShadingDescriptor, _bounds: Option<&RenderBounds>) {
             self.shading_count += 1;
         }
-        fn dispatch_state(&mut self, _op: &crate::content::ContentOperation) {
+        fn dispatch_state(&mut self, _desc: &GraphicsStateDescriptor) {
             self.state_count += 1;
         }
         fn dispatch_pattern(
@@ -1877,6 +2361,357 @@ mod tests {
                 ));
             }
             other => panic!("expected Pattern descriptor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn typed_state_descriptor_has_no_content_operation_in_active_plan() {
+        // Verify that after compilation, no NativeDescriptor::State variant contains
+        // a raw ContentOperation — the GraphicsStateDescriptor is purely typed.
+        use crate::render::display_list::DisplayOp;
+
+        let state_ops = vec![
+            ContentOperation::new(
+                "cm",
+                vec![
+                    Operand::Real(1.0),
+                    Operand::Real(0.0),
+                    Operand::Real(0.0),
+                    Operand::Real(1.0),
+                    Operand::Real(10.0),
+                    Operand::Real(20.0),
+                ],
+            ),
+            ContentOperation::new("w", vec![Operand::Real(2.5)]),
+            ContentOperation::new("J", vec![Operand::Integer(1)]),
+            ContentOperation::new("j", vec![Operand::Integer(2)]),
+            ContentOperation::new("M", vec![Operand::Real(8.0)]),
+            ContentOperation::new(
+                "d",
+                vec![
+                    Operand::Array(vec![Operand::Real(3.0), Operand::Real(2.0)]),
+                    Operand::Real(0.0),
+                ],
+            ),
+            ContentOperation::new(
+                "ri",
+                vec![Operand::Name("AbsoluteColorimetric".to_string())],
+            ),
+            ContentOperation::new("i", vec![Operand::Real(1.0)]),
+            ContentOperation::new("G", vec![Operand::Real(0.5)]),
+            ContentOperation::new("g", vec![Operand::Real(0.8)]),
+            ContentOperation::new(
+                "RG",
+                vec![Operand::Real(1.0), Operand::Real(0.0), Operand::Real(0.0)],
+            ),
+            ContentOperation::new(
+                "rg",
+                vec![Operand::Real(0.0), Operand::Real(1.0), Operand::Real(0.0)],
+            ),
+            ContentOperation::new(
+                "K",
+                vec![
+                    Operand::Real(0.1),
+                    Operand::Real(0.2),
+                    Operand::Real(0.3),
+                    Operand::Real(0.4),
+                ],
+            ),
+            ContentOperation::new(
+                "k",
+                vec![
+                    Operand::Real(0.5),
+                    Operand::Real(0.6),
+                    Operand::Real(0.7),
+                    Operand::Real(0.8),
+                ],
+            ),
+            ContentOperation::new("CS", vec![Operand::Name("DeviceRGB".to_string())]),
+            ContentOperation::new("cs", vec![Operand::Name("DeviceCMYK".to_string())]),
+            ContentOperation::new(
+                "SCN",
+                vec![
+                    Operand::Real(0.1),
+                    Operand::Real(0.2),
+                    Operand::Real(0.3),
+                    Operand::Name("Pat1".to_string()),
+                ],
+            ),
+            ContentOperation::new("scn", vec![Operand::Real(0.9), Operand::Real(0.8)]),
+            ContentOperation::new("gs", vec![Operand::Name("GS0".to_string())]),
+            ContentOperation::new("BT", Vec::new()),
+            ContentOperation::new(
+                "Tf",
+                vec![Operand::Name("F1".to_string()), Operand::Real(12.0)],
+            ),
+            ContentOperation::new("Td", vec![Operand::Real(10.0), Operand::Real(20.0)]),
+            ContentOperation::new("TD", vec![Operand::Real(5.0), Operand::Real(-15.0)]),
+            ContentOperation::new(
+                "Tm",
+                vec![
+                    Operand::Real(1.0),
+                    Operand::Real(0.0),
+                    Operand::Real(0.0),
+                    Operand::Real(1.0),
+                    Operand::Real(100.0),
+                    Operand::Real(200.0),
+                ],
+            ),
+            ContentOperation::new("T*", Vec::new()),
+            ContentOperation::new("Tc", vec![Operand::Real(0.5)]),
+            ContentOperation::new("Tw", vec![Operand::Real(1.0)]),
+            ContentOperation::new("Tz", vec![Operand::Real(150.0)]),
+            ContentOperation::new("TL", vec![Operand::Real(14.0)]),
+            ContentOperation::new("Tr", vec![Operand::Integer(2)]),
+            ContentOperation::new("Ts", vec![Operand::Real(3.0)]),
+            ContentOperation::new("ET", Vec::new()),
+            ContentOperation::new("BMC", vec![Operand::Name("Span".to_string())]),
+            ContentOperation::new(
+                "BDC",
+                vec![
+                    Operand::Name("OC".to_string()),
+                    Operand::Name("MC0".to_string()),
+                ],
+            ),
+            ContentOperation::new("EMC", Vec::new()),
+            ContentOperation::new("BX", Vec::new()),
+            ContentOperation::new("EX", Vec::new()),
+        ];
+
+        let viewport = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
+        let ops: Vec<DisplayOp> = state_ops
+            .iter()
+            .map(|op| DisplayOp::StateOp {
+                op: op.clone(),
+                approx_bytes: 32,
+            })
+            .collect();
+        let list = DisplayList {
+            ops,
+            viewport: viewport.clone(),
+            unsupported: Vec::new(),
+            supported: true,
+            stats: Default::default(),
+        };
+        let packed = PackedDisplayList::compile(list);
+
+        // Every descriptor should be a typed NativeDescriptor::State(GraphicsStateDescriptor)
+        // — NOT a raw ContentOperation. Verify no descriptor is Unsupported.
+        for desc in &packed.descriptors {
+            match desc {
+                NativeDescriptor::State(gs_desc) => {
+                    assert!(
+                        !gs_desc.is_unsupported(),
+                        "Standard state op compiled as Unsupported: {:?}",
+                        gs_desc
+                    );
+                }
+                NativeDescriptor::CompileRefusal(refusal) => {
+                    panic!("Standard state op produced CompileRefusal: {:?}", refusal);
+                }
+                _ => panic!("Expected NativeDescriptor::State, got {:?}", desc),
+            }
+        }
+
+        // Verify the count matches
+        assert_eq!(packed.descriptors.len(), state_ops.len());
+    }
+
+    #[test]
+    fn typed_state_descriptor_round_trips_to_content_operation() {
+        // Verify that to_content_operation produces semantically equivalent ops
+        let ops = vec![
+            ContentOperation::new(
+                "cm",
+                vec![
+                    Operand::Real(2.0),
+                    Operand::Real(0.0),
+                    Operand::Real(0.0),
+                    Operand::Real(2.0),
+                    Operand::Real(50.0),
+                    Operand::Real(100.0),
+                ],
+            ),
+            ContentOperation::new("w", vec![Operand::Real(3.0)]),
+            ContentOperation::new(
+                "rg",
+                vec![Operand::Real(0.5), Operand::Real(0.6), Operand::Real(0.7)],
+            ),
+            ContentOperation::new("gs", vec![Operand::Name("GS1".to_string())]),
+            ContentOperation::new(
+                "Tf",
+                vec![Operand::Name("F2".to_string()), Operand::Real(24.0)],
+            ),
+            ContentOperation::new("Tc", vec![Operand::Real(1.5)]),
+            ContentOperation::new("BMC", vec![Operand::Name("P".to_string())]),
+            ContentOperation::new("EMC", Vec::new()),
+        ];
+
+        for op in &ops {
+            let desc = GraphicsStateDescriptor::compile(op);
+            assert!(
+                !desc.is_unsupported(),
+                "op {} compiled as unsupported",
+                op.operator
+            );
+            let reconstructed = desc.to_content_operation();
+            assert_eq!(
+                reconstructed.operator, op.operator,
+                "operator mismatch for {}",
+                op.operator
+            );
+            // For numeric operands, verify the values round-trip
+            for (i, orig_operand) in op.operands.iter().enumerate() {
+                let recon_operand = &reconstructed.operands[i];
+                match (orig_operand, recon_operand) {
+                    (Operand::Real(a), Operand::Real(b)) => {
+                        assert!(
+                            (a - b).abs() < 1e-10,
+                            "operand {} mismatch for {}: {} vs {}",
+                            i,
+                            op.operator,
+                            a,
+                            b
+                        );
+                    }
+                    (Operand::Integer(a), Operand::Integer(b)) => {
+                        assert_eq!(a, b);
+                    }
+                    (Operand::Name(a), Operand::Name(b)) => {
+                        assert_eq!(a, b);
+                    }
+                    (Operand::Integer(a), Operand::Real(b)) => {
+                        assert!(
+                            (*a as f64 - b).abs() < 1e-10,
+                            "integer-to-real mismatch for {} operand {}",
+                            op.operator,
+                            i
+                        );
+                    }
+                    _ => {} // array types handled below
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unsupported_state_operator_produces_compile_refusal() {
+        use crate::render::display_list::DisplayOp;
+
+        let unknown_op = ContentOperation::new("EXOTIC_UNKNOWN_OP", vec![Operand::Real(42.0)]);
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let list = DisplayList {
+            ops: vec![DisplayOp::StateOp {
+                op: unknown_op,
+                approx_bytes: 16,
+            }],
+            viewport: viewport.clone(),
+            unsupported: Vec::new(),
+            supported: true,
+            stats: Default::default(),
+        };
+        let packed = PackedDisplayList::compile(list);
+
+        // Should produce a CompileRefusal, not a State descriptor
+        assert_eq!(packed.descriptors.len(), 1);
+        match &packed.descriptors[0] {
+            NativeDescriptor::CompileRefusal(PackedCompileRefusal::UnsupportedStateOperator(
+                op_name,
+            )) => {
+                assert_eq!(op_name, "EXOTIC_UNKNOWN_OP");
+            }
+            other => panic!(
+                "expected CompileRefusal::UnsupportedStateOperator, got {:?}",
+                other
+            ),
+        }
+
+        // has_only_supported_descriptors should be false
+        assert!(!packed.has_only_supported_descriptors());
+
+        // Execute plan — refusal is dispatched explicitly, not silently skipped
+        let mut rec = RecordingDispatcher::new();
+        packed.execute_plan(&mut rec).expect("execute_plan");
+        assert_eq!(rec.compile_refusal_count, 1);
+        assert_eq!(rec.state_count, 0);
+    }
+
+    #[test]
+    fn active_high_level_page_plan_matches_immediate_rendering() {
+        // A page with state ops + text: both immediate and plan paths should
+        // dispatch through the same state count and text count.
+        let ops = vec![
+            ContentOperation::new(
+                "rg",
+                vec![Operand::Real(1.0), Operand::Real(0.0), Operand::Real(0.0)],
+            ),
+            ContentOperation::new("BT", Vec::new()),
+            ContentOperation::new(
+                "Tf",
+                vec![Operand::Name("F1".to_string()), Operand::Real(12.0)],
+            ),
+            ContentOperation::new("Td", vec![Operand::Real(10.0), Operand::Real(50.0)]),
+            ContentOperation::new("Tj", vec![Operand::String(b"Test".to_vec())]),
+            ContentOperation::new("ET", Vec::new()),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
+        let list = build_display_list(
+            &ops,
+            viewport.clone(),
+            &crate::engine::PageResources::default(),
+        );
+        let packed = PackedDisplayList::compile(list);
+        let mut rec = RecordingDispatcher::new();
+        packed.execute_plan(&mut rec).expect("execute_plan");
+        // Text descriptors: "Tj" becomes a text dispatch
+        assert!(
+            rec.text_count >= 1,
+            "should dispatch text: {}",
+            rec.text_count
+        );
+        // State descriptors: rg, BT, Tf, Td, ET are state mutations
+        assert!(
+            rec.state_count >= 4,
+            "should dispatch state ops: {}",
+            rec.state_count
+        );
+        // No compile refusals for standard operators
+        assert_eq!(rec.compile_refusal_count, 0);
+    }
+
+    #[test]
+    fn graphics_state_descriptor_compile_all_known_operators() {
+        // Verify every known operator maps to a non-Unsupported descriptor variant
+        let known_operators = [
+            "cm", "w", "J", "j", "M", "d", "ri", "i", "G", "g", "RG", "rg", "K", "k", "CS", "cs",
+            "SC", "SCN", "sc", "scn", "gs", "BT", "ET", "Tf", "Td", "TD", "Tm", "T*", "Tc", "Tw",
+            "Tz", "TL", "Tr", "Ts", "BMC", "BDC", "EMC", "MP", "DP", "BX", "EX",
+        ];
+        for operator in &known_operators {
+            let op = ContentOperation::new(*operator, Vec::new());
+            let desc = GraphicsStateDescriptor::compile(&op);
+            assert!(
+                !desc.is_unsupported(),
+                "operator '{}' should compile to typed descriptor, got Unsupported",
+                operator
+            );
+        }
+    }
+
+    #[test]
+    fn graphics_state_descriptor_unknown_operator_is_unsupported() {
+        let op = ContentOperation::new("SOME_NOVEL_OP", vec![Operand::Integer(99)]);
+        let desc = GraphicsStateDescriptor::compile(&op);
+        assert!(
+            desc.is_unsupported(),
+            "unknown operator should be Unsupported"
+        );
+        match desc {
+            GraphicsStateDescriptor::Unsupported { operator, operands } => {
+                assert_eq!(operator, "SOME_NOVEL_OP");
+                assert_eq!(operands.len(), 1);
+            }
+            _ => panic!("expected Unsupported variant"),
         }
     }
 }

@@ -46,7 +46,7 @@ impl ColorSpace {
         }
     }
 
-    fn is_pattern(&self) -> bool {
+    pub fn is_pattern(&self) -> bool {
         matches!(self, ColorSpace::Named(name) if name == "Pattern")
     }
 }
@@ -916,7 +916,7 @@ impl GraphicsState {
     }
 }
 
-fn color_space_from_name(name: &str) -> ColorSpace {
+pub fn color_space_from_name(name: &str) -> ColorSpace {
     match name {
         "DeviceGray" => ColorSpace::DeviceGray,
         "DeviceRGB" => ColorSpace::DeviceRGB,
@@ -925,7 +925,7 @@ fn color_space_from_name(name: &str) -> ColorSpace {
     }
 }
 
-fn default_color_for(cs: &ColorSpace) -> Color {
+pub fn default_color_for(cs: &ColorSpace) -> Color {
     Color {
         space: cs.clone(),
         components: vec![0.0; cs.component_count()],

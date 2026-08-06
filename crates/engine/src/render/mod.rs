@@ -71,9 +71,10 @@ pub use path::{
     PathRasterStats, PathSegment,
 };
 pub use plan::{
-    ColdPayload, HotDisplayOp, InlineImageDescriptor, NativeDescriptor, PackedColdTables,
-    PackedCompileRefusal, PackedDisplayList, PatternPaintPhase, PatternPathDescriptor,
-    PlanDispatcher, RenderBatch, RenderPlan, RenderSpatialIndex,
+    ColdPayload, GraphicsStateDescriptor, HotDisplayOp, InlineImageDescriptor,
+    MarkedContentProperties, NativeDescriptor, PackedColdTables, PackedCompileRefusal,
+    PackedDisplayList, PatternPaintPhase, PatternPathDescriptor, PlanDispatcher, RenderBatch,
+    RenderPlan, RenderSpatialIndex,
 };
 pub use postscript::{assemble_eps_document, assemble_ps_document, render_page_ps, PsPage};
 pub use print_profile::{PrintProfileRefusal, PrintProfileRefusalCategory};
