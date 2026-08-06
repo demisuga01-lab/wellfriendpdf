@@ -677,6 +677,12 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_page_png(
 /// `render_mode` may be null (the deterministic compatibility default),
 /// `compat`, or `high`. The returned JSON is owned and must be freed with
 /// `wellfriendpdf_string_free`.
+///
+/// # Safety
+/// `document` must be a valid open document. `render_mode`, when non-null,
+/// must point to a valid NUL-terminated UTF-8 string. `out_json` must be
+/// writable; its returned value is owned by the caller. `error_out`, when
+/// non-null, must be writable and its value freed with `wellfriendpdf_error_free`.
 #[no_mangle]
 pub unsafe extern "C" fn wellfriendpdf_document_default_render_contract_json(
     document: *const WellfriendDocument,
@@ -709,6 +715,12 @@ pub unsafe extern "C" fn wellfriendpdf_document_default_render_contract_json(
 /// The contract's document revision and every supported raster policy are
 /// validated by the Rust core; unsupported policy combinations return a stable
 /// C ABI error rather than being silently ignored.
+///
+/// # Safety
+/// `document` must be a valid open document. `contract_json` must point to a
+/// valid NUL-terminated UTF-8 JSON string. `out_buffer` must be writable and
+/// its returned value freed with `wellfriendpdf_buffer_free`. `error_out`, when
+/// non-null, must be writable and its value freed with `wellfriendpdf_error_free`.
 #[no_mangle]
 pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_json(
     document: *const WellfriendDocument,
