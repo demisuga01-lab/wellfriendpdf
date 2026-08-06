@@ -117,7 +117,11 @@ impl PackedDisplayList {
             id
         };
 
+        let list_has_native_payload = source.ops.iter().any(DisplayOp::is_native_high_level);
         for (index, op) in source.ops.iter().enumerate() {
+            if !list_has_native_payload && matches!(op, DisplayOp::StateOp { .. }) {
+                continue;
+            }
             let item = DisplayItemId(u32::try_from(index + 1).unwrap_or(u32::MAX));
             let (opcode, flags, bounds_id, state_id, payload_offset, payload_len) = match op {
                 DisplayOp::Save => (OP_SAVE, 0, u32::MAX, u32::MAX, 0, 0),
