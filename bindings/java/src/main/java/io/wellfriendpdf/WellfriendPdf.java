@@ -631,6 +631,42 @@ public final class WellfriendPdf {
             }
         }
 
+        public byte[] renderPagePng(int pageNumber, int dpi) {
+            ensureOpen();
+            if (pageNumber < 1 || dpi < 1) throw new IllegalArgumentException("page and dpi must be positive");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_PNG.invokeExact(handle, (long) pageNumber, dpi, buffer, err);
+                Native.throwError(status, err);
+                return Native.takeBuffer(buffer);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render_page_png failed", ex);
+            }
+        }
+
+        public byte[] renderPagePng(int pageNumber) {
+            return renderPagePng(pageNumber, 72);
+        }
+
+        public byte[] renderPageJpeg(int pageNumber, int dpi, byte quality) {
+            ensureOpen();
+            if (pageNumber < 1 || dpi < 1) throw new IllegalArgumentException("page and dpi must be positive");
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment buffer = arena.allocate(Native.BUFFER_LAYOUT);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_JPEG.invokeExact(handle, (long) pageNumber, dpi, quality, buffer, err);
+                Native.throwError(status, err);
+                return Native.takeBuffer(buffer);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend render_page_jpeg failed", ex);
+            }
+        }
+
         public String parseJson() {
             ensureOpen();
             try (Arena arena = Arena.ofConfined()) {
@@ -1536,6 +1572,18 @@ public final class WellfriendPdf {
         public String text() {
             return document.extractText(number);
         }
+
+        public byte[] renderPng(int dpi) {
+            return document.renderPagePng(number, dpi);
+        }
+
+        public byte[] renderPng() {
+            return renderPng(72);
+        }
+
+        public byte[] renderJpeg(int dpi, byte quality) {
+            return document.renderPageJpeg(number, dpi, quality);
+        }
     }
 
     public static final class Office {
@@ -1613,6 +1661,16 @@ public final class WellfriendPdf {
         private static final MethodHandle EXTRACT_TEXT = downcall(
             "wellfriendpdf_document_extract_text",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_PNG = downcall(
+            "wellfriendpdf_document_render_page_png",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_JPEG = downcall(
+            "wellfriendpdf_document_render_page_jpeg",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG,
+                ValueLayout.JAVA_INT, ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
         );
         private static final MethodHandle PARSE_JSON = downcall(
             "wellfriendpdf_document_parse_json",

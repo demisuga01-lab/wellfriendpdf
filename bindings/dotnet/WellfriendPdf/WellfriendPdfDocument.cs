@@ -217,6 +217,26 @@ public sealed class WellfriendDocument : IDisposable
         return NativeMethods.TakeString(text);
     }
 
+    public byte[] RenderPagePng(int pageNumber, uint dpi = 72)
+    {
+        ThrowIfDisposed();
+        if (pageNumber < 1 || dpi == 0) throw new ArgumentOutOfRangeException(nameof(pageNumber));
+        var status = NativeMethods.wellfriendpdf_document_render_page_png(
+            _handle, (UIntPtr)pageNumber, dpi, out var buffer, out var error);
+        NativeMethods.ThrowIfError(status, error);
+        return NativeMethods.TakeBuffer(buffer);
+    }
+
+    public byte[] RenderPageJpeg(int pageNumber, uint dpi = 72, byte quality = 85)
+    {
+        ThrowIfDisposed();
+        if (pageNumber < 1 || dpi == 0) throw new ArgumentOutOfRangeException(nameof(pageNumber));
+        var status = NativeMethods.wellfriendpdf_document_render_page_jpeg(
+            _handle, (UIntPtr)pageNumber, dpi, quality, out var buffer, out var error);
+        NativeMethods.ThrowIfError(status, error);
+        return NativeMethods.TakeBuffer(buffer);
+    }
+
     public string ParseJson()
     {
         ThrowIfDisposed();
@@ -2060,4 +2080,9 @@ public sealed class Page
     public int Number { get; }
 
     public string Text => _document.ExtractText(Number);
+
+    public byte[] RenderPng(uint dpi = 72) => _document.RenderPagePng(Number, dpi);
+
+    public byte[] RenderJpeg(uint dpi = 72, byte quality = 85) =>
+        _document.RenderPageJpeg(Number, dpi, quality);
 }
