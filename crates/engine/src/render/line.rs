@@ -206,6 +206,36 @@ impl DashState {
         self.phase
     }
 
+    pub(crate) fn render_cache_fingerprint(&self) -> u64 {
+        const OFFSET: u64 = 0xcbf29ce484222325;
+        const PRIME: u64 = 0x00000100000001b3;
+        let mut hash = OFFSET;
+        let mut mix = |value: u64| {
+            hash ^= value;
+            hash = hash.wrapping_mul(PRIME);
+        };
+        mix(self.pattern.len() as u64);
+        for value in &self.pattern {
+            mix(value.to_bits());
+        }
+        mix(self.phase.to_bits());
+        mix(self.current_pos.to_bits());
+        mix(self.current_idx as u64);
+        hash
+    }
+
+    pub(crate) fn same_for_render(&self, other: &Self) -> bool {
+        self.pattern.len() == other.pattern.len()
+            && self
+                .pattern
+                .iter()
+                .zip(&other.pattern)
+                .all(|(left, right)| left.to_bits() == right.to_bits())
+            && self.phase.to_bits() == other.phase.to_bits()
+            && self.current_pos.to_bits() == other.current_pos.to_bits()
+            && self.current_idx == other.current_idx
+    }
+
     pub(crate) fn estimated_segment_count(&self, distance: f64) -> Option<usize> {
         if distance <= 0.0 || !distance.is_finite() || self.pattern.is_empty() {
             return None;

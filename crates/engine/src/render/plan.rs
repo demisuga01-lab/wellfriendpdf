@@ -13,7 +13,7 @@ use super::contract::{DisplayItemId, RenderContract};
 use super::display_list::{
     CpuRenderDevice, DisplayList, DisplayOp, DrawState, RenderBounds, RenderDevice, RenderTile,
 };
-use super::path::{FillRule, Path};
+use super::path::{FillRule, Path, PathSegment};
 use super::{PixelBuffer, RenderMode, Transform2D};
 
 const OP_SAVE: u16 = 1;
@@ -28,6 +28,130 @@ const OP_NATIVE_SHADING: u16 = 9;
 const OP_NATIVE_PATTERN: u16 = 10;
 const OP_NATIVE_INLINE_IMAGE: u16 = 11;
 const OP_NATIVE_FORM: u16 = 12;
+
+const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x00000100000001b3;
+
+fn hash_mix(hash: &mut u64, value: u64) {
+    *hash ^= value;
+    *hash = hash.wrapping_mul(FNV_PRIME);
+}
+
+fn hash_bytes(hash: &mut u64, bytes: &[u8]) {
+    hash_mix(hash, bytes.len() as u64);
+    for byte in bytes {
+        hash_mix(hash, u64::from(*byte));
+    }
+}
+
+fn path_fingerprint(path: &Path) -> u64 {
+    let mut hash = FNV_OFFSET;
+    hash_mix(&mut hash, path.segments.len() as u64);
+    for segment in &path.segments {
+        match segment {
+            PathSegment::MoveTo(x, y) => {
+                hash_mix(&mut hash, 1);
+                hash_mix(&mut hash, x.to_bits());
+                hash_mix(&mut hash, y.to_bits());
+            }
+            PathSegment::LineTo(x, y) => {
+                hash_mix(&mut hash, 2);
+                hash_mix(&mut hash, x.to_bits());
+                hash_mix(&mut hash, y.to_bits());
+            }
+            PathSegment::CubicTo {
+                cp1x,
+                cp1y,
+                cp2x,
+                cp2y,
+                x,
+                y,
+            } => {
+                hash_mix(&mut hash, 3);
+                for value in [cp1x, cp1y, cp2x, cp2y, x, y] {
+                    hash_mix(&mut hash, value.to_bits());
+                }
+            }
+            PathSegment::ClosePath => hash_mix(&mut hash, 4),
+        }
+    }
+    match path.current_point {
+        Some((x, y)) => {
+            hash_mix(&mut hash, 5);
+            hash_mix(&mut hash, x.to_bits());
+            hash_mix(&mut hash, y.to_bits());
+        }
+        None => hash_mix(&mut hash, 6),
+    }
+    hash
+}
+
+fn hash_optional_f32(hash: &mut u64, value: Option<[f32; 4]>) {
+    match value {
+        Some(values) => {
+            hash_mix(hash, 1);
+            for value in values {
+                hash_mix(hash, u64::from(value.to_bits()));
+            }
+        }
+        None => hash_mix(hash, 0),
+    }
+}
+
+fn same_optional_f32(left: Option<[f32; 4]>, right: Option<[f32; 4]>) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => left
+            .iter()
+            .zip(right.iter())
+            .all(|(left, right)| left.to_bits() == right.to_bits()),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+fn draw_state_fingerprint(state: &DrawState) -> u64 {
+    let mut hash = FNV_OFFSET;
+    for value in state.ctm.to_array() {
+        hash_mix(&mut hash, value.to_bits());
+    }
+    for value in state.fill_color {
+        hash_mix(&mut hash, u64::from(value));
+    }
+    for value in state.stroke_color {
+        hash_mix(&mut hash, u64::from(value));
+    }
+    hash_optional_f32(&mut hash, state.fill_cmyk);
+    hash_optional_f32(&mut hash, state.stroke_cmyk);
+    hash_mix(&mut hash, state.blend_mode as u64);
+    hash_bytes(&mut hash, state.rendering_intent.as_bytes());
+    hash_mix(&mut hash, if state.stroke_overprint { 1 } else { 0 });
+    hash_mix(&mut hash, if state.fill_overprint { 1 } else { 0 });
+    hash_mix(&mut hash, state.overprint_mode as u64);
+    hash_mix(&mut hash, state.line_width.to_bits());
+    hash_mix(&mut hash, state.line_cap.clone() as u64);
+    hash_mix(&mut hash, state.line_join.clone() as u64);
+    hash_mix(&mut hash, state.miter_limit.to_bits());
+    hash_mix(&mut hash, state.dash.render_cache_fingerprint());
+    hash
+}
+
+fn same_draw_state(left: &DrawState, right: &DrawState) -> bool {
+    left.ctm.to_array().map(f64::to_bits) == right.ctm.to_array().map(f64::to_bits)
+        && left.fill_color == right.fill_color
+        && left.stroke_color == right.stroke_color
+        && same_optional_f32(left.fill_cmyk, right.fill_cmyk)
+        && same_optional_f32(left.stroke_cmyk, right.stroke_cmyk)
+        && left.blend_mode == right.blend_mode
+        && left.rendering_intent == right.rendering_intent
+        && left.stroke_overprint == right.stroke_overprint
+        && left.fill_overprint == right.fill_overprint
+        && left.overprint_mode == right.overprint_mode
+        && left.line_width.to_bits() == right.line_width.to_bits()
+        && left.line_cap == right.line_cap
+        && left.line_join == right.line_join
+        && left.miter_limit.to_bits() == right.miter_limit.to_bits()
+        && left.dash.same_for_render(&right.dash)
+}
 
 /// Fixed-size hot command. Its payload indexes immutable arenas and never
 /// carries a string, PDF dictionary, or `ContentOperation` directly.
@@ -77,33 +201,47 @@ impl PackedDisplayList {
         let mut states = Vec::new();
         let mut bounds = Vec::new();
         let mut cold = PackedColdTables::default();
-        let mut state_ids = HashMap::<String, u32>::new();
-        let mut path_ids = HashMap::<String, u32>::new();
+        let mut state_ids = HashMap::<u64, Vec<u32>>::new();
+        let mut path_ids = HashMap::<u64, Vec<u32>>::new();
         let mut requires_native_replay = false;
 
         let intern_path =
-            |path: &Path, paths: &mut Vec<Path>, path_ids: &mut HashMap<String, u32>| {
-                let fingerprint = format!("{path:?}");
-                if let Some(id) = path_ids.get(&fingerprint) {
-                    *id
-                } else {
-                    let id = u32::try_from(paths.len()).unwrap_or(u32::MAX);
-                    paths.push(path.clone());
-                    path_ids.insert(fingerprint, id);
-                    id
+            |path: &Path, paths: &mut Vec<Path>, path_ids: &mut HashMap<u64, Vec<u32>>| {
+                let fingerprint = path_fingerprint(path);
+                match path_ids.get(&fingerprint).and_then(|ids| {
+                    ids.iter().copied().find(|id| {
+                        paths
+                            .get(*id as usize)
+                            .is_some_and(|existing| existing == path)
+                    })
+                }) {
+                    Some(id) => id,
+                    None => {
+                        let id = u32::try_from(paths.len()).unwrap_or(u32::MAX);
+                        paths.push(path.clone());
+                        path_ids.entry(fingerprint).or_default().push(id);
+                        id
+                    }
                 }
             };
         let intern_state = |state: &DrawState,
                             states: &mut Vec<DrawState>,
-                            state_ids: &mut HashMap<String, u32>| {
-            let fingerprint = format!("{state:?}");
-            if let Some(id) = state_ids.get(&fingerprint) {
-                *id
-            } else {
-                let id = u32::try_from(states.len()).unwrap_or(u32::MAX);
-                states.push(state.clone());
-                state_ids.insert(fingerprint, id);
-                id
+                            state_ids: &mut HashMap<u64, Vec<u32>>| {
+            let fingerprint = draw_state_fingerprint(state);
+            match state_ids.get(&fingerprint).and_then(|ids| {
+                ids.iter().copied().find(|id| {
+                    states
+                        .get(*id as usize)
+                        .is_some_and(|existing| same_draw_state(existing, state))
+                })
+            }) {
+                Some(id) => id,
+                None => {
+                    let id = u32::try_from(states.len()).unwrap_or(u32::MAX);
+                    states.push(state.clone());
+                    state_ids.entry(fingerprint).or_default().push(id);
+                    id
+                }
             }
         };
         let push_bounds = |value: Option<RenderBounds>, bounds: &mut Vec<Option<RenderBounds>>| {
