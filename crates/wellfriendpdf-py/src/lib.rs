@@ -4,7 +4,7 @@ use std::sync::Arc;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyIndexError, PyTypeError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::types::{PyAny, PyBytes, PyDict, PyList, PyModule, PyType};
+use pyo3::types::{PyAny, PyByteArray, PyBytes, PyDict, PyList, PyModule, PyType};
 use serde::Serialize;
 use serde_json::json;
 use wellfriendpdf_engine::{
@@ -761,6 +761,24 @@ impl PyDocument {
             self.engine.render_page_png_with_contract(
                 &contract,
                 &wellfriendpdf_engine::CancelToken::none(),
+            )
+        })
+    }
+
+    fn render_contract_into(
+        &self,
+        contract_json: &str,
+        output: &Bound<'_, PyByteArray>,
+    ) -> PyResult<()> {
+        let contract: wellfriendpdf_engine::RenderContract = serde_json::from_str(contract_json)
+            .map_err(|error| PyValueError::new_err(format!("render contract JSON: {error}")))?;
+        // SAFETY: PyO3 guarantees the bound bytearray is mutable for this GIL-held call.
+        let output = unsafe { output.as_bytes_mut() };
+        run_wellfriendpdf(|| {
+            self.engine.render_page_into_buffer(
+                &contract,
+                &wellfriendpdf_engine::CancelToken::none(),
+                output,
             )
         })
     }
