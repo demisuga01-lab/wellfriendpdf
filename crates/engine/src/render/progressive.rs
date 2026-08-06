@@ -72,8 +72,8 @@ pub struct ProgressiveRenderStepReport {
     pub visibility_fingerprint: String,
 }
 
-pub struct ProgressiveRenderJob<'a> {
-    engine: &'a ContentEngine,
+pub struct ProgressiveRenderJob {
+    engine: ContentEngine,
     page_number: usize,
     dpi: u32,
     render_mode: RenderMode,
@@ -92,9 +92,9 @@ pub struct ProgressiveRenderJob<'a> {
     aborted: bool,
 }
 
-impl<'a> ProgressiveRenderJob<'a> {
+impl ProgressiveRenderJob {
     pub fn new(
-        engine: &'a ContentEngine,
+        engine: ContentEngine,
         page_number: usize,
         dpi: u32,
         render_mode: RenderMode,
@@ -122,6 +122,9 @@ impl<'a> ProgressiveRenderJob<'a> {
             y += height;
         }
         let total = tiles.len();
+        let visibility_fingerprint = OptionalContentContext::from_document(engine.document())
+            .visibility_fingerprint()
+            .to_string();
         Ok(Self {
             engine,
             page_number,
@@ -134,9 +137,7 @@ impl<'a> ProgressiveRenderJob<'a> {
             tiles,
             completed: vec![None; total],
             next_tile_index: 0,
-            visibility_fingerprint: OptionalContentContext::from_document(engine.document())
-                .visibility_fingerprint()
-                .to_string(),
+            visibility_fingerprint,
             document_cache: RenderDocumentCache::new(),
             state: ProgressiveRenderState::Created,
             warnings: Vec::new(),
@@ -329,7 +330,7 @@ impl<'a> ProgressiveRenderJob<'a> {
             let tile = self.tiles[index];
             let rendered_tile =
                 match PageRenderer::render_page_display_list_tile_cancellable_with_mode_and_cache(
-                    self.engine,
+                    &self.engine,
                     self.page_number,
                     self.dpi,
                     tile,
@@ -342,7 +343,7 @@ impl<'a> ProgressiveRenderJob<'a> {
                         self.fallback_events
                             .push("unsupported_display_list_immediate_tile".to_string());
                         PageRenderer::render_page_tile_cancellable_with_mode(
-                            self.engine,
+                            &self.engine,
                             self.page_number,
                             self.dpi,
                             tile,
@@ -469,7 +470,7 @@ mod tests {
     #[test]
     fn lifecycle_pause_resume_cancel_and_close_are_explicit() {
         let engine = test_engine();
-        let mut job = ProgressiveRenderJob::new(&engine, 1, 72, RenderMode::Compat, 64, 64)
+        let mut job = ProgressiveRenderJob::new(engine.clone(), 1, 72, RenderMode::Compat, 64, 64)
             .expect("create job");
         assert_eq!(job.state(), ProgressiveRenderState::Created);
         let token = job.pause().expect("pause created job");

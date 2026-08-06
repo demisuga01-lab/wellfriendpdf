@@ -1,6 +1,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::io::{self, Cursor, Read};
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::content::{ContentOperation, ContentParser, StreamingContentTokenizer};
 use crate::document::{PdfDocument, PdfPage};
@@ -514,15 +515,19 @@ pub(crate) fn parse_resources_from_obj(res_obj: &PdfObject, reader: &PdfReader) 
     PageResources::from_dict(&dict, reader)
 }
 
+#[derive(Clone)]
 pub struct ContentEngine {
-    doc: PdfDocument,
+    doc: Arc<PdfDocument>,
     canonical: CanonicalDocument,
 }
 
 impl ContentEngine {
     fn from_document(doc: PdfDocument) -> Self {
         let canonical = CanonicalDocument::from_document(&doc);
-        Self { doc, canonical }
+        Self {
+            doc: Arc::new(doc),
+            canonical,
+        }
     }
 
     pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
@@ -1837,8 +1842,15 @@ impl ContentEngine {
         tile_width: u32,
         tile_height: u32,
         render_mode: RenderMode,
-    ) -> Result<ProgressiveRenderJob<'_>> {
-        ProgressiveRenderJob::new(self, page_number, dpi, render_mode, tile_width, tile_height)
+    ) -> Result<ProgressiveRenderJob> {
+        ProgressiveRenderJob::new(
+            self.clone(),
+            page_number,
+            dpi,
+            render_mode,
+            tile_width,
+            tile_height,
+        )
     }
 
     /// Verify every digital signature field in the document (the `verify-sig`
