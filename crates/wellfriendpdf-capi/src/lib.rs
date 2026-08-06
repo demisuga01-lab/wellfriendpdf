@@ -749,6 +749,44 @@ pub unsafe extern "C" fn wellfriendpdf_document_render_page_png_with_contract_js
     })
 }
 
+/// Renders a contract into caller-owned memory.
+///
+/// The destination must remain writable for the call. Its length is validated
+/// against `contract.stride * contract.height` before any pixels are written.
+///
+/// # Safety
+/// `document` must be a valid open document. `contract_json` must point to a
+/// valid NUL-terminated UTF-8 JSON string. `output` must point to
+/// `output_len` writable bytes and remain valid for the duration of the call.
+/// `error_out`, when non-null, must be writable and freed with
+/// `wellfriendpdf_error_free`.
+#[no_mangle]
+pub unsafe extern "C" fn wellfriendpdf_document_render_into_buffer_with_contract_json(
+    document: *const WellfriendDocument,
+    contract_json: *const c_char,
+    output: *mut u8,
+    output_len: usize,
+    error_out: *mut *mut c_char,
+) -> c_int {
+    ffi_status(error_out, || {
+        let doc = checked_doc(document)?;
+        if output.is_null() {
+            return Err("output pointer is null".into());
+        }
+        let contract_json = unsafe { required_c_string(contract_json, "contract_json") }?;
+        let contract: wellfriendpdf_engine::RenderContract =
+            serde_json::from_str(&contract_json)
+                .map_err(|err| format!("render contract JSON: {err}"))?;
+        let output = unsafe { slice::from_raw_parts_mut(output, output_len) };
+        wellfriendpdf(doc.engine.render_page_into_buffer(
+            &contract,
+            &wellfriendpdf_engine::CancelToken::none(),
+            output,
+        ))?;
+        Ok(())
+    })
+}
+
 /// Renders a page to JPEG bytes.
 ///
 /// # Safety
@@ -5910,6 +5948,23 @@ mod tests {
         assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
         let bytes = unsafe { slice::from_raw_parts(png.data, png.len) };
         assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        let contract_json = unsafe { CStr::from_ptr(contract) }
+            .to_str()
+            .expect("contract JSON UTF-8");
+        let parsed: wellfriendpdf_engine::RenderContract =
+            serde_json::from_str(contract_json).expect("parse contract");
+        let mut surface = vec![0xAA; parsed.stride * parsed.height as usize];
+        let status = unsafe {
+            wellfriendpdf_document_render_into_buffer_with_contract_json(
+                doc,
+                contract,
+                surface.as_mut_ptr(),
+                surface.len(),
+                &mut error,
+            )
+        };
+        assert_eq!(status, WELLFRIENDPDF_STATUS_OK);
+        assert!(surface.iter().any(|byte| *byte != 0xAA));
         unsafe {
             wellfriendpdf_buffer_free(png);
             wellfriendpdf_string_free(contract);
