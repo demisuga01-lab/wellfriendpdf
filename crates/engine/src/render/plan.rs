@@ -1138,9 +1138,9 @@ impl PackedDisplayList {
                     1,
                 ),
                 DisplayOp::StateOp { op, .. } => {
-                    requires_native_replay = true;
                     let gs_desc = GraphicsStateDescriptor::compile(op);
                     let desc = if gs_desc.is_unsupported() {
+                        requires_native_replay = true;
                         NativeDescriptor::CompileRefusal(
                             PackedCompileRefusal::UnsupportedStateOperator(op.operator.clone()),
                         )
@@ -1336,6 +1336,11 @@ impl PackedDisplayList {
             match op.opcode {
                 OP_SAVE => device.save(),
                 OP_RESTORE => device.restore(),
+                OP_STATE => {
+                    // Pure vector paths carry captured DrawState; their typed
+                    // state descriptor remains available for high-level plans
+                    // but needs no additional device mutation here.
+                }
                 OP_CLIP => {
                     let path = self.paths.get(op.payload_offset as usize).ok_or_else(|| {
                         WellfriendError::MalformedPdf("packed clip path missing".to_string())
