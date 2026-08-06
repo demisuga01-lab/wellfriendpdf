@@ -705,6 +705,36 @@ mod wasm_api {
             self.engine.render_page_png_fast(page, dpi).map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = defaultRenderContractJson)]
+        pub fn default_render_contract_json(
+            &self,
+            page: usize,
+            dpi: u32,
+            mode: Option<String>,
+        ) -> Result<String, JsValue> {
+            self.ensure_open()?;
+            let mode = mode.unwrap_or_else(|| "compat".to_string());
+            let render_mode = wellfriendpdf_engine::RenderMode::from_name(&mode)
+                .ok_or_else(|| JsValue::from_str("mode must be compat or high"))?;
+            let contract = self
+                .engine
+                .default_render_contract(page, dpi, render_mode)
+                .map_err(js_err)?;
+            serde_json::to_string(&contract).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = renderContractPng)]
+        pub fn render_contract_png(&self, contract_json: &str) -> Result<Vec<u8>, JsValue> {
+            self.ensure_open()?;
+            let contract: wellfriendpdf_engine::RenderContract =
+                serde_json::from_str(contract_json).map_err(|error| {
+                    JsValue::from_str(&format!("render contract JSON: {error}"))
+                })?;
+            self.engine
+                .render_page_png_with_contract(&contract, &CancelToken::none())
+                .map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = documentInfoJson)]
         pub fn document_info_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::document_info_json(b, None))

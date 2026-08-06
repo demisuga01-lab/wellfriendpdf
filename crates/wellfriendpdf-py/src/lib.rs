@@ -739,6 +739,32 @@ impl PyDocument {
         run_wellfriendpdf(|| self.engine.render_page_png_fast(page, dpi))
     }
 
+    #[pyo3(signature = (page, dpi=150, mode=None))]
+    fn default_render_contract_json(
+        &self,
+        page: usize,
+        dpi: u32,
+        mode: Option<&str>,
+    ) -> PyResult<String> {
+        let mode_name = mode.unwrap_or("compat");
+        let render_mode = wellfriendpdf_engine::RenderMode::from_name(mode_name)
+            .ok_or_else(|| PyValueError::new_err("mode must be compat or high"))?;
+        let contract =
+            run_wellfriendpdf(|| self.engine.default_render_contract(page, dpi, render_mode))?;
+        serde_json::to_string(&contract).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn render_contract_png(&self, contract_json: &str) -> PyResult<Vec<u8>> {
+        let contract: wellfriendpdf_engine::RenderContract = serde_json::from_str(contract_json)
+            .map_err(|error| PyValueError::new_err(format!("render contract JSON: {error}")))?;
+        run_wellfriendpdf(|| {
+            self.engine.render_page_png_with_contract(
+                &contract,
+                &wellfriendpdf_engine::CancelToken::none(),
+            )
+        })
+    }
+
     // ── Report surfaces (shared wellfriendpdf_engine::sdk facade) ────────────────────
     //
     // Each returns a Python dict parsed from the SDK's versioned-JSON envelope
