@@ -108,12 +108,13 @@ impl RenderDependencyGraph {
             })
             .collect();
         self.revision = next_revision;
+        let cache_must_reset = previous_revision != next_revision && invalidated_pages.is_empty();
         InvalidationResult {
             previous_revision,
             current_revision: next_revision,
             invalidated_pages,
             invalidated_tiles,
-            cache_must_reset: previous_revision != next_revision && invalidated_pages.is_empty(),
+            cache_must_reset,
         }
     }
 
