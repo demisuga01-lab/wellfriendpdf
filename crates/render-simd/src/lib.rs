@@ -403,25 +403,22 @@ unsafe fn blend_normal_opaque_dst_wasm_simd128(slice: &mut [u8], color: [u8; 4])
     let inv = 255i16.saturating_sub(alpha);
 
     // Source color values (replicated for 2 pixels per i16x8 half)
-    let src_v = unsafe {
-        std::arch::wasm32::i16x8(
-            color[0] as i16,
-            color[1] as i16,
-            color[2] as i16,
-            255,
-            color[0] as i16,
-            color[1] as i16,
-            color[2] as i16,
-            255,
-        )
-    };
+    let src_v = std::arch::wasm32::i16x8(
+        color[0] as i16,
+        color[1] as i16,
+        color[2] as i16,
+        255,
+        color[0] as i16,
+        color[1] as i16,
+        color[2] as i16,
+        255,
+    );
 
     // Alpha multiplier per lane: alpha for color channels, 255 for the alpha channel
-    let alpha_v =
-        unsafe { std::arch::wasm32::i16x8(alpha, alpha, alpha, 255, alpha, alpha, alpha, 255) };
+    let alpha_v = std::arch::wasm32::i16x8(alpha, alpha, alpha, 255, alpha, alpha, alpha, 255);
 
     // Inverse multiplier per lane: inv for color channels, 0 for the alpha channel
-    let inv_v = unsafe { std::arch::wasm32::i16x8(inv, inv, inv, 0, inv, inv, inv, 0) };
+    let inv_v = std::arch::wasm32::i16x8(inv, inv, inv, 0, inv, inv, inv, 0);
 
     let round = i16x8_splat(128);
 
@@ -431,9 +428,9 @@ unsafe fn blend_normal_opaque_dst_wasm_simd128(slice: &mut [u8], color: [u8; 4])
         let dst_raw = unsafe { v128_load(slice.as_ptr().add(offset) as *const v128) };
 
         // Widen low 8 bytes (pixels 0-1) → i16x8
-        let dst_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(dst_raw) };
+        let dst_lo = std::arch::wasm32::u16x8_extend_low_u8x16(dst_raw);
         // Widen high 8 bytes (pixels 2-3) → i16x8
-        let dst_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(dst_raw) };
+        let dst_hi = std::arch::wasm32::u16x8_extend_high_u8x16(dst_raw);
 
         // mixed = src * alpha + dst * inv + 128
         // Note: i16x8_mul gives low 16 bits of product (same as _mm_mullo_epi16).
@@ -536,10 +533,10 @@ unsafe fn composite_normal_opaque_dst_wasm_simd128(dst_row: &mut [u8], src_row: 
         let dst_raw =
             unsafe { std::arch::wasm32::v128_load(dst_row.as_ptr().add(offset) as *const v128) };
 
-        let src_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(src_raw) };
-        let src_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(src_raw) };
-        let dst_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(dst_raw) };
-        let dst_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(dst_raw) };
+        let src_lo = std::arch::wasm32::u16x8_extend_low_u8x16(src_raw);
+        let src_hi = std::arch::wasm32::u16x8_extend_high_u8x16(src_raw);
+        let dst_lo = std::arch::wasm32::u16x8_extend_low_u8x16(dst_raw);
+        let dst_hi = std::arch::wasm32::u16x8_extend_high_u8x16(dst_raw);
 
         // mixed = src * alpha + dst * inv + 128
         let lo_mixed = i16x8_add(
@@ -676,10 +673,10 @@ unsafe fn soft_mask_opaque_dst_wasm_simd128(
         let dst_raw =
             unsafe { std::arch::wasm32::v128_load(dst_row.as_ptr().add(offset) as *const v128) };
 
-        let src_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(src_raw) };
-        let src_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(src_raw) };
-        let dst_lo = unsafe { std::arch::wasm32::u16x8_extend_low_u8x16(dst_raw) };
-        let dst_hi = unsafe { std::arch::wasm32::u16x8_extend_high_u8x16(dst_raw) };
+        let src_lo = std::arch::wasm32::u16x8_extend_low_u8x16(src_raw);
+        let src_hi = std::arch::wasm32::u16x8_extend_high_u8x16(src_raw);
+        let dst_lo = std::arch::wasm32::u16x8_extend_low_u8x16(dst_raw);
+        let dst_hi = std::arch::wasm32::u16x8_extend_high_u8x16(dst_raw);
 
         let lo_mixed = i16x8_add(
             i16x8_add(i16x8_mul(src_lo, alpha_lo), i16x8_mul(dst_lo, inv_lo)),
