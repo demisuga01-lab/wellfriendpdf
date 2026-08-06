@@ -244,9 +244,17 @@ pub(crate) fn plan_image_decode(
     high_quality: bool,
 ) -> ImageDecodePlan {
     let device_bounds = image_device_bounds(ctm, viewport);
+    // `Viewport::to_transform()` subtracts tile origin, so device bounds are
+    // tile-local. Compare against the local output surface, not the full-page
+    // origin carried by the viewport metadata.
     let intersects = device_bounds
         .as_ref()
-        .map(|b| b.intersects_viewport(viewport))
+        .map(|bounds| {
+            bounds.x1 > 0
+                && bounds.x0 < viewport.width_px as i32
+                && bounds.y1 > 0
+                && bounds.y0 < viewport.height_px as i32
+        })
         .unwrap_or(true); // fail open if bounds are degenerate
 
     let decision = if intersects {
