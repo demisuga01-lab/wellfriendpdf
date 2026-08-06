@@ -24,6 +24,11 @@ struct PyDocument {
     engine: Arc<ContentEngine>,
 }
 
+#[pyclass(name = "ProgressiveRenderJob", module = "wellfriendpdf", unsendable)]
+struct PyProgressiveRenderJob {
+    job: wellfriendpdf_engine::ProgressiveRenderJob,
+}
+
 #[pyclass(name = "Page", module = "wellfriendpdf", unsendable)]
 struct PyPage {
     engine: Arc<ContentEngine>,
@@ -781,6 +786,29 @@ impl PyDocument {
                 output,
             )
         })
+    }
+
+    #[pyo3(signature = (page, dpi=150, tile_width=256, tile_height=256, mode="compat"))]
+    fn progressive_render_job(
+        &self,
+        page: usize,
+        dpi: u32,
+        tile_width: u32,
+        tile_height: u32,
+        mode: &str,
+    ) -> PyResult<PyProgressiveRenderJob> {
+        let render_mode = wellfriendpdf_engine::RenderMode::from_name(mode)
+            .ok_or_else(|| PyValueError::new_err("mode must be compat or high"))?;
+        let job = run_wellfriendpdf(|| {
+            self.engine.progressive_render_job_with_mode(
+                page,
+                dpi,
+                tile_width,
+                tile_height,
+                render_mode,
+            )
+        })?;
+        Ok(PyProgressiveRenderJob { job })
     }
 
     // ── Report surfaces (shared wellfriendpdf_engine::sdk facade) ────────────────────
@@ -3408,10 +3436,63 @@ fn resource_dedup_report(py: Python<'_>, resources: Vec<Vec<u8>>) -> PyResult<Py
     parse_json_str(py, &json)
 }
 
+#[pymethods]
+impl PyProgressiveRenderJob {
+    fn state_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.job.state())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn step(&mut self, max_tiles: usize) -> PyResult<String> {
+        let report = run_wellfriendpdf(|| {
+            self.job
+                .render_next(max_tiles, &wellfriendpdf_engine::CancelToken::none())
+        })?;
+        serde_json::to_string(&report).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn token_json(&self) -> PyResult<String> {
+        serde_json::to_string(&self.job.token())
+            .map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn pause_json(&mut self) -> PyResult<String> {
+        let token = run_wellfriendpdf(|| self.job.pause())?;
+        serde_json::to_string(&token).map_err(|error| PyValueError::new_err(error.to_string()))
+    }
+
+    fn resume_json(&mut self, token_json: &str) -> PyResult<()> {
+        let token: wellfriendpdf_engine::ProgressiveRenderToken = serde_json::from_str(token_json)
+            .map_err(|error| PyValueError::new_err(format!("progressive token JSON: {error}")))?;
+        run_wellfriendpdf(|| self.job.resume(&token))
+    }
+
+    fn cancel(&mut self) {
+        self.job.cancel();
+    }
+
+    fn finish_png(&self) -> PyResult<Option<Vec<u8>>> {
+        let Some(buffer) = self.job.finish() else {
+            return Ok(None);
+        };
+        let png = run_wellfriendpdf(|| {
+            wellfriendpdf_engine::images::encoder::ImageEncoder::encode_png_fast(
+                &buffer.to_raw_image(),
+            )
+        })?;
+        Ok(Some(png))
+    }
+
+    fn close(&mut self) {
+        self.job.close();
+    }
+}
+
 #[pymodule]
 fn wellfriendpdf(py: Python<'_>, module: &Bound<'_, PyModule>) -> PyResult<()> {
     module.add("WellfriendError", py.get_type::<WellfriendError>())?;
     module.add_class::<PyDocument>()?;
+    module.add_class::<PyProgressiveRenderJob>()?;
     module.add_class::<PySignatureTrustStore>()?;
     module.add_class::<PySignatureIntermediateStore>()?;
     module.add_class::<PySignatureEvidenceStore>()?;
