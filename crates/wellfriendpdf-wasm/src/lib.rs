@@ -735,6 +735,22 @@ mod wasm_api {
                 .map_err(js_err)
         }
 
+        #[wasm_bindgen(js_name = renderContractInto)]
+        pub fn render_contract_into(
+            &self,
+            contract_json: &str,
+            output: &mut [u8],
+        ) -> Result<(), JsValue> {
+            self.ensure_open()?;
+            let contract: wellfriendpdf_engine::RenderContract =
+                serde_json::from_str(contract_json).map_err(|error| {
+                    JsValue::from_str(&format!("render contract JSON: {error}"))
+                })?;
+            self.engine
+                .render_page_into_buffer(&contract, &CancelToken::none(), output)
+                .map_err(js_err)
+        }
+
         #[wasm_bindgen(js_name = documentInfoJson)]
         pub fn document_info_json(&self) -> Result<String, JsValue> {
             self.report(|b| sdk::document_info_json(b, None))
