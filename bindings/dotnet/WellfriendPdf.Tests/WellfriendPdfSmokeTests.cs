@@ -150,6 +150,12 @@ public sealed class WellfriendPdfSmokeTests
         var jpeg = doc.GetPage(1).RenderJpeg();
         var contract = doc.DefaultRenderContractJson(1);
         var contractPng = doc.RenderPagePngWithContractJson(contract);
+        using var parsedContract = JsonDocument.Parse(contract);
+        var stride = parsedContract.RootElement.GetProperty("stride").GetInt32();
+        var height = parsedContract.RootElement.GetProperty("height").GetInt32();
+        var callerSurface = Enumerable.Repeat((byte)0xAA, checked(stride * height)).ToArray();
+        doc.RenderPageIntoBufferWithContractJson(contract, callerSurface);
+        Assert.Contains(callerSurface, value => value != 0xAA);
         Assert.True(png.Length > 8);
         Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, png[..4]);
         Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, contractPng[..4]);

@@ -272,6 +272,24 @@ public sealed class WellfriendDocument : IDisposable
         }
     }
 
+    public void RenderPageIntoBufferWithContractJson(string contractJson, byte[] output)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(contractJson);
+        ArgumentNullException.ThrowIfNull(output);
+        var contractPtr = NativeMethods.StringToNativeOrNull(contractJson);
+        try
+        {
+            var status = NativeMethods.wellfriendpdf_document_render_into_buffer_with_contract_json(
+                _handle, contractPtr, output, (UIntPtr)output.Length, out var error);
+            NativeMethods.ThrowIfError(status, error);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(contractPtr);
+        }
+    }
+
     public string ParseJson()
     {
         ThrowIfDisposed();
