@@ -13,11 +13,13 @@ use crate::images::locator::{ImageLocateOptions, ImageLocator, ImageReference};
 use crate::object::{PdfDictionary, PdfObject};
 use crate::pubsec::PubSecKeyProvider;
 use crate::reader::PdfReader;
+use crate::render::contract::RevisionId;
 use crate::render::{
     CanonicalDocument, DisplayList, EditDocumentView, InvalidationResult, PageRenderer,
     PixelBuffer, PixelFormat, ProgressiveRenderJob, RenderCache, RenderContract,
     RenderDocumentCache, RenderDocumentView, RenderMode, RenderPlan, RenderTile,
-    SemanticDocumentView, ValidationDocumentView, Viewport, WHITE,
+    SemanticDocumentView, TransactionInvalidationResult, TransactionWriteSet,
+    ValidationDocumentView, Viewport, WHITE,
 };
 use crate::text::{TextExtractOptions, TextExtractor, TextFormatOptions};
 use crate::{
@@ -601,6 +603,29 @@ impl ContentEngine {
             .map(|identity| identity.id)
             .collect::<Vec<_>>();
         cache.invalidate_sources(self.canonical.revision(), &changed_ids)
+    }
+
+    /// Drive narrow cache invalidation from a transaction report's write-set.
+    ///
+    /// Maps the report's `affected_objects` strings to canonical identities and
+    /// evicts only the proven page/tile dependencies. If any object ref cannot
+    /// be mapped, the cache conservatively resets to prevent stale pixels.
+    ///
+    /// This is the canonical integration point: callers pass the transaction
+    /// report fields directly and get a typed invalidation result back.
+    pub fn invalidate_for_transaction(
+        &self,
+        cache: &mut RenderDocumentCache,
+        affected_objects: &[String],
+        affected_pages: &[usize],
+        next_revision: RevisionId,
+    ) -> TransactionInvalidationResult {
+        let write_set = TransactionWriteSet::from_transaction_report(
+            affected_objects,
+            affected_pages,
+            next_revision,
+        );
+        write_set.invalidate(cache, self.canonical.object_identities())
     }
 
     /// Lazily expose only render-required source state.

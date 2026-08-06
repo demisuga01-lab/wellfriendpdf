@@ -313,14 +313,14 @@ pub use editing::{
     TextReplacementReport, WatermarkOptions,
 };
 pub use editing_transactions::{
-    apply_scene_text_transaction, build_document_snapshot, build_scene_graph,
-    clone_on_write_report, dirty_region_report, editing_transactions_feature_matrix,
-    editing_transactions_report, embedding_permission_report, font_subset_plan,
-    plan_scene_text_transaction, scene_select, substitution_report, text_identity_report,
-    undo_restoration_report, DocumentSnapshot, EditTransactionReport, EditableSceneGraph,
-    EditingTransactionsEvidenceKind, EditingTransactionsStatus, FontIdentityReport,
-    GraphemeClusterRecord, SceneNode, SceneNodeKind, SceneSelectionReport, SceneSelectionRequest,
-    SceneTextEditRequest, ShapingGlyphRecord, TransactionState,
+    apply_scene_text_transaction, apply_transaction_with_invalidation, build_document_snapshot,
+    build_scene_graph, clone_on_write_report, dirty_region_report,
+    editing_transactions_feature_matrix, editing_transactions_report, embedding_permission_report,
+    font_subset_plan, plan_scene_text_transaction, scene_select, substitution_report,
+    text_identity_report, undo_restoration_report, DocumentSnapshot, EditTransactionReport,
+    EditableSceneGraph, EditingTransactionsEvidenceKind, EditingTransactionsStatus,
+    FontIdentityReport, GraphemeClusterRecord, SceneNode, SceneNodeKind, SceneSelectionReport,
+    SceneSelectionRequest, SceneTextEditRequest, ShapingGlyphRecord, TransactionState,
     EDITING_TRANSACTIONS_SCHEMA_VERSION,
 };
 pub use engine::{
@@ -419,7 +419,7 @@ pub use pubsec::{
 };
 pub use reader::{EncryptionContext, PdfReader, XrefEntry};
 pub use render::{
-    flatten_cubic, flatten_path, get_fallback_font, path_raster_stats,
+    flatten_cubic, flatten_path, get_fallback_font, map_refs_to_canonical_ids, path_raster_stats,
     pixel_buffer_allocation_stats, pixel_compositor_backend,
     pixel_compositor_detected_hardware_backend, pixel_compositor_operation_backend,
     pixel_compositor_stats, rgb, rgba, AlphaMask, CachedGlyph, CanonicalDocument, ClipMask,
@@ -436,8 +436,9 @@ pub use render::{
     RenderCacheKey, RenderCacheMetrics, RenderColor, RenderContract, RenderDependencyGraph,
     RenderDevice, RenderDocumentCache, RenderDocumentView, RenderMode, RenderPlan, RenderQuality,
     RenderResourceBudget, RenderTile, ResourceId, RevisionId, SemanticDocumentView, SourceLinkId,
-    SvgPage, Transform2D, UnsupportedRenderOp, ValidationDocumentView, ViewMaterializationStats,
-    Viewport, WuLineRenderer, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
+    SvgPage, TransactionInvalidationResult, TransactionWriteSet, Transform2D, UnsupportedRenderOp,
+    ValidationDocumentView, ViewMaterializationStats, Viewport, WuLineRenderer, BLACK, BLUE, GREEN,
+    RED, TRANSPARENT, WHITE,
 };
 pub use render::{render_page_svg, svg, text_decode};
 pub use runtime::*;

@@ -24,6 +24,7 @@ pub mod quality;
 pub mod shading;
 pub mod svg;
 pub mod text_decode;
+pub mod transaction_invalidation;
 pub mod transform;
 pub mod vector_fallback;
 
@@ -79,6 +80,9 @@ pub use progressive::{
 pub use quality::RenderQuality;
 pub use shading::ShadingRenderer;
 pub use svg::{render_page_svg, SvgPage};
+pub use transaction_invalidation::{
+    map_refs_to_canonical_ids, TransactionInvalidationResult, TransactionWriteSet,
+};
 pub use transform::{Transform2D, Viewport};
 pub use vector_fallback::{
     classify_page_for_vector_output, image_device_rect, VectorFallbackDecision,
