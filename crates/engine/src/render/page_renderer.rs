@@ -6137,57 +6137,10 @@ impl<'a> RenderState<'a> {
                         ttf_advance = self.render_type3_glyph(&font_name, font_dict, &glyph);
                     }
                     if ttf_advance.is_none() && !text_rendering_mode_clips(text_mode) {
-                        let allow_compat_fallback = !self.buf.render_mode().is_high_quality();
-                        let render_font_bytes = font_bytes.clone().or_else(|| {
-                            if !allow_compat_fallback {
-                                None
-                            } else {
-                                font_dict.as_ref().and_then(|font_dict| {
-                                    self.get_type3_compat_font_bytes(&font_cache_key, font_dict)
-                                })
-                            }
-                        });
-                        if let Some(font_bytes) = render_font_bytes.as_ref() {
-                            if !font_bytes.is_empty() {
-                                let font_hash = font_resource_glyph_cache_hash(
-                                    font_bytes.as_slice(),
-                                    &font_cache_key,
-                                );
-                                let upem = Self::get_upem(font_bytes.as_slice())
-                                    .map(f64::from)
-                                    .filter(|value| *value > 0.0)
-                                    .unwrap_or(upem);
-                                let light_hinting_supported =
-                                    ttf_parser::Face::parse(font_bytes.as_slice(), 0).is_ok()
-                                        || crate::fonts::type1::Type1Font::is_type1(
-                                            font_bytes.as_slice(),
-                                        );
-                                ttf_advance = self.render_glyph_with_cache(GlyphRenderRequest {
-                                    font_name: &font_name,
-                                    font_subtype: FontSubtype::TrueType,
-                                    code: glyph.code,
-                                    ch: glyph.unicode,
-                                    glyph_name: glyph.glyph_name.as_deref(),
-                                    is_gid: false,
-                                    font_bytes: font_bytes.as_slice(),
-                                    font_hash,
-                                    variation: &variation,
-                                    upem,
-                                    light_hinting_supported,
-                                    offset_x: glyph
-                                        .vertical_origin
-                                        .map(|(vx, _)| -vx)
-                                        .unwrap_or(0.0),
-                                    offset_y: glyph
-                                        .vertical_origin
-                                        .map(|(_, vy)| vy)
-                                        .unwrap_or(0.0),
-                                });
-                            }
-                        }
-                        if allow_compat_fallback && render_font_bytes.is_some() {
-                            ttf_advance = ttf_advance.or(glyph.width).or(Some(500.0));
-                        }
+                        self.record_fatal_render_error(format!(
+                            "Type 3 glyph {} in font /{} could not be rendered through its native charproc",
+                            glyph.code, font_name
+                        ));
                     }
                 } else if let (Some(font_bytes), Some(font_hash)) = (font_bytes.as_ref(), font_hash)
                 {
@@ -7845,27 +7798,6 @@ impl<'a> RenderState<'a> {
         let resolved = self.resolve_font_bytes(font_name).map(Arc::new);
         self.font_bytes_cache
             .insert(cache_key.to_string(), resolved.clone());
-        resolved
-    }
-
-    fn get_type3_compat_font_bytes(
-        &mut self,
-        font_cache_key: &str,
-        font_dict: &PdfDictionary,
-    ) -> Option<Arc<Vec<u8>>> {
-        let cache_key = format!("__type3_compat__{font_cache_key}");
-        if let Some(cached) = self.font_bytes_cache.get(&cache_key) {
-            self.font_bytes_cache_stats.hits = self.font_bytes_cache_stats.hits.saturating_add(1);
-            return cached.clone();
-        }
-        self.font_bytes_cache_stats.misses = self.font_bytes_cache_stats.misses.saturating_add(1);
-        let resolved = font_dict
-            .get("BaseFont")
-            .and_then(PdfObject::as_name)
-            .and_then(get_fallback_font)
-            .or_else(|| get_fallback_font("Helvetica"))
-            .map(|bytes| Arc::new(bytes.to_vec()));
-        self.font_bytes_cache.insert(cache_key, resolved.clone());
         resolved
     }
 
