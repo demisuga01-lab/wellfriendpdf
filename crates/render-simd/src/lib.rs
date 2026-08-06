@@ -72,6 +72,7 @@ pub fn fill_opaque_run(slice: &mut [u8], color: [u8; 4]) -> bool {
     {
         return fill_opaque_run_scalar(slice, color);
     }
+    #[cfg(not(target_arch = "wasm32"))]
     false
 }
 
@@ -102,6 +103,7 @@ pub fn blend_normal_opaque_destination(slice: &mut [u8], color: [u8; 4]) -> bool
     {
         return blend_normal_opaque_dst_scalar(slice, color);
     }
+    #[cfg(not(target_arch = "wasm32"))]
     false
 }
 
@@ -157,6 +159,7 @@ pub fn composite_soft_mask_opaque_destination(
     {
         return soft_mask_opaque_dst_scalar(dst_row, src_row, mask_row, group_alpha_255);
     }
+    #[cfg(not(target_arch = "wasm32"))]
     false
 }
 
@@ -188,6 +191,7 @@ pub fn composite_normal_opaque_destination(dst_row: &mut [u8], src_row: &[u8]) -
     {
         return composite_normal_opaque_dst_scalar(dst_row, src_row);
     }
+    #[cfg(not(target_arch = "wasm32"))]
     false
 }
 
