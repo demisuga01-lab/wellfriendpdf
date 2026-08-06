@@ -456,6 +456,11 @@ mod wasm_api {
     }
 
     #[wasm_bindgen]
+    pub struct ProgressiveRenderJob {
+        job: wellfriendpdf_engine::ProgressiveRenderJob,
+    }
+
+    #[wasm_bindgen]
     pub struct WellfriendOutput {
         bytes: Vec<u8>,
         report_json: String,
@@ -749,6 +754,26 @@ mod wasm_api {
             self.engine
                 .render_page_into_buffer(&contract, &CancelToken::none(), output)
                 .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = progressiveRenderJob)]
+        pub fn progressive_render_job(
+            &self,
+            page: usize,
+            dpi: u32,
+            tile_width: u32,
+            tile_height: u32,
+            mode: Option<String>,
+        ) -> Result<ProgressiveRenderJob, JsValue> {
+            self.ensure_open()?;
+            let mode = mode.unwrap_or_else(|| "compat".to_string());
+            let render_mode = wellfriendpdf_engine::RenderMode::from_name(&mode)
+                .ok_or_else(|| JsValue::from_str("mode must be compat or high"))?;
+            let job = self
+                .engine
+                .progressive_render_job_with_mode(page, dpi, tile_width, tile_height, render_mode)
+                .map_err(js_err)?;
+            Ok(ProgressiveRenderJob { job })
         }
 
         #[wasm_bindgen(js_name = documentInfoJson)]
@@ -1905,6 +1930,67 @@ mod wasm_api {
             self.ensure_open()?;
             let (bytes, report_json) = f(&self.bytes).map_err(js_err)?;
             Ok(WellfriendOutput { bytes, report_json })
+        }
+    }
+
+    #[wasm_bindgen]
+    impl ProgressiveRenderJob {
+        #[wasm_bindgen(js_name = stateJson)]
+        pub fn state_json(&self) -> Result<String, JsValue> {
+            serde_json::to_string(&self.job.state())
+                .map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = step)]
+        pub fn step(&mut self, max_tiles: usize) -> Result<String, JsValue> {
+            let report = self
+                .job
+                .render_next(max_tiles, &CancelToken::none())
+                .map_err(js_err)?;
+            serde_json::to_string(&report).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = tokenJson)]
+        pub fn token_json(&self) -> Result<String, JsValue> {
+            serde_json::to_string(&self.job.token())
+                .map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = pauseJson)]
+        pub fn pause_json(&mut self) -> Result<String, JsValue> {
+            let token = self.job.pause().map_err(js_err)?;
+            serde_json::to_string(&token).map_err(|error| JsValue::from_str(&error.to_string()))
+        }
+
+        #[wasm_bindgen(js_name = resumeJson)]
+        pub fn resume_json(&mut self, token_json: &str) -> Result<(), JsValue> {
+            let token: wellfriendpdf_engine::ProgressiveRenderToken =
+                serde_json::from_str(token_json).map_err(|error| {
+                    JsValue::from_str(&format!("progressive token JSON: {error}"))
+                })?;
+            self.job.resume(&token).map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = cancel)]
+        pub fn cancel(&mut self) {
+            self.job.cancel();
+        }
+
+        #[wasm_bindgen(js_name = finishPng)]
+        pub fn finish_png(&self) -> Result<Option<Vec<u8>>, JsValue> {
+            let Some(buffer) = self.job.finish() else {
+                return Ok(None);
+            };
+            wellfriendpdf_engine::images::encoder::ImageEncoder::encode_png_fast(
+                &buffer.to_raw_image(),
+            )
+            .map(Some)
+            .map_err(js_err)
+        }
+
+        #[wasm_bindgen(js_name = close)]
+        pub fn close(&mut self) {
+            self.job.close();
         }
     }
 
