@@ -68,6 +68,10 @@ pub fn fill_opaque_run(slice: &mut [u8], color: [u8; 4]) -> bool {
     {
         return guarded_fill_opaque_run_neon_aarch64(slice, color);
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return fill_opaque_run_scalar(slice, color);
+    }
     false
 }
 
@@ -93,6 +97,10 @@ pub fn blend_normal_opaque_destination(slice: &mut [u8], color: [u8; 4]) -> bool
     #[cfg(target_arch = "aarch64")]
     {
         return guarded_blend_normal_opaque_dst_neon_aarch64(slice, color);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return blend_normal_opaque_dst_scalar(slice, color);
     }
     false
 }
@@ -145,6 +153,10 @@ pub fn composite_soft_mask_opaque_destination(
             group_alpha_255,
         );
     }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return soft_mask_opaque_dst_scalar(dst_row, src_row, mask_row, group_alpha_255);
+    }
     false
 }
 
@@ -171,6 +183,10 @@ pub fn composite_normal_opaque_destination(dst_row: &mut [u8], src_row: &[u8]) -
     #[cfg(target_arch = "aarch64")]
     {
         return guarded_composite_normal_opaque_dst_neon_aarch64(dst_row, src_row);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        return composite_normal_opaque_dst_scalar(dst_row, src_row);
     }
     false
 }
@@ -417,6 +433,7 @@ unsafe fn fill_opaque_run_neon_aarch64(slice: &mut [u8], color: [u8; 4]) -> bool
     true
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 macro_rules! guarded_blend_x86 {
     ($name:ident, $kernel:ident) => {
         fn $name(slice: &mut [u8], color: [u8; 4]) -> bool {
@@ -716,6 +733,7 @@ unsafe fn blend_normal_opaque_dst_neon_aarch64(slice: &mut [u8], color: [u8; 4])
     true
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 macro_rules! guarded_soft_x86 {
     ($name:ident, $kernel:ident) => {
         fn $name(
@@ -1115,6 +1133,7 @@ unsafe fn soft_mask_opaque_dst_neon_aarch64(
     true
 }
 
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 macro_rules! guarded_row_x86 {
     ($name:ident, $kernel:ident) => {
         fn $name(dst_row: &mut [u8], src_row: &[u8]) -> bool {
