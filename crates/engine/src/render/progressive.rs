@@ -450,3 +450,38 @@ impl<'a> ProgressiveRenderJob<'a> {
             .sum()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+    fn test_engine() -> ContentEngine {
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text("progressive lifecycle", 72.0, 720.0, &TextStyle::default())
+            .expect("write page");
+        ContentEngine::open_bytes(builder.to_bytes().expect("serialize test PDF"))
+            .expect("open test PDF")
+    }
+
+    #[test]
+    fn lifecycle_pause_resume_cancel_and_close_are_explicit() {
+        let engine = test_engine();
+        let mut job = ProgressiveRenderJob::new(&engine, 1, 72, RenderMode::Compat, 64, 64)
+            .expect("create job");
+        assert_eq!(job.state(), ProgressiveRenderState::Created);
+        let token = job.pause().expect("pause created job");
+        assert_eq!(job.state(), ProgressiveRenderState::Paused);
+        assert_eq!(token.lifecycle_state, "paused");
+        job.resume(&token).expect("resume paused job");
+        assert_eq!(job.state(), ProgressiveRenderState::Rendering);
+        job.cancel();
+        assert_eq!(job.state(), ProgressiveRenderState::Cancelled);
+        assert!(job.render_next(1, &CancelToken::none()).is_err());
+        job.close();
+        assert_eq!(job.state(), ProgressiveRenderState::Closed);
+        assert!(job.finish().is_none());
+    }
+}
