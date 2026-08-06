@@ -21,8 +21,8 @@ use crate::render::buffer::{
 use crate::render::color::ColorSpaceHandler;
 use crate::render::contract::{ObjectIdentityId, RevisionId};
 use crate::render::display_list::{
-    build_display_list, render_display_list, DisplayList, DisplayOp, RenderBounds, RenderCache,
-    RenderCacheKey, RenderTile,
+    build_display_list, DisplayList, DisplayOp, RenderBounds, RenderCache, RenderCacheKey,
+    RenderTile,
 };
 use crate::render::font_rasterizer::{get_fallback_font, FontRasterizer};
 use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey, GlyphCacheStats};
@@ -34,6 +34,7 @@ use crate::render::path::{
     rasterize_flat_binary_clip_mask, rasterize_glyph_alpha_mask, stroke_flat_path, FillRule,
     FlatPath, GlyphHinting, Path, PathPainter, RasterizedGlyphMask,
 };
+use crate::render::plan::RenderPlan;
 use crate::render::shading::ShadingRenderer;
 use crate::render::text_decode::{decode_text_bytes_with_resolver, DecodedGlyph};
 use crate::render::transform::{Transform2D, Viewport};
@@ -638,6 +639,26 @@ impl PageRenderer {
         format!("revision:{:016x}", engine.canonical_document().revision().0)
     }
 
+    fn render_packed_vector_plan(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        list: &DisplayList,
+        render_mode: RenderMode,
+    ) -> Result<PixelBuffer> {
+        let contract = engine.default_render_contract(page_number, dpi, render_mode)?;
+        let plan = RenderPlan::compile(list.clone(), contract)?;
+        plan.execute_vector_tile(RenderTile::full(
+            list.viewport.width_px,
+            list.viewport.height_px,
+        ))?
+        .ok_or_else(|| {
+            WellfriendError::UnsupportedFeature(
+                "packed vector plan unexpectedly retained a native payload".to_string(),
+            )
+        })
+    }
+
     /// Return a retained page display list from the caller's document cache, or
     /// build and retain it exactly once for subsequent warm replay.
     pub fn get_or_build_display_list_with_cache(
@@ -829,7 +850,8 @@ impl PageRenderer {
         if !list.is_fully_supported() {
             Ok(None)
         } else if list.native_vector_only() {
-            let mut buf = render_display_list(&list, render_mode);
+            let mut buf =
+                Self::render_packed_vector_plan(engine, page_number, dpi, &list, render_mode)?;
             Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
             Ok(Some(buf))
         } else {
@@ -855,7 +877,8 @@ impl PageRenderer {
     ) -> Result<PixelBuffer> {
         cancel.check("display-list render start")?;
         if list.native_vector_only() {
-            let mut buf = render_display_list(list, render_mode);
+            let mut buf =
+                Self::render_packed_vector_plan(engine, page_number, dpi, list, render_mode)?;
             cancel.check("display-list native vector replay")?;
             Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
             cancel.check("display-list annotation render")?;
@@ -912,7 +935,8 @@ impl PageRenderer {
         }
 
         if list.native_vector_only() {
-            let mut buf = render_display_list(list, render_mode);
+            let mut buf =
+                Self::render_packed_vector_plan(engine, page_number, dpi, list, render_mode)?;
             cancel.check("display-list native vector replay")?;
             Self::render_annotations_into(engine, page_number, dpi, &mut buf)?;
             cancel.check("display-list annotation render")?;
