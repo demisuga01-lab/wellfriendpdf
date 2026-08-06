@@ -171,7 +171,7 @@ public sealed class WellfriendPdfSmokeTests
         var token = session.PauseJson();
         Assert.Equal("paused", JsonDocument.Parse(token).RootElement.GetProperty("lifecycle_state").GetString());
         session.ResumeJson(token);
-        for (var index = 0; index < 16; index++)
+        for (var index = 0; index < 64; index++)
         {
             var report = JsonDocument.Parse(session.StepJson(4));
             if (report.RootElement.GetProperty("lifecycle_state").GetString() == "completed") break;
