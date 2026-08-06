@@ -1694,6 +1694,7 @@ mod tests {
             }],
             viewport: viewport.clone(),
             unsupported: Vec::new(),
+            supported: true,
             stats: Default::default(),
         };
         let packed = PackedDisplayList::compile(list);
@@ -1746,6 +1747,7 @@ mod tests {
             }],
             viewport: viewport.clone(),
             unsupported: Vec::new(),
+            supported: true,
             stats: Default::default(),
         };
         let packed = PackedDisplayList::compile(list);
@@ -1791,6 +1793,7 @@ mod tests {
             }],
             viewport: viewport.clone(),
             unsupported: Vec::new(),
+            supported: true,
             stats: Default::default(),
         };
         let packed = PackedDisplayList::compile(list);
@@ -1829,6 +1832,7 @@ mod tests {
             }],
             viewport: viewport.clone(),
             unsupported: Vec::new(),
+            supported: true,
             stats: Default::default(),
         };
         let packed = PackedDisplayList::compile(list);
