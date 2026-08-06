@@ -4556,6 +4556,7 @@ impl<'a> RenderState<'a> {
             pending_inline: None,
             base_ctm: mask_base_ctm,
             cancel: self.cancel.clone(),
+            fatal_render_error: None,
             decode_scheduler: self.decode_scheduler.clone(),
             optional_content: self.optional_content.clone(),
             oc_visibility_stack: self.oc_visibility_stack.clone(),
@@ -4571,6 +4572,9 @@ impl<'a> RenderState<'a> {
             mask_state.apply_form_bbox_clip(bbox);
         }
         mask_state.dispatch_all(&ops);
+        if let Some(reason) = mask_state.fatal_render_error.take() {
+            self.record_fatal_render_error(reason);
+        }
         self.separation_framebuffer
             .absorb(mask_state.separation_framebuffer.clone());
         self.absorb_child_render_caches(&mut mask_state);
@@ -5223,6 +5227,7 @@ impl<'a> RenderState<'a> {
             pending_inline: None,
             base_ctm: group_base_ctm,
             cancel: self.cancel.clone(),
+            fatal_render_error: None,
             decode_scheduler: self.decode_scheduler.clone(),
             optional_content: self.optional_content.clone(),
             oc_visibility_stack: self.oc_visibility_stack.clone(),
@@ -5255,6 +5260,9 @@ impl<'a> RenderState<'a> {
         }
 
         group_state.dispatch_all(ops);
+        if let Some(reason) = group_state.fatal_render_error.take() {
+            self.record_fatal_render_error(reason);
+        }
         self.separation_framebuffer
             .absorb(group_state.separation_framebuffer.clone());
         self.absorb_child_render_caches(&mut group_state);
