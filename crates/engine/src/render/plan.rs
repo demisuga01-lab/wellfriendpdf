@@ -313,7 +313,7 @@ impl PackedDisplayList {
         let mut clip_transforms = Vec::new();
         let mut states = Vec::new();
         let mut bounds = Vec::new();
-        let mut cold = PackedColdTables::default();
+        let cold = PackedColdTables::default();
         let mut descriptors: Vec<NativeDescriptor> = Vec::new();
         let mut state_ids = HashMap::<u64, Vec<u32>>::new();
         let mut path_ids = HashMap::<u64, Vec<u32>>::new();
@@ -361,11 +361,6 @@ impl PackedDisplayList {
         let push_bounds = |value: Option<RenderBounds>, bounds: &mut Vec<Option<RenderBounds>>| {
             let id = u32::try_from(bounds.len()).unwrap_or(u32::MAX);
             bounds.push(value);
-            id
-        };
-        let push_payload = |payload: ColdPayload, cold: &mut PackedColdTables| {
-            let id = u32::try_from(cold.payloads.len()).unwrap_or(u32::MAX);
-            cold.payloads.push(payload);
             id
         };
         let push_descriptor =
