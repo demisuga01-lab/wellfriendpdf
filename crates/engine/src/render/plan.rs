@@ -211,6 +211,120 @@ pub struct ShadingDescriptor {
     pub name: String,
 }
 
+/// Paint phase for a pattern path operation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PatternPaintPhase {
+    /// `S` — stroke only.
+    Stroke,
+    /// `s` — close then stroke.
+    CloseStroke,
+    /// `f` / `F` — fill non-zero.
+    FillNonZero,
+    /// `f*` — fill even-odd.
+    FillEvenOdd,
+    /// `B` — fill non-zero then stroke.
+    FillStrokeNonZero,
+    /// `B*` — fill even-odd then stroke.
+    FillStrokeEvenOdd,
+    /// `b` — close, fill non-zero, then stroke.
+    CloseFillStrokeNonZero,
+    /// `b*` — close, fill even-odd, then stroke.
+    CloseFillStrokeEvenOdd,
+}
+
+impl PatternPaintPhase {
+    fn from_operator(op: &str) -> Option<Self> {
+        match op {
+            "S" => Some(Self::Stroke),
+            "s" => Some(Self::CloseStroke),
+            "f" | "F" => Some(Self::FillNonZero),
+            "f*" => Some(Self::FillEvenOdd),
+            "B" => Some(Self::FillStrokeNonZero),
+            "B*" => Some(Self::FillStrokeEvenOdd),
+            "b" => Some(Self::CloseFillStrokeNonZero),
+            "b*" => Some(Self::CloseFillStrokeEvenOdd),
+            _ => None,
+        }
+    }
+
+    /// Returns the PDF operator string for this phase.
+    pub fn operator(&self) -> &'static str {
+        match self {
+            Self::Stroke => "S",
+            Self::CloseStroke => "s",
+            Self::FillNonZero => "f",
+            Self::FillEvenOdd => "f*",
+            Self::FillStrokeNonZero => "B",
+            Self::FillStrokeEvenOdd => "B*",
+            Self::CloseFillStrokeNonZero => "b",
+            Self::CloseFillStrokeEvenOdd => "b*",
+        }
+    }
+}
+
+/// Compiled typed descriptor for a pattern path operation.
+///
+/// Stores normalized path geometry and paint phase rather than raw
+/// `Vec<ContentOperation>`. The resource context (active fill/stroke pattern,
+/// color space) is carried by the RenderState at execution time — this
+/// descriptor only stores the geometry and paint instruction.
+#[derive(Clone, Debug)]
+pub struct PatternPathDescriptor {
+    /// Normalized path segments extracted from the content operations.
+    pub path: Path,
+    /// Which paint operator terminates this path run.
+    pub phase: PatternPaintPhase,
+}
+
+/// Compiled typed descriptor for an inline image.
+///
+/// Stores the parsed image parameter operands and raw data bytes rather than
+/// `Vec<ContentOperation>`. The renderer can directly call `paint_inline_image`
+/// with these fields without intermediate ContentOperation reconstruction.
+#[derive(Clone, Debug)]
+pub struct InlineImageDescriptor {
+    /// Parsed image parameters from the `ID` operator (the operands that precede
+    /// the image data, typically key/value pairs like `/W 10 /H 10 /BPC 8 ...`).
+    pub params: Vec<Operand>,
+    /// Raw image data bytes from the `inline_image_data` pseudo-operator.
+    pub data: Vec<u8>,
+}
+
+/// Reason why a pattern or inline-image operation could not be compiled into a
+/// fully typed descriptor. This is an explicit typed refusal rather than a
+/// silent fallback to raw replay.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PackedCompileRefusal {
+    /// The pattern path sequence contained an unrecognized path construction
+    /// operator that cannot be normalized into typed PathSegments.
+    UnrecognizedPathOperator(String),
+    /// The paint operator terminating the pattern path is not a recognized
+    /// PDF path-painting operator.
+    UnrecognizedPaintOperator(String),
+    /// The pattern path ops sequence was empty.
+    EmptyPatternOps,
+    /// The inline image sequence was missing the `ID` operator with parameters.
+    MissingInlineImageParams,
+    /// The inline image sequence was missing the data payload.
+    MissingInlineImageData,
+}
+
+impl std::fmt::Display for PackedCompileRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnrecognizedPathOperator(op) => {
+                write!(f, "unrecognized path construction operator '{op}'")
+            }
+            Self::UnrecognizedPaintOperator(op) => {
+                write!(f, "unrecognized paint operator '{op}'")
+            }
+            Self::EmptyPatternOps => write!(f, "empty pattern ops sequence"),
+            Self::MissingInlineImageParams => write!(f, "missing inline image ID parameters"),
+            Self::MissingInlineImageData => write!(f, "missing inline image data payload"),
+        }
+    }
+}
+
 /// High-level typed descriptor for a compiled native op.
 #[derive(Clone, Debug)]
 pub enum NativeDescriptor {
@@ -224,12 +338,16 @@ pub enum NativeDescriptor {
     Shading(ShadingDescriptor),
     /// Graphics-state mutation dispatched through the interpreter.
     State(crate::content::ContentOperation),
-    /// Pattern path ops — explicitly unsupported for pure vector plan replay.
+    /// Fully compiled pattern path descriptor with normalized geometry and phase.
     /// Dispatched through RenderState when executing full plan.
-    UnsupportedPattern(Vec<crate::content::ContentOperation>),
-    /// Inline image ops — explicitly unsupported for pure vector plan replay.
+    Pattern(PatternPathDescriptor),
+    /// Fully compiled inline image descriptor with parsed parameters and data.
     /// Dispatched through RenderState when executing full plan.
-    UnsupportedInlineImage(Vec<crate::content::ContentOperation>),
+    InlineImage(InlineImageDescriptor),
+    /// The operation could not be compiled into a typed descriptor. The renderer
+    /// must handle this explicitly (fail-closed or use a supported fallback)
+    /// rather than silently replaying raw operations.
+    CompileRefusal(PackedCompileRefusal),
 }
 
 #[derive(Clone, Debug)]
@@ -304,6 +422,134 @@ impl PackedDisplayList {
             _ => return NativeDescriptor::State(op.clone()),
         };
         NativeDescriptor::Text(desc)
+    }
+
+    /// Compile a pattern path ops sequence into a typed `PatternPathDescriptor`.
+    ///
+    /// The sequence is expected to be path-construction operators followed by
+    /// a terminal paint operator. If the sequence cannot be compiled (unknown
+    /// operators, empty, etc.) a `PackedCompileRefusal` is returned.
+    fn compile_pattern_descriptor(ops: &[crate::content::ContentOperation]) -> NativeDescriptor {
+        if ops.is_empty() {
+            return NativeDescriptor::CompileRefusal(PackedCompileRefusal::EmptyPatternOps);
+        }
+
+        let paint_op = &ops[ops.len() - 1];
+        let phase = match PatternPaintPhase::from_operator(&paint_op.operator) {
+            Some(phase) => phase,
+            None => {
+                return NativeDescriptor::CompileRefusal(
+                    PackedCompileRefusal::UnrecognizedPaintOperator(paint_op.operator.clone()),
+                );
+            }
+        };
+
+        let mut path = Path::new();
+        for op in &ops[..ops.len().saturating_sub(1)] {
+            match op.operator.as_str() {
+                "m" => {
+                    if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
+                        path.move_to(x, y);
+                    }
+                }
+                "l" => {
+                    if let (Some(x), Some(y)) = (op.number(0), op.number(1)) {
+                        path.line_to(x, y);
+                    }
+                }
+                "c" => {
+                    if let (Some(x1), Some(y1), Some(x2), Some(y2), Some(x3), Some(y3)) = (
+                        op.number(0),
+                        op.number(1),
+                        op.number(2),
+                        op.number(3),
+                        op.number(4),
+                        op.number(5),
+                    ) {
+                        path.curve_to(x1, y1, x2, y2, x3, y3);
+                    }
+                }
+                "v" => {
+                    if let (Some(x2), Some(y2), Some(x3), Some(y3)) =
+                        (op.number(0), op.number(1), op.number(2), op.number(3))
+                    {
+                        let (cx, cy) = path.current_point.unwrap_or((0.0, 0.0));
+                        path.curve_to(cx, cy, x2, y2, x3, y3);
+                    }
+                }
+                "y" => {
+                    if let (Some(x1), Some(y1), Some(x3), Some(y3)) =
+                        (op.number(0), op.number(1), op.number(2), op.number(3))
+                    {
+                        path.curve_to(x1, y1, x3, y3, x3, y3);
+                    }
+                }
+                "h" => path.close(),
+                "re" => {
+                    if let (Some(x), Some(y), Some(w), Some(h)) =
+                        (op.number(0), op.number(1), op.number(2), op.number(3))
+                    {
+                        path.rect(x, y, w, h);
+                    }
+                }
+                other => {
+                    return NativeDescriptor::CompileRefusal(
+                        PackedCompileRefusal::UnrecognizedPathOperator(other.to_string()),
+                    );
+                }
+            }
+        }
+
+        NativeDescriptor::Pattern(PatternPathDescriptor { path, phase })
+    }
+
+    /// Compile an inline image ops sequence into a typed `InlineImageDescriptor`.
+    ///
+    /// The sequence is expected to contain an `ID` operator (with parameters as
+    /// operands) followed by an `inline_image_data` pseudo-operator (with the
+    /// raw data bytes as a String operand). If the required components are
+    /// missing a `PackedCompileRefusal` is returned.
+    fn compile_inline_image_descriptor(
+        ops: &[crate::content::ContentOperation],
+    ) -> NativeDescriptor {
+        let mut params: Option<Vec<Operand>> = None;
+        let mut data: Option<Vec<u8>> = None;
+
+        for op in ops {
+            match op.operator.as_str() {
+                "ID" => {
+                    params = Some(op.operands.clone());
+                }
+                "inline_image_data" => {
+                    if let Some(bytes) = op.string_bytes(0) {
+                        data = Some(bytes.to_vec());
+                    }
+                }
+                _ => {
+                    // Unexpected operator in inline image sequence — skip
+                }
+            }
+        }
+
+        let params = match params {
+            Some(p) => p,
+            None => {
+                return NativeDescriptor::CompileRefusal(
+                    PackedCompileRefusal::MissingInlineImageParams,
+                );
+            }
+        };
+
+        let data = match data {
+            Some(d) => d,
+            None => {
+                return NativeDescriptor::CompileRefusal(
+                    PackedCompileRefusal::MissingInlineImageData,
+                );
+            }
+        };
+
+        NativeDescriptor::InlineImage(InlineImageDescriptor { params, data })
     }
 
     pub fn compile(source: DisplayList) -> Self {
@@ -491,17 +737,15 @@ impl PackedDisplayList {
                     ..
                 } => {
                     requires_native_replay = true;
-                    let desc_id = push_descriptor(
-                        NativeDescriptor::UnsupportedPattern(ops.clone()),
-                        &mut descriptors,
-                    );
+                    let desc = Self::compile_pattern_descriptor(ops);
+                    let desc_id = push_descriptor(desc, &mut descriptors);
                     (
                         OP_NATIVE_PATTERN,
                         0,
                         push_bounds(*op_bounds, &mut bounds),
                         u32::MAX,
                         desc_id,
-                        u32::try_from(ops.len()).unwrap_or(u32::MAX),
+                        1,
                     )
                 }
                 DisplayOp::NativeInlineImage {
@@ -510,17 +754,15 @@ impl PackedDisplayList {
                     ..
                 } => {
                     requires_native_replay = true;
-                    let desc_id = push_descriptor(
-                        NativeDescriptor::UnsupportedInlineImage(ops.clone()),
-                        &mut descriptors,
-                    );
+                    let desc = Self::compile_inline_image_descriptor(ops);
+                    let desc_id = push_descriptor(desc, &mut descriptors);
                     (
                         OP_NATIVE_INLINE_IMAGE,
                         0,
                         push_bounds(*op_bounds, &mut bounds),
                         u32::MAX,
                         desc_id,
-                        u32::try_from(ops.len()).unwrap_or(u32::MAX),
+                        1,
                     )
                 }
                 DisplayOp::NativeFormXObject {
@@ -586,9 +828,8 @@ impl PackedDisplayList {
     }
 
     /// Returns `true` if every native high-level op has a fully-compiled
-    /// descriptor (text/image/form/shading). Patterns and inline images
-    /// return `false` for pure vector replay but are still plan-dispatchable
-    /// through the RenderState adapter path.
+    /// descriptor (text/image/form/shading/pattern/inline-image). A compile
+    /// refusal returns `false`.
     pub fn has_only_supported_descriptors(&self) -> bool {
         self.descriptors.iter().all(|d| {
             matches!(
@@ -598,8 +839,8 @@ impl PackedDisplayList {
                     | NativeDescriptor::Form(_)
                     | NativeDescriptor::Shading(_)
                     | NativeDescriptor::State(_)
-                    | NativeDescriptor::UnsupportedPattern(_)
-                    | NativeDescriptor::UnsupportedInlineImage(_)
+                    | NativeDescriptor::Pattern(_)
+                    | NativeDescriptor::InlineImage(_)
             )
         })
     }
@@ -688,14 +929,17 @@ pub trait PlanDispatcher {
     fn dispatch_form(&mut self, desc: &FormXObjectDescriptor, bounds: Option<&RenderBounds>);
     fn dispatch_shading(&mut self, desc: &ShadingDescriptor, bounds: Option<&RenderBounds>);
     fn dispatch_state(&mut self, op: &crate::content::ContentOperation);
-    fn dispatch_pattern_ops(
+    fn dispatch_pattern(&mut self, desc: &PatternPathDescriptor, bounds: Option<&RenderBounds>);
+    fn dispatch_inline_image(
         &mut self,
-        ops: &[crate::content::ContentOperation],
+        desc: &InlineImageDescriptor,
         bounds: Option<&RenderBounds>,
     );
-    fn dispatch_inline_image_ops(
+    /// Handle a compile refusal. The dispatcher must decide whether to skip,
+    /// log, or fail-closed. This is never silent.
+    fn dispatch_compile_refusal(
         &mut self,
-        ops: &[crate::content::ContentOperation],
+        refusal: &PackedCompileRefusal,
         bounds: Option<&RenderBounds>,
     );
     fn dispatch_save(&mut self);
@@ -784,11 +1028,14 @@ impl PackedDisplayList {
                         NativeDescriptor::State(op) => {
                             dispatcher.dispatch_state(op);
                         }
-                        NativeDescriptor::UnsupportedPattern(ops) => {
-                            dispatcher.dispatch_pattern_ops(ops, op_bounds.as_ref());
+                        NativeDescriptor::Pattern(pattern) => {
+                            dispatcher.dispatch_pattern(pattern, op_bounds.as_ref());
                         }
-                        NativeDescriptor::UnsupportedInlineImage(ops) => {
-                            dispatcher.dispatch_inline_image_ops(ops, op_bounds.as_ref());
+                        NativeDescriptor::InlineImage(inline_img) => {
+                            dispatcher.dispatch_inline_image(inline_img, op_bounds.as_ref());
+                        }
+                        NativeDescriptor::CompileRefusal(refusal) => {
+                            dispatcher.dispatch_compile_refusal(refusal, op_bounds.as_ref());
                         }
                     }
                 }
@@ -1118,6 +1365,7 @@ mod tests {
         state_count: usize,
         pattern_count: usize,
         inline_image_count: usize,
+        compile_refusal_count: usize,
         save_count: usize,
         restore_count: usize,
         fill_count: usize,
@@ -1135,6 +1383,7 @@ mod tests {
                 state_count: 0,
                 pattern_count: 0,
                 inline_image_count: 0,
+                compile_refusal_count: 0,
                 save_count: 0,
                 restore_count: 0,
                 fill_count: 0,
@@ -1164,19 +1413,26 @@ mod tests {
         fn dispatch_state(&mut self, _op: &crate::content::ContentOperation) {
             self.state_count += 1;
         }
-        fn dispatch_pattern_ops(
+        fn dispatch_pattern(
             &mut self,
-            _ops: &[crate::content::ContentOperation],
+            _desc: &PatternPathDescriptor,
             _bounds: Option<&RenderBounds>,
         ) {
             self.pattern_count += 1;
         }
-        fn dispatch_inline_image_ops(
+        fn dispatch_inline_image(
             &mut self,
-            _ops: &[crate::content::ContentOperation],
+            _desc: &InlineImageDescriptor,
             _bounds: Option<&RenderBounds>,
         ) {
             self.inline_image_count += 1;
+        }
+        fn dispatch_compile_refusal(
+            &mut self,
+            _refusal: &PackedCompileRefusal,
+            _bounds: Option<&RenderBounds>,
+        ) {
+            self.compile_refusal_count += 1;
         }
         fn dispatch_save(&mut self) {
             self.save_count += 1;
@@ -1257,5 +1513,366 @@ mod tests {
         assert!(rec.fill_count > 0, "fill should be dispatched");
         assert_eq!(rec.text_count, 0);
         assert_eq!(rec.image_count, 0);
+    }
+
+    #[test]
+    fn pattern_descriptor_contains_no_content_operation() {
+        // Build a NativePatternPathOp through the display list builder by using a
+        // named color space that forces stateful path dispatch.
+        let ops = vec![
+            ContentOperation::new("m", vec![Operand::Real(10.0), Operand::Real(20.0)]),
+            ContentOperation::new("l", vec![Operand::Real(30.0), Operand::Real(20.0)]),
+            ContentOperation::new("l", vec![Operand::Real(30.0), Operand::Real(40.0)]),
+            ContentOperation::new("h", Vec::new()),
+            ContentOperation::new("f", Vec::new()),
+        ];
+
+        // Directly invoke the compile_pattern_descriptor helper
+        let desc = PackedDisplayList::compile_pattern_descriptor(&ops);
+        match &desc {
+            NativeDescriptor::Pattern(pattern) => {
+                // Path should have the normalized segments
+                assert!(!pattern.path.segments.is_empty());
+                assert_eq!(pattern.phase, PatternPaintPhase::FillNonZero);
+                // Verify it's truly typed — no ContentOperation anywhere in the descriptor
+                // (this is compile-time guaranteed by the struct, but we assert the variant)
+                assert!(matches!(desc, NativeDescriptor::Pattern(_)));
+            }
+            other => panic!("expected Pattern descriptor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pattern_descriptor_stores_rect_path_with_stroke_phase() {
+        let ops = vec![
+            ContentOperation::new(
+                "re",
+                vec![
+                    Operand::Real(5.0),
+                    Operand::Real(5.0),
+                    Operand::Real(50.0),
+                    Operand::Real(50.0),
+                ],
+            ),
+            ContentOperation::new("S", Vec::new()),
+        ];
+        let desc = PackedDisplayList::compile_pattern_descriptor(&ops);
+        match desc {
+            NativeDescriptor::Pattern(pattern) => {
+                assert_eq!(pattern.phase, PatternPaintPhase::Stroke);
+                // rect adds 5 segments (move, line, line, line, close)
+                assert_eq!(pattern.path.segments.len(), 5);
+            }
+            other => panic!("expected Pattern descriptor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pattern_descriptor_refuses_unrecognized_operator() {
+        let ops = vec![
+            ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]),
+            ContentOperation::new("UNKNOWN_OP", Vec::new()),
+            ContentOperation::new("f", Vec::new()),
+        ];
+        let desc = PackedDisplayList::compile_pattern_descriptor(&ops);
+        match desc {
+            NativeDescriptor::CompileRefusal(PackedCompileRefusal::UnrecognizedPathOperator(
+                op,
+            )) => {
+                assert_eq!(op, "UNKNOWN_OP");
+            }
+            other => panic!("expected CompileRefusal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn pattern_descriptor_refuses_unrecognized_paint_operator() {
+        let ops = vec![
+            ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]),
+            ContentOperation::new("XYZ", Vec::new()),
+        ];
+        let desc = PackedDisplayList::compile_pattern_descriptor(&ops);
+        match desc {
+            NativeDescriptor::CompileRefusal(PackedCompileRefusal::UnrecognizedPaintOperator(
+                op,
+            )) => {
+                assert_eq!(op, "XYZ");
+            }
+            other => panic!(
+                "expected CompileRefusal for paint operator, got {:?}",
+                other
+            ),
+        }
+    }
+
+    #[test]
+    fn pattern_descriptor_refuses_empty_ops() {
+        let desc = PackedDisplayList::compile_pattern_descriptor(&[]);
+        assert!(matches!(
+            desc,
+            NativeDescriptor::CompileRefusal(PackedCompileRefusal::EmptyPatternOps)
+        ));
+    }
+
+    #[test]
+    fn inline_image_descriptor_contains_no_content_operation() {
+        let ops = vec![
+            ContentOperation::new(
+                "ID",
+                vec![
+                    Operand::Name("W".to_string()),
+                    Operand::Integer(2),
+                    Operand::Name("H".to_string()),
+                    Operand::Integer(2),
+                    Operand::Name("BPC".to_string()),
+                    Operand::Integer(8),
+                    Operand::Name("CS".to_string()),
+                    Operand::Name("G".to_string()),
+                ],
+            ),
+            ContentOperation::new(
+                "inline_image_data",
+                vec![Operand::String(vec![0xFF, 0x00, 0x80, 0x40])],
+            ),
+        ];
+        let desc = PackedDisplayList::compile_inline_image_descriptor(&ops);
+        match &desc {
+            NativeDescriptor::InlineImage(inline) => {
+                // Verify params are the ID operands
+                assert_eq!(inline.params.len(), 8);
+                // Verify data bytes
+                assert_eq!(inline.data, vec![0xFF, 0x00, 0x80, 0x40]);
+                // No ContentOperation — compile-time guaranteed by struct
+                assert!(matches!(desc, NativeDescriptor::InlineImage(_)));
+            }
+            other => panic!("expected InlineImage descriptor, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn inline_image_descriptor_refuses_missing_params() {
+        let ops = vec![ContentOperation::new(
+            "inline_image_data",
+            vec![Operand::String(vec![0xFF])],
+        )];
+        let desc = PackedDisplayList::compile_inline_image_descriptor(&ops);
+        assert!(matches!(
+            desc,
+            NativeDescriptor::CompileRefusal(PackedCompileRefusal::MissingInlineImageParams)
+        ));
+    }
+
+    #[test]
+    fn inline_image_descriptor_refuses_missing_data() {
+        let ops = vec![ContentOperation::new(
+            "ID",
+            vec![Operand::Name("W".to_string()), Operand::Integer(1)],
+        )];
+        let desc = PackedDisplayList::compile_inline_image_descriptor(&ops);
+        assert!(matches!(
+            desc,
+            NativeDescriptor::CompileRefusal(PackedCompileRefusal::MissingInlineImageData)
+        ));
+    }
+
+    #[test]
+    fn execute_plan_dispatches_pattern_through_typed_descriptor() {
+        use crate::render::display_list::DisplayOp;
+
+        // Manually construct a display list with a NativePatternPathOp
+        let path_ops = vec![
+            ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]),
+            ContentOperation::new("l", vec![Operand::Real(10.0), Operand::Real(10.0)]),
+            ContentOperation::new("S", Vec::new()),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let list = DisplayList {
+            ops: vec![DisplayOp::NativePatternPathOp {
+                ops: path_ops,
+                approx_bytes: 64,
+                bounds: None,
+            }],
+            viewport: viewport.clone(),
+            unsupported: Vec::new(),
+            stats: Default::default(),
+        };
+        let packed = PackedDisplayList::compile(list);
+        // Verify the descriptor is Pattern, not an UnsupportedPattern raw ops
+        let pattern_hot: Vec<_> = packed
+            .hot_ops
+            .iter()
+            .filter(|h| h.opcode == OP_NATIVE_PATTERN)
+            .collect();
+        assert_eq!(pattern_hot.len(), 1);
+        let desc = packed.descriptor(pattern_hot[0].payload_offset).unwrap();
+        assert!(
+            matches!(desc, NativeDescriptor::Pattern(_)),
+            "expected Pattern descriptor, got {:?}",
+            desc
+        );
+
+        // Execute plan and verify dispatch
+        let mut rec = RecordingDispatcher::new();
+        packed.execute_plan(&mut rec).expect("execute_plan");
+        assert_eq!(rec.pattern_count, 1);
+        assert_eq!(rec.inline_image_count, 0);
+        assert_eq!(rec.compile_refusal_count, 0);
+    }
+
+    #[test]
+    fn execute_plan_dispatches_inline_image_through_typed_descriptor() {
+        use crate::render::display_list::DisplayOp;
+
+        let inline_ops = vec![
+            ContentOperation::new(
+                "ID",
+                vec![
+                    Operand::Name("W".to_string()),
+                    Operand::Integer(1),
+                    Operand::Name("H".to_string()),
+                    Operand::Integer(1),
+                    Operand::Name("BPC".to_string()),
+                    Operand::Integer(8),
+                ],
+            ),
+            ContentOperation::new("inline_image_data", vec![Operand::String(vec![0xAA])]),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let list = DisplayList {
+            ops: vec![DisplayOp::NativeInlineImage {
+                ops: inline_ops,
+                approx_bytes: 32,
+                bounds: None,
+            }],
+            viewport: viewport.clone(),
+            unsupported: Vec::new(),
+            stats: Default::default(),
+        };
+        let packed = PackedDisplayList::compile(list);
+        // Verify typed descriptor
+        let inline_hot: Vec<_> = packed
+            .hot_ops
+            .iter()
+            .filter(|h| h.opcode == OP_NATIVE_INLINE_IMAGE)
+            .collect();
+        assert_eq!(inline_hot.len(), 1);
+        let desc = packed.descriptor(inline_hot[0].payload_offset).unwrap();
+        match desc {
+            NativeDescriptor::InlineImage(img) => {
+                assert_eq!(img.data, vec![0xAA]);
+                assert_eq!(img.params.len(), 6);
+            }
+            other => panic!("expected InlineImage descriptor, got {:?}", other),
+        }
+
+        // Execute plan and verify dispatch
+        let mut rec = RecordingDispatcher::new();
+        packed.execute_plan(&mut rec).expect("execute_plan");
+        assert_eq!(rec.inline_image_count, 1);
+        assert_eq!(rec.pattern_count, 0);
+        assert_eq!(rec.compile_refusal_count, 0);
+    }
+
+    #[test]
+    fn compile_refusal_is_dispatched_explicitly_not_silently_skipped() {
+        use crate::render::display_list::DisplayOp;
+
+        // A pattern op with an unrecognized operator produces a compile refusal
+        let ops = vec![
+            ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]),
+            ContentOperation::new("BOGUS_PAINT", Vec::new()),
+        ];
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let list = DisplayList {
+            ops: vec![DisplayOp::NativePatternPathOp {
+                ops,
+                approx_bytes: 32,
+                bounds: None,
+            }],
+            viewport: viewport.clone(),
+            unsupported: Vec::new(),
+            stats: Default::default(),
+        };
+        let packed = PackedDisplayList::compile(list);
+        // The descriptor should be a CompileRefusal
+        let pattern_hot: Vec<_> = packed
+            .hot_ops
+            .iter()
+            .filter(|h| h.opcode == OP_NATIVE_PATTERN)
+            .collect();
+        assert_eq!(pattern_hot.len(), 1);
+        let desc = packed.descriptor(pattern_hot[0].payload_offset).unwrap();
+        assert!(
+            matches!(desc, NativeDescriptor::CompileRefusal(_)),
+            "expected CompileRefusal, got {:?}",
+            desc
+        );
+
+        // Execute and verify the refusal is dispatched (not silently dropped)
+        let mut rec = RecordingDispatcher::new();
+        packed.execute_plan(&mut rec).expect("execute_plan");
+        assert_eq!(rec.compile_refusal_count, 1);
+        assert_eq!(rec.pattern_count, 0);
+    }
+
+    #[test]
+    fn has_only_supported_descriptors_false_on_refusal() {
+        use crate::render::display_list::DisplayOp;
+
+        let ops = vec![ContentOperation::new("INVALID_PAINT", Vec::new())];
+        let viewport = Viewport::new([0.0, 0.0, 50.0, 50.0], 72);
+        let list = DisplayList {
+            ops: vec![DisplayOp::NativePatternPathOp {
+                ops,
+                approx_bytes: 16,
+                bounds: None,
+            }],
+            viewport: viewport.clone(),
+            unsupported: Vec::new(),
+            stats: Default::default(),
+        };
+        let packed = PackedDisplayList::compile(list);
+        assert!(
+            !packed.has_only_supported_descriptors(),
+            "compile refusal should make has_only_supported_descriptors false"
+        );
+    }
+
+    #[test]
+    fn pattern_path_descriptor_curve_to_is_preserved() {
+        let ops = vec![
+            ContentOperation::new("m", vec![Operand::Real(0.0), Operand::Real(0.0)]),
+            ContentOperation::new(
+                "c",
+                vec![
+                    Operand::Real(1.0),
+                    Operand::Real(2.0),
+                    Operand::Real(3.0),
+                    Operand::Real(4.0),
+                    Operand::Real(5.0),
+                    Operand::Real(6.0),
+                ],
+            ),
+            ContentOperation::new("B*", Vec::new()),
+        ];
+        let desc = PackedDisplayList::compile_pattern_descriptor(&ops);
+        match desc {
+            NativeDescriptor::Pattern(pattern) => {
+                assert_eq!(pattern.phase, PatternPaintPhase::FillStrokeEvenOdd);
+                assert_eq!(pattern.path.segments.len(), 2);
+                assert!(matches!(
+                    pattern.path.segments[1],
+                    PathSegment::CubicTo {
+                        cp1x,
+                        cp1y,
+                        cp2x,
+                        cp2y,
+                        x,
+                        y,
+                    } if cp1x == 1.0 && cp1y == 2.0 && cp2x == 3.0 && cp2y == 4.0 && x == 5.0 && y == 6.0
+                ));
+            }
+            other => panic!("expected Pattern descriptor, got {:?}", other),
+        }
     }
 }

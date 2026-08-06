@@ -42,10 +42,11 @@ use crate::render::line::DashState;
 use crate::render::path::{
     axis_aligned_integer_rect, flatten_path, rasterize_flat_alpha_mask,
     rasterize_flat_binary_clip_mask, rasterize_glyph_alpha_mask, stroke_flat_path, FillRule,
-    FlatPath, GlyphHinting, Path, PathPainter, RasterizedGlyphMask,
+    FlatPath, GlyphHinting, Path, PathPainter, PathSegment, RasterizedGlyphMask,
 };
 use crate::render::plan::{
-    FormXObjectDescriptor, ImageXObjectDescriptor, PlanDispatcher, RenderPlan, ShadingDescriptor,
+    FormXObjectDescriptor, ImageXObjectDescriptor, InlineImageDescriptor, PackedCompileRefusal,
+    PatternPaintPhase, PatternPathDescriptor, PlanDispatcher, RenderPlan, ShadingDescriptor,
     TextArrayItem, TextDescriptor,
 };
 use crate::render::shading::ShadingRenderer;
@@ -3639,6 +3640,57 @@ impl<'a> RenderState<'a> {
                     paint_op.operator
                 );
                 self.path.clear();
+            }
+        }
+    }
+
+    /// Execute a compiled `PatternPathDescriptor` through the RenderState path
+    /// machinery. This replays the normalized path geometry and paint phase
+    /// without any `ContentOperation` on the hot path.
+    fn replay_pattern_descriptor(&mut self, desc: &PatternPathDescriptor) {
+        if !self.oc_current_visible {
+            return;
+        }
+        // Copy the pre-compiled path segments into the RenderState path
+        for segment in &desc.path.segments {
+            match segment {
+                PathSegment::MoveTo(x, y) => self.path.move_to(*x, *y),
+                PathSegment::LineTo(x, y) => self.path.line_to(*x, *y),
+                PathSegment::CubicTo {
+                    cp1x,
+                    cp1y,
+                    cp2x,
+                    cp2y,
+                    x,
+                    y,
+                } => self.path.curve_to(*cp1x, *cp1y, *cp2x, *cp2y, *x, *y),
+                PathSegment::ClosePath => self.path.close(),
+            }
+        }
+        // Set current point from the compiled descriptor
+        self.path.current_point = desc.path.current_point;
+        // Dispatch the paint phase
+        match desc.phase {
+            PatternPaintPhase::Stroke => self.stroke_and_clear(),
+            PatternPaintPhase::CloseStroke => {
+                self.path.close();
+                self.stroke_and_clear();
+            }
+            PatternPaintPhase::FillNonZero => self.fill_and_clear(FillRule::NonZero),
+            PatternPaintPhase::FillEvenOdd => self.fill_and_clear(FillRule::EvenOdd),
+            PatternPaintPhase::FillStrokeNonZero => {
+                self.fill_stroke_and_clear(FillRule::NonZero);
+            }
+            PatternPaintPhase::FillStrokeEvenOdd => {
+                self.fill_stroke_and_clear(FillRule::EvenOdd);
+            }
+            PatternPaintPhase::CloseFillStrokeNonZero => {
+                self.path.close();
+                self.fill_stroke_and_clear(FillRule::NonZero);
+            }
+            PatternPaintPhase::CloseFillStrokeEvenOdd => {
+                self.path.close();
+                self.fill_stroke_and_clear(FillRule::EvenOdd);
             }
         }
     }
@@ -9020,7 +9072,7 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
         self.state.dispatch(op);
     }
 
-    fn dispatch_pattern_ops(&mut self, ops: &[ContentOperation], bounds: Option<&RenderBounds>) {
+    fn dispatch_pattern(&mut self, desc: &PatternPathDescriptor, bounds: Option<&RenderBounds>) {
         if !self.state.oc_current_visible {
             return;
         }
@@ -9029,12 +9081,12 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 return;
             }
         }
-        self.state.replay_native_pattern_path_ops(ops);
+        self.state.replay_pattern_descriptor(desc);
     }
 
-    fn dispatch_inline_image_ops(
+    fn dispatch_inline_image(
         &mut self,
-        ops: &[ContentOperation],
+        desc: &InlineImageDescriptor,
         bounds: Option<&RenderBounds>,
     ) {
         if !self.state.oc_current_visible {
@@ -9045,7 +9097,18 @@ impl<'a, 'b> PlanDispatcher for RenderStatePlanAdapter<'a, 'b> {
                 return;
             }
         }
-        self.state.replay_native_inline_image_ops(ops);
+        self.state.paint_inline_image(&desc.params, &desc.data);
+    }
+
+    fn dispatch_compile_refusal(
+        &mut self,
+        refusal: &PackedCompileRefusal,
+        _bounds: Option<&RenderBounds>,
+    ) {
+        // Explicit fail-closed: log the refusal and skip the operation.
+        // This is intentionally not silent — the refusal is typed and the
+        // renderer does not silently replay raw operations.
+        log::debug!("Packed plan compile refusal (skipping): {}", refusal);
     }
 
     fn dispatch_save(&mut self) {
