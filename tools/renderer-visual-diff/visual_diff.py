@@ -193,6 +193,13 @@ def _load_raw_buffer(
 # Alpha / premultiplication normalization
 # ---------------------------------------------------------------------------
 
+def _flattened_data(image: Image.Image):
+    """Return Pillow pixel data without relying on deprecated getdata()."""
+    if hasattr(image, "get_flattened_data"):
+        return image.get_flattened_data()
+    return image.getdata()
+
+
 def _detect_premultiplied(image: Image.Image) -> bool:
     """Heuristic detection of premultiplied alpha.
 
@@ -203,7 +210,7 @@ def _detect_premultiplied(image: Image.Image) -> bool:
     if image.mode != "RGBA":
         return False
 
-    pixels = image.getdata()
+    pixels = _flattened_data(image)
     total = len(pixels)
     step = max(1, total // 1000)  # sample up to ~1000 pixels
     has_partial_alpha = False
@@ -225,7 +232,7 @@ def _unpremultiply_alpha(image: Image.Image) -> Image.Image:
     if image.mode != "RGBA":
         image = image.convert("RGBA")
 
-    pixels = list(image.getdata())
+    pixels = list(_flattened_data(image))
     result = []
     for r, g, b, a in pixels:
         if a == 0:
@@ -329,9 +336,10 @@ def normalize_to_canonical_rgba(
 
     # Step 3: Channel order normalization -> RGBA
     if raw_mode:
-        # Raw buffers: _load_raw_buffer already decoded the channel order,
-        # but we still need to convert to canonical RGBA
-        image = _reorder_channels(image, channel_order)
+        # `_load_raw_buffer` decodes the declared raw layout directly into the
+        # matching PIL mode (including BGRA/ARGB byte reordering), so only a
+        # canonical RGBA conversion remains here.
+        image = image.convert("RGBA")
         report.channel_order_applied = channel_order.value
     else:
         if channel_order != ChannelOrder.RGBA:
@@ -341,8 +349,10 @@ def normalize_to_canonical_rgba(
             image = image.convert("RGBA")
             report.channel_order_applied = "auto_rgba"
 
-    # Step 4: Alpha premultiplication handling
-    if assume_premultiplied or _detect_premultiplied(image):
+    # Step 4: Alpha premultiplication handling. Automatic detection is
+    # intentionally advisory only: straight-alpha colors can satisfy the
+    # r/g/b <= alpha heuristic, so mutating them would corrupt comparisons.
+    if assume_premultiplied:
         image = _unpremultiply_alpha(image)
         report.unpremultiplied = True
 
@@ -360,7 +370,7 @@ def normalize_to_canonical_rgba(
 
 def _rgba_pixels(image: Image.Image) -> list[tuple[int, int, int, int]]:
     """Extract flat list of RGBA pixel tuples."""
-    return list(image.getdata())
+    return list(_flattened_data(image))
 
 
 def _luminance(pixel: tuple[int, int, int, int]) -> float:
@@ -405,7 +415,7 @@ def load_expected_mask(
                 f"expected-difference mask dimensions {mask.size} do not match "
                 f"input images ({width}, {height})"
             )
-        return [value != 0 for value in mask.getdata()]
+        return [value != 0 for value in _flattened_data(mask)]
 
 
 
