@@ -15729,7 +15729,7 @@ mod tests {
 mod print_profile_tests {
     use super::*;
     use crate::render::contract::{
-        ColorManagementPolicy, HalftonePolicy, OverprintPolicy, PrintProfile,
+        ColorManagementPolicy, HalftonePolicy, OverprintPolicy, PrintProfile, RenderContract,
     };
 
     fn pdf_header() -> Vec<u8> {

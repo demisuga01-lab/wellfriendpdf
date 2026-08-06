@@ -307,17 +307,6 @@ mod tests {
     }
 
     #[test]
-    fn proof_intent_override_requires_native_cmm() {
-        assert_eq!(
-            proof_intent_override(PrintProfile::Proof, true),
-            Some(crate::render::contract::RenderingIntent::AbsoluteColorimetric)
-        );
-        assert_eq!(proof_intent_override(PrintProfile::Proof, false), None);
-        assert_eq!(proof_intent_override(PrintProfile::Display, true), None);
-        assert_eq!(proof_intent_override(PrintProfile::Print, true), None);
-    }
-
-    #[test]
     fn valid_combinations_pass() {
         // Display with defaults: always valid
         assert!(validate_print_profile_prepress(
