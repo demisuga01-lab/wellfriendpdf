@@ -1,5 +1,6 @@
 package io.wellfriendpdf;
 
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -19,6 +20,10 @@ public final class WellfriendPdfSmokeTest {
             byte[] jpeg = doc.page(1).renderJpeg(72, (byte) 85);
             String contract = doc.defaultRenderContractJson(1, 72);
             byte[] contractPng = doc.renderPagePngWithContractJson(contract);
+            ByteBuffer callerSurface = ByteBuffer.allocateDirect(1_000_000);
+            doc.renderPageIntoBufferWithContractJson(contract, callerSurface);
+            assertTrue(callerSurface.get(0) != 0 || callerSurface.get(1) != 0 || callerSurface.get(2) != 0,
+                "caller-owned render surface");
             assertTrue(png.length > 8 && png[0] == (byte) 0x89 && png[1] == (byte) 0x50,
                 "PNG raster rendering");
             assertTrue(contractPng.length > 8 && contractPng[0] == (byte) 0x89 && contractPng[1] == (byte) 0x50,

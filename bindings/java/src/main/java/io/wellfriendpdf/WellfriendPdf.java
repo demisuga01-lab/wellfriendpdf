@@ -10,6 +10,7 @@ import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
 import java.net.URISyntaxException;
+import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -704,6 +705,27 @@ public final class WellfriendPdf {
                 throw ex;
             } catch (Throwable ex) {
                 throw new IllegalStateException("Wellfriend contract PNG rendering failed", ex);
+            }
+        }
+
+        public void renderPageIntoBufferWithContractJson(String contractJson, ByteBuffer output) {
+            ensureOpen();
+            Objects.requireNonNull(contractJson, "contractJson");
+            Objects.requireNonNull(output, "output");
+            if (!output.isDirect()) {
+                throw new IllegalArgumentException("caller-owned render output must be a direct ByteBuffer");
+            }
+            try (Arena arena = Arena.ofConfined()) {
+                MemorySegment contract = arena.allocateFrom(contractJson);
+                MemorySegment surface = MemorySegment.ofBuffer(output);
+                MemorySegment err = arena.allocate(ValueLayout.ADDRESS);
+                int status = (int) Native.RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT.invokeExact(
+                    handle, contract, surface, surface.byteSize(), err);
+                Native.throwError(status, err);
+            } catch (WellfriendPdfException ex) {
+                throw ex;
+            } catch (Throwable ex) {
+                throw new IllegalStateException("Wellfriend caller-owned contract rendering failed", ex);
             }
         }
 
@@ -1721,6 +1743,11 @@ public final class WellfriendPdf {
             "wellfriendpdf_document_render_page_png_with_contract_json",
             FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
                 ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+        );
+        private static final MethodHandle RENDER_PAGE_INTO_BUFFER_WITH_CONTRACT = downcall(
+            "wellfriendpdf_document_render_into_buffer_with_contract_json",
+            FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, ValueLayout.ADDRESS,
+                ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
         );
         private static final MethodHandle PARSE_JSON = downcall(
             "wellfriendpdf_document_parse_json",
