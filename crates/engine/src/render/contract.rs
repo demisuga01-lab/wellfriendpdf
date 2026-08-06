@@ -460,6 +460,18 @@ impl RenderContract {
                 ));
             }
         }
+        // Validate that the print profile + prepress combination is implementable.
+        if let Err(refusal) = super::print_profile::validate_print_profile_prepress(
+            self.print_profile,
+            self.halftone,
+            self.overprint,
+            self.color_management,
+        ) {
+            return Err(WellfriendError::UnsupportedFeature(format!(
+                "render contract print profile refusal: {} (category: {:?})",
+                refusal.reason, refusal.category
+            )));
+        }
         Ok(())
     }
 }
@@ -506,5 +518,40 @@ mod tests {
         contract.validate().expect("default contract is valid");
         assert_eq!(contract.render_mode(), RenderMode::Compat);
         assert_eq!(contract.cache_fingerprint(), contract.cache_fingerprint());
+    }
+
+    #[test]
+    fn print_profile_changes_cache_fingerprint_in_contract() {
+        let mut display = contract(1);
+        display.print_profile = PrintProfile::Display;
+        let mut print = contract(1);
+        print.print_profile = PrintProfile::Print;
+        let mut proof = contract(1);
+        proof.print_profile = PrintProfile::Proof;
+        assert_ne!(display.cache_fingerprint(), print.cache_fingerprint());
+        assert_ne!(print.cache_fingerprint(), proof.cache_fingerprint());
+    }
+
+    #[test]
+    fn halftone_screen_is_refused_by_validate() {
+        let mut c = contract(1);
+        c.halftone = HalftonePolicy::Screen;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn proof_with_deterministic_fallback_is_refused() {
+        let mut c = contract(1);
+        c.print_profile = PrintProfile::Proof;
+        c.color_management = ColorManagementPolicy::DeterministicFallback;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn preserve_separations_without_native_cmm_is_refused() {
+        let mut c = contract(1);
+        c.overprint = OverprintPolicy::PreserveSeparations;
+        c.color_management = ColorManagementPolicy::PortableQcms;
+        assert!(c.validate().is_err());
     }
 }

@@ -20,7 +20,9 @@ use crate::render::buffer::{
 };
 use crate::render::clip_dag::{ClipDag, ClipNode, ClipState};
 use crate::render::color::ColorSpaceHandler;
-use crate::render::contract::{ObjectIdentityId, RevisionId};
+use crate::render::contract::{
+    AnnotationRenderPolicy, FormRenderPolicy, ObjectIdentityId, PrintProfile, RevisionId,
+};
 use crate::render::display_list::{
     build_display_list, DisplayList, DisplayOp, DrawState, RenderBounds, RenderCache,
     RenderCacheKey, RenderTile,
@@ -836,6 +838,41 @@ impl PageRenderer {
         cancel.check("page render")?;
         state.render_page_annotations();
         cancel.check("page annotation render")?;
+        let mut buf = state.into_buffer();
+        if transparent_page_group {
+            buf.flatten_onto_background(WHITE);
+        }
+        Ok(buf)
+    }
+
+    /// Render with explicit contract policies for PrintProfile, annotations,
+    /// and forms. Used by the contract-driven render path to activate policies.
+    pub(crate) fn render_page_cancellable_with_contract_policies(
+        engine: &ContentEngine,
+        page_number: usize,
+        dpi: u32,
+        cancel: &CancelToken,
+        render_mode: RenderMode,
+        print_profile: PrintProfile,
+        annotation_policy: AnnotationRenderPolicy,
+        form_policy: FormRenderPolicy,
+    ) -> Result<PixelBuffer> {
+        let ops = engine.get_page_content(page_number)?;
+        let viewport = engine.page_viewport(page_number, dpi)?;
+        let resources = engine.get_page_resources(page_number)?;
+        let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
+        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
+
+        let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
+        state.cancel = cancel.clone();
+        state.print_profile = print_profile;
+        state.annotation_policy = annotation_policy;
+        state.form_policy = form_policy;
+        state.dispatch_all(&ops);
+        state.check_fatal_render_error()?;
+        cancel.check("page render with contract policies")?;
+        state.render_page_annotations();
+        cancel.check("page annotation render with contract policies")?;
         let mut buf = state.into_buffer();
         if transparent_page_group {
             buf.flatten_onto_background(WHITE);
@@ -1663,6 +1700,12 @@ struct RenderState<'a> {
     separation_framebuffer: SeparationFramebuffer,
     /// Font substitution events recorded during this render pass.
     font_substitution_log: FontSubstitutionLog,
+    /// Active print profile controlling annotation visibility and proof CMM routing.
+    print_profile: PrintProfile,
+    /// Active annotation render policy from the render contract.
+    annotation_policy: AnnotationRenderPolicy,
+    /// Active form render policy from the render contract.
+    form_policy: FormRenderPolicy,
 }
 
 const RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES: usize = 512 * 1024 * 1024;
@@ -2388,6 +2431,9 @@ impl<'a> RenderState<'a> {
                 viewport_height,
             ),
             font_substitution_log: FontSubstitutionLog::new(),
+            print_profile: PrintProfile::Display,
+            annotation_policy: AnnotationRenderPolicy::Include,
+            form_policy: FormRenderPolicy::Include,
         }
     }
 
@@ -4682,6 +4728,9 @@ impl<'a> RenderState<'a> {
                 mask_viewport.height_px,
             ),
             font_substitution_log: FontSubstitutionLog::new(),
+            print_profile: self.print_profile,
+            annotation_policy: self.annotation_policy,
+            form_policy: self.form_policy,
         };
 
         if let Some(bbox) = extract_bbox(&g_dict) {
@@ -5356,6 +5405,9 @@ impl<'a> RenderState<'a> {
                 group_viewport.height_px,
             ),
             font_substitution_log: FontSubstitutionLog::new(),
+            print_profile: self.print_profile,
+            annotation_policy: self.annotation_policy,
+            form_policy: self.form_policy,
         };
 
         // Carry the parent clip into the group so content is bounded the same
@@ -5437,6 +5489,10 @@ impl<'a> RenderState<'a> {
     }
 
     fn render_page_annotations(&mut self) {
+        // Respect the AnnotationRenderPolicy from the render contract.
+        if self.annotation_policy == AnnotationRenderPolicy::Exclude {
+            return;
+        }
         let reader = self.engine.document().reader();
         let pages = match self.engine.document().get_pages() {
             Ok(pages) => pages,
@@ -5472,8 +5528,15 @@ impl<'a> RenderState<'a> {
                 Ok(PdfObject::Dictionary(dict)) => dict,
                 _ => continue,
             };
-            if annotation_is_hidden_or_no_view(&annot) {
+            if annotation_excluded_for_profile(&annot, self.print_profile) {
                 continue;
+            }
+            // Respect FormRenderPolicy: exclude Widget annotations when forms
+            // are excluded from the render contract.
+            if self.form_policy == FormRenderPolicy::Exclude {
+                if annot.get_name("Subtype") == Some("Widget") {
+                    continue;
+                }
             }
             if !self
                 .optional_content
@@ -10496,6 +10559,11 @@ fn expand_render_tile(
     }
 }
 
+/// Public contract-level tile crop helper for the engine render path.
+pub(crate) fn crop_buffer_for_contract(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
+    crop_buffer(buf, tile)
+}
+
 fn crop_buffer(buf: &PixelBuffer, tile: RenderTile) -> Result<PixelBuffer> {
     if tile.width == 0 || tile.height == 0 {
         return Err(WellfriendError::invalid_input(
@@ -10933,12 +11001,11 @@ fn get_float_array_dict(dict: &PdfDictionary, key: &str) -> Option<Vec<f64>> {
     }
 }
 
-fn annotation_is_hidden_or_no_view(dict: &PdfDictionary) -> bool {
+/// Print-profile-aware annotation visibility check. Returns `true` if the
+/// annotation should be excluded from rendering for the given profile.
+fn annotation_excluded_for_profile(dict: &PdfDictionary, profile: PrintProfile) -> bool {
     let flags = dict.get_integer("F").unwrap_or(0);
-    const INVISIBLE: i64 = 1 << 0;
-    const HIDDEN: i64 = 1 << 1;
-    const NO_VIEW: i64 = 1 << 5;
-    flags & (INVISIBLE | HIDDEN | NO_VIEW) != 0
+    !crate::render::print_profile::annotation_visible_for_profile(flags, profile)
 }
 
 fn select_annotation_appearance(
@@ -15654,5 +15721,314 @@ mod tests {
             .expect("plan should produce output for shading page");
             assert_same_pixels(&immediate, &plan_result);
         }
+    }
+}
+
+#[cfg(test)]
+mod print_profile_tests {
+    use super::*;
+    use crate::render::contract::{
+        ColorManagementPolicy, HalftonePolicy, OverprintPolicy, PrintProfile,
+    };
+
+    fn pdf_header() -> Vec<u8> {
+        b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n".to_vec()
+    }
+
+    /// Build a minimal PDF with one annotation carrying specified /F flags and
+    /// a red appearance stream.
+    fn pdf_with_flagged_annotation(flags: i64) -> Vec<u8> {
+        fn stream(body: &str, dict_extra: &str) -> Vec<u8> {
+            format!(
+                "<< {} /Length {} >>\nstream\n{}\nendstream",
+                dict_extra,
+                body.len(),
+                body
+            )
+            .into_bytes()
+        }
+
+        let content = stream("", "");
+        let red_appearance = stream(
+            "1 0 0 rg 0 0 50 50 re f\n",
+            "/Type /XObject /Subtype /Form /BBox [0 0 50 50] /Resources << >>",
+        );
+
+        let annot = format!(
+            "<< /Type /Annot /Subtype /Square /Rect [20 20 70 70] /F {} \
+             /AP << /N 6 0 R >> >>",
+            flags
+        );
+
+        let objects: Vec<Vec<u8>> = vec![
+            b"<< /Type /Catalog /Pages 2 0 R >>".to_vec(),
+            b"<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_vec(),
+            b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /Resources << >> /Contents 4 0 R /Annots [5 0 R] >>".to_vec(),
+            content,
+            annot.into_bytes(),
+            red_appearance,
+        ];
+
+        let mut out = pdf_header();
+        let mut offsets = vec![0usize];
+        for (idx, obj) in objects.iter().enumerate() {
+            offsets.push(out.len());
+            out.extend_from_slice(format!("{} 0 obj\n", idx + 1).as_bytes());
+            out.extend_from_slice(obj);
+            out.extend_from_slice(b"\nendobj\n");
+        }
+        let startxref = out.len();
+        out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+        out.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets.iter().skip(1) {
+            out.extend_from_slice(format!("{:010} 00000 n \n", offset).as_bytes());
+        }
+        out.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+                objects.len() + 1,
+                startxref
+            )
+            .as_bytes(),
+        );
+        out
+    }
+
+    /// Helper: render a page using a RenderState with explicit PrintProfile.
+    fn render_with_profile(pdf_bytes: Vec<u8>, profile: PrintProfile) -> PixelBuffer {
+        let engine = ContentEngine::open_bytes(pdf_bytes).expect("open test PDF");
+        let ops = engine.get_page_content(1).expect("page content");
+        let viewport = engine.page_viewport(1, 72).expect("viewport");
+        let resources = engine.get_page_resources(1).expect("resources");
+        let buf = PixelBuffer::new_filled(viewport.width_px, viewport.height_px, WHITE);
+        let mut state = RenderState::new(buf, viewport, resources, &engine, 1);
+        state.print_profile = profile;
+        state.dispatch_all(&ops);
+        state.render_page_annotations();
+        state.into_buffer()
+    }
+
+    fn count_red(buf: &PixelBuffer) -> usize {
+        let raw = buf.to_raw_image();
+        let ch = raw.channels as usize;
+        raw.pixels
+            .chunks(ch)
+            .filter(|px| px[0] > 200 && px[1] < 50 && px[2] < 50)
+            .count()
+    }
+
+    #[test]
+    fn display_profile_shows_normal_annotation_without_print_flag() {
+        // Annotation with /F 0 (no flags): visible on display, excluded from print
+        let pdf = pdf_with_flagged_annotation(0);
+        let buf = render_with_profile(pdf, PrintProfile::Display);
+        assert!(
+            count_red(&buf) > 100,
+            "annotation with no flags should render in Display profile"
+        );
+    }
+
+    #[test]
+    fn display_profile_shows_annotation_with_print_flag() {
+        // Annotation with /F 4 (Print flag): visible on both display and print
+        let pdf = pdf_with_flagged_annotation(4);
+        let buf = render_with_profile(pdf, PrintProfile::Display);
+        assert!(
+            count_red(&buf) > 100,
+            "annotation with Print flag should render in Display profile"
+        );
+    }
+
+    #[test]
+    fn print_profile_excludes_annotation_without_print_flag() {
+        // Annotation with /F 0 (no Print flag): excluded from print
+        let pdf = pdf_with_flagged_annotation(0);
+        let buf = render_with_profile(pdf, PrintProfile::Print);
+        assert_eq!(
+            count_red(&buf),
+            0,
+            "annotation without Print flag must not render in Print profile"
+        );
+    }
+
+    #[test]
+    fn print_profile_includes_annotation_with_print_flag() {
+        // Annotation with /F 4 (Print flag set): included in print
+        let pdf = pdf_with_flagged_annotation(4);
+        let buf = render_with_profile(pdf, PrintProfile::Print);
+        assert!(
+            count_red(&buf) > 100,
+            "annotation with Print flag should render in Print profile"
+        );
+    }
+
+    #[test]
+    fn print_profile_shows_no_view_plus_print_annotation() {
+        // /F 36 = NoView (32) + Print (4): hidden on display, shown on print
+        let pdf = pdf_with_flagged_annotation(36);
+        let display_buf = render_with_profile(pdf.clone(), PrintProfile::Display);
+        let print_buf = render_with_profile(pdf, PrintProfile::Print);
+        assert_eq!(
+            count_red(&display_buf),
+            0,
+            "NoView+Print annotation should NOT render in Display"
+        );
+        assert!(
+            count_red(&print_buf) > 100,
+            "NoView+Print annotation SHOULD render in Print"
+        );
+    }
+
+    #[test]
+    fn proof_profile_uses_print_visibility() {
+        // Proof uses same visibility as Print
+        let pdf = pdf_with_flagged_annotation(4);
+        let buf = render_with_profile(pdf, PrintProfile::Proof);
+        assert!(
+            count_red(&buf) > 100,
+            "annotation with Print flag should render in Proof profile"
+        );
+    }
+
+    #[test]
+    fn hidden_annotation_excluded_in_all_profiles() {
+        // /F 6 = Hidden (2) + Print (4): hidden overrides all
+        let pdf = pdf_with_flagged_annotation(6);
+        let display_buf = render_with_profile(pdf.clone(), PrintProfile::Display);
+        let print_buf = render_with_profile(pdf.clone(), PrintProfile::Print);
+        let proof_buf = render_with_profile(pdf, PrintProfile::Proof);
+        assert_eq!(count_red(&display_buf), 0);
+        assert_eq!(count_red(&print_buf), 0);
+        assert_eq!(count_red(&proof_buf), 0);
+    }
+
+    #[test]
+    fn print_profile_changes_cache_fingerprint() {
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let tile = RenderTile::full(100, 100);
+        let mut display_contract = RenderContract::for_viewport(
+            RevisionId(1),
+            ObjectIdentityId(1),
+            1,
+            &viewport,
+            tile,
+            RenderMode::Compat,
+        );
+        display_contract.print_profile = PrintProfile::Display;
+
+        let mut print_contract = display_contract.clone();
+        print_contract.print_profile = PrintProfile::Print;
+
+        let mut proof_contract = display_contract.clone();
+        proof_contract.print_profile = PrintProfile::Proof;
+
+        let fp_display = display_contract.cache_fingerprint();
+        let fp_print = print_contract.cache_fingerprint();
+        let fp_proof = proof_contract.cache_fingerprint();
+
+        assert_ne!(
+            fp_display, fp_print,
+            "Display and Print must have different cache identity"
+        );
+        assert_ne!(
+            fp_print, fp_proof,
+            "Print and Proof must have different cache identity"
+        );
+        assert_ne!(
+            fp_display, fp_proof,
+            "Display and Proof must have different cache identity"
+        );
+    }
+
+    #[test]
+    fn contract_validate_refuses_halftone_screen() {
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let tile = RenderTile::full(100, 100);
+        let mut contract = RenderContract::for_viewport(
+            RevisionId(1),
+            ObjectIdentityId(1),
+            1,
+            &viewport,
+            tile,
+            RenderMode::Compat,
+        );
+        contract.halftone = HalftonePolicy::Screen;
+        let result = contract.validate();
+        assert!(result.is_err(), "HalftonePolicy::Screen should be refused");
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("halftone"),
+            "error should mention halftone: {msg}"
+        );
+    }
+
+    #[test]
+    fn contract_validate_refuses_preserve_separations_without_native_cmm() {
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let tile = RenderTile::full(100, 100);
+        let mut contract = RenderContract::for_viewport(
+            RevisionId(1),
+            ObjectIdentityId(1),
+            1,
+            &viewport,
+            tile,
+            RenderMode::Compat,
+        );
+        contract.overprint = OverprintPolicy::PreserveSeparations;
+        contract.color_management = ColorManagementPolicy::PortableQcms;
+        let result = contract.validate();
+        assert!(
+            result.is_err(),
+            "PreserveSeparations without NativeLittleCms should be refused"
+        );
+    }
+
+    #[test]
+    fn contract_validate_refuses_proof_with_deterministic_fallback() {
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let tile = RenderTile::full(100, 100);
+        let mut contract = RenderContract::for_viewport(
+            RevisionId(1),
+            ObjectIdentityId(1),
+            1,
+            &viewport,
+            tile,
+            RenderMode::Compat,
+        );
+        contract.print_profile = PrintProfile::Proof;
+        contract.color_management = ColorManagementPolicy::DeterministicFallback;
+        let result = contract.validate();
+        assert!(
+            result.is_err(),
+            "Proof profile with DeterministicFallback should be refused"
+        );
+    }
+
+    #[test]
+    fn contract_validate_accepts_valid_print_combinations() {
+        let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
+        let tile = RenderTile::full(100, 100);
+        let mut contract = RenderContract::for_viewport(
+            RevisionId(1),
+            ObjectIdentityId(1),
+            1,
+            &viewport,
+            tile,
+            RenderMode::Compat,
+        );
+        // Display + defaults
+        contract.print_profile = PrintProfile::Display;
+        assert!(contract.validate().is_ok());
+
+        // Print + overprint preview (not PreserveSeparations)
+        contract.print_profile = PrintProfile::Print;
+        contract.overprint = OverprintPolicy::Preview;
+        assert!(contract.validate().is_ok());
+
+        // Proof + PortableQcms (sufficient for proof)
+        contract.print_profile = PrintProfile::Proof;
+        contract.overprint = OverprintPolicy::Disabled;
+        contract.color_management = ColorManagementPolicy::PortableQcms;
+        assert!(contract.validate().is_ok());
     }
 }

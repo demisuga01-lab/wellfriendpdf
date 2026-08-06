@@ -822,27 +822,44 @@ impl ContentEngine {
         normalized.alpha_mode = expected.alpha_mode;
         normalized.stride = expected.stride;
         normalized.grayscale = expected.grayscale;
-        if normalized != expected {
+        // Accept caller-specified policies that are actively implemented:
+        // PrintProfile, AnnotationRenderPolicy, and FormRenderPolicy now
+        // influence rendering rather than being validation-only metadata.
+        let mut accepted_expected = expected.clone();
+        accepted_expected.print_profile = contract.print_profile;
+        accepted_expected.annotations = contract.annotations;
+        accepted_expected.forms = contract.forms;
+        if normalized != accepted_expected {
             return Err(WellfriendError::UnsupportedFeature(
                 "the requested render contract contains semantic policy fields not yet implemented by the active CPU renderer".to_string(),
             ));
         }
         let buffer = if tile == full_tile {
-            self.render_page_cancellable_with_mode(
-                contract.page_number,
-                contract.dpi,
-                cancel,
-                contract.render_mode(),
-            )?
-        } else {
-            PageRenderer::render_page_tile_cancellable_with_mode(
+            PageRenderer::render_page_cancellable_with_contract_policies(
                 self,
                 contract.page_number,
                 contract.dpi,
-                tile,
                 cancel,
                 contract.render_mode(),
+                contract.print_profile,
+                contract.annotations,
+                contract.forms,
             )?
+        } else {
+            // For sub-page tiles, render the full page with contract policies
+            // then crop to the requested tile. This preserves correct annotation
+            // visibility while honoring the tile clip.
+            let full_buf = PageRenderer::render_page_cancellable_with_contract_policies(
+                self,
+                contract.page_number,
+                contract.dpi,
+                cancel,
+                contract.render_mode(),
+                contract.print_profile,
+                contract.annotations,
+                contract.forms,
+            )?;
+            crate::render::page_renderer::crop_buffer_for_contract(&full_buf, tile)?
         };
         if buffer.width != contract.width || buffer.height != contract.height {
             return Err(WellfriendError::MalformedPdf(

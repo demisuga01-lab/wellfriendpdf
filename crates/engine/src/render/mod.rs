@@ -19,6 +19,7 @@ pub mod page_renderer;
 pub mod path;
 pub mod plan;
 pub mod postscript;
+pub(crate) mod print_profile;
 pub mod progressive;
 pub mod quality;
 pub mod shading;
@@ -73,6 +74,7 @@ pub use plan::{
     RenderSpatialIndex,
 };
 pub use postscript::{assemble_eps_document, assemble_ps_document, render_page_ps, PsPage};
+pub use print_profile::{PrintProfileRefusal, PrintProfileRefusalCategory};
 pub use progressive::{
     ProgressiveRenderJob, ProgressiveRenderState, ProgressiveRenderStepReport,
     ProgressiveRenderToken,
