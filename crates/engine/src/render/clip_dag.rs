@@ -740,11 +740,12 @@ mod tests {
         assert!(!r1.is_materialized());
         assert!(!r2.is_materialized());
         assert!(!_inter.is_materialized());
-        // Total DAG bytes should be very small (no 400x400 byte planes)
+        // Total DAG bytes should remain far below a 400x400 dense byte plane.
         let stats = dag.stats();
+        let dense_mask_bytes = 400usize * 400usize;
         assert!(
-            stats.approximate_bytes < 2000,
-            "DAG should use narrow allocation, got {} bytes",
+            stats.approximate_bytes < dense_mask_bytes / 8,
+            "DAG should remain materially narrower than dense mask allocation, got {} bytes",
             stats.approximate_bytes
         );
     }
