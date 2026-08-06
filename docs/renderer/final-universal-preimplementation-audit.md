@@ -9,7 +9,7 @@
 
 The statuses below are deliberately conservative. `COMPLETE_ACTIVE` is not used for a dirty component unless source integration, public exposure where required, bounds, tests, and this task's current verification are all established. `PARTIAL` means production code exists and is reachable but misses one or more universal requirements. `MISSING` means the named architecture or public surface is absent. `UNVERIFIED` means source exists but the dirty snapshot was not compiled/tested before this audit. `RESEARCH_OPTIONAL` is reserved for explicitly non-Standard work.
 
-**Initial classification counts:** 38 subsystems; 0 `COMPLETE_ACTIVE`; 0 `COMPLETE_NOT_DEFAULT`; 0 `RESEARCH_OPTIONAL`; 26 `PARTIAL`; 9 `MISSING`; 0 `STUB`; 0 `UNWIRED`; 0 `DEAD_CODE`; 3 `UNVERIFIED`; 0 `BLOCKED`.
+**Initial classification counts:** 40 subsystems; 0 `COMPLETE_ACTIVE`; 0 `COMPLETE_NOT_DEFAULT`; 0 `RESEARCH_OPTIONAL`; 33 `PARTIAL`; 5 `MISSING`; 0 `STUB`; 0 `UNWIRED`; 0 `DEAD_CODE`; 2 `UNVERIFIED`; 0 `BLOCKED`.
 
 | ID | Subsystem | Required methods/algorithms | Current source files | Active entry points | Current status | Standard mode | Research mode | Native retained replay | Immediate fallback | Tests | Bindings | Known defects | Required work |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|
