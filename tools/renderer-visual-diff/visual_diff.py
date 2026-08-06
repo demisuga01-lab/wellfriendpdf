@@ -31,8 +31,13 @@ def load_rgba(path: Path, raw_bgra: bool, width: int | None, height: int | None)
         return image.convert("RGBA")
 
 
+def flattened_values(image: Image.Image) -> Iterable[object]:
+    getter = getattr(image, "get_flattened_data", image.getdata)
+    return getter()
+
+
 def rgba_pixels(image: Image.Image) -> list[tuple[int, int, int, int]]:
-    return list(image.getdata())
+    return list(flattened_values(image))
 
 
 def luminance(pixel: tuple[int, int, int, int]) -> float:
@@ -96,7 +101,7 @@ def expected_mask(path: Path | None, width: int, height: int) -> list[bool] | No
         mask = image.convert("L")
         if mask.size != (width, height):
             raise ValueError("expected-difference mask dimensions do not match input images")
-        return [value != 0 for value in mask.getdata()]
+        return [value != 0 for value in flattened_values(mask)]
 
 
 def compare(

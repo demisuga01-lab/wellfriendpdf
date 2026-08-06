@@ -143,6 +143,18 @@ public sealed class WellfriendPdfSmokeTests
     }
 
     [Fact]
+    public void RasterRenderingUsesTheCanonicalNativeSurface()
+    {
+        using var doc = WellfriendDocument.Open(FixturePath());
+        var png = doc.GetPage(1).RenderPng();
+        var jpeg = doc.GetPage(1).RenderJpeg();
+        Assert.True(png.Length > 8);
+        Assert.Equal(new byte[] { 0x89, 0x50, 0x4E, 0x47 }, png[..4]);
+        Assert.True(jpeg.Length > 4);
+        Assert.Equal(new byte[] { 0xFF, 0xD8 }, jpeg[..2]);
+    }
+
+    [Fact]
     public void SignatureComponentHandlesHaveExplicitOwnershipAndCancellation()
     {
         using var doc = WellfriendDocument.Open(FixturePath());
