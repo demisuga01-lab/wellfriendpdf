@@ -26,6 +26,10 @@ use crate::render::display_list::{
     RenderTile,
 };
 use crate::render::font_rasterizer::{get_fallback_font, FontRasterizer};
+use crate::render::font_substitution_report::{
+    classify_metric_posture, fallback_font_display_name, FontSubstitutionEvent,
+    FontSubstitutionLog, FontSubstitutionMetricPosture, FontSubstitutionReason,
+};
 use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey, GlyphCacheStats};
 use crate::render::image_painter::ImagePainter;
 use crate::render::invalidation::{InvalidationResult, RenderDependencyGraph};
@@ -113,6 +117,7 @@ pub struct RenderDocumentCache {
     transparent_page_group_cache: HashMap<String, bool>,
     document_revision: Option<RevisionId>,
     dependency_graph: Option<RenderDependencyGraph>,
+    font_substitution_log: FontSubstitutionLog,
 }
 
 impl RenderDocumentCache {
@@ -156,6 +161,7 @@ impl RenderDocumentCache {
             transparent_page_group_cache: HashMap::new(),
             document_revision: None,
             dependency_graph: None,
+            font_substitution_log: FontSubstitutionLog::new(),
         }
     }
 
@@ -198,6 +204,7 @@ impl RenderDocumentCache {
         self.transparent_page_group_cache.clear();
         self.document_revision = None;
         self.dependency_graph = None;
+        self.font_substitution_log.clear();
     }
 
     fn trim_string_cache<V>(cache: &mut HashMap<String, V>, max_entries: usize) -> usize {
@@ -553,6 +560,17 @@ impl RenderDocumentCache {
         &self,
     ) -> crate::render::display_list::RenderCacheMetrics {
         self.display_list_raster_cache.metrics()
+    }
+
+    /// Access the font substitution log recorded during rendering.
+    /// Events accumulate across render passes until explicitly cleared.
+    pub fn font_substitution_log(&self) -> &FontSubstitutionLog {
+        &self.font_substitution_log
+    }
+
+    /// Take ownership of the font substitution log and reset it.
+    pub fn take_font_substitution_log(&mut self) -> FontSubstitutionLog {
+        std::mem::take(&mut self.font_substitution_log)
     }
 
     pub(crate) fn display_list_key_with_revision(
@@ -1600,6 +1618,8 @@ struct RenderState<'a> {
     /// and DeviceN tint identity for report/proofing without changing RGB
     /// preview compositing semantics.
     separation_framebuffer: SeparationFramebuffer,
+    /// Font substitution events recorded during this render pass.
+    font_substitution_log: FontSubstitutionLog,
 }
 
 const RENDER_DOCUMENT_IMAGE_CACHE_MAX_BYTES: usize = 512 * 1024 * 1024;
@@ -2324,6 +2344,7 @@ impl<'a> RenderState<'a> {
                 viewport_width,
                 viewport_height,
             ),
+            font_substitution_log: FontSubstitutionLog::new(),
         }
     }
 
@@ -2353,6 +2374,8 @@ impl<'a> RenderState<'a> {
         let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
         let document_revision = cache.document_revision;
         let dependency_graph = std::mem::take(&mut cache.dependency_graph);
+        let mut merged_font_substitution_log = std::mem::take(&mut cache.font_substitution_log);
+        merged_font_substitution_log.absorb(self.font_substitution_log);
         *cache = RenderDocumentCache {
             glyph_cache: self.glyph_cache,
             glyph_mask_cache: self.glyph_mask_cache,
@@ -2392,6 +2415,7 @@ impl<'a> RenderState<'a> {
             transparent_page_group_cache,
             document_revision,
             dependency_graph,
+            font_substitution_log: merged_font_substitution_log,
         };
         cache.enforce_bounded_maps();
     }
@@ -2432,6 +2456,7 @@ impl<'a> RenderState<'a> {
             tiling_pattern_program_cache,
             tiling_pattern_program_cache_stats,
             offscreen_buffer_pool,
+            font_substitution_log,
             ..
         } = self;
         let display_list_cache = std::mem::take(&mut cache.display_list_cache);
@@ -2442,6 +2467,10 @@ impl<'a> RenderState<'a> {
         let transparent_page_group_cache = std::mem::take(&mut cache.transparent_page_group_cache);
         let document_revision = cache.document_revision;
         let dependency_graph = std::mem::take(&mut cache.dependency_graph);
+        // Merge the render state's font substitution log into the cache's
+        // existing log so events accumulate across render passes.
+        let mut merged_font_substitution_log = std::mem::take(&mut cache.font_substitution_log);
+        merged_font_substitution_log.absorb(font_substitution_log);
         *cache = RenderDocumentCache {
             glyph_cache,
             glyph_mask_cache,
@@ -2481,6 +2510,7 @@ impl<'a> RenderState<'a> {
             transparent_page_group_cache,
             document_revision,
             dependency_graph,
+            font_substitution_log: merged_font_substitution_log,
         };
         cache.enforce_bounded_maps();
         buf
@@ -2963,6 +2993,10 @@ impl<'a> RenderState<'a> {
         for pooled in child.offscreen_buffer_pool.drain(..) {
             self.recycle_offscreen_buffer(pooled);
         }
+
+        // Merge font substitution events from child state.
+        self.font_substitution_log
+            .absorb(std::mem::take(&mut child.font_substitution_log));
     }
 
     fn shading_mesh_data(
@@ -4604,6 +4638,7 @@ impl<'a> RenderState<'a> {
                 mask_viewport.width_px,
                 mask_viewport.height_px,
             ),
+            font_substitution_log: FontSubstitutionLog::new(),
         };
 
         if let Some(bbox) = extract_bbox(&g_dict) {
@@ -5277,6 +5312,7 @@ impl<'a> RenderState<'a> {
                 group_viewport.width_px,
                 group_viewport.height_px,
             ),
+            font_substitution_log: FontSubstitutionLog::new(),
         };
 
         // Carry the parent clip into the group so content is bounded the same
@@ -7842,9 +7878,24 @@ impl<'a> RenderState<'a> {
             return cached.clone();
         }
         self.font_bytes_cache_stats.misses = self.font_bytes_cache_stats.misses.saturating_add(1);
-        let resolved = self.resolve_font_bytes(font_name).map(Arc::new);
+        let (resolved, substitution_kind) = self.resolve_font_bytes_with_tracking(font_name);
+        let resolved = resolved.map(Arc::new);
         self.font_bytes_cache
             .insert(cache_key.to_string(), resolved.clone());
+
+        // Record font substitution event when a bundled fallback was used.
+        if let Some(reason) = substitution_kind {
+            let fallback_name = fallback_font_display_name(font_name);
+            let metric_posture = classify_metric_posture(font_name, fallback_name);
+            self.font_substitution_log.record(FontSubstitutionEvent {
+                requested_font: font_name.to_string(),
+                selected_fallback: fallback_name.to_string(),
+                reason,
+                page: self.page_number,
+                metric_posture,
+            });
+        }
+
         resolved
     }
 
@@ -7869,12 +7920,19 @@ impl<'a> RenderState<'a> {
         resolver
     }
 
-    fn resolve_font_bytes(&self, font_name: &str) -> Option<Vec<u8>> {
+    /// Resolves font bytes like the previous direct resolver, but also returns the
+    /// substitution reason if a bundled fallback was selected instead of
+    /// embedded font data. Returns `(bytes, None)` when an embedded font was
+    /// used, or `(bytes, Some(reason))` when a fallback was chosen.
+    fn resolve_font_bytes_with_tracking(
+        &self,
+        font_name: &str,
+    ) -> (Option<Vec<u8>>, Option<FontSubstitutionReason>) {
         let reader = self.engine.document().reader();
         if let Some(font_dict) = self.resources.fonts.get(font_name) {
             if let Some(bytes) = FontRasterizer::extract_font_bytes(font_dict, reader) {
                 if !bytes.is_empty() {
-                    return Some(bytes);
+                    return (Some(bytes), None);
                 }
             }
             if detect_font_subtype(font_dict) == FontSubtype::Type0 {
@@ -7883,17 +7941,28 @@ impl<'a> RenderState<'a> {
                         FontRasterizer::extract_font_bytes(&descendant_font, reader)
                     {
                         if !bytes.is_empty() {
-                            return Some(bytes);
+                            return (Some(bytes), None);
                         }
                     }
                 }
             }
+            // Font dictionary exists but no embedded program was usable.
             let fallback_name = fallback_font_lookup_name(font_name, font_dict, reader);
             if let Some(bytes) = get_fallback_font(&fallback_name) {
-                return Some(bytes.to_vec());
+                return (
+                    Some(bytes.to_vec()),
+                    Some(FontSubstitutionReason::BundledFallback),
+                );
             }
         }
-        get_fallback_font(font_name).map(|bytes| bytes.to_vec())
+        // No font dictionary at all — missing font.
+        match get_fallback_font(font_name) {
+            Some(bytes) => (
+                Some(bytes.to_vec()),
+                Some(FontSubstitutionReason::MissingFont),
+            ),
+            None => (None, None),
+        }
     }
 
     fn advance_text(&mut self, glyph_width: f64, is_space: bool) {
@@ -15088,5 +15157,85 @@ mod tests {
             Some(2),
             "Form font F1 should override page font F1"
         );
+    }
+
+    #[test]
+    fn font_substitution_log_survives_cache_transfer_and_records_fallback() {
+        use crate::render::font_substitution_report::{
+            FontSubstitutionEvent, FontSubstitutionLog, FontSubstitutionMetricPosture,
+            FontSubstitutionReason,
+        };
+
+        // Simulate what happens during a render: events are recorded on the
+        // RenderState's log and transferred to RenderDocumentCache.
+        let mut cache = RenderDocumentCache::new();
+        assert!(cache.font_substitution_log().is_empty());
+
+        // Simulate a render pass recording two events.
+        let mut state_log = FontSubstitutionLog::new();
+        state_log.record(FontSubstitutionEvent {
+            requested_font: "Helvetica".to_string(),
+            selected_fallback: "LiberationSans-Regular".to_string(),
+            reason: FontSubstitutionReason::MissingFont,
+            page: 1,
+            metric_posture: FontSubstitutionMetricPosture::MetricCompatible,
+        });
+        state_log.record(FontSubstitutionEvent {
+            requested_font: "Symbol".to_string(),
+            selected_fallback: "DejaVuSans".to_string(),
+            reason: FontSubstitutionReason::BundledFallback,
+            page: 1,
+            metric_posture: FontSubstitutionMetricPosture::CoverageOnly,
+        });
+
+        // Merge into cache via take + absorb (mirrors into_buffer_and_document_cache).
+        let mut merged = cache.take_font_substitution_log();
+        merged.absorb(state_log);
+
+        // Put it back by direct field access within the test module (tests have
+        // access to private fields of the same crate).
+        cache.font_substitution_log = merged;
+
+        // Verify events survived.
+        let log = cache.font_substitution_log();
+        assert_eq!(log.events().len(), 2);
+        assert_eq!(log.events()[0].requested_font, "Helvetica");
+        assert_eq!(log.events()[0].reason, FontSubstitutionReason::MissingFont);
+        assert_eq!(log.events()[0].page, 1);
+        assert_eq!(
+            log.events()[0].metric_posture,
+            FontSubstitutionMetricPosture::MetricCompatible
+        );
+        assert_eq!(log.events()[1].requested_font, "Symbol");
+        assert_eq!(
+            log.events()[1].reason,
+            FontSubstitutionReason::BundledFallback
+        );
+        assert_eq!(
+            log.events()[1].metric_posture,
+            FontSubstitutionMetricPosture::CoverageOnly
+        );
+
+        // Simulate a second render pass adding more events.
+        let mut second_log = FontSubstitutionLog::new();
+        second_log.record(FontSubstitutionEvent {
+            requested_font: "Courier".to_string(),
+            selected_fallback: "LiberationMono-Regular".to_string(),
+            reason: FontSubstitutionReason::MissingFont,
+            page: 2,
+            metric_posture: FontSubstitutionMetricPosture::MetricCompatible,
+        });
+
+        let mut merged2 = cache.take_font_substitution_log();
+        merged2.absorb(second_log);
+        cache.font_substitution_log = merged2;
+
+        assert_eq!(cache.font_substitution_log().events().len(), 3);
+        assert_eq!(cache.font_substitution_log().events()[2].page, 2);
+
+        // take_font_substitution_log resets the cache log.
+        let taken = cache.take_font_substitution_log();
+        assert_eq!(taken.events().len(), 3);
+        assert!(cache.font_substitution_log().is_empty());
     }
 }

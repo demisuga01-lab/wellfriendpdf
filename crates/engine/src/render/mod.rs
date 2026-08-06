@@ -8,6 +8,7 @@ pub mod contract;
 pub mod display_list;
 pub mod document_view;
 pub mod font_rasterizer;
+pub mod font_substitution_report;
 pub mod function;
 pub mod glyph_cache;
 pub mod glyph_outline;
@@ -52,6 +53,10 @@ pub use document_view::{
     RenderDocumentView, SemanticDocumentView, ValidationDocumentView, ViewMaterializationStats,
 };
 pub use font_rasterizer::{get_fallback_font, FontRasterizer};
+pub use font_substitution_report::{
+    classify_metric_posture, fallback_font_display_name, FontSubstitutionEvent,
+    FontSubstitutionLog, FontSubstitutionMetricPosture, FontSubstitutionReason,
+};
 pub use glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey, GlyphCacheStats};
 pub use image_painter::ImagePainter;
 pub use invalidation::{InvalidationResult, RenderDependencyGraph};
