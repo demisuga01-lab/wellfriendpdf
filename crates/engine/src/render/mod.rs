@@ -1,4 +1,5 @@
 pub mod buffer;
+pub mod clip_dag;
 pub(crate) mod cmm;
 pub mod color;
 pub(crate) mod color_glyph;
@@ -31,6 +32,7 @@ pub use buffer::{
     PixelBufferAllocationStats, PixelColor, PixelCompositorBackend, PixelCompositorOperation,
     PixelCompositorStats, RenderMode, BLACK, BLUE, GREEN, RED, TRANSPARENT, WHITE,
 };
+pub use clip_dag::{ClipDag, ClipDagStats, ClipNode, ClipState};
 pub use color::{ColorSpaceHandler, RenderColor};
 pub use contract::{
     AlphaMode, AnnotationRenderPolicy, BackendSelection, ColorManagementPolicy, ColorScheme,

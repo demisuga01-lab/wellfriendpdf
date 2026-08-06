@@ -11,6 +11,7 @@ use crate::content::state::{BlendMode, Color, ColorSpace, GraphicsState, LineCap
 use crate::engine::PageResources;
 use crate::object::PdfObject;
 use crate::render::buffer::{ClipMask, PixelBuffer, PixelColor, RenderMode, WHITE};
+use crate::render::clip_dag::{ClipDag, ClipNode, ClipState};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::line::DashState;
 use crate::render::path::{
@@ -760,7 +761,8 @@ pub trait RenderDevice {
 pub struct CpuRenderDevice {
     buf: PixelBuffer,
     viewport: Viewport,
-    clip_stack: Vec<Option<ClipMask>>,
+    clip_stack: Vec<Arc<ClipNode>>,
+    clip_dag: ClipDag,
     path_fill_mask_cache: CpuPathFillMaskCache,
     path_stroke_mask_cache: CpuPathStrokeMaskCache,
 }
@@ -776,6 +778,7 @@ impl CpuRenderDevice {
             ),
             viewport,
             clip_stack: Vec::new(),
+            clip_dag: ClipDag::new(),
             path_fill_mask_cache: CpuPathFillMaskCache::default(),
             path_stroke_mask_cache: CpuPathStrokeMaskCache::default(),
         }
@@ -1102,12 +1105,17 @@ fn cpu_quantize_mask_fraction(value: f64) -> i64 {
 
 impl RenderDevice for CpuRenderDevice {
     fn save(&mut self) {
-        self.clip_stack.push(self.buf.clip_mask().cloned());
+        let node = self.clip_dag.intern_option(self.buf.clip_mask());
+        self.clip_stack.push(node);
     }
 
     fn restore(&mut self) {
         if let Some(saved) = self.clip_stack.pop() {
-            self.buf.restore_clip(saved);
+            let mask = match &saved.state {
+                ClipState::Full => None,
+                _ => Some(saved.materialize(self.buf.width, self.buf.height).clone()),
+            };
+            self.buf.restore_clip(mask);
         } else {
             log::warn!("DisplayList CpuRenderDevice: restore with empty clip stack");
         }

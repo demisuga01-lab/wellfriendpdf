@@ -18,6 +18,7 @@ use crate::prepress::{self, SeparationFramebuffer, SeparationFramebufferReport};
 use crate::render::buffer::{
     AlphaMask, ClipMask, PixelBuffer, PixelColor, RenderMode, BLACK, WHITE,
 };
+use crate::render::clip_dag::{ClipDag, ClipNode, ClipState};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::contract::{ObjectIdentityId, RevisionId};
 use crate::render::display_list::{
@@ -1517,7 +1518,7 @@ struct RenderState<'a> {
     viewport: Viewport,
     resources: PageResources,
     gs: GraphicsState,
-    clip_stack: Vec<Option<ClipMask>>,
+    clip_stack: Vec<Arc<ClipNode>>,
     smask_stack: Vec<Option<AlphaMask>>,
     path: Path,
     pending_clip: Option<FillRule>,
@@ -1556,6 +1557,10 @@ struct RenderState<'a> {
     tiling_pattern_program_cache: HashMap<String, Option<Arc<Vec<ContentOperation>>>>,
     tiling_pattern_program_cache_stats: RenderArtifactCacheStats,
     offscreen_buffer_pool: Vec<PixelBuffer>,
+    /// Persistent clip DAG for structural sharing of clip states across
+    /// save/restore cycles. Rectangle and path clips are interned so that
+    /// repeated q/Q pairs share the same Arc instead of cloning masks.
+    clip_dag: ClipDag,
     /// Tiling-pattern stream keys currently being replayed. PDF pattern
     /// resources can legally refer to other patterns, but real files sometimes
     /// contain accidental self-recursive pattern fills. Bound those at the
@@ -2302,6 +2307,7 @@ impl<'a> RenderState<'a> {
             tiling_pattern_program_cache: std::mem::take(&mut cache.tiling_pattern_program_cache),
             tiling_pattern_program_cache_stats,
             offscreen_buffer_pool: std::mem::take(&mut cache.offscreen_buffer_pool),
+            clip_dag: ClipDag::new(),
             pattern_stack: Vec::new(),
             form_depth: 0,
             form_object_stack: Vec::new(),
@@ -3154,7 +3160,8 @@ impl<'a> RenderState<'a> {
     fn replay_display_op(&mut self, op: &DisplayOp) {
         match op {
             DisplayOp::Save => {
-                self.clip_stack.push(self.buf.clip_mask().cloned());
+                let node = self.clip_dag.intern_option(self.buf.clip_mask());
+                self.clip_stack.push(node);
                 self.smask_stack.push(self.buf.smask_mask().cloned());
                 self.gs.push();
             }
@@ -3162,7 +3169,13 @@ impl<'a> RenderState<'a> {
                 self.gs.pop();
                 self.sync_blend_mode();
                 match self.clip_stack.pop() {
-                    Some(saved) => self.buf.restore_clip(saved),
+                    Some(saved) => {
+                        let mask = match &saved.state {
+                            ClipState::Full => None,
+                            _ => Some(saved.materialize(self.buf.width, self.buf.height).clone()),
+                        };
+                        self.buf.restore_clip(mask);
+                    }
                     None => log::warn!("DisplayList replay: restore with empty clip stack"),
                 }
                 match self.smask_stack.pop() {
@@ -3612,7 +3625,8 @@ impl<'a> RenderState<'a> {
             "W" => self.pending_clip = Some(FillRule::NonZero),
             "W*" => self.pending_clip = Some(FillRule::EvenOdd),
             "q" => {
-                self.clip_stack.push(self.buf.clip_mask().cloned());
+                let node = self.clip_dag.intern_option(self.buf.clip_mask());
+                self.clip_stack.push(node);
                 self.smask_stack.push(self.buf.smask_mask().cloned());
                 self.gs.process(op);
             }
@@ -3620,7 +3634,13 @@ impl<'a> RenderState<'a> {
                 self.gs.process(op);
                 self.sync_blend_mode();
                 match self.clip_stack.pop() {
-                    Some(saved) => self.buf.restore_clip(saved),
+                    Some(saved) => {
+                        let mask = match &saved.state {
+                            ClipState::Full => None,
+                            _ => Some(saved.materialize(self.buf.width, self.buf.height).clone()),
+                        };
+                        self.buf.restore_clip(mask);
+                    }
                     None => log::warn!("PageRenderer: Q with empty clip stack"),
                 }
                 match self.smask_stack.pop() {
@@ -4567,6 +4587,7 @@ impl<'a> RenderState<'a> {
             tiling_pattern_program_cache: self.tiling_pattern_program_cache.clone(),
             tiling_pattern_program_cache_stats: RenderArtifactCacheStats::default(),
             offscreen_buffer_pool: child_offscreen_buffer_pool,
+            clip_dag: ClipDag::new(),
             pattern_stack: self.pattern_stack.clone(),
             form_depth: self.form_depth + 1,
             form_object_stack: self.form_object_stack.clone(),
@@ -5039,7 +5060,8 @@ impl<'a> RenderState<'a> {
         // â”€â”€ Step 2: Extract Matrix and BBox â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // â”€â”€ Step 3: Save graphics state, clip, and resources â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         let saved_gs = self.gs.clone();
-        self.clip_stack.push(self.buf.clip_mask().cloned());
+        let node = self.clip_dag.intern_option(self.buf.clip_mask());
+        self.clip_stack.push(node);
         self.smask_stack.push(self.buf.smask_mask().cloned());
         let saved_base_ctm = self.base_ctm;
         self.form_depth += 1;
@@ -5238,6 +5260,7 @@ impl<'a> RenderState<'a> {
             tiling_pattern_program_cache: self.tiling_pattern_program_cache.clone(),
             tiling_pattern_program_cache_stats: RenderArtifactCacheStats::default(),
             offscreen_buffer_pool: child_offscreen_buffer_pool,
+            clip_dag: ClipDag::new(),
             pattern_stack: self.pattern_stack.clone(),
             form_depth: self.form_depth + 1,
             form_object_stack: self.form_object_stack.clone(),
@@ -5319,7 +5342,13 @@ impl<'a> RenderState<'a> {
         self.base_ctm = saved_base_ctm;
         self.sync_blend_mode();
         match self.clip_stack.pop() {
-            Some(saved) => self.buf.restore_clip(saved),
+            Some(saved) => {
+                let mask = match &saved.state {
+                    ClipState::Full => None,
+                    _ => Some(saved.materialize(self.buf.width, self.buf.height).clone()),
+                };
+                self.buf.restore_clip(mask);
+            }
             None => log::warn!("PageRenderer: Form cleanup with empty clip stack"),
         }
         match self.smask_stack.pop() {
@@ -5504,7 +5533,8 @@ impl<'a> RenderState<'a> {
         let bbox = extract_bbox(form_dict);
 
         let saved_gs = self.gs.clone();
-        self.clip_stack.push(self.buf.clip_mask().cloned());
+        let node = self.clip_dag.intern_option(self.buf.clip_mask());
+        self.clip_stack.push(node);
         self.smask_stack.push(self.buf.smask_mask().cloned());
         let saved_base_ctm = self.base_ctm;
         self.form_depth += 1;
