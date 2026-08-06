@@ -31,12 +31,7 @@ pub enum ClipState {
     /// No pixel is visible. Annihilator for intersection.
     Empty,
     /// Axis-aligned integer rectangle clip (very common in PDF).
-    Rectangle {
-        x: i32,
-        y: i32,
-        w: i32,
-        h: i32,
-    },
+    Rectangle { x: i32, y: i32, w: i32, h: i32 },
     /// Arbitrary path-derived binary clip, stored as sorted run-length rows.
     /// The `fingerprint` is a content hash for deduplication.
     Path {
@@ -83,7 +78,8 @@ impl ClipNode {
     /// Get or materialize the concrete `ClipMask` for this node at the given
     /// buffer dimensions.
     pub fn materialize(&self, width: u32, height: u32) -> &ClipMask {
-        self.materialized.get_or_init(|| self.state.to_clip_mask(width, height))
+        self.materialized
+            .get_or_init(|| self.state.to_clip_mask(width, height))
     }
 
     /// Check if the materialized mask is already available without computing it.
@@ -109,7 +105,6 @@ impl ClipNode {
         std::mem::size_of::<Self>() + state_bytes + mat_bytes
     }
 }
-
 
 impl ClipState {
     /// Materialize a concrete `ClipMask` from this DAG state.
@@ -251,10 +246,18 @@ impl ClipState {
                     *hh = hh.wrapping_mul(0x100000001b3);
                 };
                 mix(&mut hash, 0x03); // tag byte for Rectangle
-                for b in x.to_le_bytes() { mix(&mut hash, b); }
-                for b in y.to_le_bytes() { mix(&mut hash, b); }
-                for b in w.to_le_bytes() { mix(&mut hash, b); }
-                for b in h.to_le_bytes() { mix(&mut hash, b); }
+                for b in x.to_le_bytes() {
+                    mix(&mut hash, b);
+                }
+                for b in y.to_le_bytes() {
+                    mix(&mut hash, b);
+                }
+                for b in w.to_le_bytes() {
+                    mix(&mut hash, b);
+                }
+                for b in h.to_le_bytes() {
+                    mix(&mut hash, b);
+                }
                 hash
             }
             ClipState::Path { fingerprint, .. } => *fingerprint,
@@ -265,14 +268,17 @@ impl ClipState {
                     *hh = hh.wrapping_mul(0x100000001b3);
                 };
                 mix(&mut hash, 0x04); // tag byte for Intersection
-                for b in lhs.state.fingerprint().to_le_bytes() { mix(&mut hash, b); }
-                for b in rhs.state.fingerprint().to_le_bytes() { mix(&mut hash, b); }
+                for b in lhs.state.fingerprint().to_le_bytes() {
+                    mix(&mut hash, b);
+                }
+                for b in rhs.state.fingerprint().to_le_bytes() {
+                    mix(&mut hash, b);
+                }
                 hash
             }
         }
     }
 }
-
 
 /// The clip DAG interner: deduplicates clip states and provides structural
 /// sharing for the renderer's clip stack.
@@ -373,11 +379,7 @@ impl ClipDag {
     /// - Full ∩ X = X
     /// - Empty ∩ X = Empty
     /// - X ∩ X = X (identity)
-    pub fn intersect(
-        &mut self,
-        lhs: &Arc<ClipNode>,
-        rhs: &Arc<ClipNode>,
-    ) -> Arc<ClipNode> {
+    pub fn intersect(&mut self, lhs: &Arc<ClipNode>, rhs: &Arc<ClipNode>) -> Arc<ClipNode> {
         // Algebraic identities
         if lhs.state == ClipState::Full {
             return Arc::clone(rhs);
@@ -392,8 +394,21 @@ impl ClipDag {
             return Arc::clone(lhs);
         }
         // Rectangle ∩ Rectangle → Rectangle (if containment or simple overlap)
-        if let (ClipState::Rectangle { x: x1, y: y1, w: w1, h: h1 },
-                ClipState::Rectangle { x: x2, y: y2, w: w2, h: h2 }) = (&lhs.state, &rhs.state) {
+        if let (
+            ClipState::Rectangle {
+                x: x1,
+                y: y1,
+                w: w1,
+                h: h1,
+            },
+            ClipState::Rectangle {
+                x: x2,
+                y: y2,
+                w: w2,
+                h: h2,
+            },
+        ) = (&lhs.state, &rhs.state)
+        {
             let ix0 = (*x1).max(*x2);
             let iy0 = (*y1).max(*y2);
             let ix1 = (x1 + w1).min(x2 + w2);
@@ -415,7 +430,15 @@ impl ClipDag {
     }
 
     /// Create a rectangle node.
-    pub fn rectangle(&mut self, x: i32, y: i32, w: i32, h: i32, buf_w: u32, buf_h: u32) -> Arc<ClipNode> {
+    pub fn rectangle(
+        &mut self,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+        buf_w: u32,
+        buf_h: u32,
+    ) -> Arc<ClipNode> {
         if w <= 0 || h <= 0 {
             return self.empty();
         }
@@ -468,7 +491,6 @@ impl Default for ClipDag {
         Self::new()
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -553,7 +575,12 @@ mod tests {
         let result = dag.intersect(&r1, &r2);
         assert_eq!(
             result.state,
-            ClipState::Rectangle { x: 50, y: 50, w: 50, h: 50 }
+            ClipState::Rectangle {
+                x: 50,
+                y: 50,
+                w: 50,
+                h: 50
+            }
         );
     }
 
@@ -631,7 +658,12 @@ mod tests {
         let node = dag.intern_mask(&mask);
         assert_eq!(
             node.state,
-            ClipState::Rectangle { x: 10, y: 20, w: 50, h: 30 }
+            ClipState::Rectangle {
+                x: 10,
+                y: 20,
+                w: 50,
+                h: 30
+            }
         );
     }
 
@@ -721,9 +753,9 @@ mod tests {
     fn clip_state_from_mask_path_fingerprint_is_stable() {
         // Create a non-trivial mask from visible runs
         let runs = vec![
-            vec![(5, 95)],   // row 0
-            vec![(10, 90)],  // row 1
-            vec![(15, 85)],  // row 2
+            vec![(5, 95)],  // row 0
+            vec![(10, 90)], // row 1
+            vec![(15, 85)], // row 2
         ];
         let mask = ClipMask::from_visible_runs(100, 3, runs.clone());
         let state1 = ClipState::from_clip_mask(&mask);
