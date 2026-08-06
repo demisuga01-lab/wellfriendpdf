@@ -6134,54 +6134,7 @@ impl<'a> RenderState<'a> {
             {
                 if is_type3 {
                     if let Some(font_dict) = font_dict.as_ref() {
-                        if !text_rendering_mode_clips(text_mode)
-                            && !self.buf.render_mode().is_high_quality()
-                        {
-                            if let Some(font_bytes) =
-                                self.get_type3_compat_font_bytes(&font_cache_key, font_dict)
-                            {
-                                if !font_bytes.is_empty() {
-                                    let font_hash = font_resource_glyph_cache_hash(
-                                        font_bytes.as_slice(),
-                                        &font_cache_key,
-                                    );
-                                    let upem = Self::get_upem(font_bytes.as_slice())
-                                        .map(f64::from)
-                                        .filter(|value| *value > 0.0)
-                                        .unwrap_or(upem);
-                                    let light_hinting_supported =
-                                        ttf_parser::Face::parse(font_bytes.as_slice(), 0).is_ok()
-                                            || crate::fonts::type1::Type1Font::is_type1(
-                                                font_bytes.as_slice(),
-                                            );
-                                    ttf_advance =
-                                        self.render_glyph_with_cache(GlyphRenderRequest {
-                                            font_name: &font_name,
-                                            font_subtype: FontSubtype::TrueType,
-                                            code: glyph.code,
-                                            ch: glyph.unicode,
-                                            glyph_name: glyph.glyph_name.as_deref(),
-                                            is_gid: false,
-                                            font_bytes: font_bytes.as_slice(),
-                                            font_hash,
-                                            variation: &variation,
-                                            upem,
-                                            light_hinting_supported,
-                                            offset_x: glyph
-                                                .vertical_origin
-                                                .map(|(vx, _)| -vx)
-                                                .unwrap_or(0.0),
-                                            offset_y: glyph
-                                                .vertical_origin
-                                                .map(|(_, vy)| vy)
-                                                .unwrap_or(0.0),
-                                        });
-                                }
-                            }
-                        }
-                        if ttf_advance.is_none() {
-                            ttf_advance = self.render_type3_glyph(&font_name, font_dict, &glyph);
-                        }
+                        ttf_advance = self.render_type3_glyph(&font_name, font_dict, &glyph);
                     }
                     if ttf_advance.is_none() && !text_rendering_mode_clips(text_mode) {
                         let allow_compat_fallback = !self.buf.render_mode().is_high_quality();
