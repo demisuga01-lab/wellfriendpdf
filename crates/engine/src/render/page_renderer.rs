@@ -28,7 +28,7 @@ use crate::render::display_list::{
 use crate::render::font_rasterizer::{get_fallback_font, FontRasterizer};
 use crate::render::font_substitution_report::{
     classify_metric_posture, fallback_font_display_name, FontSubstitutionEvent,
-    FontSubstitutionLog, FontSubstitutionMetricPosture, FontSubstitutionReason,
+    FontSubstitutionLog, FontSubstitutionReason,
 };
 use crate::render::glyph_cache::{CachedGlyph, GlyphCache, GlyphCacheKey, GlyphCacheStats};
 use crate::render::image_painter::ImagePainter;
