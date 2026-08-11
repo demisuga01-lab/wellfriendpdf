@@ -371,11 +371,13 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "--print-profile",
         "proof",
         "--write-contract-json",
+        "--font-substitution-report",
         "--json",
     ]);
     let json = assert_json(&out, "render contract raw");
     assert_eq!(json["render_contract"], true);
     assert_eq!(json["contract_json_sidecars"], 1);
+    assert_eq!(json["font_substitution_sidecars"], 1);
     assert_eq!(json["pixel_format"], "bgra8");
     assert_eq!(json["grayscale"], true);
     assert_eq!(json["print_profile"], "proof");
@@ -392,6 +394,14 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         .expect("contract sidecar entry");
     let contract: serde_json::Value =
         serde_json::from_slice(&contract.1).expect("parse contract sidecar");
+    let font_substitution = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.font-substitution.json")
+        .expect("font substitution report sidecar entry");
+    let font_substitution: serde_json::Value =
+        serde_json::from_slice(&font_substitution.1).expect("parse font substitution sidecar");
+    assert!(font_substitution["events"].is_array());
+    assert!(font_substitution["overflow_count"].is_number());
     assert_eq!(contract["schema_version"], 1);
     assert_eq!(contract["clip"]["width"], 16);
     assert_eq!(contract["clip"]["height"], 16);
@@ -418,11 +428,13 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "raw",
         "--contract-json",
         contract_json.to_str().unwrap(),
+        "--font-substitution-report",
         "--json",
     ]);
     let replay_json = assert_json(&replay, "render --contract-json raw");
     assert_eq!(replay_json["render_contract"], true);
     assert_eq!(replay_json["contract_json_input"], true);
+    assert_eq!(replay_json["font_substitution_sidecars"], 1);
     assert_eq!(replay_json["pixel_format"], "Bgra8");
     assert_eq!(replay_json["grayscale"], true);
     assert_eq!(replay_json["print_profile"], "Proof");
@@ -432,6 +444,9 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         .find(|(name, _)| name == "page-001.raw")
         .expect("replayed raw surface entry");
     assert_eq!(replay_raw.1.len(), 16 * 16 * 4);
+    assert!(replay_entries
+        .iter()
+        .any(|(name, _)| name == "page-001.font-substitution.json"));
 
     let _ = std::fs::remove_file(&o);
     let _ = std::fs::remove_file(&contract_json);

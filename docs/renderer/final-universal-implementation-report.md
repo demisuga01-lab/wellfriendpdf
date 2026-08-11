@@ -16,6 +16,7 @@
 6. Made SVG output explicitly rasterize pages containing unresolved ExtGState operators or more than 64 text-showing operators. This changes a known low-fidelity vector path into an explicit `SvgPage::is_rasterized` fallback; `svg_output` passes on the VPS.
 7. Exposed retained-list, fallback-reporting, progressive-core limitation, and CPU-SIMD/scalar-fallback state through `wellfriendpdf --mode standard capabilities`, with a dedicated runtime test.
 8. Added source-based pre-audit, full method inventory, and fallback inventory documents.
+9. Exposed bounded render-time font-substitution reports through Rust render APIs and CLI sidecars.
 
 ## Post-status matrix
 
@@ -43,7 +44,7 @@
 | RV-18 | PARTIAL | PARTIAL | `shading.rs`, `function.rs` | partial | canonical shading paths | shading tests pass | CLI indirect | function/decode limits | Full exact/contract verification remains incomplete |
 | RV-19 | PARTIAL | PARTIAL | pattern paint handlers | partial | FB-04/FB-05 solid fallback | pattern tests pass | Rust/CLI indirect | recursion/tile cap | Recursive/over-cap patterns approximate instead of typed exact refusal |
 | RV-20 | PARTIAL | PARTIAL | Type 3 charproc/cache paths | partial | FB-06 compatibility fallback | Type 3 tests pass | Rust indirect | cache caps | No immutable Type 3 sublist state machine/exact closure |
-| RV-21 | PARTIAL | PARTIAL | fonts/glyph caches | partial | FB-07 bundled substitution | font tests pass | limited | selected byte caches | Atlas/single-flight/full contract keys/binding parity missing |
+| RV-21 | PARTIAL | PARTIAL_ADVANCED | fonts/glyph caches plus `render/font_substitution_report.rs` | partial | FB-07 bundled substitution | font tests pass; bounded substitution log serializes | Rust/API and CLI sidecar partial | selected byte caches plus bounded report events | Atlas/single-flight/full contract keys/per-glyph and cross-binding report parity missing |
 | RV-22 | PARTIAL | PARTIAL | image decode/sampler/cache | partial | FB-09 compatibility sampler | image tests pass | limited | scheduler/image cache | Region/progressive strategy and unified identity incomplete |
 | RV-23 | PARTIAL | PARTIAL | CMM/color/overprint | partial | FB-10 qcms backend | CMM tests pass | limited | profile/decode bounds | Print/proof contract and native CMM feature validation blocked |
 | RV-24 | PARTIAL | PARTIAL | Form program cache | partial | list-level immediate fallback | Form tests pass | Rust indirect | decode/depth | Key lacks full resource/revision/contract identity |
@@ -139,6 +140,7 @@ The repaired renderer continuation is source- and VPS-validated for the availabl
 
 | ID | 2026-08-11 status | Source status | Remaining source limitation |
 |---|---|---|---|
+| RV-21 font substitution reporting | PARTIAL_ADVANCED | Bounded substitution events are recorded during render, serializable, returned from Rust render APIs, and exposed through CLI JSON sidecars. | Complete per-glyph details, atlas/single-flight closure, full contract keys, and cross-binding report parity remain incomplete. |
 | RV-22 image pipeline | PARTIAL_ADVANCED | Metadata-first image culling includes tile-origin handling; cache keys carry target size, quality, JPX flag, source-region, and reduction dimensions; SMask discovery is primary-walk based. | Decoder-native ROI, reduction-tier decode, and progressive image continuation remain limited by current codec APIs and integration. |
 | RV-28 tile scheduler | PARTIAL_ADVANCED | Fixed tile sizes 128/192/256/384/512 are supported, adaptive size selection is deterministic, and visible-tile ordering is already active through viewport hints. | Adjacent-page prefetch, dirty-region rescheduling, and a full multi-priority viewer queue are not complete. |
 | RV-29 progressive lifecycle | PARTIAL_ADVANCED | Rust, server, C ABI source, Python, WASM, .NET, and Java expose progressive session lifecycles in source; server sessions are bounded and owner scoped. | Binding build matrix and cross-language behavioral parity remain unverified locally; retained fallback for unsupported display lists remains explicit. |
@@ -158,6 +160,7 @@ The repaired renderer continuation is source- and VPS-validated for the availabl
 | `cargo test -p wellfriendpdf-engine mark_soft_masks_uses_collected_primary_walk_refs --lib --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-engine halftone --lib --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-engine contract_row_encoder_honors_reverse_byte_order --lib --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-engine render_page_returns_font_substitution_report --lib --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-server --test progressive_integration --jobs 1` | 0 |
 | `cargo fmt --all --check` | 0 |
 | `cargo check --workspace --all-targets --jobs 1` | 0 |
@@ -170,4 +173,4 @@ The repaired renderer continuation is source- and VPS-validated for the availabl
 
 `IMPLEMENTATION_INCOMPLETE`
 
-The local pass completed several actionable renderer/API gaps, but universal renderer source closure is still not achieved. Remaining blockers include complete packed plans for every supported high-level visual operation, removal of retained-to-immediate delegation for supported lists, complete transaction-driven invalidation, full persistent clip DAG integration, full print/DeviceN/proof execution, full viewer priority queue and obsolete-work cancellation across all bindings, decoder-native region/reduction/progressive image integration where APIs permit, WASM SIMD kernels, SVG/PS regional fallback, and full contract-builder parity.
+The local pass completed several actionable renderer/API gaps, but universal renderer source closure is still not achieved. Remaining blockers include complete packed plans for every supported high-level visual operation, removal of retained-to-immediate delegation for supported lists, complete transaction-driven invalidation, full persistent clip DAG integration, full print/DeviceN/proof execution, complete per-glyph/cross-binding font substitution reports, full viewer priority queue and obsolete-work cancellation across all bindings, decoder-native region/reduction/progressive image integration where APIs permit, WASM SIMD kernels, SVG/PS regional fallback, and full contract-builder parity.

@@ -934,10 +934,10 @@ impl PageRenderer {
         Ok(buf)
     }
 
-    /// Render with explicit contract policies for PrintProfile, annotations,
-    /// and forms. Used by the contract-driven render path to activate policies.
+    /// Render with explicit contract policies and return the bounded font
+    /// substitution log collected during this render pass.
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn render_page_cancellable_with_contract_policies(
+    pub(crate) fn render_page_cancellable_with_contract_policies_and_font_substitution_report(
         engine: &ContentEngine,
         page_number: usize,
         dpi: u32,
@@ -946,7 +946,7 @@ impl PageRenderer {
         print_profile: PrintProfile,
         annotation_policy: AnnotationRenderPolicy,
         form_policy: FormRenderPolicy,
-    ) -> Result<PixelBuffer> {
+    ) -> Result<(PixelBuffer, FontSubstitutionLog)> {
         let ops = engine.get_page_content(page_number)?;
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
@@ -963,11 +963,11 @@ impl PageRenderer {
         cancel.check("page render with contract policies")?;
         state.render_page_annotations();
         cancel.check("page annotation render with contract policies")?;
-        let mut buf = state.into_buffer();
+        let (mut buf, font_substitution_log) = state.into_buffer_and_font_substitution_log();
         if transparent_page_group {
             buf.flatten_onto_background(WHITE);
         }
-        Ok(buf)
+        Ok((buf, font_substitution_log))
     }
 
     /// Render a page with reusable per-document caches.
@@ -2548,6 +2548,10 @@ impl<'a> RenderState<'a> {
 
     fn into_buffer(self) -> PixelBuffer {
         self.buf
+    }
+
+    fn into_buffer_and_font_substitution_log(self) -> (PixelBuffer, FontSubstitutionLog) {
+        (self.buf, self.font_substitution_log)
     }
 
     fn return_document_cache(self, cache: &mut RenderDocumentCache) {

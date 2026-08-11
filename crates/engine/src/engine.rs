@@ -14,6 +14,7 @@ use crate::object::{PdfDictionary, PdfObject};
 use crate::pubsec::PubSecKeyProvider;
 use crate::reader::PdfReader;
 use crate::render::contract::RevisionId;
+use crate::render::FontSubstitutionLog;
 use crate::render::{
     CanonicalDocument, DisplayList, EditDocumentView, HalftonePolicy, InvalidationResult,
     PageRenderer, PixelBuffer, PixelFormat, ProgressiveRenderJob, RenderCache, RenderContract,
@@ -732,6 +733,27 @@ impl ContentEngine {
         Ok(buffer)
     }
 
+    /// Render through a fully specified contract and return any bounded font
+    /// substitution events collected during that render pass.
+    pub fn render_page_with_contract_and_font_substitution_report(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<(PixelBuffer, FontSubstitutionLog)> {
+        if contract.pixel_format != PixelFormat::Rgba8
+            || contract.alpha_mode != crate::render::AlphaMode::Premultiplied
+            || contract.grayscale
+            || contract.reverse_byte_order
+        {
+            return Err(WellfriendError::UnsupportedFeature(
+                "render_page_with_contract_and_font_substitution_report returns canonical premultiplied RGBA; use render_page_into_buffer_with_font_substitution_report for the requested surface layout".to_string(),
+            ));
+        }
+        let (buffer, _, font_substitution_log) =
+            self.render_contract_pixels_with_font_substitution_report(contract, cancel)?;
+        Ok((buffer, font_substitution_log))
+    }
+
     /// Render into a caller-owned byte surface. The core validates document
     /// revision, page identity, clip bounds, output dimensions, stride, format,
     /// and buffer length before writing a single byte. Unsupported semantic
@@ -742,7 +764,20 @@ impl ContentEngine {
         cancel: &crate::cancel::CancelToken,
         output: &mut [u8],
     ) -> Result<()> {
-        let (buffer, _) = self.render_contract_pixels(contract, cancel)?;
+        self.render_page_into_buffer_with_font_substitution_report(contract, cancel, output)
+            .map(|_| ())
+    }
+
+    /// Render into a caller-owned byte surface and return font-substitution
+    /// events collected while producing that surface.
+    pub fn render_page_into_buffer_with_font_substitution_report(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+        output: &mut [u8],
+    ) -> Result<FontSubstitutionLog> {
+        let (buffer, _, font_substitution_log) =
+            self.render_contract_pixels_with_font_substitution_report(contract, cancel)?;
         let required = contract
             .stride
             .checked_mul(contract.height as usize)
@@ -768,7 +803,7 @@ impl ContentEngine {
                 contract.reverse_byte_order,
             );
         }
-        Ok(())
+        Ok(font_substitution_log)
     }
 
     fn render_contract_pixels(
@@ -776,6 +811,15 @@ impl ContentEngine {
         contract: &RenderContract,
         cancel: &crate::cancel::CancelToken,
     ) -> Result<(PixelBuffer, RenderTile)> {
+        self.render_contract_pixels_with_font_substitution_report(contract, cancel)
+            .map(|(buffer, tile, _)| (buffer, tile))
+    }
+
+    fn render_contract_pixels_with_font_substitution_report(
+        &self,
+        contract: &RenderContract,
+        cancel: &crate::cancel::CancelToken,
+    ) -> Result<(PixelBuffer, RenderTile, FontSubstitutionLog)> {
         contract.validate()?;
         if contract.document_revision != self.canonical.revision() {
             return Err(WellfriendError::invalid_input(
@@ -842,8 +886,8 @@ impl ContentEngine {
                 "the requested render contract contains semantic policy fields not yet implemented by the active CPU renderer".to_string(),
             ));
         }
-        let mut buffer = if tile == full_tile {
-            PageRenderer::render_page_cancellable_with_contract_policies(
+        let (mut buffer, font_substitution_log) = if tile == full_tile {
+            PageRenderer::render_page_cancellable_with_contract_policies_and_font_substitution_report(
                 self,
                 contract.page_number,
                 contract.dpi,
@@ -857,7 +901,7 @@ impl ContentEngine {
             // For sub-page tiles, render the full page with contract policies
             // then crop to the requested tile. This preserves correct annotation
             // visibility while honoring the tile clip.
-            let full_buf = PageRenderer::render_page_cancellable_with_contract_policies(
+            let (full_buf, font_substitution_log) = PageRenderer::render_page_cancellable_with_contract_policies_and_font_substitution_report(
                 self,
                 contract.page_number,
                 contract.dpi,
@@ -867,7 +911,10 @@ impl ContentEngine {
                 contract.annotations,
                 contract.forms,
             )?;
-            crate::render::page_renderer::crop_buffer_for_contract(&full_buf, tile)?
+            (
+                crate::render::page_renderer::crop_buffer_for_contract(&full_buf, tile)?,
+                font_substitution_log,
+            )
         };
         if contract.halftone == HalftonePolicy::Screen {
             crate::render::print_profile::apply_ordered_halftone_screen(
@@ -881,7 +928,7 @@ impl ContentEngine {
                 "render contract output dimensions diverged from the active viewport".to_string(),
             ));
         }
-        Ok((buffer, tile))
+        Ok((buffer, tile, font_substitution_log))
     }
 
     pub fn page_count(&self) -> Result<usize> {
@@ -1730,6 +1777,29 @@ impl ContentEngine {
         PageRenderer::render_page_with_mode(self, page_number, dpi, render_mode)
     }
 
+    /// Render a page and return the bounded font-substitution report collected
+    /// during that render pass. This uses a temporary document render cache so
+    /// the same reporting path used by cached rendering is available to simple
+    /// one-shot callers.
+    pub fn render_page_with_font_substitution_report(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+    ) -> Result<(PixelBuffer, FontSubstitutionLog)> {
+        let mut cache = RenderDocumentCache::new();
+        let buffer = PageRenderer::render_page_cancellable_with_mode_and_cache(
+            self,
+            page_number,
+            dpi,
+            &CancelToken::none(),
+            render_mode,
+            &mut cache,
+        )?;
+        let log = cache.take_font_substitution_log();
+        Ok((buffer, log))
+    }
+
     /// Render a page with a cancellation token threaded into the hot loops.
     ///
     /// The token is polled periodically while executing the page content
@@ -2513,6 +2583,30 @@ mod tests {
             .render_page_into_buffer(&too_small, &CancelToken::none(), &mut surface)
             .expect_err("too-small max pixel budget must be refused");
         assert!(err.to_string().contains("exceeding budget"));
+    }
+
+    #[test]
+    fn render_page_returns_font_substitution_report() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text("font-report", 12.0, 780.0, &TextStyle::default())
+            .expect("write font report fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open font report fixture");
+        let (_buffer, log) = engine
+            .render_page_with_font_substitution_report(1, 72, RenderMode::Compat)
+            .expect("render with font substitution report");
+        assert!(log.total_count() > 0);
+        assert!(log
+            .events()
+            .iter()
+            .any(|event| event.page == 1 && !event.selected_fallback.is_empty()));
+        let json = serde_json::to_value(&log).expect("serialize font substitution log");
+        assert!(json["events"].is_array());
+        assert_eq!(json["overflow_count"], 0);
     }
 
     #[test]

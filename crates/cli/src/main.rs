@@ -2770,6 +2770,9 @@ struct RenderArgs {
     /// Include a page-###.contract.json schema-v1 sidecar for each rendered page.
     #[arg(long)]
     write_contract_json: bool,
+    /// Include a page-###.font-substitution.json sidecar for each rendered page.
+    #[arg(long)]
+    font_substitution_report: bool,
     /// Device-space clip rectangle in output pixels: x,y,width,height.
     #[arg(long)]
     clip: Option<String>,
@@ -7559,12 +7562,14 @@ struct RenderedPageOutput {
     bytes: Vec<u8>,
     extension: &'static str,
     contract_json: Option<Vec<u8>>,
+    font_substitution_json: Option<Vec<u8>>,
 }
 
 fn render_args_have_contract_options(args: &RenderArgs) -> bool {
     args.render_contract
         || args.contract_json.is_some()
         || args.write_contract_json
+        || args.font_substitution_report
         || args.clip.is_some()
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
         || args.reverse_byte_order
@@ -7756,6 +7761,12 @@ fn encode_cli_render_buffer(
     }
 }
 
+fn encode_font_substitution_log_json(
+    log: &wellfriendpdf_engine::FontSubstitutionLog,
+) -> Result<Vec<u8>, String> {
+    serde_json::to_vec_pretty(log).map_err(|err| err.to_string())
+}
+
 fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     use rayon::prelude::*;
     use std::io::Write;
@@ -7888,24 +7899,51 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                     .checked_mul(contract.height as usize)
                     .ok_or_else(|| "render surface byte length overflows".to_string())?;
                 let mut bytes = vec![0u8; len];
-                engine
-                    .render_page_into_buffer(&contract, &CancelToken::none(), &mut bytes)
-                    .map_err(|err| err.to_string())?;
+                let font_substitution_json = if args.font_substitution_report {
+                    let log = engine
+                        .render_page_into_buffer_with_font_substitution_report(
+                            &contract,
+                            &CancelToken::none(),
+                            &mut bytes,
+                        )
+                        .map_err(|err| err.to_string())?;
+                    Some(encode_font_substitution_log_json(&log)?)
+                } else {
+                    engine
+                        .render_page_into_buffer(&contract, &CancelToken::none(), &mut bytes)
+                        .map_err(|err| err.to_string())?;
+                    None
+                };
                 return Ok(RenderedPageOutput {
                     bytes,
                     extension: output_format.file_extension(),
                     contract_json,
+                    font_substitution_json,
                 });
             }
-            let buf = engine
-                .render_page_with_contract(&contract, &CancelToken::none())
-                .map_err(|err| err.to_string())?;
+            let (buf, font_substitution_json) = if args.font_substitution_report {
+                let (buf, log) = engine
+                    .render_page_with_contract_and_font_substitution_report(
+                        &contract,
+                        &CancelToken::none(),
+                    )
+                    .map_err(|err| err.to_string())?;
+                (buf, Some(encode_font_substitution_log_json(&log)?))
+            } else {
+                (
+                    engine
+                        .render_page_with_contract(&contract, &CancelToken::none())
+                        .map_err(|err| err.to_string())?,
+                    None,
+                )
+            };
             let bytes = encode_cli_render_buffer(output_format, &buf, quality)
                 .map_err(|err| err.to_string())?;
             return Ok(RenderedPageOutput {
                 bytes,
                 extension: output_format.file_extension(),
                 contract_json,
+                font_substitution_json,
             });
         }
 
@@ -7918,12 +7956,19 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 document_cache,
             )
             .map_err(|err| err.to_string())?;
+        let font_substitution_json = if args.font_substitution_report {
+            let log = document_cache.take_font_substitution_log();
+            Some(encode_font_substitution_log_json(&log)?)
+        } else {
+            None
+        };
         let bytes = encode_cli_render_buffer(output_format, &buf, quality)
             .map_err(|err| err.to_string())?;
         Ok(RenderedPageOutput {
             bytes,
             extension: output_format.file_extension(),
             contract_json: None,
+            font_substitution_json,
         })
     };
 
@@ -7945,6 +7990,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 
     let mut rendered_count = 0usize;
     let mut contract_sidecars = 0usize;
+    let mut font_substitution_sidecars = 0usize;
     for (page_num, output) in rendered_pages {
         let output = match output {
             Ok(output) => output,
@@ -7961,6 +8007,12 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             zip.start_file(&filename, zip_opts)?;
             zip.write_all(&contract_json)?;
             contract_sidecars += 1;
+        }
+        if let Some(font_substitution_json) = output.font_substitution_json {
+            let filename = format!("page-{:03}.font-substitution.json", page_num);
+            zip.start_file(&filename, zip_opts)?;
+            zip.write_all(&font_substitution_json)?;
+            font_substitution_sidecars += 1;
         }
         rendered_count += 1;
     }
@@ -7991,6 +8043,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 "render_contract": use_contract,
                 "contract_json_input": args.contract_json.is_some(),
                 "contract_json_sidecars": contract_sidecars,
+                "font_substitution_sidecars": font_substitution_sidecars,
                 "pixel_format": summary_pixel_format,
                 "grayscale": summary_grayscale,
                 "print_profile": summary_print_profile,

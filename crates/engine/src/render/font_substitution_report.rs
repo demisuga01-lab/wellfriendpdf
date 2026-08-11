@@ -55,7 +55,7 @@ pub struct FontSubstitutionEvent {
 
 /// Bounded container for font substitution events collected during a render
 /// pass. Survives transfer between `RenderState` and `RenderDocumentCache`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 pub struct FontSubstitutionLog {
     events: Vec<FontSubstitutionEvent>,
     /// Number of events that were dropped because the log was at capacity.

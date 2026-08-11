@@ -31,7 +31,7 @@
 | RV-18 | PARTIAL | PARTIAL | `shading.rs`, `function.rs` | active / active | native retained shading ops | mesh cache | all backend-plan payloads/limits not closed |
 | RV-19 | PARTIAL | PARTIAL | tiling/shading pattern renderer | active / active | native visible-cell replay | cycle and exact cell-limit now typed refusal | progressive exact batching for valid enormous patterns remains incomplete |
 | RV-20 | PARTIAL | PARTIAL | `render_type3_glyph`, Type 3 caches | active / active | native-first | caches/resolution present | unresolved Type 3 Compat fallback remains; no complete sublist state machine |
-| RV-21 | PARTIAL | PARTIAL | font/glyph caches/rasterizer | active / active | native glyph paths | glyph LRU bounded; document maps bounded | atlas, single-flight, full public substitution report incomplete |
+| RV-21 | PARTIAL | PARTIAL_ADVANCED | font/glyph caches/rasterizer and substitution report | active / active | native glyph paths | glyph LRU bounded; document maps bounded; bounded substitution log serializes | atlas, single-flight, and complete per-glyph/binding substitution parity remain incomplete |
 | RV-22 | PARTIAL | PARTIAL | decoder/image painter/JPX | active / active | native image decode | bounded image cache/decode budgets | region/scaled/progressive decoder integration incomplete |
 | RV-23 | PARTIAL | PARTIAL | `cmm.rs`, `prepress.rs` | qcms active / native feature supported | native colour paths | LittleCMS installed on VPS; all-features compiles/tests | full DeviceN/print/proof contract incomplete |
 | RV-24 | PARTIAL | PARTIAL | Form program cache and renderer | active / active | native canonical Form replay | bounded cache map | Form retained packed sublists/complete key incomplete |
@@ -86,7 +86,7 @@ The pass materially advances the renderer architecture and removes several avoid
 | Image SMask discovery | A TODO-driven second reader pass classified soft-mask images after traversal. | SMask object numbers are collected during the primary XObject walk and applied before filtering. | `mark_soft_masks_uses_collected_primary_walk_refs` |
 | Binding surface declarations | C exports and WASM Rust methods existed without complete public header/TypeScript declaration visibility. | C header declares contract/caller-buffer/progressive APIs; WASM `.d.ts` declares contract and progressive classes; .NET/Java allow adaptive progressive sessions. | Source/API inspection plus final workspace checks |
 | Direct PDFium harness | Harness existed but lacked explicit source fields for every required future-campaign control and some reports still marked it missing. | C harness source now includes one/all-page selection, page box, matrix, clip, DPI, dimensions, annotation/form flags, raw BGRA/BGRx, output hash, worker-count metadata, JSONL typed failures, and manifest output. | Source guard; no SDK runtime execution |
-| CLI render-contract controls | The CLI `render` command did not expose contract/caller-surface rendering. | Raster `render` now supports schema-v1 contract routing, raw caller-owned surfaces, JSON sidecars, exact JSON input replay, clip, pixel format, grayscale, byte-order, halftone, print-profile, annotation, and form controls. | `cargo test -p wellfriendpdf-cli render_contract_raw_surface_and_sidecar_runs --test tool_surface --jobs 1 -- --test-threads=1` |
+| CLI render-contract controls | The CLI `render` command did not expose contract/caller-surface rendering. | Raster `render` now supports schema-v1 contract routing, raw caller-owned surfaces, contract/font-substitution JSON sidecars, exact JSON input replay, clip, pixel format, grayscale, byte-order, halftone, print-profile, annotation, and form controls. | `cargo test -p wellfriendpdf-cli render_contract_raw_surface_and_sidecar_runs --test tool_surface --jobs 1 -- --test-threads=1` |
 
 ### Final local gates
 
@@ -98,6 +98,7 @@ The pass materially advances the renderer architecture and removes several avoid
 | `cargo check --workspace --all-features --all-targets --jobs 1` | 0 |
 | `cargo clippy --workspace --all-features --all-targets --jobs 1 -- -D warnings` | 0 |
 | `cargo test -p wellfriendpdf-cli cli_render_contract_parsers_accept_public_values --bin wellfriendpdf --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-engine render_page_returns_font_substitution_report --lib --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-cli render_contract_raw_surface_and_sidecar_runs --test tool_surface --jobs 1 -- --test-threads=1` | 0 |
 
 ### Updated subsystem status
@@ -113,6 +114,7 @@ The pass materially advances the renderer architecture and removes several avoid
 | Print profile | PARTIAL_ADVANCED | Halftone screen is active; full CMYK/DeviceN/proof execution remains incomplete. |
 | Adaptive scheduler | PARTIAL_ADVANCED | Deterministic adaptive tile sizing and visible-tile priority exist; full viewer queue, adjacent-page prefetch, and stale-publication suppression across bindings remain incomplete. |
 | Image decode | PARTIAL_ADVANCED | Metadata-first tile-origin culling and cache identity dimensions exist; decoder-native ROI/reduction/progressive decode remains incomplete. |
+| Font substitution reporting | PARTIAL_ADVANCED | Bounded render-time substitution events are serializable and exposed through Rust render APIs and CLI sidecars; per-glyph details and cross-binding report parity remain incomplete. |
 | CLI contract controls | PARTIAL_ADVANCED | Bounded contract/raw-surface rendering, grayscale output, print-profile selection, max-pixel budget, and exact full-field JSON input are exposed; ergonomic field builders for matrix, page box, background, CMM, overprint, exactness, determinism, and non-pixel resource-budget subfields remain incomplete. |
 | Binding parity | PARTIAL_ADVANCED | Progressive/contract/caller-buffer source surfaces exist across Rust, C, Python, WASM, .NET, Java, and server; full local build/runtime parity was not completed. |
 | Visual normalization harness | PARTIAL | Compact tooling exists; full later corpus/reference campaign remains deferred. |
