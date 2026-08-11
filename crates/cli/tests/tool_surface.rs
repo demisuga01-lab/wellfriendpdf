@@ -363,7 +363,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "--device-transform",
         "1,0,0,1,0,0",
         "--background",
-        "255,255,255",
+        "12,34,56",
         "--clip",
         "0,0,16,16",
         "--max-render-pixels",
@@ -433,9 +433,9 @@ fn render_contract_raw_surface_and_sidecar_runs() {
             .len(),
         6
     );
-    assert_eq!(contract["background"]["r"], 255);
-    assert_eq!(contract["background"]["g"], 255);
-    assert_eq!(contract["background"]["b"], 255);
+    assert_eq!(contract["background"]["r"], 12);
+    assert_eq!(contract["background"]["g"], 34);
+    assert_eq!(contract["background"]["b"], 56);
     assert_eq!(contract["background"]["a"], 255);
     assert_eq!(contract["clip"]["width"], 16);
     assert_eq!(contract["clip"]["height"], 16);

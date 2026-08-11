@@ -946,12 +946,18 @@ impl PageRenderer {
         print_profile: PrintProfile,
         annotation_policy: AnnotationRenderPolicy,
         form_policy: FormRenderPolicy,
+        background: PixelColor,
     ) -> Result<(PixelBuffer, FontSubstitutionLog)> {
         let ops = engine.get_page_content(page_number)?;
         let viewport = engine.page_viewport(page_number, dpi)?;
         let resources = engine.get_page_resources(page_number)?;
         let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
-        let buf = Self::initial_page_buffer(&viewport, transparent_page_group, render_mode);
+        let buf = Self::initial_page_buffer_with_background(
+            &viewport,
+            transparent_page_group,
+            render_mode,
+            background,
+        );
 
         let mut state = RenderState::new(buf, viewport, resources, engine, page_number);
         state.cancel = cancel.clone();
@@ -965,7 +971,7 @@ impl PageRenderer {
         cancel.check("page annotation render with contract policies")?;
         let (mut buf, font_substitution_log) = state.into_buffer_and_font_substitution_log();
         if transparent_page_group {
-            buf.flatten_onto_background(WHITE);
+            buf.flatten_onto_background(background);
         }
         Ok((buf, font_substitution_log))
     }
@@ -1651,6 +1657,20 @@ impl PageRenderer {
         transparent_page_group: bool,
         render_mode: RenderMode,
     ) -> PixelBuffer {
+        Self::initial_page_buffer_with_background(
+            viewport,
+            transparent_page_group,
+            render_mode,
+            WHITE,
+        )
+    }
+
+    fn initial_page_buffer_with_background(
+        viewport: &Viewport,
+        transparent_page_group: bool,
+        render_mode: RenderMode,
+        background: PixelColor,
+    ) -> PixelBuffer {
         if transparent_page_group {
             PixelBuffer::new_transparent_with_mode(
                 viewport.width_px,
@@ -1661,7 +1681,7 @@ impl PageRenderer {
             PixelBuffer::new_filled_with_mode(
                 viewport.width_px,
                 viewport.height_px,
-                WHITE,
+                background,
                 render_mode,
             )
         }

@@ -17,8 +17,8 @@ use crate::render::contract::RevisionId;
 use crate::render::FontSubstitutionLog;
 use crate::render::{
     CanonicalDocument, DisplayList, EditDocumentView, HalftonePolicy, InvalidationResult,
-    PageRenderer, PixelBuffer, PixelFormat, ProgressiveRenderJob, RenderCache, RenderContract,
-    RenderDocumentCache, RenderDocumentView, RenderMode, RenderPlan, RenderTile,
+    PageRenderer, PixelBuffer, PixelColor, PixelFormat, ProgressiveRenderJob, RenderCache,
+    RenderContract, RenderDocumentCache, RenderDocumentView, RenderMode, RenderPlan, RenderTile,
     SemanticDocumentView, TransactionInvalidationResult, TransactionWriteSet,
     ValidationDocumentView, Viewport, WHITE,
 };
@@ -85,6 +85,15 @@ fn encode_contract_row(
             destination[offset..offset + bytes_per_pixel].reverse();
         }
     }
+}
+
+fn contract_background_pixel(contract: &RenderContract) -> PixelColor {
+    [
+        contract.background.r,
+        contract.background.g,
+        contract.background.b,
+        contract.background.a,
+    ]
 }
 
 struct JoinedContentStreams<'a> {
@@ -880,6 +889,7 @@ impl ContentEngine {
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
         accepted_expected.halftone = contract.halftone;
+        accepted_expected.background = contract.background;
         accepted_expected.resource_budget.max_pixels = contract.resource_budget.max_pixels;
         if normalized != accepted_expected {
             return Err(WellfriendError::UnsupportedFeature(
@@ -896,6 +906,7 @@ impl ContentEngine {
                 contract.print_profile,
                 contract.annotations,
                 contract.forms,
+                contract_background_pixel(contract),
             )?
         } else {
             // For sub-page tiles, render the full page with contract policies
@@ -910,6 +921,7 @@ impl ContentEngine {
                 contract.print_profile,
                 contract.annotations,
                 contract.forms,
+                contract_background_pixel(contract),
             )?;
             (
                 crate::render::page_renderer::crop_buffer_for_contract(&full_buf, tile)?,
@@ -2583,6 +2595,45 @@ mod tests {
             .render_page_into_buffer(&too_small, &CancelToken::none(), &mut surface)
             .expect_err("too-small max pixel budget must be refused");
         assert!(err.to_string().contains("exceeding budget"));
+    }
+
+    #[test]
+    fn contract_honors_non_white_background() {
+        use crate::{AuthorPageSize, PdfBuilder};
+
+        let mut builder = PdfBuilder::new();
+        builder.add_page(AuthorPageSize::LETTER);
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open background fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 4,
+            height: 4,
+        });
+        contract.width = 4;
+        contract.height = 4;
+        contract.stride = 4 * 4;
+        contract.background = crate::render::ContractColor {
+            r: 12,
+            g: 34,
+            b: 56,
+            a: 255,
+        };
+
+        let buf = engine
+            .render_page_with_contract(&contract, &CancelToken::none())
+            .expect("render contract background");
+        assert_eq!(buf.get_pixel(0, 0), [12, 34, 56, 255]);
+
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect("render contract background into caller surface");
+        assert_eq!(&surface[..4], &[12, 34, 56, 255]);
     }
 
     #[test]
