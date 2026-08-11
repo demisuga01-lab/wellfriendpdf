@@ -60,7 +60,7 @@
 | RV-35 | PARTIAL | PARTIAL | page/decode/surface limits | partial | typed errors | resource-limit tests pass | server partial | existing caps | No unified all-resource render budget |
 | RV-36 | PARTIAL | PARTIAL | `final-fallback-inventory.md` | partial | FB-01–FB-12 | source inventory + tests | CLI counters partial | n/a | 12 active decisions remain; 8 degraded |
 | RV-37 | PARTIAL | PARTIAL | `scripts/render_reference_compare.py` | n/a | n/a | not run beyond prohibited campaign | script only | script limits | Full requested metrics/masks/adjudication not verified this task |
-| RV-38 | MISSING | BLOCKED | no direct C/C++ harness source | n/a | n/a | VPS tool discovery | none | n/a | No harness implementation; PDFium SDK/header/import library unavailable |
+| RV-38 | MISSING | PARTIAL_ADVANCED | `tools/pdfium-harness/render_page.c`, `CMakeLists.txt`, `smoke.sh` | n/a | n/a | local source guard; SDK runtime deferred | standalone C harness | PDFium bitmap errors and typed JSONL outcomes | Harness source exists for one/all pages, matrix, clip, page box, DPI, dimensions, annotation/form flags, raw BGRA/BGRx, hash, worker-count metadata, JSONL, and manifest; no local PDFium SDK build was run |
 | RV-39 | UNVERIFIED | PARTIAL | workspace/tests/C API/SIMD/metamorphic | n/a | n/a | current VPS format/check/clippy/workspace tests/build pass | Rust/C API verified; other tools blocked | n/a | All-feature and external binding gates unavailable |
 | RV-40 | UNVERIFIED | PARTIAL | audit/inventory/fallback docs; `runtime.rs` capability entries | n/a | n/a | current VPS CLI capabilities pass | CLI/Rust/C API report partial | n/a | Capability report now exposes core limitations but cannot claim universal completeness |
 
@@ -106,7 +106,7 @@ The first VPS attempt returned `127` for Cargo only because noninteractive SSH o
 - WASM build: **BLOCKED**; `wasm-pack` and `wasm32-unknown-unknown` target absent.
 - .NET build: **BLOCKED**; `dotnet` absent.
 - Java Maven/Gradle build: **BLOCKED**; only Java runtime 21 exists; `javac`, Maven, Gradle, and repository-required JDK 25 toolchain are absent.
-- Direct PDFium C/C++ harness: **BLOCKED**; no harness source is in this revision and no PDFium SDK/header/import library was available.
+- Direct PDFium C/C++ harness: **SOURCE_ACTIVE / RUNTIME DEFERRED**; harness source is present under `tools/pdfium-harness`, but no local PDFium SDK/header/import library was provisioned or built in this task.
 
 ## No-benchmark statement
 
@@ -164,6 +164,7 @@ The repaired renderer continuation is source- and VPS-validated for the availabl
 | `cargo clippy --workspace --all-targets --jobs 1 -- -D warnings` | 0 |
 | `cargo check --workspace --all-features --all-targets --jobs 1` | 0 |
 | `cargo clippy --workspace --all-features --all-targets --jobs 1 -- -D warnings` | 0 |
+| `rg` source guard for PDFium harness required switches/manifest fields | 0 |
 
 ### Local continuation verdict
 

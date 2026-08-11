@@ -48,7 +48,7 @@
 | RV-35 | PARTIAL | PARTIAL | decode/render limits | active / active | active | resource-limit errors and bounded caches | unified public RenderResourceBudget enforcement incomplete |
 | RV-36 | PARTIAL | PARTIAL | fallback report and runtime entries | active / active | explicit | 12 baseline decisions now 9 active policy categories | residual fallbacks block readiness |
 | RV-37 | PARTIAL | PARTIAL | `tools/renderer-visual-diff/visual_diff.py` | tooling | n/a | compact input only | changed pixels/MAE/RMSE/PSNR/SSIM/alpha/edge/regions smoke verified; no corpus campaign |
-| RV-38 | MISSING | COMPLETE_ACTIVE | `tools/pdfium-harness/` C/CMake/smoke | tooling | direct PDFium C API | official/trusted SDK asset hash recorded | one-fixture direct C harness smoke passes; no benchmark run |
+| RV-38 | MISSING | PARTIAL_ADVANCED | `tools/pdfium-harness/` C/CMake/smoke | tooling | direct PDFium C API | source guard / runtime deferred | Harness supports required future-campaign controls; no local PDFium SDK build or runtime smoke was run in this pass |
 | RV-39 | UNVERIFIED | PARTIAL_VERIFIED | VPS evidence logs | n/a | n/a | all-features workspace tests pass at verified commit before final doc bundle | final post-doc commit gate still required |
 | RV-40 | UNVERIFIED | PARTIAL | renderer docs/capabilities | active | n/a | source-backed | final readiness remains blocked by residual architecture/binding/fallback limits |
 
@@ -84,6 +84,7 @@ The pass materially advances the renderer architecture and removes several avoid
 | Image metadata planning | Tile viewports with non-zero origin failed open and decoded. | Metadata-first culling now uses tile-local transformed bounds for non-zero origins. | `tile_origin_participates_in_metadata_culling` |
 | Image SMask discovery | A TODO-driven second reader pass classified soft-mask images after traversal. | SMask object numbers are collected during the primary XObject walk and applied before filtering. | `mark_soft_masks_uses_collected_primary_walk_refs` |
 | Binding surface declarations | C exports and WASM Rust methods existed without complete public header/TypeScript declaration visibility. | C header declares contract/caller-buffer/progressive APIs; WASM `.d.ts` declares contract and progressive classes; .NET/Java allow adaptive progressive sessions. | Source/API inspection plus final workspace checks |
+| Direct PDFium harness | Harness existed but lacked explicit source fields for every required future-campaign control and some reports still marked it missing. | C harness source now includes one/all-page selection, page box, matrix, clip, DPI, dimensions, annotation/form flags, raw BGRA/BGRx, output hash, worker-count metadata, JSONL typed failures, and manifest output. | Source guard; no SDK runtime execution |
 
 ### Final local gates
 

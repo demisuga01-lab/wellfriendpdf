@@ -10,13 +10,19 @@ mkdir -p "$out_dir"
 
 raw="$out_dir/page-1.bgra"
 jsonl="$out_dir/result.jsonl"
+manifest="$out_dir/manifest.json"
 "$harness" --input "$fixture" --page 1 --dpi 72 --annotations 1 --forms 1 \
-  --output "$raw" --jsonl "$jsonl"
+  --page-box media --pixel-format bgra --workers 1 \
+  --output "$raw" --jsonl "$jsonl" --manifest "$manifest"
 
 test -s "$raw"
 test -s "$jsonl"
+test -s "$manifest"
 grep -q '"engine":"pdfium-c"' "$jsonl"
 grep -q '"status":"ok"' "$jsonl"
 grep -q '"width":' "$jsonl"
+grep -q '"pixel_format":"bgra"' "$jsonl"
 grep -q '"hash_fnv1a64":' "$jsonl"
-printf 'PDFIUM_HARNESS_SMOKE=PASS output=%s manifest=%s\n' "$raw" "$jsonl"
+grep -q '"harness":"wellfriend-pdfium-harness"' "$manifest"
+grep -q '"pdfium_runtime_version":"not_exposed_by_public_c_api"' "$manifest"
+printf 'PDFIUM_HARNESS_SMOKE=PASS output=%s jsonl=%s manifest=%s\n' "$raw" "$jsonl" "$manifest"

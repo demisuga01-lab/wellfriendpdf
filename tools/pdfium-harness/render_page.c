@@ -20,15 +20,38 @@
 #define FNV_PRIME UINT64_C(1099511628211)
 
 typedef struct {
+    float left;
+    float bottom;
+    float right;
+    float top;
+} PageRect;
+
+typedef enum {
+    PAGE_BOX_MEDIA,
+    PAGE_BOX_CROP
+} PageBoxMode;
+
+typedef enum {
+    PIXEL_FORMAT_BGRA,
+    PIXEL_FORMAT_BGRX
+} PixelFormatMode;
+
+typedef struct {
     const char* input_path;
     const char* output_path;
     const char* jsonl_path;
+    const char* manifest_path;
     int page_number;
     int dpi;
+    int output_width;
+    int output_height;
+    int workers;
     bool all_pages;
     bool annotations;
     bool forms;
     uint32_t background_argb;
+    PageBoxMode page_box;
+    PixelFormatMode pixel_format;
     bool has_matrix;
     FS_MATRIX matrix;
     bool has_clip;
@@ -38,8 +61,10 @@ typedef struct {
 static void usage(const char* program) {
     fprintf(stderr,
             "Usage: %s --input FILE [--page N|--all-pages] [--dpi N] \\\n"
-            "          [--output FILE_OR_PREFIX] [--jsonl FILE] [--annotations 0|1] \\\n"
-            "          [--forms 0|1] [--background AARRGGBB] \\\n"
+            "          [--output FILE_OR_PREFIX] [--jsonl FILE] [--manifest FILE] \\\n"
+            "          [--page-box media|crop] [--width PX --height PX] \\\n"
+            "          [--pixel-format bgra|bgrx] [--workers N] \\\n"
+            "          [--annotations 0|1] [--forms 0|1] [--background AARRGGBB] \\\n"
             "          [--matrix a b c d e f] [--clip x y width height]\n",
             program);
 }
@@ -89,6 +114,38 @@ static bool parse_bool(const char* text, bool* out) {
     return false;
 }
 
+static bool parse_page_box(const char* text, PageBoxMode* out) {
+    if (strcmp(text, "media") == 0) {
+        *out = PAGE_BOX_MEDIA;
+        return true;
+    }
+    if (strcmp(text, "crop") == 0) {
+        *out = PAGE_BOX_CROP;
+        return true;
+    }
+    return false;
+}
+
+static const char* page_box_name(PageBoxMode mode) {
+    return mode == PAGE_BOX_CROP ? "crop" : "media";
+}
+
+static bool parse_pixel_format(const char* text, PixelFormatMode* out) {
+    if (strcmp(text, "bgra") == 0) {
+        *out = PIXEL_FORMAT_BGRA;
+        return true;
+    }
+    if (strcmp(text, "bgrx") == 0) {
+        *out = PIXEL_FORMAT_BGRX;
+        return true;
+    }
+    return false;
+}
+
+static const char* pixel_format_name(PixelFormatMode mode) {
+    return mode == PIXEL_FORMAT_BGRX ? "bgrx" : "bgra";
+}
+
 static uint64_t fnv1a64(const unsigned char* data, size_t len) {
     uint64_t hash = FNV_OFFSET;
     for (size_t index = 0; index < len; ++index) {
@@ -130,33 +187,116 @@ static void emit_error(FILE* jsonl, int page, const char* code, const char* deta
 
 static void emit_success(
     FILE* jsonl,
+    const Options* options,
+    PageRect page_box,
     int page,
     int width,
     int height,
     int stride,
     uint64_t hash,
-    const char* output_path,
-    bool annotations,
-    bool forms
+    const char* output_path
 ) {
     if (jsonl == NULL) {
         return;
     }
     fprintf(jsonl,
             "{\"engine\":\"pdfium-c\",\"page\":%d,\"status\":\"ok\","
-            "\"width\":%d,\"height\":%d,\"stride\":%d,"
-            "\"pixel_format\":\"bgra\",\"hash_fnv1a64\":\"%016" PRIx64 "\","
-            "\"annotations\":%s,\"forms_requested\":%s,\"output\":\"",
+            "\"width\":%d,\"height\":%d,\"stride\":%d,\"dpi\":%d,"
+            "\"page_box\":\"%s\",\"page_box_rect\":[%.6g,%.6g,%.6g,%.6g],"
+            "\"pixel_format\":\"%s\",\"hash_fnv1a64\":\"%016" PRIx64 "\","
+            "\"annotations\":%s,\"forms_requested\":%s,\"workers\":%d,\"output\":\"",
             page,
             width,
             height,
             stride,
+            options->dpi,
+            page_box_name(options->page_box),
+            page_box.left,
+            page_box.bottom,
+            page_box.right,
+            page_box.top,
+            pixel_format_name(options->pixel_format),
             hash,
-            annotations ? "true" : "false",
-            forms ? "true" : "false");
+            options->annotations ? "true" : "false",
+            options->forms ? "true" : "false",
+            options->workers);
     json_escape(jsonl, output_path == NULL ? "" : output_path);
     fputs("\"}\n", jsonl);
     fflush(jsonl);
+}
+
+static bool page_box_rect(FPDF_PAGE page, PageBoxMode mode, PageRect* out) {
+    if (mode == PAGE_BOX_CROP) {
+        FS_RECTF bbox;
+        if (!FPDF_GetPageBoundingBox(page, &bbox)) {
+            return false;
+        }
+        float bottom = bbox.bottom < bbox.top ? bbox.bottom : bbox.top;
+        float top = bbox.bottom < bbox.top ? bbox.top : bbox.bottom;
+        *out = (PageRect){bbox.left, bottom, bbox.right, top};
+    } else {
+        double width = FPDF_GetPageWidth(page);
+        double height = FPDF_GetPageHeight(page);
+        if (!isfinite(width) || !isfinite(height)) {
+            return false;
+        }
+        *out = (PageRect){0.0f, 0.0f, (float)width, (float)height};
+    }
+    return isfinite(out->left) && isfinite(out->bottom) && isfinite(out->right) && isfinite(out->top) &&
+           out->right > out->left && out->top > out->bottom;
+}
+
+static bool emit_manifest(const Options* options, FPDF_DOCUMENT document, int total_pages) {
+    if (options->manifest_path == NULL) {
+        return true;
+    }
+    FILE* manifest = fopen(options->manifest_path, "wb");
+    if (manifest == NULL) {
+        return false;
+    }
+    int file_version = 0;
+    int has_file_version = FPDF_GetFileVersion(document, &file_version);
+    fprintf(manifest,
+            "{"
+            "\"schema_version\":1,"
+            "\"engine\":\"pdfium-c\","
+            "\"harness\":\"wellfriend-pdfium-harness\","
+            "\"harness_version\":\"1\","
+            "\"pdfium_runtime_version\":\"not_exposed_by_public_c_api\","
+            "\"pdf_file_version\":");
+    if (has_file_version) {
+        fprintf(manifest, "%d", file_version);
+    } else {
+        fputs("null", manifest);
+    }
+    fprintf(manifest,
+            ",\"total_pages\":%d,"
+            "\"page_selection\":\"%s\","
+            "\"requested_page\":%d,"
+            "\"dpi\":%d,"
+            "\"output_width\":%d,"
+            "\"output_height\":%d,"
+            "\"page_box\":\"%s\","
+            "\"pixel_format\":\"%s\","
+            "\"annotations\":%s,"
+            "\"forms_requested\":%s,"
+            "\"workers\":%d,"
+            "\"outputs\":{\"raw_bitmap\":\"%s\",\"jsonl\":\"%s\"}"
+            "}\n",
+            total_pages,
+            options->all_pages ? "all" : "single",
+            options->page_number,
+            options->dpi,
+            options->output_width,
+            options->output_height,
+            page_box_name(options->page_box),
+            pixel_format_name(options->pixel_format),
+            options->annotations ? "true" : "false",
+            options->forms ? "true" : "false",
+            options->workers,
+            options->output_path == NULL ? "" : options->output_path,
+            options->jsonl_path == NULL ? "stdout" : options->jsonl_path);
+    return fclose(manifest) == 0;
 }
 
 static bool write_bytes(const char* output_path, const unsigned char* data, size_t len) {
@@ -203,11 +343,18 @@ static int render_page(FPDF_DOCUMENT document, const Options* options, int page_
         return 1;
     }
 
-    double width_points = FPDF_GetPageWidth(page);
-    double height_points = FPDF_GetPageHeight(page);
-    double scale = (double)options->dpi / 72.0;
-    double width_double = ceil(width_points * scale);
-    double height_double = ceil(height_points * scale);
+    PageRect box;
+    if (!page_box_rect(page, options->page_box, &box)) {
+        emit_error(jsonl, page_number, "page_box", "could not resolve the requested PDFium page box");
+        FPDF_ClosePage(page);
+        return 1;
+    }
+    double width_points = (double)box.right - (double)box.left;
+    double height_points = (double)box.top - (double)box.bottom;
+    double scale_x = (double)options->dpi / 72.0;
+    double scale_y = scale_x;
+    double width_double = options->output_width > 0 ? (double)options->output_width : ceil(width_points * scale_x);
+    double height_double = options->output_height > 0 ? (double)options->output_height : ceil(height_points * scale_y);
     if (!isfinite(width_double) || !isfinite(height_double) || width_double < 1 || height_double < 1 ||
         width_double > INT_MAX || height_double > INT_MAX) {
         emit_error(jsonl, page_number, "dimensions", "invalid PDFium page dimensions");
@@ -216,7 +363,9 @@ static int render_page(FPDF_DOCUMENT document, const Options* options, int page_
     }
     int width = (int)width_double;
     int height = (int)height_double;
-    FPDF_BITMAP bitmap = FPDFBitmap_Create(width, height, 1);
+    scale_x = (double)width / width_points;
+    scale_y = (double)height / height_points;
+    FPDF_BITMAP bitmap = FPDFBitmap_Create(width, height, options->pixel_format == PIXEL_FORMAT_BGRA ? 1 : 0);
     if (bitmap == NULL) {
         emit_error(jsonl, page_number, "bitmap_create", "FPDFBitmap_Create returned null");
         FPDF_ClosePage(page);
@@ -227,7 +376,8 @@ static int render_page(FPDF_DOCUMENT document, const Options* options, int page_
     int flags = options->annotations ? FPDF_ANNOT : 0;
     FS_MATRIX matrix = options->has_matrix
         ? options->matrix
-        : (FS_MATRIX){(float)scale, 0.0f, 0.0f, (float)-scale, 0.0f, (float)height};
+        : (FS_MATRIX){(float)scale_x, 0.0f, 0.0f, (float)-scale_y, (float)(-box.left * scale_x),
+                      (float)(box.top * scale_y)};
     FS_RECTF clip = options->has_clip
         ? options->clip
         : (FS_RECTF){0, 0, width, height};
@@ -245,8 +395,7 @@ static int render_page(FPDF_DOCUMENT document, const Options* options, int page_
         emit_error(jsonl, page_number, "write_output", "could not write raw BGRA output");
         result = 1;
     } else {
-        emit_success(jsonl, page_number, width, height, stride, fnv1a64(buffer, byte_len), output_path,
-                     options->annotations, options->forms);
+        emit_success(jsonl, options, box, page_number, width, height, stride, fnv1a64(buffer, byte_len), output_path);
     }
 
     free(output_path);
@@ -260,12 +409,18 @@ int main(int argc, char** argv) {
         .input_path = NULL,
         .output_path = NULL,
         .jsonl_path = NULL,
+        .manifest_path = NULL,
         .page_number = 1,
         .dpi = DEFAULT_DPI,
+        .output_width = 0,
+        .output_height = 0,
+        .workers = 1,
         .all_pages = false,
         .annotations = true,
         .forms = true,
         .background_argb = UINT32_C(0xffffffff),
+        .page_box = PAGE_BOX_MEDIA,
+        .pixel_format = PIXEL_FORMAT_BGRA,
         .has_matrix = false,
         .has_clip = false,
     };
@@ -278,6 +433,8 @@ int main(int argc, char** argv) {
             options.output_path = argv[++index];
         } else if (strcmp(arg, "--jsonl") == 0 && index + 1 < argc) {
             options.jsonl_path = argv[++index];
+        } else if (strcmp(arg, "--manifest") == 0 && index + 1 < argc) {
+            options.manifest_path = argv[++index];
         } else if (strcmp(arg, "--page") == 0 && index + 1 < argc) {
             if (!parse_int(argv[++index], &options.page_number) || options.page_number < 1) {
                 usage(argv[0]);
@@ -287,6 +444,36 @@ int main(int argc, char** argv) {
             options.all_pages = true;
         } else if (strcmp(arg, "--dpi") == 0 && index + 1 < argc) {
             if (!parse_int(argv[++index], &options.dpi) || options.dpi < 1) {
+                usage(argv[0]);
+                return 2;
+            }
+        } else if (strcmp(arg, "--width") == 0 && index + 1 < argc) {
+            if (!parse_int(argv[++index], &options.output_width) || options.output_width < 1) {
+                usage(argv[0]);
+                return 2;
+            }
+        } else if (strcmp(arg, "--height") == 0 && index + 1 < argc) {
+            if (!parse_int(argv[++index], &options.output_height) || options.output_height < 1) {
+                usage(argv[0]);
+                return 2;
+            }
+        } else if (strcmp(arg, "--workers") == 0 && index + 1 < argc) {
+            if (!parse_int(argv[++index], &options.workers) || options.workers < 1) {
+                usage(argv[0]);
+                return 2;
+            }
+        } else if (strcmp(arg, "--worker-count") == 0 && index + 1 < argc) {
+            if (!parse_int(argv[++index], &options.workers) || options.workers < 1) {
+                usage(argv[0]);
+                return 2;
+            }
+        } else if (strcmp(arg, "--page-box") == 0 && index + 1 < argc) {
+            if (!parse_page_box(argv[++index], &options.page_box)) {
+                usage(argv[0]);
+                return 2;
+            }
+        } else if (strcmp(arg, "--pixel-format") == 0 && index + 1 < argc) {
+            if (!parse_pixel_format(argv[++index], &options.pixel_format)) {
                 usage(argv[0]);
                 return 2;
             }
@@ -339,6 +526,10 @@ int main(int argc, char** argv) {
         usage(argv[0]);
         return 2;
     }
+    if ((options.output_width == 0) != (options.output_height == 0)) {
+        fprintf(stderr, "--width and --height must be supplied together\n");
+        return 2;
+    }
     if (options.all_pages && options.output_path != NULL && strstr(options.output_path, "%") != NULL) {
         fprintf(stderr, "--all-pages output uses an automatic -page-NNNN.bgra suffix; do not use a format string\n");
         return 2;
@@ -362,6 +553,13 @@ int main(int argc, char** argv) {
     }
 
     int total_pages = FPDF_GetPageCount(document);
+    if (!emit_manifest(&options, document, total_pages)) {
+        emit_error(jsonl, options.page_number, "manifest", "could not write version manifest");
+        FPDF_CloseDocument(document);
+        FPDF_DestroyLibrary();
+        if (jsonl != stdout) fclose(jsonl);
+        return 1;
+    }
     int status = 0;
     if (options.all_pages) {
         for (int page = 1; page <= total_pages; ++page) {

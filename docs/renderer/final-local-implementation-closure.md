@@ -37,6 +37,7 @@ One earlier interrupted cargo run briefly left multiple compiler processes above
 | Image SMask discovery | Soft-mask classification used a second object-reader pass. | `/SMask` object references are collected during primary XObject traversal. | `images/locator.rs` | `ImageLocator::find_page_images`, `find_all_images` | No renderer fallback; classification only. | Eliminates the secondary lookup pass. | Rust image locator and extraction routes. | Inline soft-mask relationships still follow PDF source expressiveness. |
 | C ABI declarations | C exports existed without matching public header declarations for the new renderer APIs. | Header now declares opaque progressive handle, contract JSON rendering, caller buffer rendering, and progressive lifecycle functions. | `crates/wellfriendpdf-capi/include/wellfriendpdf.h` | C consumers and generated wrappers. | FFI returns status/error strings. | Caller-owned buffers remain caller-owned. | C ABI. | External C consumer build not run in this local pass. |
 | WASM TypeScript declarations | Rust WASM methods existed without matching `.d.ts` declarations. | Declaration file now exposes `ProgressiveRenderJob`, contract PNG, caller buffer, and progressive job creation. | `crates/wellfriendpdf-wasm/wellfriendpdf.d.ts` | TypeScript consumers. | WASM methods report JS errors from engine errors. | WASM caller buffer writes are explicit. | WASM/TypeScript. | `wasm-pack` build not run. |
+| Direct PDFium harness | Harness source existed but lacked several requested control/manifest fields and some docs still marked it missing. | Direct C harness supports one/all pages, page box, matrix, clip, DPI, explicit dimensions, annotation/form flags, raw BGRA/BGRx output, output hash, worker-count metadata, JSONL typed failures, and a version manifest. | `tools/pdfium-harness/render_page.c`, `CMakeLists.txt`, `smoke.sh` | `wellfriend-pdfium-harness` executable when built against an official PDFium SDK. | Typed JSONL page/document/manifest errors. | Manifest records selection, output, PDF file version, and public-API version availability. | Standalone C/CMake tool. | Local PDFium SDK build/runtime smoke was not run because no SDK was provisioned and no download is allowed. |
 
 ## Required subsystem status
 
@@ -79,6 +80,7 @@ One earlier interrupted cargo run briefly left multiple compiler processes above
 | SVG regional-fallback status | INCOMPLETE: whole-page raster embedding remains for unsupported constructs. |
 | PS regional-fallback status | INCOMPLETE: whole-page raster embedding remains for unsupported constructs. |
 | Visual-normalization harness status | PARTIAL: compact tooling exists; corpus/reference execution is deferred. |
+| Direct PDFium harness status | PARTIAL_ADVANCED: source and smoke script exist; local SDK build/runtime execution is deferred. |
 
 ## Fallback status
 
@@ -112,8 +114,11 @@ One earlier interrupted cargo run briefly left multiple compiler processes above
 | `cargo clippy --workspace --all-targets --jobs 1 -- -D warnings` | 0 |
 | `cargo check --workspace --all-features --all-targets --jobs 1` | 0 |
 | `cargo clippy --workspace --all-features --all-targets --jobs 1 -- -D warnings` | 0 |
+| `rg` source guard for PDFium harness required switches/manifest fields | 0 |
 
 Two initial PowerShell-redirection attempts at the workspace check/clippy gates exited `-1` with only cargo progress lines and no Rust diagnostics. The same commands passed when rerun through `cmd /c` redirection under the same single-job environment.
+
+The PDFium harness was not built or executed because this local machine did not have a configured official PDFium SDK root and the task forbids downloading/provisioning comparator binaries.
 
 ## Boundary confirmations
 
