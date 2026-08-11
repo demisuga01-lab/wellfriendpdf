@@ -40,7 +40,7 @@
 | RV-27 | PARTIAL | PARTIAL | hot packed vectors/arenas | active / active | active vector plan | no debug-string interning; bounded caches | full warm replay allocation invariant suite incomplete |
 | RV-28 | PARTIAL | PARTIAL | tile/band APIs | active / active | tile replay active | tile cache bounds/overdraw | adaptive priority/visibility scheduler incomplete |
 | RV-29 | PARTIAL | PARTIAL | `ProgressiveRenderJob`, state enum | active / active | retained tile then explicit fallback | Created/Preparing/Rendering/Paused/Completed/Cancelled/Failed/Closed; close/cancel releases state | cross-binding session handles incomplete |
-| RV-30 | PARTIAL | PARTIAL_ADVANCED | Rust API/CLI capabilities | active / active | contract Rust API plus bounded CLI contract/raw surface path active | contract rejects unsupported policy; CLI raw layout flags require raw output | CLI now covers clip, raw caller surface, sidecar contract JSON, byte order, halftone, annotations, and forms; full matrix/page-box/background/CMM/overprint/resource-budget builders remain incomplete |
+| RV-30 | PARTIAL | PARTIAL_ADVANCED | Rust API/CLI capabilities | active / active | contract Rust API plus CLI contract/raw surface path and exact JSON input active | contract rejects unsupported policy; CLI raw layout flags require raw output; JSON input rejects builder mixing | CLI now covers clip, raw caller surface, sidecar/input contract JSON, byte order, halftone, annotations, and forms; ergonomic matrix/page-box/background/CMM/overprint/resource-budget builders remain incomplete |
 | RV-31 | PARTIAL | PARTIAL | C ABI contract JSON + PNG | active / n/a | canonical core | opaque document/buffer ownership | progressive/caller buffer/session APIs incomplete |
 | RV-32 | PARTIAL | PARTIAL | Python/WASM/.NET/Java basic contract JSON and PNG | active / n/a | canonical core | compact fixture smoke across bindings | full field builders, cancellation, progressive parity, server contract incomplete |
 | RV-33 | PARTIAL | PARTIAL | `PrintProfile` in contract | active / active | contract present | policy identity present | public print execution/proofing controls incomplete |
@@ -62,7 +62,7 @@
 - Cache identity and fallback source guards: `renderer_architecture_guards.rs` and `display_list` cache-key test.
 - Pattern typed refusal, Type 3 native charproc, named shading diagnostic, and PS ExtGState safety: focused renderer tests.
 - Direct PDFium C harness and visual-diff JSON smoke: VPS evidence manifests.
-- CLI render-contract raw surface and sidecar path: `render_contract_raw_surface_and_sidecar_runs`.
+- CLI render-contract raw surface, sidecar, and JSON input replay path: `render_contract_raw_surface_and_sidecar_runs`.
 
 ## Honest conclusion
 
@@ -86,7 +86,7 @@ The pass materially advances the renderer architecture and removes several avoid
 | Image SMask discovery | A TODO-driven second reader pass classified soft-mask images after traversal. | SMask object numbers are collected during the primary XObject walk and applied before filtering. | `mark_soft_masks_uses_collected_primary_walk_refs` |
 | Binding surface declarations | C exports and WASM Rust methods existed without complete public header/TypeScript declaration visibility. | C header declares contract/caller-buffer/progressive APIs; WASM `.d.ts` declares contract and progressive classes; .NET/Java allow adaptive progressive sessions. | Source/API inspection plus final workspace checks |
 | Direct PDFium harness | Harness existed but lacked explicit source fields for every required future-campaign control and some reports still marked it missing. | C harness source now includes one/all-page selection, page box, matrix, clip, DPI, dimensions, annotation/form flags, raw BGRA/BGRx, output hash, worker-count metadata, JSONL typed failures, and manifest output. | Source guard; no SDK runtime execution |
-| CLI render-contract controls | The CLI `render` command did not expose contract/caller-surface rendering. | Raster `render` now supports schema-v1 contract routing, raw caller-owned surfaces, JSON sidecars, clip, pixel format, byte-order, halftone, annotation, and form controls. | `cargo test -p wellfriendpdf-cli render_contract_raw_surface_and_sidecar_runs --test tool_surface --jobs 1 -- --test-threads=1` |
+| CLI render-contract controls | The CLI `render` command did not expose contract/caller-surface rendering. | Raster `render` now supports schema-v1 contract routing, raw caller-owned surfaces, JSON sidecars, exact JSON input replay, clip, pixel format, byte-order, halftone, annotation, and form controls. | `cargo test -p wellfriendpdf-cli render_contract_raw_surface_and_sidecar_runs --test tool_surface --jobs 1 -- --test-threads=1` |
 
 ### Final local gates
 
@@ -113,7 +113,7 @@ The pass materially advances the renderer architecture and removes several avoid
 | Print profile | PARTIAL_ADVANCED | Halftone screen is active; full CMYK/DeviceN/proof execution remains incomplete. |
 | Adaptive scheduler | PARTIAL_ADVANCED | Deterministic adaptive tile sizing and visible-tile priority exist; full viewer queue, adjacent-page prefetch, and stale-publication suppression across bindings remain incomplete. |
 | Image decode | PARTIAL_ADVANCED | Metadata-first tile-origin culling and cache identity dimensions exist; decoder-native ROI/reduction/progressive decode remains incomplete. |
-| CLI contract controls | PARTIAL_ADVANCED | Bounded contract/raw-surface rendering is exposed; complete field builders for matrix, page box, background, CMM, overprint, exactness, determinism, and resource-budget subfields remain incomplete. |
+| CLI contract controls | PARTIAL_ADVANCED | Bounded contract/raw-surface rendering and exact full-field JSON input are exposed; ergonomic field builders for matrix, page box, background, CMM, overprint, exactness, determinism, and resource-budget subfields remain incomplete. |
 | Binding parity | PARTIAL_ADVANCED | Progressive/contract/caller-buffer source surfaces exist across Rust, C, Python, WASM, .NET, Java, and server; full local build/runtime parity was not completed. |
 | Visual normalization harness | PARTIAL | Compact tooling exists; full later corpus/reference campaign remains deferred. |
 

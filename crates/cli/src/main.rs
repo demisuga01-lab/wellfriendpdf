@@ -2764,6 +2764,9 @@ struct RenderArgs {
     /// Route raster rendering through the schema-v1 RenderContract API.
     #[arg(long)]
     render_contract: bool,
+    /// Read a schema-v1 RenderContract JSON file and render that exact contract.
+    #[arg(long)]
+    contract_json: Option<PathBuf>,
     /// Include a page-###.contract.json schema-v1 sidecar for each rendered page.
     #[arg(long)]
     write_contract_json: bool,
@@ -7552,7 +7555,18 @@ struct RenderedPageOutput {
 
 fn render_args_have_contract_options(args: &RenderArgs) -> bool {
     args.render_contract
+        || args.contract_json.is_some()
         || args.write_contract_json
+        || args.clip.is_some()
+        || !args.pixel_format.eq_ignore_ascii_case("rgba8")
+        || args.reverse_byte_order
+        || !args.halftone.eq_ignore_ascii_case("disabled")
+        || !args.annotations.eq_ignore_ascii_case("include")
+        || !args.forms.eq_ignore_ascii_case("include")
+}
+
+fn render_args_have_contract_builder_options(args: &RenderArgs) -> bool {
+    args.render_contract
         || args.clip.is_some()
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
         || args.reverse_byte_order
@@ -7689,6 +7703,13 @@ fn build_cli_render_contract(
     Ok(contract)
 }
 
+fn read_render_contract_json(
+    path: &Path,
+) -> Result<wellfriendpdf_engine::RenderContract, Box<dyn Error>> {
+    let bytes = std::fs::read(path)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+
 fn encode_cli_render_buffer(
     output_format: CliRenderRasterFormat,
     buffer: &wellfriendpdf_engine::PixelBuffer,
@@ -7716,15 +7737,32 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         eprintln!("Warning: DPI clamped to {} (valid range: 24-600)", dpi);
     }
 
+    let format_name = args.format.to_ascii_lowercase();
+    let contract_requested = render_args_have_contract_options(&args);
+    if args.contract_json.is_some() {
+        if render_args_have_contract_builder_options(&args) {
+            return Err(usage_error(
+                "--contract-json cannot be combined with contract builder flags",
+            ));
+        }
+        if args.max_render_pixels.is_some() {
+            return Err(usage_error(
+                "--contract-json uses the resource_budget in the JSON contract; do not combine it with --max-render-pixels",
+            ));
+        }
+        if !args.pages.eq_ignore_ascii_case("all") {
+            return Err(usage_error(
+                "--contract-json carries its own page_number; do not combine it with --pages",
+            ));
+        }
+    }
+
     // Honor an explicit per-page pixel cap by exporting it for the engine's
     // `max_render_pixels()` resolver (also read by the svg/ps/eps sub-paths,
     // which all size their pages through `page_viewport`).
     if let Some(cap) = args.max_render_pixels {
         std::env::set_var("WELLFRIENDPDF_MAX_RENDER_PIXELS", cap.to_string());
     }
-
-    let format_name = args.format.to_ascii_lowercase();
-    let contract_requested = render_args_have_contract_options(&args);
 
     // Vector output formats take separate paths.
     match format_name.as_str() {
@@ -7766,7 +7804,22 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
-    let page_nums = parse_page_range_cli(&args.pages, total)?;
+    let input_contract = args
+        .contract_json
+        .as_deref()
+        .map(read_render_contract_json)
+        .transpose()?;
+    let page_nums = if let Some(contract) = input_contract.as_ref() {
+        if !(1..=total).contains(&contract.page_number) {
+            return Err(usage_error(format!(
+                "render contract page_number {} is out of range 1..={total}",
+                contract.page_number
+            )));
+        }
+        vec![contract.page_number]
+    } else {
+        parse_page_range_cli(&args.pages, total)?
+    };
     let render_mode = RenderMode::from_name(&args.render_quality)
         .ok_or_else(|| format!("unknown render quality '{}'", args.render_quality))?;
 
@@ -7782,9 +7835,18 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                        document_cache: &mut RenderDocumentCache|
      -> Result<RenderedPageOutput, String> {
         if use_contract {
-            let contract =
+            let contract = if let Some(contract) = input_contract.as_ref() {
+                if contract.page_number != page_num {
+                    return Err(format!(
+                        "render contract page_number {} did not match selected page {page_num}",
+                        contract.page_number
+                    ));
+                }
+                contract.clone()
+            } else {
                 build_cli_render_contract(&engine, page_num, dpi, render_mode, contract_options)
-                    .map_err(|err| err.to_string())?;
+                    .map_err(|err| err.to_string())?
+            };
             let contract_json = if args.write_contract_json {
                 Some(serde_json::to_vec_pretty(&contract).map_err(|err| err.to_string())?)
             } else {
@@ -7875,6 +7937,10 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     zip.finish()?;
 
     if args.json {
+        let summary_pixel_format = input_contract
+            .as_ref()
+            .map(|contract| format!("{:?}", contract.pixel_format))
+            .unwrap_or_else(|| args.pixel_format.clone());
         println!(
             "{}",
             serde_json::json!({
@@ -7885,8 +7951,9 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 "pages_requested": page_nums.len(),
                 "pages_rendered": rendered_count,
                 "render_contract": use_contract,
+                "contract_json_input": args.contract_json.is_some(),
                 "contract_json_sidecars": contract_sidecars,
-                "pixel_format": args.pixel_format,
+                "pixel_format": summary_pixel_format,
             })
         );
     } else {

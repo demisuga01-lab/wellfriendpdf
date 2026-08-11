@@ -391,7 +391,39 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(contract["pixel_format"], "Bgra8");
     assert_eq!(contract["reverse_byte_order"], true);
     assert_eq!(contract["halftone"], "Screen");
+    let contract_json = tmp("render_contract_input.json");
+    std::fs::write(
+        &contract_json,
+        serde_json::to_vec_pretty(&contract).unwrap(),
+    )
+    .unwrap();
+
+    let replay_zip = tmp("render_contract_replay.zip");
+    let replay = run(&[
+        "render",
+        fx("multi_stream.pdf").to_str().unwrap(),
+        "-o",
+        replay_zip.to_str().unwrap(),
+        "--format",
+        "raw",
+        "--contract-json",
+        contract_json.to_str().unwrap(),
+        "--json",
+    ]);
+    let replay_json = assert_json(&replay, "render --contract-json raw");
+    assert_eq!(replay_json["render_contract"], true);
+    assert_eq!(replay_json["contract_json_input"], true);
+    assert_eq!(replay_json["pixel_format"], "Bgra8");
+    let replay_entries = zip_entries(&replay_zip);
+    let replay_raw = replay_entries
+        .iter()
+        .find(|(name, _)| name == "page-001.raw")
+        .expect("replayed raw surface entry");
+    assert_eq!(replay_raw.1.len(), 16 * 16 * 4);
+
     let _ = std::fs::remove_file(&o);
+    let _ = std::fs::remove_file(&contract_json);
+    let _ = std::fs::remove_file(&replay_zip);
 }
 
 #[test]
