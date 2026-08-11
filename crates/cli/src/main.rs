@@ -2761,6 +2761,15 @@ struct RenderArgs {
     /// WELLFRIENDPDF_MAX_RENDER_PIXELS environment variable when set.
     #[arg(long)]
     max_render_pixels: Option<u64>,
+    /// Contract decoded-byte budget recorded in resource_budget.max_decoded_bytes.
+    #[arg(long)]
+    max_decoded_bytes: Option<u64>,
+    /// Contract temporary-byte budget recorded in resource_budget.max_temporary_bytes.
+    #[arg(long)]
+    max_temporary_bytes: Option<u64>,
+    /// Contract cache-byte budget recorded in resource_budget.max_cache_bytes.
+    #[arg(long)]
+    max_cache_bytes: Option<u64>,
     /// Route raster rendering through the schema-v1 RenderContract API.
     #[arg(long)]
     render_contract: bool,
@@ -2773,6 +2782,15 @@ struct RenderArgs {
     /// Include a page-###.font-substitution.json sidecar for each rendered page.
     #[arg(long)]
     font_substitution_report: bool,
+    /// Contract page box: media, crop, bleed, trim, or art.
+    #[arg(long, default_value = "crop", value_parser = ["media", "crop", "bleed", "trim", "art"])]
+    page_box: String,
+    /// Contract device transform matrix a,b,c,d,e,f.
+    #[arg(long, alias = "matrix")]
+    device_transform: Option<String>,
+    /// Contract background color as r,g,b or r,g,b,a bytes.
+    #[arg(long, default_value = "255,255,255,255")]
+    background: String,
     /// Device-space clip rectangle in output pixels: x,y,width,height.
     #[arg(long)]
     clip: Option<String>,
@@ -2791,6 +2809,21 @@ struct RenderArgs {
     /// Contract print profile: display, print, or proof.
     #[arg(long, default_value = "display", value_parser = ["display", "print", "proof"])]
     print_profile: String,
+    /// Contract overprint policy: disabled, preview, or preserve-separations.
+    #[arg(long, default_value = "disabled", value_parser = ["disabled", "preview", "preserve-separations"])]
+    overprint: String,
+    /// Contract rendering intent.
+    #[arg(long, default_value = "relative-colorimetric", value_parser = ["relative-colorimetric", "absolute-colorimetric", "perceptual", "saturation"])]
+    rendering_intent: String,
+    /// Contract color-management policy.
+    #[arg(long, default_value = "portable-qcms", value_parser = ["portable-qcms", "native-littlecms", "deterministic-fallback"])]
+    color_management: String,
+    /// Contract exactness policy: auto, compatibility, or high-quality-exact.
+    #[arg(long, default_value = "auto", value_parser = ["auto", "compatibility", "high-quality-exact"])]
+    exactness: String,
+    /// Contract determinism policy: required or best-effort-research.
+    #[arg(long, default_value = "required", value_parser = ["required", "best-effort-research"])]
+    determinism: String,
     /// Render annotations in contract mode: include or exclude.
     #[arg(long, default_value = "include", value_parser = ["include", "exclude"])]
     annotations: String,
@@ -7547,15 +7580,26 @@ impl CliRenderRasterFormat {
 
 #[derive(Clone, Copy, Debug)]
 struct CliRenderContractOptions {
+    page_box: wellfriendpdf_engine::render::PageBox,
+    transform: wellfriendpdf_engine::render::DeviceMatrix,
+    background: wellfriendpdf_engine::render::ContractColor,
     clip: Option<wellfriendpdf_engine::render::DeviceClip>,
     pixel_format: wellfriendpdf_engine::render::PixelFormat,
     reverse_byte_order: bool,
     grayscale: bool,
     halftone: wellfriendpdf_engine::render::HalftonePolicy,
     print_profile: wellfriendpdf_engine::render::PrintProfile,
+    overprint: wellfriendpdf_engine::render::OverprintPolicy,
+    rendering_intent: wellfriendpdf_engine::render::RenderingIntent,
+    color_management: wellfriendpdf_engine::render::ColorManagementPolicy,
+    exactness: Option<wellfriendpdf_engine::render::ExactnessPolicy>,
+    determinism: wellfriendpdf_engine::render::DeterminismPolicy,
     annotations: wellfriendpdf_engine::render::AnnotationRenderPolicy,
     forms: wellfriendpdf_engine::render::FormRenderPolicy,
     max_render_pixels: Option<u64>,
+    max_decoded_bytes: Option<u64>,
+    max_temporary_bytes: Option<u64>,
+    max_cache_bytes: Option<u64>,
 }
 
 struct RenderedPageOutput {
@@ -7570,26 +7614,52 @@ fn render_args_have_contract_options(args: &RenderArgs) -> bool {
         || args.contract_json.is_some()
         || args.write_contract_json
         || args.font_substitution_report
+        || !args.page_box.eq_ignore_ascii_case("crop")
+        || args.device_transform.is_some()
+        || !args.background.eq_ignore_ascii_case("255,255,255,255")
         || args.clip.is_some()
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
         || args.reverse_byte_order
         || args.grayscale
         || !args.halftone.eq_ignore_ascii_case("disabled")
         || !args.print_profile.eq_ignore_ascii_case("display")
+        || !args.overprint.eq_ignore_ascii_case("disabled")
+        || !args
+            .rendering_intent
+            .eq_ignore_ascii_case("relative-colorimetric")
+        || !args.color_management.eq_ignore_ascii_case("portable-qcms")
+        || !args.exactness.eq_ignore_ascii_case("auto")
+        || !args.determinism.eq_ignore_ascii_case("required")
         || !args.annotations.eq_ignore_ascii_case("include")
         || !args.forms.eq_ignore_ascii_case("include")
+        || args.max_decoded_bytes.is_some()
+        || args.max_temporary_bytes.is_some()
+        || args.max_cache_bytes.is_some()
 }
 
 fn render_args_have_contract_builder_options(args: &RenderArgs) -> bool {
     args.render_contract
+        || !args.page_box.eq_ignore_ascii_case("crop")
+        || args.device_transform.is_some()
+        || !args.background.eq_ignore_ascii_case("255,255,255,255")
         || args.clip.is_some()
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
         || args.reverse_byte_order
         || args.grayscale
         || !args.halftone.eq_ignore_ascii_case("disabled")
         || !args.print_profile.eq_ignore_ascii_case("display")
+        || !args.overprint.eq_ignore_ascii_case("disabled")
+        || !args
+            .rendering_intent
+            .eq_ignore_ascii_case("relative-colorimetric")
+        || !args.color_management.eq_ignore_ascii_case("portable-qcms")
+        || !args.exactness.eq_ignore_ascii_case("auto")
+        || !args.determinism.eq_ignore_ascii_case("required")
         || !args.annotations.eq_ignore_ascii_case("include")
         || !args.forms.eq_ignore_ascii_case("include")
+        || args.max_decoded_bytes.is_some()
+        || args.max_temporary_bytes.is_some()
+        || args.max_cache_bytes.is_some()
 }
 
 fn parse_cli_render_contract_options(
@@ -7607,6 +7677,14 @@ fn parse_cli_render_contract_options(
         ));
     }
     Ok(CliRenderContractOptions {
+        page_box: parse_render_page_box_cli(&args.page_box)?,
+        transform: args
+            .device_transform
+            .as_deref()
+            .map(parse_render_device_transform_cli)
+            .transpose()?
+            .unwrap_or_default(),
+        background: parse_render_contract_color_cli(&args.background)?,
         clip: args
             .clip
             .as_deref()
@@ -7617,9 +7695,17 @@ fn parse_cli_render_contract_options(
         grayscale: args.grayscale,
         halftone: parse_render_halftone_cli(&args.halftone)?,
         print_profile: parse_render_print_profile_cli(&args.print_profile)?,
+        overprint: parse_render_overprint_cli(&args.overprint)?,
+        rendering_intent: parse_rendering_intent_cli(&args.rendering_intent)?,
+        color_management: parse_render_color_management_cli(&args.color_management)?,
+        exactness: parse_render_exactness_cli(&args.exactness)?,
+        determinism: parse_render_determinism_cli(&args.determinism)?,
         annotations: parse_render_annotations_cli(&args.annotations)?,
         forms: parse_render_forms_cli(&args.forms)?,
         max_render_pixels: args.max_render_pixels,
+        max_decoded_bytes: args.max_decoded_bytes,
+        max_temporary_bytes: args.max_temporary_bytes,
+        max_cache_bytes: args.max_cache_bytes,
     })
 }
 
@@ -7636,6 +7722,62 @@ fn parse_render_pixel_format_cli(
             "unknown --pixel-format '{other}'; use rgba8, bgra8, rgb8, bgr8, or gray8"
         ))),
     }
+}
+
+fn parse_render_page_box_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::PageBox, Box<dyn Error>> {
+    match name.to_ascii_lowercase().replace('_', "-").as_str() {
+        "media" => Ok(wellfriendpdf_engine::render::PageBox::Media),
+        "crop" => Ok(wellfriendpdf_engine::render::PageBox::Crop),
+        "bleed" => Ok(wellfriendpdf_engine::render::PageBox::Bleed),
+        "trim" => Ok(wellfriendpdf_engine::render::PageBox::Trim),
+        "art" => Ok(wellfriendpdf_engine::render::PageBox::Art),
+        other => Err(usage_error(format!(
+            "unknown --page-box '{other}'; use media, crop, bleed, trim, or art"
+        ))),
+    }
+}
+
+fn parse_render_device_transform_cli(
+    spec: &str,
+) -> Result<wellfriendpdf_engine::render::DeviceMatrix, Box<dyn Error>> {
+    let values: Vec<&str> = spec.split(',').map(str::trim).collect();
+    if values.len() != 6 {
+        return Err(usage_error(
+            "--device-transform must be six comma-separated numbers: a,b,c,d,e,f",
+        ));
+    }
+    let mut matrix = [0.0_f64; 6];
+    for (index, value) in values.iter().enumerate() {
+        matrix[index] = value.parse::<f64>()?;
+        if !matrix[index].is_finite() {
+            return Err(usage_error(
+                "--device-transform values must be finite numbers",
+            ));
+        }
+    }
+    Ok(wellfriendpdf_engine::render::DeviceMatrix::from_f64(matrix))
+}
+
+fn parse_render_contract_color_cli(
+    spec: &str,
+) -> Result<wellfriendpdf_engine::render::ContractColor, Box<dyn Error>> {
+    let values: Vec<&str> = spec.split(',').map(str::trim).collect();
+    if values.len() != 3 && values.len() != 4 {
+        return Err(usage_error(
+            "--background must be r,g,b or r,g,b,a byte values",
+        ));
+    }
+    let r = values[0].parse::<u8>()?;
+    let g = values[1].parse::<u8>()?;
+    let b = values[2].parse::<u8>()?;
+    let a = values
+        .get(3)
+        .map(|value| value.parse::<u8>())
+        .transpose()?
+        .unwrap_or(255);
+    Ok(wellfriendpdf_engine::render::ContractColor { r, g, b, a })
 }
 
 fn parse_render_halftone_cli(
@@ -7659,6 +7801,87 @@ fn parse_render_print_profile_cli(
         "proof" => Ok(wellfriendpdf_engine::render::PrintProfile::Proof),
         other => Err(usage_error(format!(
             "unknown --print-profile '{other}'; use display, print, or proof"
+        ))),
+    }
+}
+
+fn parse_render_overprint_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::OverprintPolicy, Box<dyn Error>> {
+    match name.to_ascii_lowercase().replace('_', "-").as_str() {
+        "disabled" => Ok(wellfriendpdf_engine::render::OverprintPolicy::Disabled),
+        "preview" => Ok(wellfriendpdf_engine::render::OverprintPolicy::Preview),
+        "preserve-separations" => {
+            Ok(wellfriendpdf_engine::render::OverprintPolicy::PreserveSeparations)
+        }
+        other => Err(usage_error(format!(
+            "unknown --overprint '{other}'; use disabled, preview, or preserve-separations"
+        ))),
+    }
+}
+
+fn parse_rendering_intent_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::RenderingIntent, Box<dyn Error>> {
+    match name.to_ascii_lowercase().replace('_', "-").as_str() {
+        "relative-colorimetric" => Ok(
+            wellfriendpdf_engine::render::RenderingIntent::RelativeColorimetric,
+        ),
+        "absolute-colorimetric" => Ok(
+            wellfriendpdf_engine::render::RenderingIntent::AbsoluteColorimetric,
+        ),
+        "perceptual" => Ok(wellfriendpdf_engine::render::RenderingIntent::Perceptual),
+        "saturation" => Ok(wellfriendpdf_engine::render::RenderingIntent::Saturation),
+        other => Err(usage_error(format!(
+            "unknown --rendering-intent '{other}'; use relative-colorimetric, absolute-colorimetric, perceptual, or saturation"
+        ))),
+    }
+}
+
+fn parse_render_color_management_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::ColorManagementPolicy, Box<dyn Error>> {
+    match name.to_ascii_lowercase().replace('_', "-").as_str() {
+        "portable-qcms" => Ok(wellfriendpdf_engine::render::ColorManagementPolicy::PortableQcms),
+        "native-littlecms" => Ok(
+            wellfriendpdf_engine::render::ColorManagementPolicy::NativeLittleCms,
+        ),
+        "deterministic-fallback" => Ok(
+            wellfriendpdf_engine::render::ColorManagementPolicy::DeterministicFallback,
+        ),
+        other => Err(usage_error(format!(
+            "unknown --color-management '{other}'; use portable-qcms, native-littlecms, or deterministic-fallback"
+        ))),
+    }
+}
+
+fn parse_render_exactness_cli(
+    name: &str,
+) -> Result<Option<wellfriendpdf_engine::render::ExactnessPolicy>, Box<dyn Error>> {
+    match name.to_ascii_lowercase().replace('_', "-").as_str() {
+        "auto" => Ok(None),
+        "compatibility" => Ok(Some(
+            wellfriendpdf_engine::render::ExactnessPolicy::Compatibility,
+        )),
+        "high-quality-exact" => Ok(Some(
+            wellfriendpdf_engine::render::ExactnessPolicy::HighQualityExact,
+        )),
+        other => Err(usage_error(format!(
+            "unknown --exactness '{other}'; use auto, compatibility, or high-quality-exact"
+        ))),
+    }
+}
+
+fn parse_render_determinism_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::DeterminismPolicy, Box<dyn Error>> {
+    match name.to_ascii_lowercase().replace('_', "-").as_str() {
+        "required" => Ok(wellfriendpdf_engine::render::DeterminismPolicy::Required),
+        "best-effort-research" => {
+            Ok(wellfriendpdf_engine::render::DeterminismPolicy::BestEffortResearch)
+        }
+        other => Err(usage_error(format!(
+            "unknown --determinism '{other}'; use required or best-effort-research"
         ))),
     }
 }
@@ -7719,6 +7942,9 @@ fn build_cli_render_contract(
     options: CliRenderContractOptions,
 ) -> Result<wellfriendpdf_engine::RenderContract, Box<dyn Error>> {
     let mut contract = engine.default_render_contract(page_num, dpi, render_mode)?;
+    contract.page_box = options.page_box;
+    contract.transform = options.transform;
+    contract.background = options.background;
     if let Some(clip) = options.clip {
         contract.clip = Some(clip);
         contract.width = clip.width;
@@ -7730,10 +7956,26 @@ fn build_cli_render_contract(
     contract.grayscale = options.grayscale;
     contract.halftone = options.halftone;
     contract.print_profile = options.print_profile;
+    contract.overprint = options.overprint;
+    contract.rendering_intent = options.rendering_intent;
+    contract.color_management = options.color_management;
+    if let Some(exactness) = options.exactness {
+        contract.exactness = exactness;
+    }
+    contract.determinism = options.determinism;
     contract.annotations = options.annotations;
     contract.forms = options.forms;
     if let Some(cap) = options.max_render_pixels {
         contract.resource_budget.max_pixels = cap;
+    }
+    if let Some(cap) = options.max_decoded_bytes {
+        contract.resource_budget.max_decoded_bytes = cap;
+    }
+    if let Some(cap) = options.max_temporary_bytes {
+        contract.resource_budget.max_temporary_bytes = cap;
+    }
+    if let Some(cap) = options.max_cache_bytes {
+        contract.resource_budget.max_cache_bytes = cap;
     }
     Ok(contract)
 }
@@ -12480,8 +12722,11 @@ mod tests {
     use super::{
         certificate_input_is_pem, expand_split_pattern, parse_device_clip_cli,
         parse_page_range_cli, parse_page_selection_ordered, parse_profile_cli, parse_region_cli,
-        parse_render_halftone_cli, parse_render_pixel_format_cli, parse_render_print_profile_cli,
-        Cli, Commands,
+        parse_render_color_management_cli, parse_render_contract_color_cli,
+        parse_render_determinism_cli, parse_render_device_transform_cli,
+        parse_render_exactness_cli, parse_render_halftone_cli, parse_render_overprint_cli,
+        parse_render_page_box_cli, parse_render_pixel_format_cli, parse_render_print_profile_cli,
+        parse_rendering_intent_cli, Cli, Commands,
     };
     use clap::Parser;
     use std::path::PathBuf;
@@ -12519,6 +12764,43 @@ mod tests {
             parse_render_print_profile_cli("proof").unwrap(),
             wellfriendpdf_engine::render::PrintProfile::Proof
         );
+        assert_eq!(
+            parse_render_page_box_cli("media").unwrap(),
+            wellfriendpdf_engine::render::PageBox::Media
+        );
+        assert_eq!(
+            parse_render_device_transform_cli("1,0,0,1,5,6")
+                .unwrap()
+                .to_f64(),
+            [1.0, 0.0, 0.0, 1.0, 5.0, 6.0]
+        );
+        let background = parse_render_contract_color_cli("1,2,3").unwrap();
+        assert_eq!(
+            (background.r, background.g, background.b, background.a),
+            (1, 2, 3, 255)
+        );
+        assert_eq!(
+            parse_render_overprint_cli("preserve-separations").unwrap(),
+            wellfriendpdf_engine::render::OverprintPolicy::PreserveSeparations
+        );
+        assert_eq!(
+            parse_rendering_intent_cli("perceptual").unwrap(),
+            wellfriendpdf_engine::render::RenderingIntent::Perceptual
+        );
+        assert_eq!(
+            parse_render_color_management_cli("native-littlecms").unwrap(),
+            wellfriendpdf_engine::render::ColorManagementPolicy::NativeLittleCms
+        );
+        assert_eq!(
+            parse_render_exactness_cli("high-quality-exact").unwrap(),
+            Some(wellfriendpdf_engine::render::ExactnessPolicy::HighQualityExact)
+        );
+        assert_eq!(
+            parse_render_determinism_cli("best-effort-research").unwrap(),
+            wellfriendpdf_engine::render::DeterminismPolicy::BestEffortResearch
+        );
+        assert!(parse_render_contract_color_cli("1,2").is_err());
+        assert!(parse_render_device_transform_cli("1,2,3").is_err());
     }
 
     #[test]

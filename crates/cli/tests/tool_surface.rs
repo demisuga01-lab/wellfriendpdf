@@ -358,10 +358,22 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "--format",
         "raw",
         "--render-contract",
+        "--page-box",
+        "crop",
+        "--device-transform",
+        "1,0,0,1,0,0",
+        "--background",
+        "255,255,255",
         "--clip",
         "0,0,16,16",
         "--max-render-pixels",
         "10000000",
+        "--max-decoded-bytes",
+        "536870912",
+        "--max-temporary-bytes",
+        "268435456",
+        "--max-cache-bytes",
+        "268435456",
         "--pixel-format",
         "bgra8",
         "--reverse-byte-order",
@@ -370,6 +382,16 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "screen",
         "--print-profile",
         "proof",
+        "--overprint",
+        "disabled",
+        "--rendering-intent",
+        "relative-colorimetric",
+        "--color-management",
+        "portable-qcms",
+        "--exactness",
+        "compatibility",
+        "--determinism",
+        "required",
         "--write-contract-json",
         "--font-substitution-report",
         "--json",
@@ -403,6 +425,18 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert!(font_substitution["events"].is_array());
     assert!(font_substitution["overflow_count"].is_number());
     assert_eq!(contract["schema_version"], 1);
+    assert_eq!(contract["page_box"], "Crop");
+    assert_eq!(
+        contract["transform"]["values"]
+            .as_array()
+            .expect("transform values")
+            .len(),
+        6
+    );
+    assert_eq!(contract["background"]["r"], 255);
+    assert_eq!(contract["background"]["g"], 255);
+    assert_eq!(contract["background"]["b"], 255);
+    assert_eq!(contract["background"]["a"], 255);
     assert_eq!(contract["clip"]["width"], 16);
     assert_eq!(contract["clip"]["height"], 16);
     assert_eq!(contract["pixel_format"], "Bgra8");
@@ -410,7 +444,24 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(contract["grayscale"], true);
     assert_eq!(contract["halftone"], "Screen");
     assert_eq!(contract["print_profile"], "Proof");
+    assert_eq!(contract["overprint"], "Disabled");
+    assert_eq!(contract["rendering_intent"], "RelativeColorimetric");
+    assert_eq!(contract["color_management"], "PortableQcms");
+    assert_eq!(contract["exactness"], "Compatibility");
+    assert_eq!(contract["determinism"], "Required");
     assert_eq!(contract["resource_budget"]["max_pixels"], 10_000_000);
+    assert_eq!(
+        contract["resource_budget"]["max_decoded_bytes"],
+        512 * 1024 * 1024
+    );
+    assert_eq!(
+        contract["resource_budget"]["max_temporary_bytes"],
+        256 * 1024 * 1024
+    );
+    assert_eq!(
+        contract["resource_budget"]["max_cache_bytes"],
+        256 * 1024 * 1024
+    );
     let contract_json = tmp("render_contract_input.json");
     std::fs::write(
         &contract_json,
