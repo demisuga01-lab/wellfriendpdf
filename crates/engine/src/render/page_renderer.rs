@@ -24,7 +24,7 @@ use crate::render::buffer::{
 use crate::render::clip_dag::{ClipDag, ClipNode, ClipState};
 use crate::render::color::ColorSpaceHandler;
 use crate::render::contract::{
-    AnnotationRenderPolicy, FormRenderPolicy, ObjectIdentityId, PrintProfile, RevisionId,
+    AnnotationRenderPolicy, FormRenderPolicy, ObjectIdentityId, PageBox, PrintProfile, RevisionId,
 };
 use crate::render::display_list::{
     build_display_list, DisplayList, DisplayOp, DrawState, RenderBounds, RenderCache,
@@ -947,9 +947,10 @@ impl PageRenderer {
         annotation_policy: AnnotationRenderPolicy,
         form_policy: FormRenderPolicy,
         background: PixelColor,
+        page_box: PageBox,
     ) -> Result<(PixelBuffer, FontSubstitutionLog)> {
         let ops = engine.get_page_content(page_number)?;
-        let viewport = engine.page_viewport(page_number, dpi)?;
+        let viewport = engine.page_viewport_for_box(page_number, dpi, page_box)?;
         let resources = engine.get_page_resources(page_number)?;
         let transparent_page_group = uses_top_level_transparency(&ops, &resources, engine);
         let buf = Self::initial_page_buffer_with_background(

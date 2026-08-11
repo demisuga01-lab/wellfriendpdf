@@ -16,7 +16,7 @@ use crate::reader::PdfReader;
 use crate::render::contract::RevisionId;
 use crate::render::FontSubstitutionLog;
 use crate::render::{
-    CanonicalDocument, DisplayList, EditDocumentView, HalftonePolicy, InvalidationResult,
+    CanonicalDocument, DisplayList, EditDocumentView, HalftonePolicy, InvalidationResult, PageBox,
     PageRenderer, PixelBuffer, PixelColor, PixelFormat, ProgressiveRenderJob, RenderCache,
     RenderContract, RenderDocumentCache, RenderDocumentView, RenderMode, RenderPlan, RenderTile,
     SemanticDocumentView, TransactionInvalidationResult, TransactionWriteSet,
@@ -670,12 +670,26 @@ impl ContentEngine {
         dpi: u32,
         render_mode: RenderMode,
     ) -> Result<RenderContract> {
-        let viewport = self.page_viewport(page_number, dpi)?;
-        self.render_contract_for_tile(
+        self.default_render_contract_for_page_box(page_number, dpi, render_mode, PageBox::Crop)
+    }
+
+    /// Build the canonical default render contract for a full page using an
+    /// explicit PDF page box. The active page model currently supports Media
+    /// and Crop boxes; prepress boxes remain explicit unsupported features.
+    pub fn default_render_contract_for_page_box(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+        page_box: PageBox,
+    ) -> Result<RenderContract> {
+        let viewport = self.page_viewport_for_box(page_number, dpi, page_box)?;
+        self.render_contract_for_tile_with_page_box(
             page_number,
             dpi,
             render_mode,
             RenderTile::full(viewport.width_px, viewport.height_px),
+            page_box,
         )
     }
 
@@ -686,8 +700,25 @@ impl ContentEngine {
         render_mode: RenderMode,
         tile: RenderTile,
     ) -> Result<RenderContract> {
+        self.render_contract_for_tile_with_page_box(
+            page_number,
+            dpi,
+            render_mode,
+            tile,
+            PageBox::Crop,
+        )
+    }
+
+    pub(crate) fn render_contract_for_tile_with_page_box(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        render_mode: RenderMode,
+        tile: RenderTile,
+        page_box: PageBox,
+    ) -> Result<RenderContract> {
         let page = self.get_page(page_number)?;
-        let viewport = self.page_viewport(page_number, dpi)?;
+        let viewport = self.page_viewport_for_box(page_number, dpi, page_box)?;
         let page_identity = self.canonical.page_identity_for(&page);
         let mut contract = RenderContract::for_viewport(
             self.canonical.revision(),
@@ -697,6 +728,7 @@ impl ContentEngine {
             tile,
             render_mode,
         );
+        contract.page_box = page_box;
         contract.optional_content =
             crate::optional_content::OptionalContentContext::from_document(self.document())
                 .visibility_fingerprint()
@@ -835,7 +867,8 @@ impl ContentEngine {
                 "render contract belongs to a different document revision",
             ));
         }
-        let full_viewport = self.page_viewport(contract.page_number, contract.dpi)?;
+        let full_viewport =
+            self.page_viewport_for_box(contract.page_number, contract.dpi, contract.page_box)?;
         let full_tile = RenderTile::full(full_viewport.width_px, full_viewport.height_px);
         let tile = match contract.clip {
             Some(clip) => {
@@ -869,11 +902,12 @@ impl ContentEngine {
             }
             None => full_tile,
         };
-        let expected = self.render_contract_for_tile(
+        let expected = self.render_contract_for_tile_with_page_box(
             contract.page_number,
             contract.dpi,
             contract.render_mode(),
             tile,
+            contract.page_box,
         )?;
         let mut normalized = contract.clone();
         normalized.pixel_format = expected.pixel_format;
@@ -907,6 +941,7 @@ impl ContentEngine {
                 contract.annotations,
                 contract.forms,
                 contract_background_pixel(contract),
+                contract.page_box,
             )?
         } else {
             // For sub-page tiles, render the full page with contract policies
@@ -922,6 +957,7 @@ impl ContentEngine {
                 contract.annotations,
                 contract.forms,
                 contract_background_pixel(contract),
+                contract.page_box,
             )?;
             (
                 crate::render::page_renderer::crop_buffer_for_contract(&full_buf, tile)?,
@@ -1750,10 +1786,19 @@ impl ContentEngine {
     /// clean [`WellfriendError::ResourceLimit`] instead of attempting a multi-hundred-
     /// gigabyte allocation that aborts the process.
     pub fn page_viewport(&self, page_number: usize, dpi: u32) -> Result<Viewport> {
+        self.page_viewport_for_box(page_number, dpi, PageBox::Crop)
+    }
+
+    pub fn page_viewport_for_box(
+        &self,
+        page_number: usize,
+        dpi: u32,
+        page_box: PageBox,
+    ) -> Result<Viewport> {
         self.validate_page(page_number)?;
         let page = self.get_page(page_number)?;
         let viewport = Viewport::new_rotated_with_user_unit(
-            effective_page_box(&page),
+            render_page_box(&page, page_box)?,
             dpi,
             page_rotation_u32(page.rotate),
             page.user_unit,
@@ -2373,6 +2418,18 @@ fn effective_page_box(page: &PdfPage) -> [f64; 4] {
     intersect_boxes(page.media_box, page.crop_box).unwrap_or(page.media_box)
 }
 
+fn render_page_box(page: &PdfPage, page_box: PageBox) -> Result<[f64; 4]> {
+    match page_box {
+        PageBox::Media => Ok(page.media_box),
+        PageBox::Crop => Ok(effective_page_box(page)),
+        PageBox::Bleed | PageBox::Trim | PageBox::Art => {
+            Err(WellfriendError::UnsupportedFeature(format!(
+                "render contract page_box {page_box:?} is not available in the active page model"
+            )))
+        }
+    }
+}
+
 fn intersect_boxes(media: [f64; 4], crop: [f64; 4]) -> Option<[f64; 4]> {
     let result = [
         media[0].max(crop[0]),
@@ -2426,6 +2483,68 @@ mod tests {
         let page = page([0.0, 0.0, 200.0, 200.0], [250.0, 250.0, 300.0, 300.0]);
 
         assert_eq!(effective_page_box(&page), [0.0, 0.0, 200.0, 200.0]);
+    }
+
+    fn media_crop_fixture_pdf() -> Vec<u8> {
+        let objects = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /CropBox [0 0 40 40] /Resources << >> >>".to_string(),
+        ];
+        let mut pdf = String::from("%PDF-1.7\n");
+        let mut offsets = Vec::new();
+        for (index, body) in objects.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", index + 1, body));
+        }
+        let xref_offset = pdf.len();
+        pdf.push_str(&format!("xref\n0 {}\n", objects.len() + 1));
+        pdf.push_str("0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.push_str(&format!("{offset:010} 00000 n \n"));
+        }
+        pdf.push_str(&format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+            objects.len() + 1,
+            xref_offset
+        ));
+        pdf.into_bytes()
+    }
+
+    #[test]
+    fn contract_media_page_box_uses_media_dimensions() {
+        let engine =
+            ContentEngine::open_bytes(media_crop_fixture_pdf()).expect("open media/crop fixture");
+        let crop = engine
+            .default_render_contract_for_page_box(1, 72, RenderMode::Compat, PageBox::Crop)
+            .expect("crop contract");
+        let mut media = engine
+            .default_render_contract_for_page_box(1, 72, RenderMode::Compat, PageBox::Media)
+            .expect("media contract");
+        assert_eq!((crop.width, crop.height), (40, 40));
+        assert_eq!((media.width, media.height), (100, 100));
+        assert_eq!(media.page_box, PageBox::Media);
+        media.background = crate::render::ContractColor {
+            r: 10,
+            g: 20,
+            b: 30,
+            a: 255,
+        };
+        let rendered = engine
+            .render_page_with_contract(&media, &CancelToken::none())
+            .expect("render media contract");
+        assert_eq!((rendered.width, rendered.height), (100, 100));
+        assert_eq!(rendered.get_pixel(99, 99), [10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn unsupported_prepress_page_boxes_are_refused() {
+        let engine =
+            ContentEngine::open_bytes(media_crop_fixture_pdf()).expect("open media/crop fixture");
+        let err = engine
+            .default_render_contract_for_page_box(1, 72, RenderMode::Compat, PageBox::Trim)
+            .expect_err("trim box is not retained yet");
+        assert!(err.to_string().contains("page_box Trim"));
     }
 
     #[test]

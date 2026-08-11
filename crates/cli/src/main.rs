@@ -7941,8 +7941,12 @@ fn build_cli_render_contract(
     render_mode: wellfriendpdf_engine::RenderMode,
     options: CliRenderContractOptions,
 ) -> Result<wellfriendpdf_engine::RenderContract, Box<dyn Error>> {
-    let mut contract = engine.default_render_contract(page_num, dpi, render_mode)?;
-    contract.page_box = options.page_box;
+    let mut contract = engine.default_render_contract_for_page_box(
+        page_num,
+        dpi,
+        render_mode,
+        options.page_box,
+    )?;
     contract.transform = options.transform;
     contract.background = options.background;
     if let Some(clip) = options.clip {

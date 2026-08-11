@@ -505,6 +505,57 @@ fn render_contract_raw_surface_and_sidecar_runs() {
 }
 
 #[test]
+fn render_contract_media_page_box_uses_media_dimensions() {
+    let input = tmp("render_contract_media_page_box.pdf");
+    std::fs::write(&input, media_crop_page_pdf()).expect("write media/crop fixture");
+    let output = tmp("render_contract_media_page_box.zip");
+    let out = run(&[
+        "render",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "-p",
+        "1",
+        "--dpi",
+        "72",
+        "--format",
+        "raw",
+        "--render-contract",
+        "--page-box",
+        "media",
+        "--background",
+        "10,20,30",
+        "--write-contract-json",
+        "--json",
+    ]);
+    let json = assert_json(&out, "render contract media page box");
+    assert_eq!(json["render_contract"], true);
+    assert_eq!(json["contract_json_sidecars"], 1);
+
+    let entries = zip_entries(&output);
+    let raw = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.raw")
+        .expect("raw surface entry");
+    assert_eq!(raw.1.len(), 100 * 100 * 4);
+    assert_eq!(&raw.1[..4], &[10, 20, 30, 255]);
+    let contract = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.contract.json")
+        .expect("contract sidecar entry");
+    let contract: serde_json::Value =
+        serde_json::from_slice(&contract.1).expect("parse contract sidecar");
+    assert_eq!(contract["page_box"], "Media");
+    assert_eq!(contract["width"], 100);
+    assert_eq!(contract["height"], 100);
+    assert_eq!(contract["clip"]["width"], 100);
+    assert_eq!(contract["clip"]["height"], 100);
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+}
+
+#[test]
 fn render_raster_output_is_deterministic_across_thread_counts() {
     let serial_zip = tmp("render_threads_1.zip");
     let parallel_zip = tmp("render_threads_4.zip");
@@ -872,6 +923,32 @@ fn huge_page_pdf() -> Vec<u8> {
         "<< /Type /Catalog /Pages 2 0 R >>",
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
         "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200000 200000] >>",
+    ];
+    let mut pdf = String::from("%PDF-1.7\n");
+    let mut offsets = Vec::new();
+    for (idx, body) in objs.iter().enumerate() {
+        offsets.push(pdf.len());
+        pdf.push_str(&format!("{} 0 obj\n{}\nendobj\n", idx + 1, body));
+    }
+    let xref_off = pdf.len();
+    pdf.push_str(&format!("xref\n0 {}\n", objs.len() + 1));
+    pdf.push_str("0000000000 65535 f \n");
+    for off in &offsets {
+        pdf.push_str(&format!("{:010} 00000 n \n", off));
+    }
+    pdf.push_str(&format!(
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{}\n%%EOF\n",
+        objs.len() + 1,
+        xref_off
+    ));
+    pdf.into_bytes()
+}
+
+fn media_crop_page_pdf() -> Vec<u8> {
+    let objs = [
+        "<< /Type /Catalog /Pages 2 0 R >>",
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /CropBox [0 0 40 40] /Resources << >> >>",
     ];
     let mut pdf = String::from("%PDF-1.7\n");
     let mut offsets = Vec::new();
