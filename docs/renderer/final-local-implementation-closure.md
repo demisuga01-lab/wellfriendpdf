@@ -38,6 +38,7 @@ One earlier interrupted cargo run briefly left multiple compiler processes above
 | C ABI declarations | C exports existed without matching public header declarations for the new renderer APIs. | Header now declares opaque progressive handle, contract JSON rendering, caller buffer rendering, and progressive lifecycle functions. | `crates/wellfriendpdf-capi/include/wellfriendpdf.h` | C consumers and generated wrappers. | FFI returns status/error strings. | Caller-owned buffers remain caller-owned. | C ABI. | External C consumer build not run in this local pass. |
 | WASM TypeScript declarations | Rust WASM methods existed without matching `.d.ts` declarations. | Declaration file now exposes `ProgressiveRenderJob`, contract PNG, caller buffer, and progressive job creation. | `crates/wellfriendpdf-wasm/wellfriendpdf.d.ts` | TypeScript consumers. | WASM methods report JS errors from engine errors. | WASM caller buffer writes are explicit. | WASM/TypeScript. | `wasm-pack` build not run. |
 | Direct PDFium harness | Harness source existed but lacked several requested control/manifest fields and some docs still marked it missing. | Direct C harness supports one/all pages, page box, matrix, clip, DPI, explicit dimensions, annotation/form flags, raw BGRA/BGRx output, output hash, worker-count metadata, JSONL typed failures, and a version manifest. | `tools/pdfium-harness/render_page.c`, `CMakeLists.txt`, `smoke.sh` | `wellfriend-pdfium-harness` executable when built against an official PDFium SDK. | Typed JSONL page/document/manifest errors. | Manifest records selection, output, PDF file version, and public-API version availability. | Standalone C/CMake tool. | Local PDFium SDK build/runtime smoke was not run because no SDK was provisioned and no download is allowed. |
+| CLI render-contract controls | `render` used the legacy raster route and lacked contract/caller-surface controls. | Raster `render` can route through schema-v1 `RenderContract`, emit raw caller-owned surfaces, include contract JSON sidecars, and expose clip, pixel format, byte-order, halftone, annotation, and form controls. | `crates/cli/src/main.rs`, `crates/cli/tests/tool_surface.rs` | `wellfriendpdf render --render-contract`, `--format raw`, `--write-contract-json` | Raw-surface layout flags require `--format raw`; vector SVG/PS/EPS paths reject contract-only flags rather than ignoring them. | Sidecar JSON records the exact contract; engine validation still enforces contract identity and typed refusals. | CLI. | Full field builder parity remains incomplete for matrix, page box, background, CMM, overprint, exactness, determinism, and resource-budget subfields. |
 
 ## Required subsystem status
 
@@ -66,7 +67,7 @@ One earlier interrupted cargo run briefly left multiple compiler processes above
 | Server progressive API status | ACTIVE: bounded HTTP session API with tests. |
 | Caller-owned surface status by binding | Rust/C/Python/WASM/.NET/Java source paths exist where contract JSON is exposed; reverse byte order is implemented in core. |
 | Cancellation parity status | PARTIAL: Rust/server/progressive cancel paths exist; complete cross-binding cancellation parity remains incomplete. |
-| Contract-builder parity status | PARTIAL: JSON contract transport exists; ergonomic full-field builders are incomplete. |
+| Contract-builder parity status | PARTIAL_ADVANCED: CLI can build bounded contract/raw-surface requests, and JSON contract transport exists; ergonomic full-field builders remain incomplete. |
 | Font-substitution reporting status | PARTIAL: deterministic fallback exists; complete public per-glyph substitution reporting remains incomplete. |
 | Type 3 status | PARTIAL: native-first support exists; unresolved Compat fallback remains. |
 | JPX status | PARTIAL: JPX decode exists; region/reduction/progressive API closure remains incomplete. |
@@ -86,7 +87,7 @@ One earlier interrupted cargo run briefly left multiple compiler processes above
 
 **Fallback categories found at start:** retained unsupported-list fallback, retained tile fallback, progressive tile fallback, unresolved Type 3 Compat fallback, bundled font substitution, JPX compatibility/full-decode paths, qcms portable color backend, SVG whole-page raster fallback, PS/EPS whole-page raster fallback, non-active halftone policy, caller-surface byte-order refusal, non-zero tile-origin decode fail-open.
 
-**Newly completed gaps:** caller-surface byte-order refusal, RGB screen-halftone execution, server progressive sessions, adaptive progressive tile sizing, tile-origin metadata culling, primary-walk SMask classification, C header/WASM declaration parity.
+**Newly completed gaps:** caller-surface byte-order refusal, RGB screen-halftone execution, server progressive sessions, adaptive progressive tile sizing, tile-origin metadata culling, primary-walk SMask classification, C header/WASM declaration parity, direct PDFium harness source controls, CLI raw contract-surface controls.
 
 **Fallback categories remaining:** explicit retained-to-immediate fallback for unsupported display lists, unresolved Type 3 Compat fallback, bundled font substitution, JPX full-decode/compat limitations, qcms portable backend where native CMM is not selected, SVG whole-page raster fallback, PS/EPS whole-page raster fallback.
 
@@ -104,6 +105,8 @@ One earlier interrupted cargo run briefly left multiple compiler processes above
 | `cargo test -p wellfriendpdf-engine halftone --lib --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-engine contract_row_encoder_honors_reverse_byte_order --lib --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-server --test progressive_integration --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-cli cli_render_contract_parsers_accept_public_values --bin wellfriendpdf --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-cli render_contract_raw_surface_and_sidecar_runs --test tool_surface --jobs 1 -- --test-threads=1` | 0 |
 
 ## Final lightweight gates
 

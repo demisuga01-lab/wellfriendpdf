@@ -346,6 +346,55 @@ fn render_raster_runs() {
 }
 
 #[test]
+fn render_contract_raw_surface_and_sidecar_runs() {
+    let o = tmp("render_contract_raw.zip");
+    let out = run(&[
+        "render",
+        fx("multi_stream.pdf").to_str().unwrap(),
+        "-o",
+        o.to_str().unwrap(),
+        "-p",
+        "1",
+        "--format",
+        "raw",
+        "--render-contract",
+        "--clip",
+        "0,0,16,16",
+        "--pixel-format",
+        "bgra8",
+        "--reverse-byte-order",
+        "--halftone",
+        "screen",
+        "--write-contract-json",
+        "--json",
+    ]);
+    let json = assert_json(&out, "render contract raw");
+    assert_eq!(json["render_contract"], true);
+    assert_eq!(json["contract_json_sidecars"], 1);
+    assert_eq!(json["pixel_format"], "bgra8");
+
+    let entries = zip_entries(&o);
+    let raw = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.raw")
+        .expect("raw surface entry");
+    assert_eq!(raw.1.len(), 16 * 16 * 4);
+    let contract = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.contract.json")
+        .expect("contract sidecar entry");
+    let contract: serde_json::Value =
+        serde_json::from_slice(&contract.1).expect("parse contract sidecar");
+    assert_eq!(contract["schema_version"], 1);
+    assert_eq!(contract["clip"]["width"], 16);
+    assert_eq!(contract["clip"]["height"], 16);
+    assert_eq!(contract["pixel_format"], "Bgra8");
+    assert_eq!(contract["reverse_byte_order"], true);
+    assert_eq!(contract["halftone"], "Screen");
+    let _ = std::fs::remove_file(&o);
+}
+
+#[test]
 fn render_raster_output_is_deterministic_across_thread_counts() {
     let serial_zip = tmp("render_threads_1.zip");
     let parallel_zip = tmp("render_threads_4.zip");

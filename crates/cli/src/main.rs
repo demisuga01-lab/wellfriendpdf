@@ -2761,6 +2761,30 @@ struct RenderArgs {
     /// WELLFRIENDPDF_MAX_RENDER_PIXELS environment variable when set.
     #[arg(long)]
     max_render_pixels: Option<u64>,
+    /// Route raster rendering through the schema-v1 RenderContract API.
+    #[arg(long)]
+    render_contract: bool,
+    /// Include a page-###.contract.json schema-v1 sidecar for each rendered page.
+    #[arg(long)]
+    write_contract_json: bool,
+    /// Device-space clip rectangle in output pixels: x,y,width,height.
+    #[arg(long)]
+    clip: Option<String>,
+    /// Caller-owned raw surface pixel layout, used with --format raw.
+    #[arg(long, default_value = "rgba8", value_parser = ["rgba8", "bgra8", "rgb8", "bgr8", "gray8"])]
+    pixel_format: String,
+    /// Reverse byte order within each multi-byte output pixel for --format raw.
+    #[arg(long)]
+    reverse_byte_order: bool,
+    /// Contract halftone policy: disabled or screen.
+    #[arg(long, default_value = "disabled", value_parser = ["disabled", "screen"])]
+    halftone: String,
+    /// Render annotations in contract mode: include or exclude.
+    #[arg(long, default_value = "include", value_parser = ["include", "exclude"])]
+    annotations: String,
+    /// Render form/widget appearances in contract mode: include or exclude.
+    #[arg(long, default_value = "include", value_parser = ["include", "exclude"])]
+    forms: String,
     /// Emit a JSON result summary
     #[arg(long)]
     json: bool,
@@ -7476,12 +7500,215 @@ fn run_render_compare(args: RenderCompareArgs) -> Result<(), Box<dyn Error>> {
     write_output_optional(&args.output, &output)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CliRenderRasterFormat {
+    Png,
+    Jpeg,
+    Webp,
+    Raw,
+}
+
+impl CliRenderRasterFormat {
+    fn parse(name: &str) -> Option<Self> {
+        match name {
+            "png" => Some(Self::Png),
+            "jpg" | "jpeg" => Some(Self::Jpeg),
+            "webp" => Some(Self::Webp),
+            "raw" => Some(Self::Raw),
+            _ => None,
+        }
+    }
+
+    const fn file_extension(self) -> &'static str {
+        match self {
+            Self::Png => "png",
+            Self::Jpeg => "jpg",
+            Self::Webp => "webp",
+            Self::Raw => "raw",
+        }
+    }
+
+    const fn is_raw(self) -> bool {
+        matches!(self, Self::Raw)
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CliRenderContractOptions {
+    clip: Option<wellfriendpdf_engine::render::DeviceClip>,
+    pixel_format: wellfriendpdf_engine::render::PixelFormat,
+    reverse_byte_order: bool,
+    halftone: wellfriendpdf_engine::render::HalftonePolicy,
+    annotations: wellfriendpdf_engine::render::AnnotationRenderPolicy,
+    forms: wellfriendpdf_engine::render::FormRenderPolicy,
+    max_render_pixels: Option<u64>,
+}
+
+struct RenderedPageOutput {
+    bytes: Vec<u8>,
+    extension: &'static str,
+    contract_json: Option<Vec<u8>>,
+}
+
+fn render_args_have_contract_options(args: &RenderArgs) -> bool {
+    args.render_contract
+        || args.write_contract_json
+        || args.clip.is_some()
+        || !args.pixel_format.eq_ignore_ascii_case("rgba8")
+        || args.reverse_byte_order
+        || !args.halftone.eq_ignore_ascii_case("disabled")
+        || !args.annotations.eq_ignore_ascii_case("include")
+        || !args.forms.eq_ignore_ascii_case("include")
+}
+
+fn parse_cli_render_contract_options(
+    args: &RenderArgs,
+    output_format: CliRenderRasterFormat,
+) -> Result<CliRenderContractOptions, Box<dyn Error>> {
+    let pixel_format = parse_render_pixel_format_cli(&args.pixel_format)?;
+    if !output_format.is_raw()
+        && (pixel_format != wellfriendpdf_engine::render::PixelFormat::Rgba8
+            || args.reverse_byte_order)
+    {
+        return Err(usage_error(
+            "--pixel-format and --reverse-byte-order produce caller-owned surfaces; use --format raw",
+        ));
+    }
+    Ok(CliRenderContractOptions {
+        clip: args
+            .clip
+            .as_deref()
+            .map(parse_device_clip_cli)
+            .transpose()?,
+        pixel_format,
+        reverse_byte_order: args.reverse_byte_order,
+        halftone: parse_render_halftone_cli(&args.halftone)?,
+        annotations: parse_render_annotations_cli(&args.annotations)?,
+        forms: parse_render_forms_cli(&args.forms)?,
+        max_render_pixels: args.max_render_pixels,
+    })
+}
+
+fn parse_render_pixel_format_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::PixelFormat, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "rgba8" => Ok(wellfriendpdf_engine::render::PixelFormat::Rgba8),
+        "bgra8" => Ok(wellfriendpdf_engine::render::PixelFormat::Bgra8),
+        "rgb8" => Ok(wellfriendpdf_engine::render::PixelFormat::Rgb8),
+        "bgr8" => Ok(wellfriendpdf_engine::render::PixelFormat::Bgr8),
+        "gray8" => Ok(wellfriendpdf_engine::render::PixelFormat::Gray8),
+        other => Err(usage_error(format!(
+            "unknown --pixel-format '{other}'; use rgba8, bgra8, rgb8, bgr8, or gray8"
+        ))),
+    }
+}
+
+fn parse_render_halftone_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::HalftonePolicy, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "disabled" => Ok(wellfriendpdf_engine::render::HalftonePolicy::Disabled),
+        "screen" => Ok(wellfriendpdf_engine::render::HalftonePolicy::Screen),
+        other => Err(usage_error(format!(
+            "unknown --halftone '{other}'; use disabled or screen"
+        ))),
+    }
+}
+
+fn parse_render_annotations_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::AnnotationRenderPolicy, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "include" => Ok(wellfriendpdf_engine::render::AnnotationRenderPolicy::Include),
+        "exclude" => Ok(wellfriendpdf_engine::render::AnnotationRenderPolicy::Exclude),
+        other => Err(usage_error(format!(
+            "unknown --annotations '{other}'; use include or exclude"
+        ))),
+    }
+}
+
+fn parse_render_forms_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::FormRenderPolicy, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "include" => Ok(wellfriendpdf_engine::render::FormRenderPolicy::Include),
+        "exclude" => Ok(wellfriendpdf_engine::render::FormRenderPolicy::Exclude),
+        other => Err(usage_error(format!(
+            "unknown --forms '{other}'; use include or exclude"
+        ))),
+    }
+}
+
+fn parse_device_clip_cli(
+    spec: &str,
+) -> Result<wellfriendpdf_engine::render::DeviceClip, Box<dyn Error>> {
+    let values: Vec<&str> = spec.split(',').map(str::trim).collect();
+    if values.len() != 4 {
+        return Err(usage_error(
+            "--clip must be four comma-separated integers: x,y,width,height",
+        ));
+    }
+    let x = values[0].parse::<i32>()?;
+    let y = values[1].parse::<i32>()?;
+    let width = values[2].parse::<u32>()?;
+    let height = values[3].parse::<u32>()?;
+    if width == 0 || height == 0 {
+        return Err(usage_error("--clip width and height must be non-zero"));
+    }
+    Ok(wellfriendpdf_engine::render::DeviceClip {
+        x,
+        y,
+        width,
+        height,
+    })
+}
+
+fn build_cli_render_contract(
+    engine: &wellfriendpdf_engine::ContentEngine,
+    page_num: usize,
+    dpi: u32,
+    render_mode: wellfriendpdf_engine::RenderMode,
+    options: CliRenderContractOptions,
+) -> Result<wellfriendpdf_engine::RenderContract, Box<dyn Error>> {
+    let mut contract = engine.default_render_contract(page_num, dpi, render_mode)?;
+    if let Some(clip) = options.clip {
+        contract.clip = Some(clip);
+        contract.width = clip.width;
+        contract.height = clip.height;
+    }
+    contract.pixel_format = options.pixel_format;
+    contract.stride = contract.width as usize * contract.pixel_format.bytes_per_pixel();
+    contract.reverse_byte_order = options.reverse_byte_order;
+    contract.halftone = options.halftone;
+    contract.annotations = options.annotations;
+    contract.forms = options.forms;
+    if let Some(cap) = options.max_render_pixels {
+        contract.resource_budget.max_pixels = cap;
+    }
+    Ok(contract)
+}
+
+fn encode_cli_render_buffer(
+    output_format: CliRenderRasterFormat,
+    buffer: &wellfriendpdf_engine::PixelBuffer,
+    quality: u8,
+) -> wellfriendpdf_engine::Result<Vec<u8>> {
+    use wellfriendpdf_engine::ImageEncoder;
+
+    let raw = buffer.to_raw_image();
+    match output_format {
+        CliRenderRasterFormat::Png => ImageEncoder::encode_png_fast(&raw),
+        CliRenderRasterFormat::Jpeg => ImageEncoder::encode_jpeg(&raw, quality),
+        CliRenderRasterFormat::Webp => ImageEncoder::encode_webp(&raw, quality),
+        CliRenderRasterFormat::Raw => unreachable!("raw surfaces are not image-encoded"),
+    }
+}
+
 fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
     use rayon::prelude::*;
     use std::io::Write;
-    use wellfriendpdf_engine::{
-        CancelToken, ImageEncoder, ImageOutputFormat, RenderDocumentCache, RenderMode,
-    };
+    use wellfriendpdf_engine::{CancelToken, RenderDocumentCache, RenderMode};
     use zip::{write::FileOptions, CompressionMethod, ZipWriter};
 
     let dpi = args.dpi.clamp(24, 600);
@@ -7496,26 +7723,46 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         std::env::set_var("WELLFRIENDPDF_MAX_RENDER_PIXELS", cap.to_string());
     }
 
+    let format_name = args.format.to_ascii_lowercase();
+    let contract_requested = render_args_have_contract_options(&args);
+
     // Vector output formats take separate paths.
-    match args.format.to_lowercase().as_str() {
-        "svg" => return run_render_svg(args, dpi),
-        "ps" => return run_render_ps(args, dpi),
-        "eps" => return run_render_eps(args, dpi),
+    match format_name.as_str() {
+        "svg" => {
+            if contract_requested {
+                return Err(usage_error(
+                    "render contract options apply only to raster png, jpg, webp, or raw output",
+                ));
+            }
+            return run_render_svg(args, dpi);
+        }
+        "ps" => {
+            if contract_requested {
+                return Err(usage_error(
+                    "render contract options apply only to raster png, jpg, webp, or raw output",
+                ));
+            }
+            return run_render_ps(args, dpi);
+        }
+        "eps" => {
+            if contract_requested {
+                return Err(usage_error(
+                    "render contract options apply only to raster png, jpg, webp, or raw output",
+                ));
+            }
+            return run_render_eps(args, dpi);
+        }
         _ => {}
     }
 
-    let format = match args.format.to_lowercase().as_str() {
-        "png" => ImageOutputFormat::Png,
-        "jpg" | "jpeg" => ImageOutputFormat::Jpeg,
-        "webp" => ImageOutputFormat::Webp,
-        other => {
-            return Err(format!(
-                "unknown format '{}'; use png, jpg, webp, svg, ps, or eps",
-                other
-            )
-            .into())
-        }
-    };
+    let output_format = CliRenderRasterFormat::parse(&format_name).ok_or_else(|| {
+        usage_error(format!(
+            "unknown format '{}'; use png, jpg, webp, raw, svg, ps, or eps",
+            format_name
+        ))
+    })?;
+    let contract_options = parse_cli_render_contract_options(&args, output_format)?;
+    let use_contract = contract_requested || output_format.is_raw();
 
     let engine = open_engine(&args.pdf, &args.password)?;
     let total = engine.page_count()?;
@@ -7531,29 +7778,64 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
 
     const PARALLEL_RENDER_PAGE_THRESHOLD: usize = 32;
     let quality = args.quality;
-    let encode_page =
-        |page_num: usize, document_cache: &mut RenderDocumentCache| -> Result<Vec<u8>, String> {
-            let buf = engine
-                .render_page_cancellable_with_mode_and_cache(
-                    page_num,
-                    dpi,
-                    &CancelToken::none(),
-                    render_mode,
-                    document_cache,
-                )
-                .map_err(|err| err.to_string())?;
-            let raw = buf.to_raw_image();
-            match &format {
-                ImageOutputFormat::Jpeg => ImageEncoder::encode_jpeg(&raw, quality),
-                ImageOutputFormat::Webp => ImageEncoder::encode_webp(&raw, quality),
-                ImageOutputFormat::Png | ImageOutputFormat::Original => {
-                    ImageEncoder::encode_png_fast(&raw)
-                }
+    let encode_page = |page_num: usize,
+                       document_cache: &mut RenderDocumentCache|
+     -> Result<RenderedPageOutput, String> {
+        if use_contract {
+            let contract =
+                build_cli_render_contract(&engine, page_num, dpi, render_mode, contract_options)
+                    .map_err(|err| err.to_string())?;
+            let contract_json = if args.write_contract_json {
+                Some(serde_json::to_vec_pretty(&contract).map_err(|err| err.to_string())?)
+            } else {
+                None
+            };
+            if output_format.is_raw() {
+                let len = contract
+                    .stride
+                    .checked_mul(contract.height as usize)
+                    .ok_or_else(|| "render surface byte length overflows".to_string())?;
+                let mut bytes = vec![0u8; len];
+                engine
+                    .render_page_into_buffer(&contract, &CancelToken::none(), &mut bytes)
+                    .map_err(|err| err.to_string())?;
+                return Ok(RenderedPageOutput {
+                    bytes,
+                    extension: output_format.file_extension(),
+                    contract_json,
+                });
             }
-            .map_err(|err| err.to_string())
-        };
+            let buf = engine
+                .render_page_with_contract(&contract, &CancelToken::none())
+                .map_err(|err| err.to_string())?;
+            let bytes = encode_cli_render_buffer(output_format, &buf, quality)
+                .map_err(|err| err.to_string())?;
+            return Ok(RenderedPageOutput {
+                bytes,
+                extension: output_format.file_extension(),
+                contract_json,
+            });
+        }
 
-    let rendered_pages: Vec<(usize, Result<Vec<u8>, String>)> =
+        let buf = engine
+            .render_page_cancellable_with_mode_and_cache(
+                page_num,
+                dpi,
+                &CancelToken::none(),
+                render_mode,
+                document_cache,
+            )
+            .map_err(|err| err.to_string())?;
+        let bytes = encode_cli_render_buffer(output_format, &buf, quality)
+            .map_err(|err| err.to_string())?;
+        Ok(RenderedPageOutput {
+            bytes,
+            extension: output_format.file_extension(),
+            contract_json: None,
+        })
+    };
+
+    let rendered_pages: Vec<(usize, Result<RenderedPageOutput, String>)> =
         if page_nums.len() >= PARALLEL_RENDER_PAGE_THRESHOLD {
             page_nums
                 .par_iter()
@@ -7570,17 +7852,24 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
         };
 
     let mut rendered_count = 0usize;
-    for (page_num, bytes) in rendered_pages {
-        let bytes = match bytes {
-            Ok(bytes) => bytes,
+    let mut contract_sidecars = 0usize;
+    for (page_num, output) in rendered_pages {
+        let output = match output {
+            Ok(output) => output,
             Err(err) => {
                 eprintln!("Warning: skipped page {}: {}", page_num, err);
                 continue;
             }
         };
-        let filename = format!("page-{:03}.{}", page_num, format.file_extension());
+        let filename = format!("page-{:03}.{}", page_num, output.extension);
         zip.start_file(&filename, zip_opts)?;
-        zip.write_all(&bytes)?;
+        zip.write_all(&output.bytes)?;
+        if let Some(contract_json) = output.contract_json {
+            let filename = format!("page-{:03}.contract.json", page_num);
+            zip.start_file(&filename, zip_opts)?;
+            zip.write_all(&contract_json)?;
+            contract_sidecars += 1;
+        }
         rendered_count += 1;
     }
     zip.finish()?;
@@ -7595,6 +7884,9 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 "dpi": dpi,
                 "pages_requested": page_nums.len(),
                 "pages_rendered": rendered_count,
+                "render_contract": use_contract,
+                "contract_json_sidecars": contract_sidecars,
+                "pixel_format": args.pixel_format,
             })
         );
     } else {
@@ -12026,8 +12318,9 @@ fn parse_profile_cli(
 #[cfg(test)]
 mod tests {
     use super::{
-        certificate_input_is_pem, expand_split_pattern, parse_page_range_cli,
-        parse_page_selection_ordered, parse_profile_cli, parse_region_cli, Cli, Commands,
+        certificate_input_is_pem, expand_split_pattern, parse_device_clip_cli,
+        parse_page_range_cli, parse_page_selection_ordered, parse_profile_cli, parse_region_cli,
+        parse_render_halftone_cli, parse_render_pixel_format_cli, Cli, Commands,
     };
     use clap::Parser;
     use std::path::PathBuf;
@@ -12046,6 +12339,21 @@ mod tests {
         let region = parse_region_cli("1,2,3,4").unwrap();
         assert_eq!(region.as_array(), [1.0, 2.0, 3.0, 4.0]);
         assert!(parse_region_cli("1,2,3").is_err());
+    }
+
+    #[test]
+    fn cli_render_contract_parsers_accept_public_values() {
+        let clip = parse_device_clip_cli("1,2,30,40").unwrap();
+        assert_eq!((clip.x, clip.y, clip.width, clip.height), (1, 2, 30, 40));
+        assert!(parse_device_clip_cli("1,2,0,40").is_err());
+        assert_eq!(
+            parse_render_pixel_format_cli("bgra8").unwrap(),
+            wellfriendpdf_engine::render::PixelFormat::Bgra8
+        );
+        assert_eq!(
+            parse_render_halftone_cli("screen").unwrap(),
+            wellfriendpdf_engine::render::HalftonePolicy::Screen
+        );
     }
 
     #[test]
