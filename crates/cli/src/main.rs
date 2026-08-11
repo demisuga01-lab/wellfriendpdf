@@ -2782,6 +2782,9 @@ struct RenderArgs {
     /// Contract halftone policy: disabled or screen.
     #[arg(long, default_value = "disabled", value_parser = ["disabled", "screen"])]
     halftone: String,
+    /// Contract print profile: display, print, or proof.
+    #[arg(long, default_value = "display", value_parser = ["display", "print", "proof"])]
+    print_profile: String,
     /// Render annotations in contract mode: include or exclude.
     #[arg(long, default_value = "include", value_parser = ["include", "exclude"])]
     annotations: String,
@@ -7542,6 +7545,7 @@ struct CliRenderContractOptions {
     pixel_format: wellfriendpdf_engine::render::PixelFormat,
     reverse_byte_order: bool,
     halftone: wellfriendpdf_engine::render::HalftonePolicy,
+    print_profile: wellfriendpdf_engine::render::PrintProfile,
     annotations: wellfriendpdf_engine::render::AnnotationRenderPolicy,
     forms: wellfriendpdf_engine::render::FormRenderPolicy,
     max_render_pixels: Option<u64>,
@@ -7561,6 +7565,7 @@ fn render_args_have_contract_options(args: &RenderArgs) -> bool {
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
         || args.reverse_byte_order
         || !args.halftone.eq_ignore_ascii_case("disabled")
+        || !args.print_profile.eq_ignore_ascii_case("display")
         || !args.annotations.eq_ignore_ascii_case("include")
         || !args.forms.eq_ignore_ascii_case("include")
 }
@@ -7571,6 +7576,7 @@ fn render_args_have_contract_builder_options(args: &RenderArgs) -> bool {
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
         || args.reverse_byte_order
         || !args.halftone.eq_ignore_ascii_case("disabled")
+        || !args.print_profile.eq_ignore_ascii_case("display")
         || !args.annotations.eq_ignore_ascii_case("include")
         || !args.forms.eq_ignore_ascii_case("include")
 }
@@ -7597,6 +7603,7 @@ fn parse_cli_render_contract_options(
         pixel_format,
         reverse_byte_order: args.reverse_byte_order,
         halftone: parse_render_halftone_cli(&args.halftone)?,
+        print_profile: parse_render_print_profile_cli(&args.print_profile)?,
         annotations: parse_render_annotations_cli(&args.annotations)?,
         forms: parse_render_forms_cli(&args.forms)?,
         max_render_pixels: args.max_render_pixels,
@@ -7626,6 +7633,19 @@ fn parse_render_halftone_cli(
         "screen" => Ok(wellfriendpdf_engine::render::HalftonePolicy::Screen),
         other => Err(usage_error(format!(
             "unknown --halftone '{other}'; use disabled or screen"
+        ))),
+    }
+}
+
+fn parse_render_print_profile_cli(
+    name: &str,
+) -> Result<wellfriendpdf_engine::render::PrintProfile, Box<dyn Error>> {
+    match name.to_ascii_lowercase().as_str() {
+        "display" => Ok(wellfriendpdf_engine::render::PrintProfile::Display),
+        "print" => Ok(wellfriendpdf_engine::render::PrintProfile::Print),
+        "proof" => Ok(wellfriendpdf_engine::render::PrintProfile::Proof),
+        other => Err(usage_error(format!(
+            "unknown --print-profile '{other}'; use display, print, or proof"
         ))),
     }
 }
@@ -7695,6 +7715,7 @@ fn build_cli_render_contract(
     contract.stride = contract.width as usize * contract.pixel_format.bytes_per_pixel();
     contract.reverse_byte_order = options.reverse_byte_order;
     contract.halftone = options.halftone;
+    contract.print_profile = options.print_profile;
     contract.annotations = options.annotations;
     contract.forms = options.forms;
     if let Some(cap) = options.max_render_pixels {
@@ -7941,6 +7962,10 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             .as_ref()
             .map(|contract| format!("{:?}", contract.pixel_format))
             .unwrap_or_else(|| args.pixel_format.clone());
+        let summary_print_profile = input_contract
+            .as_ref()
+            .map(|contract| format!("{:?}", contract.print_profile))
+            .unwrap_or_else(|| args.print_profile.clone());
         println!(
             "{}",
             serde_json::json!({
@@ -7954,6 +7979,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 "contract_json_input": args.contract_json.is_some(),
                 "contract_json_sidecars": contract_sidecars,
                 "pixel_format": summary_pixel_format,
+                "print_profile": summary_print_profile,
             })
         );
     } else {
@@ -12387,7 +12413,8 @@ mod tests {
     use super::{
         certificate_input_is_pem, expand_split_pattern, parse_device_clip_cli,
         parse_page_range_cli, parse_page_selection_ordered, parse_profile_cli, parse_region_cli,
-        parse_render_halftone_cli, parse_render_pixel_format_cli, Cli, Commands,
+        parse_render_halftone_cli, parse_render_pixel_format_cli, parse_render_print_profile_cli,
+        Cli, Commands,
     };
     use clap::Parser;
     use std::path::PathBuf;
@@ -12420,6 +12447,10 @@ mod tests {
         assert_eq!(
             parse_render_halftone_cli("screen").unwrap(),
             wellfriendpdf_engine::render::HalftonePolicy::Screen
+        );
+        assert_eq!(
+            parse_render_print_profile_cli("proof").unwrap(),
+            wellfriendpdf_engine::render::PrintProfile::Proof
         );
     }
 

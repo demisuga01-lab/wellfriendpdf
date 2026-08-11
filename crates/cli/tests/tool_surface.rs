@@ -365,6 +365,8 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "--reverse-byte-order",
         "--halftone",
         "screen",
+        "--print-profile",
+        "proof",
         "--write-contract-json",
         "--json",
     ]);
@@ -372,6 +374,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(json["render_contract"], true);
     assert_eq!(json["contract_json_sidecars"], 1);
     assert_eq!(json["pixel_format"], "bgra8");
+    assert_eq!(json["print_profile"], "proof");
 
     let entries = zip_entries(&o);
     let raw = entries
@@ -391,6 +394,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(contract["pixel_format"], "Bgra8");
     assert_eq!(contract["reverse_byte_order"], true);
     assert_eq!(contract["halftone"], "Screen");
+    assert_eq!(contract["print_profile"], "Proof");
     let contract_json = tmp("render_contract_input.json");
     std::fs::write(
         &contract_json,
@@ -414,6 +418,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(replay_json["render_contract"], true);
     assert_eq!(replay_json["contract_json_input"], true);
     assert_eq!(replay_json["pixel_format"], "Bgra8");
+    assert_eq!(replay_json["print_profile"], "Proof");
     let replay_entries = zip_entries(&replay_zip);
     let replay_raw = replay_entries
         .iter()

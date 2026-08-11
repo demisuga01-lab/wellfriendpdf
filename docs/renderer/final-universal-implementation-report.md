@@ -55,7 +55,7 @@
 | RV-30 | PARTIAL | PARTIAL_ADVANCED | Rust/CLI render APIs | partial | contract/raw surface route plus exact JSON input for raster CLI output | focused local CLI contract round-trip test passes | Rust/CLI partial | max pixels and contract validation | Ergonomic matrix/page-box/background/CMM/overprint/resource-budget builders still missing |
 | RV-31 | PARTIAL | PARTIAL | C ABI PNG/JPEG functions | no | core immediate encoding | VPS release build + C API test pass | C API partial | C pointer checks | No versioned full contract/cancellation/progressive surfaces |
 | RV-32 | PARTIAL | PARTIAL | Python/WASM/.NET/Java/server | no | simple binding routes | Rust workspace pass; external tools blocked | Python/WASM partial; .NET/Java no raster | varies | Cross-binding renderer parity incomplete; VPS toolchains missing |
-| RV-33 | PARTIAL | PARTIAL | `prepress.rs`/render paths | partial | display behavior | prepress tests pass | not public parity | existing limits | No explicit PrintRenderProfile contract |
+| RV-33 | PARTIAL | PARTIAL_ADVANCED | `prepress.rs`/render paths and CLI `--print-profile` | partial | display/print/proof contract behavior | focused local CLI contract test passes | Rust/CLI partial | existing limits | Full CMYK/DeviceN/proof backend execution still incomplete |
 | RV-34 | PARTIAL | PARTIAL | runtime/server/CLI | partial | n/a | deterministic tests/workspace pass | partial | runtime configs | No renderer structured concurrency proof by thread/cache matrix |
 | RV-35 | PARTIAL | PARTIAL | page/decode/surface limits | partial | typed errors | resource-limit tests pass | server partial | existing caps | No unified all-resource render budget |
 | RV-36 | PARTIAL | PARTIAL | `final-fallback-inventory.md` | partial | FB-01–FB-12 | source inventory + tests | CLI counters partial | n/a | 12 active decisions remain; 8 degraded |
@@ -145,7 +145,7 @@ The repaired renderer continuation is source- and VPS-validated for the availabl
 | RV-30 Rust/API controls | PARTIAL_ADVANCED | Contract JSON, caller-owned buffer render, reverse byte order, adaptive progressive entry, bounded CLI raw contract rendering, and exact CLI JSON input are active in source. | CLI still lacks ergonomic builders for matrix, page box, background, CMM, overprint, exactness, determinism, and resource-budget subfields. |
 | RV-31 C ABI | PARTIAL_ADVANCED | Contract JSON render, caller buffer, progressive create/step/token/pause/resume/cancel/finish/free exports exist and are declared in the public header. | Header/source checks are local; no external C consumer build was run in this pass. |
 | RV-32 language bindings | PARTIAL_ADVANCED | Python, WASM, .NET, and Java source expose contract JSON and progressive surfaces; WASM `.d.ts` now declares them. | Full generated-schema ergonomics and local external toolchain validation remain incomplete. |
-| RV-33 print profile | PARTIAL_ADVANCED | Screen halftone execution is active for RGB raster surfaces; incompatible separation-preserving output fails typed. | Full CMYK/DeviceN/proofing backend execution remains incomplete. |
+| RV-33 print profile | PARTIAL_ADVANCED | Screen halftone execution is active for RGB raster surfaces; incompatible separation-preserving output fails typed; CLI exposes display/print/proof contract selection. | Full CMYK/DeviceN/proofing backend execution remains incomplete. |
 
 ### Focused local checks run in this continuation
 
