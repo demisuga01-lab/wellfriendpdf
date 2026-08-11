@@ -365,6 +365,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "--pixel-format",
         "bgra8",
         "--reverse-byte-order",
+        "--grayscale",
         "--halftone",
         "screen",
         "--print-profile",
@@ -376,6 +377,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(json["render_contract"], true);
     assert_eq!(json["contract_json_sidecars"], 1);
     assert_eq!(json["pixel_format"], "bgra8");
+    assert_eq!(json["grayscale"], true);
     assert_eq!(json["print_profile"], "proof");
 
     let entries = zip_entries(&o);
@@ -395,6 +397,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(contract["clip"]["height"], 16);
     assert_eq!(contract["pixel_format"], "Bgra8");
     assert_eq!(contract["reverse_byte_order"], true);
+    assert_eq!(contract["grayscale"], true);
     assert_eq!(contract["halftone"], "Screen");
     assert_eq!(contract["print_profile"], "Proof");
     assert_eq!(contract["resource_budget"]["max_pixels"], 10_000_000);
@@ -421,6 +424,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(replay_json["render_contract"], true);
     assert_eq!(replay_json["contract_json_input"], true);
     assert_eq!(replay_json["pixel_format"], "Bgra8");
+    assert_eq!(replay_json["grayscale"], true);
     assert_eq!(replay_json["print_profile"], "Proof");
     let replay_entries = zip_entries(&replay_zip);
     let replay_raw = replay_entries

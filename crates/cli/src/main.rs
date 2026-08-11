@@ -2779,6 +2779,9 @@ struct RenderArgs {
     /// Reverse byte order within each multi-byte output pixel for --format raw.
     #[arg(long)]
     reverse_byte_order: bool,
+    /// Convert caller-owned raw surface output to grayscale.
+    #[arg(long)]
+    grayscale: bool,
     /// Contract halftone policy: disabled or screen.
     #[arg(long, default_value = "disabled", value_parser = ["disabled", "screen"])]
     halftone: String,
@@ -7544,6 +7547,7 @@ struct CliRenderContractOptions {
     clip: Option<wellfriendpdf_engine::render::DeviceClip>,
     pixel_format: wellfriendpdf_engine::render::PixelFormat,
     reverse_byte_order: bool,
+    grayscale: bool,
     halftone: wellfriendpdf_engine::render::HalftonePolicy,
     print_profile: wellfriendpdf_engine::render::PrintProfile,
     annotations: wellfriendpdf_engine::render::AnnotationRenderPolicy,
@@ -7564,6 +7568,7 @@ fn render_args_have_contract_options(args: &RenderArgs) -> bool {
         || args.clip.is_some()
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
         || args.reverse_byte_order
+        || args.grayscale
         || !args.halftone.eq_ignore_ascii_case("disabled")
         || !args.print_profile.eq_ignore_ascii_case("display")
         || !args.annotations.eq_ignore_ascii_case("include")
@@ -7575,6 +7580,7 @@ fn render_args_have_contract_builder_options(args: &RenderArgs) -> bool {
         || args.clip.is_some()
         || !args.pixel_format.eq_ignore_ascii_case("rgba8")
         || args.reverse_byte_order
+        || args.grayscale
         || !args.halftone.eq_ignore_ascii_case("disabled")
         || !args.print_profile.eq_ignore_ascii_case("display")
         || !args.annotations.eq_ignore_ascii_case("include")
@@ -7588,10 +7594,11 @@ fn parse_cli_render_contract_options(
     let pixel_format = parse_render_pixel_format_cli(&args.pixel_format)?;
     if !output_format.is_raw()
         && (pixel_format != wellfriendpdf_engine::render::PixelFormat::Rgba8
-            || args.reverse_byte_order)
+            || args.reverse_byte_order
+            || args.grayscale)
     {
         return Err(usage_error(
-            "--pixel-format and --reverse-byte-order produce caller-owned surfaces; use --format raw",
+            "--pixel-format, --reverse-byte-order, and --grayscale produce caller-owned surfaces; use --format raw",
         ));
     }
     Ok(CliRenderContractOptions {
@@ -7602,6 +7609,7 @@ fn parse_cli_render_contract_options(
             .transpose()?,
         pixel_format,
         reverse_byte_order: args.reverse_byte_order,
+        grayscale: args.grayscale,
         halftone: parse_render_halftone_cli(&args.halftone)?,
         print_profile: parse_render_print_profile_cli(&args.print_profile)?,
         annotations: parse_render_annotations_cli(&args.annotations)?,
@@ -7714,6 +7722,7 @@ fn build_cli_render_contract(
     contract.pixel_format = options.pixel_format;
     contract.stride = contract.width as usize * contract.pixel_format.bytes_per_pixel();
     contract.reverse_byte_order = options.reverse_byte_order;
+    contract.grayscale = options.grayscale;
     contract.halftone = options.halftone;
     contract.print_profile = options.print_profile;
     contract.annotations = options.annotations;
@@ -7966,6 +7975,10 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
             .as_ref()
             .map(|contract| format!("{:?}", contract.print_profile))
             .unwrap_or_else(|| args.print_profile.clone());
+        let summary_grayscale = input_contract
+            .as_ref()
+            .map(|contract| contract.grayscale)
+            .unwrap_or(args.grayscale);
         println!(
             "{}",
             serde_json::json!({
@@ -7979,6 +7992,7 @@ fn run_render(args: RenderArgs) -> Result<(), Box<dyn Error>> {
                 "contract_json_input": args.contract_json.is_some(),
                 "contract_json_sidecars": contract_sidecars,
                 "pixel_format": summary_pixel_format,
+                "grayscale": summary_grayscale,
                 "print_profile": summary_print_profile,
             })
         );
