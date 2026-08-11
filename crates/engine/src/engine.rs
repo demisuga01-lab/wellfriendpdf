@@ -836,6 +836,7 @@ impl ContentEngine {
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
         accepted_expected.halftone = contract.halftone;
+        accepted_expected.resource_budget.max_pixels = contract.resource_budget.max_pixels;
         if normalized != accepted_expected {
             return Err(WellfriendError::UnsupportedFeature(
                 "the requested render contract contains semantic policy fields not yet implemented by the active CPU renderer".to_string(),
@@ -2474,6 +2475,44 @@ mod tests {
         assert!(surface.chunks_exact(4).any(|px| px[0] == 0));
         assert!(surface.chunks_exact(4).any(|px| px[0] == 255));
         assert!(surface.chunks_exact(4).all(|px| px[3] == 255));
+    }
+
+    #[test]
+    fn contract_accepts_valid_custom_max_pixel_budget() {
+        use crate::{AuthorPageSize, PdfBuilder, TextStyle};
+
+        let mut builder = PdfBuilder::new();
+        builder
+            .add_page(AuthorPageSize::LETTER)
+            .draw_text("budget", 12.0, 780.0, &TextStyle::default())
+            .expect("write budget fixture");
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open budget fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+        });
+        contract.width = 16;
+        contract.height = 16;
+        contract.stride = 16 * 4;
+        contract.resource_budget.max_pixels =
+            u64::from(contract.width) * u64::from(contract.height);
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect("custom max pixel budget is accepted after validation");
+
+        let mut too_small = contract;
+        too_small.resource_budget.max_pixels -= 1;
+        let err = engine
+            .render_page_into_buffer(&too_small, &CancelToken::none(), &mut surface)
+            .expect_err("too-small max pixel budget must be refused");
+        assert!(err.to_string().contains("exceeding budget"));
     }
 
     #[test]

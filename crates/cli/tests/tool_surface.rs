@@ -360,6 +360,8 @@ fn render_contract_raw_surface_and_sidecar_runs() {
         "--render-contract",
         "--clip",
         "0,0,16,16",
+        "--max-render-pixels",
+        "10000000",
         "--pixel-format",
         "bgra8",
         "--reverse-byte-order",
@@ -395,6 +397,7 @@ fn render_contract_raw_surface_and_sidecar_runs() {
     assert_eq!(contract["reverse_byte_order"], true);
     assert_eq!(contract["halftone"], "Screen");
     assert_eq!(contract["print_profile"], "Proof");
+    assert_eq!(contract["resource_budget"]["max_pixels"], 10_000_000);
     let contract_json = tmp("render_contract_input.json");
     std::fs::write(
         &contract_json,
