@@ -556,6 +556,57 @@ fn render_contract_media_page_box_uses_media_dimensions() {
 }
 
 #[test]
+fn render_contract_trim_page_box_uses_trim_dimensions() {
+    let input = tmp("render_contract_trim_page_box.pdf");
+    std::fs::write(&input, media_crop_page_pdf()).expect("write media/crop fixture");
+    let output = tmp("render_contract_trim_page_box.zip");
+    let out = run(&[
+        "render",
+        input.to_str().unwrap(),
+        "-o",
+        output.to_str().unwrap(),
+        "-p",
+        "1",
+        "--dpi",
+        "72",
+        "--format",
+        "raw",
+        "--render-contract",
+        "--page-box",
+        "trim",
+        "--background",
+        "7,8,9",
+        "--write-contract-json",
+        "--json",
+    ]);
+    let json = assert_json(&out, "render contract trim page box");
+    assert_eq!(json["render_contract"], true);
+    assert_eq!(json["contract_json_sidecars"], 1);
+
+    let entries = zip_entries(&output);
+    let raw = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.raw")
+        .expect("raw surface entry");
+    assert_eq!(raw.1.len(), 60 * 70 * 4);
+    assert_eq!(&raw.1[..4], &[7, 8, 9, 255]);
+    let contract = entries
+        .iter()
+        .find(|(name, _)| name == "page-001.contract.json")
+        .expect("contract sidecar entry");
+    let contract: serde_json::Value =
+        serde_json::from_slice(&contract.1).expect("parse contract sidecar");
+    assert_eq!(contract["page_box"], "Trim");
+    assert_eq!(contract["width"], 60);
+    assert_eq!(contract["height"], 70);
+    assert_eq!(contract["clip"]["width"], 60);
+    assert_eq!(contract["clip"]["height"], 70);
+
+    let _ = std::fs::remove_file(&input);
+    let _ = std::fs::remove_file(&output);
+}
+
+#[test]
 fn render_raster_output_is_deterministic_across_thread_counts() {
     let serial_zip = tmp("render_threads_1.zip");
     let parallel_zip = tmp("render_threads_4.zip");
@@ -948,7 +999,7 @@ fn media_crop_page_pdf() -> Vec<u8> {
     let objs = [
         "<< /Type /Catalog /Pages 2 0 R >>",
         "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /CropBox [0 0 40 40] /Resources << >> >>",
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /CropBox [0 0 40 40] /BleedBox [0 0 80 90] /TrimBox [0 0 60 70] /ArtBox [0 0 20 30] /Resources << >> >>",
     ];
     let mut pdf = String::from("%PDF-1.7\n");
     let mut offsets = Vec::new();

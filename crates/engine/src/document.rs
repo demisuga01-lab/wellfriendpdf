@@ -22,6 +22,9 @@ pub struct PdfPage {
     pub generation_number: u16,
     pub media_box: [f64; 4],
     pub crop_box: [f64; 4],
+    pub bleed_box: [f64; 4],
+    pub trim_box: [f64; 4],
+    pub art_box: [f64; 4],
     pub rotate: i32,
     pub user_unit: f64,
     pub resources: PdfDictionary,
@@ -365,6 +368,18 @@ fn build_page_from_dict(
         }
     };
     let crop_box = inherited.crop_box.unwrap_or(media_box);
+    let bleed_box = match dict.get("BleedBox") {
+        Some(bleed_box) => parse_box(bleed_box, reader, "BleedBox")?,
+        None => crop_box,
+    };
+    let trim_box = match dict.get("TrimBox") {
+        Some(trim_box) => parse_box(trim_box, reader, "TrimBox")?,
+        None => crop_box,
+    };
+    let art_box = match dict.get("ArtBox") {
+        Some(art_box) => parse_box(art_box, reader, "ArtBox")?,
+        None => crop_box,
+    };
     let rotate = normalize_rotate(inherited.rotate.unwrap_or(0));
     let user_unit = parse_user_unit(dict, reader)?;
     let resources = match inherited.resources {
@@ -386,6 +401,9 @@ fn build_page_from_dict(
         generation_number,
         media_box,
         crop_box,
+        bleed_box,
+        trim_box,
+        art_box,
         rotate,
         user_unit,
         resources,
@@ -518,6 +536,10 @@ mod tests {
         let parent_resources = dict(&[("Font", PdfObject::Dictionary(PdfDictionary::empty()))]);
         let parent = dict(&[
             ("MediaBox", box_obj([0, 0, 300, 400])),
+            ("CropBox", box_obj([0, 0, 200, 250])),
+            ("BleedBox", box_obj([0, 0, 190, 240])),
+            ("TrimBox", box_obj([0, 0, 180, 230])),
+            ("ArtBox", box_obj([0, 0, 170, 220])),
             ("Resources", PdfObject::Dictionary(parent_resources.clone())),
         ]);
         let parent_attrs = apply_inherited_attrs(&parent, InheritedAttrs::default(), None).unwrap();
@@ -532,16 +554,27 @@ mod tests {
         )
         .unwrap();
         assert_eq!(inherited_page.media_box, [0.0, 0.0, 300.0, 400.0]);
+        assert_eq!(inherited_page.crop_box, [0.0, 0.0, 200.0, 250.0]);
+        assert_eq!(inherited_page.bleed_box, [0.0, 0.0, 200.0, 250.0]);
+        assert_eq!(inherited_page.trim_box, [0.0, 0.0, 200.0, 250.0]);
+        assert_eq!(inherited_page.art_box, [0.0, 0.0, 200.0, 250.0]);
         assert_eq!(inherited_page.rotate, 0);
         assert_eq!(inherited_page.resources, parent_resources);
 
         let page_resources = dict(&[("XObject", PdfObject::Dictionary(PdfDictionary::empty()))]);
         let page = dict(&[
             ("MediaBox", box_obj([10, 20, 500, 600])),
+            ("BleedBox", box_obj([10, 20, 320, 420])),
+            ("TrimBox", box_obj([10, 20, 300, 400])),
+            ("ArtBox", box_obj([10, 20, 280, 380])),
             ("Resources", PdfObject::Dictionary(page_resources.clone())),
         ]);
         let overridden_page = build_page_from_dict(11, 0, 2, &page, parent_attrs, None).unwrap();
         assert_eq!(overridden_page.media_box, [10.0, 20.0, 500.0, 600.0]);
+        assert_eq!(overridden_page.crop_box, [0.0, 0.0, 200.0, 250.0]);
+        assert_eq!(overridden_page.bleed_box, [10.0, 20.0, 320.0, 420.0]);
+        assert_eq!(overridden_page.trim_box, [10.0, 20.0, 300.0, 400.0]);
+        assert_eq!(overridden_page.art_box, [10.0, 20.0, 280.0, 380.0]);
         assert_eq!(overridden_page.rotate, 0);
         assert_eq!(overridden_page.resources, page_resources);
     }

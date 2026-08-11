@@ -40,7 +40,7 @@
 | RV-27 | PARTIAL | PARTIAL | hot packed vectors/arenas | active / active | active vector plan | no debug-string interning; bounded caches | full warm replay allocation invariant suite incomplete |
 | RV-28 | PARTIAL | PARTIAL | tile/band APIs | active / active | tile replay active | tile cache bounds/overdraw | adaptive priority/visibility scheduler incomplete |
 | RV-29 | PARTIAL | PARTIAL | `ProgressiveRenderJob`, state enum | active / active | retained tile then explicit fallback | Created/Preparing/Rendering/Paused/Completed/Cancelled/Failed/Closed; close/cancel releases state | cross-binding session handles incomplete |
-| RV-30 | PARTIAL | PARTIAL_ADVANCED | Rust API/CLI capabilities | active / active | contract Rust API plus CLI contract/raw surface path and exact JSON input active | contract rejects unsupported policy; CLI raw layout flags require raw output; JSON input rejects builder mixing | CLI now covers schema builders for page box, device transform, background, clip, raw caller surface, sidecar/input contract JSON, grayscale, byte order, halftone, print-profile, overprint, rendering intent, color management, exactness, determinism, annotations, forms, and resource budgets; non-white background and Media/Crop page boxes are honored; other non-default execution parity remains incomplete |
+| RV-30 | PARTIAL | PARTIAL_ADVANCED | Rust API/CLI capabilities | active / active | contract Rust API plus CLI contract/raw surface path and exact JSON input active | contract rejects unsupported policy; CLI raw layout flags require raw output; JSON input rejects builder mixing | CLI now covers schema builders for page box, device transform, background, clip, raw caller surface, sidecar/input contract JSON, grayscale, byte order, halftone, print-profile, overprint, rendering intent, color management, exactness, determinism, annotations, forms, and resource budgets; non-white background and all five page boxes are honored; other non-default execution parity remains incomplete |
 | RV-31 | PARTIAL | PARTIAL | C ABI contract JSON + PNG | active / n/a | canonical core | opaque document/buffer ownership | progressive/caller buffer/session APIs incomplete |
 | RV-32 | PARTIAL | PARTIAL | Python/WASM/.NET/Java basic contract JSON and PNG | active / n/a | canonical core | compact fixture smoke across bindings | full field builders, cancellation, progressive parity, server contract incomplete |
 | RV-33 | PARTIAL | PARTIAL_ADVANCED | `PrintProfile` in contract and CLI builder | active / active | contract present; CLI display/print/proof selection active | policy identity present | full CMYK/DeviceN/proof execution remains incomplete |
@@ -100,10 +100,11 @@ The pass materially advances the renderer architecture and removes several avoid
 | `cargo test -p wellfriendpdf-cli cli_render_contract_parsers_accept_public_values --bin wellfriendpdf --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-engine contract_honors_non_white_background --lib --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-engine contract_media_page_box_uses_media_dimensions --lib --jobs 1` | 0 |
-| `cargo test -p wellfriendpdf-engine unsupported_prepress_page_boxes_are_refused --lib --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-engine contract_prepress_page_boxes_use_retained_dimensions --lib --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-engine render_page_returns_font_substitution_report --lib --jobs 1` | 0 |
 | `cargo test -p wellfriendpdf-cli render_contract_raw_surface_and_sidecar_runs --test tool_surface --jobs 1 -- --test-threads=1` | 0 |
 | `cargo test -p wellfriendpdf-cli render_contract_media_page_box_uses_media_dimensions --test tool_surface --jobs 1 -- --test-threads=1` | 0 |
+| `cargo test -p wellfriendpdf-cli render_contract_trim_page_box_uses_trim_dimensions --test tool_surface --jobs 1 -- --test-threads=1` | 0 |
 
 ### Updated subsystem status
 
@@ -119,7 +120,7 @@ The pass materially advances the renderer architecture and removes several avoid
 | Adaptive scheduler | PARTIAL_ADVANCED | Deterministic adaptive tile sizing and visible-tile priority exist; full viewer queue, adjacent-page prefetch, and stale-publication suppression across bindings remain incomplete. |
 | Image decode | PARTIAL_ADVANCED | Metadata-first tile-origin culling and cache identity dimensions exist; decoder-native ROI/reduction/progressive decode remains incomplete. |
 | Font substitution reporting | PARTIAL_ADVANCED | Bounded render-time substitution events are serializable and exposed through Rust render APIs and CLI sidecars; per-glyph details and cross-binding report parity remain incomplete. |
-| CLI contract controls | PARTIAL_ADVANCED | Bounded contract/raw-surface rendering, grayscale output, print-profile selection, contract background, Media/Crop page boxes, full schema-v1 field builders, and exact full-field JSON input are exposed; active CPU execution for non-default transform, Bleed/Trim/Art boxes, CMM, overprint, exactness, determinism, and non-pixel resource-budget semantics remains incomplete. |
+| CLI contract controls | PARTIAL_ADVANCED | Bounded contract/raw-surface rendering, grayscale output, print-profile selection, contract background, all five PDF page boxes, full schema-v1 field builders, and exact full-field JSON input are exposed; active CPU execution for non-default transform, CMM, overprint, exactness, determinism, and non-pixel resource-budget semantics remains incomplete. |
 | Binding parity | PARTIAL_ADVANCED | Progressive/contract/caller-buffer source surfaces exist across Rust, C, Python, WASM, .NET, Java, and server; full local build/runtime parity was not completed. |
 | Visual normalization harness | PARTIAL | Compact tooling exists; full later corpus/reference campaign remains deferred. |
 

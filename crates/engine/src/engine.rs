@@ -674,8 +674,7 @@ impl ContentEngine {
     }
 
     /// Build the canonical default render contract for a full page using an
-    /// explicit PDF page box. The active page model currently supports Media
-    /// and Crop boxes; prepress boxes remain explicit unsupported features.
+    /// explicit PDF page box.
     pub fn default_render_contract_for_page_box(
         &self,
         page_number: usize,
@@ -2414,20 +2413,25 @@ fn link_uri(adict: &crate::object::PdfDictionary, reader: &PdfReader) -> Option<
     }
 }
 
-fn effective_page_box(page: &PdfPage) -> [f64; 4] {
-    intersect_boxes(page.media_box, page.crop_box).unwrap_or(page.media_box)
-}
-
 fn render_page_box(page: &PdfPage, page_box: PageBox) -> Result<[f64; 4]> {
-    match page_box {
-        PageBox::Media => Ok(page.media_box),
-        PageBox::Crop => Ok(effective_page_box(page)),
-        PageBox::Bleed | PageBox::Trim | PageBox::Art => {
-            Err(WellfriendError::UnsupportedFeature(format!(
-                "render contract page_box {page_box:?} is not available in the active page model"
-            )))
-        }
+    if page_box == PageBox::Media {
+        return Ok(page.media_box);
     }
+    if page_box == PageBox::Crop {
+        return Ok(intersect_boxes(page.media_box, page.crop_box).unwrap_or(page.media_box));
+    }
+
+    let selected = match page_box {
+        PageBox::Media | PageBox::Crop => unreachable!(),
+        PageBox::Bleed => page.bleed_box,
+        PageBox::Trim => page.trim_box,
+        PageBox::Art => page.art_box,
+    };
+    intersect_boxes(page.media_box, selected).ok_or_else(|| {
+        WellfriendError::invalid_input(format!(
+            "render contract page_box {page_box:?} does not overlap the page MediaBox"
+        ))
+    })
 }
 
 fn intersect_boxes(media: [f64; 4], crop: [f64; 4]) -> Option<[f64; 4]> {
@@ -2456,6 +2460,9 @@ mod tests {
             generation_number: 0,
             media_box,
             crop_box,
+            bleed_box: crop_box,
+            trim_box: crop_box,
+            art_box: crop_box,
             rotate: 0,
             resources: PdfDictionary::empty(),
             contents: Vec::new(),
@@ -2479,17 +2486,20 @@ mod tests {
     }
 
     #[test]
-    fn effective_page_box_ignores_invalid_cropbox() {
+    fn render_page_box_ignores_invalid_cropbox() {
         let page = page([0.0, 0.0, 200.0, 200.0], [250.0, 250.0, 300.0, 300.0]);
 
-        assert_eq!(effective_page_box(&page), [0.0, 0.0, 200.0, 200.0]);
+        assert_eq!(
+            render_page_box(&page, PageBox::Crop).expect("crop page box"),
+            [0.0, 0.0, 200.0, 200.0]
+        );
     }
 
     fn media_crop_fixture_pdf() -> Vec<u8> {
         let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /CropBox [0 0 40 40] /Resources << >> >>".to_string(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 100 100] /CropBox [0 0 40 40] /BleedBox [0 0 80 90] /TrimBox [0 0 60 70] /ArtBox [0 0 20 30] /Resources << >> >>".to_string(),
         ];
         let mut pdf = String::from("%PDF-1.7\n");
         let mut offsets = Vec::new();
@@ -2538,13 +2548,21 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_prepress_page_boxes_are_refused() {
+    fn contract_prepress_page_boxes_use_retained_dimensions() {
         let engine =
             ContentEngine::open_bytes(media_crop_fixture_pdf()).expect("open media/crop fixture");
-        let err = engine
+        let bleed = engine
+            .default_render_contract_for_page_box(1, 72, RenderMode::Compat, PageBox::Bleed)
+            .expect("bleed contract");
+        let trim = engine
             .default_render_contract_for_page_box(1, 72, RenderMode::Compat, PageBox::Trim)
-            .expect_err("trim box is not retained yet");
-        assert!(err.to_string().contains("page_box Trim"));
+            .expect("trim contract");
+        let art = engine
+            .default_render_contract_for_page_box(1, 72, RenderMode::Compat, PageBox::Art)
+            .expect("art contract");
+        assert_eq!((bleed.width, bleed.height), (80, 90));
+        assert_eq!((trim.width, trim.height), (60, 70));
+        assert_eq!((art.width, art.height), (20, 30));
     }
 
     #[test]
