@@ -79,8 +79,8 @@ pub use plan::{
 pub use postscript::{assemble_eps_document, assemble_ps_document, render_page_ps, PsPage};
 pub use print_profile::{PrintProfileRefusal, PrintProfileRefusalCategory};
 pub use progressive::{
-    ProgressiveRenderJob, ProgressiveRenderState, ProgressiveRenderStepReport,
-    ProgressiveRenderToken,
+    choose_adaptive_tile_size, ProgressiveRenderJob, ProgressiveRenderState,
+    ProgressiveRenderStepReport, ProgressiveRenderToken,
 };
 pub use quality::RenderQuality;
 pub use shading::ShadingRenderer;

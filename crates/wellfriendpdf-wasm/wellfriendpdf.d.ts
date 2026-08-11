@@ -8,6 +8,17 @@ export class WellfriendOutput {
   reportJson(): ReportJson;
 }
 
+export class ProgressiveRenderJob {
+  stateJson(): ReportJson;
+  step(maxTiles: number): ReportJson;
+  tokenJson(): ReportJson;
+  pauseJson(): ReportJson;
+  resumeJson(tokenJson: string): void;
+  cancel(): void;
+  finishPng(): Uint8Array | undefined;
+  close(): void;
+}
+
 export class WellfriendPdf {
   constructor(bytes: Uint8Array | ArrayBuffer | ArrayLike<number>);
   static openWithPassword(bytes: Uint8Array | ArrayBuffer | ArrayLike<number>, password: Uint8Array | ArrayLike<number>): WellfriendPdf;
@@ -30,6 +41,10 @@ export class WellfriendPdf {
   extractFieldsJson(docType: string): ReportJson;
   infoJson(): ReportJson;
   renderPagePng(page: number, dpi: number): Uint8Array;
+  defaultRenderContractJson(page: number, dpi: number, mode?: string): ReportJson;
+  renderContractPng(contractJson: string): Uint8Array;
+  renderContractInto(contractJson: string, output: Uint8Array): void;
+  progressiveRenderJob(page: number, dpi: number, tileWidth: number, tileHeight: number, mode?: string): ProgressiveRenderJob;
 
   documentInfoJson(): ReportJson;
   securityReportJson(): ReportJson;

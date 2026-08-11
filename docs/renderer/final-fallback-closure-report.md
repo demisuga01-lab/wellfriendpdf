@@ -39,3 +39,20 @@ The previous inventory contained 12 fallback decisions, eight of which could mat
 ## Remaining closure blockers
 
 The residual policies above, incomplete native compiled payloads for high-level retained operations, incomplete public progressive sessions outside Rust, incomplete full binding contract builders, vector regionalization, font substitution reporting, and JPX region/progressive decode remain benchmark-readiness blockers.
+
+## 2026-08-11 local fallback-policy update
+
+This local source-only continuation did not run a corpus or benchmark campaign. It changed fallback posture in the following renderer-adjacent areas:
+
+| Area | Previous fallback or limitation | Current disposition |
+|---|---|---|
+| Caller-owned byte order | `reverse_byte_order` was rejected by the CPU caller-surface encoder. | Implemented for supported contract pixel formats; no fallback or refusal for byte-order-only layout changes. |
+| Screen halftone | `HalftonePolicy::Screen` was not renderer-active. | Implemented as deterministic ordered raster screening for RGB output. `Screen + PreserveSeparations` remains a typed exactness refusal. |
+| Progressive public sessions | Public server/session exposure was incomplete. | Server lifecycle routes are active and report fallback events from retained tile rendering. C/Python/WASM/.NET/Java source surfaces also expose progressive session handles. |
+| Adaptive tile sizing | Fixed tile iteration only. | Adaptive tile size is selected deterministically from 128/192/256/384/512 when requested. |
+| Image tile culling | Non-zero tile-origin image planning failed open and decoded. | Tile-origin-aware metadata culling skips images outside the active tile without invoking decode. |
+| SMask image classification | Soft-mask references were discovered by a second reader pass. | SMask references are classified during the primary XObject walk. |
+
+**Current materially degrading high-quality fallbacks remaining:** retained-to-immediate delegation for unsupported display lists, unresolved Type 3 Compat fallback, deterministic bundled font substitution, JPX full-decode/compat paths where region/reduction APIs are unavailable, and SVG/PS whole-page raster embedding for unsupported local constructs.
+
+**Verdict:** `IMPLEMENTATION_INCOMPLETE`

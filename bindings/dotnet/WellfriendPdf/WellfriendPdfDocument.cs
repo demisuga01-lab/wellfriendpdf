@@ -298,7 +298,7 @@ public sealed class WellfriendDocument : IDisposable
         string? mode = null)
     {
         ThrowIfDisposed();
-        if (pageNumber < 1 || dpi == 0 || tileWidth == 0 || tileHeight == 0)
+        if (pageNumber < 1 || dpi == 0 || (tileWidth == 0) != (tileHeight == 0))
         {
             throw new ArgumentOutOfRangeException(nameof(pageNumber));
         }
@@ -317,6 +317,14 @@ public sealed class WellfriendDocument : IDisposable
         {
             if (modePtr != IntPtr.Zero) Marshal.FreeCoTaskMem(modePtr);
         }
+    }
+
+    public ProgressiveRenderSession CreateAdaptiveProgressiveRenderSession(
+        int pageNumber,
+        uint dpi = 72,
+        string? mode = null)
+    {
+        return CreateProgressiveRenderSession(pageNumber, dpi, 0, 0, mode);
     }
 
     public string ParseJson()

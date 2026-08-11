@@ -52,6 +52,10 @@ pub struct ServerConfig {
     /// Backstop cap on the number of jobs retained in the store at once. Bounds
     /// memory/disk even if submissions outpace retention cleanup.
     pub max_jobs: usize,
+    /// Backstop cap on active progressive render sessions retained in memory.
+    pub max_progressive_sessions: usize,
+    /// Idle timeout for progressive render sessions, in seconds.
+    pub progressive_session_idle_secs: u64,
     /// Directory for job result files. `None` => a per-process subdir of the
     /// system temp dir (or the `WELLFRIENDPDF_JOB_RESULT_DIR` env override). Tests set
     /// this to a unique dir so on-disk cleanup can be verified in isolation.
@@ -110,6 +114,11 @@ impl Default for ServerConfig {
             job_retention_secs: 3_600,
             // Bound total retained jobs regardless of retention timing.
             max_jobs: 1_000,
+            // Progressive sessions retain document state plus completed tile
+            // buffers, so keep the in-memory surface smaller than the async job
+            // store.
+            max_progressive_sessions: 64,
+            progressive_session_idle_secs: 300,
             job_result_dir: None,
             runtime_config: wellfriendpdf_engine::RuntimeConfig::standard(),
             force_standard: false,
@@ -234,6 +243,18 @@ impl ServerConfig {
         if let Ok(value) = std::env::var("WELLFRIENDPDF_MAX_JOBS") {
             if let Ok(max_jobs) = value.parse::<usize>() {
                 cfg.max_jobs = max_jobs.max(1);
+            }
+        }
+
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_MAX_PROGRESSIVE_SESSIONS") {
+            if let Ok(max_progressive_sessions) = value.parse::<usize>() {
+                cfg.max_progressive_sessions = max_progressive_sessions.max(1);
+            }
+        }
+
+        if let Ok(value) = std::env::var("WELLFRIENDPDF_PROGRESSIVE_SESSION_IDLE_SECS") {
+            if let Ok(progressive_session_idle_secs) = value.parse::<u64>() {
+                cfg.progressive_session_idle_secs = progressive_session_idle_secs;
             }
         }
 

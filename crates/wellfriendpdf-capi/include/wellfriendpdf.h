@@ -26,6 +26,7 @@ enum {
 };
 
 typedef struct WellfriendDocument WellfriendDocument;
+typedef struct WellfriendProgressiveRenderJob WellfriendProgressiveRenderJob;
 typedef struct WellfriendSignatureValidationOptions WellfriendSignatureValidationOptions;
 typedef struct WellfriendSignatureTrustStore WellfriendSignatureTrustStore;
 typedef struct WellfriendSignatureIntermediateStore WellfriendSignatureIntermediateStore;
@@ -193,6 +194,69 @@ WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png(
     uint32_t dpi,
     WellfriendBuffer *out_buffer,
     char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_default_render_contract_json(
+    const WellfriendDocument *document,
+    size_t page,
+    uint32_t dpi,
+    const char *render_mode,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_page_png_with_contract_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_document_render_into_buffer_with_contract_json(
+    const WellfriendDocument *document,
+    const char *contract_json,
+    uint8_t *output,
+    size_t output_len,
+    char **error_out);
+
+WELLFRIENDPDF_API WellfriendProgressiveRenderJob *wellfriendpdf_document_progressive_render_new(
+    const WellfriendDocument *document,
+    size_t page,
+    uint32_t dpi,
+    uint32_t tile_width,
+    uint32_t tile_height,
+    const char *render_mode,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_step_json(
+    WellfriendProgressiveRenderJob *job,
+    size_t max_tiles,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_token_json(
+    WellfriendProgressiveRenderJob *job,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_pause_json(
+    WellfriendProgressiveRenderJob *job,
+    char **out_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_resume_json(
+    WellfriendProgressiveRenderJob *job,
+    const char *token_json,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_cancel(
+    WellfriendProgressiveRenderJob *job,
+    char **error_out);
+
+WELLFRIENDPDF_API int wellfriendpdf_progressive_render_finish_png(
+    WellfriendProgressiveRenderJob *job,
+    WellfriendBuffer *out_buffer,
+    char **error_out);
+
+WELLFRIENDPDF_API void wellfriendpdf_progressive_render_free(
+    WellfriendProgressiveRenderJob *job);
 
 WELLFRIENDPDF_API int wellfriendpdf_document_render_page_jpeg(
     const WellfriendDocument *document,

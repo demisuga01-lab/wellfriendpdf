@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::http::{HeaderName, HeaderValue, Method};
 use axum::{
@@ -12,6 +13,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::config::{get_config, ServerConfig};
 use crate::jobs::JobsState;
+use crate::progressive_sessions::ProgressiveSessionStore;
 use crate::rate_limit::RateLimiter;
 use crate::routes;
 
@@ -122,6 +124,52 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
         .route("/api/v1/jobs/:id/result", get(routes::jobs::result))
         .with_state(jobs_state);
 
+    // Progressive render session routes carry their own store state.
+    let progressive_store = ProgressiveSessionStore::new(
+        config.max_progressive_sessions,
+        Duration::from_secs(config.progressive_session_idle_secs),
+    );
+    let progressive_state = routes::progressive::ProgressiveState {
+        store: progressive_store,
+    };
+    let progressive_cleanup =
+        crate::progressive_sessions::spawn_cleanup_task(progressive_state.store.clone());
+    std::mem::forget(progressive_cleanup);
+    let progressive_routes = Router::new()
+        .route(
+            "/api/v1/progressive/start",
+            post(routes::progressive::start),
+        )
+        .route(
+            "/api/v1/progressive/:id/step",
+            post(routes::progressive::step),
+        )
+        .route(
+            "/api/v1/progressive/:id/pause",
+            post(routes::progressive::pause),
+        )
+        .route(
+            "/api/v1/progressive/:id/resume",
+            post(routes::progressive::resume),
+        )
+        .route(
+            "/api/v1/progressive/:id/cancel",
+            post(routes::progressive::cancel),
+        )
+        .route(
+            "/api/v1/progressive/:id/close",
+            post(routes::progressive::close),
+        )
+        .route(
+            "/api/v1/progressive/:id/status",
+            get(routes::progressive::status),
+        )
+        .route(
+            "/api/v1/progressive/:id/finish",
+            get(routes::progressive::finish_png),
+        )
+        .with_state(progressive_state);
+
     Router::new()
         .route("/health", get(routes::health::health))
         .route("/readiness", get(routes::health::readiness))
@@ -152,6 +200,7 @@ pub fn create_app_with_limiter(config: ServerConfig, limiter: Arc<RateLimiter>) 
         )
         .route("/api/v1/info", post(routes::parse_ops::info))
         .merge(job_routes)
+        .merge(progressive_routes)
         .layer(TraceLayer::new_for_http())
         .layer(RequestBodyLimitLayer::new(config.max_file_size))
         .layer(build_cors_layer(&config))

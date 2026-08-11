@@ -45,9 +45,9 @@
 //! Because none of the upstream decoders currently support partial decode, the
 //! `source_region` and `reduction_level` fields in [`ImageDecodePlan`] and
 //! [`ImageDecodeCacheKey`] are populated conservatively (full region, no
-//! reduction) and function as cache-identity placeholders. When a future
-//! decoder upgrade exposes partial APIs, these fields will drive actual partial
-//! decode without changing cache semantics.
+//! reduction) as reserved cache-identity dimensions. When a future decoder
+//! upgrade exposes partial APIs, these fields will drive actual partial decode
+//! without changing cache semantics.
 
 use crate::render::display_list::RenderBounds;
 use crate::render::transform::{Transform2D, Viewport};
@@ -244,22 +244,15 @@ pub(crate) fn plan_image_decode(
     high_quality: bool,
 ) -> ImageDecodePlan {
     let device_bounds = image_device_bounds(ctm, viewport);
-    let intersects = if viewport.origin_x_px != 0 || viewport.origin_y_px != 0 {
-        // A tile viewport carries a local device transform. Until the planner
-        // tracks both global and tile-local bounds, fail open here rather than
-        // incorrectly skipping an image that crosses this tile.
-        true
-    } else {
-        device_bounds
-            .as_ref()
-            .map(|bounds| {
-                bounds.x1 > 0
-                    && bounds.x0 < viewport.width_px as i32
-                    && bounds.y1 > 0
-                    && bounds.y0 < viewport.height_px as i32
-            })
-            .unwrap_or(true)
-    };
+    let intersects = device_bounds
+        .as_ref()
+        .map(|bounds| {
+            bounds.x1 > 0
+                && bounds.x0 < viewport.width_px as i32
+                && bounds.y1 > 0
+                && bounds.y0 < viewport.height_px as i32
+        })
+        .unwrap_or(true);
 
     let decision = if intersects {
         ImageDecodePlanDecision::DecodeRequired
@@ -491,6 +484,25 @@ mod tests {
         // In the real renderer, this decision means scheduled_decode_image
         // is never called, so no cache entry is created and no decode work
         // is performed.
+    }
+
+    #[test]
+    fn tile_origin_participates_in_metadata_culling() {
+        let full = Viewport::new([0.0, 0.0, 200.0, 200.0], 72);
+        let right_tile = full.pixel_window(100, 0, 100, 200);
+        let meta = metadata_for_test();
+        let base = "xobject:5:0:200:200:8:FlateDecode";
+
+        let left_image = Transform2D::new(30.0, 0.0, 0.0, 30.0, 10.0, 80.0);
+        let left_plan = plan_image_decode(&meta, &left_image, &right_tile, base, false);
+        assert_eq!(
+            left_plan.decision,
+            ImageDecodePlanDecision::SkipOutsideViewport
+        );
+
+        let right_image = Transform2D::new(30.0, 0.0, 0.0, 30.0, 120.0, 80.0);
+        let right_plan = plan_image_decode(&meta, &right_image, &right_tile, base, false);
+        assert_eq!(right_plan.decision, ImageDecodePlanDecision::DecodeRequired);
     }
 
     #[test]

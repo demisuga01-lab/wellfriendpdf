@@ -733,8 +733,8 @@ public final class WellfriendPdf {
             int pageNumber, int dpi, int tileWidth, int tileHeight, String mode
         ) {
             ensureOpen();
-            if (pageNumber < 1 || dpi < 1 || tileWidth < 1 || tileHeight < 1) {
-                throw new IllegalArgumentException("page, dpi, and tile dimensions must be positive");
+            if (pageNumber < 1 || dpi < 1 || (tileWidth == 0) != (tileHeight == 0)) {
+                throw new IllegalArgumentException("page and dpi must be positive; tile dimensions must both be positive or both be zero for adaptive sizing");
             }
             try (Arena arena = Arena.ofConfined()) {
                 MemorySegment modePtr = mode == null ? MemorySegment.NULL : arena.allocateFrom(mode);
@@ -754,6 +754,12 @@ public final class WellfriendPdf {
 
         public ProgressiveRenderSession progressiveRenderSession(int pageNumber) {
             return progressiveRenderSession(pageNumber, 72, 256, 256, "compat");
+        }
+
+        public ProgressiveRenderSession adaptiveProgressiveRenderSession(
+            int pageNumber, int dpi, String mode
+        ) {
+            return progressiveRenderSession(pageNumber, dpi, 0, 0, mode);
         }
 
         public String parseJson() {

@@ -16477,7 +16477,7 @@ mod print_profile_tests {
     }
 
     #[test]
-    fn contract_validate_refuses_halftone_screen() {
+    fn contract_validate_accepts_halftone_screen_without_preserve_separations() {
         let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], 72);
         let tile = RenderTile::full(100, 100);
         let mut contract = RenderContract::for_viewport(
@@ -16490,11 +16490,9 @@ mod print_profile_tests {
         );
         contract.halftone = HalftonePolicy::Screen;
         let result = contract.validate();
-        assert!(result.is_err(), "HalftonePolicy::Screen should be refused");
-        let msg = format!("{}", result.unwrap_err());
         assert!(
-            msg.contains("halftone"),
-            "error should mention halftone: {msg}"
+            result.is_ok(),
+            "HalftonePolicy::Screen is implemented for RGB raster surfaces"
         );
     }
 

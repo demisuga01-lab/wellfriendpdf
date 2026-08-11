@@ -15,8 +15,8 @@ use crate::pubsec::PubSecKeyProvider;
 use crate::reader::PdfReader;
 use crate::render::contract::RevisionId;
 use crate::render::{
-    CanonicalDocument, DisplayList, EditDocumentView, InvalidationResult, PageRenderer,
-    PixelBuffer, PixelFormat, ProgressiveRenderJob, RenderCache, RenderContract,
+    CanonicalDocument, DisplayList, EditDocumentView, HalftonePolicy, InvalidationResult,
+    PageRenderer, PixelBuffer, PixelFormat, ProgressiveRenderJob, RenderCache, RenderContract,
     RenderDocumentCache, RenderDocumentView, RenderMode, RenderPlan, RenderTile,
     SemanticDocumentView, TransactionInvalidationResult, TransactionWriteSet,
     ValidationDocumentView, Viewport, WHITE,
@@ -48,6 +48,7 @@ fn encode_contract_row(
     destination: &mut [u8],
     format: PixelFormat,
     grayscale: bool,
+    reverse_byte_order: bool,
 ) {
     destination.fill(0);
     let bytes_per_pixel = format.bytes_per_pixel();
@@ -78,6 +79,9 @@ fn encode_contract_row(
                 destination[offset..offset + 3].copy_from_slice(&[blue, green, red])
             }
             PixelFormat::Gray8 => destination[offset] = gray,
+        }
+        if reverse_byte_order && bytes_per_pixel > 1 {
+            destination[offset..offset + bytes_per_pixel].reverse();
         }
     }
 }
@@ -756,7 +760,13 @@ impl ContentEngine {
         for row in 0..contract.height as usize {
             let src = &source[row * source_row_bytes..(row + 1) * source_row_bytes];
             let dst = &mut output[row * contract.stride..(row + 1) * contract.stride];
-            encode_contract_row(src, dst, contract.pixel_format, contract.grayscale);
+            encode_contract_row(
+                src,
+                dst,
+                contract.pixel_format,
+                contract.grayscale,
+                contract.reverse_byte_order,
+            );
         }
         Ok(())
     }
@@ -770,11 +780,6 @@ impl ContentEngine {
         if contract.document_revision != self.canonical.revision() {
             return Err(WellfriendError::invalid_input(
                 "render contract belongs to a different document revision",
-            ));
-        }
-        if contract.reverse_byte_order {
-            return Err(WellfriendError::UnsupportedFeature(
-                "reverse_byte_order is not implemented for the CPU surface encoder".to_string(),
             ));
         }
         let full_viewport = self.page_viewport(contract.page_number, contract.dpi)?;
@@ -822,6 +827,7 @@ impl ContentEngine {
         normalized.alpha_mode = expected.alpha_mode;
         normalized.stride = expected.stride;
         normalized.grayscale = expected.grayscale;
+        normalized.reverse_byte_order = expected.reverse_byte_order;
         // Accept caller-specified policies that are actively implemented:
         // PrintProfile, AnnotationRenderPolicy, and FormRenderPolicy now
         // influence rendering rather than being validation-only metadata.
@@ -829,12 +835,13 @@ impl ContentEngine {
         accepted_expected.print_profile = contract.print_profile;
         accepted_expected.annotations = contract.annotations;
         accepted_expected.forms = contract.forms;
+        accepted_expected.halftone = contract.halftone;
         if normalized != accepted_expected {
             return Err(WellfriendError::UnsupportedFeature(
                 "the requested render contract contains semantic policy fields not yet implemented by the active CPU renderer".to_string(),
             ));
         }
-        let buffer = if tile == full_tile {
+        let mut buffer = if tile == full_tile {
             PageRenderer::render_page_cancellable_with_contract_policies(
                 self,
                 contract.page_number,
@@ -861,6 +868,13 @@ impl ContentEngine {
             )?;
             crate::render::page_renderer::crop_buffer_for_contract(&full_buf, tile)?
         };
+        if contract.halftone == HalftonePolicy::Screen {
+            crate::render::print_profile::apply_ordered_halftone_screen(
+                &mut buffer,
+                tile.x,
+                tile.y,
+            );
+        }
         if buffer.width != contract.width || buffer.height != contract.height {
             return Err(WellfriendError::MalformedPdf(
                 "render contract output dimensions diverged from the active viewport".to_string(),
@@ -1569,7 +1583,9 @@ impl ContentEngine {
         image: &ImageReference,
         limits: &DecodeLimits,
     ) -> Result<RawImage> {
-        // TODO: parallel-decode multi-image pages (decode is currently serial per call).
+        // Image extraction decodes one caller-selected image per scheduler
+        // reservation. Multi-image callers should sequence requests or use
+        // decode-scheduler APIs with an explicit memory budget.
         if image.is_inline {
             return self.decode_inline_image_with_limits(image, limits);
         }
@@ -2422,5 +2438,62 @@ mod tests {
         assert!(engine
             .render_page_with_contract(&contract, &CancelToken::none())
             .is_err());
+    }
+
+    #[test]
+    fn contract_renders_halftone_screen_into_caller_surface() {
+        use crate::{AuthorPageSize, Color, GraphicsStyle, PdfBuilder};
+
+        let mut builder = PdfBuilder::new();
+        builder.add_page(AuthorPageSize::LETTER).draw_rect(
+            0.0,
+            728.0,
+            64.0,
+            64.0,
+            &GraphicsStyle::fill(Color::device_rgb(0.5, 0.5, 0.5)),
+        );
+        let engine = ContentEngine::open_bytes(builder.to_bytes().expect("serialize fixture"))
+            .expect("open halftone fixture");
+        let mut contract = engine
+            .default_render_contract(1, 72, RenderMode::Compat)
+            .expect("default contract");
+        contract.clip = Some(crate::render::DeviceClip {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+        });
+        contract.width = 16;
+        contract.height = 16;
+        contract.stride = 16 * 4;
+        contract.halftone = HalftonePolicy::Screen;
+        let mut surface = vec![0; contract.stride * contract.height as usize];
+        engine
+            .render_page_into_buffer(&contract, &CancelToken::none(), &mut surface)
+            .expect("render halftone into caller surface");
+        assert!(surface.chunks_exact(4).any(|px| px[0] == 0));
+        assert!(surface.chunks_exact(4).any(|px| px[0] == 255));
+        assert!(surface.chunks_exact(4).all(|px| px[3] == 255));
+    }
+
+    #[test]
+    fn contract_row_encoder_honors_reverse_byte_order() {
+        let source = [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+
+        let mut rgba = [0u8; 8];
+        encode_contract_row(&source, &mut rgba, PixelFormat::Rgba8, false, true);
+        assert_eq!(rgba, [0x44, 0x33, 0x22, 0x11, 0x88, 0x77, 0x66, 0x55]);
+
+        let mut bgra = [0u8; 8];
+        encode_contract_row(&source, &mut bgra, PixelFormat::Bgra8, false, true);
+        assert_eq!(bgra, [0x44, 0x11, 0x22, 0x33, 0x88, 0x55, 0x66, 0x77]);
+
+        let mut rgb = [0u8; 6];
+        encode_contract_row(&source, &mut rgb, PixelFormat::Rgb8, false, true);
+        assert_eq!(rgb, [0x33, 0x22, 0x11, 0x77, 0x66, 0x55]);
+
+        let mut gray = [0u8; 2];
+        encode_contract_row(&source, &mut gray, PixelFormat::Gray8, false, true);
+        assert_eq!(gray, [0x1f, 0x63]);
     }
 }

@@ -1,4 +1,5 @@
 target/
+.work/
 .env
 crates/engine/tests/references/*.png
 

@@ -66,3 +66,51 @@
 ## Honest conclusion
 
 The pass materially advances the renderer architecture and removes several avoidable degraded fallbacks. It does **not** establish universal renderer closure: high-level packed plans, complete invalidation from edits, all SIMD targets, persistent clip DAG, full progressive binding sessions, full print execution, regional vector fallback, complete image/JPX decode, and complete binding contract parity remain unfinished. No benchmark-readiness claim is made by this report.
+
+## 2026-08-11 local implementation continuation
+
+**Start commit:** `2c893fbfe5ca3799f7ba9e437fe080f63735e0ca`
+**Branch:** `main`
+**Scope controls:** local source work only; no VPS, SSH, corpus use, real-PDF campaign, benchmark, competitor comparison, deployment, release tag, or package publication.
+
+### Completed source deltas
+
+| Area | Previous state in this report | Implemented source state | Evidence |
+|---|---|---|---|
+| Caller-owned surfaces | `reverse_byte_order` was a contract field but the CPU surface encoder refused it. | CPU row encoding now reverses output bytes for supported pixel formats, and contract policy comparison treats byte order as caller-surface layout. | `contract_row_encoder_honors_reverse_byte_order` |
+| Print halftone | `HalftonePolicy::Screen` was print-contract-only and not renderer-active. | Ordered 4x4 Bayer screen is applied deterministically to RGB raster output; alpha is preserved. Screen plus separation-preserving overprint remains a typed unsupported policy. | `cargo test -p wellfriendpdf-engine halftone --lib --jobs 1` |
+| Progressive server sessions | Rust lifecycle existed; server public session handling was absent/incomplete. | Server routes expose start/step/pause/resume/cancel/close/status/finish, with caller ownership, bounded store, idle reaping, strict multipart parsing, render-pixel validation, and finish-time release. | `cargo test -p wellfriendpdf-server --test progressive_integration --jobs 1` |
+| Adaptive tile scheduling | Fixed tile iteration with optional viewport hint. | Zero tile dimensions select deterministic adaptive sizes from 128/192/256/384/512 using page size and render temporary budget; server exposes `tile_size=adaptive`. | `adaptive_tile_size_is_deterministic_and_budget_bounded`; `progressive_start_accepts_adaptive_tile_size` |
+| Image metadata planning | Tile viewports with non-zero origin failed open and decoded. | Metadata-first culling now uses tile-local transformed bounds for non-zero origins. | `tile_origin_participates_in_metadata_culling` |
+| Image SMask discovery | A TODO-driven second reader pass classified soft-mask images after traversal. | SMask object numbers are collected during the primary XObject walk and applied before filtering. | `mark_soft_masks_uses_collected_primary_walk_refs` |
+| Binding surface declarations | C exports and WASM Rust methods existed without complete public header/TypeScript declaration visibility. | C header declares contract/caller-buffer/progressive APIs; WASM `.d.ts` declares contract and progressive classes; .NET/Java allow adaptive progressive sessions. | Source/API inspection plus final workspace checks |
+
+### Final local gates
+
+| Command | Exit code |
+|---|---:|
+| `cargo fmt --all --check` | 0 |
+| `cargo check --workspace --all-targets --jobs 1` | 0 |
+| `cargo clippy --workspace --all-targets --jobs 1 -- -D warnings` | 0 |
+| `cargo check --workspace --all-features --all-targets --jobs 1` | 0 |
+| `cargo clippy --workspace --all-features --all-targets --jobs 1 -- -D warnings` | 0 |
+
+### Updated subsystem status
+
+| Subsystem | Status after local continuation | Remaining limitation |
+|---|---|---|
+| Packed backend plans | PARTIAL | Vector packed plans exist, but high-level text/image/Form/pattern/shading/transparency resources are not universally packed into backend-native payloads. |
+| Retained immediate delegation | PARTIAL | Unsupported display lists still take explicit canonical immediate fallback; this is reported, not silently claimed as retained-native. |
+| Hot/cold display data | PARTIAL | Vector hot/cold arenas exist; high-level retained ops still carry cold/raw resource work. |
+| Transaction invalidation | PARTIAL | Revision-aware cache foundations exist, but edit transactions do not yet drive complete narrow renderer invalidation. |
+| Persistent clip DAG | PARTIAL | `clip_dag.rs` and mask structures exist; the full requested DAG representation is not universally integrated into hot replay. |
+| Transparency and soft masks | PARTIAL | Common groups/masks are active and bounded; full group-space, knockout, backdrop, and contract-key closure remains incomplete. |
+| Print profile | PARTIAL_ADVANCED | Halftone screen is active; full CMYK/DeviceN/proof execution remains incomplete. |
+| Adaptive scheduler | PARTIAL_ADVANCED | Deterministic adaptive tile sizing and visible-tile priority exist; full viewer queue, adjacent-page prefetch, and stale-publication suppression across bindings remain incomplete. |
+| Image decode | PARTIAL_ADVANCED | Metadata-first tile-origin culling and cache identity dimensions exist; decoder-native ROI/reduction/progressive decode remains incomplete. |
+| Binding parity | PARTIAL_ADVANCED | Progressive/contract/caller-buffer source surfaces exist across Rust, C, Python, WASM, .NET, Java, and server; full local build/runtime parity was not completed. |
+| Visual normalization harness | PARTIAL | Compact tooling exists; full later corpus/reference campaign remains deferred. |
+
+### Verdict
+
+`IMPLEMENTATION_INCOMPLETE`

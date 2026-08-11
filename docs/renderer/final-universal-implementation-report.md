@@ -117,3 +117,56 @@ No production service was deployed, no release tag was created, and no package w
 ## Final implementation status
 
 The repaired renderer continuation is source- and VPS-validated for the available Rust/C ABI surfaces, and its capability output is more honest about retained replay, fallback reporting, progressive limitations, and SIMD fallback. It is **not** a universal renderer implementation under the requested definition because the missing/partial IDs above remain active architectural and public-surface blockers.
+
+## 2026-08-11 local source-only continuation
+
+**Local start commit:** `2c893fbfe5ca3799f7ba9e437fe080f63735e0ca`
+**Branch:** `main`
+**Working root:** `.work/final-universal-renderer-implementation`
+**Execution boundary:** local device only; no VPS, no SSH, no corpus, no benchmarks, no competitor run, no deployment, no release publication.
+
+### Implemented in this local pass
+
+1. Caller-owned contract surfaces now honor `reverse_byte_order` in the CPU row encoder instead of refusing the contract.
+2. `HalftonePolicy::Screen` now has a deterministic ordered-screen raster pass for RGB caller surfaces and normal render-contract output. It remains a typed refusal only when combined with separation-preserving overprint.
+3. Progressive rendering is exposed through server HTTP sessions with owner scoping, bounded session count, idle reaping, pause/resume/cancel/close, finish-and-release PNG output, strict multipart numeric parsing, and page-pixel/file-size validation.
+4. Progressive tile sizing now supports deterministic adaptive selection from 128/192/256/384/512 by passing zero tile dimensions. The server also accepts `tile_size=adaptive`, and .NET/Java expose adaptive convenience methods.
+5. Image metadata-first culling now accounts for non-zero tile origins instead of failing open for tile viewports.
+6. Image soft-mask classification is collected during the primary XObject walk, removing the previous second object-lookup pass.
+7. C header declarations, WASM TypeScript declarations, and managed binding guards were updated so the existing contract/progressive/caller-surface source is visible to downstream callers.
+
+### Updated status rows
+
+| ID | 2026-08-11 status | Source status | Remaining source limitation |
+|---|---|---|---|
+| RV-22 image pipeline | PARTIAL_ADVANCED | Metadata-first image culling includes tile-origin handling; cache keys carry target size, quality, JPX flag, source-region, and reduction dimensions; SMask discovery is primary-walk based. | Decoder-native ROI, reduction-tier decode, and progressive image continuation remain limited by current codec APIs and integration. |
+| RV-28 tile scheduler | PARTIAL_ADVANCED | Fixed tile sizes 128/192/256/384/512 are supported, adaptive size selection is deterministic, and visible-tile ordering is already active through viewport hints. | Adjacent-page prefetch, dirty-region rescheduling, and a full multi-priority viewer queue are not complete. |
+| RV-29 progressive lifecycle | PARTIAL_ADVANCED | Rust, server, C ABI source, Python, WASM, .NET, and Java expose progressive session lifecycles in source; server sessions are bounded and owner scoped. | Binding build matrix and cross-language behavioral parity remain unverified locally; retained fallback for unsupported display lists remains explicit. |
+| RV-30 Rust/API controls | PARTIAL_ADVANCED | Contract JSON, caller-owned buffer render, reverse byte order, and adaptive progressive entry are active in Rust/server/binding source. | CLI still lacks a complete builder for every render-contract field. |
+| RV-31 C ABI | PARTIAL_ADVANCED | Contract JSON render, caller buffer, progressive create/step/token/pause/resume/cancel/finish/free exports exist and are declared in the public header. | Header/source checks are local; no external C consumer build was run in this pass. |
+| RV-32 language bindings | PARTIAL_ADVANCED | Python, WASM, .NET, and Java source expose contract JSON and progressive surfaces; WASM `.d.ts` now declares them. | Full generated-schema ergonomics and local external toolchain validation remain incomplete. |
+| RV-33 print profile | PARTIAL_ADVANCED | Screen halftone execution is active for RGB raster surfaces; incompatible separation-preserving output fails typed. | Full CMYK/DeviceN/proofing backend execution remains incomplete. |
+
+### Focused local checks run in this continuation
+
+| Command | Exit code |
+|---|---:|
+| `cargo fmt --all` | 0 |
+| `cargo test -p wellfriendpdf-engine adaptive_tile --lib --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-engine zero_tile_dimension_selects_adaptive_size --lib --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-engine tile_origin_participates_in_metadata_culling --lib --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-engine mark_soft_masks_uses_collected_primary_walk_refs --lib --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-engine halftone --lib --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-engine contract_row_encoder_honors_reverse_byte_order --lib --jobs 1` | 0 |
+| `cargo test -p wellfriendpdf-server --test progressive_integration --jobs 1` | 0 |
+| `cargo fmt --all --check` | 0 |
+| `cargo check --workspace --all-targets --jobs 1` | 0 |
+| `cargo clippy --workspace --all-targets --jobs 1 -- -D warnings` | 0 |
+| `cargo check --workspace --all-features --all-targets --jobs 1` | 0 |
+| `cargo clippy --workspace --all-features --all-targets --jobs 1 -- -D warnings` | 0 |
+
+### Local continuation verdict
+
+`IMPLEMENTATION_INCOMPLETE`
+
+The local pass completed several actionable renderer/API gaps, but universal renderer source closure is still not achieved. Remaining blockers include complete packed plans for every supported high-level visual operation, removal of retained-to-immediate delegation for supported lists, complete transaction-driven invalidation, full persistent clip DAG integration, full print/DeviceN/proof execution, full viewer priority queue and obsolete-work cancellation across all bindings, decoder-native region/reduction/progressive image integration where APIs permit, WASM SIMD kernels, SVG/PS regional fallback, and full contract-builder parity.

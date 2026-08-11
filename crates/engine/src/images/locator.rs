@@ -135,15 +135,11 @@ impl ImageLocator {
             Some(list) => list.clone(),
             None => (1..=total_pages).collect(),
         };
-        let reader = engine.document().reader();
-
         let mut all_refs = Vec::new();
         for page_num in pages {
             let page_refs = Self::find_page_images(engine, page_num, options)?;
             all_refs.extend(page_refs);
         }
-
-        Self::mark_soft_masks_with_reader(&mut all_refs, reader);
 
         all_refs.retain(|r| {
             if r.is_mask && !options.include_masks {
@@ -174,12 +170,14 @@ impl ImageLocator {
         let reader = engine.document().reader();
         let mut refs = Vec::new();
         let mut visited = HashSet::new();
+        let mut soft_mask_objects = HashSet::new();
 
         Self::walk_xobject_dict(
             &resources.xobjects,
             page_number,
             reader,
             &mut visited,
+            &mut soft_mask_objects,
             options,
             &mut refs,
         );
@@ -188,6 +186,8 @@ impl ImageLocator {
             let inline_refs = Self::find_inline_images(engine, page_number)?;
             refs.extend(inline_refs);
         }
+
+        Self::mark_soft_masks(&mut refs, &soft_mask_objects);
 
         Ok(refs)
     }
@@ -462,6 +462,7 @@ impl ImageLocator {
         page_number: usize,
         reader: &PdfReader,
         visited: &mut HashSet<u32>,
+        soft_mask_objects: &mut HashSet<u32>,
         options: &ImageLocateOptions,
         results: &mut Vec<ImageReference>,
     ) {
@@ -494,6 +495,9 @@ impl ImageLocator {
 
             match dict.get_name("Subtype") {
                 Some("Image") => {
+                    if let Some(PdfObject::Reference { number, .. }) = dict.get("SMask") {
+                        soft_mask_objects.insert(*number);
+                    }
                     results.push(Self::image_ref_from_dict(
                         page_number,
                         name.clone(),
@@ -519,6 +523,7 @@ impl ImageLocator {
                                 page_number,
                                 reader,
                                 visited,
+                                soft_mask_objects,
                                 options,
                                 results,
                             );
@@ -550,23 +555,7 @@ impl ImageLocator {
         }
     }
 
-    fn mark_soft_masks_with_reader(refs: &mut [ImageReference], reader: &PdfReader) {
-        // TODO: collect /SMask refs during the primary walk to avoid this second pass.
-        let mut smask_objs: HashSet<u32> = HashSet::new();
-
-        for image_ref in refs.iter() {
-            if image_ref.is_inline || image_ref.object_number == 0 {
-                continue;
-            }
-            if let Ok(PdfObject::Stream { dict, .. }) =
-                reader.get_object(image_ref.object_number, image_ref.generation_number)
-            {
-                if let Some(PdfObject::Reference { number, .. }) = dict.get("SMask") {
-                    smask_objs.insert(*number);
-                }
-            }
-        }
-
+    fn mark_soft_masks(refs: &mut [ImageReference], smask_objs: &HashSet<u32>) {
         for image_ref in refs.iter_mut() {
             if smask_objs.contains(&image_ref.object_number) {
                 image_ref.is_smask = true;
@@ -687,6 +676,49 @@ mod tests {
             inline_data: None,
         };
         assert_eq!(r.uncompressed_bytes(), 10000);
+    }
+
+    #[test]
+    fn mark_soft_masks_uses_collected_primary_walk_refs() {
+        let mut refs = vec![
+            ImageReference {
+                page_number: 1,
+                xobject_name: "Image".to_string(),
+                object_number: 10,
+                generation_number: 0,
+                width: 10,
+                height: 10,
+                bits_per_component: 8,
+                color_space: "DeviceRGB".to_string(),
+                filter: vec![],
+                is_inline: false,
+                is_mask: false,
+                is_smask: false,
+                inline_data: None,
+            },
+            ImageReference {
+                page_number: 1,
+                xobject_name: "SoftMask".to_string(),
+                object_number: 11,
+                generation_number: 0,
+                width: 10,
+                height: 10,
+                bits_per_component: 8,
+                color_space: "DeviceGray".to_string(),
+                filter: vec![],
+                is_inline: false,
+                is_mask: false,
+                is_smask: false,
+                inline_data: None,
+            },
+        ];
+        let mut soft_masks = HashSet::new();
+        soft_masks.insert(11);
+
+        ImageLocator::mark_soft_masks(&mut refs, &soft_masks);
+
+        assert!(!refs[0].is_smask);
+        assert!(refs[1].is_smask);
     }
 
     #[test]

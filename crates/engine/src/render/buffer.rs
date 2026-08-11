@@ -2954,6 +2954,10 @@ impl PixelBuffer {
         &self.data
     }
 
+    pub(crate) fn rgba_bytes_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+
     /// Convert to a RawImage for use with ImageEncoder.
     pub fn to_raw_image(&self) -> RawImage {
         RawImage {

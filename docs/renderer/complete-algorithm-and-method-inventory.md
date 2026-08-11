@@ -72,3 +72,21 @@
 7. **Binding raster capability differs materially:** C/Python/WASM only expose limited encoded rendering; .NET/Java have no general raster render surface; server adds cancellation but no full contract.
 
 No performance conclusion follows from this inventory. It is a source-based implementation map for the next steps of this task.
+
+## 2026-08-11 local inventory delta
+
+**Start commit:** `2c893fbfe5ca3799f7ba9e437fe080f63735e0ca`
+**Scope:** local implementation only; no VPS, corpus, benchmark, competitor comparison, deployment, tag, or package publication.
+
+| Method group | Source delta | Public exposure | Status |
+|---|---|---|---|
+| Caller-owned surface encoding | `engine.rs` now honors `RenderContract.reverse_byte_order` in `render_page_into_buffer` for RGB/RGBA/BGRA/Gray contract output. | Rust, C ABI, Python, WASM, .NET, Java contract/caller-buffer routes share the core path where present. | PARTIAL_ADVANCED |
+| Print halftone routing | `print_profile.rs` implements ordered 4x4 screen halftoning over mutable RGBA bytes; `engine.rs` invokes it for contract renders. | Rust contract render path; server/bindings through contract JSON where exposed. | PARTIAL_ADVANCED |
+| Progressive render lifecycle | Server added bounded sessions and lifecycle routes; engine added deterministic adaptive tile sizing. | Rust, server, C ABI, Python, WASM, .NET, Java source surfaces. | PARTIAL_ADVANCED |
+| Image metadata/decode planning | `image_decode_planning.rs` now culls against non-zero tile origins. | Internal renderer path before decode/cache insertion. | PARTIAL_ADVANCED |
+| Image SMask locator | `images/locator.rs` collects `/SMask` references during the primary XObject walk. | Rust image-location APIs and downstream extraction routes. | PARTIAL_ADVANCED |
+| Binding declarations | C header and WASM TypeScript declarations now expose contract/caller-buffer/progressive functions/classes. | C and TypeScript consumers. | PARTIAL_ADVANCED |
+
+The following inventory blockers remain implementation work, not mere future verification: universal high-level packed backend plans, removal of common retained-to-immediate delegation for supported features, complete transaction-driven invalidation, fully integrated persistent clip DAG, full CMYK/DeviceN/proof execution, complete viewer-priority scheduler with obsolete-work cancellation across bindings, codec-native region/reduction/progressive image decode integration, WASM SIMD kernels, SVG/PS regional fallback, and complete contract-builder parity.
+
+**Inventory verdict:** `IMPLEMENTATION_INCOMPLETE`

@@ -5,7 +5,8 @@ use crate::engine::ContentEngine;
 use crate::error::{Result, WellfriendError};
 use crate::optional_content::OptionalContentContext;
 use crate::render::{
-    PageRenderer, PixelBuffer, RenderDocumentCache, RenderMode, RenderTile, WHITE,
+    PageRenderer, PixelBuffer, RenderDocumentCache, RenderMode, RenderResourceBudget, RenderTile,
+    WHITE,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
@@ -95,6 +96,8 @@ pub struct ProgressiveRenderJob {
     aborted: bool,
 }
 
+const ADAPTIVE_TILE_SIZES: [u32; 5] = [128, 192, 256, 384, 512];
+
 impl ProgressiveRenderJob {
     pub fn new(
         engine: ContentEngine,
@@ -125,8 +128,15 @@ impl ProgressiveRenderJob {
         viewport_hint: Option<RenderTile>,
     ) -> Result<Self> {
         let viewport = engine.page_viewport(page_number, dpi)?;
-        let tile_width = tile_width.max(1);
-        let tile_height = tile_height.max(1);
+        let (tile_width, tile_height) = if tile_width == 0 || tile_height == 0 {
+            choose_adaptive_tile_size(
+                viewport.width_px,
+                viewport.height_px,
+                RenderResourceBudget::default(),
+            )
+        } else {
+            (tile_width, tile_height)
+        };
         let mut tiles = Vec::new();
         let mut y = 0;
         while y < viewport.height_px {
@@ -483,6 +493,40 @@ impl ProgressiveRenderJob {
     }
 }
 
+/// Select a deterministic progressive tile size from the supported fixed set.
+///
+/// The policy is intentionally data-free and benchmark-free: it uses page
+/// dimensions plus the render temporary-memory budget to pick a bounded tile
+/// that keeps retained RGBA tile surfaces well below the active budget while
+/// avoiding excessive scheduler fragmentation on small pages.
+pub fn choose_adaptive_tile_size(
+    page_width: u32,
+    page_height: u32,
+    budget: RenderResourceBudget,
+) -> (u32, u32) {
+    let page_pixels = u64::from(page_width).saturating_mul(u64::from(page_height));
+    let target = if page_pixels <= 1_000_000 {
+        384
+    } else if page_pixels <= 4_000_000 {
+        256
+    } else if page_pixels <= 12_000_000 {
+        192
+    } else {
+        128
+    };
+    let max_tile_pixels = budget.max_temporary_bytes.saturating_div(16).max(1);
+    let selected = ADAPTIVE_TILE_SIZES
+        .iter()
+        .copied()
+        .rev()
+        .find(|size| {
+            let pixels = u64::from(*size).saturating_mul(u64::from(*size));
+            *size <= target && pixels <= max_tile_pixels
+        })
+        .unwrap_or(128);
+    (selected, selected)
+}
+
 fn tile_priority_key(tile: RenderTile, hint: RenderTile) -> (u8, u64, u32, u32) {
     let tile_x1 = tile.x.saturating_add(tile.width);
     let tile_y1 = tile.y.saturating_add(tile.height);
@@ -516,6 +560,34 @@ mod tests {
             .expect("write page");
         ContentEngine::open_bytes(builder.to_bytes().expect("serialize test PDF"))
             .expect("open test PDF")
+    }
+
+    #[test]
+    fn adaptive_tile_size_is_deterministic_and_budget_bounded() {
+        let default = RenderResourceBudget::default();
+        assert_eq!(choose_adaptive_tile_size(800, 1000, default), (384, 384));
+        assert_eq!(choose_adaptive_tile_size(2200, 1800, default), (256, 256));
+        assert_eq!(choose_adaptive_tile_size(3600, 2400, default), (192, 192));
+        assert_eq!(choose_adaptive_tile_size(8000, 8000, default), (128, 128));
+
+        let tiny_budget = RenderResourceBudget {
+            max_temporary_bytes: 128 * 128 * 16,
+            ..RenderResourceBudget::default()
+        };
+        assert_eq!(
+            choose_adaptive_tile_size(800, 1000, tiny_budget),
+            (128, 128)
+        );
+    }
+
+    #[test]
+    fn zero_tile_dimension_selects_adaptive_size() {
+        let engine = test_engine();
+        let job = ProgressiveRenderJob::new(engine, 1, 72, RenderMode::Compat, 0, 0)
+            .expect("create adaptive job");
+        assert!(ADAPTIVE_TILE_SIZES.contains(&job.tile_width));
+        assert_eq!(job.tile_width, job.tile_height);
+        assert_eq!(job.token().tile_width, job.tile_width);
     }
 
     #[test]

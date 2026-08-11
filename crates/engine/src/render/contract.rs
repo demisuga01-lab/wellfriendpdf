@@ -533,10 +533,10 @@ mod tests {
     }
 
     #[test]
-    fn halftone_screen_is_refused_by_validate() {
+    fn halftone_screen_is_valid_without_preserve_separations() {
         let mut c = contract(1);
         c.halftone = HalftonePolicy::Screen;
-        assert!(c.validate().is_err());
+        assert!(c.validate().is_ok());
     }
 
     #[test]

@@ -27,6 +27,7 @@
 //! proof CMM transforms when the native CMM backend is available and the
 //! rendering intent/profile shape is supported.
 
+use crate::render::buffer::PixelBuffer;
 use crate::render::contract::{
     ColorManagementPolicy, HalftonePolicy, OverprintPolicy, PrintProfile,
 };
@@ -94,7 +95,7 @@ pub struct PrintProfileRefusal {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PrintProfileRefusalCategory {
-    /// Halftone screening is requested but not implemented.
+    /// Halftone screening cannot be combined with separation-preserving output.
     UnsupportedHalftone,
     /// Overprint semantics (PreserveSeparations) requested without native CMM.
     UnsupportedOverprintSeparations,
@@ -117,12 +118,16 @@ pub(crate) fn validate_print_profile_prepress(
     overprint: OverprintPolicy,
     cmm_policy: ColorManagementPolicy,
 ) -> Result<(), PrintProfileRefusal> {
-    // Halftone screening is not implemented in any profile.
-    if halftone == HalftonePolicy::Screen {
+    // RGB ordered-screen halftoning is implemented for raster surfaces. It must
+    // not be used for PreserveSeparations because that policy requires keeping
+    // ink channels semantically separate.
+    if halftone == HalftonePolicy::Screen && overprint == OverprintPolicy::PreserveSeparations {
         return Err(PrintProfileRefusal {
             profile: print_profile_cache_label(profile).to_string(),
-            reason: "halftone screening (HalftonePolicy::Screen) is not implemented; \
-                     requesting it would produce incorrect raster output"
+            reason: "HalftonePolicy::Screen cannot be combined with \
+                     OverprintPolicy::PreserveSeparations because the active \
+                     raster screen is RGB/page-surface based, not separation \
+                     preserving"
                 .to_string(),
             category: PrintProfileRefusalCategory::UnsupportedHalftone,
         });
@@ -156,6 +161,34 @@ pub(crate) fn validate_print_profile_prepress(
     }
 
     Ok(())
+}
+
+pub(crate) fn apply_ordered_halftone_screen(
+    buffer: &mut PixelBuffer,
+    page_origin_x: u32,
+    page_origin_y: u32,
+) {
+    const BAYER_4X4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
+    let width = buffer.width as usize;
+    let origin_x = page_origin_x as usize;
+    let origin_y = page_origin_y as usize;
+    for (index, px) in buffer.rgba_bytes_mut().chunks_exact_mut(4).enumerate() {
+        let x = index % width;
+        let y = index / width;
+        let threshold = u16::from(BAYER_4X4[(origin_y + y) & 3][(origin_x + x) & 3]) * 16 + 8;
+        px[0] = screen_channel(px[0], threshold);
+        px[1] = screen_channel(px[1], threshold);
+        px[2] = screen_channel(px[2], threshold);
+    }
+}
+
+#[inline]
+fn screen_channel(channel: u8, threshold: u16) -> u8 {
+    if u16::from(channel) > threshold {
+        255
+    } else {
+        0
+    }
 }
 
 #[cfg(test)]
@@ -247,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn halftone_screen_is_refused_in_all_profiles() {
+    fn halftone_screen_is_supported_without_separation_preservation() {
         for profile in [
             PrintProfile::Display,
             PrintProfile::Print,
@@ -259,12 +292,33 @@ mod tests {
                 OverprintPolicy::Disabled,
                 ColorManagementPolicy::PortableQcms,
             );
-            assert!(result.is_err());
-            assert_eq!(
-                result.unwrap_err().category,
-                PrintProfileRefusalCategory::UnsupportedHalftone
-            );
+            assert!(result.is_ok());
         }
+    }
+
+    #[test]
+    fn halftone_screen_refuses_preserve_separations() {
+        let result = validate_print_profile_prepress(
+            PrintProfile::Print,
+            HalftonePolicy::Screen,
+            OverprintPolicy::PreserveSeparations,
+            ColorManagementPolicy::NativeLittleCms,
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().category,
+            PrintProfileRefusalCategory::UnsupportedHalftone
+        );
+    }
+
+    #[test]
+    fn ordered_halftone_screen_is_deterministic_and_preserves_alpha() {
+        let mut buffer = PixelBuffer::new_filled(4, 4, [128, 96, 64, 37]);
+        apply_ordered_halftone_screen(&mut buffer, 0, 0);
+        let pixels = buffer.rgba_bytes();
+        assert!(pixels.chunks_exact(4).any(|px| px[0] == 0));
+        assert!(pixels.chunks_exact(4).any(|px| px[0] == 255));
+        assert!(pixels.chunks_exact(4).all(|px| px[3] == 37));
     }
 
     #[test]

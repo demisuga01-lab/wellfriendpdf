@@ -6,5 +6,6 @@ pub mod jobs;
 pub mod ocr;
 pub mod params;
 pub mod processing;
+pub mod progressive_sessions;
 pub mod rate_limit;
 pub mod routes;
